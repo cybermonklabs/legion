@@ -2735,12 +2735,12 @@ jobs:
               - *bun_install
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
-              # dispatch_ui's set: this suite has no tsc program, and loads the SPA and the e2e
-              # helpers that filter's programs compile. Its jobs' contracts build
-              # (`build:dispatch`) bundles the four entries Dispatch imports and so nothing
-              # outside that set (ci_ts_programs.py, LISTED, says why).
+              # dispatch_ui's set, which the SPA and the e2e helpers load, with the bundle of the
+              # dispatch command its rows spawn (e2e/dispatch-cli.ts:8,39), dispatch_two_builds_go's
+              # set (ci_ts_programs.py, LISTED, says why). Its jobs' contracts build
+              # (`build:dispatch`) compiles nothing outside the first: not legion-api.ts.
               # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_ui's
-              # tsc programs compile. An edit by hand is refused by that check, which writes these.
+              # tsc programs and filter dispatch_two_builds_go's bundles load. An edit by hand is refused by that check, which writes these.
               - 'packages/contracts/src/actor-label.ts'
               - 'packages/contracts/src/agent-stream.ts'
               - 'packages/contracts/src/block-schema.generated.ts'
@@ -2995,6 +2995,7 @@ jobs:
               - '.github/workflows/ci-job-dispatch-multiprocess.yaml'
               - '.github/workflows/ci-job-broker-multiprocess.yaml'
               # The two-build Go step's reads rule 15 holds this job to: its file, and the CLI twobuild_cli_test.go runs.
+              # Rule 15 holds it to that step's listed block too, which packages/contracts/src/** above takes in.
               - '.github/workflows/ci-job-dispatch-two-builds.yaml'
               - 'packages/envoy-client/bin/dispatch.ts'
               - 'packages/envoy-client/src/**'
@@ -3182,9 +3183,8 @@ jobs:
             # against, the sizing of its Postgres, and the current build's CLI
             # twobuild_cli_test.go runs (`bun packages/envoy-client/bin/dispatch.ts`, with the
             # sources it loads, after a frozen Bun install). TAG_RUNS pairs the step with envoy_go,
-            # whose filter rule 15 holds to all of this but the listed block, which is no declared
-            # read (envoy_go takes packages/contracts/src whole), and to nothing of the browser
-            # half below.
+            # whose filter rule 15 holds to all of this, the listed block's files among them, and
+            # to nothing of the browser half below.
             dispatch_two_builds_go:
               - *ci_router
               - '.github/workflows/ci-job-dispatch-two-builds.yaml'

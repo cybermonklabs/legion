@@ -1614,12 +1614,14 @@ def tag_run_steps(documents: dict) -> list:
 
 
 def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, gate_files: dict,
-                   selection: Selection, problems: list[Annotation]) -> list:
+                   selection: Selection, listed: dict, expander: Expander, problems: list[Annotation]) -> list:
     """A step that runs a package under a build tag and passes `-run` runs only the tests the tag
     adds, so the package's untagged tests must run elsewhere in every run that step runs. The job
     that runs them is declared (TAG_RUNS), and its filter must cover every file the tag step reads
-    (tag_step_files); otherwise a change to a file only the tag step reads runs the tagged tests
-    alone and the untagged ones nowhere. The table is no entry's to opt into: a `go test`
+    (tag_step_files) and every file of the tag step's filter's listed block (tag_listed_files,
+    given `listed`, the listed blocks listed_owners accepts); otherwise a change to a file only the
+    tag step reads runs the tagged tests alone and the untagged ones nowhere. The table is no
+    entry's to opt into: a `go test`
     step of ci.yaml or of a workflow it calls passing both -tags and -run that no entry names is
     a failure of its own, and
     so is a stale entry - one naming a filter the changes job does not have, a job its own
@@ -1663,15 +1665,24 @@ def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, gate
             continue
         untagged = PathsFilter(filters[entry.untagged_filter], quantifiers[entry.untagged_filter])
         held, counted, named = tag_step_files(entry, gate_files, selection)
-        uncovered = [f for f in held if not untagged.covers(f)]
-        report.append(f"{where}: {len(held)} files {counted}, {len(uncovered)} uncovered by {entry.untagged_job} "
+        read = set(held)
+        block = [f for f in tag_listed_files(entry, listed, expander) if f not in read]
+        # Per way a refusal names a file: the files the tag step reads, then the ones only its
+        # filter's listed block holds.
+        uncovered = {named: [f for f in held if not untagged.covers(f)],
+                     f"filter {entry.filter}'s listed block holds": [f for f in block if not untagged.covers(f)]}
+        of_block = f" and {len(block)} of its listed block" if block else ""
+        report.append(f"{where}: {len(held)} files {counted}{of_block}, "
+                      f"{sum(len(files) for files in uncovered.values())} uncovered by {entry.untagged_job} "
                       f"(filter {entry.untagged_filter})")
-        if uncovered:
-            more = f", and {len(uncovered) - SHOWN} more" if len(uncovered) > SHOWN else ""
+        for which, files in uncovered.items():
+            if not files:
+                continue
+            more = f", and {len(files) - SHOWN} more" if len(files) > SHOWN else ""
             problems.append(error(entry.workflow, f"{where} runs only what its tag adds (-run), so {entry.untagged_job} "
                                                   f"must run that package's untagged tests in every run it runs ({entry.why}), "
                                                   f"but filter {entry.untagged_filter} does not match "
-                                                  f"{' '.join(uncovered[:SHOWN])}{more}, which {named}: a change to one of "
+                                                  f"{' '.join(files[:SHOWN])}{more}, which {which}: a change to one of "
                                                   f"them runs the tagged tests alone and the untagged ones nowhere"))
     # The other side of the rule: an entry holds the step it names, and this holds every step no
     # entry names - a step added without one, or an entry deleted while its step stayed. A step
@@ -1751,18 +1762,42 @@ def tag_step_files(entry, gate_files: dict, selection: Selection) -> tuple:
     return (selection.of(entry.filter), f"selected by filter {entry.filter}", f"filter {entry.filter} matches")
 
 
-def tag_held_files(data, filters: dict, gate_files: dict, selection: Selection) -> dict:
+def tag_listed_files(entry, listed: dict, expander: Expander) -> list:
+    """The files of the listed block of a TAG_RUNS entry's tag filter, which rule 15 holds the
+    filter of the job that runs the package's untagged tests to beside what the tag step reads
+    (tag_step_files), sorted. Such a block (TS_LISTED) is the files of a tree that the tag step
+    loads and this check cannot compute: .github/scripts/check-ts-filters.sh derives them, from
+    the tsc programs or the `bun build` of an entry its table pairs with the filter, writes them
+    and holds the block to them. They are no declared read of the tag step's gate, so its read set
+    leaves them out: dispatch_two_builds_go's block is the contracts modules of the dispatch
+    command its step runs. A change to one of them starts the tagged run all the same, so it must
+    start the untagged one with it, whatever patterns of its own the untagged filter takes that
+    tree in by. Read from the block's own lines in ci.yaml, among the blocks listed_owners accepts
+    (`listed`), each pattern expanded to the files it matches: a block whose marker names no check
+    CI runs is refused there and holds nothing here, since no check holds its lines true."""
+    block = listed.get(entry.filter)
+    if block is None or block.begin < 0:
+        return []
+    return sorted({f for pattern in block.patterns for f in expander.expand(pattern)})
+
+
+def tag_held_files(data, filters: dict, gate_files: dict, selection: Selection, listed: dict,
+                   expander: Expander) -> dict:
     """Per filter, the files rule 15 holds it to: every file a TAG_RUNS step reads
-    (tag_step_files), held on the filter of the job that runs that package's untagged tests, so a
-    change that starts the tagged run starts the untagged one with it. Rule 9's second direction
-    passes over them (rule_required_files) and rule 17 writes no `!` pattern for one
-    (wanted_negations): either would be refusing the rule that put the file there. An entry
-    pairing a filter with itself adds nothing here, since what its tag step reads is already
-    what that filter's gate reads."""
+    (tag_step_files) and every file of its filter's listed block (tag_listed_files), held on the
+    filter of the job that runs that package's untagged tests, so a change that starts the tagged
+    run starts the untagged one with it. Rule 9's second direction passes over them
+    (rule_required_files) and rule 17 writes no `!` pattern for one (wanted_negations): either
+    would be refusing the rule that put the file there. A listed block's files are what tsc
+    programs compile and bundles load, never a Go test file, so rule 17, which reads Go test files
+    alone, finds none of them here. An entry pairing a filter with itself adds nothing here, since
+    what its tag step reads is already what that filter's gate reads, and its listed block is its
+    own."""
     held: dict = defaultdict(set)
     for entry in data.TAG_RUNS:
         if entry.filter in filters and entry.untagged_filter in filters:
             held[entry.untagged_filter].update(tag_step_files(entry, gate_files, selection)[0])
+            held[entry.untagged_filter].update(tag_listed_files(entry, listed, expander))
     return held
 
 
@@ -1777,9 +1812,10 @@ def rule_required_files(data, filters: dict, gate_files: dict, selection: Select
     docs filter holds .github/workflows/docs-pages.yaml so that main's docs build runs when its
     own workflow changes, which is a run of that file rather than a read by ci.yaml's docs job.
     Rule 15 holds the filter of the job that runs a package's untagged tests to every file the
-    tag step reads (tag_held_files), so a change that starts the tagged run starts the untagged
-    one with it: envoy_go_race holds .github/scripts/go-tagged-tests.sh, which
-    listener-server-change's soak takes its -run from and no step of envoy-go-race reads.
+    tag step reads and every file of the tag step filter's listed block (tag_held_files), so a
+    change that starts the tagged run starts the untagged one with it: envoy_go_race holds
+    .github/scripts/go-tagged-tests.sh, which listener-server-change's soak takes its -run from
+    and no step of envoy-go-race reads.
 
     And .github/scripts/check-ts-filters.sh does it from outside: it writes into a filter a
     listed block (TS_LISTED below) of the files of a tree that a job's tsc programs compile or the
@@ -1795,7 +1831,7 @@ def rule_required_files(data, filters: dict, gate_files: dict, selection: Select
     for name, path in data.PUSH_WORKFLOWS.items():
         if name in filters:
             required[name].add(path)
-    for name, held in tag_held_files(data, filters, gate_files, selection).items():
+    for name, held in tag_held_files(data, filters, gate_files, selection, listed, expander).items():
         required[name].update(held)
     for name, block in listed.items():
         if name in filters and block.begin >= 0:
@@ -1884,7 +1920,8 @@ GENERATED = Marks(BEGIN, END, WRITE)
 # the other's block for its own: rule 17 reads and rewrites only the lines between BEGIN and END,
 # a listed block's lines are items of the list to it, and rule 9's second direction passes over a
 # listed block's patterns (rule_required_files) while its BEGIN line names that check, which a job
-# of CI runs (listed_owners below).
+# of CI runs (listed_owners below). Rule 15 reads such a block as what the tag step its filter
+# gates loads, and holds that step's untagged job's filter to it (tag_listed_files).
 TS_LISTED = Marks("# BEGIN listed", "# END listed", ".github/scripts/check-ts-filters.sh write")
 KINDS = (GENERATED, TS_LISTED)
 
@@ -1914,12 +1951,13 @@ def ci_commands(documents: dict) -> set:
 
 
 def listed_owners(documents: dict, lines: list, problems: list[Annotation]) -> dict:
-    """The changes job's listed blocks rule 9's second direction may pass over: each one whose
-    BEGIN line names, as the command that writes it, a script a step of CI runs (ci_commands)
-    other than this check. Passing over a block's patterns is right only because another check
-    holds them to what the job reads, so a block whose marker names no such check - a script no
-    job runs, this check itself, or nothing - holds its filter to nothing: it is refused, naming
-    the filter and the marker, and its patterns are judged like any other."""
+    """The changes job's listed blocks rule 9's second direction may pass over, and rule 15 reads
+    for a tag step's filter: each one whose BEGIN line names, as the command that writes it, a
+    script a step of CI runs (ci_commands) other than this check. Passing over a block's patterns
+    is right only because another check holds them to what the job reads, so a block whose marker
+    names no such check - a script no job runs, this check itself, or nothing - holds its filter
+    to nothing: it is refused, naming the filter and the marker, and its patterns are judged like
+    any other."""
     runs = ci_commands(documents)
     owned = {}
     for name, block in filter_blocks(lines, [], TS_LISTED).items():
@@ -2129,8 +2167,9 @@ def wanted_negations(filters: dict, quantifiers: dict, gate_files: dict, blocks:
     is kept as a read file is: listener-server-change's soak reads cmd/listener's tagged test,
     which envoy-go-race does not compile, and rule 15 holds envoy_go_race to selecting it so
     that a change to it runs that package's untagged tests too. What rule 15 holds a filter to is
-    what a tag step reads (tag_step_files), never a selection a generated block narrows, so this
-    set does not grow when a hand deletes a `!` pattern."""
+    what a tag step reads (tag_step_files) and the files of its filter's listed block
+    (tag_listed_files), never a selection a generated block narrows, so this set does not grow
+    when a hand deletes a `!` pattern."""
     wanted = {}
     for name in sorted(gate_files):
         if quantifiers[name] != "some-with-excludes":
@@ -2296,19 +2335,21 @@ def check() -> int:
             problems += held
     # Rule 9's second direction passes over the patterns of the listed blocks whose marker names
     # the check that writes and holds them, and refuses a block whose marker names no check CI
-    # runs (listed_owners); whether an owned block is well formed is its owner's to refuse.
+    # runs (listed_owners); whether an owned block is well formed is its owner's to refuse. Rule
+    # 15 reads the same blocks, holding a tag step's untagged job to its filter's one.
     lines = read_repository_text(REPO / WORKFLOW).splitlines()
-    check_dead_gate_patterns(data, filters, gate_files, expander, selection,
-                             listed_owners(documents, lines, problems), problems)
+    listed = listed_owners(documents, lines, problems)
+    check_dead_gate_patterns(data, filters, gate_files, expander, selection, listed, problems)
     problems += session.problems
     report += check_push_workflows(data, filters, problems)
-    report += check_tag_runs(documents, data, filters, quantifiers, gate_files, selection, problems)
+    report += check_tag_runs(documents, data, filters, quantifiers, gate_files, selection, listed, expander,
+                             problems)
     # Rule 17, last of the rules that read a filter: it needs the files each gate reads, which
     # the loop above has just finished, and the text of ci.yaml, read above.
     blocks = filter_blocks(lines, problems)
     tests = [f for f in files if f.endswith(TEST_SUFFIX)]
     wanted = wanted_negations(filters, quantifiers, gate_files, blocks, expander, tests,
-                              tag_held_files(data, filters, gate_files, selection))
+                              tag_held_files(data, filters, gate_files, selection, listed, expander))
     if mode == "write":
         rewrite(WORKFLOW, lines, blocks, wanted)
         # Rule 8 holds a PUSH_WORKFLOWS workflow's on.push.paths equal to its filter, so the

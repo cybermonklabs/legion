@@ -30,7 +30,8 @@ header says what is proved).
             run, the paths main's.
   TAG_RUNS  one entry per step that runs a package under a build tag and passes -run: the job
             whose untagged run of that package that -run leans on, whose filter must therefore
-            cover every file the tag step reads (the read set of the gate on its filter).
+            cover every file the tag step reads (the read set of the gate on its filter, and that
+            filter's listed block).
 
 A Read's glob is expanded over the repository's files; a why cites the step (at()) or the
 source line that reads it - the line that performs the read, not the one naming its path, and
@@ -514,9 +515,9 @@ RULES = {
     # :42), which loads bin/dispatch.ts and its imports: envoy-client's sources and
     # broker-client's with them, which are reads here, and some of contracts' modules, which are
     # not: check-ts-filters.sh builds that entry (ci_ts_programs.py, BUNDLES), writes the
-    # contracts modules its bundle loads into the listed blocks of dispatch_two_builds_go and
-    # dispatch_two_builds and holds both blocks to them, and rule 9's second direction passes
-    # over those blocks' patterns.
+    # contracts modules its bundle loads into the listed blocks of dispatch_two_builds_go,
+    # dispatch_two_builds and dispatch_browser and holds those blocks to them, and rule 9's second
+    # direction passes over those blocks' patterns.
     f"{ENVOY}/cmd/dispatch/twobuild_cli_test.go": reads(
         ("packages/envoy-client/bin/dispatch.ts",
          "cmd/dispatch/twobuild_cli_test.go:42 runs `bun ../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command"),
@@ -2423,10 +2424,10 @@ GATES = [
          f"{at_browser(BROWSER_MERGE_STEP, BROWSER_MERGE)} merges their reports, in packages/dispatch"),
         ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:127-147 (build:web)"),
         # packages/contracts/src is no read of this table's either: the filter's listed block holds
-        # the modules dispatch_ui's tsc programs compile, which check-ts-filters.sh writes, and
-        # ci_ts_programs.py's LISTED says why this suite loads that set and no other, and each
-        # job's `Build contracts for dispatch e2e` step runs `build:dispatch`, whose four entries
-        # compile nothing outside it.
+        # the modules dispatch_ui's tsc programs compile and the dispatch command's bundle loads,
+        # which check-ts-filters.sh writes, and ci_ts_programs.py's LISTED says why this suite
+        # loads those and no other; each job's `Build contracts for dispatch e2e` step runs
+        # `build:dispatch`, whose four entries compile nothing outside dispatch_ui's.
         ("packages/envoy-client/bin/dispatch.ts", "packages/dispatch/e2e/inbox-cli.e2e.ts:326 runs it through e2e/dispatch-cli.ts:8"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
@@ -3038,8 +3039,9 @@ GATES = [
 # untagged run is a step of the same job, so the filters are the same one and the subset holds
 # trivially; they are here all the same, so the rule covers every -run step and a later move of
 # one to another job is caught. What the check holds an untagged job's filter to is what the tag
-# step's gate reads, never what the tag filter selects, so these two hold their filter to nothing
-# its own gate does not read already, and rules 9 and 17 judge it as they judge any other.
+# step's gate reads and the tag step filter's listed block, never what the tag filter selects, so
+# these two hold their filter to nothing its own gate does not read already, and rules 9 and 17
+# judge it as they judge any other.
 TAG_RUNS = [
     TagRun("dispatch_memory", "dispatch-memory", MEMORY_STEP, "envoy_go", "envoy-go",
            f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/dispatch's untagged tests",

@@ -22,7 +22,8 @@
 # DAEMON_RACE_PACKAGES names,
 # ci_job_reads.py's WORKSPACES must name exactly the workspaces of the root package.json, and no
 # workflow but ci.yaml may run on a merge group, the job TAG_RUNS pairs with a tag step that
-# passes -run must have a filter covering every file the tag step reads, each gate
+# passes -run must have a filter covering every file the tag step reads and every file of its
+# filter's listed block, each gate
 # filter must hold exactly the generated `!` patterns that keep it off the Go test files its job
 # does not read, which the write mode writes, no paths-filter step's filters string may come
 # near the 131,072-byte cap the kernel puts on the environment variable Actions hands it in,
@@ -1153,6 +1154,70 @@ run_check "$root"
 check "the ordinary mode passes" "$(is "$status" 0)"
 check "with the tag step's files covered" \
   "$(contains "$out" '^report: image step "Build": 3 files selected by filter image, 0 uncovered by app (filter app)$')"
+
+# The tag step's filter can hold a listed block that check-ts-filters.sh writes: the contracts
+# modules that the dispatch command the two-build Go step runs loads, in the real repository. Those
+# files are no declared read of the step's gate, so the gate's read set leaves them out, and rule
+# 15 holds the untagged job's filter to them from the block itself. A change to one of them starts
+# the tagged run, so it must start the untagged one too.
+# listed_tag_run <root>: a tagged job, gated on the filter tagged, whose step runs ./lib under the
+# live tag with -run, pinned whole as self_tag_run pins it. Its filter holds a listed block of
+# docs/readme.md, owned by the check the lint job runs, and TAG_RUNS pairs the step with the app
+# job. The app filter covers every file the tagged gate reads, so the listed block is the only
+# thing the app filter misses.
+listed_tag_run() {
+  local root=$1
+  replace "$root/.github/workflows/ci.yaml" "        run: echo lint" "        run: .github/scripts/check-ts-filters.sh"
+  replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
+    $'      image: ${{ steps.filter.outputs.image }}\n      tagged: ${{ steps.filter.outputs.tagged }}'
+  replace "$root/.github/workflows/ci.yaml" "            image:" \
+    $'            tagged:\n              - \'.github/workflows/ci.yaml\'\n              - *workspace\n              - \'mod/lib/*\'\n              - \'fixtures/**\'\n              # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of docs filter tagged\'s\n              # bundles load. An edit by hand is refused by that check, which writes these.\n              - \'docs/readme.md\'\n              # END listed\n            image:'
+  replace "$root/.github/workflows/ci.yaml" '{"app": "app", "image": "image"}' \
+    '{"app": "app", "image": "image", "tagged": "tagged"}'
+  replace "$root/.github/workflows/ci.yaml" "    needs: [changes, app, image, lint]" \
+    "    needs: [changes, app, image, lint, tagged]"
+  cat >> "$root/.github/workflows/ci.yaml" <<'YAML'
+  tagged:
+    needs: changes
+    if: needs.changes.outputs.tagged == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Test what the live tag adds
+        run: go test -tags live -run TestLive ./lib
+        working-directory: mod
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          changes: ${{ toJSON(needs.changes) }}
+          job-status: ${{ job.status }}
+YAML
+  replace "$root/.github/scripts/ci_job_reads.py" 'from ci_filter_coverage import Read, at, gate, run' \
+    'from ci_filter_coverage import Read, TagRun, at, exact, gate, run'
+  replace "$root/.github/scripts/ci_job_reads.py" 'EXCLUDED = {' \
+    $'GATES.append(gate("tagged", "tagged", exact=[\n    exact("Test what the live tag adds", "mod", "go test -tags live -run TestLive ./lib", [\n        run("mod", ["./lib"], at("tagged", "Test what the live tag adds") + " (its pinned script): go test -tags live ./lib",\n            tags="live"),\n    ]),\n], reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]))\nEXCLUDED = {'
+  replace "$root/.github/scripts/ci_job_reads.py" 'TAG_RUNS = []' \
+    'TAG_RUNS = [TagRun("tagged", "tagged", "Test what the live tag adds", "app", "app", "the app job runs ./lib untagged")]'
+}
+
+echo "case: an untagged job's filter missing a file of the tag step's listed block"
+root=$(fixture tag-run-listed)
+listed_tag_run "$root"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names both jobs, the step, the file and the block that holds it" \
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::tagged step "Test what the live tag adds" runs only what its tag adds (-run), so app must run that package.s untagged tests in every run it runs (the app job runs ./lib untagged), but filter app does not match docs/readme.md, which filter tagged.s listed block holds')"
+check "counts the block's file beside the gate's reads" \
+  "$(contains "$out" '^report: tagged step "Test what the live tag adds": [0-9][0-9]* files read by tagged (filter tagged) and 1 of its listed block, 1 uncovered by app (filter app)$')"
+# Once the app filter selects that file, rule 9's second direction must pass over the pattern
+# that selects it, though no step of the app job reads it: refusing it would refuse the pattern
+# rule 15 puts there.
+replace "$root/.github/workflows/ci.yaml" "              - 'mod/cmd/app/*'" \
+  $'              - \'mod/cmd/app/*\'\n              - \'docs/readme.md\''
+run_check "$root"
+check "passes once the untagged job's filter selects it" "$(is "$status" 0)"
+check "with the block's file covered" \
+  "$(contains "$out" '^report: tagged step "Test what the live tag adds": [0-9][0-9]* files read by tagged (filter tagged) and 1 of its listed block, 0 uncovered by app (filter app)$')"
 
 echo "case: a TAG_RUNS entry naming a filter the changes job does not have"
 root=$(fixture tag-run-no-filter)

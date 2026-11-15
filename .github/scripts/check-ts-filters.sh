@@ -48,7 +48,11 @@
 # node_modules, makes each path relative to the repository root, and holds every one of them to
 # that filter as it holds a program's, failing with the filter, the file and the entry it came
 # from. A bundle that does not build is a refusal naming the entry and the exit, never a bundle
-# of no files, which every filter would cover.
+# of no files, which every filter would cover; so is one that builds and leaves no metafile to
+# read, or one whose `inputs` name no file inside the repository and outside node_modules, since
+# a bundle loads at least its entry. Each such refusal shows the scratch directory as
+# `<scratch>`, in the command and in what Bun or the metafile's read said, so it names no path
+# that is gone by the time anyone reads it.
 #
 # Files a test reads by relative path - the JSON fixtures and corpora a test of one package
 # reads out of another package's directory - are part of no tsc program, so they stay hand-kept
@@ -93,20 +97,25 @@
 # to say; and a file of the block that only another filter's programs or bundles give, which the
 # filter does not select. Every refusal names the filter, the file and the command that writes
 # the block. An entry's source is another filter where its job runs no program of its own and
-# loads what that filter's programs compile or its bundles load: dispatch_browser takes
-# dispatch_ui's set, dispatch_two_builds the union of that set and the bundle of the dispatch
-# command its Go step runs, which is dispatch_two_builds_go's own set, and LISTED says why.
+# loads what that filter's programs compile or its bundles load. dispatch_browser takes the
+# union of dispatch_ui's set and dispatch_two_builds_go's, the bundle of the dispatch command:
+# its rows run the SPA and the e2e helpers that dispatch_ui's programs compile, and they spawn
+# that command (packages/dispatch/e2e/dispatch-cli.ts:8,39). dispatch_two_builds takes the same
+# union, for its browser half and for the command its Go step runs. LISTED says why for each.
 # check-ci-filters.sh, which can run neither tsc nor `bun build`, holds no declared read to those
 # files: rule 9's second direction passes over a listed block's patterns, since this check holds
-# them.
+# them. Its rule 15 reads a block's lines all the same, as what the tag step its filter gates
+# loads: it holds the filter of the job that runs that package's untagged tests to them, envoy_go
+# to dispatch_two_builds_go's block.
 #
 # THE TWO MODES, as check-ci-filters.sh has them. `check`, the default a bare call takes, is
 # every refusal above. `write` lists the programs and builds the bundles, writes each listed
 # block into ci.yaml - only ci.yaml, and only inside those blocks, one written where none was
 # going after the filter's last item - and then runs the check over what it wrote, so every
-# refusal that is not a listed block's still stands. A program that cannot be listed or a bundle
-# that cannot be built makes it write nothing, since the blocks would then be computed from a
-# source that is unknown. Any other word, or more than one, fails naming both.
+# refusal that is not a listed block's still stands. A program that cannot be listed, or a bundle
+# that cannot be built or whose metafile cannot be read or names no module, makes it write
+# nothing, since the blocks would then be computed from a source that is unknown. Any other
+# word, or more than one, fails naming both.
 #
 # Why ci.yaml's lint job and not ci-filters: the ci-filters job has no Bun and no node_modules -
 # its steps are the checkout, actions/setup-go, check-ci-filters.sh and the ci-ok report - so
@@ -188,13 +197,24 @@ def kept(paths) -> list:
     return sorted(files)
 
 
-def failed(path: str, command: str, result, holds: str) -> None:
+def failed(path: str, command: str, result, holds: str, scratch: str = "") -> None:
     """The refusal of a command that could not list a source's files. The source is then
     unknown, which is a failure of its own rather than a source of no files that every filter
-    covers."""
-    output = " / ".join((result.stdout + result.stderr).split()) or "no output"
+    covers. A build passes the scratch directory it gave Bun, which what Bun printed then shows as
+    `<scratch>` (scrubbed)."""
+    output = " / ".join(scrubbed(result.stdout + result.stderr, scratch).split()) or "no output"
     problems.append(engine.error(path, f"`{command}` failed (exit {result.returncode}), so the files its {holds} "
                                        f"are unknown: {output[:500]}"))
+
+
+def scrubbed(text: str, scratch: str) -> str:
+    """`text` with the scratch directory, as it was given and as it resolves, shown as
+    `<scratch>`: the directory is this run's own and gone when it ends, so a refusal naming it
+    would name a path nobody can read and read differently on every run. The longer form is
+    replaced first, so neither leaves part of the other behind."""
+    for form in sorted({scratch, os.path.realpath(scratch)} if scratch else (), key=len, reverse=True):
+        text = text.replace(form, "<scratch>")
+    return text
 
 
 def program_files(project: str) -> list | None:
@@ -212,23 +232,34 @@ def bundle_files(entry: str) -> list | None:
     """Every module `bun build` loads for the entry - the `inputs` of the metafile it writes,
     each a path relative to the directory Bun runs in - that is inside the repository and outside
     node_modules, repository-relative. The bundle and the metafile go to a scratch directory of
-    this run's own, removed with them, and a refusal shows that directory as `<scratch>`, so it
-    reads the same on every run. None when the build fails or leaves no metafile to read."""
+    this run's own, removed with them, and a refusal shows that directory as `<scratch>` - in the
+    command, in what Bun printed and in the error a metafile it cannot read raised - so it reads
+    the same on every run. None when the build fails, leaves no metafile to read, or leaves one
+    whose `inputs` name no such module: a bundle loads at least its entry, so that metafile is no
+    answer, and the empty set read from it would be one every filter covers and every listed
+    block it gives would be written empty from."""
     with tempfile.TemporaryDirectory(prefix="check-ts-filters.") as scratch:
         command = ["bun", "build", entry, "--target", "bun", "--outdir", scratch, f"--metafile={scratch}/meta.json"]
-        shown = " ".join(command).replace(scratch, "<scratch>")
+        shown = scrubbed(" ".join(command), scratch)
         result = subprocess.run(command, cwd=engine.REPO, capture_output=True, text=True)
         if result.returncode != 0:
-            failed(entry, shown, result, "bundle loads")
+            failed(entry, shown, result, "bundle loads", scratch)
             return None
         try:
             inputs = list(json.loads((Path(scratch) / "meta.json").read_text())["inputs"])
         except (OSError, ValueError, KeyError, TypeError) as exc:
             problems.append(engine.error(entry, f"`{shown}` exited 0 and left no metafile whose `inputs` this check "
-                                                f"can read ({type(exc).__name__}: {exc}), so the files its bundle loads "
-                                                f"are unknown"))
+                                                f"can read ({type(exc).__name__}: {scrubbed(str(exc), scratch)}), so "
+                                                f"the files its bundle loads are unknown"))
             return None
-    return kept(inputs)
+    files = kept(inputs)
+    if not files:
+        problems.append(engine.error(entry, f"`{shown}` exited 0 and the `inputs` of its metafile name {len(inputs)} "
+                                            f"module(s), none of them a file of this repository outside node_modules, "
+                                            f"so the files its bundle loads are unknown: a bundle loads at least its "
+                                            f"entry"))
+        return None
+    return files
 
 
 def read_workflow() -> tuple:

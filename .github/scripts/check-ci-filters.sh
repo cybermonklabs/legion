@@ -127,8 +127,9 @@
 #      on.push.paths equal to its filter and a workflow that does not name itself never runs on a
 #      change to itself, so the docs filter holds .github/workflows/docs-pages.yaml to keep
 #      main's docs build running when its own workflow changes, and rule 15 holds the filter of
-#      the job that runs a package's untagged tests to every file the tag step reads, so
-#      envoy_go_race holds .github/scripts/go-tagged-tests.sh, which
+#      the job that runs a package's untagged tests to every file the tag step reads and every
+#      file of the tag step filter's listed block, so envoy_go_race holds
+#      .github/scripts/go-tagged-tests.sh, which
 #      listener-server-change's soak takes its -run from and no step of envoy-go-race reads; a
 #      pattern of a listed block check-ts-filters.sh writes (rule 1 above) is exempt from the
 #      second for the same reason, since that check holds the filter to the file, which a tsc
@@ -227,7 +228,10 @@
 #      elsewhere in every run that step runs. The job that runs them is declared, and its filter
 #      must cover every file the tag step reads: the read set this check computes for the gate on
 #      the tag step's filter, the set rule 1 holds that filter to, or, for a filter EXCLUDED
-#      names, which has none, every file that filter selects. Otherwise a change to a file the
+#      names, which has none, every file that filter selects; and every file of the listed block
+#      check-ts-filters.sh writes into the tag step's filter (rule 9 above), the files of a tree
+#      that step loads, which are no declared read of its gate: envoy_go is held to the
+#      contracts modules of dispatch_two_builds_go's block. Otherwise a change to a file the
 #      tag step reads runs the tagged tests alone and the untagged ones nowhere. The read set
 #      and never the filter's selection, which its generated block narrows: TAG_RUNS pairs
 #      envoy_go and envoy_infra_go with themselves, since each job's own unit step runs the

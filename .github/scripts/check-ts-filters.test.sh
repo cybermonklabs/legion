@@ -6,9 +6,11 @@
 # not hold, a `!` pattern of a covered filter read under the step's quantifier - refused when
 # it excludes a file of the program, passed over when it excludes files outside it - and a
 # refusal of the engine's, written to the log as the workflow command the engine writes for it.
-# The same holds for every module a bundle loads, with a bundle that does not build refused by
-# its entry; and a listed block holds exactly the files its sources give, the union where it
-# names two of them, a tsc program and a bundle.
+# The same holds for every module a bundle loads, with a bundle refused by its entry when it does
+# not build, leaves no metafile, or leaves one naming no module of the repository, each refusal
+# showing the scratch directory as <scratch>; and a listed block holds exactly the files its
+# sources give, the union where it names two of them, a tsc program and a bundle, as the browser
+# suite's block of the real ci_ts_programs.py does.
 #
 # Each case builds a miniature repository under a temporary directory - a ci.yaml whose changes
 # job defines two filters through an anchor, a package and a library it compiles, and a
@@ -90,8 +92,11 @@ SH
 # A stand-in bun for the fixtures: `bun build <entry> --target bun --outdir <dir>
 # --metafile=<dir>/meta.json` writes <dir>/meta.json with one `inputs` key per line of the file
 # `bundled` beside <entry>, each a path relative to the directory it runs in, as Bun writes them,
-# so a line may reach into node_modules or climb out of the fixture. With a `fails` file beside
-# <entry> it prints that file and exits 1, as Bun does on an entry it cannot build.
+# so a line may reach into node_modules or climb out of the fixture. It records <dir> in the file
+# `outdir` beside <entry>, so a case can tell whether a refusal shows that directory. With a
+# `fails` file beside <entry> it prints that file, each @outdir@ in it written as <dir>, and exits
+# 1, as Bun does on an entry it cannot build; with a `nometa` file beside it, it exits 0 and
+# writes no metafile.
 set -euo pipefail
 if [ "$#" -ne 7 ] || [ "$1" != build ] || [ "$3" != --target ] || [ "$4" != bun ] || [ "$5" != --outdir ] \
   || [ "$7" != "--metafile=$6/meta.json" ]; then
@@ -99,9 +104,15 @@ if [ "$#" -ne 7 ] || [ "$1" != build ] || [ "$3" != --target ] || [ "$4" != bun 
   exit 64
 fi
 beside=$(dirname "$2")
+printf '%s\n' "$6" > "$beside/outdir"
 if [ -f "$beside/fails" ]; then
-  cat "$beside/fails" >&2
+  while IFS= read -r line; do
+    printf '%s\n' "${line//@outdir@/"$6"}"
+  done < "$beside/fails" >&2
   exit 1
+fi
+if [ -f "$beside/nometa" ]; then
+  exit 0
 fi
 mkdir -p "$6"
 separator=
@@ -395,15 +406,22 @@ check "fails" "$(is "$status" 1)"
 check "names the filter, the module and the bundles that do not load it" \
   "$(contains "$out" "::error file=.github/workflows/ci.yaml::filter cli's listed block has 'pkg/lib/unused.ts', which no bundle of filter cli loads, so it selects the job for a change no step of it sees: the block is generated from filter cli.s bundles, so run \`.github/scripts/check-ts-filters.sh write\`")"
 
+# Bun names the outdir it was given when it reports on it, and that outdir is a scratch directory
+# this run makes and removes: a refusal shows it as <scratch>, so it reads the same on every run
+# and names no path that is gone by the time anyone reads it.
 echo "case: a bundle that does not build"
 root=$(fixture bundle-fails)
 bundled "$root"
 run_write "$root"
-printf 'error: ModuleNotFound resolving "pkg/cli/main.ts" (entry point)\n' > "$root/pkg/cli/fails"
+printf 'error: ModuleNotFound resolving "pkg/cli/main.ts" (entry point)\nerror: wrote nothing to @outdir@/main.js\n' \
+  > "$root/pkg/cli/fails"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the entry, the command, its exit and what it printed" \
   "$(contains "$out" '::error file=pkg/cli/main.ts::`bun build pkg/cli/main.ts --target bun --outdir <scratch> --metafile=<scratch>/meta.json` failed (exit 1), so the files its bundle loads are unknown: error: / ModuleNotFound')"
+check "shows the outdir Bun printed as <scratch>" "$(contains "$out" 'error: / wrote / nothing / to / <scratch>/main.js')"
+check "and names no absolute path of the scratch directory" \
+  "$(is "$(contains "$out" "$(<"$root/pkg/cli/outdir")")" false)"
 check "counts that one problem, holding the block to no empty set" \
   "$(contains "$out" '^::error::1 problem(s) across 1 tsc program(s), 1 bundle(s) and 1 listed block(s)$')"
 run_write "$root"
@@ -411,6 +429,42 @@ check "the write mode fails too" "$(is "$status" 1)"
 check "and writes no block" "$(contains "$out" 'wrote no listed block: the files a block holds are computed from programs and bundles this run could not list, build or read')"
 check "so the block keeps the module rather than going empty" \
   "$(contains "$(<"$root/.github/workflows/ci.yaml")" "^              - 'pkg/lib/runtime.ts'$")"
+
+echo "case: a bundle that builds and leaves no metafile"
+root=$(fixture bundle-no-metafile)
+bundled "$root"
+run_write "$root"
+: > "$root/pkg/cli/nometa"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the entry, the command and the error, the scratch directory shown as <scratch>" \
+  "$(contains "$out" "::error file=pkg/cli/main.ts::\`bun build pkg/cli/main.ts --target bun --outdir <scratch> --metafile=<scratch>/meta.json\` exited 0 and left no metafile whose \`inputs\` this check can read (FileNotFoundError: \[Errno 2\] No such file or directory: '<scratch>/meta.json'), so the files its bundle loads are unknown")"
+check "and names no absolute path of the scratch directory" \
+  "$(is "$(contains "$out" "$(<"$root/pkg/cli/outdir")")" false)"
+
+# A bundle loads at least its entry, so a metafile naming no module of the repository is a
+# metafile this check cannot trust, never a bundle of no files: a block computed from it would be
+# empty, and the write mode would delete it.
+echo "case: a bundle whose metafile names no module of the repository"
+root=$(fixture bundle-no-inputs)
+bundled "$root"
+run_write "$root"
+: > "$root/pkg/cli/bundled"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the entry and the command, and says its metafile names no module" \
+  "$(contains "$out" "::error file=pkg/cli/main.ts::\`bun build pkg/cli/main.ts --target bun --outdir <scratch> --metafile=<scratch>/meta.json\` exited 0 and the \`inputs\` of its metafile name 0 module(s), none of them a file of this repository outside node_modules, so the files its bundle loads are unknown: a bundle loads at least its entry")"
+check "counts that one problem, holding the block to no empty set" \
+  "$(contains "$out" '^::error::1 problem(s) across 1 tsc program(s), 1 bundle(s) and 1 listed block(s)$')"
+run_write "$root"
+check "the write mode fails too" "$(is "$status" 1)"
+check "and writes no block" "$(contains "$out" 'wrote no listed block: the files a block holds are computed from programs and bundles this run could not list, build or read')"
+check "so the block keeps the module rather than going empty" \
+  "$(contains "$(<"$root/.github/workflows/ci.yaml")" "^              - 'pkg/lib/runtime.ts'$")"
+printf 'node_modules/zod/index.js\n../outside/elsewhere.ts\n' > "$root/pkg/cli/bundled"
+run_check "$root"
+check "one naming only modules under node_modules and outside the repository fails the same way" \
+  "$(contains "$out" "::error file=pkg/cli/main.ts::\`bun build pkg/cli/main.ts --target bun --outdir <scratch> --metafile=<scratch>/meta.json\` exited 0 and the \`inputs\` of its metafile name 2 module(s), none of them a file of this repository outside node_modules")"
 
 # union <root>: the bundled fixture with a second listed block, of the filter consumer, whose job
 # loads what app's program compiles of pkg/lib and runs the CLI too, so LISTED takes its files
@@ -505,6 +559,49 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the filter, the file and the source that gives it" \
   "$(contains "$out" '::error file=pkg/lib/runtime.ts::filter consumer does not select pkg/lib/runtime.ts, which the bundles of filter cli load (consumer loads what app compiles and runs the CLI): the filter must select it, or a change to it starts no job')"
+
+# The browser suite's rows spawn the dispatch command: packages/dispatch/e2e/dispatch-cli.ts:8,39
+# runs `bun packages/envoy-client/bin/dispatch.ts` for the inbox-cli, asked-of-cli, asked-of and
+# doc specs. So the suite loads the contracts modules that dispatch_ui's programs compile and that
+# command's bundle loads, the bundle BUNDLES pairs with dispatch_two_builds_go.
+# browser <root>: a fixture of that shape. dispatch_ui's program is app's,
+# dispatch_two_builds_go's bundle loads pkg/lib/runtime.ts, which no program compiles, and
+# dispatch_browser's block holds pkg/lib/lib.ts alone, which is that program's share of pkg/lib.
+# The block's sources are the dispatch_browser row of the real ci_ts_programs.py, so the case
+# holds that row and not a copy of it.
+browser() {
+  local root=$1 sources
+  sources=$(cd "$script_dir" && PYTHONDONTWRITEBYTECODE=1 python3 -c \
+    'from ci_ts_programs import LISTED; print(repr(next(row[2] for row in LISTED if row[0] == "dispatch_browser")))')
+  mkdir -p "$root/pkg/cli"
+  printf 'export const cli = 1;\n' > "$root/pkg/cli/main.ts"
+  printf 'export const runtime = 1;\n' > "$root/pkg/lib/runtime.ts"
+  printf 'pkg/cli/main.ts\npkg/lib/runtime.ts\n' > "$root/pkg/cli/bundled"
+  cat > "$root/.github/scripts/ci_ts_programs.py" <<PY
+PROGRAMS = [("dispatch_ui", "pkg/app", "dispatch-ui: Typecheck the dashboard")]
+BUNDLES = [("dispatch_two_builds_go", "pkg/cli/main.ts", "dispatch-two-builds: Run the dispatch command")]
+LISTED = [("dispatch_browser", "pkg/lib", $sources, "the browser suite runs the dashboard and spawns the dispatch command")]
+PY
+  replace "$root/.github/workflows/ci.yaml" "            app:" "            dispatch_ui:"
+  replace "$root/.github/workflows/ci.yaml" "            other:" \
+    $'            dispatch_two_builds_go:\n              - *library\n              - \'pkg/cli/**\'\n            dispatch_browser:\n              - \'pkg/app/**\'\n              # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of pkg/lib filter dispatch_ui\'s\n              # tsc programs compile. An edit by hand is refused by that check, which writes these.\n              - \'pkg/lib/lib.ts\'\n              # END listed\n            other:'
+}
+
+echo "case: the browser suite's listed block lacking a module only the dispatch command's bundle loads"
+root=$(fixture browser-bundle)
+browser "$root"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the filter, the module and the bundle that loads it" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::filter dispatch_browser's listed block lacks 'pkg/lib/runtime.ts', which the bundles of filter dispatch_two_builds_go load (the browser suite runs the dashboard and spawns the dispatch command): the block is generated from filter dispatch_ui.s tsc programs and filter dispatch_two_builds_go.s bundles, so run \`.github/scripts/check-ts-filters.sh write\`")"
+run_write "$root"
+written=$(<"$root/.github/workflows/ci.yaml")
+check "the write mode passes" "$(is "$status" 0)"
+check "and lists that module in the block" "$(contains "$written" "^              - 'pkg/lib/runtime.ts'$")"
+check "under a head naming both sources" \
+  "$(contains "$written" '^              # tsc programs and filter dispatch_two_builds_go.s bundles load. An edit by hand is refused by that check, which writes these.$')"
+run_check "$root"
+check "the check passes over what it wrote" "$(is "$status" 0)"
 
 echo "case: a mode the script does not have"
 root=$(fixture bad-mode)
