@@ -4336,7 +4336,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   against 30 days of records a team topic almost never counts zero.
   Both are read from memory, so counting makes no JetStream request, and a count of zero is sent as the number it is rather than left out.
   A role topic's answer carries neither, since it names its `holder` instead, and a refused topic carries neither;
-  nor does a listener whose known-session store does not answer (`session.KnownSessions.Opened`: its bucket not open, its first read not complete, or its copy past the stale bound), which sends no number rather than one that means something narrower than its name.
+  nor does a listener whose known-session store does not answer (`session.KnownSessions.Opened`: its bucket not open, its first read not complete, or its copy past the stale bound), or whose interest copy cannot be served (`store.Registry.Servable`, by the same rule), which sends no number rather than one that means something narrower than its name.
+  A listener whose session registry copy cannot be served (`session.SessionRegistry.Servable`) sends `recipients` without `recipients_connected`, since only the second reads it.
   A `notifications.role.<role>` topic is not published on the role lane:
   the listener forwards it to the live holder's agent subject itself and waits for the stream's acknowledgement that it stored the forward, forwarding again until one is stored (`sendToRole`, `cmd/listener/confirmed.go`;
   the "Role messages use core NATS" rule under "Critical conventions" has the retry).

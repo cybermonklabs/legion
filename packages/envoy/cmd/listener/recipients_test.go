@@ -13,9 +13,11 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -150,6 +152,58 @@ func assertNoCounts(t *testing.T, recorder *httptest.ResponseRecorder) {
 	}
 }
 
+// assertRecipientsAlone fails unless the answer carries recipients, with this value, and leaves
+// recipients_connected out entirely. It reads the raw JSON object, as assertNoCounts does: a key
+// left out and one sent as null decode alike, and left out is what the route must send.
+func assertRecipientsAlone(t *testing.T, recorder *httptest.ResponseRecorder, wantTotal int) {
+	t.Helper()
+	var answer map[string]json.RawMessage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode the answer %s: %v", recorder.Body.String(), err)
+	}
+	if total, carried := answer["recipients"]; !carried || string(total) != strconv.Itoa(wantTotal) {
+		t.Fatalf("answer %s, want recipients %d", recorder.Body.String(), wantTotal)
+	}
+	if raw, carried := answer["recipients_connected"]; carried {
+		t.Fatalf("the answer carries recipients_connected: %s; want the key left out entirely, body %s", raw, recorder.Body.String())
+	}
+}
+
+// countedCopy is a cache the counts read, as the test drives it: the hooks main drives it by
+// (kvCache) and the servability the counts check (recipientCounts).
+type countedCopy interface {
+	kvCache
+	Servable() error
+}
+
+// watchCopiesOn puts the stale episodes of the interest and session copies the counts read on
+// clock: each store's cache watcher is replaced by one that reads the time from clock
+// (replaceWatcher), as the list rig's are, and both replacements' first reads are waited for, so
+// each copy can be served until the test disconnects it. It runs right after newRecipientRig,
+// before any route has read either store.
+func (rig *recipientRig) watchCopiesOn(t *testing.T, clock *listenerClock) map[string]countedCopy {
+	t.Helper()
+	unwrapped := func(kv jetstream.KeyValue) jetstream.KeyValue { return kv }
+	replaceWatcher(t, rig.harness.registry, "interest registry", unwrapped, kvwatch.WithNow(clock.Now))
+	replaceWatcher(t, rig.harness.sessions, "session registry", unwrapped, kvwatch.WithNow(clock.Now))
+	copies := map[string]countedCopy{"interest": rig.harness.registry, "session": rig.harness.sessions}
+	rig.awaitCopiesServable(t, copies, "the interest and session copies to complete their first reads")
+	return copies
+}
+
+// awaitCopiesServable waits until every one of copies can be served.
+func (rig *recipientRig) awaitCopiesServable(t *testing.T, copies map[string]countedCopy, what string) {
+	t.Helper()
+	waitFor(t, 10*time.Second, what, func() bool {
+		for _, cache := range copies {
+			if cache.Servable() != nil {
+				return false
+			}
+		}
+		return true
+	})
+}
+
 // A publish answers with the sessions the topic is for and how many of them are running now:
 // every session that follows it, whether it is registered now, stopped, or registered through a
 // listener older than the known-session records, counted once however many stores name it, and
@@ -280,6 +334,54 @@ func TestAListenerWithNoKnownSessionStoreCarriesNeitherCount(t *testing.T) {
 
 	rig.deps.known = nil
 	assertNoCounts(t, rig.publish(t, topic, "degraded-1"))
+}
+
+// A count is sent only while every cache it is read from can be served (recipientCounts), the
+// rule the known-session store's own check applies. A copy that stopped following its bucket, as
+// each does at a disconnect, is served for the stale bound and not past it. Past it, a stale
+// session copy leaves recipients_connected out of the answer and keeps recipients, which it plays
+// no part in; a stale interest copy leaves both out, since recipients is the union of its rows
+// with the known-session records, and the sessions connected are among those recipients. The
+// known-session store answers throughout, so each absence is the stale copy's, and a read of the
+// bucket that completes serves that copy, and both counts, again.
+func TestAPublishCountsOnlyFromCopiesThatCanBeServed(t *testing.T) {
+	for _, stale := range []string{"session", "interest"} {
+		t.Run(stale+" copy", func(t *testing.T) {
+			rig := newRecipientRig(t)
+			clock := &listenerClock{now: time.Now()}
+			copies := rig.watchCopiesOn(t, clock)
+			const topic = "notifications.team.servable-count"
+			rig.register(t, recipientSender, []string{topic})
+			rig.register(t, "ses_counted_a", []string{topic})
+			rig.register(t, "ses_counted_b", []string{topic})
+			assertCounts(t, rig.publish(t, topic, "servable"), 2, 2)
+
+			copies[stale].Disconnected()
+			clock.Advance(staleBound)
+			assertCounts(t, rig.publish(t, topic, "inside-the-bound"), 2, 2)
+
+			clock.Advance(time.Second)
+			if !rig.known.Opened() {
+				t.Fatal("the known-session store stopped answering, so an absent count below would be its own")
+			}
+			for name, cache := range copies {
+				if err := cache.Servable(); (err == nil) == (name == stale) {
+					t.Fatalf("past the %s copy's stale bound the %s copy answers Servable() = %v; want the %s copy alone not servable", stale, name, err, stale)
+				}
+			}
+			if stale == "session" {
+				assertRecipientsAlone(t, rig.publish(t, topic, "past-the-bound"), 2)
+			} else {
+				assertNoCounts(t, rig.publish(t, topic, "past-the-bound"))
+			}
+
+			if err := copies[stale].Rewatch(rig.harness.client.Conn); err != nil {
+				t.Fatalf("read the %s bucket again: %v", stale, err)
+			}
+			rig.awaitCopiesServable(t, copies, "the "+stale+" copy to be served once it read its bucket again")
+			assertCounts(t, rig.publish(t, topic, "read-again"), 2, 2)
+		})
+	}
 }
 
 // The counts cost no JetStream API request: 100 publishes over warm caches send none, and the

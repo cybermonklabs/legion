@@ -7,7 +7,8 @@ body: |-
   days is `stopped` too, from its record in the new `envoy_known_sessions` bucket. A send with
   `connected_only: true` to a stopped session is refused
   `409 {"error":"the session is stopped"}` and nothing is stored. A publish to a topic the stream
-  captures answers `recipients` and `recipients_connected`, and `GET /v1/registry/<id>` takes
+  captures answers `recipients` and `recipients_connected`, each left out while a cache it is
+  counted from is not complete, and `GET /v1/registry/<id>` takes
   `stopped` in its `include=` list. The bucket is in `bus.ListenerBuckets()`, so envoy-infra grants
   it to the listener, host and Dispatch users; a listener whose NATS user may not open it logs the
   bucket once, answers no counts and no record-based stopped session, and opens it in the

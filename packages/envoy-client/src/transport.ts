@@ -189,8 +189,10 @@ const ErrorWireSchema = z.object({
  * subscribed session's own consumer delivers, so there is no per-recipient send to report; its
  * answer counts instead: `recipients` is every session other than the sender the topic is for,
  * and `recipients_connected` how many of those are running now. Both are absent from a role
- * topic's answer and from a listener that cannot read the known-session bucket; a count of zero
- * is sent. Each field is omitted when there is none, and absent from a listener predating it.
+ * topic's answer and from a listener that cannot read the known-session bucket or whose copy of
+ * the interests is not complete, and `recipients_connected` alone from one whose copy of the
+ * session registry is not; a count of zero is sent. Each field is omitted when there is none, and
+ * absent from a listener predating it.
  */
 const EnvelopeResponseSchema = EnvelopeSchema.extend({
   recipient: z.string().optional(),
