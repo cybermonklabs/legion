@@ -1073,7 +1073,8 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 // walk of an entry and an entry's pre-delete re-read open and every batch of that directory's
 // names after its first (haltCheck, walkEntries, newestModTime, newerThan), and never once an
 // entry's removal has begun: so none of the three endings leaves an entry half removed, and the
-// listing is cut where it stands. Nothing asks the container's kill at the end of its grace,
+// listing is cut at the entry where it stands. A root's or a Go cache shard's own listing is read
+// whole before any of these is asked (list, listShard). Nothing asks the container's kill at the end of its grace,
 // which can land inside a removal (sweep).
 //
 // The container's stop comes first so that run returns promptly on a shutdown rather than after

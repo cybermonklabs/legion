@@ -415,7 +415,11 @@ type Notice struct {
 // target, which is the one way a walk ends early, and SizesMissing every target the walk did not
 // measure at all, each with its reason where a read was refused (VolumeMissing): a directory it
 // could not open or list, a file whose lstat was refused, and, of a walk that was cut, every
-// target it had not measured when it was cut. A directory the walk could read only in part is a
+// target it had not measured when it was cut, as far as the report's cap and counted past it
+// (SizesMissingOmitted) — where the cut came while it listed them, every one it had listed, the
+// child of the volume root whose names it was reading, whole, and every child it had not yet
+// listed, or the volume root alone where the cut came inside the root's own listing
+// (shimwire.LauncherVolumeReport). A directory the walk could read only in part is a
 // size that names the first read under it the walk did not make, one the kernel refused or a
 // directory deeper than the walk descends (VolumeSize). Faults are the panics the trimmer
 // recovered from, each with its stack, and SwitchedOff the report no sweep produces: the trimmer

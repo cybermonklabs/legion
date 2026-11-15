@@ -966,7 +966,9 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 			// every worker-died's reason carries it, on one line, quoted and cut (deathSentence).
 			// The daemon's own sentence for a fact that holds none is written bare, as deathReason
 			// writes its own words ("the pod ended: ", "the process was last found "): the quotes
-			// in a reason mark the text the daemon did not write, and nothing else.
+			// in a reason mark text the daemon did not write, and never the daemon's own words.
+			// The pod end deathReason writes bare is the one text it did not write that a reason
+			// leaves unquoted: the kubelet's reason and message, cut at runtime.PodEndRunes.
 			reason := fmt.Sprintf("the %s's claim failed before it reported the look", check.Role)
 			if fact.Reason != "" {
 				reason = deathSentence(fact.Reason)
