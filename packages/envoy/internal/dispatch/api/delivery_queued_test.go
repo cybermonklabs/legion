@@ -930,6 +930,34 @@ func TestARetryOfASwitchAnEarlierReleaseWroteIsRefusedForAStoppedSession(t *test
 	}
 }
 
+// A /model line an agent sends for its person, with the person's own agent token, is recorded as
+// the person with the agent's act, and the session's accept refuses it (ACCEPT_WRITTEN_BY_AGENT):
+// it reaches the session as a card and is never run as a turn, so it changes no model. It is "a
+// message a session sent", which plan v5's switch table queues for a stopped session (R6), and
+// no switch: the switch rule holds only the shape a session runs as its turn.
+func TestASwitchLineAnAgentSentForItsPersonIsQueuedForAStoppedSession(t *testing.T) {
+	listener := stoppedAndLive(t)
+	handler, database := newTargetedMessageHandler(t, listener.url)
+	token := mintPersonalToken(t, handler, "alice", actingTokenName, nil)
+
+	created := agentRequest(t, handler, http.MethodPost, "/api/v1/agents/s1/messages?session="+actingSession, map[string]any{
+		"body": "/model acme/model-b", "delivery": "steer",
+	}, token.Token)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("send the line with a personal token: status=%d body=%s", created.Code, created.Body.String())
+	}
+	message := decodeBody[model.Message](t, created)
+	if message.Author.Kind != "user" || message.Author.Act == nil {
+		t.Fatalf("the message's author = %#v, want the person with the agent's act", message.Author)
+	}
+	if attempts := messageAttempts(t, database, message.ID); len(attempts) != 1 || attempts[0].State != "queued" {
+		t.Fatalf("the agent's line for its person to the stopped session = %#v, want one queued attempt", attempts)
+	}
+	if refused := listener.refusedFor("s1"); len(refused) != 0 {
+		t.Fatalf("the listener refused %d sends of the agent's line, want none: %#v", len(refused), refused)
+	}
+}
+
 // The claim holder's liveness read stays the registry's own: a stopped session holds no claim, so
 // it must read as no holder at all and the read must not ask for stopped sessions. A delivery's
 // read of the same session, beside it, finds it.
