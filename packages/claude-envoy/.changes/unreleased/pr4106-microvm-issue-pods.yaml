@@ -1,0 +1,6 @@
+kind: Changed
+custom:
+  Issue: pr4106
+body: |-
+  The plugin declares daemon API contract 151, which adds the launcher's microVM flags,
+  `kernelKills` to `launcher_hello_ack` and `cause` to `launcher_memory_kill`.

@@ -1915,4 +1915,39 @@ package api
 // line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 144
+//
+// 151: dispatch://INFRA-3729 -- issue pods in GKE Sandbox microVMs, which is four shapes of the
+// launcher wire and one of the state. The launcher's command line gains `--microvm` and, with
+// `runtime.kubernetes.sandbox.microvm.metadata` set, `--metadata-workload-pool` and
+// `--metadata-identity-provider`, which a microVM issue pod's container passes (sandbox's
+// issuePod.launcherContainer). The daemon's answer to an issue pod launcher's hello gains
+// `kernelKills` (`shimwire.LauncherHelloAck.KernelKills`), set on every issue pod's answer and on
+// no controller pod's. `launcher_memory_kill` gains `cause` (`shimwire.LauncherMemoryKill.Cause`):
+// empty for the gVisor guard's own kill, as 144 sends it, and `kernel` for a process a microVM
+// pod's own kernel stopped, which the launcher's guest watch names (memoryguard.Guest); the daemon
+// tells that role with a note of its own (workflow's kernelKillNote) under the same event id
+// `memory-guard-kill:<id>:<sequence>`. The state's settings block carries the new
+// `runtime.kubernetes.sandbox` key as `settings.runtime.kubernetes.sandbox`, which the plugin
+// parses loosely (35 above), so that key alone would bump nothing.
+//
+// The skew is safe in both directions. An older launcher refuses an unknown flag and exits, so a
+// daemon of this release must never render the microVM flags into a pod whose image predates
+// them: the image probe pairs a daemon with an image by this number (`runtime/sandbox/probe.go`),
+// as it did for 39, 48 and 144, which is why the flags carry one. A gVisor pod's command line is
+// unchanged. An older daemon sends no `kernelKills`, and a microVM pod's launcher then sends no
+// kill report, since it sends one only on a connection whose answer carried `kernelKills`
+// (`internal/launcher`'s manager.serve), so such a daemon never tells a role of the kernel's kill
+// in the guard's words, and the launcher's own line in the pod's log keeps what it would have
+// said. An older launcher ignores `kernelKills`, as it ignored `memoryGuard` (144), and sends no
+// `cause`. The member is left out when false and `cause` when empty, so a gVisor pod's
+// acknowledgement and the guard's report are the bytes 144 writes.
+//
+// An earlier loader refuses the `runtime.kubernetes.sandbox` key by name, so a file that sets it
+// takes the block out before an earlier image is pinned (docs/kubernetes.md, "Issue pods in
+// microVMs").
+// (This change took 151, the lowest number above main's 144 that no open pull request declared,
+// read on 2026-11-15 in each open head's own copy of this file: #3659 holds 145, #3711
+// 146, #4017 147, #4049 and #3519 148, #2731 149 and #3730 150. That is a reading and never the
+// rule: read main's own number and every open head again at the next forward merge rather than
+// from this line.)
+const DaemonAPIVersion = 151
