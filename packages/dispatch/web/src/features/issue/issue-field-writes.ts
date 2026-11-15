@@ -348,8 +348,8 @@ function showEverywhere(client: QueryClient, showings: readonly Showing[]): void
  *  refused, discarded, dropped or stopped - by write id; each live write of another kind that sets
  *  a field the watch shows (`follow`), by write id, and each board move not yet answered that sets
  *  one, each with what it sets; the newest place in a line it has seen; and each query that was
- *  reading when a pick shown on it landed, by hash, with what to put back over the answer of that
- *  read. */
+ *  reading when a write of a field shown on it landed (`holdReads`), by hash, with what to put
+ *  back over the answer of that read. */
 interface Watch {
   readonly live: Map<number, Write<IssueFieldPick>>;
   readonly followed: Map<number, readonly IssueFieldPick[]>;
@@ -568,13 +568,12 @@ function confirmFrom(client: QueryClient, watch: Watch, query: Query, data: unkn
   }
 }
 
-/** What one change of the client's cache does to its picks. A read that starts is stamped with
- *  the moment it was sent (`sentAt`). An answer of a read, or a merge of another write's answer,
- *  on a cache a pick shows on has each field a pick of which is live shown again over it as the
- *  newest live write of that field - a read's answer first recorded as what Dispatch last
- *  confirmed where it is the newest answer (`confirmFrom`); an answer of a read that was out when
- *  a pick shown on it landed has that landed value shown again over it, and ends its hold, as a
- *  new read of that query or its failure does. */
+/** What one change of the client's cache does to its picks. An answer of a read, or a merge of
+ *  another write's answer, on a cache a pick shows on has each field a pick of which is live shown
+ *  again over it as the newest live write of that field - a read's answer first recorded as what
+ *  Dispatch last confirmed where it is the newest answer (`confirmFrom`); an answer of a read that
+ *  was out when a write of a field shown on it landed (`holdReads`) has that landed value shown
+ *  again over it, and ends its hold, as a new read of that query or its failure does. */
 function answered(client: QueryClient, watch: Watch, event: QueryCacheNotifyEvent): void {
   if (writing) return;
   const { query } = event;
@@ -585,7 +584,6 @@ function answered(client: QueryClient, watch: Watch, event: QueryCacheNotifyEven
   }
   if (event.type !== "updated") return;
   const { action } = event;
-  if (action.type === "fetch") sentAt.set(query, ++clock);
   const fetched = action.type === "success" && action.manual !== true;
   const held = watch.held.get(query.queryHash);
   if (held !== undefined && (fetched || action.type === "fetch" || action.type === "error")) {
@@ -630,7 +628,8 @@ function follow(client: QueryClient, watch: Watch): void {
 
 /** What the end of a followed write does to each field it set, the store having let it go:
  *  landed, it is what Dispatch last confirmed for the field, which shows unless a newer live
- *  write of it does; refused, discarded or stopped, the field shows as its newest live write, or
+ *  write of it does, and where none does, over the answer of each read out then as well
+ *  (`holdReads`); refused, discarded or stopped, the field shows as its newest live write, or
  *  else as Dispatch last confirmed it, and the issue is read again (`putBack`). */
 function ended(client: QueryClient, watch: Watch, outcome: WriteOutcome): void {
   const followed = watch.followed.get(outcome.write.id);
@@ -643,22 +642,23 @@ function ended(client: QueryClient, watch: Watch, outcome: WriteOutcome): void {
     }
     const look = confirmLanding(client, pick, outcome.answer);
     const newer = newestWrite(client, watch, pick.issueKey, pick.field);
-    showEverywhere(client, [
-      ...newestPicks(client, watch, pick.issueKey),
-      newer ?? { field: pick.field, issueKey: pick.issueKey, look },
-    ]);
+    const landed: Showing = { field: pick.field, issueKey: pick.issueKey, look };
+    showEverywhere(client, [...newestPicks(client, watch, pick.issueKey), newer ?? landed]);
+    if (newer === undefined) holdReads(client, watch, landed);
   }
   release(client, watch);
 }
 
-/** The client's watch, begun if it has none: of its cache; of its store, since a write of another
- *  kind that sets a field a pick shows can join the issue's line after the surface that made it
- *  has written its own cache, and of what becomes of each write it follows; and of its board
- *  moves - when each is made (`movesMade`), and each change of one, which shows the newest write
- *  of each field again. */
+/** The client's watch, begun if it has none - and with the first, the stamping of each read of
+ *  the client as it is sent (`stampReads`), which outlives every watch: of its cache; of its
+ *  store, since a write of another kind that sets a field a pick shows can join the issue's line
+ *  after the surface that made it has written its own cache, and of what becomes of each write it
+ *  follows; and of its board moves - when each is made (`movesMade`), and each change of one,
+ *  which shows the newest write of each field again. */
 function watchOf(client: QueryClient): Watch {
   const current = watches.get(client);
   if (current !== undefined) return current;
+  stampReads(client);
   const writes = writesOf(client);
   const watch: Watch = {
     followed: new Map(),
@@ -720,10 +720,28 @@ function release(client: QueryClient, watch: Watch): void {
 }
 
 /** The moments of the client's answers, in one order: each read's request, stamped as it is sent
- *  while a watch is on (`sentAt`), and each landing of a write of a field. A read sent while no
- *  watch was on counts as sent before every landing since. */
+ *  (`sentAt`) from the client's first pick on, whether a pick is live then or not (`stampReads`),
+ *  and each landing of a write of a field. A read sent before the client's first pick has no
+ *  stamp: it counts as sent before every landing, as it was. */
 let clock = 0;
 const sentAt = new WeakMap<Query, number>();
+
+/** The clients whose reads are stamped as they are sent (`stampReads`). */
+const stamped = new WeakSet<QueryClient>();
+
+/** Stamps each read of the client with the moment it is sent (`sentAt`), from now on and for as
+ *  long as the client lives - not with a watch, which ends once nothing is live: before the app's
+ *  own read after a landing goes out (its `invalidate` comes first), and before every read sent
+ *  while no pick is live. */
+function stampReads(client: QueryClient): void {
+  if (stamped.has(client)) return;
+  stamped.add(client);
+  client.getQueryCache().subscribe((event) => {
+    if (event.type === "updated" && event.action.type === "fetch") {
+      sentAt.set(event.query, ++clock);
+    }
+  });
+}
 
 /** How a field of an issue shows as Dispatch last confirmed it, with the moment of the answer it
  *  comes from (`clock`). */
@@ -734,10 +752,11 @@ interface Confirmed {
 
 /** How each field of each issue shows as Dispatch last confirmed it, per client: taken from the
  *  cache at the first pick of a run of picks of that field, as new as what was recorded before
- *  it; then from the newest answer, of a read of the issue, a list of issues or the Inbox while a
- *  watch is on (`confirmFrom`), or of a write of the field that landed (`confirmLanding`). A
- *  refused, discarded or dropped pick or followed write that leaves no live write of its field
- *  puts this back. */
+ *  it, unless the cache shows a live write of the field of another kind there - a board move,
+ *  which Dispatch has not stored (`started`); then from the newest answer, of a read of the
+ *  issue, a list of issues or the Inbox while a watch is on (`confirmFrom`), or of a write of the
+ *  field that landed (`confirmLanding`). A refused, discarded or dropped pick or followed write
+ *  that leaves no live write of its field puts this back. */
 let confirmed = new WeakMap<QueryClient, Map<string, Confirmed>>();
 
 function confirmedOf(client: QueryClient): Map<string, Confirmed> {
@@ -768,6 +787,25 @@ function readAgain(client: QueryClient, issueKey: string): void {
   void client.invalidateQueries({ queryKey: ["issue", issueKey] });
   void client.invalidateQueries({ queryKey: ["issues"] });
   void client.invalidateQueries({ queryKey: inboxKey });
+}
+
+/** Holds each read out now on a cache a pick shows on, which may have been composed before
+ *  `landed`, the answer of a write of its field that landed, and so answer with the value from
+ *  before it: over that answer the landed value shows again (`answered`). The client's watch,
+ *  begun where there is none, holds them until each answers. */
+function holdReads(client: QueryClient, watch: Watch | undefined, landed: Showing): void {
+  const reading = client
+    .getQueryCache()
+    .getAll()
+    .filter((query) => query.state.fetchStatus !== "idle" && cacheOf(query.queryKey) !== undefined);
+  if (reading.length === 0) return;
+  const holding = watch ?? watchOf(client);
+  const name = fieldName(landed);
+  for (const query of reading) {
+    const showings = holding.held.get(query.queryHash) ?? new Map<string, Showing>();
+    showings.set(name, landed);
+    holding.held.set(query.queryHash, showings);
+  }
 }
 
 /** Shows `of`'s field as its newest live write, or, where none is left, as Dispatch last
@@ -815,9 +853,10 @@ const KIND = "issue-field";
  * it. What this module writes itself is no answer (`writing`), and it writes nothing where the
  * cache already shows the value. A live write of another kind that sets such a field, a board
  * move above all, is followed (`follow`) until it ends, since it shows on caches its surface does
- * not own: landed, its answer is the value Dispatch last confirmed; refused, discarded or stopped,
- * the field shows as its newest live write, or else as Dispatch last confirmed it, and the issue
- * is read again (`ended`).
+ * not own: landed, its answer is the value Dispatch last confirmed, which shows where no live
+ * write of the field is left, over the answer of each read out at the landing too; refused,
+ * discarded or stopped, the field shows as its newest live write, or else as Dispatch last
+ * confirmed it, and the issue is read again (`ended`).
  *
  * Landed, it merges Dispatch's answer and records it as the value Dispatch last confirmed. Where
  * a live write of the field is left, the newest of them shows. Where none is, the landed value
@@ -829,13 +868,14 @@ const KIND = "issue-field";
  * the field shows, so a pick a newer one took out puts nothing back; where none is left, the
  * value Dispatch last confirmed (`confirmed`) shows and the caches are read again (`putBack`).
  * That value is the field in the newest answer Dispatch gave, kept apart from the pick shown over
- * it: what the caches showed at the first pick of a run, then each newer answer of a read
- * (`confirmFrom`) or of a write of the field that landed (`confirmLanding`), a read being as new
- * as its request, so one sent before a landing is older than it whenever it arrives. After a
- * reload, or a lapse that let go of every value confirmed, the caches hold nothing at the first
- * pick, so only the answers since count. The watch ends once no pick is live, no board move is
- * followed and no read is held. Whoever is signed in changing lets go of every value confirmed
- * (`reset`).
+ * it: what the caches showed at the first pick of a run, unless a live write of the field of
+ * another kind put it there, then each newer answer of a read (`confirmFrom`) or of a write of
+ * the field that landed (`confirmLanding`), a read being as new as its request, whether a pick
+ * was live when it was sent or not, so one sent before a landing is older than it whenever it
+ * arrives. After a reload, or a lapse that let go of every value confirmed, the caches hold
+ * nothing at the first pick, so only the answers since count. The watch ends once no pick is
+ * live, no board move is followed and no read is held. Whoever is signed in changing lets go of
+ * every value confirmed (`reset`).
  */
 export const issueFieldWrite = defineWriteKind<IssueFieldPick>({
   kept: keptPick,
@@ -859,21 +899,7 @@ export const issueFieldWrite = defineWriteKind<IssueFieldPick>({
     } else {
       const landed: Showing = { field: detail.field, issueKey: detail.issueKey, look };
       showEverywhere(client, [...live, landed]);
-      const reading = client
-        .getQueryCache()
-        .getAll()
-        .filter(
-          (query) => query.state.fetchStatus !== "idle" && cacheOf(query.queryKey) !== undefined
-        );
-      if (reading.length > 0) {
-        const held = watch ?? watchOf(client);
-        const name = fieldName(detail);
-        for (const query of reading) {
-          const showings = held.held.get(query.queryHash) ?? new Map<string, Showing>();
-          showings.set(name, landed);
-          held.held.set(query.queryHash, showings);
-        }
-      }
+      holdReads(client, watch, landed);
       readAgain(client, detail.issueKey);
     }
     const current = watches.get(client);
@@ -887,13 +913,19 @@ export const issueFieldWrite = defineWriteKind<IssueFieldPick>({
     const watch = watchOf(client);
     const { detail } = write;
     // The first pick of a run of picks of this field: what the cache shows now is what Dispatch
-    // last gave it, as new as anything recorded before. A write already live - one a lapse put
-    // back in its line - begins no run.
+    // last answered, as new as anything recorded before - unless it is what a live write of the
+    // field of another kind sets, a board move, which put it there and which Dispatch has not
+    // stored: what is recorded then stays, and where nothing is, the first read that answers is
+    // (`confirmFrom`). A write already live - one a lapse put back in its line - begins no run.
     if (![...watch.live.values()].some((live) => sameField(live.detail, detail))) {
       const look = cachedLook(client, detail);
+      const shown = look?.fields[detail.field];
+      const unsaved = fieldWritesOf(client, detail).some(
+        (other) => other.live && !other.ofPick && other.pick.value === shown
+      );
       const looks = confirmedOf(client);
       const name = fieldName(detail);
-      if (look !== undefined) looks.set(name, { at: looks.get(name)?.at ?? 0, look });
+      if (look !== undefined && !unsaved) looks.set(name, { at: looks.get(name)?.at ?? 0, look });
     }
     watch.live.set(write.id, write);
     follow(client, watch);

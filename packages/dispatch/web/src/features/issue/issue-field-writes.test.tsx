@@ -1297,6 +1297,80 @@ test("a refused pick puts back the priority of Dispatch's newest answer, another
   }
 });
 
+// R3: a read is as new as its request, whether a pick was live when it went out or not. P1
+// lands, and the app reads the issue again; another person sets P0, and a read of the issue goes
+// out while no pick is live. The person picks P2 while that read is out, the read answers with
+// P0, and P2 is refused: what the refusal puts back is P0, Dispatch's newest answer, sent after
+// P1 landed - not P1.
+test("a read sent while no pick is live is as new as its request: a refusal after its answer puts back its value, not an older landing's", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const second = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  const client = signedIn();
+  client.setQueryData(detailKey, { ...details, priority: 3 });
+  client.setQueryData(listKey, [{ ...summary, priority: 3 }]);
+  client.setQueryData(inboxKey, [{ ...inboxRow, priority: 3 }]);
+  const reads = dispatchReads();
+  reads.store(3);
+  const surfaces = renderIn(client, <Surfaces reads={reads} />);
+  const picker = renderIn(client, <CachedPriority reads={reads} />);
+  const user = userEvent.setup();
+  const seen: string[] = [];
+  const see = (step: string) => {
+    const { detail, inbox, list } = shownPriorities();
+    seen.push(`${step}: detail ${detail} list ${list} inbox ${inbox}`);
+  };
+  try {
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "1");
+    reads.store(1);
+    await act(async () => {
+      first.resolve({ ...issue, priority: 1 });
+      await first.promise;
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    see("P1 lands and is read again");
+    // Another person sets P0, and a read of the issue goes out while no pick is live.
+    reads.store(0);
+    const answerRead = reads.hold();
+    const read = client.refetchQueries({ queryKey: detailKey });
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 1 }, { priority: 2 }]));
+    see("P2 picked while that read is out");
+    await act(async () => {
+      answerRead();
+      await read;
+    });
+    see("the read answers P0");
+    // The reads the refusal starts are held until what it put back is checked.
+    const answerReads = reads.hold();
+
+    await act(async () => {
+      second.reject(closed());
+      await second.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    see("P2 refused, before the re-read answers");
+    await act(async () => answerReads());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    see("the re-read answers");
+
+    expect(seen).toEqual([
+      "P1 lands and is read again: detail P1 list P1 inbox P1",
+      "P2 picked while that read is out: detail P2 list P2 inbox P2",
+      "the read answers P0: detail P2 list P2 inbox P2",
+      "P2 refused, before the re-read answers: detail P0 list P0 inbox P0",
+      "the re-read answers: detail P0 list P0 inbox P0",
+    ]);
+  } finally {
+    surfaces.unmount();
+    picker.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
 const mappings: RepoProject[] = ["acme/widgets", "acme/gadgets"].map((repo) => ({
   created_at: "2026-10-01T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
@@ -1579,38 +1653,59 @@ function storedPriority(patchIssue: { mock: { calls: unknown[][] } }): IssuePrio
 }
 
 /** The project's board as the Board reads it (`projectIssuesQuery`, whose read waits until every
- *  board move on the project is answered), showing the priority of CORE-1's card. */
-function BoardCard(): ReactNode {
+ *  board move on the project is answered), showing the priority of CORE-1's card, and, with
+ *  `picker`, the card's own priority picker, as each card of the board draws one. */
+function BoardCard({ picker = false }: { picker?: boolean }): ReactNode {
   const board = useQuery({
     ...projectIssuesQuery(issue.project, []),
     staleTime: Number.POSITIVE_INFINITY,
   });
   const card = board.data?.find((row) => row.key === issue.key);
-  return <p data-testid="board-priority">P{card?.priority}</p>;
+  return (
+    <>
+      <p data-testid="board-priority">P{card?.priority}</p>
+      {picker && card !== undefined ? (
+        <PriorityControl issueKey={card.key} priority={issuePriority(card.priority)} />
+      ) : null}
+    </>
+  );
 }
 
-/** A board on CORE beside the issue's own picker, with `others` on it besides CORE-1, whose
- *  list and detail Dispatch answers with the priority it stores then (`stored`). */
+/** A board on CORE beside the issue's own picker - or, `onCard`, with the picker on CORE-1's card
+ *  alone, as the board page draws it - with `others` on it besides CORE-1, whose list and detail
+ *  Dispatch answers with the priority it stores as each read reaches it (`stored`), once the row
+ *  lets the reads it holds go (`hold`). */
 function renderBoard(
   client: DispatchQueryClient,
   stored: () => IssuePriority | null,
-  others: readonly IssueSummary[] = []
+  { onCard = false, others = [] }: { onCard?: boolean; others?: readonly IssueSummary[] } = {}
 ) {
   client.setQueryData(listKey, [summary, ...others]);
-  const listIssues = spyOn(api, "listIssues").mockImplementation(async () => [
-    { ...summary, priority: stored() },
-    ...others,
-  ]);
+  let gate: Promise<void> | undefined;
+  const read =
+    <T,>(compose: () => T) =>
+    async (): Promise<T> => {
+      const answer = compose();
+      await gate;
+      return answer;
+    };
+  const listIssues = spyOn(api, "listIssues").mockImplementation(
+    read(() => [{ ...summary, priority: stored() }, ...others])
+  );
   const reads: Reads = {
     ...dispatchReads(),
-    detail: async () => ({ ...details, priority: stored() }),
+    detail: read(() => ({ ...details, priority: stored() })),
   };
   const view = renderIn(
     client,
-    <>
-      <CachedPriority reads={reads} />
-      <BoardCard />
-    </>
+    onCard ? (
+      <BoardCard picker />
+    ) : (
+      <>
+        <CachedPriority reads={reads} />
+        <BoardCard />
+      </>
+    )
   );
   const board = renderHook(() => useBoardMoves(issue.project), {
     wrapper: ({ children }) => (
@@ -1618,6 +1713,13 @@ function renderBoard(
     ),
   });
   return {
+    /** Holds every read of the board and the issue that starts from now on until the returned
+     *  function lets them answer. */
+    hold: () => {
+      const held = Promise.withResolvers<void>();
+      gate = held.promise;
+      return () => held.resolve();
+    },
     moves: () => board.result.current,
     shown: () => screen.getByTestId("board-priority").textContent,
     unmount: () => {
@@ -1695,6 +1797,67 @@ test("two drags of a card over its live pick show the card in the newest drag's 
   }
 });
 
+// R2: a drag that lands as the last live write of the priority is what Dispatch stores, so a read
+// of the issue that reached Dispatch before it, while Dispatch held the pick the drag took over,
+// and answers after it does not put that pick back: over its answer the drag's lane shows again,
+// on the issue as on the board.
+test("a read composed before a drag of the card landed as the last write of its priority answers with the drag's lane, not the pick before it", async () => {
+  const pick = Promise.withResolvers<Issue>();
+  const drag = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => pick.promise)
+    .mockImplementationOnce(() => drag.promise);
+  const client = signedIn();
+  let stored: IssuePriority | null = 1;
+  const board = renderBoard(client, () => stored);
+  const user = userEvent.setup();
+  const seen: string[] = [];
+  const see = (step: string) =>
+    seen.push(`${step}: detail P${cachedPriorities(client).detail} board ${board.shown()}`);
+  try {
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    act(() => {
+      void board.moves().moveCardToLane(issue.key, "todo", 0, 0);
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toHaveLength(2));
+    see("pick P2 out, drag to P0");
+    stored = 2;
+    await act(async () => {
+      pick.resolve({ ...issue, priority: 2 });
+      await pick.promise;
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
+    see("pick lands, drag out");
+    // A read of the issue reaches Dispatch while it holds P2, and answers once the drag landed.
+    const answerReads = board.hold();
+    const read = client.refetchQueries({ queryKey: detailKey });
+    stored = 0;
+    await act(async () => {
+      drag.resolve({ ...issue, priority: 0 });
+      await drag.promise;
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    see("drag lands");
+    await act(async () => {
+      answerReads();
+      await read;
+    });
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    see("the read composed before the drag landed answers");
+
+    expect(seen).toEqual([
+      "pick P2 out, drag to P0: detail P0 board P0",
+      "pick lands, drag out: detail P0 board P0",
+      "drag lands: detail P0 board P0",
+      "the read composed before the drag landed answers: detail P0 board P0",
+    ]);
+    expect(bodies(patchIssue).map((body) => (body as UpdateIssueInput).priority)).toEqual([2, 0]);
+  } finally {
+    board.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
 // The drag is refused once the pick has landed: Dispatch holds the pick, which every surface the
 // pick's write showed the drag on - the board, the issue, the Inbox - shows again.
 test("a refused drag of a card over its pick puts the pick back on every surface", async () => {
@@ -1738,6 +1901,134 @@ test("a refused drag of a card over its pick puts the pick back on every surface
   }
 });
 
+// R3: what Dispatch last confirmed is never a drag's lane it has not stored. P2 lands while a drag
+// of the card to P0 is out behind it, and the person picks P1 behind the drag: the issue shows P0
+// then, which the drag put there, so what Dispatch last confirmed stays P2, the landing's answer.
+// Someone closes the issue, and Dispatch refuses the drag, then P1: from P1's refusal until the
+// reads it starts answer, every surface shows P2, not P0.
+test("a pick made behind a live drag of its card and refused after the drag puts back the value Dispatch last confirmed, not the drag's lane", async () => {
+  const pick = Promise.withResolvers<Issue>();
+  const drag = Promise.withResolvers<Issue>();
+  const again = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => pick.promise)
+    .mockImplementationOnce(() => drag.promise)
+    .mockImplementationOnce(() => again.promise);
+  const client = signedIn();
+  let stored: IssuePriority | null = 1;
+  const board = renderBoard(client, () => stored);
+  const user = userEvent.setup();
+  const seen: string[] = [];
+  const see = (step: string) => {
+    const { detail, inbox } = cachedPriorities(client);
+    seen.push(`${step}: detail P${detail} inbox P${inbox} board ${board.shown()}`);
+  };
+  try {
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    act(() => {
+      void board.moves().moveCardToLane(issue.key, "todo", 0, 0);
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toHaveLength(2));
+    stored = 2;
+    await act(async () => {
+      pick.resolve({ ...issue, priority: 2 });
+      await pick.promise;
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
+    see("P2 lands, drag to P0 out");
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "1");
+    see("P1 picked behind the drag");
+    // The reads the refusals start are held until what the refusals put back is checked.
+    const answerReads = board.hold();
+
+    await act(async () => {
+      drag.reject(closed());
+      await drag.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toHaveLength(3));
+    see("drag refused, P1 out");
+    await act(async () => {
+      again.reject(closed());
+      await again.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    see("P1 refused, before the reads answer");
+    await act(async () => answerReads());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    see("the reads answer");
+
+    expect(seen).toEqual([
+      "P2 lands, drag to P0 out: detail P0 inbox P0 board P0",
+      "P1 picked behind the drag: detail P1 inbox P1 board P1",
+      "drag refused, P1 out: detail P1 inbox P1 board P1",
+      "P1 refused, before the reads answer: detail P2 inbox P2 board P2",
+      "the reads answer: detail P2 inbox P2 board P2",
+    ]);
+  } finally {
+    board.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// R3 on the board page alone, which holds no read of the issue: the card is dragged to P0 while no
+// pick is live, and the person picks P2 on the card while the drag is out. The board shows the
+// drag's lane then, which Dispatch has not stored, so nothing is confirmed until a read answers.
+// Someone closes the issue, and Dispatch refuses the drag, then the pick, before the board's read
+// answers: the card never shows P0 again, and shows P1, the priority Dispatch holds, once the
+// reads answer.
+test("a pick made on a card while its drag is out and refused after the drag never puts back the drag's lane", async () => {
+  const drag = Promise.withResolvers<Issue>();
+  const pick = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => drag.promise)
+    .mockImplementationOnce(() => pick.promise);
+  const client = signedIn();
+  client.removeQueries({ queryKey: detailKey });
+  client.removeQueries({ queryKey: inboxKey });
+  const board = renderBoard(client, () => 1, { onCard: true });
+  const user = userEvent.setup();
+  const seen: string[] = [];
+  const see = (step: string) => seen.push(`${step}: ${board.shown()}`);
+  try {
+    act(() => {
+      void board.moves().moveCardToLane(issue.key, "todo", 0, 0);
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
+    see("drag to P0 out");
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    see("P2 picked on the card behind it");
+    // The reads the refusals start are held until what the refusals put back is checked.
+    const answerReads = board.hold();
+
+    await act(async () => {
+      drag.reject(closed());
+      await drag.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
+    see("drag refused, P2 out");
+    await act(async () => {
+      pick.reject(closed());
+      await pick.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    see("P2 refused, before the reads answer");
+    await act(async () => answerReads());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    see("the reads answer");
+
+    expect(seen).toEqual([
+      "drag to P0 out: P0",
+      "P2 picked on the card behind it: P2",
+      "drag refused, P2 out: P2",
+      "P2 refused, before the reads answer: P2",
+      "the reads answer: P1",
+    ]);
+  } finally {
+    board.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
 const neighbour: IssueSummary = { ...summary, key: "CORE-2", rank: "V", title: "Plan the work" };
 
 // A drag of the card made after a pick, which still waits its turn behind another card's move, is
@@ -1751,7 +2042,7 @@ test("a pick refused while a later drag of its card still waits behind another c
     .mockImplementationOnce(() => other.promise)
     .mockImplementation(stores);
   const client = signedIn();
-  const board = renderBoard(client, () => 1, [neighbour]);
+  const board = renderBoard(client, () => 1, { others: [neighbour] });
   const user = userEvent.setup();
   try {
     await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
