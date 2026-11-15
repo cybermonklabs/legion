@@ -1582,18 +1582,22 @@ not configured` text), a receipt timeout, or `no live session` (`retryableDelive
 the sender resolves again only the recipient the attempt names (its pinned session, rechecked;
 for a row no session is pinned to yet, the message's or the mention's own target, pinning what it finds), renews its claim (`claimed_at = now()`, scoped to the claim it holds, as every settle statement is) before each try, and settles on the claim it renewed last.
 The backoff is 250 ms doubling to 2 s, and no try starts later than `listenerTakeoverWindow` (12 s) after the first;
-the attempt then settles with the last try's outcome exactly as before, so a mention of a session that is really gone still reads `failed: no live session`, about 12 seconds after the send, and a targeted message to it is kept then instead (below).
+the attempt then settles with the last try's outcome exactly as before, so a mention of a session that is really gone still reads `failed: no live session`, about 12 seconds after the send, and a targeted message to it is queued by Dispatch then instead (below).
 Every deployment runs 12 s: only the api package's tests set `Deps.ListenerTakeoverWindow`, their server's default being 750 ms (`testTakeoverWindow`), so a send that runs the window out does not sleep 12 s.
 Any other outcome - a mode the session does not take, a send the listener refused, the listener's own answer (`envoy listener answered: …`) - settles at once.
 Every sender takes this path: a request's own send (whose request therefore answers up to 12 s later), a broadcast worker, a Retry and the delivery sweep.
 A process killed during the wait leaves the attempt pending under the claim it renewed last, which the delivery sweep sends once that claim's lease has passed.
 
-**A targeted message to a session the listener holds no record of is kept, not failed.**
-When a targeted message's last try ends `no live session` for the session its attempt names, whether the registry read or the send's own 404 said so, the sender keeps it (`keepForSession`, `api/message_kept.go`):
-Dispatch publishes on that session's own subject, `notifications.agent.<session>`, the envelope the listener's send route would have stored, under the dedupe key that send would have used, and settles the attempt `kept`, so the session reads the message when it registers again under its id.
-Every sender above keeps it the same way, and a comment's mention is never kept.
-A targeted message to a role whose holder is gone resolves to no session, so it still settles `failed`.
-A publish that fails settles the attempt `failed`, with the publish's error after the listener's words, and a process with no publisher (`DISPATCH_NATS_DISABLED=1` without test hooks) keeps nothing and settles `failed`.
+**Dispatch queues a targeted message itself for a session that no store of the listener's holds.**
+The listener queues a message for a session its known-session store holds (above).
+A session that neither its registry nor that store holds - one not registered for 30 days, or any session of a listener that cannot open `envoy_known_sessions` - ends the last try with `no live session <id>`, from the registry read or from the send's own 404.
+For a targeted message to a session, Dispatch then publishes the message itself (`queueForUnknownSession`, `api/message_queue_publish.go`):
+on that session's own subject, `notifications.agent.<session>`, the envelope the listener's send route would have stored (`contracts.AgentSendEnvelope`), under the dedupe key that send would have used.
+It settles the attempt `queued` with that envelope, or as a duplicate with none when the stream already held it, and the card reads as for any queued attempt.
+The listener's delivery of that copy finds no record, holds it for its retry window and gives it up with the agent wake (`reportAgentWake`), which brings a released Legion pod back, and the session reads the copy from its consumer when it registers again under its id.
+Every sender above queues it the same way, and only while it still holds the attempt's claim.
+A comment's mention is never queued this way, and neither is a message to a role whose holder is gone, which resolves to no session, nor a send that asks for a session running now (`connected_only`, a model or thinking switch).
+A publish that fails settles the attempt `failed`, with the publish's error after the listener's words, and a process with no publisher (`DISPATCH_NATS_DISABLED=1` without test hooks) publishes nothing and settles `failed`.
 
 A comment decides before it commits which sessions its other routes skip - the issue's route when a mention resolved to its session (`suppress_route`), and the outbox's session routes for every session a mention resolved to (the payload's mentions) - so a mention resolved only after the commit would reach a session those routes reach too.
 A comment that has such a route (the issue's route is set or its claimant is a session, it replies to a thread, it replies on an ask that has a follower, it is on a document, or its issue's primary document credits a session) therefore resolves its mentions and its route through a take-over before its transaction opens, with nothing held (`resolveCommentDeliveries`, `resolveThroughTakeover`), and its `comment.created` payload records that (`mentions_decide_routes`);

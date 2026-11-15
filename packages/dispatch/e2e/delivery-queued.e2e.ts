@@ -11,7 +11,7 @@ import {
   setSessionSendState,
   setSessionStopped,
 } from "./agents";
-import { createIssue, createMessage, createProject } from "./api";
+import { createIssue, createMessage, createProject, listQueuedMessages } from "./api";
 import { sessionIds } from "./session-ids";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -21,8 +21,9 @@ import { asUser } from "./users";
  * a refusal: the listener stores the message for it and hands it over when it runs again, and
  * Dispatch records that attempt `queued`. This spec reads that word on each of the three surfaces
  * a person sees it on - a message aimed at one session, a mention in a comment, and a broadcast
- * recipient - and holds the one answer a reader may act on where it still belongs: a session
- * Envoy knows nothing of is still refused as `no live session`.
+ * recipient. A session Envoy knows nothing of is still refused as `no live session` to a
+ * mention, and a message aimed at it is queued by Dispatch itself (INFRA-3740), under the same
+ * word.
  *
  * The sentence is spelt out here rather than imported from the SPA, so a change to the SPA's
  * wording fails a row here rather than passing with it.
@@ -263,30 +264,45 @@ test("the broadcast strip counts a queued copy rather than calling the broadcast
   }
 });
 
-// The other half of the rule: a session Envoy knows nothing of has really ended, and that is the
-// one answer a reader may act on, so its wording has not moved. (A mention of one is
-// `mention-composer.e2e.ts`; a broadcast recipient is `broadcast.e2e.ts`.)
-test("a message to a session Envoy does not know is still refused as no live session", async ({
+// A session Envoy knows nothing of - neither its registry nor its known-session store holds it -
+// gets no send from Dispatch: the registry read answers `no live session`. A message aimed at it
+// is queued all the same, by Dispatch publishing it on the session's agent subject itself, so the
+// card reads the one queued sentence and no failure. (A mention of such a session is still refused
+// as `no live session`, `mention-composer.e2e.ts`; a broadcast recipient is excluded,
+// `broadcast.e2e.ts`.)
+test("a message to a session Envoy does not know is queued by Dispatch itself, with no send to the listener", async ({
   browser,
 }) => {
-  // Room for the 12 s listener take-over wait before Dispatch settles the attempt
-  // (listenerTakeoverWindow in packages/envoy/internal/dispatch/api/envoy_resolve.go).
-  test.setTimeout(60_000);
   await setLiveSessions([planner]);
   const issue = await issueFor("Message to a session nobody knows");
   await setSessionRecord(planner.session_id, "absent");
   const body = "Are you there at all?";
-  await createMessage(issue, { body, delivery: "steer", target: `session:${planner.session_id}` });
+  const message = await createMessage(issue, {
+    body,
+    delivery: "steer",
+    target: `session:${planner.session_id}`,
+  });
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue}/conversation`);
-    await expect(turn(page, body)).toContainText(`no live session ${planner.session_id}`, {
-      timeout: 30_000,
-    });
-    await expect(turn(page, body)).not.toContainText("Queued:");
+    await expect(turn(page, body)).toContainText(QUEUED(shortSessionId(planner.session_id)));
+    await expect(turn(page, body)).not.toContainText("no live session");
+    await expect(turn(page, body).getByRole("button", { name: "Retry" })).toHaveCount(0);
     expect(await sentTo()).toEqual([]);
+    // The server keeps what it queued for the life of its process, which the rows before this
+    // one share, so the row reads the envelopes of its own message alone.
+    const queued = ((await listQueuedMessages()).queued ?? []).filter((envelope) =>
+      envelope.dedupe_key?.includes(message.id)
+    );
+    expect(queued).toEqual([
+      expect.objectContaining({
+        dedupe_key: `agent.${planner.session_id}.${message.id}:steer`,
+        source: "dispatch",
+        subject: `notifications.agent.${planner.session_id}`,
+      }),
+    ]);
   } finally {
     await alice.close();
   }

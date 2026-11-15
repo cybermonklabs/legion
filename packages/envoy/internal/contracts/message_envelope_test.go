@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// The copy Dispatch keeps for a session the listener holds no record of and the send the
+// The copy Dispatch queues itself for a session no store of the listener's holds and the send the
 // listener's route stores are one message to the stream and to the session's host only while
 // both go on the session's agent subject under the one dedupe key of that delivery, which the
 // stream counts as naming the event; each build is still an event of its own.

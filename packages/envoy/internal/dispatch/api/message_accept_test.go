@@ -353,13 +353,14 @@ func TestAcceptTakesTheAuthorsOwnRetryHoweverTheirLoginIsCased(t *testing.T) {
 // A person's Send to a session Dispatch finds not live is recorded as failed: no frame of it ever
 // left. A frame forged inside the minute naming that attempt must not make it the session's turn,
 // or the person, shown "Failed", may already have sent it another way (Deep's first round-2
-// construction).
+// construction). The deployment has no publisher, so Dispatch cannot queue the message itself for
+// a session the listener holds no record of (message_queue_publish.go), and the attempt fails.
 func TestAcceptRefusesASendDispatchCouldNotDeliver(t *testing.T) {
 	live := false
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
 	t.Cleanup(listener.Close)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, noAgentPublisher: true})
 	created := postAgentMessage(t, handler, "s1", map[string]any{
 		"body": "Restart the deploy.", "delivery": "steer",
 	}, "alice")

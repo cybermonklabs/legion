@@ -67,11 +67,11 @@ func MessageEnvelope(m Message, topic, dedupeKey string) Envelope {
 //
 // Two senders build it, and both build it here so the two cannot drift apart: the listener's send
 // route (POST /v1/messages/send), which stores it for a session it holds a record of, and
-// Dispatch's kept delivery, which publishes the envelope that route would have stored straight
-// onto the session's topic when a person's targeted message is for a session the listener holds
-// no record of. The kept copy then reaches the session's host as the send would have, under the
-// same topic and dedupe key, so the stream and the host take a copy whose send did land as that
-// same message again rather than a second one.
+// Dispatch's own queueing of a person's targeted message, which publishes the envelope that route
+// would have stored straight onto the session's topic when neither the listener's registry nor
+// its known-session store holds the session. That copy then reaches the session's host as the
+// send would have, under the same topic and dedupe key, so the stream and the host take a copy
+// whose send did land as that same message again rather than a second one.
 func AgentSendEnvelope(targetSession, idempotencyKey string, m Message) Envelope {
 	if idempotencyKey == "" {
 		idempotencyKey = id.New()
