@@ -9,6 +9,7 @@ import {
   num,
   outDirectory,
   randomStream,
+  readCorpus,
   signed,
   span,
   table,
@@ -183,8 +184,8 @@ const EXIT_OK = 0;
 /** The reading could not be made at all. */
 const EXIT_CANNOT_RUN = 2;
 
-const USAGE = `usage: bun scripts/approval-eval/pool-runs.ts --run <dir> [--run <dir>]... \\
-  [--shape <with|without>] [--resamples <n>] [--seed <n>] [--out <dir>]
+const USAGE = `usage: bun scripts/approval-eval/pool-runs.ts --corpus <dir> --run <dir> \\
+  [--run <dir>]... [--shape <with|without>] [--resamples <n>] [--seed <n>] [--out <dir>]
 
 Pools several runs of one fresh-agent comparison over one case list, reading each case as the
 mean over the runs of each arm's outcome, and prints the pooled difference with paired
@@ -192,6 +193,9 @@ bootstrap intervals over the case-level differences, two-sided at 90 and at 95 p
 both read off one draw.
 
 Options:
+  --corpus <dir>     Required. The corpus the runs were made from. A run holding a case this
+                     corpus does not hold is refused, since the reserve of INFRA-2897's next
+                     final test (reserve.ts) may hold that case.
   --run <dir>        Required, and repeated: each a directory fresh-agent.ts wrote, holding
                      answers-<shape>.jsonl. Two runs that do not cover one case list are
                      refused, naming the cases.
@@ -405,6 +409,7 @@ export interface PooledRecord {
 
 /** The flags, as the command reads them. */
 interface Flags {
+  corpus: string;
   runs: string[];
   shape: Shape;
   resamples: number;
@@ -1316,6 +1321,7 @@ export function reportLines(record: PooledRecord): string[] {
 
 function readFlags(argv: readonly string[]): Flags {
   let values: {
+    corpus?: string;
     run?: string[];
     shape?: string;
     resamples?: string;
@@ -1326,6 +1332,7 @@ function readFlags(argv: readonly string[]): Flags {
     ({ values } = parseArgs({
       args: [...argv],
       options: {
+        corpus: { type: "string" },
         run: { type: "string", multiple: true },
         shape: { type: "string" },
         resamples: { type: "string" },
@@ -1339,9 +1346,11 @@ function readFlags(argv: readonly string[]): Flags {
     // parseArgs names what it refused, so its message is never repeated.
     throw new UsageError(USAGE);
   }
+  const corpus = values.corpus?.trim();
   const runs = (values.run ?? []).map((one) => one.trim()).filter((one) => one !== "");
-  if (runs.length === 0) throw new UsageError(USAGE);
+  if (!corpus || runs.length === 0) throw new UsageError(USAGE);
   return {
+    corpus,
     runs,
     shape: shapeOf(values.shape, "--shape", DEFAULT_SHAPE, USAGE),
     resamples: whole(values.resamples, "--resamples", DEFAULT_RESAMPLES, 1, USAGE),
@@ -1350,10 +1359,32 @@ function readFlags(argv: readonly string[]): Flags {
   };
 }
 
+/**
+ * Refuses a run holding a case the corpus does not hold: such a case is one the reserve left out
+ * (`reserve.ts`), whose outcomes are agreements with the person's answers on INFRA-2897's next
+ * final test, or one of another corpus, which nothing here can say is not reserved.
+ */
+export function refuseRunsOutside(
+  runs: readonly RunOutcomes[],
+  corpus: ReadonlyMap<string, unknown>
+): void {
+  for (const run of runs) {
+    const outside = [...run.cases.keys()].filter((caseId) => !corpus.has(caseId)).length;
+    if (outside > 0) {
+      throw new PoolError(
+        `${run.directory} holds ${counted(outside, "case")} the corpus does not hold, which ` +
+          "the reserve may hold (reserve.ts), so it is not pooled"
+      );
+    }
+  }
+}
+
 /** The reading as the command makes it: the runs off a disk, and the record printed and written. */
 async function pool(flags: Flags): Promise<number> {
+  const corpus = await readCorpus(flags.corpus);
   const runs: RunOutcomes[] = [];
   for (const directory of flags.runs) runs.push(await readRun(directory, flags.shape));
+  refuseRunsOutside(runs, corpus.byCaseId);
   const options = { resamples: flags.resamples, seed: flags.seed, shape: flags.shape };
   // The two digests are of two files and neither is read from the other, so they are read
   // together: the record carries both and the order they came back in is in nothing it prints.

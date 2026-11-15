@@ -269,6 +269,12 @@ above says how to run it).
   temporary file, not the rename onto `session-id`. The heartbeat is the fallback. On shutdown
   (stdin end, SIGTERM, SIGINT, SIGHUP) drain NATS, deregister the session, close the transport, and
   let the stdio process exit.
+  The relay subscription also answers the listener's connection probe, through the shared
+  `receive` in `@legion/envoy-client/consumer-delivery` (the probe's format is in
+  `packages/envoy/AGENTS.md`, "Session consumers"), and the server holds no subscription for it
+  beyond the relay subject: while that subject is open a send reads `connected`, and once the
+  connection closes, or a `/clear` handoff moves the relay to the new id and drops the old
+  subject, nothing answers and a send to the id left behind reads `stopped`.
 - The listener merges each registration's topics into the entry and never removes one. So every
   registry write (register, unsubscribe, deregister, the handoff) goes through the session's one
   `serialized` chain, a registration reads the id and topics when it runs, and a topic leaves the

@@ -120,7 +120,7 @@ func (r *mainPathRig) rootView() api.Issue {
 	var state api.State
 	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
 		var err error
-		state, err = projection.Project(r.ctx, tx, r.records, mainPathProject, config.DesignGateRootIssues.Steps(),
+		state, err = projection.Project(r.ctx, tx, r.records, mainPathProject, config.DesignGateRootIssues.Steps(), nil,
 			[]supervise.Claim{r.machine().Claim()}, nil, nil, time.Now().UTC())
 		return err
 	}); err != nil {

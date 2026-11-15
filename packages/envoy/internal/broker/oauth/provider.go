@@ -30,6 +30,7 @@ import (
 	"authelia.com/provider/oauth2"
 	"authelia.com/provider/oauth2/compose"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
@@ -145,8 +146,9 @@ type TokenHooks struct {
 }
 
 // Refusal is an onRequest error the device authorization endpoint answers as
-// {"error": "invalid_request", "error_description": "<Code>: <Message>"} with Status, and with
-// Retry-After when RetryAfter (seconds) is set. Any other onRequest error is a 500 server_error.
+// {"error": "invalid_request", "error_description": "<Code>: <Message>", "code": "<Code>"} with
+// Status, and with Retry-After when RetryAfter (seconds) is set. Any other onRequest error is a
+// 500 server_error.
 type Refusal struct {
 	Status     int
 	Code       string
@@ -385,6 +387,7 @@ func (p *Provider) Token(w http.ResponseWriter, r *http.Request, hooks TokenHook
 		return
 	}
 	request, err := p.oauth.NewAccessRequest(ctx, r, &oauth2.DefaultSession{})
+	noteClient(ctx, request)
 	if err != nil {
 		p.writeError(ctx, w, request, err)
 		return
@@ -512,13 +515,25 @@ func (p *Provider) writeError(ctx context.Context, w http.ResponseWriter, reques
 	p.oauth.WriteAccessError(ctx, w, request, err)
 }
 
+// noteClient names, as the caller of the answer's record, the OAuth client the library
+// authenticated for request, when it authenticated one (answer.Recorder.NoteCaller). It is one of
+// the two clients this provider registers, never text the caller chose. The class stays public:
+// the token route takes no credential of the broker's, and neither client presents a secret.
+func noteClient(ctx context.Context, request oauth2.AccessRequester) {
+	if request == nil || request.GetClient() == nil {
+		return
+	}
+	answer.FromContext(ctx).NoteCaller(answer.CallerPublic, request.GetClient().GetID())
+}
+
 // WriteRefusal answers refusal as an OAuth error a client's OAuth library parses: invalid_request,
-// its description naming the broker's code.
+// its description naming the broker's code, and that code again as the member code every other
+// refusal of the broker carries, which the answer's record reads.
 func WriteRefusal(w http.ResponseWriter, refusal *Refusal) {
 	if refusal.RetryAfter > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(refusal.RetryAfter))
 	}
-	writeOAuthJSON(w, refusal.Status, map[string]string{"error": "invalid_request", "error_description": refusal.Error()})
+	writeOAuthJSON(w, refusal.Status, map[string]string{"error": "invalid_request", "error_description": refusal.Error(), "code": refusal.Code})
 }
 
 // writeOAuthJSON answers status with body and the no-store headers RFC 6749 and RFC 8628 require.

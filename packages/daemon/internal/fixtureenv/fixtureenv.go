@@ -1,10 +1,11 @@
 // Package fixtureenv is the environment a test's real git and jj run in. The daemon's tests run
 // inside Legion's own issue pods, whose environment names the pod's live workspace, its git
-// configuration, its GitHub credential and the deployment's own session store; a test that
-// inherited them could read or push the pod's own work, or read and write the conversation of
-// every agent of the deployment. Guard takes them out of a test process's own environment, so
-// every command it starts and everything it runs in-process inherits none; Isolated hands one
-// command none of them and a home of the test's.
+// configuration, its GitHub credential and the deployment's own session store, and whose PATH
+// leads with Legion's own git and jj wrappers; a test that inherited them could read or push the
+// pod's own work, read and write the conversation of every agent of the deployment, or have its
+// own push refused by the pod's leak guard. Guard takes them out of a test process's own
+// environment, so every command it starts and everything it runs in-process inherits none;
+// Isolated hands one command none of the variables and a home of the test's.
 package fixtureenv
 
 import (
@@ -14,6 +15,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 )
 
 // reaches is whether a variable can lead git or jj to a workspace, repository, remote or
@@ -49,6 +52,32 @@ func guarded(key string) bool {
 	return reaches(key) || placesSession(key)
 }
 
+// imageGit is the image's git wrapper (workerbin.ImageGit), or the stand-in a test points it at.
+var imageGit = workerbin.ImageGit
+
+// withoutImageWrappers is path without each entry whose git is the image's git wrapper
+// (imageGit), by the rule workerbin reads that wrapper by: the same file (os.SameFile), so an entry
+// holding a link to it goes too. A pod's PATH leads with one such entry, /opt/legion/bin, whose
+// git puts Legion's leak guard in front of every push, whose jj refuses a push whose git is any
+// other, and whose gh runs `legion gh`. A test's own push to a local bare repository runs there
+// under the test's empty home, where the guard finds no shared check, and is refused in a pod and
+// not on CI, whose PATH holds no such entry. Every other entry stays, as written and in order, a
+// test's own copy of a wrapper included, since a copy is not the same file.
+func withoutImageWrappers(path string) string {
+	image, err := os.Stat(imageGit)
+	if err != nil {
+		return path
+	}
+	entries := slices.DeleteFunc(filepath.SplitList(path), func(entry string) bool {
+		if entry == "" {
+			return false
+		}
+		git, err := os.Stat(filepath.Join(entry, "git"))
+		return err == nil && os.SameFile(git, image)
+	})
+	return strings.Join(entries, string(filepath.ListSeparator))
+}
+
 // testInput is whether a variable is one a person or CI sets for the tests themselves, which Guard
 // keeps: the LEGION_TEST_* and LEGION_E2E* services and binaries (LEGION_TEST_PG_DSN,
 // LEGION_TEST_OMP), and GITHUB_ACTIONS, which turns a missing prerequisite's skip into a failure.
@@ -67,7 +96,11 @@ var unguarded []string
 // Guard takes every variable that reaches (LEGION_*, GIT_*, JJ_*, GH_*, GITHUB_*, SSH_AUTH_SOCK,
 // SSH_ASKPASS) or places a session (OMP_SESSION_SQL_DSN_FILE, OMP_SESSION_STORAGE,
 // OMP_SESSION_SQL_DSN) out of the test process's own environment, but the test inputs and the
-// names in keep, and sets GIT_ALLOW_PROTOCOL=file. A package whose tests run git or jj — as child
+// names in keep, takes every directory of Legion's image wrappers out of its PATH
+// (withoutImageWrappers), and sets GIT_ALLOW_PROTOCOL=file. The PATH is the process's own because
+// exec.Command and exec.LookPath look a bare name up on it, whatever PATH a command's Env holds:
+// a fixture's `git push` under Isolated, and a test's exec.LookPath("jj") for the real jj, find
+// the first git or jj of the process's PATH. A package whose tests run git or jj — as child
 // processes, with no Env of their own, or in-process through the code under test — calls it in
 // TestMain before m.Run, after the branch where the test binary runs as a helper child: that child
 // keeps the variables its test hands it. Code under test that names its own transport
@@ -90,6 +123,15 @@ func Guard(keep ...string) error {
 		}
 		if err := os.Unsetenv(key); err != nil {
 			return fmt.Errorf("fixtureenv: unset %s: %w", key, err)
+		}
+	}
+	path := os.Getenv("PATH")
+	if kept := withoutImageWrappers(path); kept != path {
+		if first {
+			unguarded = append(unguarded, "PATH="+path)
+		}
+		if err := os.Setenv("PATH", kept); err != nil {
+			return fmt.Errorf("fixtureenv: set PATH: %w", err)
 		}
 	}
 	if err := os.Setenv("GIT_ALLOW_PROTOCOL", "file"); err != nil {
@@ -118,11 +160,11 @@ func guardFailed(err error) {
 	os.Exit(1)
 }
 
-// Live gives the test the process's own values back of every variable Guard took out or set, and
-// leaves GIT_ALLOW_PROTOCOL unset when the process had none; the guarded environment returns when
-// the test ends. Only a live proof's entry point calls it: an e2e-tagged test that reaches a real
-// cluster and GitHub with the operator's credentials and configuration. Like t.Setenv, it cannot
-// run in a parallel test. Without a Guard it changes nothing.
+// Live gives the test the process's own values back of every variable Guard took out or set, its
+// PATH included, and leaves GIT_ALLOW_PROTOCOL unset when the process had none; the guarded
+// environment returns when the test ends. Only a live proof's entry point calls it: an e2e-tagged
+// test that reaches a real cluster and GitHub with the operator's credentials and configuration.
+// Like t.Setenv, it cannot run in a parallel test. Without a Guard it changes nothing.
 func Live(t testing.TB) {
 	t.Helper()
 	if guardedKeep == nil {
@@ -148,8 +190,9 @@ func Kept() []string {
 }
 
 // RequireGuarded fails the test unless the package's TestMain ran Guard and the process holds
-// none of the variables it takes out: the only GIT_ variable is GIT_ALLOW_PROTOCOL=file and the
-// only JJ_ one is the JJ_CONFIG a TestMain may set after it.
+// none of the variables it takes out: the only GIT_ variable is GIT_ALLOW_PROTOCOL=file, the
+// only JJ_ one is the JJ_CONFIG a TestMain may set after it, and PATH holds no directory of
+// Legion's image wrappers.
 func RequireGuarded(t testing.TB) {
 	t.Helper()
 	if guardedKeep == nil {
@@ -160,6 +203,9 @@ func RequireGuarded(t testing.TB) {
 		if guarded(key) && !testInput(key, guardedKeep) && key != "GIT_ALLOW_PROTOCOL" && key != "JJ_CONFIG" {
 			t.Errorf("the test process holds %s, which Guard takes out", key)
 		}
+	}
+	if path := os.Getenv("PATH"); withoutImageWrappers(path) != path {
+		t.Errorf("PATH=%s holds a directory of Legion's image wrappers, which Guard takes out", path)
 	}
 	if got := os.Getenv("GIT_ALLOW_PROTOCOL"); got != "file" {
 		t.Errorf("GIT_ALLOW_PROTOCOL=%q, want file", got)

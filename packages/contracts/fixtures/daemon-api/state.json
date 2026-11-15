@@ -267,7 +267,21 @@
       "entryQueuedAt": "2026-09-22T08:58:14Z",
       "entryConfirmedAt": "2026-09-22T08:58:51Z",
       "treeMovedAt": "2026-09-22T09:17:12Z",
-      "quietHours": 0.013333333333333334
+      "quietHours": 0.013333333333333334,
+      "assignments": [
+        {
+          "experiment": "memory",
+          "variant": "memory",
+          "mode": "random",
+          "drawnAt": "2026-09-20T11:04:05Z"
+        },
+        {
+          "experiment": "plan-length",
+          "variant": "short",
+          "mode": "random",
+          "drawnAt": "2026-09-21T18:42:11Z"
+        }
+      ]
     },
     "LEGION-209": {
       "key": "LEGION-209",
@@ -283,7 +297,21 @@
       },
       "memoryGroup": "memory",
       "memoryDrawMode": "random",
-      "memoryDrawnAt": "2026-09-20T11:04:05Z"
+      "memoryDrawnAt": "2026-09-20T11:04:05Z",
+      "assignments": [
+        {
+          "experiment": "memory",
+          "variant": "memory",
+          "mode": "random",
+          "drawnAt": "2026-09-20T11:04:05Z"
+        },
+        {
+          "experiment": "plan-length",
+          "variant": "long",
+          "mode": "random",
+          "drawnAt": "2026-09-21T18:42:11Z"
+        }
+      ]
     },
     "LEGION-210": {
       "key": "LEGION-210",
@@ -334,7 +362,14 @@
         "claim-unreachable"
       ],
       "treeMovedAt": "2026-09-22T06:18:00Z",
-      "quietHours": 3
+      "quietHours": 3,
+      "assignments": [
+        {
+          "experiment": "plan-length",
+          "variant": "",
+          "mode": ""
+        }
+      ]
     },
     "LEGION-211": {
       "key": "LEGION-211",
@@ -924,6 +959,7 @@
         "memory": {
           "config_files": []
         },
+        "experiments": [],
         "production_check": "tester",
         "deploys": []
       },
@@ -932,6 +968,7 @@
         "memory": {
           "config_files": []
         },
+        "experiments": [],
         "production_check": "off",
         "deploys": []
       }
