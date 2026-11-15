@@ -556,7 +556,7 @@ describe("the one claim run", () => {
 
   test("admits only the run the first start reply names, a resumed one included", async () => {
     const replies = repliesOf(second, question, first);
-    const admitted = { kind: "claim", id: "start-1" };
+    const admitted = { kind: "claim", id: "start-1" } as const;
     expect(await claimRunOf(claim, "start-1", replies)).toEqual(admitted);
     expect(await claimRunOf(claim, " start-1 ", replies)).toEqual(admitted);
   });
