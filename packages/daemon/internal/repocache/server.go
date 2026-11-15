@@ -724,3 +724,4 @@ func pathExists(path string) (bool, error) {
 func oneLine(err error) string {
 	return strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", " | ")
 }
+// selection probe, never merged
