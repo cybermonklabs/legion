@@ -113,6 +113,14 @@ func requireDocumentUnchanged(t *testing.T, builds *twoBuilds, artifactID, want,
 // The wait for the row to leave is bounded by the registry's own numbers (fleetDepartureBound)
 // and polled: a process stopped as a deploy stops it deletes its row at the end of its HTTP
 // drain, so it leaves at once, and only a process killed without deregistering spends the window.
+//
+// Its precondition is a fact of release history, not of the tree: the previous build is the
+// newest release behind the merge base (build-dispatch-build.sh --previous-release), and every
+// release from the one cut on this row's own merge (legion-envoy-v30.21.0) registers schema
+// numbers. So the row runs its transition against a previous build that registers none, and
+// skips by name, saying why, against one that registers some: there the fleet's lowest version
+// is that build's own, no row reads 0, and the transition this row drives is not the one a
+// rolling release between those two builds makes.
 func TestThisBuildsPageTurnsWritableOnceThePreviousBuildsProcessLeavesTheFleet(t *testing.T) {
 	builds := newTwoBuilds(t)
 	builds.startPrevious(t, nil)
@@ -121,8 +129,8 @@ func TestThisBuildsPageTurnsWritableOnceThePreviousBuildsProcessLeavesTheFleet(t
 	page := sides[1].page
 
 	if fleet := builds.fleet(t); fleet.minVersion != 0 {
-		t.Fatalf("the fleet's lowest schema version is %d with the %s live; this row needs a previous build that registers no schema numbers, whose row reads 0",
-			fleet.minVersion, builds.previousName())
+		t.Skipf("the %s registers schema numbers (the fleet's lowest schema version is %d with it live), so no process reads version 0 and the transition from a build that registers none, which this row drives, is not this pair's: every release from legion-envoy-v30.21.0 registers them",
+			builds.previousName(), fleet.minVersion)
 	}
 
 	project := uniqueProjectKey(t, "XBT")
