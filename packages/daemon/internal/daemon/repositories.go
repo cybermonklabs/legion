@@ -1573,20 +1573,10 @@ func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx, serv
 		return nil, fmt.Errorf("read the repositories the project's records name: %w", err)
 	}
 	for _, issue := range issues {
-		// A record the boot's backfill could not name, GitHub's rate limit refusing its read
-		// (backfillRead), is heard under the spelling it keeps until a later boot names it, and
-		// one it could not fill names no repository to hear yet.
-		spelled := issue.GitHubRepo
-		if spelled == "" {
-			spelled = issue.Repo
-		}
-		if spelled == "" {
+		if _, ok := heard[strings.ToLower(issue.GitHubRepo)]; ok {
 			continue
 		}
-		if _, ok := heard[strings.ToLower(spelled)]; ok {
-			continue
-		}
-		repo, err := ghrepo.Parse("GitHub's spelling of the repository of "+issue.Key, spelled)
+		repo, err := ghrepo.Parse("GitHub's spelling of the repository of "+issue.Key, issue.GitHubRepo)
 		if err != nil {
 			return nil, err
 		}

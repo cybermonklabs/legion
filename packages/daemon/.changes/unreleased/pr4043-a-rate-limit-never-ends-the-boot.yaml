@@ -10,8 +10,8 @@ body: |-
   the time it waits until, and is then read once more; if GitHub still does not answer, only that
   repository is left out for now and read again, as one whose installation read failed is. A later
   read of the mapping applies the same rule without waiting. The backfill of records from before
-  the record carried its repository waits a limit out the same way, and leaves only the record
-  GitHub still does not answer for unfilled until the next boot. A 404 still refuses the boot, and
+  the record carried its repository waits a limit, or a read GitHub does not answer, out and reads
+  again until GitHub answers, so the boot waits rather than exits. A 404 still refuses the boot, and
   a 5xx is still retried. An event whose preparation meets the limit on a repository the daemon
   holds no read of is delivered again after GitHub's wait rather than every second.
 

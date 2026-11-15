@@ -458,53 +458,94 @@ func TestARecordedDefaultBranchIsHeldOnlyForTheRepositoryTheRecordNames(t *testi
 	}
 }
 
-// The boot's backfill of records from before the record carried its repository takes GitHub's rate
-// limit as every default-branch read of the boot does: a repository GitHub's limit refuses is
-// waited out and read once more, and if GitHub still refuses it, only that record is left unfilled,
-// in one line naming the issue and the repository, while the record on a repository GitHub answers
-// for is filled, and the boot goes on to subscribe to what its records name. Before, the limit
-// refused the whole boot here.
-func TestABootsBackfillThroughARateLimitLeavesOnlyThatRecordUnfilled(t *testing.T) {
-	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		for _, key := range []string{"LEGION-7", "LEGION-9"} {
-			if _, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
-				values ($1, $1, 'LEGION', $1, 'planning', 1, 'in_progress', 'A', 1)`, key); err != nil {
-				return err
+// The boot's backfill of records from before the record carried its repository waits out GitHub's
+// rate limit, and a read GitHub does not answer, and reads again until GitHub answers: the boot
+// waits rather than exits, and no record is left without its repository or GitHub's spelling of it,
+// which every later reader of a record takes as given. Each wait is one line naming the issue, the
+// repository and the time it waits until: a limit's as GitHub asks, an unanswered read's 1 s and
+// then 2 s. Before, the first refusal refused the whole boot here.
+func TestABootsBackfillWaitsOutARateLimitAndFillsTheRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		refuse func(w http.ResponseWriter)
+		gaps   []time.Duration
+	}{
+		{name: "a rate limit asking for a second", gaps: []time.Duration{time.Second, time.Second}, refuse: func(w http.ResponseWriter) {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"message":"You have exceeded a secondary rate limit."}`)
+		}},
+		{name: "a read GitHub does not answer", gaps: []time.Duration{time.Second, 2 * time.Second}, refuse: func(w http.ResponseWriter) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, `{"message":"Server Error"}`)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				for _, key := range []string{"LEGION-7", "LEGION-9"} {
+					if _, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+						values ($1, $1, 'LEGION', $1, 'planning', 1, 'in_progress', 'A', 1)`, key); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
 			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, repo string, _ int) bool {
-		if repo != "zeta/tools" {
-			return false
-		}
-		w.Header().Set("Retry-After", "1")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = io.WriteString(w, `{"message":"You have exceeded a secondary rate limit."}`)
-		return true
-	})
-	logs := &syncBuffer{}
-	w := &workflowRuntime{pool: pool, records: projectRecords{Store: record.NewStore(), project: "LEGION"}, repositories: newRepositories("LEGION", ghrepo.Renames{}),
-		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), log: slog.New(slog.NewJSONHandler(logs, nil))}
-	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-7", ResolvedRepo: "zeta/tools"}, {Key: "LEGION-9", ResolvedRepo: "acme/widgets"}}}
-	if err := backfillRepositories(ctx, w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, w.log); err != nil {
-		t.Fatalf("backfill = %v, want the boot to go on", err)
-	}
-	if unfilled := unfilledKeys(t, w); !slices.Equal(unfilled, []string{"LEGION-7"}) {
-		t.Fatalf("unfilled after the backfill = %v, want LEGION-7 alone", unfilled)
-	}
-	if reads := github.readsOf("zeta/tools"); len(reads) != 2 || reads[1].Sub(reads[0]) < time.Second || reads[1].Sub(reads[0]) > 6*time.Second {
-		t.Fatalf("GitHub was read for zeta/tools at %v, want the refused read and one more a second later, as Retry-After asked", reads)
-	}
-	if left := loggedLines(t, logs.String(), "so the boot leaves the record as it is"); len(left) != 1 || left[0]["issue"] != "LEGION-7" || left[0]["repo"] != "zeta/tools" {
-		t.Fatalf("left-unfilled lines = %v, want one naming LEGION-7 and zeta/tools", left)
-	}
-	if _, err := w.heardAtBoot(ctx); err != nil {
-		t.Fatalf("the boot's subscription with LEGION-7 unfilled = %v, want what the records name heard", err)
+			github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, repo string, read int) bool {
+				if repo != "zeta/tools" || read > len(tc.gaps) {
+					return false
+				}
+				tc.refuse(w)
+				return true
+			})
+			logs := &syncBuffer{}
+			w := &workflowRuntime{pool: pool, records: projectRecords{Store: record.NewStore(), project: "LEGION"}, repositories: newRepositories("LEGION", ghrepo.Renames{}),
+				defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), log: slog.New(slog.NewJSONHandler(logs, nil))}
+			client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-7", ResolvedRepo: "zeta/tools"}, {Key: "LEGION-9", ResolvedRepo: "acme/widgets"}}}
+			if err := backfillRepositories(ctx, w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, w.log); err != nil {
+				t.Fatalf("backfill = %v, want the boot to wait and go on", err)
+			}
+			if unfilled := unfilledKeys(t, w); len(unfilled) != 0 {
+				t.Fatalf("unfilled after the backfill = %v, want none", unfilled)
+			}
+			var issues []record.Issue
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				var err error
+				issues, err = w.records.Issues(ctx, tx)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, issue := range issues {
+				if issue.Repo == "" || issue.GitHubRepo == "" || issue.DefaultBranch == "" {
+					t.Errorf("%s after the backfill = repo %q, GitHub's spelling %q, default branch %q; want all three", issue.Key, issue.Repo, issue.GitHubRepo, issue.DefaultBranch)
+				}
+			}
+			reads := github.readsOf("zeta/tools")
+			if len(reads) != len(tc.gaps)+1 {
+				t.Fatalf("GitHub was read for zeta/tools %d times, want the %d refused and the one answered", len(reads), len(tc.gaps))
+			}
+			for index, gap := range tc.gaps {
+				if got := reads[index+1].Sub(reads[index]); got < gap || got > gap+5*time.Second {
+					t.Errorf("read %d came %s after the one before, want %s", index+2, got, gap)
+				}
+			}
+			waits := loggedLines(t, logs.String(), "so the boot waits and reads it again")
+			if len(waits) != len(tc.gaps) {
+				t.Fatalf("wait lines = %v, want %d", waits, len(tc.gaps))
+			}
+			for _, line := range waits {
+				if line["issue"] != "LEGION-7" || line["repo"] != "zeta/tools" || line["waitUntil"] == nil {
+					t.Errorf("wait line = %v, want one naming LEGION-7, zeta/tools and the time it waits until", line)
+				}
+			}
+			if _, err := w.heardAtBoot(ctx); err != nil {
+				t.Fatalf("the boot's subscription after the backfill = %v, want what the records name heard", err)
+			}
+		})
 	}
 }
 

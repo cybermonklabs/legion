@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -264,41 +265,53 @@ func limitAttributes(read limitedRead) []any {
 }
 
 // backfillRead is named's read of repo for the boot's backfill of key's record (fillRepositories,
-// nameRepositories), on the path every default-branch read of the boot takes through GitHub's rate
-// limit, so the limit never ends the boot here either: a read of a repository read or held before
-// is answered from that (defaultBranches.Named); one GitHub's limit refuses with nothing held is
-// waited out as GitHub asks (defaultBranchLimit) and read once more; and one GitHub still does not
-// answer gives no fill (ok false), said in one line naming the issue and the repository, so the
-// record keeps what it has, its issue alone goes without, and the next boot fills it. No record's
-// branch stands in for the read, since what the backfill reads GitHub for is GitHub's spelling of
-// the repository the record will carry. Any other failure of the first read, and GitHub's answer
-// about the repository on the second (answeredRefusal), is returned, refusing the boot as before.
-func backfillRead(ctx context.Context, named *defaultBranches, repo ghrepo.Repository, key string, log *slog.Logger) (_ ghbranch.Repository, ok bool, _ error) {
-	read, err := named.Named(ctx, repo)
-	answer, wait, limited := defaultBranchLimit(err)
-	if !limited {
-		return read, err == nil, err
+// nameRepositories). GitHub's rate limit, or a read GitHub does not answer, neither ends the boot
+// nor leaves the record unfilled, since every later reader of the record takes its repository and
+// GitHub's spelling of it as given. A read of a repository read or held before is answered from that
+// (defaultBranches.Named). One GitHub's limit refuses with nothing held is waited out as GitHub asks
+// (defaultBranchLimit); one GitHub does not answer (backfillUnanswered) is waited 1 s, doubling to a
+// minute. Each wait is one line naming the issue, the repository and the time it waits until, and
+// the read is made again, until GitHub answers or ctx ends. Any other failure — GitHub's answer
+// about the repository, such as a 404, or a mint refused — is returned and refuses the boot, as
+// before. No record's branch stands in for the read, since what the backfill reads GitHub for is
+// GitHub's spelling of the repository the record will carry.
+func backfillRead(ctx context.Context, named *defaultBranches, repo ghrepo.Repository, key string, log *slog.Logger) (ghbranch.Repository, error) {
+	backoff := time.Second
+	for {
+		attempt, cancel := context.WithTimeout(ctx, appMintAttempt)
+		read, err := named.Named(attempt, repo)
+		cancel()
+		if err == nil {
+			return read, nil
+		}
+		if ctx.Err() != nil {
+			return ghbranch.Repository{}, ctx.Err()
+		}
+		attributes := []any{"issue", key, "repo", repo.String()}
+		answer, wait, limited := defaultBranchLimit(err)
+		switch {
+		case limited:
+			attributes = append(attributes, limitAttributes(limitedRead{answer: answer, err: err, wait: wait})...)
+		case backfillUnanswered(err):
+			wait, backoff = backoff, min(2*backoff, time.Minute)
+			attributes = append(attributes, "wait", wait.String(), "error", err)
+		default:
+			return ghbranch.Repository{}, err
+		}
+		log.Warn("workflow backfill: GitHub's rate limit refused the read of a record's repository, or GitHub did not answer it, so the boot waits and reads it again",
+			append(attributes, "waitUntil", time.Now().Add(wait).UTC().Format(time.RFC3339))...)
+		select {
+		case <-ctx.Done():
+			return ghbranch.Repository{}, ctx.Err()
+		case <-time.After(wait):
+		}
 	}
-	log.Warn("workflow backfill: GitHub's rate limit refused the read of a record's repository, so the boot waits as long as GitHub asks and reads it once more",
-		append([]any{"issue", key, "repo", repo.String(), "waitUntil", time.Now().Add(wait).UTC().Format(time.RFC3339)},
-			limitAttributes(limitedRead{answer: answer, err: err, wait: wait})...)...)
-	select {
-	case <-ctx.Done():
-		return ghbranch.Repository{}, false, ctx.Err()
-	case <-time.After(wait):
-	}
-	attempt, cancel := context.WithTimeout(ctx, appMintAttempt)
-	read, err = named.Named(attempt, repo)
-	cancel()
-	switch {
-	case err == nil:
-		return read, true, nil
-	case ctx.Err() != nil:
-		return ghbranch.Repository{}, false, ctx.Err()
-	case answeredRefusal(err):
-		return ghbranch.Repository{}, false, err
-	}
-	log.Warn("workflow backfill: GitHub did not answer the read of a record's repository after its rate limit, so the boot leaves the record as it is and goes on; the next boot fills it",
-		"issue", key, "repo", repo.String(), "error", err)
-	return ghbranch.Repository{}, false, nil
+}
+
+// backfillUnanswered is whether err, a read of a default branch that failed, is one GitHub did not
+// answer and no rate limit: a 5xx or a mint GitHub reports as its own trouble (bootReadTransient), a
+// transport failure (the *url.Error the HTTP client returns), or a read cut off by its bound.
+func backfillUnanswered(err error) bool {
+	var transport *url.Error
+	return bootReadTransient(err) || errors.As(err, &transport) || errors.Is(err, context.DeadlineExceeded)
 }

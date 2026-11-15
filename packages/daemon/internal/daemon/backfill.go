@@ -59,9 +59,9 @@ func backfillRepositories(ctx context.Context, pool *store.Pool, records record.
 // for its whole life, and heardRepositories hears the pair's other name too, so the events GitHub
 // now publishes under the name it moved to still reach it.
 //
-// The one exception is GitHub's rate limit: a read it refuses is waited out and read once more
-// (backfillRead), and a record GitHub still does not answer for is left unfilled, its issue alone
-// going without, until the next boot fills it.
+// The one exception is GitHub's rate limit, or a read GitHub does not answer: backfillRead waits
+// it out and reads again until GitHub answers, so the boot waits rather than exits, and every record
+// is filled.
 func fillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
 	var unfilled []record.Issue
 	pulls := map[string]record.PullRequest{}
@@ -116,12 +116,9 @@ func fillRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 		if err != nil {
 			return err
 		}
-		read, ok, err := backfillRead(ctx, named, repo, issue.Key, log)
+		read, err := backfillRead(ctx, named, repo, issue.Key, log)
 		if err != nil {
 			return fmt.Errorf("fill the repository of %s: %w", issue.Key, err)
-		}
-		if !ok {
-			continue
 		}
 		spelling := read.Name.String()
 		var spelled []string
@@ -237,9 +234,9 @@ func recordedSpelling(renames ghrepo.Renames, recorded string, github ghrepo.Rep
 // spelling of its own name (recordedSpelling), which keeps it one repository and lets the boot
 // go on.
 //
-// The one exception is GitHub's rate limit: a read it refuses is waited out and read once more
-// (backfillRead), and a record GitHub still does not answer for is left unnamed, heard under the
-// spelling it keeps (heardRepositories), until the next boot names it.
+// The one exception is GitHub's rate limit, or a read GitHub does not answer: backfillRead waits
+// it out and reads again until GitHub answers, so the boot waits rather than exits, and every record
+// is named.
 func nameRepositories(ctx context.Context, pool *store.Pool, records record.Store, project string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
 	var unnamed []record.Issue
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -255,12 +252,9 @@ func nameRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 		if err != nil {
 			return err
 		}
-		read, ok, err := backfillRead(ctx, named, repo, issue.Key, log)
+		read, err := backfillRead(ctx, named, repo, issue.Key, log)
 		if err != nil {
 			return fmt.Errorf("name the repository of %s: %w", issue.Key, err)
-		}
-		if !ok {
-			continue
 		}
 		if !renames.Same(read.Name.String(), issue.Repo) {
 			return fmt.Errorf("name the repository of %s: GitHub renamed %s to %s, and a record's repository never changes; only a pre-release build of this daemon leaves a record with no GitHub spelling, so recreate that build's database",
@@ -270,11 +264,7 @@ func nameRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 	}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		for _, issue := range unnamed {
-			name, ok := names[issue.Key]
-			if !ok {
-				continue
-			}
-			if err := records.NameIssueRepository(ctx, tx, issue.Key, issue.Repo, name); err != nil {
+			if err := records.NameIssueRepository(ctx, tx, issue.Key, issue.Repo, names[issue.Key]); err != nil {
 				return err
 			}
 		}
@@ -283,9 +273,6 @@ func nameRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 		return err
 	}
 	for _, issue := range unnamed {
-		if _, ok := names[issue.Key]; !ok {
-			continue
-		}
 		log.Info("legion workflow backfill named "+issue.Key+"'s repository "+issue.Repo+" as GitHub spells it, "+names[issue.Key],
 			"issue", issue.Key, "repo", issue.Repo, "githubRepo", names[issue.Key])
 	}
