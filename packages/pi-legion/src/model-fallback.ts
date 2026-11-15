@@ -398,14 +398,27 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
       save(step({ kind: "superseded" }));
       return;
     }
-    const target = ctx.models?.resolve?.(arming.restoreTo);
+    const resolve = ctx.models?.resolve;
+    // The return undoes the fallback's own move and nothing after it. A launch that names its
+    // model (`--model @default`) moves the session without a `model_change` entry, so the
+    // arming's entry can still be the newest while the session runs a model its deployment chose
+    // since: the session goes back only while it still runs the model that entry names. A host
+    // that names no current model cannot show that, so the arming ends, as it does below for a
+    // model gone from the roster, rather than reading the branch again at every request.
+    const current = ctx.models?.current?.();
+    const fallback = newest.entry.model === undefined ? undefined : resolve?.(newest.entry.model);
+    if (!sameModel(current, fallback)) {
+      save(step({ kind: "superseded" }));
+      return;
+    }
+    const target = resolve?.(arming.restoreTo);
     if (target === undefined) {
       // Gone from this session's roster (a credential lost, a catalog change): nothing to go back
       // to, so the arming ends rather than being tried at every request for the rest of the run.
       save(step({ kind: "superseded" }));
       return;
     }
-    if (sameModel(ctx.models?.current?.(), target)) {
+    if (sameModel(current, target)) {
       save(step({ kind: "restored" }));
       return;
     }
