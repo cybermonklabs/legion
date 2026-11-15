@@ -1145,6 +1145,48 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			t.Fatalf("the holder's agent subject holds %d copies, want %d", len(stored), copies)
 		}
 	})
+
+	// The tester's red test of round 3 (INFRA-2846): the review's R2 finding was a dead-letter
+	// sentence that is false for some walk. A walk drops a copy for its delivery mode and claims
+	// it to send the dead letter, the first publish of that dead letter fails with an error that
+	// can pass, and the copy's hour ends before the walk that takes the claim over sends it again.
+	// The copy was dropped because the session that held the role does not take its mode, so
+	// the dead letter that is stored says that, and does not say that no session held the role or
+	// that the hour ended before the holder took it.
+	t.Run("s a delivery mode dead letter sent again after the copy's hour still names the delivery mode", func(t *testing.T) {
+		rig := newHourRig(t)
+		const (
+			role   = "hour-mode-letter-late"
+			holder = "ses_hour_mode_late_holder"
+			sender = "ses_hour_mode_late_sender"
+		)
+		message := roleMessage(role, sender, "steer the next holder, whose dead letter fails once")
+		message["payload"] = `{"delivery":{"mode":"steer"}}`
+		answer := rig.kept(rig.listeners[0], message)
+		held := rig.copyOf(role, answer.EventID)
+		seam := &deadLetterSeam{role: role, failed: func() { rig.setClock(held.stored.Add(time.Hour + time.Minute)) }}
+		seam.install(t, rig)
+		rig.startSweeps()
+		rig.claim(rig.listeners[1], holder, role,
+			session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Capabilities: []string{"btw"}})
+		rig.waitDeadLetter(held)
+		rig.waitPassed(role, held.sequence)
+		letSweepsRun()
+
+		letters := rig.envelopesOn(contracts.AgentSubject(sender))
+		if len(letters) != 1 {
+			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
+		}
+		assertDeadLetterOf(t, letters[0], role, held, held.stored, rig.now(), "does not take the delivery mode steer.")
+		for _, wrong := range []string{"No session held the role", "no session held the role", "The hour ended before session", "its hour ended before"} {
+			if strings.Contains(letters[0].Payload, wrong) || strings.Contains(letters[0].PayloadSummary, wrong) {
+				t.Fatalf("the dead letter of a copy dropped for its delivery mode says %q:\n%s\n%s", wrong, letters[0].PayloadSummary, letters[0].Payload)
+			}
+		}
+		if stored := rig.lines(hourDeadLetterLine, map[string]any{"role": role}); len(stored) != 1 || stored[0]["reason"] != "delivery_mode" {
+			t.Fatalf("the dead letter lines are %v, want one with reason delivery_mode", stored)
+		}
+	})
 }
 
 // TestARepeatedKeepIsOneCopyUntilItEnds holds rows (k) and (l) of check k1: a publish that repeats
