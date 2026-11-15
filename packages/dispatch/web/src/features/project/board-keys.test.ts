@@ -6,6 +6,8 @@ import { groupIssuesByStatus, type IssueStatus } from "./board-model";
 
 function issue(key: string, status: IssueStatus): IssueSummary {
   return {
+    advances: [],
+    advances_revision: 0,
     route: null,
     repo: null,
     resolved_repo: null,

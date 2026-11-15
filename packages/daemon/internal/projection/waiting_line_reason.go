@@ -7,6 +7,7 @@ package projection
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -27,7 +28,10 @@ import (
 // holder that it queues for a free slot is the defect this sentence exists to stop. A member of
 // the returned part whose record knows no moment (record.LineEntry.Since) names none, and a
 // member of the starting part with nothing in the other part says nothing about it: both
-// clauses end at the words that are true.
+// clauses end at the words that are true. A member that gave its slot back to wait on another
+// issue (record.LineWaitingOnIssue) is told it waits its turn (waitsItsTurn) only while its
+// entry still names a wait (record.LineEntry.Waits); with none left, the sentence says the wait
+// has ended and ends on the clause the rest of the returned part reads.
 func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string {
 	switch entry.Part {
 	case record.PartReturned:
@@ -39,13 +43,29 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 			came = "A person answered it, and its work came back"
 		case record.LineFirstPhase:
 			came = "Its design gate opened"
+		case record.LineWaitingOnIssue:
+			came = "It gave its admission slot back to wait on another issue"
+			if len(entry.Waits) > 0 {
+				came = "It gave its admission slot back to wait on " + strings.Join(entry.Waits, ", ")
+			}
 		}
 		if !entry.Since.IsZero() {
 			came += " at " + entry.Since.UTC().Format(time.RFC3339)
 		}
+		// A mark that still stands with nothing left to wait on: its blockers closed while the
+		// cap was full, and it now takes the next free slot like the rest of its part.
+		if entry.Kind == record.LineWaitingOnIssue && len(entry.Waits) == 0 {
+			came += ", and that wait has ended"
+		}
 		place := fmt.Sprintf("It is %s of %s whose work came back", englishOrdinal(entry.PartPlace), issuesCounted(partLength))
 		if entry.Holds {
 			return came + ". " + place + "." + holdsItsSlot
+		}
+		// The promotion passes over a member that still waits on an issue (its Waits), so it
+		// does not take the free slots first (admit.releaseSlotsForWaits).
+		// A member whose waits all ended takes the free slots first like the rest of its part.
+		if entry.Kind == record.LineWaitingOnIssue && len(entry.Waits) > 0 {
+			return came + ". " + place + "." + waitsItsTurn
 		}
 		takes := "they take"
 		if partLength == 1 {
@@ -93,6 +113,14 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 // this truth instead (waitingLineReason). It opens on a space because it follows the full stop
 // the place clause ends on.
 const holdsItsSlot = " It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+
+// waitsItsTurn is the last clause of a member that gave its slot back to wait on another issue
+// (record.LineWaitingOnIssue), holds none, and still names a wait (record.LineEntry.Waits, read
+// there rather than off the kind, since the kind outlasts the wait): the promotion passes over
+// it while the wait lasts, so telling it that it takes the free slots first would be false, and
+// the clause says that it takes one by itself after the wait instead. It opens on a space for
+// the reason holdsItsSlot does. The rule is admit.releaseSlotsForWaits.
+const waitsItsTurn = " The promotion passes over it while that wait lasts, and after the wait it takes a free slot again by itself."
 
 // englishOrdinal is n as a person writes a place: 1st, 2nd, 3rd and `th` for the rest, with 11,
 // 12 and 13 taking `th` whatever their last digit says — so 11th, 12th and 13th, and 21st, 22nd,

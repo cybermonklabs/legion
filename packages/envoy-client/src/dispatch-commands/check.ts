@@ -53,6 +53,7 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_issues: true,
   dispatch_project: true,
   dispatch_projects: true,
+  dispatch_priorities: true,
   dispatch_open_asks: true,
   dispatch_answers: true,
   dispatch_whoami: true,

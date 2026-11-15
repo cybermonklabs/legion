@@ -82,14 +82,15 @@ func takeSlot(t *testing.T, pool *pgxpool.Pool, key string) {
 	})
 }
 
-// oweStart queues the start of key's worker as a transition does (workflow.StartOrOwe): the one
-// row that carries the task, which the outbox holds unclaimable until key holds a slot. It is
-// what puts an issue whose work came back in the waiting line.
-func oweStart(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase) {
+// oweStart queues the start of key's worker for the phase it stands in, as a transition does
+// (workflow.StartOrOwe): the one row that carries the task, which the outbox holds unclaimable
+// until key holds a slot. It is what puts an issue whose work came back in the waiting line.
+// tree is the issue's own tree, which a root of its own names by its own key.
+func oweStart(t *testing.T, pool *pgxpool.Pool, tree, key string, stands phase.Phase) {
 	t.Helper()
 	role := phase.RoleFor(stands)
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), key, record.SuperviseRequest{Op: "start", Tree: "LEGION-1",
+		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), key, record.SuperviseRequest{Op: "start", Tree: tree,
 			Role: role, Generation: 1, Phase: stands, Task: "Continue " + key + ".", Entry: 1}, fixedNow); err != nil {
 			t.Fatalf("owe %s a start: %v", key, err)
 		}
@@ -190,16 +191,21 @@ func assertRowHolders(t *testing.T, pool *pgxpool.Pool, want ...string) {
 
 // A1. One row rule per phase, read by admission passes over trees that run.
 //
-// The daemon creates a slots row for an issue when it starts it, and deletes that row in three
-// cases only: the issue's own phase is done; Dispatch shows it in backlog, icebox, triage or
-// done; it belongs to a tree whose root closed or a tree the daemon no longer runs; or its work
-// stands past its review, which is accepting, retro and merging. No other phase deletes a row,
-// so an issue keeps its place against the cap while it waits — in awaiting_person, in held, and
-// as a root standing at admitted whose design gate has opened.
+// The daemon creates a slots row for an issue when it starts it, and the phase rule deletes that
+// row in four cases only: the issue's own phase is done; Dispatch shows it in backlog, icebox,
+// triage or done; it belongs to a tree whose root closed or a tree the daemon no longer runs; or
+// its work stands past its review, which is accepting, retro and merging. No other phase deletes
+// a row, so an issue keeps its place against the cap while it waits — in awaiting_person, in
+// held, and as a root standing at admitted whose design gate has opened, when it waits on no
+// other issue. What the phase rule does not
+// decide is a wait on another issue: an issue the daemon started that waits on one before its
+// review gives its row back (INFRA-3036, releaseSlotsForWaits), which is the root of the first
+// tree here.
 //
 // The first reading gives one started issue each phase and reads the rows one admission pass
-// leaves: every phase up to the review keeps its row, and the three past it lose theirs on that
-// same pass, which is the cutover a deployment taking this change makes. The second reading
+// leaves: every phase up to the review keeps its row, save the root's, which an open child holds,
+// and the three past it lose theirs on that same pass, which is the cutover a deployment taking
+// this change makes. The second reading
 // makes the three deletions that are left — a phase of done while Dispatch still shows the
 // issue at a running status, a Dispatch status of backlog while the phase is still in the
 // workflow, and a tree whose root closed — and reads that those three rows go and no others. A
@@ -223,10 +229,12 @@ func TestSlotPerPhase(t *testing.T) {
 	root.Phase, root.Status, root.DispatchStatus = phase.Admitted, "in_progress", "in_progress"
 	putIssue(t, pool, root)
 	takeSlot(t, pool, "LEGION-1")
-	// The root's own first phase could start on this very pass — its gate is open and it holds
-	// its row, so no cap can hold it back — which would move it out of the phase this case is
-	// about. An open Dispatch child holds it at admitted instead (record.LineFacts.ChildWaits),
-	// and the state names it under admission.blocked, read below beside its row.
+	// The root's own first phase could start on this very pass — its gate is open, so no cap can
+	// hold it back — which would move it out of the phase this case is about. An open Dispatch
+	// child holds it at admitted instead (record.LineFacts.ChildWaits). That wait is also why it
+	// is the one started issue here holding no row: an issue the daemon started and that waits
+	// on another issue gives its row back (INFRA-3036), and the state names it under
+	// admission.blocked, read below beside the rows.
 	seedMirror(t, pool, "LEGION-1", "in_progress")
 	seedMirrorChild(t, pool, "LEGION-99", "backlog", "LEGION-1")
 
@@ -275,7 +283,8 @@ func TestSlotPerPhase(t *testing.T) {
 	// A child of the same tree the daemon did start, which a person's todo re-entered: a
 	// re-entry writes the phase back to admitted, bumps the generation and leaves the Dispatch
 	// status at todo (workflow.ReenterChild), and none of the three deletions reads any of that,
-	// so the row its first run took stands (record.KeepsSlot). The unstarted child above is
+	// so the row its first run took stands (record.KeepsSlot), as it waits on no other issue
+	// (blockers.waitsOf). The unstarted child above is
 	// read beside it in the same assertion, still holding none: the two stand in the same
 	// phase, in the same status, under the same root's wait, so what tells them apart is that
 	// the daemon started one of them and never started the other — which is the distinction a
@@ -312,10 +321,10 @@ func TestSlotPerPhase(t *testing.T) {
 
 	pass("the first reading", "rows-per-phase")
 
-	assertRowHolders(t, pool, "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-9", "LEGION-20",
+	assertRowHolders(t, pool, "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-9", "LEGION-20",
 		"LEGION-30", "LEGION-32")
 	if want := []record.BlockedIssue{{Issue: "LEGION-1", BlockedBy: []string{"LEGION-99"}}}; !reflect.DeepEqual(blockedNow(t, pool, admission), want) {
-		t.Fatalf("blocked = %#v, want %#v: the root keeps its row at admitted because an open Dispatch child holds it there",
+		t.Fatalf("blocked = %#v, want %#v: the root waits at admitted for an open Dispatch child, which is why it holds no row",
 			blockedNow(t, pool, admission), want)
 	}
 
@@ -335,7 +344,7 @@ func TestSlotPerPhase(t *testing.T) {
 
 	pass("the second reading", "rows-after-the-three-deletions")
 
-	assertRowHolders(t, pool, "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-9", "LEGION-30", "LEGION-32")
+	assertRowHolders(t, pool, "LEGION-2", "LEGION-3", "LEGION-9", "LEGION-30", "LEGION-32")
 
 	t.Run("a re-entered child keeps its row and an unstarted child at admitted holds none", func(t *testing.T) {
 		reentered, never := holdsSlot(t, pool, "LEGION-32"), holdsSlot(t, pool, "LEGION-31")
@@ -347,9 +356,9 @@ func TestSlotPerPhase(t *testing.T) {
 }
 
 // A2. The cap counts the issues whose change is still to write, so one tree holds one row for
-// each issue the daemon has started and has not carried past its review: the root gives up the
-// row it took at its admission once it reaches accepting, where its children do the work, and
-// each child takes one as its first phase starts.
+// each issue the daemon has started and has not carried past its review: the root, which the
+// fixture stands in accepting with the row it took at its admission, gives that row up because
+// its work is past its review, and each child takes one as its first phase starts.
 //
 // The root's own work comes back when the architect sends it to a phase of its own. It holds no
 // row then, so it waits in the line among the issues whose work came back, and the row its own
@@ -383,7 +392,7 @@ func TestATreeHoldsOneRowForEachIssueTheDaemonHasStarted(t *testing.T) {
 	root = issue(t, pool, "LEGION-1")
 	root.Phase, root.Status = phase.Implementing, "in_progress"
 	putIssue(t, pool, root)
-	oweStart(t, pool, "LEGION-1", phase.Implementing)
+	oweStart(t, pool, "LEGION-1", "LEGION-1", phase.Implementing)
 
 	assertWaiting(t, pool, []string{"LEGION-1"})
 

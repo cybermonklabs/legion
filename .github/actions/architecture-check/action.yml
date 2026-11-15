@@ -1,0 +1,121 @@
+name: Check Dispatch architecture notes
+description: >-
+  Checks a repository's Dispatch architecture notes by the Dispatch server's own rules: which
+  entries of the directory are notes, how large a note may be, and whether the note set is
+  valid. It builds packages/envoy's architecture-check command from this repository, with the Go
+  that packages/envoy/go.mod names, and runs it over a directory of the caller's checkout.
+
+  Other repositories call it, pinned by a full commit SHA, in a job without `container:`. Its
+  README.md says why, and gives the inputs, the output, the exit statuses and a job to copy.
+
+inputs:
+  path:
+    description: >-
+      The notes directory. A relative path is resolved against the caller's checkout,
+      $GITHUB_WORKSPACE, and an absolute path is kept as it is.
+    default: .dispatch/architecture
+  allow-empty:
+    description: >-
+      `true` accepts an empty directory and a directory that does not exist as the empty note
+      set, as the Dispatch server does, so a mistyped path also passes with a count of 0. Set it
+      only while the repository has no note.
+    default: 'false'
+
+outputs:
+  count:
+    description: >-
+      The number of notes the command judged. It is set whenever the command printed its count
+      line: on exit 0 (a valid set) and on exit 1 (a refused set).
+    value: ${{ steps.run.outputs.count }}
+
+runs:
+  using: composite
+  steps:
+    # The runner fetches this whole repository for the action, and github.action_path is
+    # .github/actions/architecture-check inside it, so the version comes from this repository's
+    # packages/envoy/go.mod and never from the caller's tree.
+    - id: setup-go
+      name: Install the Go that packages/envoy/go.mod names
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: ${{ github.action_path }}/../../../packages/envoy/go.mod
+        cache: false
+
+    # setup-go adds its `go` problem matcher for the rest of the job, and the runner reads every
+    # later line of the job through it, so a file name or a front-matter value holding `.go: `
+    # (for example `cmd.go: forged annotation`) would become an error annotation with the
+    # author's text. The action builds only this repository's command and needs no Go matcher, so
+    # it removes it. The runner keeps one matcher per owner, so the action's setup-go already
+    # replaced a `go` matcher an earlier setup-go of the caller's job added, and this removal
+    # deletes it for the rest of the job (README.md, "The Go toolchain").
+    - name: Remove the Go problem matcher setup-go added
+      shell: bash
+      run: echo "::remove-matcher owner=go::"
+
+    # The cache key carries the SHA-256 of this repository's packages/envoy/go.sum at the pinned
+    # commit, so a caller that moves its pin to a commit with other modules gets a new key. The
+    # step hashes the file itself and does not use the hashFiles() expression: hashFiles() matches
+    # only files under $GITHUB_WORKSPACE, and a remote caller's action path is outside it, so there
+    # it would hash nothing. This repository's own `uses: ./` run, whose action path is inside the
+    # workspace, would hide that. The hash goes into a variable before it is written, so a go.sum
+    # that is missing or cannot be read fails the step. A macOS runner has shasum and can lack
+    # sha256sum. Both read the file from standard input, because each starts its line with `\`
+    # when the file name holds a backslash or a line break.
+    - id: gosum
+      name: Hash packages/envoy/go.sum for the cache key
+      shell: bash
+      run: |
+        f="$GITHUB_ACTION_PATH/../../../packages/envoy/go.sum"
+        if command -v sha256sum > /dev/null; then
+          sum=$(sha256sum < "$f")
+        else
+          sum=$(shasum -a 256 < "$f")
+        fi
+        echo "hash=${sum%% *}" >> "$GITHUB_OUTPUT"
+
+    # The command's own module and build caches, which check.sh points the build at, so an entry
+    # holds this build alone and never the caller's caches. The key holds the runner's OS and
+    # architecture, the Go version and the go.sum hash. On a miss of that exact key, the restore
+    # falls back to the newest entry of the same Go version (restore-keys, the key without the
+    # hash), so the build fetches only the modules that changed. actions/cache/restore sets
+    # cache-hit to true only for an exact match of the key and not for a restore-keys match, so
+    # the save step below runs after such a fallback too.
+    - id: cache
+      name: Restore the command's module and build caches
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ runner.temp }}/architecture-check/mod
+          ${{ runner.temp }}/architecture-check/build
+        key: architecture-check-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ steps.gosum.outputs.hash }}
+        restore-keys: architecture-check-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
+
+    - name: Build the architecture-check command
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/check.sh" build
+
+    # Saves on a miss of the exact key only, and only in a push, schedule or workflow_dispatch run.
+    # A restore-keys fallback is a miss too: after a go.sum change the build starts from the older
+    # entry, a push run saves the new key, and later runs fetch no new module again. Any other run,
+    # pull_request, pull_request_target, merge_group, issue_comment and workflow_run among them,
+    # may hold another person's code, so it restores and never saves. A step runs only after every
+    # step above it succeeded, so this one also follows a successful build.
+    - name: Save the command's module and build caches
+      if: steps.cache.outputs.cache-hit != 'true' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ runner.temp }}/architecture-check/mod
+          ${{ runner.temp }}/architecture-check/build
+        key: ${{ steps.cache.outputs.cache-primary-key }}
+
+    # The inputs reach the script as environment variables and never as text of `run:`, so no
+    # input can become shell code. Their names leave out the INPUT prefix, which this
+    # repository's Bun pin check reserves for an action's own inputs.
+    - id: run
+      name: Check the architecture notes
+      shell: bash
+      env:
+        ARCHITECTURE_CHECK_PATH: ${{ inputs.path }}
+        ARCHITECTURE_CHECK_ALLOW_EMPTY: ${{ inputs.allow-empty }}
+      run: bash "$GITHUB_ACTION_PATH/check.sh" run

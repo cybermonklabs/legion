@@ -53,7 +53,7 @@ func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessi
 	// deployment with these windows would give it.
 	delivery, err := connectSessionDelivery([]string{url},
 		inactiveThresholdFor(harness.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval),
-		harness.config.logger)
+		client, harness.config.logger)
 	if err != nil {
 		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}
@@ -282,7 +282,6 @@ func TestSessionConsumerFiltersOnTheControllerNoticeLaneOfTheRoleItHolds(t *test
 		lane      = "notifications.legion.ACME.controller"
 	)
 	claimRoles(t, rig.harness.registry, sessionID, role)
-	awaitRoles(t, rig.harness.registry, sessionID, role)
 	registration := `{"session_id":"ses_controller","self_subscribed":true,
 		"topics":["notifications.legion.ACME.controller"],"delivery":{"consumer":true,"epoch":"e"}}`
 	rig.subscribe(t, registration)
@@ -303,8 +302,8 @@ func TestSessionConsumerFiltersOnTheControllerNoticeLaneOfTheRoleItHolds(t *test
 }
 
 // A heartbeat that leaves the lane out of its body keeps it in the consumer's filter and in the
-// stored row alike: one read of the session's roles, for the body's topics and the row's
-// together, decides both (store.Registry.PlanInterest, UpsertPlanned). A plugin sends such a
+// stored row alike: one read of the controller's claim record, made for the body's topics and the
+// row's together, decides both (store.Registry.PlanInterest, UpsertPlanned). A plugin sends such a
 // heartbeat whenever its registration carries only what the session subscribed to in this
 // process, and the lane dropped from a filter takes every notice published after it with it.
 func TestSessionConsumerKeepsTheControllerNoticeLaneAHeartbeatOmits(t *testing.T) {
@@ -315,7 +314,6 @@ func TestSessionConsumerKeepsTheControllerNoticeLaneAHeartbeatOmits(t *testing.T
 		lane      = "notifications.legion.ACME.controller"
 	)
 	claimRoles(t, rig.harness.registry, sessionID, role)
-	awaitRoles(t, rig.harness.registry, sessionID, role)
 	rig.subscribe(t, `{"session_id":"ses_controller_heartbeat","self_subscribed":true,
 		"topics":["notifications.legion.ACME.controller"],"delivery":{"consumer":true,"epoch":"e"}}`)
 
@@ -331,7 +329,7 @@ func TestSessionConsumerKeepsTheControllerNoticeLaneAHeartbeatOmits(t *testing.T
 	}
 	// The row holds the session's own agent subject, which sessionConsumerFilter names anyway,
 	// and the consumer keeps each subject once (bus.SessionConsumers).
-	want := slices.Compact(slices.Sorted(slices.Values(sessionConsumerFilter(sessionID, stored.Topics))))
+	want := slices.Compact(slices.Sorted(slices.Values(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v: the filter and the stored row must name one set after a heartbeat that omits the lane", got, want)
 	}
@@ -385,7 +383,7 @@ func TestSessionConsumerFiltersAgainWhenItsWriteLosesTheCompareAndSwap(t *testin
 	if !slices.Contains(stored.Topics, added) {
 		t.Fatalf("stored topics %v, want the topic %s the second registration was answered 200 for", stored.Topics, added)
 	}
-	want := slices.Compact(slices.Sorted(slices.Values(sessionConsumerFilter(sessionID, stored.Topics))))
+	want := slices.Compact(slices.Sorted(slices.Values(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v: a registration that re-plans after a lost compare-and-swap must filter on the plan it stores", got, want)
 	}
@@ -450,7 +448,7 @@ func TestSessionConsumerCarriesTheGapAndTheUnsubscribeAcrossARefusedWrite(t *tes
 	if slices.Contains(stored.Topics, dropped) {
 		t.Fatalf("stored topics %v; the unsubscribe removed %s, so the registration must not write it back", stored.Topics, dropped)
 	}
-	want := slices.Compact(slices.Sorted(slices.Values(sessionConsumerFilter(sessionID, stored.Topics))))
+	want := slices.Compact(slices.Sorted(slices.Values(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v: the filter is the plan that was stored", got, want)
 	}
@@ -932,7 +930,7 @@ func followWhileLocked(t *testing.T, rig *sessionConsumerRig, sessionID, topic s
 	if _, err := rig.harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{topic}); err != nil {
 		t.Fatalf("store %s's interest in %s: %v", sessionID, topic, err)
 	}
-	if err := rig.deps.consumers.consumers.UpdateFilter(context.Background(), sessionID, sessionConsumerFilter(sessionID, []string{topic})); err != nil {
+	if err := rig.deps.consumers.consumers.UpdateFilter(context.Background(), sessionID, rig.deps.consumers.sessionConsumerFilter(sessionID, []string{topic})); err != nil {
 		t.Fatalf("set the filter of %s's consumer: %v", sessionID, err)
 	}
 }

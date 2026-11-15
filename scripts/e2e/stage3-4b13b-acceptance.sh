@@ -250,10 +250,7 @@ start_dispatch() {
 }
 
 # The one difference from Stage 3's configuration: admission_cap 5, for the five issues this lane
-# runs at once. Five is this lane's peak under
-# the slot rule of dispatch://INFRA-2560, where an issue holds one of the cap's slots from the
-# moment the daemon starts it until its work is past its review — accepting, retro and merging
-# hold none — or until it is done or Dispatch takes it out of the workflow. Its
+# runs at once. Five is this lane's peak under the slot rule (root AGENTS.md, "Admission"). Its
 # three roots hold a row each from their admission on, through the wait on the person at their
 # gates and on to their reviews, and the two children of root 1
 # run beside them at rerun-a-closed-child, where all three roots are still short of their
@@ -1089,13 +1086,14 @@ send_agent "$root1" merger "Acceptance merge operation: merge pull request #${pr
 await_merger_merge "$repo" "${pr_of[$root1]}"
 # The message the merger's own --subject and --body wrote: the pull request's title and number
 # alone. GitHub's default squash message joins every commit message of the branch, which would put
-# this tree's Dispatch key, its Omp-Session trailers and its skip-checks lines on the base.
+# this tree's Dispatch key, its Omp-Session and Legion-Role trailers and its skip-checks lines on the
+# base.
 merge_message=$(gh api "repos/$repo/commits/$merge_when_clean_commit" --jq .commit.message)
 printf '%s\n' "$merge_message" >"$evidence/merge-commit-message-$root1.txt"
 [ "$merge_message" = "$pr1_title (#${pr_of[$root1]})" ] ||
   soft "$repo#${pr_of[$root1]}'s squash commit message is '$merge_message', want the pull request's title and number alone"
 case "$merge_message" in
-  *"Omp-Session:"* | *"skip-checks: true"* | *"Dispatch: $root1"*)
+  *"Omp-Session:"* | *"Legion-Role:"* | *"skip-checks: true"* | *"Dispatch: $root1"*)
     soft "the squash commit message of $repo#${pr_of[$root1]} carries the branch's own commit messages: $merge_message" ;;
 esac
 # The merge closes the issue, and its architect is told no pr-merged: nothing of $root1's tree is

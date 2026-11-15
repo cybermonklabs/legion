@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -79,12 +78,36 @@ func (s *Service) takePreload(room string) (persistence.LoadResult, admissionRen
 // repair state rather than as a dropped connection to retry.
 const documentSchemaCloseCode = contracts.DocumentSchemaCloseCode
 
+// documentNewerContentCloseCode closes a document websocket whose room holds an element this
+// build does not know (DOCUMENT_NEWER_CONTENT_CLOSE_CODE in packages/contracts). A newer build
+// wrote it while two builds serve one database, and a browser editor would drop it and write the
+// result back. In the pinned @hocuspocus/provider 2.15, onClose
+// (packages/dispatch/node_modules/@hocuspocus/provider/src/HocuspocusProviderWebsocket.ts:483-545)
+// stops reconnecting only on 4401 and 1009, which set shouldConnect to false, and on 4403, where
+// it returns before it reconnects unless the provider is quiet. A socket closed before any message
+// rejects its connection attempt, which the provider retries with its backoff (:265-288). So it
+// reconnects on this code, and a later attempt can reach a build that reads the document.
+const documentNewerContentCloseCode = contracts.DocumentNewerContentCloseCode
+
 // refuseOutsideSchema completes the upgrade only to close it with documentSchemaCloseCode before
 // anything of the document is sent: a browser reads a close code, never the status of a refused
-// upgrade. The zero upgrader keeps the same-origin rule ygo's own upgrade applies with no
-// AllowedOrigins configured.
+// upgrade.
 func refuseOutsideSchema(w http.ResponseWriter, r *http.Request, room string, cause error) {
 	slog.Warn("dispatch: refuse a document socket outside Proof schema; a replacement from markdown repairs it", "room", room, "error", cause)
+	closeRefusedSocket(w, r, documentSchemaCloseCode, contracts.DocumentSchemaCloseReason)
+}
+
+// refuseNewerContent completes the upgrade only to close it with documentNewerContentCloseCode
+// before anything of the document is sent.
+func refuseNewerContent(w http.ResponseWriter, r *http.Request, room string, cause error) {
+	slog.Warn("dispatch: refuse a document socket holding an element this build cannot read; the provider reconnects", "room", room, "error", cause)
+	closeRefusedSocket(w, r, documentNewerContentCloseCode, contracts.DocumentNewerContentCloseReason)
+}
+
+// closeRefusedSocket completes the upgrade only to close it with code and reason. The zero
+// upgrader keeps the same-origin rule ygo's own upgrade applies with no AllowedOrigins
+// configured.
+func closeRefusedSocket(w http.ResponseWriter, r *http.Request, code int, reason string) {
 	var upgrader gws.Upgrader
 	connection, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -92,7 +115,7 @@ func refuseOutsideSchema(w http.ResponseWriter, r *http.Request, room string, ca
 	}
 	defer connection.Close()
 	deadline := time.Now().Add(time.Second)
-	if err := connection.WriteControl(gws.CloseMessage, gws.FormatCloseMessage(documentSchemaCloseCode, contracts.DocumentSchemaCloseReason), deadline); err != nil {
+	if err := connection.WriteControl(gws.CloseMessage, gws.FormatCloseMessage(code, reason), deadline); err != nil {
 		return
 	}
 	// The client's close in reply completes the handshake; whatever it sent before that is
@@ -188,8 +211,15 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	connection := &connectionState{actor: actor, issue: issue}
+	// The socket's admission lives on a request context of its own: the answer to the Hocuspocus
+	// token this socket sends is that admission and no other's (authorizeSchemaVersion), since two
+	// sockets of one room can present one token, and cancelling that context with errSchemaRevoked
+	// is how a re-check closes the socket (RunSchemaAdmission).
+	ctx, cancel := context.WithCancelCause(r.Context())
+	defer cancel(nil)
+	connection := &connectionState{actor: actor, issue: issue, admission: &schemaAdmission{cancel: cancel}}
 	defer func() {
+		s.schemaAdmissions.remove(connection.admission)
 		s.releaseRoom(room)
 		if connection.added {
 			s.removeConnection(connection.room, connection.id)
@@ -202,7 +232,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.afterSocketIssueRead != nil {
 		s.afterSocketIssueRead(room)
 	}
-	withdraw, err := s.admitDocument(r.Context(), room)
+	withdraw, documentSince, err := s.admitDocument(ctx, room)
+	if errors.Is(err, ErrDocNewerContent) {
+		refuseNewerContent(w, r, room, err)
+		return
+	}
 	if errors.Is(err, ErrDocOutsideSchema) {
 		refuseOutsideSchema(w, r, room, err)
 		return
@@ -212,7 +246,8 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer withdraw()
-	ctx := context.WithValue(r.Context(), connectionContextKey{}, connection)
+	connection.admission.documentSince = documentSince
+	ctx = context.WithValue(ctx, connectionContextKey{}, connection)
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
 	// frames (awareness_limit.go).
 	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room}, r.WithContext(ctx))
@@ -284,43 +319,51 @@ func (c *processHeaderConn) Write(p []byte) (int, error) {
 	return written, err
 }
 
-// admitDocument decides whether a socket may join room's document. A browser editor normalizes a
-// tree it cannot represent and writes the result back, so no connection - a first one, or a
-// provider's reconnect - joins a room outside the Proof schema until it is replaced from markdown.
-// An ask holding blocks off its content rule is inside it: the editor keeps such an ask rather
-// than normalizing it away, and settlement marks it `invalid`. The server decides it for every
-// client at once, by the same document and rendering `/text` answers with (readDocument), so a
-// socket is refused exactly when that read is ErrDocOutsideSchema. A resident room's update
-// observer has rendered the room after every update it took, as that read renders it, and recorded
-// the verdict (residentVerdict), which is taken as it stands; only a room with no verdict - not
-// resident, or with a replica that lost the room's state - is read and rendered here. A cold
-// socket offers the state it read, and what it rendered of it, to the room's load (offerPreload),
-// and withdraw is what the socket's end runs to take that offer back.
-func (s *Service) admitDocument(ctx context.Context, room string) (withdraw func(), err error) {
-	switch s.residentVerdict(room) {
-	case verdictInsideSchema:
-		return func() {}, nil
-	case verdictOutsideSchema:
-		return nil, ErrDocOutsideSchema
+// admitDocument decides whether a socket may join room's document, and reports the document's own
+// schema since (pmdoc.DocumentSince), which is what the page's admission is judged against
+// (schemaFleet.admits). A browser editor normalizes a tree it cannot represent and writes the
+// result back, so no connection - a first one, or a provider's reconnect - joins a room outside
+// the Proof schema until it is replaced from markdown, nor one holding an element this build does
+// not know, which a newer build wrote. An ask holding blocks off its content rule is inside the
+// schema: the editor keeps such an ask rather than normalizing it away, and settlement marks it
+// `invalid`. The server decides it for every client at once, by the same document and rendering
+// `/text` answers with (readDocument), so a socket is refused exactly when that read is
+// ErrDocOutsideSchema or ErrDocNewerContent.
+//
+// A resident room's update observer has rendered the room after every update it took, as that
+// read renders it, and recorded the verdict (residentVerdict), which is taken as it stands: a
+// room it found inside the schema renders nothing here, and one it found outside is refused
+// without a read. Only a room with no verdict - not resident, or with a replica that lost the
+// room's state - is rendered here. The tree is read either way, since the document's since is
+// read off it and no rendering records it; for a resident room that read holds the room's own
+// document and makes no query of the stored history (heldTree). A cold socket offers the state it
+// read, and what it rendered of it, to the room's load (offerPreload), and withdraw is what the
+// socket's end runs to take that offer back.
+func (s *Service) admitDocument(ctx context.Context, room string) (withdraw func(), documentSince int, err error) {
+	verdict := s.residentVerdict(room)
+	if verdict == verdictOutsideSchema {
+		return nil, 0, ErrDocOutsideSchema
 	}
 	tree, loaded, err := s.loadTree(ctx, room)
 	rendered := admissionRendering{tree: tree}
-	if err == nil && tree != nil {
+	if err == nil && tree != nil && verdict != verdictInsideSchema {
 		if s.admissionRendered != nil {
 			s.admissionRendered(room)
 		}
 		var renderErr error
-		if rendered.rendering, renderErr = replicaRenderingOf(tree); errors.Is(renderErr, ErrDocOutsideSchema) {
+		rendered.rendering, renderErr = replicaRenderingOf(tree)
+		if errors.Is(renderErr, ErrDocOutsideSchema) || errors.Is(renderErr, ErrDocNewerContent) {
 			err = renderErr
 		}
 	}
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
+	documentSince = pmdoc.DocumentSince(tree)
 	if loaded == nil {
-		return func() {}, nil
+		return func() {}, documentSince, nil
 	}
-	return s.offerPreload(room, loaded, rendered), nil
+	return s.offerPreload(room, loaded, rendered), documentSince, nil
 }
 
 // offerPreload offers loaded, the durable state a cold socket's admission read for room, and
@@ -355,23 +398,33 @@ func (s *Service) offerPreload(room string, loaded *persistence.LoadResult, rend
 	return func() { s.preloads.CompareAndDelete(room, preload) }
 }
 
-// authorize is ygo's authorization of a document socket ServeHTTP admitted. It registers the
-// browser as the caller ServeHTTP resolved, and takes the issue read ServeHTTP made, so it resolves
-// and reads neither again. The connection is counted already: ServeHTTP took its place under the
-// connection cap (reserveConnection) before it loaded anything, so registering it counts nothing
-// more, and no cap refuses it here, where a refusal would reach the browser as ygo's 401, which
-// says it is not signed in. The issue is closed for the socket when that read says so or the
-// room's state records it closed: ServeHTTP's hold on the state (holdForAdmission) is where a close
-// made while the socket loaded its document is recorded (setRoomIssueOpen), so such a socket is
-// admitted read-only, as one opened after the close is. A closed issue, or a client schema version
-// other than the server's, admits the socket read-only; a request no admission read the issue for
-// is refused, as is a socket to a failed room.
+// authorize is ygo's authorization of a document socket ServeHTTP admitted, read-only unless its
+// page may write (schemaFleet.admits). It registers the browser as the caller ServeHTTP resolved,
+// and takes the issue read ServeHTTP made, so it resolves and reads neither again. The connection
+// is counted already: ServeHTTP took its place under the connection cap (reserveConnection)
+// before it loaded anything, so registering it counts nothing more, and no cap refuses it here,
+// where a refusal would reach the browser as ygo's 401, which says it is not signed in. The issue
+// is closed for the socket when that read says so or the room's state records it closed:
+// ServeHTTP's hold on the state (holdForAdmission) is where a close made while the socket loaded
+// its document is recorded (setRoomIssueOpen), so such a socket is admitted read-only, as one
+// opened after the close is. A closed issue, or a page the live fleet does not admit, admits the
+// socket read-only; a request no admission read the issue for is refused, as is a socket to a
+// failed room.
+//
+// It decides the admission ServeHTTP put on the socket's context and records it with the service,
+// so a re-check can close the socket again (schemaAdmissions); the answer to the socket's token
+// is that same admission (authorizeSchemaVersion).
 func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) {
 	connection, _ := r.Context().Value(connectionContextKey{}).(*connectionState)
 	if connection == nil {
 		return websocket.ConnectionConfig{}, false
 	}
 	room := socketRoom(r)
+	fleet, err := readSchemaFleet(r.Context(), s.queryFrom(r.Context()))
+	if err != nil {
+		slog.Warn("dispatch: refuse a document socket: read the live server processes", "room", room, "error", err)
+		return websocket.ConnectionConfig{}, false
+	}
 	state := s.lockState(room)
 	if state.failed != nil {
 		s.unlockState(room, state)
@@ -384,6 +437,12 @@ func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) 
 	connection.added = true
 	s.registerConnectionLocked(state, connection.id, connection.actor)
 	s.unlockState(room, state)
+	query := r.URL.Query()
+	admission := connection.admission
+	admission.key = schemaAdmissionKey{room: room, token: query.Get("schema_version")}
+	admission.page = schemaPageOf(query)
+	admission.writable = open && fleet.admits(admission.page, admission.documentSince)
+	s.schemaAdmissions.admit(admission)
 	// A reader joining a room already resident here asks the other processes for their readers'
 	// awareness, so their cursors reach it at once; a room this join has yet to load asks once its
 	// load finishes (awarenessRelay.RoomActivated), and the connection registered above is what
@@ -391,32 +450,25 @@ func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) 
 	if s.srv.GetDoc(room) != nil {
 		s.awarenessRelay.query(room)
 	}
-	return websocket.ConnectionConfig{
-		ReadOnly: schemaReadOnly(open, r.URL.Query().Get("schema_version")),
-	}, true
+	return websocket.ConnectionConfig{ReadOnly: !admission.writable}, true
 }
 
-func schemaReadOnly(open bool, clientSchemaVersion string) bool {
-	return !open || clientSchemaVersion != fmt.Sprintf("%d", pmdoc.SchemaVersion())
-}
-
-// authorizeSchemaVersion confirms the existing HTTP-authorized connection's schema admission
-// through Hocuspocus's authenticated scope, which is the provider's client-visible signal. ygo
-// calls it with the room and the client's token alone. The issue's state is what room's state
-// records, which is at least as fresh as the read the connection's own admission made (authorize
-// recorded it there); only a room that records none reads the issue.
-func (s *Service) authorizeSchemaVersion(room, clientSchemaVersion string) (websocket.ConnectionConfig, error) {
-	closed, recorded := s.recordedIssueClosed(room)
-	if !recorded {
-		ctx := context.Background()
-		issue, err := s.readIssue(ctx, s.queryFrom(ctx), room)
-		if err != nil {
-			return websocket.ConnectionConfig{}, err
-		}
-		s.recordIssueRead(room, issue)
-		closed = !issue.open
+// authorizeSchemaVersion is ygo's OnTokenAuthContext: the answer to the Hocuspocus token a
+// socket's provider sends once it opens, which the provider takes as the socket's scope and ygo as
+// its read-only state (sjawhar/ygo provider/websocket/peer.go, handleAuth). ctx is the request
+// context ServeHTTP served that socket on, so the answer is the admission that socket carries and
+// no other's: the page's token is its schema_version alone - a server that predates the fleet
+// columns compares the whole token with its own version - so two sockets of one room can send one
+// token, and neither the key nor the order they arrive in tells them apart. It is read-write only
+// when this socket was admitted writable, no re-check has revoked it, and the room and token are
+// the ones it was admitted with (schemaAdmissions.writable); read-only in every other case. It
+// never refuses: a refusal closes the socket with 4401, after which the provider never reconnects.
+func (s *Service) authorizeSchemaVersion(ctx context.Context, room, token string) (websocket.ConnectionConfig, error) {
+	var admission *schemaAdmission
+	if connection, ok := ctx.Value(connectionContextKey{}).(*connectionState); ok {
+		admission = connection.admission
 	}
-	return websocket.ConnectionConfig{ReadOnly: schemaReadOnly(!closed, clientSchemaVersion)}, nil
+	return websocket.ConnectionConfig{ReadOnly: !s.schemaAdmissions.writable(admission, room, token)}, nil
 }
 
 // requestActor is the person a document connection is: the identity service's answer, and nothing

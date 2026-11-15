@@ -1,8 +1,13 @@
-// Package architecture parses, validates, and projects a project's
-// architecture model: every *.md file in .dispatch/architecture/ at one commit
-// of the configured source repository. Parse is pure — no database, no
-// network; the importer owns fetching and projection.
-package architecture
+// Package notes holds the rules of one architecture note set: every *.md
+// file of .dispatch/architecture/ at one commit. IsNote, with GitKind or
+// FileKind, decides which entries of the directory are notes, CheckSize
+// bounds a note, and Parse validates the set and returns its model. IsNote
+// and CheckSize are the one note rule and bound that both the Dispatch
+// server's GitHub reader (githubapp's Dir and DirFiles) and the
+// architecture-check command (cmd/architecture-check) call. The package is
+// pure, with no database and no network; the architecture package's importer
+// owns fetching and projection.
+package notes
 
 import (
 	"errors"

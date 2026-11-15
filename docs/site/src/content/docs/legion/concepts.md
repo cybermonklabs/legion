@@ -111,7 +111,7 @@ of its own, inside the same tree.
 **The children do the work first.** An issue starts no phase of its own while Dispatch shows an
 open child under it, a child the architect has filed and not released yet included; the architect
 is told so once, with a notice naming each open child and the Dispatch status that holds it. A
-parent starts its own first phase once the last of them has left the workflow, and its pull
+parent's own first phase can start once the last of them has left the workflow, and its pull
 request then builds on a base that already carries their merges. For the same reason the daemon
 refuses a parent's acceptance, and a root's close, while an issue beneath it is still in the
 workflow.
@@ -159,15 +159,47 @@ a labelled `todo` root takes its place in that line in the project board's order
 An issue takes a slot when the daemon starts it — a root at its admission, which starts its
 architect, a child at the start of its first phase. An issue holds one of the cap's slots from the
 moment the daemon starts it until its work is past its review — `accepting`, `retro` and
-`merging` hold none — or until it is done or Dispatch takes it out of the workflow.
-So it holds its slot through every wait up to its review as well: on a blocker, on its own
-children, on a person, and on the review itself. Past the review the issue writes no more of the
-change, so its acceptance, its retro and its merge run on no slot at all. An issue holding a slot
-starts its next phase whatever the cap says, and so does an issue past its review, which holds
-none. An issue that holds none and is owed a start, a child its architect has just released among
-them, waits in line while the project stands at the cap. A slot stops nothing either way: every
-worker of a waiting issue stays live in the issue's pod and answers questions until the issue
-closes.
+`merging` hold none — or until it is done or Dispatch takes it out of the workflow, except while
+it waits on another issue before that point.
+So it holds its slot through the other waits up to its review: on a person, and on the review
+itself. Past the review the issue writes no more of the change, so its acceptance, its retro and
+its merge run on no slot at all, and an issue there that waits on another issue has no slot to
+give back.
+
+A wait on another issue before the review is the exception: a started issue that Dispatch shows
+blocked by an issue that is not `done`, or whose own first phase waits on an open child under
+it, holds no admission slot.
+The daemon takes its slot back and stands it in the
+waiting line among the issues whose work came back, oldest first.
+Once the daemon has seen the wait end, the issue takes the next free slot by itself,
+ahead of every issue that has not started; under a full cap it waits for a free slot.
+The daemon sees a blocker in the same project close as a live event.
+It sees a blocker in another project close only at its periodic turn's re-read:
+the first turn comes about a minute after the daemon starts,
+then one every `controller_wake_interval_seconds`, an hour by default.
+Three started issues keep their slot although a wait
+names them: a root in `awaiting_person`; a root at `admitted` whose design gate has never
+opened, whose architect is writing the design; and a root that arrived from another tree
+carrying the row it held there, which the line starts whatever its links say.
+Such a wait is a wait by design, in any project, when nothing in the issue's own tree moves it:
+a `blocked_by` link to an issue that is not `done`, in another project or in this one, run by a
+Legion tree or by none, or an open child the daemon has released into the tree and runs.
+A wait on an open child the architect filed and has not released is not one, because releasing
+that child is the tree's own work.
+
+An issue holding a slot starts its next phase whatever the cap says, and so does an issue past
+its review, which holds none. An issue that holds none and is owed a start, a child its architect
+has just released among them, waits in line while the project stands at the cap.
+A slot stops
+nothing either way: every worker of a waiting issue stays live in the issue's pod and answers
+questions until the issue closes, and giving a slot back for a wait stops nothing either — no
+claim is suspended, no session ends, no phase moves, and no Dispatch status is written.
+The worker at work goes on, but every start of a phase worker of the issue up to its review, its
+next phase's or a restart of its current one, waits until the issue holds a slot again; a start of
+a phase past the review (`retro`, `merging`) takes no slot and runs at once.
+`legion state` names such an issue under `admission.waiting` and under `admission.blocked` and
+never under `admission.active`, which is how you tell it from an issue a person parked, which is
+in none of the three.
 
 The line has two parts, and `legion state` prints them in the order the daemon promotes them:
 the issues whose work came back, oldest first by the moment it came back, and then the issues
@@ -183,8 +215,7 @@ work came back, or `rootRank`, `ownRank` and `rootKey` for an issue that has not
 `blocked` and `unlisted` (the record holds it in the workflow and no list places it), with a
 `reason` sentence. An issue holding an admission slot carries no `why` unless it
 also stands in `admission.waiting` or `admission.blocked`, or a stranded claim names it: an
-answered root reads `waiting`, a root whose open children hold its own first phase reads
-`blocked`, and an issue at work whose worker runs, one `held` and a root whose ask a person has
+answered root reads `waiting`, and an issue at work whose worker runs, one `held` and a root whose ask a person has
 not answered yet, which `waitingOn` answers for, read nothing. Neither does an issue the record
 does not hold in the workflow. So the daemon says why an issue stands where it does, and nobody has to
 work it out from the order.
@@ -348,12 +379,29 @@ Legion uses GitHub's own review mechanisms rather than labels:
   stops writing there and leaves whatever it has uncommitted. Only the implementer's phase entry
   is raised, so a completion the tester, the reviewer or the merger sends for the phase it lost
   still names the entry that phase gave it and is refused `HANDOFF_NOT_CURRENT_PHASE`;
-  `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again. From retro
-  the implementer keeps its turn, is told the same way, and is handed the implementing task after
-  it; a retro completion that reaches the daemon after the move reports the entry retro handed it
-  while its phases row is on the implementing one, so it is refused `HANDOFF_STALE_ENTRY`;
-  the implementer merges the base forward in the implementing task's own turn and completes that
-  work with a handoff of its own, never retro's commit.
+  `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again, and only
+  while the issue stands in that phase. A completion of another entry than the role's phases row
+  names, from a role whose phase the issue is no longer in, is answered
+  `HANDOFF_NOT_CURRENT_PHASE` as well, before anything is recorded: the task of that entry was
+  queued for the phase the issue has left, so the daemon drops it unsent and owes the claim none.
+  One completion behind its entry goes on all the same: a verdict on the head the record holds,
+  of a phase that ends with the role's own handoff record. The phase was entered again at that
+  head, so the work the new entry's task asks for is the work that completion reports; taking it
+  moves the issue on, so the same completion sent again, or one naming a newer record, is
+  answered `HANDOFF_NOT_CURRENT_PHASE`. A completion at another commit is refused, as the
+  tester's verdict on the head before the merge forward is; so is one that names no commit, and
+  so is any while the record holds no pull request for the issue. A completion is refused
+  whatever head it names when the entry the phase stands on was raised by a move back, which asks
+  for that phase's work to be done again. From retro the implementer keeps its turn, is told the
+  same way, and is handed the implementing task after it; a retro
+  completion that reaches the daemon after the move reports the entry retro handed it while its
+  phases row is on the implementing one. The issue is in `implementing` by then, so that
+  completion goes as the implementer's completion of implementing, naming the newest
+  `implement` record and the head that record names, which can be the head the record holds;
+  what refuses it `HANDOFF_STALE_ENTRY` is the move, since retro back to `implementing` is a
+  move back and raised the entry the phase stands on. The implementer merges the base forward in
+  the implementing task's own turn and completes that work with a handoff of its own, never
+  retro's commit.
 - **An implementer that completes with no pull request** is refused (`HANDOFF_NO_PULL_REQUEST`)
   until one is open on its branch, and the daemon's read of that issue tells its architect
   `pull-request-missing`, once per handoff commit, so an issue never waits in `implementing`
@@ -405,8 +453,8 @@ that lands under the merger is refused instead of merged unseen.
 The merge carries a message the merger writes itself,
 `--subject '<pull request title> (#<n>)' --body ''`. GitHub's own default
 (`squash_merge_commit_message` of `COMMIT_MESSAGES`) joins every commit message of the branch into
-the squash commit, which would put the tree's Dispatch keys and its `Omp-Session:` trailers on your
-default branch. `enqueuePullRequest` can carry no message, so on a
+the squash commit, which would put the tree's Dispatch keys and its `Omp-Session:` and
+`Legion-Role:` trailers on your default branch. `enqueuePullRequest` can carry no message, so on a
 merge-queue base whose repository setting still joins them the merger enqueues nothing and tells
 the architect: only a person can change that setting, to `PR_BODY` or `BLANK`.
 
@@ -438,9 +486,12 @@ it.
 
 The merge closes the issue: the daemon reads the merged pull request, writes `done`, and nothing is
 left of the issue to develop. A root whose tree still runs is the one issue the merge does not
-close at once: the daemon records the merge, the root stays in `merging` with its workers
-and its admission slot while its children reach their own merges, its architect is told once which
-issues the close waits for, and the close comes when the last of them is done or parked. What is
+close at once: the daemon records the merge, and the root stays in `merging` with its workers
+while its children reach their own merges.
+It stands there on no admission slot, as every phase past the review does, so no wait of it
+changes the cap.
+Its architect is told once which issues the close waits for,
+and the close comes when the last of them is done or parked. What is
 left after the close is to see the change work in production, and that is
 work after the close, where your project asks for it: `projects.<KEY>.production_check` in
 `legion.yaml` takes `off` or `tester` and is `tester` by default, so the tester is handed a

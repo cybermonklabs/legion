@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -65,17 +66,26 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 			publisher := &outboxPublisher{}
 			runner, sup, pool := conflictRunner(t, tc.from, tc.status, tc.uncompleted, publisher)
 			implementer := startedClaim(t, sup, claim.RoleImplementer)
+			// The premise: the issue holds the row its phase keeps and no other, so a row in
+			// merging or in retro, which stand past the review, is the admission pass's grant.
+			if holds, keeps := slotted(t, pool, "LEGION-208"), tc.from != phase.Merging && tc.from != phase.Retro; holds != keeps {
+				t.Fatalf("LEGION-208 in %s holds a slot = %t before the conflict, want %t", tc.from, holds, keeps)
+			}
 
 			applyTheConflict(t, ctx, pool, runner)
+			if !slotted(t, pool, "LEGION-208") {
+				t.Fatalf("LEGION-208 holds no slot after the conflict: the admission pass of that fact grants the implementing start its row")
+			}
 			if err := runner.RunOnce(ctx); err != nil {
 				t.Fatalf("run the conflict's effects: %v", err)
 			}
 
-			// The start ran in the same drain, and the implementer holds the conflict task.
+			// The start ran in the same drain, on the row the fact's admission pass holds or
+			// granted, and the implementer holds the conflict task.
 			implementer.Wait()
 			held := implementer.Claim()
 			if held.Pending == nil || !strings.Contains(held.Pending.Task, "Phase: implementing.") || !strings.Contains(held.Pending.Task, why) {
-				t.Fatalf("the implementer is %s holding %+v, want the implementing task naming the conflict: its start waits for nothing", held.State, held.Pending)
+				t.Fatalf("the implementer is %s holding %+v, want the implementing task naming the conflict: its start waits for nothing once its slot is held", held.State, held.Pending)
 			}
 			topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", tc.role))
 			var told []outboxPublish
@@ -184,8 +194,14 @@ func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
 
 // conflictRunner is an outbox runner over an isolated database holding LEGION-208 in from, with the
 // pull request about to be read as conflicting and the phase rows of the roles that worked it, wired to
-// the workflow engine as production wires it: a fact applied against the pool queues its rows, and
-// one drain runs them.
+// the workflow engine and the admission pass as production wires them: a fact applied against the
+// pool queues its rows, and one drain runs them.
+//
+// The issue holds the admission slot its phase keeps (record.KeepsSlot): a row in testing and in
+// reviewing, and none in merging or in retro, which stand past the review. The conflict sends the
+// work back to implementing, whose start waits for a slot (workflow.StartOrOwe), and the admission
+// pass that runs on the same fact grants the issue that slot where it holds none, so the start is
+// claimable when the drain runs.
 func conflictRunner(t *testing.T, from phase.Phase, status string, uncompleted bool, publisher notify.Publisher) (*outbox, *supervisor, *store.Pool) {
 	t.Helper()
 	ctx := context.Background()
@@ -194,7 +210,9 @@ func conflictRunner(t *testing.T, from phase.Phase, status string, uncompleted b
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
 		Tree: "LEGION-208", Title: "Workflow", Phase: from, Generation: 1, Status: status, Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, issue)
-	holdSlot(t, pool, issue.Key)
+	if record.KeepsSlot(issue) {
+		holdSlot(t, pool, issue.Key)
+	}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		if err := records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: issue.Key, Repo: "acme/widgets",
 			Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1", HeadUpdatedAt: time.Now(), Failing: []string{},
@@ -221,12 +239,13 @@ func conflictRunner(t *testing.T, from phase.Phase, status string, uncompleted b
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
+	admission := admit.New(records, engine, 2, "LEGION", quietLogger())
 	runner := &outbox{
 		dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, issue.Tree),
 		tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: issue.Key, Status: status}}, notices: publisher,
 		// The drain runs an hour after the rows the red writes, so every one of them is due.
-		handlers: []intake.Handler{engine}, now: func() time.Time { return time.Now().Add(time.Hour) }, log: quietLogger(),
+		handlers: []intake.Handler{engine, admission}, now: func() time.Time { return time.Now().Add(time.Hour) }, log: quietLogger(),
 	}
 	return runner, sup, pool
 }
@@ -253,4 +272,14 @@ func applyTheConflict(t *testing.T, ctx context.Context, pool *store.Pool, runne
 	if err != nil || result.Refusal != nil {
 		t.Fatalf("apply the conflicting head = %+v, %v", result, err)
 	}
+}
+
+// slotted says whether an admission slot row names issue.
+func slotted(t *testing.T, pool *store.Pool, issue string) bool {
+	t.Helper()
+	var holds bool
+	if err := pool.QueryRow(context.Background(), "select exists(select 1 from slots where issue = $1)", issue).Scan(&holds); err != nil {
+		t.Fatalf("read the slot of %s: %v", issue, err)
+	}
+	return holds
 }

@@ -117,6 +117,39 @@ export function ageOf(iso: string): string {
   return days < 1 ? "Today" : days < 7 ? "This week" : days < 30 ? "This month" : "Older";
 }
 
+/** `created_at` and `created_by` as this build's pages read them while a release rolls out: a
+ *  Dispatch process of the release before the one that added the two members answers with
+ *  neither, and the table still has to draw the row ("Two builds at once",
+ *  `packages/envoy/cmd/dispatch/README.md`). A parameter of this type takes an `IssueSummary`
+ *  as it is, so no reader of the two members needs a cast. */
+export interface CreatedMembers {
+  readonly created_at?: string;
+  readonly created_by?: Actor | null;
+}
+/** When the issue was created, or undefined from a server of the release before the one that
+ *  added `created_at`. Every caller branches on it: `compareTimestamps` and `<Timestamp>` both
+ *  need a time that parses. Without that branch, `IssuesTable.test.tsx`'s "a row a server sends
+ *  without created_by or created_at renders, with no author and no time" fails. */
+export const createdAt = (issue: CreatedMembers): string | undefined => issue.created_at;
+/** Who created the issue, or null: both a server that says nobody did and one of the release
+ *  before the one that added `created_by`, which says nothing at all. Either reads as Unknown,
+ *  and without this, `IssuesTable.test.tsx`'s "a row a server sends without created_by or
+ *  created_at renders, with no author and no time" fails in `AgentName`. */
+export const createdBy = (issue: CreatedMembers): Actor | null => issue.created_by ?? null;
+/** Orders two issues by when they were created, keeping one a server of the release before
+ *  `created_at` sent without a time after every issue that carries one, rather than handing an
+ *  absent value to `compareTimestamps`, which throws on anything it cannot parse. Without it,
+ *  `IssuesTable.test.tsx`'s "the Legion queue puts an issue with no created_at after one of the
+ *  same rank that has one" fails. */
+export function compareCreated(left: CreatedMembers, right: CreatedMembers): number {
+  const a = createdAt(left);
+  const b = createdAt(right);
+  if (a === undefined || b === undefined) {
+    return a === b ? 0 : a === undefined ? 1 : -1;
+  }
+  return compareTimestamps(a, b);
+}
+
 export const COLUMNS: readonly ColumnSpec[] = [
   { id: "select", size: 44, min: 44, pinned: true, sortable: false },
   {
@@ -213,7 +246,18 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "created",
     size: 120,
     min: 148,
-    filter: one((item) => ageOf(item.issue.created_at), { order: AGES }),
+    // A server of the release before the one that added `created_at` sends none, so the filter
+    // asks `createdAt` and files a row without a time under Older, the bucket an issue old
+    // enough to come from that release would reach anyway. `AGES` keeps its four values. No row
+    // of the suite fails without this one, since `ageOf` buckets an unreadable time as Older
+    // through `NaN`; it says the case rather than resting on that.
+    filter: one(
+      (item) => {
+        const at = createdAt(item.issue);
+        return at === undefined ? "Older" : ageOf(at);
+      },
+      { order: AGES }
+    ),
   },
   {
     id: "updated",
@@ -255,7 +299,8 @@ const phoneMin = (id: ColumnId): number => COMPACT_COLUMN_MIN[id] ?? COLUMN_MIN[
  * first; on a phone, where the key and the title are what identify a row, Select, Key and Title
  * stay pinned within 85% of the box, Key at its phone width and Title taking what is left down
  * to its phone minimum, so an edge of the next column shows the table scrolls sideways. Every
- * saved `dispatch.project-table.<project>` record was written for these columns.
+ * saved `dispatch.project-table.<key>` record was written for these columns, whether its key is
+ * a project or the one key every table scoped to a priority shares (`IssuesTable`).
  */
 export const ISSUE_TABLE_COLUMNS: LayoutColumns = {
   ids: COLUMNS.map((column) => column.id),
@@ -281,6 +326,10 @@ export interface View {
   search: string;
   page: number;
   pageSize: number;
+  /** The issues the reader picked elsewhere, which the table shows alone; `null` is every row.
+   *  It is the address's own narrowing (`readSelection`), not one of the table's controls, so
+   *  it takes no `stateKey` prefix: one page shows one selection however many tables it draws. */
+  selection: IssueSelection | null;
 }
 export const defaultView: View = {
   sorting: [{ id: "queue", desc: false }],
@@ -289,6 +338,7 @@ export const defaultView: View = {
   search: "",
   page: 0,
   pageSize: 50,
+  selection: null,
 };
 const hasLabel = (issue: Pick<IssueSummary, "labels">, label: string) =>
   (issue.labels ?? []).some((value) => value.toLowerCase() === label);
@@ -308,7 +358,11 @@ export function buildItems(
   const byKey = new Map<string, EpicAncestor>(
     [...ancestors, ...issues].map((issue) => [issue.key, issue])
   );
-  // Rank's alphabet is byte-ordered, not locale-ordered.
+  // Rank's alphabet is byte-ordered, not locale-ordered. Two issues of one rank break the tie
+  // by `compareCreated`, not `compareTimestamps`: a server of the release before the one that
+  // added `created_at` sends none, and that absent time would throw there, which is what
+  // `IssuesTable.test.tsx`'s "the Legion queue puts an issue with no created_at after one of
+  // the same rank that has one" shows.
   const queue = issues
     .filter((issue) => !isEpic(issue) && isQueued(issue))
     .sort((a, b) =>
@@ -316,7 +370,7 @@ export function buildItems(
         ? -1
         : a.rank > b.rank
           ? 1
-          : compareTimestamps(a.created_at, b.created_at) || a.key.localeCompare(b.key)
+          : compareCreated(a, b) || a.key.localeCompare(b.key)
     );
   const positions = new Map(queue.map((issue, index) => [issue.key, index + 1]));
   return issues.map((issue) => {
@@ -481,14 +535,70 @@ const columnForParam: ReadonlyMap<string, string> = new Map(
   COLUMNS.map((column) => [paramFor(column.id), column.id])
 );
 const defaultSort = defaultView.sorting.map(({ id, desc }) => `${desc ? "-" : ""}${id}`).join(",");
-export function readUrl(params: URLSearchParams): View {
-  const sorting = (params.get("sort") ?? "")
+/** What a narrowing that names itself in no other way is called. */
+const DEFAULT_SELECTION_LABEL = "Selected issues";
+
+/** The issues behind a number the reader clicked elsewhere, as the URL holds them: the keys,
+ *  and the words naming them. */
+export interface IssueSelection {
+  readonly keys: ReadonlySet<string>;
+  readonly label: string;
+}
+export function readSelection(params: URLSearchParams): IssueSelection | null {
+  const only = params.get("only");
+  if (only === null) return null;
+  return {
+    keys: new Set(only.split(",").filter(Boolean)),
+    label: params.get("onlyLabel") ?? DEFAULT_SELECTION_LABEL,
+  };
+}
+/** Narrows the table to these issues. They are mostly finished ones, so the Status filter is
+ *  lifted (closed issues load) and the page goes back to the first; other filters stay. */
+export function selectIssues(
+  params: URLSearchParams,
+  keys: readonly string[],
+  label: string
+): URLSearchParams {
+  const next = new URLSearchParams(params);
+  next.set("only", keys.join(","));
+  next.set("onlyLabel", label);
+  next.delete("status");
+  next.set("nofilter", "1");
+  next.delete("page");
+  return next;
+}
+/** Drops that narrowing, leaving every other control as it is. */
+export function clearPicked(params: URLSearchParams): URLSearchParams {
+  const next = new URLSearchParams(params);
+  next.delete("only");
+  next.delete("onlyLabel");
+  next.delete("page");
+  return next;
+}
+
+/** The address key one of this table's controls is written under: the bare name, or that name
+ *  under the prefix the table's `stateKey` gives it, so two tables on one page keep a sort, a
+ *  search, a filter set and a page each. */
+const viewKey = (name: string, stateKey: string | undefined) =>
+  stateKey === undefined ? name : `${stateKey}.${name}`;
+/** The control `key` names for this table, or `undefined` where the key is another table's: a
+ *  prefixed table reads only its own prefix, and a bare one never matches a prefixed key. */
+const viewName = (key: string, stateKey: string | undefined): string | undefined =>
+  stateKey === undefined
+    ? key
+    : key.startsWith(`${stateKey}.`)
+      ? key.slice(stateKey.length + 1)
+      : undefined;
+
+export function readUrl(params: URLSearchParams, stateKey?: string): View {
+  const key = (name: string) => viewKey(name, stateKey);
+  const sorting = (params.get(key("sort")) ?? "")
     .split(",")
     .map((part) => ({ id: part.replace(/^-/, ""), desc: part.startsWith("-") }))
     .filter(({ id }) => columnIds.includes(id));
-  const grouping = params.get("group") ?? "";
-  const filters: ColumnFiltersState = [...new Set(params.keys())].flatMap((key) => {
-    const id = columnForParam.get(key) ?? "";
+  const grouping = params.get(key("group")) ?? "";
+  const filters: ColumnFiltersState = [...new Set(params.keys())].flatMap((param) => {
+    const id = columnForParam.get(viewName(param, stateKey) ?? "") ?? "";
     const filter = columnFilterSpec(id);
     return columnIds.includes(id)
       ? [
@@ -496,9 +606,9 @@ export function readUrl(params: URLSearchParams): View {
             id,
             value:
               filter?.kind === "text"
-                ? params.get(key)
+                ? params.get(param)
                 : params
-                    .getAll(key)
+                    .getAll(param)
                     .map((value) =>
                       filter?.kind === "picks" && filter.normalize ? filter.normalize(value) : value
                     ),
@@ -508,7 +618,7 @@ export function readUrl(params: URLSearchParams): View {
   });
   // `?unclaimed=1` is the Board strip's own parameter and what shared List links carry: it picks
   // the Claimed by filter's "Nobody or lapsed", so both views read one URL.
-  if (params.get("unclaimed") === "1") {
+  if (params.get(key("unclaimed")) === "1") {
     const claim = filters.find((filter) => filter.id === "claim");
     if (claim === undefined) filters.push({ id: "claim", value: [UNCLAIMED_FACET] });
     else
@@ -516,21 +626,23 @@ export function readUrl(params: URLSearchParams): View {
         ...new Set([...(Array.isArray(claim.value) ? claim.value : []), UNCLAIMED_FACET]),
       ];
   }
-  if (!params.has("status") && !params.has("nofilter")) filters.unshift(...defaultView.filters);
-  const page = Number(params.get("page"));
-  const size = Number(params.get("size"));
+  if (!params.has(key("status")) && !params.has(key("nofilter")))
+    filters.unshift(...defaultView.filters);
+  const page = Number(params.get(key("page")));
+  const size = Number(params.get(key("size")));
   return {
     sorting:
-      params.has("sort") && params.get("sort") === ""
+      params.has(key("sort")) && params.get(key("sort")) === ""
         ? []
         : sorting.length
           ? sorting
           : defaultView.sorting,
     grouping: canGroupBy(grouping) ? [grouping] : [],
     filters,
-    search: capSearchQuery(params.get("q") ?? ""),
+    search: capSearchQuery(params.get(key("q")) ?? ""),
     page: Number.isSafeInteger(page) && page > 0 ? page - 1 : 0,
     pageSize: PAGE_SIZES.includes(size) ? size : defaultView.pageSize,
+    selection: readSelection(params),
   };
 }
 /** Whether a status pick is exactly the set the table opens with. */
@@ -539,20 +651,24 @@ function isDefaultStatus(value: unknown): boolean {
   const fallback = (defaultView.filters[0]?.value ?? []) as string[];
   return picked.length === fallback.length && fallback.every((status) => picked.includes(status));
 }
-export function writeUrl(params: URLSearchParams, state: View): URLSearchParams {
+export function writeUrl(params: URLSearchParams, state: View, stateKey?: string): URLSearchParams {
+  const key = (name: string) => viewKey(name, stateKey);
   const next = new URLSearchParams(params);
-  for (const key of [...next.keys()])
+  for (const param of [...next.keys()]) {
+    const name = viewName(param, stateKey);
     if (
-      key.startsWith("f.") ||
-      columnForParam.has(key) ||
-      ["sort", "group", "q", "page", "size", "nofilter", "unclaimed"].includes(key)
+      name !== undefined &&
+      (name.startsWith("f.") ||
+        columnForParam.has(name) ||
+        ["sort", "group", "q", "page", "size", "nofilter", "unclaimed"].includes(name))
     )
-      next.delete(key);
+      next.delete(param);
+  }
   // A control left at its default says nothing, so a shared link carries only what was changed.
   const sort = state.sorting.map(({ id, desc }) => `${desc ? "-" : ""}${id}`).join(",");
-  if (sort !== defaultSort) next.set("sort", sort);
-  if (state.grouping[0]) next.set("group", state.grouping[0]);
-  if (!state.filters.some(({ id }) => id === "status")) next.set("nofilter", "1");
+  if (sort !== defaultSort) next.set(key("sort"), sort);
+  if (state.grouping[0]) next.set(key("group"), state.grouping[0]);
+  if (!state.filters.some(({ id }) => id === "status")) next.set(key("nofilter"), "1");
   for (const filter of state.filters) {
     // The open statuses are what the table shows when nothing says otherwise, so a link that
     // carries them says nothing; `readUrl` puts them back, and `nofilter=1` is how an empty
@@ -560,13 +676,22 @@ export function writeUrl(params: URLSearchParams, state: View): URLSearchParams 
     if (filter.id === "status" && isDefaultStatus(filter.value)) continue;
     const values = Array.isArray(filter.value) ? filter.value : [filter.value];
     for (const value of values) {
-      if (filter.id === "claim" && value === UNCLAIMED_FACET) next.set("unclaimed", "1");
-      else next.append(paramFor(filter.id), String(value));
+      if (filter.id === "claim" && value === UNCLAIMED_FACET) next.set(key("unclaimed"), "1");
+      else next.append(key(paramFor(filter.id)), String(value));
     }
   }
-  if (state.search) next.set("q", state.search);
-  if (state.page) next.set("page", String(state.page + 1));
-  if (state.pageSize !== defaultView.pageSize) next.set("size", String(state.pageSize));
+  if (state.search) next.set(key("q"), state.search);
+  if (state.page) next.set(key("page"), String(state.page + 1));
+  if (state.pageSize !== defaultView.pageSize) next.set(key("size"), String(state.pageSize));
+  // The narrowing belongs to the address rather than to one table's view, so it is written
+  // bare under every `stateKey`, and `clearPicked` is what takes it off.
+  next.delete("only");
+  next.delete("onlyLabel");
+  if (state.selection !== null) {
+    next.set("only", [...state.selection.keys].join(","));
+    if (state.selection.label !== DEFAULT_SELECTION_LABEL)
+      next.set("onlyLabel", state.selection.label);
+  }
   return next;
 }
 

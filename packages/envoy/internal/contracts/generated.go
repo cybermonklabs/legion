@@ -306,6 +306,12 @@ const GoingRequestTTL = 3600000 * time.Millisecond
 // MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.
 const MaxIssueBlockers = 20
 
+// MaxIssueAdvances bounds the `advances` input of an issue write before deduplication: the most
+// priorities one issue states it advances, its own relations alone. Generated from
+// MAX_ISSUE_ADVANCES in packages/contracts so the server's refusal and every client's bound are
+// one number.
+const MaxIssueAdvances = 20
+
 // MaxIssuePageLimit is the most issues one page of GET /api/v1/issues holds, and
 // DefaultIssuePageLimit the page size when a caller pages with offset alone. Generated from
 // MAX_ISSUE_PAGE_LIMIT and DEFAULT_ISSUE_PAGE_LIMIT in packages/contracts so the server's bounds
@@ -362,6 +368,23 @@ const ProjectNameMax = 80
 // reading of it cannot drift apart.
 const DocumentSchemaCloseCode = 4409
 const DocumentSchemaCloseReason = "DOC_SCHEMA"
+
+// DocumentNewerContentCloseCode and DocumentNewerContentCloseReason close a document websocket
+// whose room holds an element this build cannot read, before any sync. The Hocuspocus provider
+// reconnects on the code. Generated from DOCUMENT_NEWER_CONTENT_CLOSE_CODE and
+// DOCUMENT_NEWER_CONTENT_CLOSE_REASON in packages/contracts so the server's close and the
+// dashboard's reading of it cannot drift apart.
+const DocumentNewerContentCloseCode = 4425
+const DocumentNewerContentCloseReason = "DOC_NEWER_CONTENT"
+
+// DocumentAdmissionRevokedCloseCode and DocumentAdmissionRevokedCloseReason close an open writable
+// document socket whose page the live server processes no longer admit, once the message in flight
+// on it is out. The Hocuspocus provider reconnects on the code, and the reconnect is admitted
+// again. Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and
+// DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON in packages/contracts so the server's close and the
+// dashboard's reading of it cannot drift apart.
+const DocumentAdmissionRevokedCloseCode = 4412
+const DocumentAdmissionRevokedCloseReason = "DOC_ADMISSION_REVOKED"
 
 // LiveSocketMaxAgeClose is the close code Dispatch ends a live socket with once the socket reaches
 // its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), and LiveSocketMaxSubscriptions

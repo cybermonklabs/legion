@@ -27,6 +27,7 @@
     "extensions/legion-phase-stall-omp.test.ts",
     "extensions/legion-role-tools-omp.test.ts",
     "extensions/legion-background-subagent-omp.test.ts",
+    "extensions/legion-commit-trailers-omp.test.ts",
     "extensions/legion-session-activity-omp.test.ts",
     "extensions/legion-stall-watchdog-omp.test.ts",
     "test/*.ts",

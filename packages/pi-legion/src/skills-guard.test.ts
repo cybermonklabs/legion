@@ -548,7 +548,7 @@ test("the worker skill tells a role to read the pull request's head after its ow
     '`jj -R "$LEGION_WORKSPACE" log -r legion/<issue>@origin --no-graph -T commit_id`',
     onlyInTheWorkerPrompt
   );
-  countedOncePerFile("Three waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);
+  countedOncePerFile("These waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);
   countedOncePerFile("the empty commit that carries it there", [
     "packages/daemon/internal/prompts/roles/reviewer.md",
   ]);

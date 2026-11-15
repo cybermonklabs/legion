@@ -266,7 +266,7 @@ export function ProjectPage(): ReactNode {
       >
         {activeTab === "issues" ? (
           issueView === "list" ? (
-            <IssuesTable key={route.project} project={route.project} />
+            <IssuesTable key={route.project} listing={{ project: route.project }} />
           ) : (
             <>
               <IssueFilters key={route.project} project={route.project} />
