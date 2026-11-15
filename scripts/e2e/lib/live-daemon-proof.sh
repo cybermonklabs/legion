@@ -9,6 +9,9 @@
 # live_daemon_proof in a subshell of its own, with root set there to the tree the driver is built
 # from (its checkout, or a scratch tree of a base commit), and reads the subshell's status and the
 # driver's proof.log afterwards, to count the proof's checks and judge its negative control.
+# busy-relaunch-delivery.sh's negative control also calls it in a subshell of its own, whose root
+# is a `git archive` of the base commit, so this run's EXIT trap is that subshell's and the script
+# goes on to read the run's proof.log.
 #
 # live_daemon_proof LABEL SLUG TEST EVIDENCE [TIMEOUT] runs four checks, each printing
 # `== <check>`, what it observed and `ok <check> (<s>s)`; the first that fails prints
