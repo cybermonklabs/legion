@@ -5628,23 +5628,27 @@ jobs:
           job-status: ${{ job.status }}
 
   # The two-build tests (packages/envoy/cmd/dispatch/twobuild_*_test.go): each row starts
-  # an envoy-dispatch of the previous build and one of this tree against one Postgres and one NATS,
+  # an envoy-dispatch of an earlier build and one of this tree against one Postgres and one NATS,
   # which is what a rolling release runs, and drives each build's CLI, stored documents, document
   # socket and bus traffic against the other (cmd/dispatch/README.md, "Two builds at once"). They
   # build only under the `twobuild` tag and are a job of their own for the reason
   # dispatch-multiprocess is: a row waits out durable hand-overs and settings polls, tens of seconds
-  # each, and the previous build is built here first. The previous build is the newest
+  # each, and the earlier builds are built here first. Most rows run the previous build, the newest
   # legion-envoy-v* release in the history of origin/main; build-dispatch-build.sh resolves it,
   # which needs the whole history and the tags (fetch-depth 0), and builds it from `git archive`.
-  # The build is cached by the commit and the script that built it, so a pull request builds each
+  # The first-rollout row runs the first-rollout build instead, the newest release before the first
+  # that registers its schema numbers: the job pins it by its commit (FIRST_ROLLOUT_COMMIT), the
+  # resolve step fails when its tag, legion-envoy-v30.20.2, names another commit, and the job builds
+  # it the same way.
+  # Each build is cached by its commit and the script that built it, so a pull request builds each
   # release once; its src/ is left out of the cache, since the test reads only the parts the script
   # copies out of it. Each row's NATS runs in its own test process (internal/testnats), so the job
   # needs no container runtime of its own. Then the browser half
-  # (packages/dispatch/e2e/cross-build.multiprocess.e2e.ts): the browser suite's two-process mode
-  # with Dispatch B run from the previous build's envoy-dispatch and web dist, and each direction's
-  # page served by one build against the other build's server. Playwright installs as it does for
-  # dispatch-browser-multiprocess, and the rows get a database of their own, since they truncate
-  # it.
+  # (packages/dispatch/e2e/cross-build.multiprocess.e2e.ts), which runs twice: the browser suite's
+  # two-process mode with Dispatch B run from the previous build's envoy-dispatch and web dist, then
+  # from the first-rollout build's, and each direction's page served by one build against the other
+  # build's server. Playwright installs as it does for dispatch-browser-multiprocess, and the rows
+  # get a database of their own, since they truncate it.
   dispatch-two-builds:
     needs: changes
     if: needs.changes.outputs.dispatch_two_builds == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -5770,10 +5774,14 @@ jobs:
             bun run e2e:multiprocess -- cross-build.multiprocess
         working-directory: packages/dispatch
       # The same rows with B the first-rollout build, a release before the fleet columns, which
-      # registers no schema numbers: a page of either build is read-only on A's server while it is
-      # live, which the previous release, registering its numbers, no longer shows. The spec reads
-      # which of the two B is from the live registry (pageWritable). The database is made again,
-      # so this run starts from what the step above started from.
+      # registers no schema numbers: B's page is read-only on A's server while B is live, which the
+      # previous release, registering its numbers, no longer shows, and A's page is held to B's own
+      # exact version rule on B's server, which admits it writable while the two builds' schema
+      # versions are equal. The step tells the spec this is the first-rollout run with
+      # DISPATCH_E2E_FIRST_ROLLOUT_COMMIT: the spec fails unless B is that commit and the registry
+      # reads version 0 while B is live, and pageWritable then reads each direction's rule from the
+      # registry. The database is made again, so this run starts from what the step above started
+      # from.
       - name: Browser-test each build's page against the first-rollout build's server
         env:
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
