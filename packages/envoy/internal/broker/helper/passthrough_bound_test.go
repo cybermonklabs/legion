@@ -4,169 +4,109 @@
 package helper
 
 import (
-	"strings"
+	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// SetBrokerCallBound, clientCallWait and replyWriteSlack are kept only because
-// passthrough_signin_test.go reads them; nothing else does. SetBrokerCallBound sets
-// Server.BrokerCallBound and nothing else.
-func (s *Server) SetBrokerCallBound(d time.Duration) { s.BrokerCallBound = d }
+// overBound is the bound a row that runs an op past its bound gives its own Server: the row
+// need not wait the real 20 s, since what it reads is the answer at the bound and not the number.
+const overBound = 500 * time.Millisecond
 
-// clientCallWait is BrokerCallWait, and replyWriteSlack the 5 s past the bound for which
-// brokerCall keeps the connection open (it answers by the bound plus 1 s).
-const (
-	clientCallWait  = BrokerCallWait
-	replyWriteSlack = 5 * time.Second
-)
-
-// overBound is the bound the rows that run out of time give their own Server, and
-// pastOverBound how long their broker then takes: a row that proves the bound answers need not
-// wait the real 20 s to prove it, since what it reads is the answer at the bound and not the
-// number. Six times the bound is far enough past it that a loaded box still answers at the
-// bound first, and short enough that the fake's own call — which goes on until its delay is
-// up, since a cancelled request reaches the handler only when the connection breaks — does not
-// hold the test up at the end of the row.
-const (
-	overBound     = 500 * time.Millisecond
-	pastOverBound = 3 * time.Second
-)
-
-// slowAnswer is how long the broker takes to answer the rows that must still be answered: 8 s,
-// well past the 5 s deadline handle puts on every connection, and well inside
-// DefaultBrokerCallBound. These rows run against the REAL bound, because the deadline they
-// prove gone is the one those 8 s are measured against.
-const slowAnswer = 8 * time.Second
-
-// TestEachBrokerCallOpAnswersASlowBrokerOrSaysItsOutcomeIsUnknown drives the bound
-// (Server.brokerCall) on each broker-call op — enroll-session-key, unenroll-session-key and
-// login — through the REAL helper socket against a broker that answers after a delay the row
-// sets.
+// TestASlowLoginAnswersItsCodeAndAnUnenrollPastItsBoundSaysItsOutcomeIsUnknown drives, through
+// the REAL helper socket, the two cases of a slow broker that contract_brokercall_test.go and
+// brokercall_test.go leave out: those drive an enrollment and a revoke the broker answers after
+// 8 s, and an enrollment and a login past their bound.
 //
-// Two rows for each op. The first is answered after 8 s and must reach the client as a JSON
-// reply carrying the broker's own result: that is what the defect cost, a helper that made the
-// enrollment and could not write its reply, leaving `agent-secrets enroll --helper` reading an
-// empty one and exiting 1 (dispatch://INFRA-49/comment/9bf092b6). The second is answered later
-// than the bound and must reach the client, never as an empty reply either, with that op's
-// answer for an outcome the helper does not know: ENROLL_OUTCOME_UNKNOWN,
-// UNENROLL_OUTCOME_UNKNOWN, or LOGIN_FAILED saying the outcome is unknown, since the broker may
-// have acted on a request it was still answering.
+// A login the broker answers after 8 s must reach the client as a JSON reply carrying the
+// broker's code. 8 s is past the 5 s deadline handle puts on every connection and inside the
+// helper's 20 s bound (DefaultBrokerCallBound), so that row runs under the real bound. The
+// broker answers the device authorization at once and the helper's transport holds the answer
+// (holdingTransport), as contract_brokercall_test.go holds the enrollment's and the revoke's.
+//
+// An unenroll-session-key whose DELETE the broker holds past the op's bound (the fake's
+// revokeGate) must reach the client, never as an empty reply, as UNENROLL_OUTCOME_UNKNOWN with
+// settle's cause, before the bound plus 1 s where brokerCall's timer would answer: the broker got
+// the request, so it may have revoked the enrollment.
 //
 // The named revert: put the 5 s connection deadline back over the broker-call ops (drop
-// brokerCall's SetDeadline) and every 8 s row fails with its reply unread.
-func TestEachBrokerCallOpAnswersASlowBrokerOrSaysItsOutcomeIsUnknown(t *testing.T) {
-	const rowsToDrive = 6
+// brokerCall's SetDeadline) and the login row reads an empty reply.
+func TestASlowLoginAnswersItsCodeAndAnUnenrollPastItsBoundSaysItsOutcomeIsUnknown(t *testing.T) {
+	const rowsToDrive = 2
 	var driven atomic.Int64
 	rows := []struct {
-		op   string
-		code string
-		// request is this row's request, built against a rig whose broker still answers at
-		// once: the unenroll row enrolls the key it then ends.
-		request func(t *testing.T, r *rig) Request
-		// answered reads the reply of the call the broker answered inside the bound, and holds
-		// it to the result the broker gave.
-		answered func(t *testing.T, r *rig, req Request, resp Response)
+		name string
+		run  func(t *testing.T)
 	}{
 		{
-			op:   "enroll-session-key",
-			code: CodeEnrollUnknown,
-			request: func(*testing.T, *rig) Request {
-				return Request{Op: "enroll-session-key", RuntimeID: "rt-slow-box", Thumbprint: "tp-slow-box"}
-			},
-			answered: func(t *testing.T, r *rig, _ Request, resp Response) {
-				t.Helper()
-				if !resp.OK || resp.EnrollmentID == "" || resp.LeaseExpires == "" {
-					t.Fatalf("enroll-session-key against an %s broker: %+v; want the broker's enrollment", slowAnswer, resp)
+			name: "login answers the code a broker gives after 8 s",
+			run: func(t *testing.T) {
+				const slowAnswer = 8 * time.Second
+				r := newRig(t, "")
+				client := *r.srv.Broker.HTTP
+				held := &holdingTransport{base: client.Transport, method: http.MethodPost, path: "/v1/oauth/device_authorization", hold: slowAnswer}
+				client.Transport = held
+				r.srv.Broker.HTTP = &client
+
+				held.holds.Store(1)
+				started := time.Now()
+				resp, err := Call(r.sock, Request{Op: "login"}, BrokerCallWait)
+				waited := time.Since(started)
+				if err != nil {
+					t.Fatalf("login against a broker %s slow to answer: %v after %s; the client must read one JSON reply, never an empty one", slowAnswer, err, waited)
 				}
-				if _, err := time.Parse(time.RFC3339Nano, resp.LeaseExpires); err != nil {
-					t.Fatalf("lease_expires %q: %v", resp.LeaseExpires, err)
+				if n := held.held.Load(); n != 1 {
+					t.Fatalf("the transport held %d answers of POST /v1/oauth/device_authorization, want 1; answer %+v after %s", n, resp, waited)
 				}
-				posts, _, _ := r.fake.snapshot()
-				if len(posts) != 1 || posts[0]["runtime_id"] != "rt-slow-box" {
-					t.Fatalf("the broker was asked %v; want one enroll of rt-slow-box", posts)
-				}
-			},
-		},
-		{
-			op:   "unenroll-session-key",
-			code: CodeUnenrollUnknown,
-			request: func(t *testing.T, r *rig) Request {
-				t.Helper()
-				enrolled := r.call(t, Request{Op: "enroll-session-key", RuntimeID: "rt-ended-box", Thumbprint: "tp-ended-box"})
-				if !enrolled.OK || enrolled.EnrollmentID == "" {
-					t.Fatalf("enroll the key this row ends: %+v", enrolled)
-				}
-				return Request{Op: "unenroll-session-key", EnrollmentID: enrolled.EnrollmentID}
-			},
-			answered: func(t *testing.T, r *rig, req Request, resp Response) {
-				t.Helper()
-				if !resp.OK {
-					t.Fatalf("unenroll-session-key against an %s broker: %+v; want the broker's 204", slowAnswer, resp)
-				}
-				_, deletes, _ := r.fake.snapshot()
-				if len(deletes) != 1 || deletes[0] != req.EnrollmentID {
-					t.Fatalf("the broker was asked to delete %v; want %q", deletes, req.EnrollmentID)
-				}
-			},
-		},
-		{
-			op:   "login",
-			code: CodeLoginFailed,
-			request: func(*testing.T, *rig) Request {
-				return Request{Op: "login"}
-			},
-			answered: func(t *testing.T, r *rig, _ Request, resp Response) {
-				t.Helper()
 				r.fake.mu.Lock()
 				code, uri := r.fake.pendingCode, r.fake.srv.URL
 				r.fake.mu.Unlock()
 				if !resp.OK || resp.Code != code || resp.VerificationURI != uri {
-					t.Fatalf("login against an %s broker: %+v; want the broker's code %q and %q", slowAnswer, resp, code, uri)
+					t.Fatalf("login against a broker %s slow to answer: %+v after %s; want the broker's code %q and %q", slowAnswer, resp, waited, code, uri)
+				}
+			},
+		},
+		{
+			name: "unenroll-session-key past its bound says its outcome is unknown",
+			run: func(t *testing.T) {
+				r := startRig(t, "")
+				enrolled := r.call(t, Request{Op: "enroll-session-key", RuntimeID: "rt-ended-box", Thumbprint: "tp-ended-box"})
+				if !enrolled.OK || enrolled.EnrollmentID == "" {
+					t.Fatalf("enroll the key this row ends: %+v", enrolled)
+				}
+				gate, _ := testGate(t)
+				r.fake.mu.Lock()
+				r.fake.revokeGate = gate
+				r.fake.mu.Unlock()
+				r.srv.BrokerCallBound = overBound
+
+				started := time.Now()
+				resp, err := Call(r.sock, Request{Op: "unenroll-session-key", EnrollmentID: enrolled.EnrollmentID}, BrokerCallWait)
+				waited := time.Since(started)
+				if err != nil {
+					t.Fatalf("unenroll-session-key held past its bound: %v after %s; the client must read one JSON reply, never an empty one", err, waited)
+				}
+				r.fake.mu.Lock()
+				attempts := r.fake.revokeAttempts
+				r.fake.mu.Unlock()
+				if attempts != 1 {
+					t.Fatalf("the fake received %d DELETEs, want 1, held at its gate; answer %+v after %s", attempts, resp, waited)
+				}
+				wantSettled(t, "unenroll-session-key past its bound", resp, CodeUnenrollUnknown, waited, overBound+time.Second)
+				if waited < overBound {
+					t.Fatalf("unenroll-session-key past its bound answered after %s; want about the %s bound", waited, overBound)
 				}
 			},
 		},
 	}
-	// The rows run side by side: each builds a rig of its own, and nearly all of their time is
-	// spent waiting on a broker that is deliberately slow.
+	// The rows run side by side: each builds a rig of its own, and the login row spends its time
+	// waiting on an answer the transport holds.
 	t.Run("rows", func(t *testing.T) {
 		for _, row := range rows {
-			t.Run(row.op+" answers what a broker says after "+slowAnswer.String(), func(t *testing.T) {
+			t.Run(row.name, func(t *testing.T) {
 				t.Parallel()
-				r := startRig(t, "")
-				req := row.request(t, r)
-				r.fake.slowAnswers(slowAnswer)
-				started := time.Now()
-				resp, err := Call(r.sock, req, BrokerCallWait)
-				waited := time.Since(started)
-				if err != nil {
-					t.Fatalf("%s against an %s broker: %v after %s; the client must read one JSON reply, never an empty one", row.op, slowAnswer, err, waited)
-				}
-				if waited < slowAnswer {
-					t.Fatalf("%s answered after %s, before the broker did: the row proves nothing", row.op, waited)
-				}
-				row.answered(t, r, req, resp)
-				driven.Add(1)
-			})
-			t.Run(row.op+" says its outcome is unknown past its bound", func(t *testing.T) {
-				t.Parallel()
-				r := startRig(t, "")
-				r.srv.BrokerCallBound = overBound
-				req := row.request(t, r)
-				r.fake.slowAnswers(pastOverBound)
-				started := time.Now()
-				resp, err := Call(r.sock, req, BrokerCallWait)
-				waited := time.Since(started)
-				if err != nil {
-					t.Fatalf("%s against a broker slower than its bound: %v after %s; the client must read one JSON reply, never an empty one", row.op, err, waited)
-				}
-				if resp.OK || resp.Code != row.code || !strings.Contains(resp.Error, "the outcome is unknown") {
-					t.Fatalf("%s past its bound: %+v; want %s saying the outcome is unknown", row.op, resp, row.code)
-				}
-				if waited >= pastOverBound {
-					t.Fatalf("%s past its bound answered after %s: it waited out the broker rather than its bound", row.op, waited)
-				}
+				row.run(t)
 				driven.Add(1)
 			})
 		}

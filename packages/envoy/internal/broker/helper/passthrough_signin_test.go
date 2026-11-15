@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,6 +25,9 @@ import (
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
+
+// signedInPerson is the person signedInBox signs in on the box.
+const signedInPerson = "ada@example.com"
 
 // boxMachine is this machine's own identity, the actor token of a person's trade on it.
 type boxMachine struct{}
@@ -34,17 +38,18 @@ func (boxMachine) Token(context.Context) (string, string, error) {
 
 func (boxMachine) Describe() string { return "this machine" }
 
-// signedInBox is the sign-in `agent-secrets login` leaves on a box: a person's device grant at
-// an issuer, kept with a box key of its own, read through the REAL brokerclient.SignInAuthority
-// that agent-secrets-helper serves its sessions with (cmd/agent-secrets-helper, signInAuthority).
-// Its trades go to tokenURL.
+// signedInBox is the sign-in `agent-secrets login` leaves on a box: signedInPerson's device
+// grant at an issuer, kept with a box key of its own, read through the REAL
+// brokerclient.SignInAuthority that agent-secrets-helper serves its sessions with
+// (cmd/agent-secrets-helper, signInAuthority). Its trades go to tokenURL.
 func signedInBox(t *testing.T, tokenURL string) *brokerclient.SignInAuthority {
 	t.Helper()
-	const clientID, clientSecret, person = "example-device-client", "example-device-secret", "ada@example.com"
+	const clientID = "example-device-client"
+	deviceClientWord := clientID + "-word" // the device client's shared word, which the stand-in issuer checks
 	issuer := oidctest.New(t)
-	issuer.EnableDeviceFlow(issuer.PublishKey(t, "google-key"), clientID, clientSecret)
-	issuer.SignInByDefault(map[string]any{"sub": person, "email": person, "email_verified": true})
-	flow := &brokerclient.DeviceFlow{Issuer: issuer.URL(), ClientID: clientID, ClientSecret: clientSecret}
+	issuer.EnableDeviceFlow(issuer.PublishKey(t, "google-key"), clientID, deviceClientWord)
+	issuer.SignInByDefault(map[string]any{"sub": signedInPerson, "email": signedInPerson, "email_verified": true})
+	flow := &brokerclient.DeviceFlow{Issuer: issuer.URL(), ClientID: clientID, ClientSecret: deviceClientWord}
 	authorization, err := flow.Start(context.Background())
 	if err != nil {
 		t.Fatalf("start the sign-in: %v", err)
@@ -67,9 +72,9 @@ func signedInBox(t *testing.T, tokenURL string) *brokerclient.SignInAuthority {
 	}
 	store := brokerclient.SignInStore{Dir: filepath.Join(t.TempDir(), "signins")}
 	if err := store.Write(brokerclient.SignInRecord{
-		Person: person, Issuer: flow.Issuer, ClientID: clientID, RefreshToken: granted.RefreshToken,
+		Person: signedInPerson, Issuer: flow.Issuer, ClientID: clientID, RefreshToken: granted.RefreshToken,
 		BoxKey:     string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})),
-		Thumbprint: "thumbprint-of-" + person, SignedInAt: time.Now().UTC(),
+		Thumbprint: "thumbprint-of-" + signedInPerson, SignedInAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("keep the sign-in: %v", err)
 	}
@@ -78,27 +83,40 @@ func signedInBox(t *testing.T, tokenURL string) *brokerclient.SignInAuthority {
 	}
 }
 
-// TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading: A10 says the helper answers
-// every request it accepted within the time its client waits, and that a pass-through call that
-// runs out of time answers with its own failure code saying it timed out, so a client never
-// reads an empty reply.
+// TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading: A10 says the helper
+// answers every request it accepted within the time its client waits, and adds that no lock the
+// helper holds for its own work outlives a caller's bound.
 //
 // A box a person has signed in on enrols every call under that person's authority
-// (Broker.signingAuthority), and brokerclient.SignInAuthority.Current holds its mutex across
-// the trade that renews it, as Client.Token holds its own. A registered session's enrollLoop
-// makes that trade on the serve loop's context, which has no deadline. So an
-// `agent-secrets enroll --helper` that arrives while the broker is slow to answer that trade
-// waits on the mutex, which no context reaches, for as long as the trade takes: past the bound
-// brokerCallBound gives it, and past the connection deadline that bound's reply is written
-// inside. The helper then has nothing to write by the time it could, and the client reads an
-// empty reply - the defect A10 was written for, reached by another road.
+// (Broker.signingAuthority), and brokerclient.SignInAuthority.Current holds its lock across the
+// trade that renews that authority. A registered session's enrollLoop makes that trade on the
+// serve loop's context, which has no deadline. An enroll-session-key that arrives while the trade
+// is in flight waits for the lock only while its own context lives (ctxlock), so the wait ends at
+// the bound (Server.brokerCall) before the op has sent the broker anything, and the op answers
+// what it knows: ENROLL_FAILED, timed out waiting for the person's sign-in. The row asserts that
+// code, that text, and that the fake broker received no enroll while the op waited. Those three
+// tell this answer from brokerCall's timer, which answers an unknown outcome a second later; the
+// time alone would not.
 //
-// The row runs under a bound of overBound, so the trade it holds need only outlast
-// overBound + replyWriteSlack rather than the real 25 s.
+// The trade waits at a gate the row opens once it has read its answer, so the trade lasts as long
+// as the row needs and no longer. The row runs under a bound of 1 s rather than the real 20 s.
+//
+// The named revert: put a sync.Mutex back as SignInAuthority.mu, as it was before ctxlock. The
+// op then waits out the trade with no context, and brokerCall's timer answers it
+// ENROLL_OUTCOME_UNKNOWN at the bound plus 1 s (21 s under the real 20 s bound), as
+// TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter reads, and not an empty reply:
+// the code, the text and the time fail, though the broker made nothing.
 func TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading(t *testing.T) {
-	const tradeTakes = overBound + replyWriteSlack + 3*time.Second
+	// bound is the row's bound on the op, and timerAnswers when brokerCall's timer answers an op
+	// still running: the bound plus 1 s.
+	const (
+		bound        = time.Second
+		timerAnswers = bound + time.Second
+	)
 	var trades atomic.Int64
 	tradeStarted := make(chan struct{})
+	tradeGate := make(chan struct{})
+	releaseTrade := sync.OnceFunc(func() { close(tradeGate) })
 	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != brokerclient.TokenPath {
 			http.NotFound(w, r)
@@ -107,7 +125,7 @@ func TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading(t *testi
 		if trades.Add(1) == 1 {
 			close(tradeStarted)
 			select {
-			case <-time.After(tradeTakes):
+			case <-tradeGate:
 			case <-r.Context().Done():
 				return
 			}
@@ -122,18 +140,22 @@ func TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading(t *testi
 
 	r := startRig(t, "")
 	r.srv.Broker.SignIns = signedInBox(t, tokens.URL)
-	r.srv.SetBrokerCallBound(overBound)
+	r.srv.BrokerCallBound = bound
+	// Registered after the rig and the token server, so the trade is let go before their Close.
+	t.Cleanup(releaseTrade)
 
 	// A session the helper registered for itself enrols, as enrollLoop does, and its trade for
-	// the person's token is the slow one.
+	// the person's token is the one held.
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
+	registered := make(chan error, 1)
 	go func() {
-		_, _, _ = r.srv.Broker.EnrollIdentity(context.Background(), identity{
+		_, _, err := r.srv.Broker.EnrollIdentity(context.Background(), identity{
 			RuntimeID: "session-registered-on-this-box", Thumbprint: "tp-registered", Key: key,
 		})
+		registered <- err
 	}()
 	select {
 	case <-tradeStarted:
@@ -142,16 +164,39 @@ func TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading(t *testi
 	}
 
 	started := time.Now()
-	resp, err := Call(r.sock, Request{Op: "enroll-session-key", RuntimeID: "rt-during-the-trade", Thumbprint: "tp-during-the-trade"}, clientCallWait)
+	resp, err := Call(r.sock, Request{Op: "enroll-session-key", RuntimeID: "rt-during-the-trade", Thumbprint: "tp-during-the-trade"}, BrokerCallWait)
 	waited := time.Since(started)
+	// Read before the trade is let go: the registered session's own enroll follows its trade.
+	r.fake.mu.Lock()
+	arrivals := r.fake.enrollArrivals
+	r.fake.mu.Unlock()
 	if err != nil {
-		t.Fatalf("enroll-session-key while the box's sign-in is trading: %v after %s; the client must read one JSON reply, never an empty one (the bound is %s, its reply written inside %s)",
-			err, waited, overBound, overBound+replyWriteSlack)
+		t.Fatalf("enroll-session-key while the box's sign-in is trading: %v after %s; the client must read one JSON reply, never an empty one (the bound is %s)",
+			err, waited, bound)
 	}
-	if resp.OK || resp.Code != CodeEnrollFailed || !strings.Contains(resp.Error, "timed out") {
-		t.Fatalf("enroll-session-key while the box's sign-in is trading: %+v after %s; want %s saying it timed out", resp, waited, CodeEnrollFailed)
+	// Each is checked apart, so a failing row reports every one that is wrong.
+	if resp.OK || resp.Code != CodeEnrollFailed {
+		t.Errorf("enroll-session-key while the box's sign-in is trading: %+v after %s; want %s, a known failure: the op sent the broker nothing", resp, waited, CodeEnrollFailed)
 	}
-	if waited >= overBound+replyWriteSlack {
-		t.Fatalf("enroll-session-key answered after %s, past the %s its reply is written inside", waited, overBound+replyWriteSlack)
+	if want := "timed out waiting for " + signedInPerson + "'s sign-in on this machine"; !strings.Contains(resp.Error, want) {
+		t.Errorf("enroll-session-key while the box's sign-in is trading: error %q; want it to name the sign-in it waited on: %q", resp.Error, want)
+	}
+	if arrivals != 0 {
+		t.Errorf("the fake received %d POST /v1/enrollments while enroll-session-key waited for the sign-in; want none", arrivals)
+	}
+	if waited >= timerAnswers {
+		t.Errorf("enroll-session-key answered after %s, at or past brokerCall's timer (%s): the wait for the sign-in did not end with the op's context", waited, timerAnswers)
+	}
+
+	// The trade the op stood behind goes on to its own answer, and the registered session enrols
+	// under the person's credential.
+	releaseTrade()
+	select {
+	case err := <-registered:
+		if err != nil {
+			t.Fatalf("the registered session's enrollment, once its trade ended: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the registered session's enrollment did not end after its trade was let go")
 	}
 }

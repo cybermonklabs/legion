@@ -6016,9 +6016,13 @@ behind the sign-in's trade (`SignInAuthority.Current`, `Refused`) its error says
 the op made nothing, since it had sent the broker nothing, or, for an enroll, the broker had refused its first request under the person's credential (401 `LAUNCHER_INVALID`, `enrollAs`);
 behind a refresh, the drop that a 401 `LAUNCHER_INVALID` makes (`dropOutsideRefresh`) drops nothing, and the op answers the broker's 401 as it came.
 That refresh settles the credential only when it succeeds or the broker answers `invalid_grant`; a refresh that fails otherwise leaves the refused credential held until the refresh loop's next refresh settles it or a later refused call drops it, whichever comes first.
-`TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading` and `TestAPassThroughOpAnswersInsideItsBoundWhileARefreshHoldsTheMachineLogin` hold one of each and read that answer, the second before the bound plus 1 s, where the timer would answer.
-An op can wait past the bound plus 1 s only on a lock that the helper holds across an HTTP request and that does not watch the op's context: a login in progress (`Broker.loginMu`).
-The timer answers such an op unknown, and the helper logs the WARN `a broker call did not end within its bound; its outcome is answered as unknown` with the op and the bound.
+`TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading` and `TestAPassThroughOpAnswersInsideItsBoundWhileARefreshHoldsTheMachineLogin` hold one of each, and each asserts its answer's code, `ENROLL_FAILED`, and its text: the sign-in that it waited on, or the broker's 401 `LAUNCHER_INVALID`.
+The sign-in row also asserts that the broker received no enroll call while the op waited.
+Those three checks, and not the time of the answer, tell this answer from the timer's answer, `ENROLL_OUTCOME_UNKNOWN`, which comes a second later.
+A login waits for a login already in progress on `Broker.loginMu`, a `sync.Mutex`, but not past its own bound.
+The login that holds `loginMu` sends one request while it does, its device authorization, under its own op's context (`contextClient`), and polls the token endpoint only after it unlocks.
+So it unlocks by the end of its own bound, which ends before the bound of any login that came after it.
+The timer is the backstop for an op that waits on something that does not watch its context: it answers such an op unknown, and the helper logs the WARN `a broker call did not end within its bound; its outcome is answered as unknown` with the op and the bound.
 When the op ends after that, the helper logs its result (`a broker call answered as unknown has ended`, with its code and any `enrollment_id`), so an operator can see what the broker did.
 
 `helper.Call` marks each error that comes after it wrote the whole request with `helper.ErrNoReply`: no reply line within its timeout, or a reply that is not one JSON object.
