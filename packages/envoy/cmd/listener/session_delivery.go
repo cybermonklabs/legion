@@ -120,8 +120,10 @@ type sessionDeliveryOutcome struct {
 	// epoch is the plugin's epoch, recorded on the entry when the session is relayed.
 	epoch string
 	// consumerStart is the stream sequence the session's consumer starts at, recorded on the entry
-	// beside the epoch: the durable path still delivers a stored message below it, which is in no
-	// consumer (session.SessionEntry.ConsumerStart).
+	// beside the epoch: a stored message below it is in no consumer, and the durable path does not
+	// deliver it; which message it NAKs, defers or skips, and what it logs, is decided by
+	// agentSubjectDelivery and fanoutDelivery in cmd/listener/delivery.go
+	// (session.SessionEntry.ConsumerStart).
 	consumerStart uint64
 	// ackFloor is the stream sequence the session's consumer had everything acked through when
 	// this registration's consumer call read it (bus.SessionConsumerStart.AckFloor). It is where
@@ -272,14 +274,17 @@ type sessionDelivery struct {
 // urls, with inactiveThreshold the threshold every consumer created on it carries: it is given
 // here, at the connection, because the threshold must be in hand before the first consumer is
 // created, and this is the one place every one of them comes from. main derives it from the
-// deployment's own windows (inactiveThresholdFor). stream is the listener's own client, whose
-// read of the deployed stream's subjects both a registration's stored topics and every consumer
-// filter are judged on (sessionDelivery.stream).
+// deployment's own windows (inactiveThresholdFor). The connection is handed logger's own
+// slog.Logger (logging.Logger.Slog) for the same reason, so the lines its creates write of a
+// start they lowered to a resume record or clamped from past the stream's end to its first
+// sequence are this listener's JSON, with its machine_id. stream is the listener's own client,
+// whose read of the deployed stream's subjects both a registration's stored topics and every
+// consumer filter are judged on (sessionDelivery.stream).
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
 // the whole start's: main ends the process with it, as it does for the live topics lane.
 func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger) (*sessionDelivery, error) {
-	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold)
+	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog())
 	if err != nil {
 		return nil, err
 	}
@@ -510,7 +515,12 @@ const (
 // has acked is offered again. A caller that read no floor passes 0 - the stream held no such
 // consumer when it looked, or the read failed - and the start is the record's own. A record
 // naming no start leaves the start to the consumer call, which then creates the consumer at the
-// first message the stream holds for the session (bus.SessionConsumers.Ensure).
+// first message the stream holds for the session (bus.SessionConsumers.Ensure). The start this
+// passes is a caller's start to that call, so a create lowers it to the floor the session's
+// resume record holds plus one when that is lower and that resume record names the stream's
+// identity, and clamps a start past the sequence after the stream's last to the stream's first
+// sequence, so a start an earlier build or a restored stream left on the session's entry past
+// the stream's end creates no consumer past it.
 //
 // A read that failed is logged rather than returned: the caller's answer does not change, and
 // the session's next registration confirms the consumer again. The line names the session, which
@@ -670,13 +680,21 @@ func versionPart(version string, i int) (int, bool) {
 // to the current filter, before the registration answers; it refuses a registration that asks for
 // none, or that this listener can give none. The consumer is created at the sequence after its
 // resume point's seq when that point carries a seq, 0 included (which gives sequence 1), and names
-// the stream's current identity. A registration with no resume point, or one with no seq or naming
-// another identity, creates it at the first message the stream holds on the session's own agent
-// subject, and at the stream's end only when it holds none (bus.SessionConsumers.Ensure). The
-// filter is the topics the registration is about to store, so a message published on a newly
-// followed topic once the registration is answered is the consumer's to deliver. It is a plan
-// and not a row the bucket holds, so something judges it against the bucket afterwards every
-// time: the repair that follows the session entry of a registration that is answered
+// the stream's current identity. The consumer call lowers that start to the floor the session's
+// resume record holds plus one when that is lower and the record names the same identity, and
+// clamps a start past the sequence after the stream's last to the stream's first sequence: a
+// resume point above what the session's last delete recorded creates the consumer at that record,
+// which hands the session everything stored since, and one past the stream's end, with no record
+// to lower it, creates it at the stream's first sequence, which hands it every message the stream
+// holds on its filters (bus.SessionConsumers.Ensure). The answer's consumer_start and the session
+// entry's start are the start the consumer was created at (bus.SessionConsumerStart.StartSeq),
+// the lowered or clamped one included. A registration with no resume point, or one with no seq or
+// naming another identity, creates it at the first message the stream holds on the session's own
+// agent subject, and at the stream's end only when it holds none (bus.SessionConsumers.Ensure).
+// The filter is the topics the registration is about to store, so a message published on a newly
+// followed topic once the registration is answered is the consumer's to deliver. It is a plan and
+// not a row the bucket holds, so something judges it against the bucket afterwards every time:
+// the repair that follows the session entry of a registration that is answered
 // (confirmRegistered), and the settle of one that is not (registerSession).
 //
 // It returns the session's lock held over that filter, which the caller releases (register); a

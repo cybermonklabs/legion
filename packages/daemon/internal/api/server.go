@@ -1092,13 +1092,14 @@ const mergeWaitContract = 133
 // entryTimesContract is the daemon contract that added each issue's `entryQueuedAt` and
 // `entryConfirmedAt`, the time the task of its phase entry was first queued to its role's claim
 // and the time that claim's worker confirmed it, and each root's `architectStalls`, the arms of
-// the architect-stalled reading that hold for its architect (version.go's 144). A plugin before
+// the architect-stalled reading that hold for its architect (version.go's 146). A plugin before
 // it is served the state without the three keys: one built before sjawhar/legion#2788 reads it
 // with a strict schema and would refuse the whole body for a key it does not name, and one built
 // after strips the keys instead, so the strip is what keeps them from a caller that did not ask
 // for them rather than what keeps such a caller reading at all. mergeWaitContract stands below
-// it, so a caller in a pod at 133 through 143 is served `mergeWait` and not these three keys.
-const entryTimesContract = 144
+// it, so a caller in a pod at 133 through 145 is served `mergeWait` and not these three keys (137,
+// INFRA-3621's contract, moves no shape of the state).
+const entryTimesContract = 146
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

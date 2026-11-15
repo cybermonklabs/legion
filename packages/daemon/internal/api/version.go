@@ -6,8 +6,10 @@ package api
 // `packages/contracts/src/legion-api.ts`), the pane environment it reads — every variable
 // the tmux runtime sets on a pane (`internal/runtime/tmux/spawn.go`'s `panePairs`) and the Sandbox
 // runtime on a pod's worker container (`internal/runtime/sandbox/manifest.go`'s
-// `mainEnvironment`) — and the command line and environment of a pod's `workspace-init provision`
+// `mainEnvironment`) — the command line and environment of a pod's `workspace-init provision`
 // container (`initContainers` in `internal/runtime/sandbox/podkind.go`, and `initEnvironment`),
+// and the command line of a pod's `legion launcher` container (each pod kind's
+// `launcherContainer` in `internal/runtime/sandbox/podkind.go`, and `sessionProxyFlags`), both of
 // which the image's own `legion` reads. The installed plugin declares the
 // number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
 // gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
@@ -1725,7 +1727,25 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
 //
-// 144: INFRA-2614 (cybermonklabs/legion) -- a root's architect is a role the record states work
+// 137: INFRA-3621 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
+// `--session-impersonate-service-account <email>`, a fourth session flag after the three that name
+// the Cloud SQL session database (`sessionProxyAccountFlag` after `sessionProxyFlagNames`,
+// `internal/runtime/sandbox/manifest.go`). The daemon renders it
+// only when `runtime.kubernetes.session_database.impersonate_service_account` is set, and the
+// launcher's session proxy then impersonates that Google service account with the pod's own
+// credentials and signs in to Cloud SQL as it (`connectorOptions`, `internal/sessionproxy`). A
+// launcher built before 137 exits 2 on the unknown flag in every pod the daemon creates with it,
+// so the image probe, which holds the image's pi-legion to this number, refuses such an image at
+// boot instead, as it did for 27's new flag. A deployment that sets no account renders no fourth
+// flag, and its pods carry the command they carried before. (The number was the lowest above
+// main's 132 that no open pull request of cybermonklabs/legion declared at 2026-11-15T02:27Z, read
+// with the `take` of .github/scripts/check-daemon-api-contract.sh. It stays above main's 133 at the
+// forward merge of 2026-11-15 that brought in 2e546572 (#3937's 133, the entry above), and the same
+// reading at 2026-11-15T03:57Z found no other open pull request declaring 137: it passed over 134
+// (#4017 and #4021), 135 (#3659) and 136 (#3575 and #3730). Read the base's own number and every
+// open pull request again at every forward merge rather than from this line.)
+//
+// 146: INFRA-2614 (cybermonklabs/legion) -- a root's architect is a role the record states work
 // for, so the two keys contract 94 added carry a root: `phase.RoleFor` answers the architect for
 // `admitted`, the phase a root's own architect works, and each root's view carries the entry its
 // architect's work stands at and the entry its claim was queued, as a child's carries its
@@ -1761,11 +1781,12 @@ package api
 // snapshot), whether or not the controller was told of an arm, and the key is absent for a root
 // no arm holds for and for every issue that is not a tree's root.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 144 is served the issues without both times and without `architectStalls`
-// (api's stateFor, withoutEntryTimes) — as a caller below 133, the entry right above, is served
-// the issues without `mergeWait`, one below 132 every member of the waiting line whose `kind` is
-// `waiting_on_issue` without its `kind`, one below 111 the issues without `treeMovedAt` and
-// `quietHours` (123 moves no shape of the state and narrows nothing), one below 98
+// contract below 146 is served the issues without both times and without `architectStalls`
+// (api's stateFor, withoutEntryTimes) — as a caller below 133 is served the issues without
+// `mergeWait` (137, the entry right above, moves no shape of the state and narrows nothing), one
+// below 132 every member of the waiting line whose `kind` is `waiting_on_issue` without its
+// `kind`, one below 111 the issues without `treeMovedAt` and `quietHours` (123 moves no shape of
+// the state and narrows nothing), one below 98
 // the admission block without `admission.held`, one below 94 the issues without `phaseEntry` and
 // `givenEntry`, one below 87 every claim view without `leakCheckCause`, one below 85 every issue
 // without `why` and every member of the admission line with its `place` and its `length` alone,
@@ -1776,7 +1797,7 @@ package api
 // below 55 without the gated steps, one below 53 a body with no wakes waiting, one below 51
 // without the admission's trees and each issue's tree, one below 49 without the memory draw and
 // one below 46 without the claim views' update rounds; the bands compose, and every reader
-// from 144 on takes both times and `architectStalls` as optional. The two entry numbers move no
+// from 146 on takes both times and `architectStalls` as optional. The two entry numbers move no
 // further: a plugin at 94 parses them already, and a root carrying them is the same shape the
 // issue beside it carries.
 // `legion state`'s plain line changes with them: it names a tree's own root where the state
@@ -1825,15 +1846,22 @@ package api
 // 2026-11-15T03:58:42Z and 04:03:11Z, gave above the base's 133: 134 (#4017 and #4021), 135
 // (#3659), 136 (#3575 and #3730), 137 (#4046) and 138 (#3712), and no head declared a number
 // above 138, so this change took 139, the lowest free number above main's 133 at that reading.
-// It takes 144 at the forward merge of 2026-11-15 that brings main in at 66ee7eb9100d, which
-// still declares 133. A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open
+// It took 144 at the forward merge of 2026-11-15 that brought main in at 66ee7eb9100d, which
+// still declared 133. A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open
 // pull request of this repository, made between 2026-11-15T10:07:01Z and 10:17:18Z, gave above
 // the base's 133: 134 (#4021), 135 (#3659), 136 (#4065), 137 (#4046), 138 (#4017), 139 (#2731
 // and #3993), 140 (#3519), 141 (#3575), 142 (#3712) and 143 (#3730), and no head declared a
-// number above 143, so 139 was no longer free and this change takes 144, the lowest free number
-// above main's 133 at that reading. Each of those numbers is the number that head declared at
-// that reading and no head's for good. Read the base's own number and every open pull request
-// again at the next merge rather than from this line, as
+// number above 143, so 139 was no longer free and this change took 144, the lowest free number
+// above main's 133 at that reading. It takes 146 at the forward merge of 2026-11-15 that brings
+// main in at fecceeb60ec0, which landed cybermonklabs/legion#4046's INFRA-3621 at 137, the entry
+// right above and the number the base now carries. A reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for every open pull request of this repository, made between
+// 2026-11-15T14:06:47Z and 14:11:13Z, gave above the base's 137: 138 (#4017), 139 (#2731 and
+// #3993), 140 (#3519), 141 (#3575), 142 (#3712), 143 (#3730), 144 (#4021) and 145 (#3659), so
+// 144 was no longer free and this change takes 146, the lowest free number above main's 137 at
+// that reading. Each of those numbers is the number that head declared at that reading and no
+// head's for good. Read the base's own number and every open pull request again at the next
+// merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 144
+const DaemonAPIVersion = 146

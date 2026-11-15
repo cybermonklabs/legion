@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 
 import type { BlockSchema } from "../../api/types";
-import { compiledBlockSchema, schemaCreatable } from "./schema";
+import { compiledBlockSchema } from "./schema";
+import { schemaCreatable } from "./schema-creatable";
 
 /** The compiled manifest as the build that introduces one more typed block, "future", declares
  *  it: the version raised by one, and the block read from that version and created from it

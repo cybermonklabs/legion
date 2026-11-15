@@ -1126,9 +1126,6 @@ The edit route's refusal of the same shape advises moving the code out of the ty
 A line of colons in code inside a typed block is kept:
 the browser editor's parser ends a typed block at a line of at least its fence's colons, with spaces and tabs around them, starting less than four columns past where the typed block's own lines start on the written line, even inside fenced code - counting the width of the list markers and `> ` around the code, advancing a tab to the next multiple of four from the column it stands at, and finding nothing closing in a blockquote inside the typed block - so the renderer writes the typed block's fence longer than every such line (below).
 The engine's reading of each shape is `pmdoc/testdata/typed-fence-lines.json`, which the fixture generator writes for a callout at the top and inside a blockquote, list items, a footnote definition and another callout.
-Text a `replace` writes that would read as block syntax at a line start is written escaped, so it reads back as the characters:
-`---`, `***`, `~~~` or `::::` over a paragraph is stored `\---` and so on (the renderer's line-start escapes).
-Beside an emptied paragraph it is written the same way, since an empty paragraph is not written.
 Accepting a suggestion (`POST /api/v1/comments/{id}/accept`, `docs/marks.go` `applySuggestion`, its checks in `docs/accept.go`) writes blocks, so it stores what reads back as the live document, and refuses what cannot, naming `replace_with`.
 A table the splice cut is padded to its width as the browser editor's table plugin pads it (`padCutTables`, `pmdoc.PadTables`), where the browser's accept writes the replacement where `Splice` does (`padsLikeTheBrowser`):
 inline text, code's literal text, an empty replacement (which deletes the matched text, by this accept's own rule, where the browser's accept of an empty suggestion only clears its mark), or block content over exactly the two textblocks the browser's accept replaces whole (`pmdoc.MultiblockRange`, which reads each textblock one position short of its end as the editor does), the first of them a document-level block.
@@ -1164,23 +1161,42 @@ the document stays as it was and the suggestion stays open.
 The person accepting cannot change the text, so the refusal (`acceptRefusal`) says what the text writes where it lands - for a same-id rewrite of a typed block, in the block that typed block stands in - and names what they can do (reject the suggestion, or reply asking for text the block can hold), never an edit-route operation;
 it says the text empties a paragraph only when the text renders no content, and then offers deleting the paragraph only where the rest of its block stands without it, and the whole block only where the paragraph is all it holds.
 A reject is not checked, since it gives back the text the insert started from.
-Everywhere else `replace` is inline: `with` parses through `pmdoc.ParseInline` (paragraph-only block grammar), so a multi-paragraph `with` is `INVALID_OP`, so is any non-empty `with` that renders to no inline content (a line indented four spaces or a tab, which markdown reads as a code block, or whitespace alone
-— an empty `with` deletes the match on purpose, and a container left holding only the emptied paragraph reads back holding it;
-refusing the rest is LEGION-280, since splicing nothing over the match silently deleted the caller's text), and a leading marker of a *different* kind from the matched block's own is literal escaped text.
+Everywhere else `with` is markdown written into the document, read by the parse an insert's markdown is read by (`pmdoc.ParseFragment`, where front matter opens the document's start alone, `opensDocument`), and what that parse gives decides how it is written.
+A `with` of one paragraph, and the empty document an empty `with` gives, go to the inline path (`inlineReplacement`), which parses the text again through `pmdoc.ParseInline` (paragraph-only block grammar) and continues the textblock the match sits in.
+That path carries the refusal of a non-empty `with` that renders to no inline content, the hard breaks, the whitespace at the text's edges and the anchor marks it strips, so the paragraph the first parse made is not reused.
+Whitespace alone is the whole of that refusal now, since a line indented four spaces or a tab is a code block, which the block path writes.
+An empty `with` deletes the match on purpose, and a container left holding only the emptied paragraph reads back holding it;
+refusing the rest is LEGION-280, since splicing nothing over the match silently deleted the caller's text.
+HTML the parser reads as a block goes to the inline path as well (`pmdoc.ErrBlockHTML`):
+the Proof schema holds no block of HTML, so that text names no block, and where it lands it is inline text, which the read-back refusals judge - refused where it opens a block there, kept in a heading, in a table cell and inside a line.
+Every other refusal of the parse is the caller's to read, as an insert's markdown is, and is `INVALID_MARKDOWN` on `with`.
+A `with` that gives blocks writes them over the match (`blockReplacement`), fitted by `pmdoc.ValidDocument.Splice` as the editor a person reads the document in fits them:
+blocks that enter a list become its items, and blocks a typed block can hold go inside it.
+Three places hold no block of their own, and a match in one is refused with the document unchanged:
+a heading, which holds one line of text;
+any cell of a table, where the fit lifts the blocks out of the table and leaves it a cell short or splits it in two, so every cell is refused and not the refusing cells alone;
+and a typed block whose content rule cannot hold the blocks, which would then stand outside it, unless the `with` rewrites that block under its own id (`pmdoc.RewritesBlock`, `holdsWrittenBlocks`), which is that climb out on purpose.
+The anchor marks covering the match go on one block of what is written (`markBlockReplacement`):
+the first paragraph or heading holding a run of text (`anchoredBlock`, which passes over a block in a table, whose mark would quote one cell), and a `with` holding none of either under an open comment or ask is refused, since the anchor would have no words left to quote.
+What the block path wrote then runs the guards every other path that writes blocks runs (`refuseWrittenBlocks`: `pmdoc.RepeatedBlockID` and `pmdoc.RefuseMisreadWrite`), and is settled with the block ids of the textblock it split carried (`settleBlockReplacement`).
+A leading marker of a *different* kind from the matched block's own names the block its markdown names, as it does in an insert, and a backslash before it keeps prose that merely looks like a marker as text.
 A `with` opening with a marker of the *same* kind as that block's own would render it twice and is `INVALID_OP` on `with` (`replacementMarkdown`), naming the marker the block renders and, in backticks the caller can paste back, their own text with the marker's significant character escaped;
 the exceptions are a heading rename whose `find` carried a heading marker, where the repeated marker is dropped, and `with` may change the level only when `find` named the block's actual level
 — `# ` is the level-blind selector, so a generic `find` renames the text and keeps the level —
 and a list item the `find`'s own list marker selected, having matched no text as written (`resolveEditQuote`'s `byMarker`), where the repeated marker is dropped and the item keeps its number, and a `with` that is the marker alone, which would empty the item, is `INVALID_OP`.
 A hard line break inside `with` — two trailing spaces or a backslash before the newline
-— puts what follows it at a true line start, where a heading, bullet, `1.`/`1)` ordered or `>` blockquote marker is `INVALID_OP` on `with` as well (`blockMarkerAfterHardBreak`), since replace is inline and that marker can only be written as escaped literal text continuing the matched block, never as the block it names.
-A hard break is itself `INVALID_OP` when the matched textblock is a heading or a table cell (`pmdoc.TextblockAt.OneLine`), which are written on one line, so the break would end the block;
+— is `INVALID_OP` when the matched textblock is a heading or a table cell (`pmdoc.TextblockAt.OneLine`), which are written on one line, so the break would end the block;
 a line break inside a code span or inline HTML there ends it too, and the replace is refused because the block would read back as blocks of another shape (`refuseReshapedReplacement`).
-A bare newline is a soft break, which renders as a space and reaches no line start;
-an ordered marker interrupts a paragraph only numbered a lone `1`, as the browser editor's parser reads it, so `1.` and `1)` are refused, while `01.`, `001)`, `02.` and `10.` are not;
-and marked text opens with its mark's delimiter, not the marker — none of the three is refused.
+A line start inside `with` is the markdown's own:
+a bullet, a heading or a `>` opens its block after a bare newline as after a hard break, and a soft break joins the two lines where the line after it opens none;
+an ordered marker interrupts a paragraph only numbered a lone `1`, as the browser editor's parser reads it, so `1.` and `1)` write the list their markdown names, while `01.`, `001)`, `02.` and `10.` stay the paragraph's text;
+and marked text opens with its mark's delimiter, not the marker, so it stays text as well.
 A batch that leaves the document's semantic identity unchanged
 — `nodeToken` over the whole tree, inline marks included
 — mints no version, named or not, and the response carries `changed: false` with `unchanged_ops` naming each operation that changed nothing (`docs.EditOutcome`).
+Every edit answers with `written` too, the markdown the batch wrote, read back off the tree it wrote (`docs.EditOutcome.Written`, `editBatch.readBack`):
+each of the document's own blocks the write added, changed or moved, in document order, and a line for each one it removed or emptied, within 2000 bytes (`editReadBackBound`, `boundedReadBack`, which cuts at a rune boundary and ends with a line naming what it left out).
+A batch that left the document as it was writes none, and the command prints what there is under its `Applied` line.
 Every refusal names its operation index and its anchor:
 `docs` dresses quote, heading-anchor and cross-block misses (`ErrQuoteNotFound`, `ErrAnchorAmbiguous`, `ErrQuoteSpansBlocks`), and `isEditRefusal` keeps the service's internal prose off them.
 `delete` takes `find` or `block`; a `find` covering a textblock's whole text removes that block (`pmdoc.ValidDocument.DeleteTextblock`:
@@ -1223,7 +1239,7 @@ Since `BlocksGainingText` reads the same span, a replacement whose old and new c
 A splice cuts a text node only where a range's edge falls between characters:
 `slice16` answers an edge inside a pair with an error of the package's own (a `500`, never the `ErrSchema` verdict on the write), and a quote's ambiguity context rounds outward to whole characters (`context16`).
 
-Accepting a suggestion (`POST /api/v1/comments/{id}/accept`, `docs/marks.go` `applySuggestion`) splices its `replace_with`, which unlike an edit's `with` may be blocks, with ProseMirror's range fitting (`pmdoc.ValidDocument.Splice`).
+Accepting a suggestion (`POST /api/v1/comments/{id}/accept`, `docs/marks.go` `applySuggestion`) splices its `replace_with`, which may be blocks as a `replace`'s `with` may, with ProseMirror's range fitting (`pmdoc.ValidDocument.Splice`).
 A non-empty replacement fitted into a typed block stays inside it, and a fit never replaces the typed block it lands in:
 a callout takes what its content rule allows, a code block included (the engine oracle's `callout-paragraph-and-code` case), and an ask takes any block at this step, since `Validate` lets an ask hold other blocks, which concurrent browser edits can leave there.
 The one exception is a replacement holding exactly one block of the typed block's own type under its id, at any depth, which is that block rewritten:
@@ -1303,7 +1319,8 @@ Table `references` from `GET /api/v1/artifacts/{id}/blocks` aggregate anchors pi
 A row or column deletion that would remove an open ask or unresolved comment anchor is `INVALID_OP` on `index`, naming the axis and anchor ids;
 answered asks and resolved comments remain historical and do not block it.
 Block ids stay with moved, retyped, and table-edited nodes, so the ask reconciliation keeps a moved ask;
-a removed block retracts its ask only while the ask is open (an answered or resolved ask is already closed, and `asks_answer_state_check` forbids a resolved row that still carries an answer).
+a batch whose result drops a block an open ask points at is refused `INVALID_ASK_BLOCK`, naming the block and saying to answer or resolve its ask, or to remove the block in the document editor, before the write (`droppedAskBlocks`, which answers which ask blocks this batch dropped and reads the asks table only when one is gone, and `refuseBatchDroppedAskBlocks`, which refuses on those blocks alone, so an open ask row whose block went some other way is not this batch's to answer for; the upload path's repair and a rebuild take the whole-document reading instead, `refuseDroppedAskBlocks`);
+the editor's own removal is what retracts an ask, and it retracts it only while the ask is open (an answered or resolved ask is already closed, and `asks_answer_state_check` forbids a resolved row that still carries an answer).
 Within one atomic batch, an operation that names a block cascaded away by an earlier `delete {block}` fails as `INVALID_OP`, naming the earlier operation and the parent block rather than treating it as an unknown id.
 `ApplyOps` stamps `EnsureBlockIDs` on the live tree before resolving operations so every block is addressable.
 
@@ -2655,6 +2672,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A `replace` through the edit route, and the text an accepted suggestion writes inline or into code, takes every comment, suggestion and ask mark that covers all of the text it replaces (`pmdoc.AnchorMarksCovering`, the accepted suggestion's own mark excepted):
   replacing a word, the first or last word, or the whole quote leaves the anchor over the new text, and the refreshed quote is its whole current extent.
   A replace that runs past an anchor's edge rewrote text outside it too, so that anchor keeps only the text the replace left alone, and one covering the whole anchor and more orphans it.
+  A `replace` that writes blocks marks one block of what it writes (`markBlockReplacement`, `anchoredBlock`: the first paragraph or heading holding a run of text, a block in a table passed over, since a mark there would quote one cell), and is refused where what it writes holds no such block, since the anchor would have no words left to quote.
   A block replacement from an accepted suggestion takes no mark, since it can land a code block an ask's mark cannot cover.
 
 - A refresh finds every open row's mark in one walk of the tree (`pmdoc.FindMarks`, which reads for each identity exactly what `FindMark` and `pmdoc.MarkAttrs` read), then updates and announces the rows in their order (`openAnchoredMarks`:
@@ -4487,6 +4505,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   One that asks for a consumer gets the session's consumer created, or its filter set to the session's agent subject and stored topics, before the registration answers, so a message published on a newly followed stored topic after the answer is the consumer's to deliver;
   the answer then carries `delivery`: `{"mode": "consumer", "subject": "notifications.envoy.deliver.<session id>", "stream_id": "<envoy_stream_id>", "gap": <bool>, "consumer_start": <stream sequence>}`, the one mode there is.
   `consumer_start` is the stream sequence the consumer starts at (`deliveryAnswer.ConsumerStart`, from `bus.SessionConsumers.Ensure`; left out when it is 0, as a listener of an earlier release leaves it out), and the plugin keeps it as the floor of its resume point, so a session that has received nothing still comes back at its consumer's start rather than at the stream's end (`packages/envoy-client/src/consumer-delivery.ts`).
+  For a consumer the call created, `consumer_start` is never past the stream's last sequence + 1 as that create read the stream: it is the start the consumer was created at, after the create lowered it to the session's resume record or clamped a start past the stream's end to the stream's first sequence, where it did either ("Session consumers", "Settings").
   A registration this listener can give no consumer is refused by name before anything is written, so it leaves no interest row and no session entry:
   `503 {"error":…,"reason":"no_grant"}`, `"consumer_limit"` or `"consumer_error"`, and `409 {"error":…,"reason":"not_requested"}` or `"invalid_session_id"` ("Session consumers", "No consumer").
 
@@ -4713,11 +4732,90 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   That threshold is the backstop for a consumer no listener deleted rather than the bound on how long one lives ("Deleted" below), and it must stand above the sweep's own bound, because the server's removal writes no resume record: `bus.InactiveThresholdFor` takes the longer of `ENVOY_SESSION_GONE_HORIZON` and the session bucket's maximum age, adds one `ENVOY_SESSION_REAP_INTERVAL` and one sweep interval and a 15-minute margin, and never answers below `bus.SessionConsumerInactiveThreshold` (1 hour, which is also what a listener that set nothing carries); a listener logs the value and those windows once at start.
   It is no bound of its own: nats-server restarts its clock at every consumer leader election (v2.15.1 arms the timer in `setLeader` and reschedules nothing while the consumer is not the leader), so on a replicated hub it removes nothing predictably.
   A new consumer starts at the first of these the call has (`bus.SessionConsumers.Ensure`, `create`): the start a restart of it left pending ("Restart at the ack floor" below), the start the registration's `resume` asks for, the sequence after the floor the session's resume record holds ("Deleted" below), the first sequence the stream holds on that session's own agent subject (`bus.Client.NextStoredMessage`, one `$JS.API.STREAM.MSG.GET` by `next_by_subj`), and otherwise the sequence after the stream's last, which delivers what `DeliverNew` delivers.
+  A caller's start is the one the registration's `resume` asks for or the one a repair passes (`sessionDelivery.registeredTarget`), and the record rule lowers it: a caller's start above the resume record's floor plus one starts at that floor plus one instead, where the record names the stream's current `envoy_stream_id` ("The resume record each delete writes" below).
+  A start a restart left pending reads no record, because it comes from the floor of the consumer that restart deleted, which is newer than any record.
+  Every start, from each of these sources, that is past the sequence after the stream's last is then clamped to the stream's first sequence, so no consumer is created past the stream's end ("Past the stream's end" below).
   That start is recorded on the session's entry and carried in the registration's answer, both as `consumer_start`: the entry's is what the durable path skips by, the answer's is the floor the plugin keeps for its resume point.
-  When the registration's `resume` names the stream's current `envoy_stream_id` and carries a `seq`, the consumer starts at `resume.seq + 1`, a `seq` of 0 included (a session that holds nothing of the stream starts at sequence 1), and a start below the stream's first sequence answers `gap: true`.
+  When the registration's `resume` names the stream's current `envoy_stream_id` and carries a `seq`, the caller's start is `resume.seq + 1`, a `seq` of 0 included (a session that holds nothing of the stream starts at sequence 1), and a start below the stream's first sequence answers `gap: true`.
   A `resume` without `seq`, or naming another `envoy_stream_id`, leaves the start to the session's resume record, then to that agent subject, and to the stream's end only where neither holds anything.
   An agent subject is one session's alone and nothing can be stored there before the session id exists, so that start is never older than the session itself, and it hands the session what was stored for it before it could register: a message published while its NATS connection was down, or one that raced its first registration, which the deleted `/v1/replay` sweep used to back-fill (sjawhar/legion#2720, dispatch://INFRA-771).
   A session the stream holds nothing of therefore reads no followed topic's history from before it existed, and one whose own first stored message is old carries its followed topics from that message on, a window bounded by the session's own lifetime.
+
+- **Past the stream's end:** a consumer created at a start past the sequence after the stream's last skips every message the stream stores until the stream reaches that start.
+  A resume point past the stream's end gives such a start: a stream restored from an older backup keeps its `envoy_stream_id`, so a resume point a session holds can name a sequence past its end, and a client can also report a wrong point.
+  So `bus.SessionConsumers.create` clamps every start past the sequence after the stream's last to the stream's first sequence, and a registration's answer and the entry it writes carry that start as `consumer_start`.
+  The client reports only sequences the server handed it, so a start past the end says the stream's sequences went back, and the messages now at those sequences were stored after that and never handed to the session.
+  Started at the stream's first sequence, the consumer hands over every one of them, as Kafka's `earliest` reset policy does, and the session's plugin drops by identity those it was handed before ("The stream's sequences went back" below).
+  A target of the sequence after the stream's last would skip every message stored between a whole loss and the session's next registration.
+  The stream read that `create` makes first can trail the start it fixes, because a message stored after that read can be the first one on the session's agent subject (`next_by_subj`).
+  So `create` holds a start past that read's end to a second read (`streamState`, whose read begins after the call), clamps the start to that read's first sequence only when it is past the end of that read too, and takes the answer's `gap` and `stream_id` from that read.
+  A start that is not past the stream's real end is never moved, and the second read happens only for a start past the end of the first.
+  A client's resume point only rises, so a session whose consumer was created at a clamped start comes back with the same point, still past the stream's end.
+  The record rule then lowers that start to the sequence after the floor its last delete recorded, so its next consumer starts at or before the first message stored while it was away and not again at the stream's first sequence, which would hand it again every message it acked ("The resume record each delete writes" below).
+  A session that deregistered before its one-copy stream lost every message comes back with no record, because a loss that cuts the stream below a record's floor removes the record, which the stream stored after that floor, too.
+  Its old resume point is then clamped to the stream's first sequence, and it is handed the messages stored since the loss (`cmd/listener/session_went_back_test.go`).
+  A consumer an earlier build created past the end has an ack floor that reads as `OptStartSeq - 1` on nats-server v2.15.1 and 2.10.29 alike (`ackFloor`), so its next sequence is its old start, and it is restarted at its relay's next restart ("Restart at the ack floor" below).
+  That restart keeps no consumer whose next sequence, its ack floor plus one, is past the sequence after the stream's last: it deletes the consumer and creates it at that next sequence, and the create clamps that start to the stream's first sequence (`bus.SessionConsumers.RestartAtFloor`).
+  `keepAtFloor` first holds that next sequence to a second stream read, because its first read can begin before the consumer's info was read and so trail the consumer.
+  `KeepListed` answers not kept with no second read, because its one read begins after the list that read the consumer.
+  A delete of such a consumer records the sequence before the stream's first as its floor, so its next consumer starts at the stream's first sequence too ("The resume record each delete writes" below).
+  `Ensure` does not check a consumer that exists against the stream's end, because that check would cost a stream read on every registration, so the relay's restart is what repairs it.
+
+- **Two limits of 'Past the stream's end':** every start the listener creates or restarts a session consumer at, from any source, is reset to the stream's first sequence when it is past the sequence after the stream's last, after the record rule has lowered it, so no consumer this build creates sits past the end, and none skips a message it was never handed.
+  Two limits remain.
+  They are limits of resuming by stream sequence, which every rule above rests on, not defects of those rules, and closing either would need another mechanism: a message's store time against the consumer's creation time, or a new stream identity at every restore.
+  The first is a consumer the stream catches up with before anything restarts it: one an earlier build created past the end, or one an unreconciled whole loss of a one-copy stream left there ("The stream's sequences went back" below).
+  Once the stream reaches that consumer's floor, the keep paths keep it, and the messages between the old end and its floor are skipped.
+  For an earlier build's consumer, the window closes at the first start of a listener that runs this build and holds that session's consumer.
+  A session it relays is repaired by the relay restart it makes at its start.
+  A session whose record has left the bucket is reached by the sweep's delete instead, whose first pass runs at the listener's start and then every `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` (5 minutes by default), at most 256 consumers a pass.
+  A session whose record names another machine is repaired by that machine's relay.
+  In production, the clustered hub's session listener first runs this build at the later of dispatch://INFRA-3635's roll, which moves that hub's listener image, and dispatch://INFRA-3426's window, which first renders that listener.
+  The VM hub's listener, which serves sessions until that window, never runs this build; dispatch://INFRA-811 retires it.
+  The sweep's delete path was measured on the real binary (dispatch://INFRA-3501): the delete recorded floor 17, the next consumer started at 18, and messages 14 to 16 were skipped; this build's code gives the same result for that timing.
+  The second is a restore from an older backup that keeps the stream's `envoy_stream_id`, after which the stream grows past a client's resume point R before that client returns.
+  R + 1 then lies inside the stream, so the messages between the restored end and R are skipped, and no sequence tells that apart from a valid resume point.
+  The Envoy move's window (dispatch://INFRA-810) copies the current streams with writes frozen, not an older backup, so it does not meet this.
+
+- **Data loss:** a stream that lost data can end below a consumer's start.
+  nats-server v2.15.1 recovers a one-copy consumer whose delivered sequence is past its stream's last sequence by lowering its ack floor and its delivered sequence to that last sequence, while its configuration keeps its `OptStartSeq` (`server/consumer.go` v2.15.1, lines 1366-1374 and 6317-6370).
+  The messages the stream stores next take the sequences after that last one, which are below the consumer's start, and the consumer delivers them.
+  The reconcile sets the ack floor's consumer sequence to the one it had delivered before the loss.
+  So `ackFloor` keeps the floor the server reports even below the sequence before the consumer's start, unless it is 0 in both its stream and its consumer sequence and the delivered stream sequence is at or above the sequence before the start ("Restart at the ack floor" below).
+  A restart then starts after that floor, so the session is handed again what waits for an ack.
+  On nats-server v2.15.1 a consumer that had delivered nothing before its stream lost every message is not reconciled ("The stream's sequences went back" below).
+  nats-server v2.15.1 reconciles only a one-copy consumer this way, not a replicated one.
+
+- **The stream's sequences went back:** when a consumer's ack floor, as the server reports it (`AckFloor.Stream`), is above its stream's last sequence, and the stream still carries the same `envoy_stream_id`, the stream's sequence space went back, as when a one-copy stream lost every message.
+  A restore from a backup brings each consumer back at the backup's own floor, inside the restored stream, so it does not reach this state.
+  The messages now at those sequences are ones the consumer was never handed.
+  `ackFloor` reads no lower than the floor the server reports, so such a consumer's next sequence, its ack floor plus one, is past the sequence after the stream's last, and no path keeps it, whether or not anything it delivered awaits an ack: `keepAtFloor` and `KeepListed` answer not kept by the next-sequence check of "Past the stream's end" above.
+  `RestartAtFloor` deletes it and creates it again at that next sequence, and `create` clamps that start to the stream's first sequence and writes the clamp's WARN line, whose `asked_start` is that next sequence ("The log lines of a start" below).
+  The first message the consumer then hands over is the first the stream holds on its filters.
+  nats-server v2.15.1 leaves a consumer in this state in two ways.
+  A consumer that had delivered nothing before its one-copy stream lost every message is not reconciled, because the reconciled state is all 0, which the consumer's file store reads as state not loaded yet and copies the old state back over (`server/filestore.go` v2.15.1, `stateWithCopyLocked`, lines 14324 and 14344-14373, reached from `ForceUpdate` through `encodeState`, lines 14128-14132 and 14015-14017).
+  With 20 messages stored before the loss, such a consumer still reports an ack floor of 20 in its stream sequence and 0 in its consumer sequence, a delivered stream sequence of 20 and `OptStartSeq` 21, and delivers nothing the stream stores after the loss until the stream reaches 21 (`bus.TestRestartAtFloorRestartsAConsumerAWholeLossLeftUnreconciledAtTheStreamsFirstSequence`, and `bus.TestKeepListedLeavesAConsumerAWholeLossLeftUnreconciledToARestartAtTheStreamsFirstSequence` for the list's path).
+  Its restart asks `create` for 21, which the clamp moves to the stream's first sequence.
+  And a consumer an earlier build created past the end reports its ack floor as `OptStartSeq - 1`, so its restart asks for its old start, which the clamp moves to the stream's first sequence, and it is handed the messages stored below that start (`bus.TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequence`).
+  Such a consumer reads as past the end only while the stream's last sequence is below its floor: once the stream has stored up to the floor again, the consumer reads as one inside the stream.
+  A start at the stream's first sequence ("Past the stream's end" above) hands the session again what it was handed before at those sequences, for the consumer an earlier build left and after a restore from an older backup.
+  Its plugin's ledger drops each such frame it recorded within 72 hours (`DELIVERY_DUPLICATE_WINDOW_MS`, the stream's own retention), up to the 20,000 frames it holds (`DELIVERY_LEDGER_LIMIT`, `packages/envoy-client/src/delivery-ledger.ts`).
+  That cap is the limit on these repeats: a session shown more than 20,000 frames within 72 hours can be shown the oldest of them again.
+
+- **The log lines of a start:** the session-consumer connection writes three lines with the logger the listener passes to `bus.ConnectSessionConsumers`, its own JSON logger (`connectSessionDelivery`), so each line carries the listener's `machine_id`.
+  dispatch://INFRA-3635's production check reads the clamp's line by its text and keys, and this item states all three, so keep them exact.
+  WARN `session consumer start past the stream's end, created at the stream's first sequence` reports a create that clamped its start, a restart's create included.
+  Its keys are `session_id`, `asked_start` (the start before the clamp, after the record rule where that applied; for a restart, the sequence after the ack floor it read), `stream_last_seq` (the last sequence of the read that settled the clamp), `stream_id` and `consumer_start` (the clamped start, the first sequence of that read, at most `stream_last_seq + 1`).
+  INFO `session consumer created at its resume record's floor, below the start the caller asked` reports a create that lowered a caller's start to the record's floor plus one.
+  Its keys are `session_id`, `asked_start` (the caller's start), `record_floor` and `stream_id`, and its count is how often the record rule lowers a start.
+  WARN `session resume floor past the stream's end, recorded at the sequence before the stream's first` reports a resume record whose floor was past the stream's end and was recorded at the sequence before the stream's first instead.
+  Its keys are `session_id`, `floor` (the floor asked), `recorded_floor` (the floor recorded, the stream's first sequence minus one: 0 for a stream that has stored nothing or whose first sequence is still 1, and the stream's last sequence for a stream that age or a purge has emptied), `stream_last_seq` and `stream_id`.
+  Each sequence is a JSON number (`slog.Uint64`), and each id is a JSON string (`slog.String`).
+  A create line is written only after the server confirmed the create (`upsert(..., "create")` returned no error), so a create that failed writes none, and the retry that succeeds writes one.
+  A create whose answer was lost while the server applied it writes no line.
+  A create that lost the race to another call's create (`jetstream.ErrConsumerExists`) writes no line either, and `Ensure` then updates the consumer that call created.
+  The floor line is written only after the record's publish succeeded.
+  Two listeners can create one consumer with the same configuration, and the server answers both (`server/consumer.go` v2.15.1, lines 1122-1144), so each writes a line for that one clamp.
 
 - **Deleted** (`bus.SessionConsumers.Delete`, `sessionDelivery.deleteConsumer`):
   the listener deletes a session's consumer in three places, so it holds a slot of the stream's consumer cap no longer, and all three go through one body.
@@ -4735,9 +4833,27 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
 
 - **The resume record each delete writes:** before each delete the listener records the consumer's ack floor and the stream's identity on the session's resume lane, `notifications.envoy.resume.<session id>` (`bus.SessionResumeSubject`), one message per session:
   the stream carries that prefix (`bus.StreamCarriedSubjects`) where no consumer filter takes it (`bus.StreamSubjects`, and `consumerFilterSubjects` for a legacy durable's), no session may register a topic reaching it (`bus.ReachesPrivateStreamSubject`), and `POST /v1/messages/publish` refuses a topic under it `400`.
+  The floor recorded is the consumer's ack floor, from the stream read the record's write makes (`bus.SessionConsumers.recordResumeFloorAt`), and `Delete` returns the floor it recorded.
+  A floor past the stream's end is recorded as the stream's first sequence minus one: 0 for a stream that has stored nothing or still holds sequence 1, and its last sequence for one that age or a purge emptied.
+  Such a floor is a consumer's whose stream's sequences went back: every message the stream holds is below its next sequence and was never handed to it, so the session's next consumer starts at the stream's first sequence, the floor plus one, and skips none of them.
+  The session is handed again what it took at those sequences, which its plugin's ledger drops within 72 hours and 20,000 frames (`DELIVERY_LEDGER_TTL_MS`, `DELIVERY_LEDGER_LIMIT`).
+  The listener logs each such floor with the floor WARN line ("The log lines of a start" above).
   A consumer created for a session that carries no resume point of its own starts at that floor plus one rather than at the stream's end, so the session loses nothing it had not acked;
   a record naming another `envoy_stream_id` is ignored, and a record expires with the stream's own 72-hour retention, by when its floor would name a sequence the stream no longer holds.
-  A delete whose resume record could not be published deletes nothing and leaves that consumer to the next pass.
+  A consumer created from a caller's start reads the record too (the record rule, "Settings" above): a caller's start above the floor plus one starts at the floor plus one, where the record names the stream's current `envoy_stream_id`.
+  The rule lowers every such start, not only one past the stream's end, so the session is given again the messages after the floor up to its resume point, and its plugin's ledger drops them.
+  That is rare: the client raises its resume point in the same step that sends `done`, so the point stands above the floor only where a `done` it sent did not become the server's ack before the delete, or where a frame the server delivered never reached the client.
+  In that second case the rule hands the session a message a create at its resume point would skip.
+  Only `Delete` and `recordDroppedStart` write a record, and a restart's delete writes none, so a consumer that goes without a `Delete` leaves the previous record standing for its 72 hours.
+  Two kinds of consumer go that way: one the server removed on its inactive threshold, and one a restart deleted on a listener that then stopped before its create.
+  The server's removal of a consumer on its inactive threshold writes no record, so that case keeps today's behaviour, a create at the caller's start, clamped, unless an older record of the same `envoy_stream_id` still stands.
+  Where one stands, the caller's start is lowered to that older floor plus one, and the session is given again everything stored since that floor, which its ledger drops within the limits above.
+  Where that floor's next message has aged out of the stream, the answer says `gap: true`, although the client may hold every message.
+  Both cases need a consumer to go without a delete, which the sweep and the reaper exist to prevent, and the INFO line counts each lowered start, these included ("The log lines of a start" above).
+  A record read that fails fails the create, for a caller's start as for a start of 0 (`bus.SessionConsumers.resumeFloor`), so no consumer is created that could skip what the record protects.
+  A registration is then refused `503 consumer_error`, or `503 no_grant` where the server refused the read for want of a grant, and its next heartbeat tries again.
+  A repair logs the failure.
+  A delete whose resume record could not be published deletes nothing, leaving it to the next pass.
 
 - **Repairing it:** a consumer delete and a registration of the same session repair each other through the bucket, and every repair writes what the bucket's newest record and row ask for.
   A registration repairs its session's consumer once it has written that entry, through the same path the delete's repair takes: it reads the record and the interest row the bucket then holds and makes the consumer what they ask for, creating it where a delete took it away, at the ack floor its own consumer call read, and setting its filter where the live one is not what that row's topics build (`listenerDeps.registerPass`, which writes the entry, and `sessionDelivery.confirmRegistered` over `repairRegistered`; the call itself judges whether anything changed, `bus.SessionConsumers.Ensure`).
@@ -4763,9 +4879,10 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   The derived `InactiveThreshold` stays the backstop for a consumer no delete ever names -- one created for a registration whose own writes then failed, and one whose session's record the bucket's own maximum age dropped before a pass judged it -- and a consumer a delete failed on stands until that threshold takes it, the failure logged and the pass or the request going on.
 
 - **A session that comes back with no cursor:** one that registers again inside the stream's 72 hours with no resume point -- none sent, one without a `seq`, or one naming another `envoy_stream_id` -- is given a new consumer at the sequence after the floor its delete recorded, and, where no record of this stream's identity stands for it, at the first message the stream still holds on its own agent subject, whichever delete took its consumer: a deregistration's, the sweep's, the reaper's, or the threshold's.
+  A session that comes back with a cursor above its record's floor, where the record names the stream's current `envoy_stream_id`, also starts at the sequence after that floor ("The resume record each delete writes" above), so the rule below holds for it too, and its plugin's ledger drops what it already wrote, within 72 hours and 20,000 frames.
   So the rule, stated once: every message the stream holds above that floor is offered again, the ones the session took but had not acked included, and nothing at or below it is.
   That floor is the consumer's ack floor and so lags what the session has already written, which is the promise rather than a fault -- a session that comes back loses nothing it had not acked -- and nothing acknowledged those messages for a consumer that did not exist, so the repeat is the stream's own copies and not a second delivery.
-  Only a client that keeps a ledger reads each once -- in this repository `packages/envoy-client/src/consumer-delivery.ts`, whose snapshot holds what the session has written and whose `resumePoint()` is the cursor a registration sends.
+  Only a client that keeps a ledger reads each once, within that ledger's 72 hours (`DELIVERY_DUPLICATE_WINDOW_MS`) and 20,000 frames (`DELIVERY_LEDGER_LIMIT`) -- in this repository `packages/envoy-client/src/consumer-delivery.ts`, whose snapshot holds what the session has written and whose `resumePoint()` is the cursor a registration sends.
   `scripts/e2e-local.sh` pins both halves on a real server: its registration after a clean stop sends no cursor and is given the consumer the recorded floor names, its relaunch sends the cursor and takes each message once, and a window of its own registers with no cursor and reads what the transport offered it.
   That window is where the rule above is read in both directions, and which direction a run reads is the run's own input: with no ack delay the run waits until the server reports the session has acked everything it wrote before the clean stop (`wait_for_acks_settled`, a JetStream `CONSUMER.INFO` request), so the floor stands at that frame and the window asserts no second offer of it, which a floor that ignored the acks would fail; under `E2E_SESSION_ACK_DELAY_MS`, the script's own control, which it takes as 0 or a value from 1000 to 2500 and refuses otherwise, the stop lands before the ack, so the floor stands one below that frame and the window asserts the frame is offered again, exactly once, and that the stand-in's ledger wrote it once.
   The stand-in keeps two records for that reason -- every frame the transport offered it, and the frames it wrote, deduped by the sequence half of a real client's ledger -- since a deduped record alone cannot tell a transport that offered once from one that offered twice.
@@ -4792,13 +4909,13 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
 - **Restart at the ack floor:** every start of a session's relay (the listener starts or gains the durable binding, the session registers with a new `epoch`, a paused relay's backoff ran out or its session registered, a consumer call or a pull failed) reads the consumer's ack floor, deletes the consumer and creates it again at the sequence after the floor with the current filter (`bus.SessionConsumers.RestartAtFloor`;
   nats-server 2.10.29 has no consumer reset).
   So after any break the session takes its messages again in stream order, and its plugin's ledger drops the ones it already wrote.
-  nats-server 2.10.29 reports a consumer's ack floor as 0 until an ack moves it, so the floor never reads below the consumer's start sequence minus one, and, while nothing awaits an ack, never below the last sequence delivered (`ackFloor`;
+  nats-server 2.10.29 reports an ack floor of 0 until an ack moves it, so a floor the server reports as 0 reads as the consumer's start sequence minus one while its delivered sequence is at or above that and its consumer ack floor is 0, any other floor stands even below it ("Data loss" above), and the floor is at least the last sequence delivered when nothing awaits an ack (`ackFloor`;
   `docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md`).
-  A consumer with nothing awaiting an ack has nothing to deliver again and already goes on at the sequence after its floor, so the restart keeps it:
+  A consumer with nothing awaiting an ack, whose next sequence is not past the stream's end, has nothing to deliver again and already goes on at the sequence after its floor, so the restart keeps it:
   it updates the filter and settings in place and sends no delete or create, which leaves no window without a consumer and writes nothing to the server's store.
   Once a restart that deletes has read the floor, the start after it stays pending on the listener's session-consumer connection until a create at it is confirmed:
   a delete or create that failed (a timeout included, and a delete the server applied whose answer was lost) leaves the consumer to the relay's retry, after 1 s doubling to 30 s while the listener owns the session, which creates a consumer it finds missing at that start, and a registration that finds it missing meanwhile creates it there too, not at its resume point or the stream's end.
-  Only a consumer missing with no pending start (never created, deleted with the session's registration or by the sweep, or removed by the server after its inactive threshold) pauses the relay until the next registration, which creates it again at the resume point that registration carries, or at the session's resume record ("Deleted" above).
+  Only a consumer missing with no pending start (never created, deleted with the session's registration or by the sweep, or removed by the server after its inactive threshold) pauses the relay until the next registration, which creates it again at the lower of the resume point that registration carries and the session's resume record ("Deleted" above).
   The rule holds under the listener's per-session lock;
   a second listener knows nothing of the pending start, nor does a listener killed between the delete and the create.
   At most 32 relays of one listener restart at once (`relayRestartLimit`);
@@ -4806,7 +4923,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   Registrations take no turn.
   When the listener starts or gains the durable binding it reads every session consumer at once with the paged consumer list (`$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS`, 256 consumers a page;
   `bus.SessionConsumers.ListSessionConsumers`), and each relay of that burst whose listed consumer has nothing awaiting an ack, already carries the wanted filter and settings, and has no pending start takes no turn and sends no call before it pulls (`bus.SessionConsumers.KeepListed`);
-  every other relay, and every relay started alone (a new `epoch`, a probe after a pause, a retry), restarts through `RestartAtFloor`.
+  every other relay, one whose listed consumer is past the stream's end included, and every relay started alone (a new `epoch`, a probe after a pause, a retry), restarts through `RestartAtFloor`.
   A grant without the list costs one log line and one info per session.
   Calls made at once share their reads of the stream's state (identity, first and last sequence):
   each waits for a read that began after it was made, so a gap is still reported exactly when a start lies below the stream's first sequence.
@@ -4853,7 +4970,10 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   So an attempt record names a delivery this path made, or a refusal it resolved and reported, and never a message it left to a relay or a session it could not read.
   What those two branches cost is the exception dedupe: each further copy of the event, and each redelivery of it, is reported again rather than skipped as an attempt already made.
   The entry records the sequence that consumer starts at (`consumer_start`, written by the registration from `bus.SessionConsumers.Ensure`, the same number that registration's answer carries), and only a message at or after it is the consumer's:
-  one stored below that start -- one deferred as unplaceable before the session's first consumer was created, say -- is in no consumer, so the durable path delivers it as it would for a session with none.
+  one stored below that start -- one deferred as unplaceable before the session's first consumer was created, say -- is in no consumer, and the durable path does not deliver it; which message it NAKs, defers or skips, and what it logs, is decided by `agentSubjectDelivery` and `fanoutDelivery` in `cmd/listener/delivery.go`.
+  Only a registration writes that start (`sessionEntryFromSubscribe`), so a repair or a relay restart that creates the consumer below it leaves the entry above the consumer's real start until the session's next registration, every 90 s, rewrites it from `Ensure`'s answer.
+  A create that clamps a start past the end to the stream's first sequence does that where an earlier build or a restored stream left a start past the end on the entry, and so does a restart at a floor the server lowered after data loss ("Data loss" above) or at the stream's first sequence after its sequences went back.
+  In that window a message between the two starts reads as in no consumer, as above, though the consumer holds it and its relay delivers it; once the next registration rewrites the start, `ConsumerHoldsStored` answers that the consumer holds it.
   An entry an earlier release wrote carries no start, which reads as today: the consumer holds every stored message of it.
 
 - **Lane receipts are gone:** a role forward is stored only.
