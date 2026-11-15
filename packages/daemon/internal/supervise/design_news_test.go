@@ -220,3 +220,215 @@ func TestATaskCarryingNoNewsIsNeverPutToDesignNews(t *testing.T) {
 		t.Fatalf("prompt = %+v, want the task as it was queued", sent)
 	}
 }
+
+// newsOnlyNews is what a start queued for the news alone carries (record.DeliveryNews, encoded
+// JSON): no text of the start's own, two items, and the mark that says it was queued for its news.
+const newsOnlyNews = `{"task":"","news_only":true,` +
+	`"items":[{"issue":"LEGION-209","audience":"holder","step":"spec","artifact":"artifact-spec","from":3,"to":5},` +
+	`{"issue":"LEGION-209","audience":"holder","step":"decisions","artifact":"artifact-decisions","from":1,"to":2}]}`
+
+// newsCarryingStart is one start that carries news of the approved design, and what DesignNews
+// answers of its task once the record has moved under it: its decisions item stopped standing.
+type newsCarryingStart struct {
+	name      string
+	start     RequestDeliver
+	movedTask string
+	movedNews string
+}
+
+// newsCarryingStarts is the two starts that carry news: a phase start, whose news follows its own
+// task, and a start queued for the news alone (the daemon's news-only start).
+func newsCarryingStarts() []newsCarryingStart {
+	return []newsCarryingStart{
+		{
+			name:      "a phase start carrying news",
+			start:     newsStart("outbox:46", 46),
+			movedTask: "Review the change. Issue: LEGION-209. Phase: reviewing.\n\nThe approved spec of LEGION-208 changed for LEGION-209.",
+			movedNews: `{"task":"Review the change. Issue: LEGION-209. Phase: reviewing.",` +
+				`"items":[{"issue":"LEGION-209","audience":"holder","step":"spec","artifact":"artifact-spec","from":3,"to":5}]}`,
+		},
+		{
+			name: "a news-only start",
+			start: RequestDeliver{Claim: testToken, Task: "The approved design of LEGION-208 changed for LEGION-209.", ID: "outbox:46", Row: 46,
+				Phase: phase.Reviewing, Generation: 7, News: []byte(newsOnlyNews)},
+			movedTask: "The approved spec of LEGION-208 changed for LEGION-209.",
+			movedNews: `{"task":"","news_only":true,` +
+				`"items":[{"issue":"LEGION-209","audience":"holder","step":"spec","artifact":"artifact-spec","from":3,"to":5}]}`,
+		},
+	}
+}
+
+// A task that carries news is sent once into a busy worker, as every task is
+// (dispatch://INFRA-3276 R4): a worker in a turn of its own answers the send busy, the answer
+// records the claim working (recordBusyTurn), and nothing sends the task into that turn again —
+// not the sweep, not the shim's hello — so nothing reads its news again either. The turn's end
+// makes the one next send, and that send renders the news again from the record as it reads then
+// (currentNews): the item that stopped standing while the task waited goes from the text and from
+// the delivery, and the confirmation of that send carries only what it told, which is what the
+// store raises as taken (the store's settleDesignNews).
+func TestATaskCarryingNewsABusyAnswerHoldsIsSentOnceMoreAtTheTurnsEnd(t *testing.T) {
+	for _, tc := range newsCarryingStarts() {
+		t.Run(tc.name, func(t *testing.T) {
+			answer := &designNewsAnswer{task: tc.start.Task, news: tc.start.News}
+			h := newsHarness(t, answer)
+			h.reach(StateReady)
+			h.conn.SetStreaming(true)
+			h.conn.RefusePrompt(busyAnswer)
+
+			h.must(tc.start)
+			h.wantPrompts(1)
+			h.wantState(StateWorking)
+
+			h.observe(runtime.Alive)
+			h.must(StreamHello{Claim: testToken, Generation: h.generation()})
+			h.observe(runtime.Alive)
+			h.wantPrompts(1)
+			if len(answer.asked) != 1 {
+				t.Fatalf("DesignNews was asked %d times by the end of the turn the busy answer recorded, want once, at the one send", len(answer.asked))
+			}
+
+			answer.task, answer.news = tc.movedTask, []byte(tc.movedNews)
+			h.conn.FailPrompt(nil)
+			h.conn.SetStreaming(false)
+			h.mustQuiet(StreamTurnEnd{Claim: testToken})
+
+			sent := h.wantPrompts(2)
+			if sent[1].Message != tc.movedTask || sent[1].DeliveryID != h.pending().ID {
+				t.Fatalf("the send at the turn's end = %+v, want the task as the record reads now, %q, under its pending id %s", sent[1], tc.movedTask, h.pending().ID)
+			}
+			if len(answer.asked) != 2 {
+				t.Fatalf("DesignNews was asked %d times, want twice: once at each send", len(answer.asked))
+			}
+			h.must(StreamTurnStart{Claim: testToken})
+			stored, ok := h.store.delivery(testToken)
+			if !ok || stored.ConfirmedAt.IsZero() || !bytes.Equal(stored.News, []byte(tc.movedNews)) {
+				t.Fatalf("stored delivery after the turn started = %+v (held %t), want it confirmed carrying only %s", stored, ok, tc.movedNews)
+			}
+		})
+	}
+}
+
+// A task that carries news whose first prompt's turn starts late is confirmed by that turn, as
+// every task is (Machine.outstanding): Oh My Pi acknowledges the prompt, the wait for its turn
+// runs out (noTurn), the next sweep sends the task again and renders its news again, and Oh My Pi
+// answers that send busy, since it is preparing the first prompt's turn. The busy answer records
+// the claim working and nothing more is sent. The first prompt's turn, when it starts, confirms the
+// task under the id it holds now, and the store's write of that confirmation carries the news the
+// task holds, which is what raises it as taken; the first prompt's result retires the task. The
+// worker is prompted twice in all and the news is told by the one confirmation.
+func TestATaskCarryingNewsIsConfirmedByTheLateTurnOfItsFirstPrompt(t *testing.T) {
+	for _, tc := range newsCarryingStarts() {
+		t.Run(tc.name, func(t *testing.T) {
+			answer := &designNewsAnswer{task: tc.start.Task, news: tc.start.News}
+			h := newsHarness(t, answer)
+			h.reach(StateReady)
+
+			h.must(tc.start)
+			first := h.wantPrompts(1)[0].DeliveryID
+			h.advance(testRPC)
+			h.observe(runtime.Alive) // the next sweep sends the task again, as a silent prompt's bound has it
+			resend := h.wantPrompts(2)[1].DeliveryID
+			if len(answer.asked) != 2 {
+				t.Fatalf("DesignNews was asked %d times, want twice: once at each send", len(answer.asked))
+			}
+			h.must(StreamPromptResult{Claim: testToken, DeliveryID: resend, Error: busyAnswer})
+			h.wantState(StateWorking)
+			task := h.pending().ID
+
+			h.must(StreamTurnStart{Claim: testToken}) // the first prompt's turn, late
+			stored, ok := h.store.delivery(testToken)
+			if !ok || stored.ID != task || stored.ConfirmedAt.IsZero() || !bytes.Equal(stored.News, tc.start.News) {
+				t.Fatalf("stored delivery after the late start = %+v (held %t), want %s confirmed carrying %s", stored, ok, task, tc.start.News)
+			}
+
+			h.mustQuiet(StreamTurnEnd{Claim: testToken})
+			h.must(StreamPromptResult{Claim: testToken, DeliveryID: first, AgentInvoked: true})
+			if c := h.claim(); c.Pending != nil {
+				t.Fatalf("pending after the first prompt's result = %+v, want the task retired", c.Pending)
+			}
+			h.wantPrompts(2)
+			if len(answer.asked) != 2 {
+				t.Fatalf("DesignNews was asked %d times, want only at the two sends", len(answer.asked))
+			}
+		})
+	}
+}
+
+// A relaunched claim that holds nothing at its ready holds the daemon's own delivery of what the
+// relaunch ended (queueRelaunch), and a task carrying news that arrives while no prompt of that
+// delivery waits on a result takes its place (replaceable), as any newer task does. The relaunch
+// neither drops the news nor tells it twice, and the record's sentence is neither lost nor
+// duplicated:
+//
+//   - a task whose news still stands is sent once at the end of the turn the agent is in, with
+//     the record's sentence in front of the text its news renders to then, and the one turn that
+//     takes it confirms both: the delivery carrying the news, and the record told by that delivery;
+//   - a task queued for its news alone that has nothing left to say at that send is retired
+//     unsent, and the drop gives the claim the daemon's own delivery of the record again
+//     (relaunchAfterDrop), which is sent at once, the sentence alone.
+func TestATaskCarryingNewsTakesTheRelaunchDeliverysPlace(t *testing.T) {
+	// relaunched is a claim whose worker ran a turn, died, and came back holding the daemon's own
+	// delivery of what that death ended, which its agent, in a turn of its own, answered busy at
+	// the send, so no prompt of it waits on a result.
+	relaunched := func(t *testing.T, answer *designNewsAnswer) *harness {
+		t.Helper()
+		h := newsHarness(t, answer)
+		h.reach(StateIdle)
+		h.observe(runtime.Gone)
+		h.conn.RefusePrompt(busyAnswer)
+		h.relaunched()
+		h.conn.FailPrompt(nil)
+		if p := h.pending(); !relaunchTask(p.ID) || len(h.outstanding()) != 0 {
+			t.Fatalf("the relaunched claim holds %+v with %v outstanding, want the relaunch's delivery and no prompt of it waiting", p, h.outstanding())
+		}
+		return h
+	}
+
+	t.Run("its news still stands", func(t *testing.T) {
+		answer := &designNewsAnswer{task: queuedTask, news: []byte(queuedNews)}
+		h := relaunched(t, answer)
+
+		h.must(newsStart("outbox:47", 47))
+		if p := h.pending(); p.ID != "outbox:47" {
+			t.Fatalf("the claim holds %+v after the task carrying news, want it in the relaunch delivery's place", p)
+		}
+		h.mustQuiet(StreamTurnEnd{Claim: testToken})
+
+		sent := h.prompts()[len(h.prompts())-1]
+		if want := relaunchSentence(h.claim().EndedWork, true) + "\n\n" + queuedTask; sent.DeliveryID != "outbox:47" || sent.Message != want {
+			t.Fatalf("the task carrying news was sent as %+v, want %q under outbox:47", sent, want)
+		}
+		if len(answer.asked) != 1 {
+			t.Fatalf("DesignNews was asked %d times, want once, at the one send", len(answer.asked))
+		}
+		h.must(StreamTurnStart{Claim: testToken})
+		if stored, ok := h.store.delivery(testToken); !ok || stored.ID != "outbox:47" || stored.ConfirmedAt.IsZero() || !bytes.Equal(stored.News, []byte(queuedNews)) {
+			t.Fatalf("stored delivery after the turn started = %+v (held %t), want outbox:47 confirmed carrying its news", stored, ok)
+		}
+		h.wantEndedTold(true, "outbox:47", "once the turn of the task carrying news began")
+	})
+
+	t.Run("a news-only task with nothing left to say", func(t *testing.T) {
+		answer := &designNewsAnswer{}
+		h := relaunched(t, answer)
+		start := newsCarryingStarts()[1].start
+		start.ID, start.Row = "outbox:48", 48
+
+		h.must(start)
+		before := len(h.prompts())
+		h.mustQuiet(StreamTurnEnd{Claim: testToken})
+
+		ended := h.claim().EndedWork
+		sent := h.wantPrompts(before + 1)[before]
+		if !relaunchTask(sent.DeliveryID) || sent.Message != RelaunchSentence(ended) {
+			t.Fatalf("the send after the news-only task was retired = %+v, want the relaunch's record alone, %q", sent, RelaunchSentence(ended))
+		}
+		if p := h.pending(); p.ID != sent.DeliveryID {
+			t.Fatalf("the claim holds %+v, want the daemon's own delivery %s it was sent", p, sent.DeliveryID)
+		}
+		if log := h.store.deliveryLog(); !slices.Contains(log, "retire outbox:48") {
+			t.Fatalf("delivery writes = %v, want the news-only task retired unsent", log)
+		}
+		h.wantEndedTold(false, "", "before the relaunch delivery's turn")
+	})
+}

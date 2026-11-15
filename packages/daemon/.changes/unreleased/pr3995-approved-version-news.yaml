@@ -12,7 +12,9 @@ body: |-
   it is told, an issue whose holder holds a task it has not taken yet named as waiting for that
   task, and an issue in `accepting` is told through the architect that owns it. The daemon
   moves no issue and stops no turn: a running worker gets the task between its turns, and news that
-  a worker did not confirm goes with its next start or with the entry sweep.
+  a worker did not confirm goes with its next start or with the entry sweep. The daemon's own
+  message of what a relaunch ended is not a task the worker has not taken: a task with news takes
+  its place and starts with its sentence.
 
   The daemon reads the change set from Dispatch (`GET /api/v1/artifacts/{id}/changes`). Against a
   Dispatch without that route, the task names the two versions and says why it lists no change.

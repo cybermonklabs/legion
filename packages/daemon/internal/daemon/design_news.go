@@ -626,8 +626,17 @@ func newsStartQueued(run record.RoleRun) bool {
 // architect's summary reads the same rule over the same claim, for a phase holder (holderTold) and
 // for the sub-architect that owns a member in accepting (readMemberClaims), and says that member's
 // news waits until the task is taken (workflow.NewsWaitsForTask).
+//
+// The daemon's own delivery of a relaunch's record is no task (supervise.HoldsTask), as
+// workflow's owed reads it for the same question: it carries only the sentence of what the
+// relaunch ended, a newer task takes its place while no prompt of it waits on a result (the
+// machine's queue), and that task carries the sentence in front of its own text. So a claim that
+// holds it alone is queued its news-only start, and the summary says a task tells the member now.
+// Should the start meet a prompt of it still waiting on its result, the machine refuses the start
+// as it refuses one behind any untaken task, and the start retries on its backoff until that
+// prompt's turn has taken the delivery.
 func holdsUntakenTask(held *record.RoleClaim) bool {
-	return held != nil && held.Pending != nil && held.Pending.ConfirmedAt.IsZero()
+	return held != nil && supervise.HoldsTask(held.Pending) && held.Pending.ConfirmedAt.IsZero()
 }
 
 // newsClaimTakes is the one rule for whether a news-only start may hand its news to a claim the

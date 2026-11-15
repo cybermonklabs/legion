@@ -666,23 +666,35 @@ func TestNoNewsOnlyStartGoesWhereTheRecordSaysNoNewsMay(t *testing.T) {
 // until a turn takes that task. The root architect's summary says so of the member
 // (workflow.NewsWaitsForTask), never that a task tells it now nor that its next start carries it.
 // A claim whose pending task a turn has taken is the control: its confirmation is recorded, the
-// reconcile queues its start, and the summary says a task tells it now.
+// reconcile queues its start, and the summary says a task tells it now. So is a claim that holds
+// only the daemon's own delivery of a relaunch's record, unconfirmed: that delivery is no task
+// (supervise.HoldsTask), and a newer task takes its place while no prompt of it waits on a result,
+// carrying its sentence in front of the news.
 func TestNoNewsOnlyStartIsQueuedBehindATaskTheHolderHasNotTaken(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
+		relaunch  bool
 		confirmed bool
+		queued    bool
 	}{
 		{name: "a task not taken yet"},
-		{name: "a task a turn took", confirmed: true},
+		{name: "a task a turn took", confirmed: true, queued: true},
+		{name: "the daemon's own delivery of a relaunch's record, not taken yet", relaunch: true, queued: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newNewsReconcileRig(t)
 			r.member(reconcileRoot, "", phase.Reviewing)
 			r.told(reconcileRoot, record.AudienceHolder, 4)
 			token := r.holder(reconcileRoot, claim.RoleReviewer, supervise.StateWorking, "", 1)
+			// The phase's task names its phase and run; the relaunch's delivery names neither, and
+			// its text is the record's sentence alone (supervise's queueRelaunch).
+			id, task, generation, worked := "outbox:7", "Review the change.", 1, string(phase.Reviewing)
+			if tc.relaunch {
+				id, task, generation, worked = "relaunch:QXKZ7TRWJ5", "Your previous process ended.", 0, ""
+			}
 			r.inTx(func(tx pgx.Tx) error {
 				_, err := tx.Exec(r.ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, generation, phase, confirmed_at)
-					values ($1, 'outbox:7', 'Review the change.', now(), 1, 'reviewing', case when $2 then now() end)`, string(token), tc.confirmed)
+					values ($1, $2, $3, now(), $4, $5, case when $6 then now() end)`, string(token), id, task, generation, worked, tc.confirmed)
 				return err
 			})
 
@@ -690,8 +702,8 @@ func TestNoNewsOnlyStartIsQueuedBehindATaskTheHolderHasNotTaken(t *testing.T) {
 				t.Fatalf("reconcile the tree's news: %v", err)
 			}
 			starts := r.newsStarts()
-			if queued := len(starts) == 1; queued != tc.confirmed || len(starts) > 1 {
-				t.Fatalf("the news-only starts = %v, want one queued: %t", startsTo(starts), tc.confirmed)
+			if queued := len(starts) == 1; queued != tc.queued || len(starts) > 1 {
+				t.Fatalf("the news-only starts = %v, want one queued: %t", startsTo(starts), tc.queued)
 			}
 			if took, _ := r.toldOf(reconcileRoot, record.AudienceHolder).Took(record.DesignStepSpec); took != 4 {
 				t.Fatalf("the reviewer's told version = %d, want 4: the news stays owed until a task carrying it is taken", took)
@@ -706,7 +718,7 @@ func TestNoNewsOnlyStartIsQueuedBehindATaskTheHolderHasNotTaken(t *testing.T) {
 				return err
 			})
 			want := workflow.NewsWaitsForTask
-			if tc.confirmed {
+			if tc.queued {
 				want = workflow.NewsSentNow
 			}
 			if len(drafts) != 1 || drafts[0].state != want {
