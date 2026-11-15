@@ -6,14 +6,8 @@
  *  `whether` and `eventually`, the wait a row makes for a state another process reaches, which
  *  the short bound ends.
  *
- * That line, and the failure of a child its bound stopped, name the child by the file that
- * started it, its command with its arguments, and the environment its caller gave it. Both go to
- * the run's stderr, which CI keeps in a public log, so they print an environment variable's value
- * only for a variable of `runTellingVariables`, whose value tells one run of a command from
- * another, and every other variable by its name alone: a list of what to hide would print any
- * secret it does not know, such as a token or a key a caller hands a child. The arguments tell
- * runs apart and none can be left out, so they print with every secret libpq reads in them
- * written as `***` (`masked`).
+ * That line, and the failure of a child its bound stopped, go to the run's stderr, which CI keeps
+ * in a public log, so both name the child as `named` writes it.
  *
  * A process a row or hook drives rather than waits for starts outside it by design, since a bound
  * would kill a process its row is still using: the probe the seven driven rows of
@@ -190,6 +184,17 @@ export async function eventually(
   if (!(await whether(holds))) {
     throw new Error(`waited the short bound of ${bounds.short} ms for ${what}, and it never came`);
   }
+}
+
+/** Answers whether `waiting` has settled yet, without awaiting it. `silence-read.test.ts` keeps
+ *  a copy of its own, since importing this module adds its exit and signal listeners. */
+export function watch(waiting: Promise<unknown>): () => boolean {
+  let settled = false;
+  const done = () => {
+    settled = true;
+  };
+  waiting.then(done, done);
+  return () => settled;
 }
 
 /** What every line this module writes on stderr starts with. It is how a caller that starts
@@ -414,10 +419,7 @@ const environmentFloor = new Set(["HOME", "PATH", "TMPDIR"]);
  *  imports and `run-server.sh` runs of `harness-signin.test.ts` and `round-robin-proxy.test.ts`;
  *  `TEST_PARALLEL_INDEX` chooses the stack a worker reads in `harness-stacks.test.ts`; and
  *  `DISPATCH_E2E_SERVER_BIN`, the path of the server binary `run-server.sh` runs, is all that
- *  tells two of its runs in `round-robin-proxy.test.ts` apart. Every other variable a caller
- *  passes prints by its name alone: a URL (`DATABASE_URL`, `LEGION_TEST_PG_DSN`), a manifest that
- *  holds URLs (`DISPATCH_E2E_STACKS`), a credential (`DISPATCH_E2E_SIGNIN_CLIENT_SECRET`), and the
- *  ports, paths and names no two runs of one command differ by. A variable joins this list only
+ *  tells two of its runs in `round-robin-proxy.test.ts` apart. A variable joins this list only
  *  when its value tells two runs apart and is no URL, no credential and no path to a secret. */
 const runTellingVariables: ReadonlySet<string> = new Set([
   "DISPATCH_E2E_PROCESSES",
@@ -470,9 +472,8 @@ const secretKeys = [
   "scram_server_key",
 ];
 
-/** `password`, `sslpassword`, `oauth_client_secret`, `scram_client_key` and `scram_server_key`
- *  (`secretKeys`) as `passwordParameter` reads a key, any one of the five: each character as
- *  itself or as `%` and the hex code of that character, in either case, as `pass%57ord` writes
+/** The keys of `secretKeys` as `passwordParameter` reads a key, any one of them: each character
+ *  as itself or as `%` and the hex code of that character, in either case, as `pass%57ord` writes
  *  its `W` and `oauth%5Fclient_secret` its first `_`. A character with no case, such as `_`, has
  *  one code, and the `i` flag of `passwordParameter` reads its hex digits in either case, as
  *  `%5F` or `%5f`. */
@@ -493,8 +494,7 @@ const passwordKey = secretKeys
 
 /** The value of a secret keyword, as in `host=h password=*** dbname=d`, of a secret query
  *  parameter, as in `postgres://h/?sslpassword=***&dbname=d`, or of a `PGPASSWORD` assignment, as
- *  in `PGPASSWORD=*** psql`, which `masked` hides. A secret key is any one of `password`,
- *  `sslpassword`, `oauth_client_secret`, `scram_client_key` and `scram_server_key`, read
+ *  in `PGPASSWORD=*** psql`, which `masked` hides. A secret key is any one of `secretKeys`, read
  *  percent-decoded and in any case (`passwordKey`). `PGPASSWORD` is read in any case, as a shell
  *  or `env` writes the variable libpq reads a password from, with no whitespace on either side of
  *  its `=`, since a shell ends the assignment at whitespace. Every key stands at the start of the
@@ -517,8 +517,7 @@ const passwordParameter = new RegExp(
 );
 
 /** `text` with three kinds of secret written as `***`: a URL's userinfo password
- *  (`urlPassword`); the value of a `password`, `sslpassword`, `oauth_client_secret`,
- *  `scram_client_key` or `scram_server_key` keyword or query parameter, its name read
+ *  (`urlPassword`); the value of a keyword or query parameter of `secretKeys`, its name read
  *  percent-decoded and in any case; and the value of a `PGPASSWORD=value` assignment inside a
  *  word, in any case, as `env PGPASSWORD=… psql` and `bash -c "PGPASSWORD=… psql"` start a child
  *  (both `passwordParameter`). A variable libpq does not read, such as `DB_PASSWORD`, is not
@@ -537,15 +536,10 @@ export function masked(text: string): string {
 }
 
 /** What the cost line and the failure call a child: the file that started it, the command with
- *  its arguments, and the environment the caller gave it. Each argument is masked on its own
- *  (`masked`), before the arguments are joined and before `oneLine` escapes their breaks, so a
- *  mask never reaches past its own argument: a URL's userinfo password, the value of a
- *  `password`, `sslpassword`, `oauth_client_secret`, `scram_client_key` or `scram_server_key`
- *  keyword or query parameter, its name read percent-decoded and in any case, and the value of a
- *  `PGPASSWORD=value` assignment inside a word, as `env PGPASSWORD=… psql` or
- *  `bash -c "PGPASSWORD=… psql"` starts a child, are written as `***`. The arguments are read
- *  against a list of what to hide because they are what tells two runs of a file apart, and none
- *  of them can be left out.
+ *  its arguments, and the environment the caller gave it. Each argument is masked on its own, as
+ *  `masked` says, before the arguments are joined and before `oneLine` escapes their breaks, so a
+ *  mask never reaches past its own argument. The arguments are read against a list of what to
+ *  hide because they are what tells two runs of a file apart, and none of them can be left out.
  *
  *  An environment entry is read against a list of what to show: an entry of
  *  `runTellingVariables` prints as `NAME=value`, and every other entry as its bare `NAME`,

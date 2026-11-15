@@ -139,8 +139,6 @@ export interface FakeDispatchServerOptions<Frame> extends FakeDispatchOptions {
    * reconnect's.
    */
   readonly live?: (socket: ServerWebSocket<undefined>, frame: Frame, nth: number) => void;
-  /** Runs after every recorded frame, whatever `live` did: what wakes a test waiting on one. */
-  readonly onFrame?: () => void;
 }
 
 /** A fake Dispatch listening on a loopback port, and what its client asked of it. */
@@ -223,7 +221,6 @@ export function startFakeDispatch<Frame = unknown>(
         const nth = (counts.get(type) ?? 0) + 1;
         counts.set(type, nth);
         options.live?.(socket, frame, nth);
-        options.onFrame?.();
       },
     },
   });

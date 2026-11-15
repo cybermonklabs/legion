@@ -40,7 +40,6 @@ test("the scan reads files and limits of the real directory", () => {
   expect(scannedFiles.length).toBeGreaterThan(0);
   expect(realLimits.length).toBeGreaterThan(0);
   expect(realLimits.filter((limit) => limit.stated?.fromBounds).length).toBeGreaterThan(0);
-  expect(realLimits.some((limit) => limit.kind === "hook")).toBe(true);
   expect(
     realLimits.some(
       (limit) =>

@@ -17,7 +17,7 @@ import {
   Supervisor,
   shellQuote,
 } from "../local-instance-support";
-import { bounds, eventually, rowLimit, runBounded } from "./bounded-subprocess";
+import { bounds, eventually, rowLimit, runBounded, watch } from "./bounded-subprocess";
 
 const makeDirectory = temporaryDirectories("local-instance-support");
 
@@ -87,16 +87,6 @@ function killLeft(pid: number): void {
  *  two turns before it stops listening for an unhandled rejection: Bun 1.4.4 reports one within
  *  the first turn, and the second keeps the row from resting on which turn that is. */
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
-
-/** Answers whether `waiting` has settled yet, without awaiting it. */
-function watch(waiting: Promise<unknown>): () => boolean {
-  let settled = false;
-  const done = () => {
-    settled = true;
-  };
-  waiting.then(done, done);
-  return () => settled;
-}
 
 /** A `Supervisor.stop` the row started and did not await. A stop that never sees a leader exit
  *  never returns, so the row waits for `returned` with `eventually`, which fails naming the stop,

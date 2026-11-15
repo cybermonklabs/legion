@@ -24,6 +24,7 @@ import type {
   LiveClientFrame,
 } from "../../web/src/api/types";
 import {
+  MAX_TIMER_DELAY_MS,
   type ProbeCloseLine,
   type ProbeCompareLine,
   type ProbeEndLine,
@@ -39,6 +40,7 @@ import {
   pastDeadline,
   rowLimit,
   runBounded,
+  watch,
   whether,
 } from "./bounded-subprocess";
 
@@ -75,8 +77,8 @@ interface Run {
   readonly named: string;
   readonly lines: readonly ProbeLine[];
   readonly stderr: readonly string[];
-  /** Whether the probe has exited and both its output streams are read to their end. */
-  readonly ended: boolean;
+  /** Answers whether the probe has exited and both its output streams are read to their end. */
+  readonly ended: () => boolean;
   /** Sends the probe `signal`, as a Ctrl-C does. */
   kill(signal: NodeJS.Signals): void;
   /** The exit code, once both output streams are read to their end. */
@@ -153,15 +155,8 @@ function runProbe(args: readonly string[]): Run {
     readLines(child.stdout, (line) => lines.push(JSON.parse(line) as ProbeLine)),
     readLines(child.stderr, (line) => stderr.push(line)),
   ]).then(() => child.exited);
-  let ended = false;
-  const end = () => {
-    ended = true;
-  };
-  exit.then(end, end);
   return {
-    get ended() {
-      return ended;
-    },
+    ended: watch(exit),
     exited: () => exit,
     kill: (signal) => child.kill(signal),
     lines,
@@ -170,13 +165,18 @@ function runProbe(args: readonly string[]): Run {
   };
 }
 
+/** What the probe wrote so far, as a failure quotes it: its lines as JSON, then its stderr. */
+function wroteSoFar(run: Run): string {
+  return `${JSON.stringify(run.lines)} ${run.stderr.join("\n")}`;
+}
+
 /** Waits, as `whether` does, until `holds` answers true for `run`. Where the probe ends first, or
  *  the short bound passes first, it fails naming `what`, the line the row waits for, beside the
  *  lines the probe wrote so far. */
 async function lineBy(run: Run, what: string, holds: () => boolean): Promise<void> {
-  if (await whether(holds, () => run.ended)) return;
-  const wrote = `${JSON.stringify(run.lines)} ${run.stderr.join("\n")}`;
-  if (run.ended) {
+  if (await whether(holds, run.ended)) return;
+  const wrote = wroteSoFar(run);
+  if (run.ended()) {
     throw new Error(
       `the probe ended first, with exit ${await run.exited()}, before its ${what}: ${wrote}`
     );
@@ -193,10 +193,10 @@ async function lineBy(run: Run, what: string, holds: () => boolean): Promise<voi
  *  beside the lines the probe wrote so far. */
 async function exitAfter(run: Run, signal: NodeJS.Signals): Promise<number> {
   run.kill(signal);
-  if (!(await whether(() => run.ended))) {
+  if (!(await whether(run.ended))) {
     throw new Error(
       `the probe ${run.named} did not exit inside the short bound of ${bounds.short} ms after ` +
-        `${signal}: ${JSON.stringify(run.lines)} ${run.stderr.join("\n")}`
+        `${signal}: ${wroteSoFar(run)}`
     );
   }
   return run.exited();
@@ -472,11 +472,11 @@ test(
   rowLimit("short", "short")
 );
 
-/** The longest wait a timer keeps, 2^31-1 ms or about 24.8 days, which is the largest spread the
- *  probe takes: far above the rotation row's wait for its second subscribe, which ends at the
- *  short bound, so a reopen on a timer drawn from it reaches that subscribe inside the bound on at
- *  most about one draw in 35 800 (60 s over 24.8 days). */
-const NO_TIMER_SPREAD_MS = 2 ** 31 - 1;
+/** The probe's `MAX_TIMER_DELAY_MS`, the longest wait a timer keeps, 2^31-1 ms or about 24.8
+ *  days, which is the largest spread the probe takes: far above the rotation row's wait for its
+ *  second subscribe, which ends at the short bound, so a reopen on a timer drawn from it reaches
+ *  that subscribe inside the bound on at most about one draw in 35 800 (60 s over 24.8 days). */
+const NO_TIMER_SPREAD_MS = MAX_TIMER_DELAY_MS;
 
 // Once the first connection has opened, Dispatch's rotation (4001) is the one close the probe
 // answers by opening again at once: its restart (1012) waits within the first attempt's spread,

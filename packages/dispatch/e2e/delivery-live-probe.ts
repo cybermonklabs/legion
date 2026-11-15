@@ -185,7 +185,7 @@ const SUB = "probe";
  *  `--open-within`, `--read-within`) longer than this, whose wait would then end at once, and a
  *  `--reconnect-spread-ms` above it, whose draws could pass it and make the probe reopen at once:
  *  the option honoured as its own opposite. */
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 /** Dispatch closes every socket with this code when it shuts down; the page reconnects within the
  *  first attempt's spread (`reconnectDelayMs(0)`). */
 const SERVICE_RESTART = 1012;
@@ -928,8 +928,8 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-// The test imports `reconnectWaitMs` from this file: the command line runs only when bun runs
-// the probe itself.
+// The test imports `reconnectWaitMs` and `MAX_TIMER_DELAY_MS` from this file: the command line
+// runs only when bun runs the probe itself.
 if (import.meta.main) {
   process.exit(await main(Bun.argv.slice(2)));
 }
