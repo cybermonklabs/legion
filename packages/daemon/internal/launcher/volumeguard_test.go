@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -588,6 +589,52 @@ func TestTheGuardWalkHoldsABatchOfALevelsNamesAndNotAllOfThem(t *testing.T) {
 	}
 	if rise := peak - before; rise > bound {
 		t.Errorf("the live heap rose %d bytes over the walk of a directory of %d names, want no more than %d: the walk held the level whole", rise, names, bound)
+	}
+}
+
+// The guards' walk asks the sweep's stop between the batches of one directory's names, not only
+// before it opens a directory: the age read and the re-read before a delete honour the sweep's
+// budget, its settings and the container's stop (the round-23 decision, dispatch://INFRA-2009),
+// and a role may put any number of names in one directory of an entry, which a walk asking only
+// per directory reads to its end once it has opened it. At this code's own measure of 8,400 to
+// 9,700 names a second (volumetrim.go), three million names in one directory is past the
+// sweep's five-minute budget. The case walks a directory of two thousand names whose stop is
+// asked for once the first name has been visited: the walk ends within the batch it is reading,
+// with the stop's own error. The negative control is the walk at dd846980, which asks only before
+// it opens the directory: it visited every name and answered no error.
+func TestTheGuardWalkAsksItsStopBetweenTheBatchesOfOneDirectory(t *testing.T) {
+	const names = 2000
+	dir := t.TempDir()
+	wide := filepath.Join(dir, "wide")
+	mkdirFixture(t, wide)
+	for at := range names {
+		if err := os.WriteFile(filepath.Join(wide, fmt.Sprintf("%05d", at)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held, err := openVolumeDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+
+	stop := errors.New("the sweep's budget ran out")
+	visited := 0
+	err = walkEntries(held, "wide", func() error {
+		if visited > 0 {
+			return stop
+		}
+		return nil
+	}, func(os.FileInfo) error {
+		visited++
+		return nil
+	})
+	if !errors.Is(err, stop) {
+		t.Errorf("the walk of a directory of %d names answered %v, want the stop asked for after its first name", names, err)
+	}
+	if visited > walkEntriesBatch {
+		t.Errorf("the walk visited %d of the directory's %d names after its stop was asked for at the first, want no more than the batch of %d it was reading",
+			visited, names, walkEntriesBatch)
 	}
 }
 
