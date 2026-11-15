@@ -23,7 +23,6 @@ import type {
   CommentWriteResponse,
   CreateAgentMessageInput,
   CreateArtifactInput,
-  CreateArtifactReviewInput,
   CreateAskInput,
   CreateCommentInput,
   CreatedProject,
@@ -276,6 +275,33 @@ export class DispatchNoRouteError extends DispatchServiceError {
   constructor() {
     super("NOT_FOUND", 404, NO_ROUTE_ROLLING_RELEASE_MESSAGE);
   }
+}
+
+/**
+ * What `reviewArtifact` throws once the Dispatch at `baseUrl` answered no route for `route` (the
+ * method and path it sent the review to) each time it was sent. The code and status are that
+ * answer's, so a caller reads it as the refusal it is. The words are not
+ * `DispatchNoRouteError`'s: a build without the versioned review route may simply be older than
+ * that route rather than half of a release in progress, and no other route is asked, so the
+ * message says why. Dispatch's no-route answer carries only a code, an error and a hint
+ * (`unmatchedRoute`, packages/envoy/internal/dispatch/routes/router.go) and names no build, so
+ * it points at the probe that does, `/healthz`, whose `commit` member is the commit that build
+ * runs (`healthzHandler`, packages/envoy/cmd/dispatch/main.go), rather than guessing.
+ */
+function reviewNoRouteRefusal(
+  baseUrl: string,
+  route: string,
+  version: number
+): DispatchServiceError {
+  return new DispatchServiceError(
+    "NOT_FOUND",
+    404,
+    `Dispatch at ${baseUrl} answered no route for ${route} each time the review was sent, so it ` +
+      "recorded no review. This build is older than that route. No other request was sent: the " +
+      "review route an older build serves takes no version, and it would record the review at " +
+      `a version that build chooses, which may not be version ${version}. The no-route answer ` +
+      `does not name the build; GET ${baseUrl}/healthz shows its commit.`
+  );
 }
 
 export interface ListIssuesOptions {
@@ -1334,24 +1360,48 @@ export class DispatchClient {
   }
 
   /**
-   * Records the review of the person the credential names on a document: `approved`, or
-   * `changes_requested` with its `reason`, at `version`, the version the caller read
-   * (`createArtifactReview` in packages/envoy/internal/dispatch/api/reviews.go). The body names no
-   * actor: the route records the person the credential names, and refuses a field it does not
-   * take. Dispatch refuses a credential that names no person holding `approve` (403
+   * Records the review of the person the credential names on one version of a document:
+   * `approved`, or `changes_requested` with its `reason`. It sends
+   * `POST /api/v1/artifacts/{id}/versions/{version}/reviews` with `{state, reason?}` and nothing
+   * else (`createArtifactVersionReview` in packages/envoy/internal/dispatch/api/reviews.go); the
+   * body names no actor, since the route records the person the credential names. `version` is
+   * the version the caller read, sent as a segment of the path rather than as a member of the
+   * body: a Dispatch route ignores a member it does not declare (`decodeJSON`;
+   * packages/envoy/cmd/dispatch/README.md, "Two builds at once"), so a build without this route
+   * answers that it has no route for it rather than recording the review at a version it picks
+   * itself.
+   *
+   * Dispatch refuses a credential that names no person holding `approve` (403
    * `OAUTH_SCOPE_REQUIRED` or `SIGN_IN_REQUIRED`), and a `version` other than the one the review
-   * would record (409 `REVIEW_VERSION_MOVED`). With an approval request open the review answers
-   * it and records the verdict on every document the request named, but the answer is this
-   * document's review alone; its `ask_id` names the request it answered.
+   * would record (409 `REVIEW_VERSION_MOVED`); those refusals are thrown as Dispatch wrote them.
+   * With an approval request open the review answers it and records the verdict on every
+   * document the request named, but the answer is this document's review alone; its `ask_id`
+   * names the request it answered.
+   *
+   * A build without the route answers no route each time the review is sent (`#noRoute`), and
+   * this then throws `reviewNoRouteRefusal`'s refusal rather than the rolling-release message:
+   * that build may simply be older than the route. No other route is asked, since the review
+   * route such a build serves takes no version.
    */
   async reviewArtifact(
     artifactID: string,
-    input: CreateArtifactReviewInput & {
-      state: "approved" | "changes_requested";
-      version: number;
-    }
+    version: number,
+    input: { readonly state: "approved" | "changes_requested"; readonly reason?: string }
   ): Promise<ArtifactReview> {
-    return this.#json("POST", ["api", "v1", "artifacts", artifactID, "reviews"], input);
+    const path = ["api", "v1", "artifacts", artifactID, "versions", String(version), "reviews"];
+    // Built from the two members the route takes, so nothing else a caller's object carries can
+    // reach the wire.
+    const body =
+      input.reason === undefined
+        ? { state: input.state }
+        : { state: input.state, reason: input.reason };
+    try {
+      return await this.#json("POST", path, body);
+    } catch (error) {
+      if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
+      const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
+      throw reviewNoRouteRefusal(this.#baseUrl, route, version);
+    }
   }
 
   /**
@@ -1896,9 +1946,11 @@ export class DispatchClient {
    * again, a write under the same `Idempotency-Key`. Dispatch authenticates a request before any
    * handler runs (`brokerTokenActor`, packages/envoy/internal/dispatch/api/broker_token.go), so
    * that 401 says it did nothing and the request is safe to send again. It is sent again once
-   * per call: a second such answer is the call's, as any other refusal is. A trade the broker
-   * refuses throws out of the second presentation, so the call fails in the broker's own words,
-   * which name `agent-secrets login` after a revoke.
+   * per `#send`, which is once per attempt: a second such answer is that attempt's, as any other
+   * refusal is. A no-route retry (`#noRoute`) is a new attempt, which runs `#send` afresh and so
+   * may send its request again once after such an answer of its own. A trade the broker refuses
+   * throws out of the second presentation, so the call fails in the broker's own words, which
+   * name `agent-secrets login` after a revoke.
    */
   async #send(
     method: string,

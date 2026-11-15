@@ -894,8 +894,15 @@ document header's Approve and Request changes record (`reviewCommand`,
 `src/dispatch-commands/reviews.ts`). The verdict is `approved` or `changes_requested`. The
 document is the issue's spec unless `--artifact` names another, resolved as `dispatch doc-read`
 resolves it. `changes_requested` needs `--reason`, and the command refuses it without one before
-it sends anything. It posts `{state, reason?, version}` to `POST /api/v1/artifacts/{id}/reviews`
-(`DispatchClient.reviewArtifact`). A review records an approval or a request for changes in the
+it sends anything. It posts `{state, reason?}` to
+`POST /api/v1/artifacts/{id}/versions/{version}/reviews` (`DispatchClient.reviewArtifact`), the
+review route that names the version in its path, and sends no other request. A Dispatch route
+ignores a body member it does not declare, so a version sent in the body of the older
+`POST /api/v1/artifacts/{id}/reviews` would be dropped by a build that predates the guard, and
+the review recorded at a version that build chooses. A build without the versioned route answers
+no route instead: once the client's no-route retries are spent, the command fails `NOT_FOUND`,
+says that nothing was recorded, and names `GET /healthz`, whose `commit` member says which build
+answered. A review records an approval or a request for changes in the
 person's name, so it works only with a token that names a person who holds `approve`. A session
 gets such a token from a person's sign-in on the machine (above). Dispatch refuses any other
 token with `403 OAUTH_SCOPE_REQUIRED` or `403 SIGN_IN_REQUIRED`. `--version` is the version the

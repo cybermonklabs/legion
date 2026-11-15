@@ -15,11 +15,13 @@ import { refusalWithCode } from "./failures";
  * `dispatch review`: approve one version of an issue's document, or request changes on it, in the
  * name of the person the credential names, which is what the document header's Approve and
  * Request changes record. The document resolves as `dispatch doc-read` and
- * `dispatch request-approval` resolve theirs, the issue's spec by default.
+ * `dispatch request-approval` resolve theirs, the issue's spec by default. The version is sent in
+ * the path of the versioned review route (`DispatchClient.reviewArtifact`), so a Dispatch build
+ * without that route records nothing and the command says so.
  *
  * What it prints of the review is what Dispatch answered: the state, the version and the actor.
  * A review that answered an open approval request records the same verdict on every document the
- * request named, yet Dispatch answers with this document's review alone (`createArtifactReview`
+ * request named, yet Dispatch answers with this document's review alone (`recordArtifactReview`
  * in packages/envoy/internal/dispatch/api/reviews.go answers `reviews[artifact.ID]`), so the
  * output says that rather than naming reviews the answer does not carry.
  */
@@ -29,14 +31,13 @@ export async function reviewCommand(context: CommandContext): Promise<DispatchTo
   const { artifact } = resolved;
   let review: ArtifactReview;
   try {
-    review = await client.reviewArtifact(artifact.id, {
+    review = await client.reviewArtifact(artifact.id, numberArg(args, "version"), {
       state: stringArg(args, "verdict") as "approved" | "changes_requested",
       ...defined("reason", optionalString(args, "reason")),
-      version: numberArg(args, "version"),
     });
   } catch (error) {
-    // The description names REVIEW_VERSION_MOVED, OAUTH_SCOPE_REQUIRED and SIGN_IN_REQUIRED, so
-    // the code reaches the caller.
+    // The description names REVIEW_VERSION_MOVED, OAUTH_SCOPE_REQUIRED and SIGN_IN_REQUIRED, and
+    // a build without the route refuses NOT_FOUND, so the code reaches the caller.
     throw refusalWithCode(error);
   }
   const issue = resolved.issue?.key;

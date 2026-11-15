@@ -477,7 +477,7 @@ export interface paths {
     /** @description List a document's approval reviews. */
     get: operations["getApiV1ArtifactsByIdReviews"];
     put?: never;
-    /** @description Approve or request changes on a document {state, reason?, version?}, at its latest settled version; with an approval ask open it answers that ask instead, preserving its thread, and reviews every document the ask named, each at the version the ask names. version, when given, is the version the caller read: a review that would record another version of this document is 409 REVIEW_VERSION_MOVED, naming the version it would record, with nothing written, and a version below 1 is 400 INVALID_REVIEW. */
+    /** @description Approve or request changes on a document's latest settled version; answers the open approval ask when present, preserving its thread, and reviews every document that ask named. */
     post: operations["postApiV1ArtifactsByIdReviews"];
     delete?: never;
     options?: never;
@@ -564,6 +564,23 @@ export interface paths {
     get: operations["getApiV1ArtifactsByIdVersionsByNumber"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/artifacts/{id}/versions/{number}/reviews": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Approve or request changes on one version of a document {state, reason?}: {number} is the version the caller read, and the route requires it. The review is recorded only when {number} is the version it would record, the document's latest settled version or, with an approval ask open, the version that ask names for the document; any other is 409 REVIEW_VERSION_MOVED, naming the version the review would record, with nothing written, and a {number} that is not a whole number of 1 or more is 400 INVALID_REVIEW. With an approval ask open the review answers it, preserving its thread, and reviews every document the ask named, each at the version the ask names. This is the route a client sends when the version is a guard: a build without it answers no route, rather than recording the review without the guard. */
+    post: operations["postApiV1ArtifactsByIdVersionsByNumberReviews"];
     delete?: never;
     options?: never;
     head?: never;
@@ -3957,7 +3974,6 @@ export interface components {
     CreateArtifactReviewInput: {
       reason?: null | string;
       state: string;
-      version?: null | number;
     };
     CreateAskInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -7664,6 +7680,45 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["ArtifactVersionText"];
           "application/octet-stream": unknown;
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1ArtifactsByIdVersionsByNumberReviews: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+        number: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CreateArtifactReviewInput"];
+      };
+    };
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ArtifactReview"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */

@@ -136,6 +136,7 @@ var writeClasses = map[string]writeScope{
 	"PATCH /api/v1/artifacts/{id}":                                  scopeProject,
 	"DELETE /api/v1/artifacts/{id}":                                 scopeProject,
 	"POST /api/v1/artifacts/{id}/reviews":                           scopeProject,
+	"POST /api/v1/artifacts/{id}/versions/{number}/reviews":         scopeProject,
 	"POST /api/v1/artifacts/{id}/plan-reviews":                      scopeProject,
 	"POST /api/v1/artifacts/{id}/approval-requests":                 scopeProject,
 	"POST /api/v1/artifacts/{id}/versions":                          scopeProject,
@@ -301,6 +302,7 @@ var idRoutes = map[string]idRoute{
 	"GET /api/v1/artifacts/{id}/references":                  {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
 	"GET /api/v1/artifacts/{id}/reviews":                     {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
 	"POST /api/v1/artifacts/{id}/reviews":                    {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
+	"POST /api/v1/artifacts/{id}/versions/{number}/reviews":  {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
 	"GET /api/v1/artifacts/{id}/subscribers":                 {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
 	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}": {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
 	"GET /api/v1/artifacts/{id}/text":                        {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
@@ -439,7 +441,7 @@ type routeScopeSet []string
 //
 // These are the routes Dispatch refused every bearer token on until INFRA-1017, and two scopes
 // decide them now: `person`, "this credential acts as its person", which every row here needs,
-// and `approve`, the right to settle what a person settles, which the ten rows below that
+// and `approve`, the right to settle what a person settles, which the eleven rows below that
 // decide a credential, a sign-in, a review or a token need as well. A person's browser, their
 // personal tokens and their machine logins hold both; the shared token, a pod's service-account
 // token, a project-scoped session's token and a broker-issued token that names a service and no
@@ -512,6 +514,9 @@ var routeScopes = map[string]routeScopeSet{
 	"POST /api/v1/me/agent-tokens":                    {model.ScopePerson, model.ScopeApprove},
 	"PATCH /api/v1/me/agent-tokens/{id}":              {model.ScopePerson, model.ScopeApprove},
 	"DELETE /api/v1/me/agent-tokens/{id}":             {model.ScopePerson, model.ScopeApprove},
+	// The review that names the version its caller read settles what the review above settles,
+	// with that version as a guard.
+	"POST /api/v1/artifacts/{id}/versions/{number}/reviews": {model.ScopePerson, model.ScopeApprove},
 }
 
 // routesNotMounted names every route of names that is no row of the table, sorted. The walk is
@@ -746,7 +751,8 @@ func (s *server) routes() []apiRoute {
 		{http.MethodDelete, "/api/v1/artifacts/{id}", authAny, "Remove a document of an issue that is still untouched: made by typing a title and never written in. It answers 204 and appends artifact.removed on the issue, and it leaves no row behind. A document that holds writing or a later version, an edit that has not settled, or a comment, ask, review, approval request, check result, read mark or link from anything in Dispatch is 409 ARTIFACT_NOT_UNTOUCHED, saying which of those it is; the issue's spec, a document that plays a role and an artifact that is no document read the same refusal; and a project's document is 400 ARTIFACT_PROJECT_DOCUMENT, since a project document's events are its own and its removal event would need the row the removal deletes.", s.removeArtifact},
 		{http.MethodPost, "/api/v1/artifacts/{id}/rebuild", authAny, "Rebuild a document history ygo cannot load from its latest saved markdown; a live document is 409 DOCUMENT_LIVE and one that loads is 409 DOCUMENT_LOADS.", s.rebuildArtifact},
 		{http.MethodGet, "/api/v1/artifacts/{id}/reviews", authAny, "List a document's approval reviews.", s.listArtifactReviews},
-		{http.MethodPost, "/api/v1/artifacts/{id}/reviews", authAny, "Approve or request changes on a document {state, reason?, version?}, at its latest settled version; with an approval ask open it answers that ask instead, preserving its thread, and reviews every document the ask named, each at the version the ask names. version, when given, is the version the caller read: a review that would record another version of this document is 409 REVIEW_VERSION_MOVED, naming the version it would record, with nothing written, and a version below 1 is 400 INVALID_REVIEW.", s.createArtifactReview},
+		{http.MethodPost, "/api/v1/artifacts/{id}/reviews", authAny, "Approve or request changes on a document's latest settled version; answers the open approval ask when present, preserving its thread, and reviews every document that ask named.", s.createArtifactReview},
+		{http.MethodPost, "/api/v1/artifacts/{id}/versions/{number}/reviews", authAny, "Approve or request changes on one version of a document {state, reason?}: {number} is the version the caller read, and the route requires it. The review is recorded only when {number} is the version it would record, the document's latest settled version or, with an approval ask open, the version that ask names for the document; any other is 409 REVIEW_VERSION_MOVED, naming the version the review would record, with nothing written, and a {number} that is not a whole number of 1 or more is 400 INVALID_REVIEW. With an approval ask open the review answers it, preserving its thread, and reviews every document the ask named, each at the version the ask names. This is the route a client sends when the version is a guard: a build without it answers no route, rather than recording the review without the guard.", s.createArtifactVersionReview},
 		{http.MethodPost, "/api/v1/artifacts/{id}/plan-reviews", authAny, "Record a plan review's approval of a plan version: {version}, on an issue's plan.md alone (409 NOT_PLAN_DOCUMENT otherwise). A plan is never sent to a person for approval, so POST /api/v1/artifacts/{id}/approval-requests refuses it with 409 PLAN_APPROVED_BY_REVIEW; a later plan version makes this approval stale, as a spec's goes stale.", s.createArtifactPlanReview},
 		{http.MethodPost, "/api/v1/artifacts/{id}/approval-requests", authAny, "Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same.", s.requestArtifactApproval},
 		{http.MethodGet, "/api/v1/artifacts/{id}/blocks", authAny, "A document's blocks with markdown ranges, tokens, reference counts and each block's embedding, where meaning search stands on it (embedded, pending, or none while no window covers it); a typed block carries attributes, its type's attributes in declaration order as its opening line writes them ({name, value, kind}, the value unescaped and unquoted and the kind the one the block schema declares it, so a reader follows a block[] value as the pointers it holds and reads every other kind as text), and a table block lists its rows and cells by the indexes delete_row and delete_column take.", s.getArtifactBlocks},

@@ -23,7 +23,7 @@ import (
 
 // goingMutatingRoutesWithNoTool is every write of the served table no action of the catalogue
 // performs. Nearly all of them are the catalogue's gap and this tree's follow-up work: an
-// operation the bar cannot yet propose. One is not, and its row says why.
+// operation the bar cannot yet propose. Two are not, the review routes, and their rows say why.
 // TestTheMutatingRoutesNoToolSpecNames holds the list to the table, so a write added later is
 // named here or in goingToolRoutes and never silently missing.
 var goingMutatingRoutesWithNoTool = []string{
@@ -43,12 +43,17 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PATCH /api/v1/priorities/{id}",
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep",
 	"POST /api/v1/artifacts/{id}/rebuild",
+	// The document header's review. goingToolRoutes gives it no row on purpose, as it gives none
+	// to the review route dispatch_review performs (below): a review records an approval or a
+	// changes request in a person's name, and the loop that proposes operations on Dispatch's
+	// graph must never propose one. Keep it here; never give it a row.
+	"POST /api/v1/artifacts/{id}/reviews",
+	"POST /api/v1/artifacts/{id}/versions",
 	// dispatch_review performs this write, and goingToolRoutes gives it no row on purpose: a
 	// review records an approval or a changes request in a person's name, and the loop that
 	// proposes operations on Dispatch's graph must never propose one. Keep it here; never give
 	// it a row.
-	"POST /api/v1/artifacts/{id}/reviews",
-	"POST /api/v1/artifacts/{id}/versions",
+	"POST /api/v1/artifacts/{id}/versions/{number}/reviews",
 	"POST /api/v1/asks/{id}/answer",
 	"POST /api/v1/asks/{id}/decline",
 	"POST /api/v1/broadcasts",
@@ -198,8 +203,8 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 
 // TestTheMutatingRoutesNoToolSpecNames: the catalogue's gap, named rather than refused. A write
 // of the served table no catalogue action performs is an operation the bar cannot yet propose,
-// or, for the review route, one it must never propose, and the list is committed here so a write
-// added later is either given a tool or added to it.
+// or, for the two review routes, one it must never propose, and the list is committed here so a
+// write added later is either given a tool or added to it.
 func TestTheMutatingRoutesNoToolSpecNames(t *testing.T) {
 	routes := (&server{}).routes()
 	performed := map[string]bool{}

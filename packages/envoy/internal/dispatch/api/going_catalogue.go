@@ -19,8 +19,9 @@ package api
 // (mutatingRoutes, the set TestEveryMutatingRouteIsClassed reads), a placeholder nothing fills,
 // or a relation in neither edge family refuses to mount (register). The other direction is a
 // report rather than a refusal, since a write no tool in the catalogue performs is not an error:
-// most are work still to do, and the review route is kept out on purpose.
-// TestTheMutatingRoutesNoToolSpecNames names every one of them.
+// most are work still to do, and the two review routes, the document header's and the one
+// dispatch_review performs, are kept out on purpose. TestTheMutatingRoutesNoToolSpecNames names
+// every one of them.
 //
 // Nothing here decides anything: the catalogue says what an action is and what it takes, and
 // GoingCaller performs one an agent already chose. The loop that chooses is not in this package.

@@ -1489,7 +1489,7 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
-  test("dispatch_review's description, which --help prints, says whose name it writes in and what Dispatch refuses", () => {
+  test("dispatch_review's description, which --help prints, says whose name it writes in, what Dispatch refuses and what a build without its route does", () => {
     const { description } = specFor("dispatch_review");
 
     for (const words of [
@@ -1497,6 +1497,7 @@ describe("dispatchToolSpecs", () => {
       "403 OAUTH_SCOPE_REQUIRED or 403 SIGN_IN_REQUIRED",
       "it must be the version the review would record",
       "409 REVIEW_VERSION_MOVED",
+      "A Dispatch build without the versioned review route answers no route and records nothing; the command then says so and names /healthz",
       "every other browser action is dispatch://INFRA-910's",
     ]) {
       expect(description).toContain(words);

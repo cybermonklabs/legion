@@ -255,9 +255,10 @@ function planReviewBody() {
   };
 }
 
-/** `POST /api/v1/artifacts/{id}/reviews`: the person's approval of the issue's spec at the version
- *  `dispatch review`'s example names. The person is the one the token names, and the act names
- *  the session the token proved; no request was open, so the review answers no ask. */
+/** `POST /api/v1/artifacts/{id}/versions/{number}/reviews`: the person's approval of the issue's
+ *  spec at the version `dispatch review`'s example names. The person is the one the token names,
+ *  and the act names the session the token proved; no request was open, so the review answers no
+ *  ask. */
 function reviewBody() {
   return {
     id: UUID,
@@ -573,7 +574,7 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "blocks") return response([]);
     if (rest === "edits") return response({ applied: 1, version: versionBody(), changed: true });
     if (rest === "plan-reviews") return response(planReviewBody(), 201);
-    if (rest === "reviews") return response(reviewBody(), 201);
+    if (rest === "versions/2/reviews" && method === "POST") return response(reviewBody(), 201);
     if (rest === "suggestions") {
       return response({ ...commentBody(), artifact_id: ARTIFACT_ID }, 201);
     }

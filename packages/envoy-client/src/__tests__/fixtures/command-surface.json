@@ -1717,15 +1717,14 @@
         },
         {
           "method": "POST",
-          "path": "/api/v1/artifacts/01234567-0000-4000-8000-00000000000a/reviews",
+          "path": "/api/v1/artifacts/01234567-0000-4000-8000-00000000000a/versions/2/reviews",
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
             "Content-Type": "application/json"
           },
           "body": {
-            "state": "approved",
-            "version": 2
+            "state": "approved"
           }
         }
       ],

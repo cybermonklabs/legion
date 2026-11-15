@@ -1,15 +1,20 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { NO_ROUTE_ROLLING_RELEASE_MESSAGE } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
-import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
+import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
+import { DispatchServiceError, forgetKeyedLayerMemory } from "../dispatch-http";
+import { messageFor } from "../errors";
+import { ToolInputError } from "../tool-input-errors";
 
 // `dispatch review` against a stub Dispatch: the issue read its document resolves through, and
-// `POST /api/v1/artifacts/{id}/reviews` answered as `createArtifactReview`
-// (packages/envoy/internal/dispatch/api/reviews.go) answers it, so each row pins what goes on the
-// wire and what the command prints of Dispatch's answer. The shape is
-// `dispatch-who-waits.test.ts`'s: one stub server driven through `runDispatchCli`, with a
-// temporary state directory per row.
+// `POST /api/v1/artifacts/{id}/versions/{number}/reviews` answered as
+// `createArtifactVersionReview` (packages/envoy/internal/dispatch/api/reviews.go) answers it, so
+// each row pins what goes on the wire and what the command prints of Dispatch's answer. The shape
+// is `dispatch-who-waits.test.ts`'s: one stub server driven through `runDispatchCli`, with a
+// temporary state directory per row; the row of a build without the route drives the executor
+// the CLI runs instead, which takes the wait its retries pause with.
 
 const makeDirectory = temporaryDirectories("dispatch-review");
 
@@ -59,6 +64,8 @@ let refusal: {
 } | null = null;
 /** The approval request the next recorded review answered, or null when none was open. */
 let answeredAsk: string | null = null;
+/** Whether the stub answers the versioned review route as a build without it does: no route. */
+let noRoute = false;
 
 const server = Bun.serve({
   port: 0,
@@ -70,23 +77,35 @@ const server = Bun.serve({
     if (pathname === "/api/v1/issues/DSP-1" && request.method === "GET") {
       return Response.json(ISSUE);
     }
-    const review = /^\/api\/v1\/artifacts\/([^/]+)\/reviews$/.exec(pathname);
+    const review = /^\/api\/v1\/artifacts\/([^/]+)\/versions\/([^/]+)\/reviews$/.exec(pathname);
     if (review !== null && request.method === "POST") {
+      if (noRoute) {
+        // A build older than the route, answering as its router answers a path it has no route
+        // for (`unmatchedRoute` in packages/envoy/internal/dispatch/routes/router.go).
+        return Response.json(
+          {
+            code: "NOT_FOUND",
+            error: `no route for ${request.method} ${pathname}`,
+            hint: "GET /api/v1 lists every route",
+          },
+          { status: 404 }
+        );
+      }
       if (refusal !== null) {
         return Response.json(
           { code: refusal.code, error: refusal.error },
           { status: refusal.status, headers: refusal.headers ?? {} }
         );
       }
-      // The review as Dispatch records it: at the version the request named, in the name of the
+      // The review as Dispatch records it: at the version the path named, in the name of the
       // person the token names, with the session the token proved as its act, and the reason
       // trimmed.
-      const sent = body as { state: string; reason?: string; version: number };
+      const sent = body as { state: string; reason?: string };
       return Response.json(
         {
           id: "review-1",
           artifact_id: review[1],
-          version: sent.version,
+          version: Number(review[2]),
           state: sent.state,
           kind: "person",
           actor: { kind: "user", id: PERSON, act: { session: "ses-1" } },
@@ -110,6 +129,7 @@ beforeEach(() => {
   requests.length = 0;
   refusal = null;
   answeredAsk = null;
+  noRoute = false;
   stateDir = makeDirectory();
   resetAdviceMemory();
   forgetKeyedLayerMemory();
@@ -159,7 +179,7 @@ const REASON_RULE =
   "verdict changes_requested requires reason, a non-empty note saying what must change before the document can be approved.";
 
 describe("dispatch review", () => {
-  test("an approval goes to the issue's spec by default with the version read, and prints the state, version and actor Dispatch answered", async () => {
+  test("an approval goes to the versioned route of the issue's spec by default, with the version read in its path and a body of the state alone, and prints the state, version and actor Dispatch answered", async () => {
     const { code, stdout, stderr } = await run([
       "review",
       "DSP-1",
@@ -171,16 +191,17 @@ describe("dispatch review", () => {
 
     expect(stderr).toBe("");
     expect(code).toBe(0);
-    // The body names no actor: Dispatch records the person the token names.
+    // The version is in the path and the body carries nothing else; it names no actor either:
+    // Dispatch records the person the token names.
     expect(posted()).toEqual([
-      { path: "/api/v1/artifacts/artifact-spec/reviews", body: { state: "approved", version: 3 } },
+      { path: "/api/v1/artifacts/artifact-spec/versions/3/reviews", body: { state: "approved" } },
     ]);
     expect(stdout).toBe(
       `Recorded the review of spec.md (document id artifact-spec): approved at version 3, by user ${PERSON}, acting through session ses-1.\n`
     );
   });
 
-  test("a request for changes sends its reason beside the version, to the document --artifact names, and prints the reason Dispatch recorded", async () => {
+  test("a request for changes sends its reason, with the version in the path, to the document --artifact names, and prints the reason Dispatch recorded", async () => {
     const { code, stdout, stderr } = await run([
       "review",
       "DSP-1",
@@ -198,8 +219,8 @@ describe("dispatch review", () => {
     expect(code).toBe(0);
     expect(posted()).toEqual([
       {
-        path: "/api/v1/artifacts/artifact-design/reviews",
-        body: { state: "changes_requested", reason: "Name the rollback path.", version: 2 },
+        path: "/api/v1/artifacts/artifact-design/versions/2/reviews",
+        body: { state: "changes_requested", reason: "Name the rollback path." },
       },
     ]);
     expect(stdout.split("\n")).toEqual([
@@ -255,8 +276,11 @@ describe("dispatch review", () => {
 
     expect(result.code).toBe(1);
     expect(result.stdout).toBe(`${code}: ${error}\n`);
-    // Dispatch's own refusal is final: the review was sent once and not again.
-    expect(posted()).toHaveLength(1);
+    // Dispatch's own refusal is final: the review was sent once, to the versioned route, and not
+    // again.
+    expect(posted()).toEqual([
+      { path: "/api/v1/artifacts/artifact-spec/versions/3/reviews", body: { state: "approved" } },
+    ]);
   });
 
   test("a review that answered an open approval request says so, for every document the request named, and that the answer carries this document alone", async () => {
@@ -278,5 +302,45 @@ describe("dispatch review", () => {
       "It also answered the open approval request (ask ask-9), so Dispatch recorded the same verdict on every document that request named, each at the version the request named for it. Dispatch answered with the review of spec.md alone, so no other document's review is shown here; dispatch doc-read --issue DSP-1 --artifact <document> prints the approval each of them now reads.",
       "",
     ]);
+  });
+
+  test("a Dispatch without the versioned route records nothing, and the refusal names the route and /healthz, never a release in progress, after asking that route alone", async () => {
+    noRoute = true;
+    const base = `http://127.0.0.1:${server.port}`;
+    const waits: number[] = [];
+
+    // runDispatchCli takes no wait of its own, and the no-route retries pause 1, 2 and 4 seconds,
+    // jittered. The executor it runs takes one (`sleep`), so this row calls it directly with a
+    // wait that returns at once. The CLI prints `messageFor` of what it throws, and exits 1 for
+    // any error that is no ToolInputError.
+    const error: unknown = await executeDispatchTool({
+      tool: "dispatch_review",
+      args: { issue: "DSP-1", version: 3, verdict: "approved" },
+      cwd: stateDir,
+      host: "omp",
+      sessionId: "ses-1",
+      config: { url: base, credential: bearerCredential("test-token") },
+      env: {},
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+    }).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(DispatchServiceError);
+    expect(error).not.toBeInstanceOf(ToolInputError);
+    expect(error).toMatchObject({ code: "NOT_FOUND", status: 404 });
+    const printed = messageFor(error);
+    expect(printed).toBe(
+      `NOT_FOUND: Dispatch at ${base} answered no route for POST /api/v1/artifacts/artifact-spec/versions/3/reviews each time the review was sent, so it recorded no review. This build is older than that route. No other request was sent: the review route an older build serves takes no version, and it would record the review at a version that build chooses, which may not be version 3. The no-route answer does not name the build; GET ${base}/healthz shows its commit.`
+    );
+    expect(printed).not.toContain(NO_ROUTE_ROLLING_RELEASE_MESSAGE);
+    // The first attempt and one after each of the three waits, all to the versioned route: none
+    // to the review route that takes no version, and no /healthz.
+    expect(waits).toHaveLength(3);
+    expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+      "GET /api/v1/issues/DSP-1",
+      ...Array(4).fill("POST /api/v1/artifacts/artifact-spec/versions/3/reviews"),
+    ]);
+    expect(posted().map(({ body }) => body)).toEqual(Array(4).fill({ state: "approved" }));
   });
 });

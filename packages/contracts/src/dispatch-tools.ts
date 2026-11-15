@@ -511,9 +511,10 @@ const handoffValidation: NonNullable<DispatchToolSpec["validation"]> = {
   refusal: (value) => handoffProblem(value) ?? HANDOFF_RULE,
 };
 
-/** What a request for changes must carry. Dispatch requires it too (`createArtifactReview` in
- *  packages/envoy/internal/dispatch/api/reviews.go answers 400 REASON_REQUIRED without one), and
- *  `dispatch review` refuses such a call before it sends anything. */
+/** What a request for changes must carry. Dispatch requires it too (`recordArtifactReview` in
+ *  packages/envoy/internal/dispatch/api/reviews.go, which both review routes share, answers 400
+ *  REASON_REQUIRED without one), and `dispatch review` refuses such a call before it sends
+ *  anything. */
 const REVIEW_REASON_RULE =
   "verdict changes_requested requires reason, a non-empty note saying what must change before the document can be approved.";
 
@@ -1585,14 +1586,16 @@ export const dispatchToolSpecs = [
       "records an approval or a changes request in the person's name at that version, so it " +
       "works only with a token that names a person who holds approve; Dispatch refuses it to " +
       "any other token, with 403 OAUTH_SCOPE_REQUIRED or 403 SIGN_IN_REQUIRED. --version is the " +
-      "version you read, and it must be the version the review would record: the document's " +
-      "latest settled version, or, while an approval request is open on it, the version that " +
-      "request names for it. Any other is refused 409 REVIEW_VERSION_MOVED, which names the " +
-      "version to read, and nothing is recorded. With a request open the review answers it, and " +
-      "records the same verdict on every document the request names, each at the version the " +
-      "request names. A later version makes an approval stale. A review is the one browser " +
-      "action this command takes for a person; every other browser action is " +
-      "dispatch://INFRA-910's. " +
+      "version you read, sent in the review route's path, and it must be the version the review " +
+      "would record: the document's latest settled version, or, while an approval request is " +
+      "open on it, the version that request names for it. Any other is refused 409 " +
+      "REVIEW_VERSION_MOVED, which names the version to read, and nothing is recorded. A " +
+      "Dispatch build without the versioned review route answers no route and records nothing; " +
+      "the command then says so and names /healthz, which reports the commit a build runs. With " +
+      "a request open the review answers it, and records the same verdict on every document the " +
+      "request names, each at the version the request names. A later version makes an approval " +
+      "stale. A review is the one browser action this command takes for a person; every other " +
+      "browser action is dispatch://INFRA-910's. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
@@ -1603,7 +1606,7 @@ export const dispatchToolSpecs = [
       version: z
         .number({ int: true, min: 1 })
         .describe(
-          "The document version you read and review: the version the review would record, or Dispatch refuses it 409 REVIEW_VERSION_MOVED naming the version to read."
+          "The document version you read and review, sent as a segment of the review route's path: the version the review would record, or Dispatch refuses it 409 REVIEW_VERSION_MOVED naming the version to read."
         ),
       verdict: z
         .enum(["approved", "changes_requested"])
