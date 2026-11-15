@@ -34,7 +34,8 @@
 #     its unmerged child in reviewing is sent the task;
 #   - a7-the-merger-waits-then-reads-the-opening: with the gate closed the merger is not launched,
 #     in the window a merger whose gate is open is launched; the approval launches it with a start
-#     task that leads with the gate's opening and names what changed;
+#     task that holds the start's own text, a blank line, and then the news, which opens with the
+#     gate's opening and names what changed;
 #   - r6-only-the-root-is-told-of-its-checks: a root's checks-only approval reaches the root's
 #     phase holder, and its children's workers are sent no task;
 #   - off-the-daemon-sends-nothing: a second daemon under gates.design off, on Dispatch again; an
@@ -51,19 +52,26 @@
 # runs each of three steps three times in two arms, the head's prompts and the base's (the base
 # below): a4-the-architect-tells-the-child-reviewer, off-the-architect-tells-the-holders and
 # answers-a-stale-reviewer-moves-back-a-current-one-comments, which the driver's file describes. It
-# prints each run's evidence and `run <step> <arm> <n>: PASS|FAIL …`, and this script prints
-# `<step> <arm>: <n>/3 runs passed` for each step and arm. Part two passes when every head run
-# passed. The base arm is the control of each step: it bites when its count is below the head's,
-# and an equal count is printed as no control for that step, which fails nothing. The driver stops
-# at the first head run that fails, since the proof then fails whatever the rest show. The model
-# key is read from APPROVED_VERSION_NEWS_MODEL_KEY_FILE (default /var/run/model-gateway-key/key,
-# where a role pod mounts the gateway's key) by the driver itself, which gives it to each pane's
-# environment alone: this script exports no key, so no build, broker or service it starts holds
+# prints each run's evidence and `run <step> <arm> <n>: <outcome> …`. PASS and FAIL are runs that
+# reached the step's assertion. SETUP is a run that stopped before it, on something both arms
+# share, such as a holder that did not end its start turn in the run's bound. HARNESS is a run the
+# harness failed. This script counts PASS and FAIL alone for an arm, prints
+# `<step> <arm>: <p> of <n> runs that reached the assertion passed` for each step and arm, and
+# names each run it did not count. Part two passes when every head run reached its assertion and
+# passed: a head run that stopped before its assertion fails the run, and its FAIL line names it.
+# The base arm is the control of each step: it bites when a base run failed at its assertion. A
+# base arm that passed every run that reached its assertion is printed as no control for that
+# step, which fails nothing, and a setup failure is never counted as the control biting. The
+# driver stops at the first head run that does not pass, since the proof then fails whatever the
+# rest show. The model key is read from APPROVED_VERSION_NEWS_MODEL_KEY_FILE (default
+# /var/run/model-gateway-key/key, where a role pod mounts the gateway's key) by the driver itself,
+# which gives it to each pane's environment alone. This script exports no key, and it unsets the
+# caller's ANTHROPIC_API_KEY before either part, so no build, broker or service it starts holds
 # one. Once part two ran, the key-leak check counts the key's first 8 characters in the evidence
 # directory, without printing them, and fails the run on any.
 #
 # Run it from a checkout on a Linux host with go, git, tar, awk, bun and python3, as
-#   LEGION_OMP_PATH=/opt/omp/bin/omp \
+#   LEGION_OMP_PATH=/opt/omp/bin/omp ANTHROPIC_BASE_URL=<model gateway> \
 #     LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/approved-version-news.sh [--part one|both] [--control | --base-commit <rev>]
 # LEGION_TEST_PG_DSN is required and names a loopback PostgreSQL with the pgvector extension: the
@@ -91,16 +99,19 @@
 # control runs used 2a6ff6c03269dc9377bf60f8f06e6682df55419e, the base before the forward merges.
 # Part two's base arm takes that commit's role prompt files (`git archive <base>
 # packages/daemon/internal/prompts/{roles,go}`), which its driver writes over the snapshot the
-# daemon takes at boot.
+# daemon takes at boot. So part two and the control need the checkout's history down to the base,
+# which a shallow clone lacks: the arguments check refuses a base it cannot find with exit 2.
 #
 # --control runs part one's negative control against the base, and --base-commit <rev> against
 # <rev>: `git archive <rev> | tar -x` into a scratch tree under TMPDIR, this checkout's part-one
 # driver copied into it, and part one built and run there, daemon and Dispatch both of that
 # commit; nothing of this checkout is written. Either runs part one alone, since the control is
 # part one's. The run must fail at a2-the-reviewer-is-told-the-changed-sections, past that step's
-# setup checks, the one-approval check after them failing by name: the script reports the control
-# as biting then, and as no control for a pass, a failure in an earlier check or step, a build
-# failure, a killed driver or a failure line that names no step.
+# setup checks, on the one-approval check after them, in that check's own words (control_failure
+# below): the script reports the control as biting then. It reports no control for a pass, a
+# failure in an earlier check or step, a build failure, a killed driver, a failure line that names
+# no step, and a failure at that step in other words, such as the line the driver prints when its
+# harness fails because the base daemon died.
 #
 # Exit 0 is a pass, or a control that bites; exit 2 is an input of the caller's the run refuses,
 # here or in the lib's prerequisites; exit 1 is every other failure. The run around each driver is
@@ -132,6 +143,12 @@ part_one_checks=(
 # from before the change too. A control that fails earlier failed for another reason.
 control_step=a2-the-reviewer-is-told-the-changed-sections
 control_setup_checks=5
+# The words that check fails with on a daemon from before the change, as an extended regular
+# expression: the driver's wait for a task queued for the reviewer behind its open turn runs out
+# (awaitQueued in its file). The control bites on these words alone. A failure at that check in
+# other words is something else stopping the run, such as the driver's harness when the base
+# daemon dies, and says nothing about the change.
+control_failure='waited [^ ]+ for a task queued for the reviewer of [^ ]+ behind its open turn; last seen: '
 
 # Each step of part two, with the word the last line names it by, and how many runs each arm makes
 # of it. The driver's own deadline is the lib's for part two: eighteen runs of real sessions took 44
@@ -177,6 +194,84 @@ finish() {
     echo "approved version news e2e: PASS in $((SECONDS - version_news_started))s ($said)"
   else
     echo "approved version news e2e: FAIL at $check after $((SECONDS - version_news_started))s ($said, evidence: $version_news_evidence)" >&2
+  fi
+}
+
+# control_verdict PROOF STATUS is part one's negative control, read from the base run's driver
+# output PROOF and that run's status STATUS. It sets counted to the checks of $control_step that
+# held, and control_said to what the control saw. It answers 0 when the control bites, which is
+# one ending alone: the run failed, its first FAIL line is $control_step's, the step's
+# $control_setup_checks setup checks held before it, and the line holds the one-approval check's
+# own words (control_failure). Every other ending is no control, and control_said says which: a
+# pass, no driver output, no FAIL line (a killed or timed-out driver), a failure in another step or
+# in the step's setup, or a failure at that check in other words.
+control_verdict() {
+  local proof=$1 status=$2 failure own="^FAIL $control_step: $control_failure"
+  counted=$(grep -c "^   assert $control_step: " "$proof" 2>/dev/null || true)
+  counted=${counted:-0}
+  failure=$(grep -m1 '^FAIL ' "$proof" 2>/dev/null || true)
+  if [ "$status" -eq 0 ]; then
+    control_said="no control: part one passed against the base"
+  elif [ ! -s "$proof" ]; then
+    control_said="no control: the base run failed (status $status) before its driver ran"
+  elif [ -z "$failure" ]; then
+    control_said="no control: the base run's driver ended (status $status) with no FAIL line naming a step, a killed or timed-out run"
+  elif [[ "$failure" != "FAIL $control_step: "* ]]; then
+    control_said="no control: the base run failed somewhere other than $control_step: $failure"
+  elif [ "$counted" -ne "$control_setup_checks" ]; then
+    control_said="no control: the base run failed at $control_step after $counted of its checks, not at its first one-approval check after the $control_setup_checks setup checks: $failure"
+  elif ! [[ "$failure" =~ $own ]]; then
+    control_said="no control: the base run stopped at $control_step's first one-approval check, but not on that check's own failure (a wait for a task queued for the reviewer behind its open turn that ran out), so its harness or another fault stopped it: $failure"
+  else
+    control_said=$failure
+    return 0
+  fi
+  return 1
+}
+
+# part_two_step PROOF STEP WORD reads STEP's `run STEP <arm> <n>: <outcome> …` lines in part two's
+# driver output PROOF. A PASS or FAIL run reached the step's assertion, and it counts for its arm. A
+# SETUP or HARNESS run stopped before the assertion, so it does not count, and it is noted by its
+# line. It sets step_said, the step's part of the last line: WORD, each arm's passed runs of those
+# that reached the assertion, the runs not counted, and the control's verdict. The control bites
+# only when a base run failed at its assertion. It also sets head_missed: each head run that did
+# not reach its assertion and pass, by its line, each after `; `.
+part_two_step() {
+  local proof=$1 step=$2 word=$3 arm lines ran passed failed line count counts=()
+  head_missed=''
+  for arm in head base; do
+    lines=$(grep -E "^run $step $arm [0-9]+: " "$proof" 2>/dev/null || true)
+    ran=$(grep -c . <<<"$lines" || true)
+    passed=$(grep -cE "^run $step $arm [0-9]+: PASS " <<<"$lines" || true)
+    failed=$(grep -cE "^run $step $arm [0-9]+: FAIL: " <<<"$lines" || true)
+    line="$step $arm: $passed of $((passed + failed)) runs that reached the assertion passed"
+    count="$arm $passed/$((passed + failed))"
+    if [ "$ran" -ne $((passed + failed)) ]; then
+      line="$line; $((ran - passed - failed)) stopped before it, not counted"
+      count="$count with $((ran - passed - failed)) not counted"
+    fi
+    [ "$ran" -eq "$part_two_runs" ] || line="$line ($ran of $part_two_runs ran)"
+    note "$line"
+    counts+=("$count")
+    while IFS= read -r line; do
+      [ -z "$line" ] || note "not counted: $line"
+    done < <(grep -vE "^run $step $arm [0-9]+: (PASS |FAIL: )" <<<"$lines" || true)
+    if [ "$arm" = head ]; then
+      [ "$ran" -eq "$part_two_runs" ] || head_missed="$head_missed; $word: $ran of $part_two_runs head runs ran"
+      while IFS= read -r line; do
+        [ -z "$line" ] || head_missed="$head_missed; $line"
+      done < <(grep -vE "^run $step head [0-9]+: PASS " <<<"$lines" || true)
+    fi
+  done
+  step_said="$word ${counts[0]}, ${counts[1]}"
+  if [ "$ran" -eq 0 ]; then
+    step_said="$step_said (base did not run)"
+  elif [ "$failed" -gt 0 ]; then
+    step_said="$step_said (control bites)"
+  elif [ "$passed" -eq 0 ]; then
+    step_said="$step_said (no control: no base run reached its assertion)"
+  else
+    step_said="$step_said (no control: the base arm passed every run that reached its assertion)"
   fi
 }
 
@@ -233,6 +328,10 @@ done
 # require_loopback_dsn in lib/loopback-dsn.sh says why a caller of the loopback guard clears
 # these three. The lib's prerequisites reads the DSN again, inside the run it makes.
 unset PGHOSTADDR PGSERVICE PGSERVICEFILE
+# A caller's own model key reaches nothing the run starts, in either part: no build, no Dispatch
+# and no daemon holds it, and part two's driver reads the key file and gives the key to each pane
+# alone.
+unset ANTHROPIC_API_KEY
 require_loopback_dsn db_host LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "this run creates and drops databases there" ||
   refuse "$db_host"
 note "store LEGION_TEST_PG_DSN on $db_host (not printed)"
@@ -273,9 +372,6 @@ if [ "$parts" = both ]; then
   command -v bun >/dev/null || fail "bun is not on PATH: part two packs the two plugins with it"
   [ -n "$(git -C "$root" ls-tree --name-only "$base_sha" packages/daemon/internal/prompts/roles)" ] ||
     refuse "the base $base_sha holds no packages/daemon/internal/prompts/roles, so part two has no base prompts"
-  # A caller's own key reaches nothing the run starts: the driver reads the key file and gives
-  # it to each pane alone.
-  unset ANTHROPIC_API_KEY
   note "part two against the base $base_sha's prompts, Oh My Pi $LEGION_OMP_PATH, model key file $key_file (read by the driver, never printed)"
 fi
 note "parts: $parts; evidence: $version_news_evidence"
@@ -330,22 +426,11 @@ if [ -z "$control" ]; then
   pass
 else
   begin control
-  counted=$(grep -c "^   assert $control_step: " "$proof" 2>/dev/null || true)
-  counted=${counted:-0}
-  failure=$(grep -m1 '^FAIL ' "$proof" 2>/dev/null || true)
-  if [ "$part_one_status" -eq 0 ]; then
-    fail "no control: part one passed against $base_sha"
-  elif [ ! -s "$proof" ]; then
-    fail "no control: the base run failed (status $part_one_status) before its driver ran; see $part_one/transcript.log"
-  elif [ -z "$failure" ]; then
-    fail "no control: the base run's driver ended (status $part_one_status) with no FAIL line naming a step, a killed or timed-out run; see $proof"
-  elif [[ "$failure" != "FAIL $control_step: "* ]]; then
-    fail "no control: the base run failed somewhere other than $control_step: $failure"
-  elif [ "$counted" -ne "$control_setup_checks" ]; then
-    fail "no control: the base run failed at $control_step after $counted of its checks, not at its first one-approval check after the $control_setup_checks setup checks: $failure"
+  if ! control_verdict "$proof" "$part_one_status"; then
+    fail "$control_said (the base $base_sha; $part_one keeps the run's transcript and the driver's output)"
   fi
-  note "the base run failed at $control_step after its $counted setup checks held:"
-  note "$failure"
+  note "the base run failed at $control_step after its $counted setup checks held, on its first one-approval check:"
+  note "$control_said"
   verdict="control bites at $control_step against $base_sha"
   pass
 fi
@@ -389,33 +474,12 @@ pass
 begin part-two
 head_short=''
 for entry in "${part_two_steps[@]}"; do
-  step=${entry%%:*}
-  word=${entry##*:}
-  said="$word"
-  for arm in head base; do
-    ran=$(grep -cE "^run $step $arm [0-9]+: " "$proof" 2>/dev/null || true)
-    got=$(grep -cE "^run $step $arm [0-9]+: PASS " "$proof" 2>/dev/null || true)
-    ran=${ran:-0} got=${got:-0}
-    line="$step $arm: $got/$part_two_runs runs passed"
-    [ "$ran" -eq "$part_two_runs" ] || line="$line ($ran of $part_two_runs ran)"
-    note "$line"
-    said="$said $arm $got/$part_two_runs"
-    if [ "$arm" = head ]; then
-      head_got=$got
-      [ "$got" -eq "$part_two_runs" ] || head_short="$head_short $word"
-    fi
-  done
-  if [ "$ran" -lt "$part_two_runs" ]; then
-    said="$said (base did not run)"
-  elif [ "$got" -lt "$head_got" ]; then
-    said="$said (control bites)"
-  else
-    said="$said (no control: the base arm passed as often as the head)"
-  fi
-  part_two_said="${part_two_said:+$part_two_said; }$said"
+  part_two_step "$proof" "${entry%%:*}" "${entry##*:}"
+  part_two_said="${part_two_said:+$part_two_said; }$step_said"
+  head_short="$head_short$head_missed"
 done
 calls=$(grep -m1 -E '^model calls: ' "$proof" 2>/dev/null || true)
 [ -z "$calls" ] || part_two_said="$part_two_said; ${calls%% in all*}"
+[ -z "$head_short" ] || fail "the head arm did not reach its assertion and pass in every run: ${head_short#; }"
 [ "$part_two_status" -eq 0 ] || fail "part two failed (status $part_two_status); $proof keeps each run's evidence"
-[ -z "$head_short" ] || fail "the head arm did not pass every run of:$head_short"
 pass

@@ -32,17 +32,21 @@
 // The issues, their pull requests, their trees' slots and lifecycles and the claims the boot
 // relaunches are seeded through the store, as every daemon test seeds its fixture, beside the
 // Dispatch issues the steps write to. Where the schema holds the told record of a release that
-// keeps one (the design_news_told table), each member seeded in a phase with work gets the holder
-// row the store's upgrade writes for a tree running at the upgrade: the approved versions its work
-// stood on, 1 of each document its tree registers. A schema without the table, which is a release
-// from before that record, is seeded nothing there. The driver uses no Go symbol of that release:
-// it reads the wire and the database alone, so the script can build it against a base commit's
-// daemon, which is the run's negative control.
+// keeps one (the design_news_told table), each member seeded in a phase with work gets a holder
+// row the driver writes by hand: the approved versions its work stood on, 1 of each document its
+// tree registers. That row stands for the one the store's upgrade writes for a tree running at
+// the upgrade. The upgrade writes none here, because no gate row exists when the rows are seeded,
+// so this part never runs the writers of a baseline (BaselineTold and the upgrade's seed). A
+// schema without the table, which is a release from before that record, is seeded nothing there.
+// The driver uses no Go symbol of that release: it reads the wire and the database alone, so the
+// script can build it against a base commit's daemon, which is the run's negative control.
 //
 // Every check prints `   assert <step>: <what held>` once it holds, which the script counts, and
-// a check that does not hold prints `FAIL <step>: <what did not hold>` and ends the run. Every wait
-// is bounded, and its failure names what it waited for and what it last saw. Every check that
-// nothing arrives watches a window in which a delivery the same run makes does arrive.
+// a check that does not hold prints `FAIL <step>: <what did not hold>` and ends the run. A failure
+// outside the checks, such as the harness's read of a daemon that died, prints the step's FAIL
+// line in words of no check (run). Every wait is bounded, and its failure names what it waited
+// for and what it last saw. Every check that nothing arrives watches a window in which a delivery
+// the same run makes does arrive.
 package daemon
 
 import (
@@ -413,8 +417,8 @@ func versionNewsVerification(check, words string) string {
 // pull request unless it stands in admitted, and each of its roles as a launch a previous daemon
 // began and never recorded, serving run 1, which the boot relaunches. Every role's prompt is on
 // disk, as the daemon's own launch writes it, so a launch the run makes later starts too. Where
-// the schema holds the told record, each member in a phase with work takes the holder row the
-// store's upgrade writes for it.
+// the schema holds the told record, each member in a phase with work takes a holder row written
+// here by hand, which stands for the row the store's upgrade writes for it.
 func (r *versionNewsLive) seed() {
 	t := r.t
 	t.Helper()
@@ -506,7 +510,7 @@ func (r *versionNewsLive) seed() {
 				t.Fatalf("seed the holder row of %s: %v", member.key, err)
 			}
 		}
-		r.note("tree %s: each member in a phase with work took %s, as the store's upgrade records a running tree", tree.name, encoded)
+		r.note("tree %s: each member in a phase with work took %s, in a row written by hand for the one the store's upgrade writes for a running tree", tree.name, encoded)
 	}
 }
 
@@ -514,7 +518,10 @@ func (r *versionNewsLive) seed() {
 func versionNewsHead(key string) string { return "head-" + strings.ToLower(key) }
 
 // run runs one step between its `== name` and `ok name` lines, and prints the step's FAIL line when
-// it stops on a failure that printed none of its own, so that every stopped step is named.
+// it stops on a failure that printed none of its own, so that every stopped step is named. That is
+// a failure outside the step's checks, such as the harness failing a read of a daemon that died,
+// and its line holds no check's words: the script's negative control bites only on the words of
+// A2's one-approval check (awaitQueued), so a harness failure there is no control.
 func (r *versionNewsLive) run(name string, body func()) {
 	r.t.Helper()
 	r.running, r.named = name, false
@@ -1029,7 +1036,9 @@ func (r *versionNewsLive) holdPhase(key string, want phase.Phase) {
 
 // awaitQueued waits for a task the daemon queued for c after mark that it has not sent, which is a
 // task waiting behind the turn c is in, and returns it. A task it sent into that turn fails the
-// run.
+// run. In A2 its failure is the one-approval check's: `waited <bound> for a task queued for the
+// reviewer of <key> behind its open turn; last seen: …`. The script's negative control bites on
+// those words alone (control_failure in approved-version-news.sh), so change both together.
 func (r *versionNewsLive) awaitQueued(c *versionNewsClaimant, mark time.Time) api.DeliveryView {
 	r.t.Helper()
 	var queued api.DeliveryView
@@ -1085,6 +1094,13 @@ func versionNewsFirstLine(task string) string {
 // never the "2" of "version 21".
 func versionNewsNamesVersion(text string, n int) bool {
 	return regexp.MustCompile(`\bversion ` + strconv.Itoa(n) + `\b`).MatchString(text)
+}
+
+// versionNewsNamesCheck says whether text names check where the news names a changed check, at the
+// head of its `Checks:` line ("Checks: c-a7 changed."), the one check of each tree's Verification
+// document. A bare check id is no proof: `c-a7` can stand inside a UUID the news prints.
+func versionNewsNamesCheck(text, check string) bool {
+	return strings.Contains(text, "Checks: "+check)
 }
 
 // Step A2. A tree registers its spec alone, and its gate opens on the setup approval of version 1.
@@ -1229,8 +1245,8 @@ func (r *versionNewsLive) a3() {
 	r.approve(accepting.verification, 2)
 	task := owner.awaitPrompt("the news of the accepting root's checks", mark)
 	r.note("%s was prompted:\n%s", owner.name(), task.message)
-	if !strings.Contains(task.message, accepting.check) || !strings.Contains(task.message, accepting.root().key) ||
-		!strings.Contains(task.message, "accepting") || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
+	if !versionNewsNamesCheck(task.message, accepting.check) || !strings.Contains(task.message, accepting.root().key) ||
+		!strings.Contains(task.message, "which you hold in accepting") || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
 		r.fail("%s's task names %s, want the changed check %s of %s, which it holds in accepting, and versions 2 and 1: %q",
 			owner.name(), versionNewsFirstLine(task.message), accepting.check, accepting.root().key, task.message)
 	}
@@ -1245,7 +1261,7 @@ func (r *versionNewsLive) a3() {
 	r.approve(implementing.verification, 2)
 	task = implementer.awaitPrompt("the news of the implementing root's checks", mark)
 	r.note("%s was prompted:\n%s", implementer.name(), task.message)
-	if !strings.Contains(task.message, implementing.check) || strings.Contains(task.message, `"Design"`) ||
+	if !versionNewsNamesCheck(task.message, implementing.check) || strings.Contains(task.message, `"Design"`) ||
 		!versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
 		r.fail("%s's task names %s, want the changed check %s and versions 2 and 1, and no spec section: %q",
 			implementer.name(), versionNewsFirstLine(task.message), implementing.check, task.message)
@@ -1284,7 +1300,7 @@ func (r *versionNewsLive) a5() {
 	reviewer := r.connect(tree.root(), claim.RoleReviewer, before)
 	task := reviewer.awaitPrompt("the reviewer's start task", mark)
 	r.note("%s was prompted:\n%s", reviewer.name(), task.message)
-	if !strings.Contains(task.message, tree.check) || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
+	if !versionNewsNamesCheck(task.message, tree.check) || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
 		r.fail("%s's start task names %s, want the changed check %s and versions 2 and 1: %q", reviewer.name(), versionNewsFirstLine(task.message), tree.check, task.message)
 	}
 	r.held("%s's start task names the changed check %s and versions 1 and 2", reviewer.name(), tree.check)
@@ -1303,9 +1319,10 @@ func (r *versionNewsLive) a5() {
 	childReviewer := r.connect(child, claim.RoleReviewer, before)
 	start := childReviewer.awaitPrompt("the child reviewer's start task", mark)
 	r.note("%s was prompted:\n%s", childReviewer.name(), start.message)
-	// A change list names the check, or a "Checks:" line, under the news's own opening words.
+	// A change list shows as a "Checks:" line or as the news's own opening words. A bare check id
+	// is not read: it can stand inside a UUID the task prints.
 	names := func(message string) bool {
-		return strings.Contains(message, tree.check) || strings.Contains(message, "Checks:") || strings.Contains(message, "The approved design of")
+		return strings.Contains(message, "Checks:") || strings.Contains(message, "The approved design of")
 	}
 	if names(start.message) {
 		r.fail("%s's start task names a change; want none, since version 2 changed nothing %s holds: %q", childReviewer.name(), child.key, start.message)
@@ -1410,8 +1427,9 @@ func (r *versionNewsLive) processed(source, eventID string) bool {
 // Step A7. A checks-only version closes one tree's gate while its retro runs, and the implementer
 // of that tree and of a second, whose gate stands open, each complete retro at once. The open
 // tree's merger is launched, and in that same window the closed tree's merger is not. The person's
-// approval then releases it: the merger is launched and its start task leads with the gate's
-// opening and names what changed.
+// approval then releases it: the merger is launched with a start task that holds the start's own
+// text, a blank line, and then the news, which opens with the gate's opening and names what
+// changed.
 func (r *versionNewsLive) a7() {
 	closed, open := r.trees["a7"], r.trees["a7-open"]
 	implementers := []*versionNewsClaimant{r.claimant(closed.root(), claim.RoleImplementer), r.claimant(open.root(), claim.RoleImplementer)}
@@ -1447,7 +1465,7 @@ func (r *versionNewsLive) a7() {
 	task := merger.awaitPrompt("the merger's start task", mark)
 	r.note("%s was prompted:\n%s", merger.name(), task.message)
 	opening := "The design gate of " + closed.root().key + " opened"
-	if !strings.Contains(task.message, opening) || !strings.Contains(task.message, closed.check) || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
+	if !strings.Contains(task.message, opening) || !versionNewsNamesCheck(task.message, closed.check) || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
 		r.fail("%s's start task names %s, want %q and the changed check %s with versions 2 and 1: %q", merger.name(), versionNewsFirstLine(task.message), opening, closed.check, task.message)
 	}
 	r.held("the approval launched %s, whose start task reads %q and names the changed check %s and versions 1 and 2", merger.name(), opening, closed.check)
@@ -1466,7 +1484,7 @@ func (r *versionNewsLive) r6() {
 	r.approve(tree.verification, 2)
 	task := holder.awaitPrompt("the news of the root's checks", mark)
 	r.note("%s was prompted:\n%s", holder.name(), task.message)
-	if !strings.Contains(task.message, tree.check) || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
+	if !versionNewsNamesCheck(task.message, tree.check) || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
 		r.fail("%s's task names %s, want the changed check %s and versions 2 and 1: %q", holder.name(), versionNewsFirstLine(task.message), tree.check, task.message)
 	}
 	r.held("the root's checks-only approval reached %s, naming the changed check %s and versions 1 and 2", holder.name(), tree.check)

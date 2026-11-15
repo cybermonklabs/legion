@@ -44,13 +44,15 @@
 // Three steps, each run three times in each arm, each run on trees of its own:
 //   - a4-the-architect-tells-the-child-reviewer: under root-issues, a root waiting in admitted and
 //     its child in reviewing, whose reviewer is live; the root architect is asked to write version
-//     2 of the child's Verification document. It passes when that version exists, the reviewer's
-//     transcript holds an Envoy message naming version 2 and the changed check, and the child has
-//     no approval request;
+//     2 of the child's Verification document. It passes when the reviewer's transcript holds an
+//     Envoy message naming version 2 and the changed check, the architect's transcript holds its
+//     envoy_publish to the reviewer's role topic naming the same, and the child has no approval
+//     request;
 //   - off-the-architect-tells-the-holders: under gates.design off, a root in implementing and its
 //     child in reviewing, both holders live; the architect is asked to write version 2 of the
-//     root's spec. It passes when that version exists and each holder's transcript holds an Envoy
-//     message naming version 2 and the changed section;
+//     root's spec. It passes when each holder's transcript holds an Envoy message naming version 2
+//     and the change, and the architect's transcript holds its envoy_publish to that holder's
+//     role topic naming the same;
 //   - answers-a-stale-reviewer-moves-back-a-current-one-comments: under root-issues, two roots in
 //     reviewing, each reviewer told what its review rests on; the person approves a version 2 of
 //     each spec, one changing the section the review rests on and one a section it does not touch.
@@ -58,10 +60,14 @@
 //     issue back, and the second writes a comment on its issue naming version 2 and stays.
 //
 // Each run prints `== <step> <arm> <n>`, its evidence (the tool calls and the messages, from the
-// sessions' own transcripts) and `run <step> <arm> <n>: PASS|FAIL …` with its time and the model
-// calls it made, which the script counts. A head run that fails ends the proof there, since the
-// proof then fails whatever the rest show, and every model call after it would be spent for
-// nothing; a base run's verdict is the control's, and never fails the driver.
+// sessions' own transcripts) and `run <step> <arm> <n>: <outcome> …` with its time and the model
+// calls it made, which the script counts. The outcome is a word of sessionsOutcome. PASS and FAIL
+// are runs that reached the step's assertion, and the script counts them for the arm. SETUP is a
+// run that stopped before its assertion, and HARNESS is a run the harness failed: neither says
+// anything about the prompts the arms differ in, so the script does not count them. A head run
+// that does not pass ends the proof there, whatever its outcome: the head must reach its
+// assertion and pass in every run, and every model call after a run that did not would be spent
+// for nothing. A base run's outcome is the control's, and never fails the driver.
 package daemon
 
 import (
@@ -96,6 +102,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -141,6 +148,26 @@ const (
 // sessionsRuns is how many runs each arm makes of each step.
 const sessionsRuns = 3
 
+// sessionsOutcome is how one run of a step ended: the word its `run` line prints, which the script
+// counts. Only a run that reached the step's assertion counts for its arm. A run that stopped
+// before its assertion stopped on something both arms share, which says nothing about the prompts
+// they differ in, so a base arm that lost a run that way has not failed.
+type sessionsOutcome string
+
+const (
+	// sessionsPassed is a run whose assertion held.
+	sessionsPassed sessionsOutcome = "PASS"
+	// sessionsFailed is a run whose assertion did not hold: the sessions did not do what the step
+	// asks of the arm's prompts.
+	sessionsFailed sessionsOutcome = "FAIL"
+	// sessionsSetup is a run that stopped before its assertion, on what the step needs first: a
+	// holder that did not end its start turn in the run's bound, an architect that did not write
+	// the version the operator's task asks for, or a reviewer the daemon never gave its news.
+	sessionsSetup sessionsOutcome = "SETUP"
+	// sessionsHarness is a run the harness failed, which ends the proof in either arm.
+	sessionsHarness sessionsOutcome = "HARNESS"
+)
+
 // sessionsRunBound bounds a run from its daemon's boot to its verdict. A run still waiting at its
 // bound fails, and its sessions are ended with it, so an agent that wanders spends no more than
 // this.
@@ -154,8 +181,8 @@ const sessionsSettle = 20 * time.Second
 // message one of them sent to show in its recipient's transcript.
 const sessionsGrace = 30 * time.Second
 
-// The words each document is written with and changed to, and the words of the change a message
-// must name.
+// The words each document is written with and changed to, and the id of the one check of A4's
+// child.
 const (
 	sessionsDesign      = "The reader takes one page at a time."
 	sessionsDesignAgain = "The reader takes two pages at a time, and keeps the second for the next read."
@@ -163,6 +190,17 @@ const (
 	sessionsLaterAgain  = "A later issue, not this one, adds an export of the pages to CSV and to JSON."
 	sessionsCheck       = "The read answers 200."
 	sessionsCheckAgain  = "The read answers 200 with the page it read."
+	sessionsCheckID     = "c-reader-pages"
+)
+
+// The words a message must name of each step's change, any one of them, beside version 2.
+var (
+	// sessionsChecksChange is A4's: the changed check, or its new words.
+	sessionsChecksChange = []string{sessionsCheckID, "with the page it read"}
+	// sessionsSpecChange is the off step's: the new words, or the changed section's heading as the
+	// news names it (`"Design"`) or as the spec writes it (`## Design`). The heading's word alone
+	// names nothing, since "the approved design" holds it too.
+	sessionsSpecChange = []string{`"Design"`, "## Design", "two pages"}
 )
 
 // The sentence of each arm's prompt the run reads back from a pane's own command line: the head's
@@ -203,15 +241,16 @@ type sessionsLive struct {
 }
 
 // TestRealSessionsTellAndAnswerANewVersionLive runs each step three times in the head arm and
-// then three times in the base arm, and stops at the first head run that fails. A run that
-// -test.run leaves out is neither, which is how one run is driven alone.
+// then three times in the base arm, and stops at the first head run that does not pass: one that
+// failed its assertion, or one that stopped before it. A run that -test.run leaves out is neither,
+// which is how one run is driven alone.
 func TestRealSessionsTellAndAnswerANewVersionLive(t *testing.T) {
 	fixtureenv.Live(t)
 	s := newSessionsLive(t)
 	steps := []struct {
 		name  string
 		gates config.DesignGate
-		body  func(*sessionsRun) (bool, string)
+		body  func(*sessionsRun) (sessionsOutcome, string)
 	}{
 		{sessionsA4, config.DesignGateRootIssues, (*sessionsRun).a4},
 		{sessionsOff, config.DesignGateOff, (*sessionsRun).off},
@@ -221,14 +260,15 @@ func TestRealSessionsTellAndAnswerANewVersionLive(t *testing.T) {
 	for _, step := range steps {
 		for _, arm := range []string{sessionsHead, sessionsBase} {
 			for n := 1; n <= sessionsRuns; n++ {
-				ran, passed := s.run(step.name, arm, n, step.gates, step.body)
+				ran, outcome := s.run(step.name, arm, n, step.gates, step.body)
 				if !ran {
 					continue
 				}
 				runs++
-				if !passed && arm == sessionsHead {
+				if outcome != sessionsPassed && arm == sessionsHead {
 					fmt.Printf("model calls: %d in all, over %d runs\n", s.calls.count(), runs)
-					t.Fatalf("%s %s run %d failed, so the head arm does not pass every run; its evidence is above", step.name, arm, n)
+					t.Fatalf("%s %s run %d ended %s, so the head arm did not reach its assertion and pass in every run; its evidence is above",
+						step.name, arm, n, outcome)
 				}
 			}
 		}
@@ -511,36 +551,40 @@ type sessionsMember struct {
 }
 
 // run makes one run in a subtest of its own, whose cleanup stops its daemon, and answers whether
-// it ran, which a -test.run pattern can leave out, and whether it passed. Its sessions end with its
-// verdict, before anything else of the run is read, so none spends a model call past it. A fault
-// of the harness fails the subtest and ends the proof, since no count of runs means anything past
-// it; the step's own verdict is the answer.
-func (s *sessionsLive) run(step, arm string, n int, gates config.DesignGate, body func(*sessionsRun) (bool, string)) (ran, passed bool) {
+// it ran, which a -test.run pattern can leave out, and how it ended. Its sessions end with its
+// outcome, before anything else of the run is read, so none spends a model call past it. A fault
+// of the harness fails the subtest, prints the run's line as HARNESS and ends the proof, since no
+// count of runs means anything past it; otherwise the step's own outcome is the answer.
+func (s *sessionsLive) run(step, arm string, n int, gates config.DesignGate, body func(*sessionsRun) (sessionsOutcome, string)) (ran bool, outcome sessionsOutcome) {
 	name := fmt.Sprintf("%s %s %d", step, arm, n)
+	outcome = sessionsHarness
 	succeeded := s.t.Run(fmt.Sprintf("%s-%s-%d", step, arm, n), func(t *testing.T) {
 		ran = true
 		started := time.Now()
 		calls := s.calls.count()
 		fmt.Printf("== %s\n", name)
-		r := s.newRun(t, name, arm, gates)
 		why := "the harness failed; its log is above"
+		var r *sessionsRun
 		defer func() {
-			r.rt.killEverything()
-			if r.d != nil {
-				r.keepTranscripts()
+			if r != nil {
+				r.rt.killEverything()
+				if r.d != nil {
+					r.keepTranscripts()
+				}
 			}
-			verdict := "PASS"
-			if !passed {
-				verdict = "FAIL: " + why
+			said := string(outcome)
+			if outcome != sessionsPassed {
+				said += ": " + why
 			}
-			fmt.Printf("run %s: %s in %ds, %d model calls\n", name, verdict, int(time.Since(started).Seconds()), s.calls.count()-calls)
+			fmt.Printf("run %s: %s in %ds, %d model calls\n", name, said, int(time.Since(started).Seconds()), s.calls.count()-calls)
 		}()
-		passed, why = body(r)
+		r = s.newRun(t, name, arm, gates)
+		outcome, why = body(r)
 	})
 	if !succeeded {
 		s.t.Fatalf("the harness failed in run %s; its log is above", name)
 	}
-	return ran, passed
+	return ran, outcome
 }
 
 // newRun readies a run's configuration, database, Dispatch project and runtime. The step seeds its
@@ -995,15 +1039,21 @@ type sessionsCall struct {
 // writes it.
 func (r *sessionsRun) transcript(member *sessionsMember, role claim.Role) sessionsTranscript {
 	r.t.Helper()
-	var read sessionsTranscript
 	file := r.claim(r.token(member, role)).SessionFile
 	if file == "" {
-		return read
+		return sessionsTranscript{}
 	}
 	body, err := os.ReadFile(file)
 	if err != nil {
-		return read
+		return sessionsTranscript{}
 	}
+	return sessionsReadTranscript(body)
+}
+
+// sessionsReadTranscript is what body, a session file of Oh My Pi's, holds as this proof reads it:
+// one JSON entry a line, and a line that is no entry skipped.
+func sessionsReadTranscript(body []byte) sessionsTranscript {
+	var read sessionsTranscript
 	for _, line := range bytes.Split(body, []byte("\n")) {
 		var entry struct {
 			Type       string          `json:"type"`
@@ -1095,19 +1145,49 @@ func (read sessionsTranscript) bash(words string) []sessionsCall {
 }
 
 // toldOf is the first Envoy message card that names version 2 and any of change, and "" when none
-// does.
+// does. A card says nothing of who sent it or how: publishedTo reads that from the sender's own
+// transcript.
 func (read sessionsTranscript) toldOf(change ...string) string {
 	for _, card := range read.envoy {
-		if !sessionsVersion2.MatchString(card) {
-			continue
-		}
-		for _, words := range change {
-			if strings.Contains(strings.ToLower(card), strings.ToLower(words)) {
-				return card
-			}
+		if sessionsNamesChange(card, change...) {
+			return card
 		}
 	}
 	return ""
+}
+
+// publishedTo is the first envoy_publish call to topic whose message names version 2 and any of
+// change, and false when none does. A call of the tool or of its xd:// device is read by its
+// arguments, `topic` and `message`; eval code that calls it is read whole, so its code must hold
+// the topic and the words. A message sent another way, such as envoy_send to a session or a
+// Dispatch comment, is not a publish to the holder's role topic, whatever card it left.
+func (read sessionsTranscript) publishedTo(topic string, change ...string) (sessionsCall, bool) {
+	for _, call := range read.calling("envoy_publish") {
+		to, _ := call.args["topic"].(string)
+		message, _ := call.args["message"].(string)
+		if call.name == "eval" && strings.Contains(call.text, topic) {
+			to, message = topic, call.text
+		}
+		if strings.TrimSpace(to) == topic && sessionsNamesChange(message, change...) {
+			return call, true
+		}
+	}
+	return sessionsCall{}, false
+}
+
+// sessionsNamesChange says whether text names version 2 and any of change, the words of the change
+// in any case.
+func sessionsNamesChange(text string, change ...string) bool {
+	if !sessionsVersion2.MatchString(text) {
+		return false
+	}
+	lower := strings.ToLower(text)
+	for _, words := range change {
+		if strings.Contains(lower, strings.ToLower(words)) {
+			return true
+		}
+	}
+	return false
 }
 
 // sessionsExcerpt is text as evidence prints it: on one line, cut at 600 bytes.
@@ -1294,30 +1374,28 @@ func architectTask(document, issue, find, with, tree string) string {
 // the root's gate stands open at version 1 of its spec. The root architect is asked to write
 // version 2 of the child's Verification document. The child's checks are the architect's to
 // change and no person approves them, so the daemon sends no news of it: the reviewer hears of it
-// only from the architect.
-func (r *sessionsRun) a4() (bool, string) {
+// only from the architect. The architect's own envoy_publish to the reviewer's role topic must
+// carry it, since a card in the reviewer's transcript does not say who sent it or how.
+func (r *sessionsRun) a4() (sessionsOutcome, string) {
 	root := &sessionsMember{phase: phase.Admitted, roles: []claim.Role{claim.RoleArchitect}}
-	child := &sessionsMember{phase: phase.Reviewing, roles: []claim.Role{claim.RoleReviewer}, check: "c-reader-pages", tasks: map[claim.Role]string{}}
+	child := &sessionsMember{phase: phase.Reviewing, roles: []claim.Role{claim.RoleReviewer}, check: sessionsCheckID, tasks: map[claim.Role]string{}}
 	r.tree(sessionsSpec("A reader that pages.", sessionsDesign, sessionsLater), root, child)
 	child.tasks[claim.RoleReviewer] = holderStart(child.key, phase.Reviewing)
 	r.boot()
 	r.checkArm(root, claim.RoleArchitect, sessionsArchitectMark)
 	if !r.settled(child, claim.RoleReviewer) {
-		return false, fmt.Sprintf("the reviewer of %s did not end its start turn within the run's bound", child.key)
+		return sessionsSetup, fmt.Sprintf("the reviewer of %s did not end its start turn within the run's bound", child.key)
 	}
 	r.deliver(root, claim.RoleArchitect, architectTask(
 		fmt.Sprintf("Verification document (`verification.md`, document %s)", child.verification), child.key, sessionsCheck, sessionsCheckAgain,
 		fmt.Sprintf("%s, the root, in admitted, waiting for its child; %s, its child, in reviewing, where its reviewer holds it", root.key, child.key)))
-	change := []string{child.check, "with the page it read"}
+	change := sessionsChecksChange
 	told := ""
 	var quiet time.Time
 	r.until(r.deadline, func() bool {
 		told = r.transcript(child, claim.RoleReviewer).toldOf(change...)
 		return told != "" || r.quiet(root, claim.RoleArchitect, &quiet)
 	})
-	architect := r.transcript(root, claim.RoleArchitect)
-	r.printCalls(root, claim.RoleArchitect, architect.bash("dispatch "), "ran")
-	r.printCalls(root, claim.RoleArchitect, architect.calling("envoy_publish"), "called")
 	if told == "" {
 		// The architect settled: a message it sent may still be on its way.
 		r.until(time.Now().Add(sessionsGrace), func() bool {
@@ -1325,28 +1403,58 @@ func (r *sessionsRun) a4() (bool, string) {
 			return told != ""
 		})
 	}
+	// The architect may still be in its turn: a request for approval would come in it.
+	if !r.settled(root, claim.RoleArchitect) {
+		r.evidence("the architect of %s was still in a turn or held a task at the run's bound, so what follows is what it did by then", root.key)
+	}
+	architect := r.transcript(root, claim.RoleArchitect)
+	r.printCalls(root, claim.RoleArchitect, architect.bash("dispatch "), "ran")
+	r.printCalls(root, claim.RoleArchitect, architect.calling("envoy_publish"), "called")
 	written, text := r.version2(child.verification)
 	if !written || !strings.Contains(text, sessionsCheckAgain) {
-		return false, fmt.Sprintf("Dispatch holds no version 2 of %s's Verification document with the new words", child.key)
+		return sessionsSetup, fmt.Sprintf("Dispatch holds no version 2 of %s's Verification document with the new words: the architect did not make the edit the operator's task asks for", child.key)
 	}
 	r.evidence("version 2 of %s's Verification document %s holds %q", child.key, child.verification, sessionsCheckAgain)
+	var why []string
 	if told == "" {
-		return false, fmt.Sprintf("the reviewer of %s was sent no Envoy message naming version 2 and the change", child.key)
+		why = append(why, fmt.Sprintf("the reviewer of %s was sent no Envoy message naming version 2 and the change", child.key))
+	} else {
+		r.evidence("the reviewer of %s's transcript holds the Envoy message %s", child.key, sessionsExcerpt(told))
 	}
-	r.evidence("the reviewer of %s's transcript holds the Envoy message %s", child.key, sessionsExcerpt(told))
-	// The architect may still be in its turn: a request for approval would come in it.
-	r.settled(root, claim.RoleArchitect)
+	if missed := r.publishedBy(architect, child, claim.RoleReviewer, change); missed != "" {
+		why = append(why, missed)
+	}
 	if asks := r.approvalAsks(child.key); len(asks) > 0 {
-		return false, fmt.Sprintf("Dispatch holds approval requests %v on %s", asks, child.key)
+		why = append(why, fmt.Sprintf("Dispatch holds approval requests %v on %s", asks, child.key))
+	} else {
+		r.evidence("Dispatch holds no approval request on %s", child.key)
 	}
-	r.evidence("Dispatch holds no approval request on %s", child.key)
-	return true, ""
+	if len(why) > 0 {
+		return sessionsFailed, strings.Join(why, "; ")
+	}
+	return sessionsPassed, ""
+}
+
+// publishedBy reads architect's transcript for its envoy_publish of the change to the role topic
+// of role on member, which the architect's prompt asks for (prompts/go/architect-common.md). It
+// prints the call it found as evidence and answers "", or answers why the step failed.
+func (r *sessionsRun) publishedBy(architect sessionsTranscript, member *sessionsMember, role claim.Role, change []string) string {
+	r.t.Helper()
+	topic := notify.RoleTopicPrefix + string(r.token(member, role))
+	call, published := architect.publishedTo(topic, change...)
+	if !published {
+		return fmt.Sprintf("the architect made no envoy_publish to %s, the role topic of the %s of %s, naming version 2 and the change",
+			topic, role, member.key)
+	}
+	r.evidence("the architect's envoy_publish to %s, the role topic of the %s of %s: %s %s", topic, role, member.key, call.name, sessionsExcerpt(call.text))
+	return ""
 }
 
 // Step off. Under gates.design off a root in implementing and its child in reviewing are each held
 // by a live worker. The root architect is asked to write version 2 of the root's spec, which a
-// deployment that gates nothing sends no news of: each holder hears of it only from the architect.
-func (r *sessionsRun) off() (bool, string) {
+// deployment that gates nothing sends no news of: each holder hears of it only from the architect,
+// by its own envoy_publish to that holder's role topic.
+func (r *sessionsRun) off() (sessionsOutcome, string) {
 	root := &sessionsMember{phase: phase.Implementing, roles: []claim.Role{claim.RoleArchitect, claim.RoleImplementer}, tasks: map[claim.Role]string{}}
 	child := &sessionsMember{phase: phase.Reviewing, roles: []claim.Role{claim.RoleReviewer}, tasks: map[claim.Role]string{}}
 	r.tree(sessionsSpec("A reader that pages.", sessionsDesign+" The child issue builds the reader's fetch, and the root builds the cache in front of it.", sessionsLater), root, child)
@@ -1355,12 +1463,12 @@ func (r *sessionsRun) off() (bool, string) {
 	r.boot()
 	r.checkArm(root, claim.RoleArchitect, sessionsArchitectMark)
 	if !r.settled(root, claim.RoleImplementer) || !r.settled(child, claim.RoleReviewer) {
-		return false, "a holder did not end its start turn within the run's bound"
+		return sessionsSetup, "a holder did not end its start turn within the run's bound"
 	}
 	r.deliver(root, claim.RoleArchitect, architectTask(
 		fmt.Sprintf("spec (document %s)", root.spec), root.key, sessionsDesign, sessionsDesignAgain,
 		fmt.Sprintf("%s, the root, in implementing, where its implementer holds it; %s, its child, in reviewing, where its reviewer holds it", root.key, child.key)))
-	change := []string{"Design", "two pages"}
+	change := sessionsSpecChange
 	holders := []struct {
 		member *sessionsMember
 		role   claim.Role
@@ -1381,21 +1489,24 @@ func (r *sessionsRun) off() (bool, string) {
 	r.printCalls(root, claim.RoleArchitect, architect.bash("dispatch "), "ran")
 	r.printCalls(root, claim.RoleArchitect, architect.calling("envoy_publish"), "called")
 	if written, text := r.version2(root.spec); !written || !strings.Contains(text, "two pages") {
-		return false, fmt.Sprintf("Dispatch holds no version 2 of %s's spec with the new words", root.key)
+		return sessionsSetup, fmt.Sprintf("Dispatch holds no version 2 of %s's spec with the new words: the architect did not make the edit the operator's task asks for", root.key)
 	}
 	r.evidence("version 2 of %s's spec %s holds the new Design sentence", root.key, root.spec)
-	var missing []string
+	var why []string
 	for i, holder := range holders {
 		if told[i] == "" {
-			missing = append(missing, fmt.Sprintf("the %s of %s", holder.role, holder.member.key))
-			continue
+			why = append(why, fmt.Sprintf("no Envoy message naming version 2 and the change reached the %s of %s", holder.role, holder.member.key))
+		} else {
+			r.evidence("the %s of %s's transcript holds the Envoy message %s", holder.role, holder.member.key, sessionsExcerpt(told[i]))
 		}
-		r.evidence("the %s of %s's transcript holds the Envoy message %s", holder.role, holder.member.key, sessionsExcerpt(told[i]))
+		if missed := r.publishedBy(architect, holder.member, holder.role, change); missed != "" {
+			why = append(why, missed)
+		}
 	}
-	if len(missing) > 0 {
-		return false, fmt.Sprintf("no Envoy message naming version 2 and the change reached %s", strings.Join(missing, " or "))
+	if len(why) > 0 {
+		return sessionsFailed, strings.Join(why, "; ")
 	}
-	return true, ""
+	return sessionsPassed, ""
 }
 
 // holderStart is the start task a holder of the a4 and off steps holds at the boot, in place of the
@@ -1425,7 +1536,7 @@ func reviewerStart(issue, spec string) string {
 // the daemon sends each reviewer the news. The stale reviewer must move its issue back with a
 // reason naming the version; the current one must comment on its issue naming the version, and
 // stay.
-func (r *sessionsRun) answers() (bool, string) {
+func (r *sessionsRun) answers() (sessionsOutcome, string) {
 	stale := &sessionsMember{phase: phase.Reviewing, roles: []claim.Role{claim.RoleReviewer}, tasks: map[claim.Role]string{}}
 	current := &sessionsMember{phase: phase.Reviewing, roles: []claim.Role{claim.RoleReviewer}, tasks: map[claim.Role]string{}}
 	r.tree(sessionsSpec("A reader that pages.", sessionsDesign, sessionsLater), stale)
@@ -1437,7 +1548,7 @@ func (r *sessionsRun) answers() (bool, string) {
 	for _, member := range []*sessionsMember{stale, current} {
 		r.checkArm(member, claim.RoleReviewer, sessionsWorkerMark)
 		if !r.settled(member, claim.RoleReviewer) {
-			return false, fmt.Sprintf("the reviewer of %s did not end its start turn within the run's bound", member.key)
+			return sessionsSetup, fmt.Sprintf("the reviewer of %s did not end its start turn within the run's bound", member.key)
 		}
 	}
 	r.note("both reviewers ended their start turns")
@@ -1457,7 +1568,7 @@ func (r *sessionsRun) answers() (bool, string) {
 			}
 			return false
 		}) {
-			return false, fmt.Sprintf("the reviewer of %s was never given the news of version 2", member.key)
+			return sessionsSetup, fmt.Sprintf("the reviewer of %s was never given the news of version 2", member.key)
 		}
 		r.evidence("the reviewer of %s was given the news %s", member.key, sessionsExcerpt(news))
 	}
@@ -1473,7 +1584,9 @@ func (r *sessionsRun) answers() (bool, string) {
 		return r.stateIssue(stale.key).Phase != phase.Reviewing && commented() != ""
 	})
 	for _, member := range []*sessionsMember{stale, current} {
-		r.settled(member, claim.RoleReviewer)
+		if !r.settled(member, claim.RoleReviewer) {
+			r.evidence("the reviewer of %s was still in a turn or held a task at the run's bound, so what follows is what it did by then", member.key)
+		}
 	}
 	staleRead, currentRead := r.transcript(stale, claim.RoleReviewer), r.transcript(current, claim.RoleReviewer)
 	moves := func(read sessionsTranscript) []sessionsCall {
@@ -1515,9 +1628,9 @@ func (r *sessionsRun) answers() (bool, string) {
 		r.evidence("%s stays in reviewing, and its reviewer made no request_backward_move", current.key)
 	}
 	if len(why) > 0 {
-		return false, strings.Join(why, "; ")
+		return sessionsFailed, strings.Join(why, "; ")
 	}
-	return true, ""
+	return sessionsPassed, ""
 }
 
 // stateIssue is key as GET /legion/v1/state shows it now.

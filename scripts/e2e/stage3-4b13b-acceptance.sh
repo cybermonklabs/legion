@@ -1126,20 +1126,25 @@ until_true 180 "the new primary spec version to close $root3's gate" sh -c \
   "'$work/legion' state --json --port '$port_daemon' | jq -e --arg issue '$root3' '.issues[\$issue].designGate.currentVersion > .issues[\$issue].designGate.approvedVersion'"
 reclosed=$(daemon_state | jq -er --arg issue "$root3" '.issues[$issue].designGate.currentVersion')
 note "$root3's gate closed on spec version $reclosed while it stood in merging, and $repo#${pr_of[$root3]} is on its own base $gate_base"
+# The closed role message comes first: an instruction that reached the merger before it would be
+# answered as an open gate allows, and its WAITING line, if any, would be for another reason.
+closed="The design gate of $root3 closed"
+until_true 600 "the closed message of $root3's gate to reach its merger" session_contains "$root3" merger "$closed"
 marker_gate="GATED-MERGE-$stamp"
 send_agent "$root3" merger "Acceptance merge operation ($marker_gate): merge pull request #${pr_of[$root3]} exactly as your instructions describe, then end this phase with the legion tool: op handoff_complete and a summary. Where your instructions say to wait first, wait as they say: this operation still stands when the wait ends."
 # merger_waits_after MARKER: $root3's merger session holds, after the first entry carrying MARKER
-# (the instruction), an assistant turn with a line that starts WAITING, the line roles/merger.md
-# ends each turn on while the gate is closed.
+# (the instruction), an assistant turn with a line that starts WAITING and names the opening, the
+# line roles/merger.md ends each turn on while the gate is closed ("names the opening you wait
+# for"). A WAITING line that names no opening waits for something else.
 merger_waits_after() {
   local f
   f=$(claim_session_file "$root3" merger) || return 1
   jq -R -s -e --arg marker "$1" '[split("\n")[] | fromjson?] as $e
     | ([$e | to_entries[] | select(.value | tostring | contains($marker)) | .key] | first) as $at
     | $at != null and any($e[($at + 1):][]; .type == "message" and .message.role == "assistant"
-        and any(.message.content[]?; .type == "text" and (.text | test("(^|\n)WAITING"))))' "$f" >/dev/null
+        and any(.message.content[]?; .type == "text" and (.text | test("(^|\n)WAITING[^\n]*[Oo]pen"))))' "$f" >/dev/null
 }
-until_true 900 "$root3's merger to end its turn on a WAITING line while the gate is closed" merger_waits_after "$marker_gate"
+until_true 900 "$root3's merger to end its turn on a WAITING line naming the opening while the gate is closed" merger_waits_after "$marker_gate"
 # The merger's turn has ended, so nothing of that turn merges. The pull request is read after a
 # further minute, in which only the opening could release the merge, and that read is the last one
 # before the person approves, so the merge that follows is the approval's.
