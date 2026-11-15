@@ -55,7 +55,7 @@ const (
 	StateRegistered ClaimState = "registered"
 	// StateReady: the agent finished booting and can be prompted.
 	StateReady ClaimState = "ready"
-	// StateWorking: a turn is in flight.
+	// StateWorking: a turn is in flight or a compaction is in progress (compact.go's compactStart).
 	StateWorking ClaimState = "working"
 	// StateIdle: the agent finished a turn and can be prompted.
 	StateIdle ClaimState = "idle"
