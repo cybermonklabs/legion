@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http/httptest"
 	"strings"
@@ -11,12 +12,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A closed issue's document settles as an open one's does (settleRoomWithin), whatever armed its
@@ -139,6 +142,122 @@ func (f closedSettlementFixture) settlementArmed() bool {
 	return f.service.isSettleTimerArmed(state.settle)
 }
 
+// settlementState is what the service and the store hold of the document's settlement, for the
+// failure text of a wait that gave up on it, so a room that failed, an append that never landed
+// and a settlement nobody armed read apart. The room's record is read under its lock, as the
+// service reads it (lockExistingState): whether its settle timer is armed, the settlements running
+// on it, its generation, whether a close is retiring its room for a reload (reloading) or a
+// settlement is loading the room (settleWarming), whether a live write took a settlement over
+// (settleDeferred), whether it reads the issue closed, its failure, and the settlements it counts
+// failed. The room is read after the record's lock is let go: whether a room of the document is
+// resident and the durable version that room's instance holds every update through (cursorOf),
+// whether the service holds a load's record of the room (roomLoads), and the times a room of the
+// document failed (RoomCounters, failRoomLocked). The store's reading is the database's clock, the
+// document's pending-settlement row, its latest version, its durable head (doc_updates) and the
+// text its stored updates fold to.
+func (f closedSettlementFixture) settlementState() string {
+	record := "the service holds no record of the document"
+	if state := f.service.lockExistingState(f.artifactID); state != nil {
+		failure := "none"
+		if state.failed != nil {
+			failure = state.failed.Error()
+		}
+		record = fmt.Sprintf("settle timer armed %t, settlements running %d, generation %d, reloading %t, settle warming %t, settle deferred %t, reads its issue closed %t, failed %s, settlements failed %d",
+			f.service.isSettleTimerArmed(state.settle), state.settling, state.roomGeneration, state.reloading,
+			state.settleWarming, state.settleDeferred, state.closed, failure, state.settleFailures)
+		f.service.unlockState(f.artifactID, state)
+	}
+	room := "resident false"
+	if live := f.service.srv.GetDoc(f.artifactID); live != nil {
+		room = "resident true, instance listed false"
+		if cursor := f.service.cursorOf(live); cursor != nil {
+			room = fmt.Sprintf("resident true, instance holds every update through %d", cursor.heldThrough())
+		}
+	}
+	_, loadHeld := f.service.roomLoads.Load(f.artifactID)
+	failures := "unread"
+	if counters, err := f.service.RoomCounters(f.artifactID); err == nil {
+		failures = fmt.Sprint(counters.RoomFailures)
+	}
+	room = fmt.Sprintf("%s, load record held %t, room failures %s", room, loadHeld, failures)
+
+	var clock time.Time
+	var latest int
+	var head int64
+	var markedAt, triedAt *time.Time
+	var lastActor []byte
+	var stored string
+	if err := f.database.Pool.QueryRow(context.Background(), `
+		select clock_timestamp(),
+			(select coalesce(max(number), 0) from artifact_versions where artifact_id = $1),
+			(select coalesce(max(version), 0) from doc_updates where artifact_id = $1),
+			p.marked_at, p.tried_at, p.last_actor
+		from (select 1) one left join doc_settlements_pending p on p.artifact_id = $1
+	`, f.artifactID).Scan(&clock, &latest, &head, &markedAt, &triedAt, &lastActor); err != nil {
+		stored = fmt.Sprintf("unread: %v", err)
+	} else {
+		pending := "no pending-settlement row"
+		if markedAt != nil {
+			tried, actor := "null", "null"
+			if triedAt != nil {
+				tried = triedAt.Format(time.RFC3339Nano)
+			}
+			if lastActor != nil {
+				actor = string(lastActor)
+			}
+			pending = fmt.Sprintf("pending-settlement row marked_at %s, tried_at %s, last_actor %s",
+				markedAt.Format(time.RFC3339Nano), tried, actor)
+		}
+		stored = fmt.Sprintf("database clock %s, %s, latest version %d, durable head %d, stored text %s",
+			clock.Format(time.RFC3339Nano), pending, latest, head, f.storedText())
+	}
+	return fmt.Sprintf("the document's settlement state:\n  record: %s\n  room: %s\n  store: %s", record, room, stored)
+}
+
+// storedText is the quoted rendering the document's stored updates fold to, or why it could not
+// be read: a diagnostic's reading, which fails no test.
+func (f closedSettlementFixture) storedText() string {
+	loaded, err := NewPgVersioned(f.database).Load(context.Background(), f.artifactID)
+	if err != nil {
+		return fmt.Sprintf("unread: %v", err)
+	}
+	doc := newDocumentCopy()
+	if err := crdt.ApplyUpdateV1(doc, loaded.Update, nil); err != nil {
+		return fmt.Sprintf("undecodable: %v", err)
+	}
+	tree, err := treeOf(doc)
+	if err != nil {
+		return fmt.Sprintf("unreadable: %v", err)
+	}
+	markdown, err := renderTree(tree)
+	if err != nil {
+		return fmt.Sprintf("unrendered: %v", err)
+	}
+	return fmt.Sprintf("%q", markdown)
+}
+
+// waitFor is waitFor within roomWait, failing with the document's settlement state
+// (settlementState) when it gives up.
+func (f closedSettlementFixture) waitFor(t *testing.T, description string, condition func() bool) {
+	t.Helper()
+	if !testwait.Holds(roomWait(t), 5*time.Millisecond, condition) {
+		t.Fatalf("timed out waiting for %s\n%s", description, f.settlementState())
+	}
+}
+
+// requireEnds is requireEnds, failing with the document's settlement state (settlementState). It
+// reads roomWait once: read again for the failure text, it fails the test itself once the test
+// binary's deadline is what bounds the wait, and the state is not reported.
+func (f closedSettlementFixture) requireEnds(t *testing.T, peer *docstest.Peer, what string) {
+	t.Helper()
+	wait := roomWait(t)
+	select {
+	case <-peer.Ended:
+	case <-time.After(wait):
+		t.Fatalf("%s: the browser's socket was still open after %v\n%s", what, wait, f.settlementState())
+	}
+}
+
 // waitForNoSettlement waits until no settlement of the document is armed or running: the timer's
 // callback has returned, with what follows its settlement (followUpSettlement), and nothing armed
 // the settlement again. A settlement that stopped short is run again a settle delay later, so the
@@ -177,7 +296,7 @@ func (f closedSettlementFixture) requireNoVersionSince(t *testing.T, before int,
 func (f closedSettlementFixture) requireSettledFromTheStore(t *testing.T, before int) string {
 	t.Helper()
 	ctx := context.Background()
-	waitFor(t, roomWait(t), "the closed issue's document to settle and owe no settlement", func() bool {
+	f.waitFor(t, "the closed issue's document to settle and owe no settlement", func() bool {
 		owed, err := settlementPending(ctx, f.database.Pool, f.artifactID)
 		return err == nil && !owed
 	})
@@ -223,19 +342,20 @@ func settleAnAppendInsideTheCloseMargin(t *testing.T) {
 		defer close(recorded)
 		f.service.issueOpenChanged(store.WithTransactionTracking(context.Background()), "CORE-1")
 	}()
-	waitFor(t, roomWait(t), "the close to be recorded on the room's record", func() bool {
+	f.waitFor(t, "the close to be recorded on the room's record", func() bool {
 		return recordReadsClosed(f.service, f.artifactID)
 	})
 	if f.settlementArmed() {
 		t.Fatal("the close left the keystroke's settlement armed, so the append's own settlement is not what this case settles with")
 	}
 	f.held.let()
+	wait := roomWait(t)
 	select {
 	case <-recorded:
-	case <-time.After(roomWait(t)):
-		t.Fatalf("the close of CORE-1 had not returned %v after the room's append went on", roomWait(t))
+	case <-time.After(wait):
+		t.Fatalf("the close of CORE-1 had not returned %v after the room's append went on\n%s", wait, f.settlementState())
 	}
-	requireEnds(t, alice, "the close of CORE-1 closed alice's room")
+	f.requireEnds(t, alice, "the close of CORE-1 closed alice's room")
 
 	if markdown := f.requireSettledFromTheStore(t, before); !strings.Contains(markdown, typed) {
 		t.Fatalf("the settled version reads %q, want the keystroke the store took inside the close margin", markdown)

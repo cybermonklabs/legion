@@ -17,4 +17,5 @@ body: |-
   `doc_closed_edit_sources` to keep that editor past the closed issue's settlement. An approval
   given after a reopen, before its settlement, is carried to the version that settlement writes
   when that version differs from the approved one only in the questions the close withdrew and the
-  reopen opened again.
+  reopen opened again. A settlement whose room a close retired before the settlement held it, or
+  before it caught the room up, is armed again and logged, rather than ending without a word.

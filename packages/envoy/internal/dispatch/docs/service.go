@@ -1568,8 +1568,9 @@ func (s *Service) retrySettleLocked(room string, state *roomState, generation ui
 	switch {
 	case errors.Is(err, errRoomReplaced):
 		// Expected, not a fault: the settlement wrote nothing (one that wrote fails the room
-		// instead) because the room it read was replaced first, and the replacement's load arms
-		// the settlement the document still owes.
+		// instead) because the room it read was replaced or retired first. A close that moved the
+		// generation leaves the settlement the document still owes to the reload that follows it;
+		// one that did not is followed by no load that arms it, so it is armed again below.
 		slog.Info("dispatch: document settlement wrote nothing into a replaced room", "room", room, "error", err)
 	default:
 		slog.Error("dispatch: settle document", "room", room, "error", err)
