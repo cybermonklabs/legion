@@ -59,11 +59,16 @@ type ArchitectStart struct {
 	// Gate is the steps the deployment gates and the design gate rows the root holds now
 	// (record.Store.GatesOf). The zero value is a root that has registered nothing.
 	Gate record.TreeGate
-	// Served is the issue generation of the last task the tree's architect claim took
-	// (record.Store.ArchitectServed), zero where that tree has no architect claim or its claim has
-	// taken no task of a run. It is a run, which the claim's own generation is not: that counts
-	// the claim's launches, and the claim is kept from one run to the next.
+	// Served is the issue generation of the last confirmed task the tree's architect claim retired
+	// that carried one (record.Store.ArchitectServed), zero where that tree has no architect claim
+	// or its claim has retired no such task. It is a run, which the claim's own generation is not:
+	// that counts the claim's launches, and the claim is kept from one run to the next.
 	Served uint64
+	// ServedEntry is the phase entry of the last confirmed task that claim retired that carried
+	// one (supervise.Claim.ServedEntry, read by the same reader), zero where that tree has no
+	// architect claim or its claim has retired no such task. A confirmed task of no entry, such as
+	// a wake's, leaves it where it stood (supervise's retirePending, Claim.ServingEntry).
+	ServedEntry int64
 	// Decided is what a person decided on the tree while nobody in it could hear them, as
 	// KeptDecisionsTask writes it, empty where there is nothing.
 	Decided string
@@ -73,8 +78,8 @@ type ArchitectStart struct {
 // (ArchitectStart), all but Decided: whether a hand-over carried the root in at its generation
 // (ArchitectCarried) and, for such a root, whether its phase is over by its own terminating fact
 // (PhaseFinished), the design gate rows it holds under steps, the design-gate steps the deployment
-// gates, and the run its tree's architect claim last served. It is the one reader of them, which
-// every derivation of a root architect's task reads them through.
+// gates, and the run and the phase entry its tree's architect claim last served. It is the one
+// reader of them, which every derivation of a root architect's task reads them through.
 //
 // Decided is the caller's because it is what tells a task composed now from a held task narrowed.
 // A task composed now names what its tree is owed and nothing claims (ParkedDecisionTask, which
@@ -101,7 +106,7 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 	if start.Gate.Rows, err = store.GatesOf(ctx, tx, root.Key); err != nil {
 		return ArchitectStart{}, err
 	}
-	if start.Served, err = store.ArchitectServed(ctx, tx, root.Tree); err != nil {
+	if start.Served, start.ServedEntry, err = store.ArchitectServed(ctx, tx, root.Tree); err != nil {
 		return ArchitectStart{}, err
 	}
 	if root.Phase != phase.Admitted {
@@ -153,8 +158,9 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 //     admission slot, an open child under it or an issue it is blocked by (a root released for
 //     that wait, record.Issue.ReleasedForWaitAt, among them), and the daemon starts that phase
 //     itself once nothing holds it, so that shape is one of its own.
-//  4. The tree's architect claim last served a run below the root's generation (Served), or the
-//     root's run has stood in a phase of its own (record.Issue.TakenBack). The tree ran at an
+//  4. The tree's architect has run before: the root's run has stood in a phase of its own
+//     (record.Issue.TakenBack), the tree's architect claim served a run below the root's
+//     generation (Served), or that claim served a phase entry (ServedEntry). The tree ran at an
 //     earlier generation, and re-admission cleared that generation and its design gate with it,
 //     so the spec is registered again and nothing is decomposed anew.
 //  5. Otherwise nobody has architected this tree, and the task asks for the whole first act.
@@ -163,15 +169,37 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // 5. That is right: a child handed over before it ever started has no phase of its own to take up,
 // and it writes its own spec like any tree nobody has architected.
 //
-// Two readings of rule 4 are worth stating, because they are easy to get wrong. The rule reads the
-// run the claim served, and not the claim's generation, which counts its launches: the claim is
-// kept from one run to the next, so after relaunches in an earlier run its count can stand above
-// the root's generation, and where it was never relaunched below it, whatever the tree has run.
-// And a tree whose earlier generation ended with no phase of its own leaves no TakenBack mark, so
-// it falls through to rule 5 where its claim served nothing or served the run the root stands at.
-// A claim that served nothing took no task of any run, so the record holds no earlier run of the
-// tree for the task to carry on from. A claim that served the root's own generation took a task
-// of this run, which says nothing of an earlier one.
+// Three readings of rule 4 are worth stating, because they are easy to get wrong.
+//
+// The rule reads what the claim served, and not the claim's generation, which counts its
+// launches: the claim is kept from one run to the next, so after relaunches in an earlier run its
+// count can stand above the root's generation, and where it was never relaunched below it,
+// whatever the tree has run.
+//
+// A served phase entry says the architect ran before, whatever run it was of. Within one
+// generation the derivation is composed for the generation's first entry alone: admission's
+// promotion and the sweep's raise of an entry for a row that names none (StartArchitect), the
+// sweep's derived send again of that entry while the claim is owed it (SendArchitectStart), and
+// the send-time narrowing of the held task of that entry (NarrowRootTask). Before each of those
+// the claim has retired no confirmed task of that entry: the raise makes the entry new, a claim
+// that retired its confirmed task was given the entry and is owed nothing (OwedEntry), and a task
+// a let-go took back is not retired. An entry is never reset (record.Store.ClearTreeGeneration
+// keeps it), so a served entry is one of an earlier generation, or the 1 that the upgrade to this
+// release gives every architect claim of the release before it
+// (20261113182000_architect_entry_upgrade), whose tasks carried no entry. That is the reading
+// that tells a re-admitted tree of the release before: its claim served entry 1 and, where that
+// release's start carried no task, no run at all. A confirmed task of no entry, such as a wake's,
+// leaves the served entry where it stood (supervise's retirePending, Claim.ServingEntry).
+//
+// A served run says the tree ran before only where it is below the root's generation. A claim can
+// serve the root's own run before any task of its first entry: a wake's task carries the root's
+// generation and no entry (wakeRow), and where it takes the place of a first-entry task that a
+// provider error took back (supervise's replaceOwedTask), its turn's end leaves the claim serving
+// this run and no entry, and the sweep then sends the first entry again. So a run equal to the
+// root's generation says nothing of an earlier run. A claim that served nothing took no task of
+// any run, so the record holds no earlier run of the tree for the task to carry on from, and a
+// tree whose earlier generation ended with no phase of its own, whose claim served no entry and no
+// earlier run, falls through to rule 5.
 //
 // Each shape ends in a closing sentence of its own, which says what starts the tree's next work,
 // and every clause of it holds of the root the shape is written for (dispatch://INFRA-2614, R3).
@@ -206,7 +234,7 @@ func ArchitectStartTask(start ArchitectStart) string {
 		writeGateOpen(&task, start)
 	case len(start.Gate.Rows) > 0:
 		writeGateStanding(&task, start)
-	case start.Served > 0 && start.Served < start.Root.Generation, start.Root.TakenBack:
+	case start.Root.TakenBack, start.Served > 0 && start.Served < start.Root.Generation, start.ServedEntry > 0:
 		writeEarlierGeneration(&task, start)
 	default:
 		writeFreshTree(&task, start)

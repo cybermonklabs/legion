@@ -59,15 +59,19 @@ type architectWakeFixture struct {
 	entry    int64
 	raisedAt time.Time
 	// claimed records the architect's claim in state, given the entry given. A fixture without
-	// one is a root whose architect claim does not exist.
-	claimed bool
-	state   supervise.ClaimState
-	given   int64
-	// task gives that claim the delivery of entry, queued at queuedAt and confirmed where
-	// confirmed is set: the handshake the first arm reads.
-	task      bool
-	queuedAt  time.Time
-	confirmed bool
+	// one is a root whose architect claim does not exist. lastReady is the moment the claim's
+	// agent last said it was ready (claims.last_ready), none where it is the zero time.
+	claimed   bool
+	state     supervise.ClaimState
+	given     int64
+	lastReady time.Time
+	// task gives that claim the delivery of entry, queued at queuedAt, confirmed where confirmed
+	// is set and marked as a task a let-go took back from a turn where interrupted is set: the
+	// handshake the first arm reads.
+	task        bool
+	queuedAt    time.Time
+	confirmed   bool
+	interrupted bool
 }
 
 // architectWakeRoot is the base fixture: the root the reading raises no arm for.
@@ -111,8 +115,13 @@ func seedArchitectWakeRoot(t *testing.T, pool *pgxpool.Pool, f architectWakeFixt
 	if f.given != 0 {
 		markGivenEntry(t, pool, token, f.given)
 	}
+	if !f.lastReady.IsZero() {
+		if _, err := pool.Exec(ctx, `update claims set last_ready = $2 where token = $1`, string(token), f.lastReady); err != nil {
+			t.Fatalf("record when the agent of the claim %s was last ready: %v", token, err)
+		}
+	}
 	if f.task {
-		putArchitectTask(t, pool, token, f.generation, f.entry, f.queuedAt, f.confirmed)
+		putArchitectTask(t, pool, token, f.generation, f.entry, f.queuedAt, f.confirmed, f.interrupted)
 	}
 }
 
@@ -133,9 +142,12 @@ func takeSlotAt(t *testing.T, pool *pgxpool.Pool, key string, at time.Time) {
 }
 
 // putArchitectTask records the task an architect's claim holds: the entry it is of, the moment
-// it was queued and, where confirmed is set, the moment a turn of the claim confirmed it. Those
-// three are the handshake the first arm reads (record.RoleClaim.Pending).
-func putArchitectTask(t *testing.T, pool *pgxpool.Pool, token claim.Token, generation uint64, entry int64, queued time.Time, confirmed bool) {
+// it was queued, where confirmed is set the moment a turn of the claim confirmed it, and where
+// interrupted is set the mark a let-go's take-back leaves on it (supervise.Delivery.Interrupted).
+// Those are the handshake the first arm reads (record.RoleClaim.Pending).
+func putArchitectTask(t *testing.T, pool *pgxpool.Pool, token claim.Token, generation uint64, entry int64, queued time.Time,
+	confirmed, interrupted bool,
+) {
 	t.Helper()
 	var at *time.Time
 	if confirmed {
@@ -143,8 +155,8 @@ func putArchitectTask(t *testing.T, pool *pgxpool.Pool, token claim.Token, gener
 		at = &took
 	}
 	if _, err := pool.Exec(context.Background(), `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at,
-		generation, phase, entry, confirmed_at) values ($1, 'outbox:21', 'Carry the tree on.', $2, $3, '', $4, $5)`,
-		string(token), queued, int64(generation), entry, at); err != nil {
+		generation, phase, entry, confirmed_at, interrupted) values ($1, 'outbox:21', 'Carry the tree on.', $2, $3, '', $4, $5, $6)`,
+		string(token), queued, int64(generation), entry, at, interrupted); err != nil {
 		t.Fatalf("record the task the architect claim %s holds: %v", token, err)
 	}
 }
@@ -442,6 +454,74 @@ func TestNoArchitectWakeIsRaisedForARootThatIsMovingAlong(t *testing.T) {
 
 			if reasons := architectWakes(t, pool, root); len(reasons) != 0 {
 				t.Fatalf("the architect wakes of %s = %q, want none: %s", root, reasons, tc.why)
+			}
+		})
+	}
+}
+
+// The first arm counts a task a let-go took back from a turn (supervise.Delivery.Interrupted) only
+// while the claim's agent can take a prompt, and from the later of the task's queueing and that
+// agent's last ready (record.RoleClaim.LastReady). Every relaunch takes the claim's task back so:
+// the task keeps the moment it was queued, loses its confirmation and waits for the relaunched
+// agent. Each case is a root whose architect's claim holds the task of the entry it was given,
+// queued forty minutes ago, unconfirmed and taken back:
+//   - the claim launching: the relaunch has brought up no agent that could take the task, and a
+//     turn of the architect did confirm it before the let-go, so no arm holds and the pass writes
+//     no wake and no mark;
+//   - the claim ready, its agent ready eleven minutes ago: the relaunched agent has been able to
+//     take the task for more than the bound and no turn has confirmed it, so the arm holds and
+//     the controller is woken;
+//   - the claim ready, its agent ready nine minutes ago: that is inside the bound, so no arm holds.
+func TestTheTookNothingArchitectWakeCountsATakenBackTaskFromTheRelaunchedAgentsReady(t *testing.T) {
+	queued := fixedNow.Add(-40 * time.Minute)
+	for _, tc := range []struct {
+		name      string
+		state     supervise.ClaimState
+		lastReady time.Time
+		want      []record.ArchitectStallArm
+		why       string
+	}{
+		{
+			name: "a claim the relaunch is still launching", state: supervise.StateLaunching, lastReady: queued.Add(-time.Minute),
+			why: "the architect worked the task until the let-go, and the relaunched agent cannot take it yet",
+		},
+		{
+			name: "a relaunched claim whose agent was ready past the bound", state: supervise.StateReady,
+			lastReady: fixedNow.Add(-pastTheHandshake), want: []record.ArchitectStallArm{record.ArchitectTookNothing},
+			why: "the relaunched agent could take the task for longer than the bound and no turn confirmed it",
+		},
+		{
+			name: "a relaunched claim whose agent was ready inside the bound", state: supervise.StateReady,
+			lastReady: fixedNow.Add(-insideTheHandshake),
+			why:       "the relaunched agent has been able to take the task for less than the bound",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			registerController(t, pool)
+			admission := quiet(t, 1)
+			const root = "LEGION-829"
+			fixture := architectWakeRoot(root)
+			fixture.state, fixture.lastReady = tc.state, tc.lastReady
+			fixture.raisedAt, fixture.queuedAt, fixture.confirmed, fixture.interrupted = queued, queued, false, true
+			seedArchitectWakeRoot(t, pool, fixture)
+
+			if arms := architectStallArmsOf(t, pool, admission, root); !slices.Equal(arms, tc.want) {
+				t.Fatalf("the state's reading of %s names the arms %v, want %v: %s", root, arms, tc.want, tc.why)
+			}
+			applySweep(t, pool, admission, "taken-back-1")
+			applySweep(t, pool, admission, "taken-back-2")
+
+			assertArchitectWakes(t, pool, root, tc.want, tc.why)
+			if marks := architectWakeMarks(t, pool, root, architectWakeGeneration); !slices.Equal(marks, tc.want) {
+				t.Fatalf("the arms %s is marked told for = %v, want %v: %s", root, marks, tc.want, tc.why)
+			}
+			if len(tc.want) == 0 {
+				return
+			}
+			if ready := tc.lastReady.UTC().Format(time.RFC3339); !strings.Contains(architectWakes(t, pool, root)[0], ready) {
+				t.Fatalf("the wake of %s = %q, want it to name %s, the relaunched agent's ready the arm counted from",
+					root, architectWakes(t, pool, root)[0], ready)
 			}
 		})
 	}

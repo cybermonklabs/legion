@@ -2351,6 +2351,8 @@ A caller from a pod whose claims record a contract below 146 is served the issue
 The daemon wakes the project's controller with `architect-stalled on <KEY>` (`skill://legion-controller/references/wakes.md`), once for each arm in each run of the root:
 
 - the architect took nothing: the task of its entry was queued to its claim more than ten minutes ago, and no turn confirmed it.
+  A process of the claim that dies or that the daemon replaces in the middle of a turn of that task — a crash, an out-of-memory kill, a relaunch onto the current plugin, a stalled turn the daemon ends — leaves the task to be sent again to the relaunched agent.
+  Such a task counts only while the claim is ready, working or idle, and from the moment the relaunched agent said it was ready where that is later than its queueing, so the relaunch of an architect that was working its task raises no wake.
 
 - the architect's claim cannot be reached: the claim is failed or retired and no start of the root's run is the daemon's next move for it, or no architect claim stands, no start of one was queued in the last ten minutes, and the work of the entry has waited the same ten minutes.
   A start the outbox is running is that next move, and so is a start queued in the last ten minutes unless it has already run against the claim and left it failed or retired.

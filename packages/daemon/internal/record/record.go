@@ -1610,13 +1610,15 @@ type Store interface {
 	// the trees that have one: what a catch-up queued to another tree's architect is written for
 	// (record.CatchUp.Launch), so a failed forward of an older one is not queued again behind it.
 	ArchitectLaunches(ctx context.Context, tx pgx.Tx, trees []string) (map[string]uint64, error)
-	// ArchitectServed is the issue generation of the last task the root architect claim of tree
-	// took (supervise.Claim.ServingGeneration): the run that claim last served, and zero where the
-	// tree has no architect claim or its claim has taken no task of a run. It is what tells a tree
-	// that ran at an earlier generation (workflow.ArchitectStartTask's fourth rule). The launch
-	// ArchitectLaunches reads cannot tell it: claims.generation counts the claim's launches, and
-	// the claim is kept from one run to the next.
-	ArchitectServed(ctx context.Context, tx pgx.Tx, tree string) (uint64, error)
+	// ArchitectServed is what the root architect claim of tree has served: the issue generation
+	// of the last confirmed delivery carrying one that the claim retired, and the phase entry of
+	// the last confirmed delivery carrying one (supervise.Claim.ServingGeneration and
+	// ServedEntry), each zero where the tree has no architect claim or its claim has retired no
+	// confirmed task carrying one. It is what tells a tree whose architect ran before
+	// (workflow.ArchitectStartTask's fourth rule). The launch ArchitectLaunches reads cannot tell
+	// it: claims.generation counts the claim's launches, and the claim is kept from one run to
+	// the next.
+	ArchitectServed(ctx context.Context, tx pgx.Tx, tree string) (uint64, int64, error)
 	// KeepReadmittedApproval keeps, for root's next architect start, the step whose document a
 	// person approved, the version they approved and that document's latest version, which its
 	// re-admission found above the approved one before it cleared the old generation's gate; a
@@ -2011,12 +2013,14 @@ type QueuedSupervise struct {
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it
 // is suspended, the newest start the outbox ran against it (last_start_row), the update round it is
 // in (update_round), the write mark its retirement took (retired_at_write_mark), the phase entry
-// it was last given work of (given_entry), the moment its agent last stepped (step_at,
-// turn_started_at), what its own session last reported it was doing (activity_at,
-// activity_background, activity_next_reminder_at), and the task it holds, nil for none, with the
-// task's delivery id, generation, phase and confirmation. The id is what says the task is the
-// daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch), which a reader of a
-// run reads as no work of the claim's (supervise.HoldsTask: workflow's owed and readyWorkerTask).
+// it was last given work of (given_entry), the moment its agent last said it was ready
+// (last_ready), the moment its agent last stepped (step_at, turn_started_at), what its own session
+// last reported it was doing (activity_at, activity_background, activity_next_reminder_at), and
+// the task it holds, nil for none, with the task's delivery id, generation, phase, entry, the
+// moments it was queued and confirmed, and whether a let-go took it back from a turn
+// (interrupted). The id is what says the task is the daemon's own delivery of a relaunch's record
+// (supervise.Delivery.Relaunch), which a reader of a run reads as no work of the claim's
+// (supervise.HoldsTask: workflow's owed and readyWorkerTask).
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string
@@ -2076,7 +2080,14 @@ type RoleClaim struct {
 	// Its reader is the admission pass, which tells a claim behind the entry its role's phases
 	// row names — one owed that entry's work — from one already holding it.
 	GivenEntry int64
-	Pending    *supervise.Delivery
+	// LastReady is when the claim's agent last said it could be prompted (supervise.Claim.LastReady,
+	// last_ready), and the zero time for a claim whose agent never has. The ready of every launch
+	// writes it, a relaunch's included (supervise's ready). Its reader is the first stall arm
+	// (admit's architectTookNothing): a task a let-go took back from a turn waits for the
+	// relaunched agent, so the arm counts that task from the later of its queueing and this
+	// moment.
+	LastReady time.Time
+	Pending   *supervise.Delivery
 }
 
 // TreeLingers says whether tree lingers after its close: its root is recorded with a linger

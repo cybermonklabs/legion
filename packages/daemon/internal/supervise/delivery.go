@@ -1461,11 +1461,12 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	doubt := m.confirmationInDoubt()
 	untold := m.untellInFlight()
 	stored := m.stored()
+	var handshakeMoved bool
 	if doubt {
-		stored.Handshake = m.claim.Handshake.unconfirmed(*p)
+		stored.Handshake, handshakeMoved = m.claim.Handshake.unconfirmed(*p)
 	}
 	var err error
-	if untold || stored.Handshake != m.claim.Handshake {
+	if untold || handshakeMoved {
 		err = m.putClaimAndDelivery(ctx, stored, next)
 	} else {
 		err = m.putDelivery(ctx, next)
@@ -1638,9 +1639,9 @@ func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 // confirmation is in doubt (confirmationInDoubt), and keeps it where a turn of the task did take
 // it.
 func (m *Machine) takeBackConfirmation(p *Delivery) bool {
-	handshake := m.claim.Handshake.unconfirmed(*p)
+	handshake, moved := m.claim.Handshake.unconfirmed(*p)
 	p.ConfirmedAt = time.Time{}
-	if handshake == m.claim.Handshake {
+	if !moved {
 		return false
 	}
 	m.claim.Handshake = handshake

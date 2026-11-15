@@ -2990,11 +2990,7 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 			return nil, fmt.Errorf("read the phase rows of %s: %w", held.issue.Key, err)
 		}
 		row := record.PhaseRowOf(rows, held.role)
-		var given int64
-		if c := run.Claim; c != nil {
-			given = c.GivenEntry
-		}
-		owed = append(owed, owedEntryRole{Issue: held.issue, Role: held.role, Row: row, Send: send, Given: given})
+		owed = append(owed, owedEntryRole{Issue: held.issue, Role: held.role, Row: row, Send: send, Given: workflow.GivenEntry(run)})
 	}
 	return owed, nil
 }

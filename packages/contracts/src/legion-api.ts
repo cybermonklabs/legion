@@ -780,21 +780,23 @@ const legionIssue = z.object({
   /** For a tree's own root, every arm of the daemon's architect-stalled reading that holds for its
    * architect at this read, in the order the controller is told them (contract 146):
    * `took-nothing`, the task of its entry was queued to its claim more than ten minutes ago and no
-   * turn confirmed it; `claim-unreachable`, the claim is failed or retired and no start of the
-   * root's run is the daemon's next move for it (a start the outbox is running is, and so is a
-   * start queued in the last ten minutes unless it has already run against the claim and left it
-   * failed or retired, after which the outbox only runs it again on its backoff), or no architect
-   * claim stands, no start of one was queued in the last ten minutes, and the work of its entry
-   * has waited the same ten minutes, which holds of a root waiting on a person as of any root,
-   * since the daemon queues the next start of such a root's architect only when that wait is
-   * answered; `slow-before-gate`, it stands at `admitted` with no design-gate step registered 90
-   * minutes after the later of its admission and its architect's last raised entry. The daemon
-   * reads the arms by the predicates its own `architect-stalled` wake uses and serves them whether
-   * or not the controller was told, and `legion state`'s plain line prints them and names a root
-   * for nothing else. Absent for a root no arm holds for and for every issue that is not a tree's
-   * root; a daemon before contract 146 writes none, and a caller in a pod whose plugin declares a
-   * contract below 146 is served the state without it (the daemon's `withoutEntryTimes`), which is
-   * why a reader takes it as optional. */
+   * turn confirmed it, where a task whose turn ended with the claim's process (a death, or a
+   * replacement the daemon made) counts only while the claim is ready, working or idle, and from
+   * the relaunched agent's ready where that is later; `claim-unreachable`, the claim is failed or
+   * retired and no start of the root's run is the daemon's next move for it (a start the outbox is
+   * running is, and so is a start queued in the last ten minutes unless it has already run against
+   * the claim and left it failed or retired, after which the outbox only runs it again on its
+   * backoff), or no architect claim stands, no start of one was queued in the last ten minutes,
+   * and the work of its entry has waited the same ten minutes, which holds of a root waiting on a
+   * person as of any root, since the daemon queues the next start of such a root's architect only
+   * when that wait is answered; `slow-before-gate`, it stands at `admitted` with no design-gate
+   * step registered 90 minutes after the later of its admission and its architect's last raised
+   * entry. The daemon reads the arms by the predicates its own `architect-stalled` wake uses and
+   * serves them whether or not the controller was told, and `legion state`'s plain line prints
+   * them and names a root for nothing else. Absent for a root no arm holds for and for every issue
+   * that is not a tree's root; a daemon before contract 146 writes none, and a caller in a pod
+   * whose plugin declares a contract below 146 is served the state without it (the daemon's
+   * `withoutEntryTimes`), which is why a reader takes it as optional. */
   architectStalls: z
     .array(z.enum(["took-nothing", "claim-unreachable", "slow-before-gate"]))
     .optional(),

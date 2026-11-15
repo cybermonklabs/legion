@@ -680,9 +680,11 @@ const (
 // reads two wakes of one root reads two different facts:
 //
 //   - ArchitectTookNothing: the task of the architect's phase entry was queued to its claim more
-//     than workflow.StrandedReleaseWake ago and no turn of that claim confirmed it. The daemon
-//     writes no second start while that task stands (workflow.ArchitectStartPending), so the
-//     wake is the one thing left.
+//     than workflow.StrandedReleaseWake ago and no turn of that claim confirmed it. A task a
+//     let-go of the claim's process took back from a turn is counted only while the claim is
+//     ready, working or idle, from the later of its queueing and the relaunched agent's ready.
+//     The daemon writes no second start while that task stands (workflow.ArchitectStartPending),
+//     so the wake is the one thing left.
 //   - ArchitectClaimUnreachable: the architect's claim is failed or retired, or the root has no
 //     architect claim at all and the work of its entry has stood that same bound, and in either
 //     case no start of the root's run is the daemon's next move for it, which

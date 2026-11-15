@@ -174,6 +174,8 @@ A root whose own architect is not taking the work the daemon states it is owed.
 `reason` begins with the arm that raised it, and one root raises each arm once per run, so two wakes of one root are two different facts:
 
 - "the architect took nothing": the task of the architect's phase entry was queued to its claim more than ten minutes ago and no turn of that claim confirmed it.
+  A process of the claim that dies or that the daemon replaces in the middle of a turn of that task — a crash, an out-of-memory kill, a relaunch onto the current plugin, a stalled turn the daemon ends — leaves the task to be sent again to the relaunched agent.
+  Such a task counts only while the claim is ready, working or idle, and from the moment the relaunched agent said it was ready where that is later than its queueing, so the relaunch of an architect that was working its task raises no wake.
   The daemon writes no second start while that task stands, so this wake is the one thing left.
 
 - "the architect's claim cannot be reached": the claim is failed or retired and no start of the root's run is the daemon's next move for it, or the root has no architect claim at all, no start of one was queued in the last ten minutes, and the work of its entry has stood that same bound.

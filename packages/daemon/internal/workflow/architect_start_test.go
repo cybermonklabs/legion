@@ -286,14 +286,17 @@ func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 	}
 }
 
-// The rule that chooses the shape, case by case. Four readings of it are easy to get wrong: a
-// root at admitted whose architect claim served the root's own generation, and whose run never
-// stood in a phase of its own, is a tree nobody has architected, since its claim took a task of
-// this run and of no earlier one; a root a hand-over carried in stands in the phase that came
-// with it whatever its gate rows say; a carried root that never left admitted has no phase of
-// its own to take up, so it reads as any other root standing there; and a root whose gate rows
-// open its gate reads apart from one whose rows stand part way, since the daemon starts its first
-// phase itself.
+// The rule that chooses the shape, case by case. Five readings of it are easy to get wrong: a
+// root at admitted whose architect claim served the root's own generation and no phase entry, and
+// whose run never stood in a phase of its own, is a tree nobody has architected, since a task of
+// this run and of no entry, a wake's, says nothing of an earlier run; a claim that served a phase
+// entry ran the tree before whatever run it served, which is the claim the upgrade leaves a
+// re-admitted tree of the release before (served entry 1, no run) and a claim that served a wake's
+// task of the root's own generation after an entry of an earlier one; a root a hand-over carried
+// in stands in the phase that came with it whatever its gate rows say; a carried root that never
+// left admitted has no phase of its own to take up, so it reads as any other root standing there;
+// and a root whose gate rows open its gate reads apart from one whose rows stand part way, since
+// the daemon starts its first phase itself.
 func TestTheArchitectTaskShapeRule(t *testing.T) {
 	registered := registeredSpec()
 	carried := func(gate record.TreeGate, taken bool) ArchitectStart {
@@ -317,9 +320,19 @@ func TestTheArchitectTaskShapeRule(t *testing.T) {
 			label: ArchitectFreshTreeLabel,
 		},
 		{
-			name:  "an architect claim that served the root's own generation, for a tree that never ran",
+			name:  "an architect claim that served the root's own generation and no entry, for a tree that never ran",
 			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Served: 2},
 			label: ArchitectFreshTreeLabel,
+		},
+		{
+			name:  "an architect claim the upgrade settled: served entry 1 and no run",
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, ServedEntry: 1},
+			label: ArchitectReadmittedLabel,
+		},
+		{
+			name:  "an architect claim that served an earlier entry and a task of the root's own generation",
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Served: 2, ServedEntry: 1},
+			label: ArchitectReadmittedLabel,
 		},
 		{
 			name:  "an architect claim that served the generation before",
@@ -390,27 +403,36 @@ func TestTheArchitectTaskShapeRule(t *testing.T) {
 	}
 }
 
-// The fourth rule reads the run the tree's architect claim last served, never the claim's launch
-// count. The claim is kept from one run to the next, and its generation (claims.generation)
-// counts its launches, so it can stand above the root's generation after relaunches in an earlier
-// run, or below it where the claim was never relaunched, whatever the tree has run. Each case is a
-// root re-admitted at generation 3, at admitted with no design gate row and no run of its own
-// phase, read from the record through ArchitectStartOf:
+// The fourth rule reads what the tree's architect claim served, never the claim's launch count.
+// The claim is kept from one run to the next, and its generation (claims.generation) counts its
+// launches, so it can stand above the root's generation after relaunches in an earlier run, or
+// below it where the claim was never relaunched, whatever the tree has run. Each case is a root
+// re-admitted at generation 3, at admitted with no design gate row and no run of its own phase,
+// read from the record through ArchitectStartOf, which reads the claim's serving_generation and
+// served_entry (record.Store.ArchitectServed):
 //   - a claim that launched five times and last served generation 2 ran the tree at an earlier
 //     generation, so the task is of the fourth rule's shape;
 //   - a claim that served nothing took no task of any run, so the tree is one nobody has
 //     architected;
-//   - a claim that served generation 3 took a task of the run the root stands at, which says
-//     nothing of an earlier run, so the task is not of the fourth rule's shape.
+//   - a claim that served generation 3 and no entry took a task of the run the root stands at and
+//     of no entry, a wake's, which says nothing of an earlier run, so the task is not of the
+//     fourth rule's shape;
+//   - a claim the upgrade settled, served entry 1 and no run, ran the tree on the release before,
+//     so the task is of the fourth rule's shape;
+//   - a claim that served entry 1 and then generation 3, a wake's task of this run, ran the tree
+//     at an earlier generation all the same, so the task is of the fourth rule's shape.
 func TestTheArchitectTaskReadsTheRunItsArchitectServedAndNotItsLaunches(t *testing.T) {
 	for _, tc := range []struct {
 		name             string
 		launches, served uint64
+		servedEntry      int64
 		label            string
 	}{
-		{"a claim that launched five times and served generation 2", 5, 2, ArchitectReadmittedLabel},
-		{"a claim that launched twice and served nothing", 2, 0, ArchitectFreshTreeLabel},
-		{"a claim that launched twice and served generation 3, the run the root stands at", 2, 3, ArchitectFreshTreeLabel},
+		{"a claim that launched five times and served generation 2", 5, 2, 0, ArchitectReadmittedLabel},
+		{"a claim that launched twice and served nothing", 2, 0, 0, ArchitectFreshTreeLabel},
+		{"a claim that launched twice and served generation 3, the run the root stands at, and no entry", 2, 3, 0, ArchitectFreshTreeLabel},
+		{"a claim the upgrade settled, served entry 1 and no run", 2, 0, 1, ArchitectReadmittedLabel},
+		{"a claim that served entry 1 and then generation 3, the run the root stands at", 2, 3, 1, ArchitectReadmittedLabel},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
@@ -423,9 +445,10 @@ func TestTheArchitectTaskReadsTheRunItsArchitectServedAndNotItsLaunches(t *testi
 				t.Fatal(err)
 			}
 			if _, err := pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-				state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, serving_generation)
-				values ($1, $2, $3, $4, 'architect', $5, 'session-architect', '', 'ready', 0, 0, 0, 0, $6)`,
-				string(wakeToken(t, claim.RoleArchitect)), project, root.Tree, root.Key, int64(tc.launches), int64(tc.served)); err != nil {
+				state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, serving_generation, given_entry, served_entry)
+				values ($1, $2, $3, $4, 'architect', $5, 'session-architect', '', 'ready', 0, 0, 0, 0, $6, $7, $7)`,
+				string(wakeToken(t, claim.RoleArchitect)), project, root.Tree, root.Key, int64(tc.launches), int64(tc.served),
+				tc.servedEntry); err != nil {
 				t.Fatalf("seed the architect's claim: %v", err)
 			}
 			var task string

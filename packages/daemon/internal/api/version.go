@@ -1767,13 +1767,16 @@ package api
 // A tree's own root carries `architectStalls` too: every arm of INFRA-2614's architect-stalled
 // reading that holds for its architect at that read, as `record.ArchitectStallArm`'s values —
 // `took-nothing` (the task of its entry was queued to its claim more than ten minutes ago and no
-// turn confirmed it), `claim-unreachable` (the claim is failed or retired and no start of the
-// root's run is the daemon's next move for it: a start the outbox is running is, and so is a start
-// queued in the last ten minutes unless it has already run against the claim and left it failed
-// or retired, after which the outbox only runs it again on its backoff; or no architect claim
-// stands, no start of one was queued in the last ten minutes, and the work of its entry has
-// waited the same ten minutes; a root waiting on a person raises it as any root does, since the
-// daemon queues the next start of its architect only when that wait is answered) and
+// turn confirmed it; a task whose turn ended with the claim's process, at a death or at a
+// replacement the daemon made, counts only while the claim is ready, working or idle, and from
+// the relaunched agent's ready where that is later), `claim-unreachable` (the claim is failed or
+// retired and no start of the root's run is the daemon's next move for it: a start the outbox is
+// running is, and so is a start queued in the last ten minutes unless it has already run against
+// the claim and left it failed or retired, after which the outbox only runs it again on its
+// backoff; or no architect claim stands, no start of one was queued in the last ten minutes, and
+// the work of its entry has waited the same ten minutes; a root waiting on a person raises it as
+// any root does, since the daemon queues the next start of its architect only when that wait is
+// answered) and
 // `slow-before-gate` (it stands at `admitted` with no design-gate step registered 90 minutes
 // after the later of its admission and its architect's last raised entry) — in that order. The
 // daemon serves the arms the admission pass reads before it wakes the controller, by the same

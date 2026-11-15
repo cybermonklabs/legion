@@ -243,15 +243,15 @@ func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, iss
 // Admission asks it of every role of an issue at work and sends the ones it answers true for the
 // work of that entry (admit's owedEntryRoles and resumeSlottedWorkers, SendOwedEntry).
 //
-// It answers true when the entry the claim was given — record.RoleClaim.GivenEntry, and 0 for a
-// role the daemon holds no claim row of at all, which was given nothing — is below entry, and no
-// queued start of the role carries an entry at or above it. That second term is what keeps one
-// entry to one start row: the given number moves when the outbox queues the delivery, not when
-// the transition writes the row, and an admission pass runs on every fact of the project, so
-// without it every pass between the write and the delivery would write another start for the
-// same entry. A stop that still acts (actingStop) undoes the start it outlives, which may run
-// first, so past one only a queued start newer than the stop counts, which is the body StartFor
-// reads the same rows with.
+// It answers true when the entry the claim was given (GivenEntry: record.RoleClaim.GivenEntry,
+// and 0 for a role the daemon holds no claim row of at all, which was given nothing) is below
+// entry, and no queued start of the role carries an entry at or above it. That second term is
+// what keeps one entry to one start row: the given number moves when the outbox queues the
+// delivery, not when the transition writes the row, and an admission pass runs on every fact of
+// the project, so without it every pass between the write and the delivery would write another
+// start for the same entry. A stop that still acts (actingStop) undoes the start it outlives,
+// which may run first, so past one only a queued start newer than the stop counts, which is the
+// body StartFor reads the same rows with.
 //
 // Two tests the caller holds are deliberately not here, because each is about the issue rather
 // than about the role's entry: that the role is the one the issue's current phase names
@@ -265,12 +265,7 @@ func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, iss
 // difference for. The states no start may reach — an operator's suspension, a retirement — are
 // the caller's own skips.
 func OwedEntry(run record.RoleRun, root record.Issue, entry int64) bool {
-	held := run.Claim
-	var given int64
-	if held != nil {
-		given = held.GivenEntry
-	}
-	if given >= entry {
+	if GivenEntry(run) >= entry {
 		return false
 	}
 	stop := actingStop(run, root)

@@ -72,15 +72,18 @@ func ArchitectAtWork(ctx context.Context, tx pgx.Tx, store record.Store, root re
 // carries a run (record.Issue.CarriesRun), which its caller has already answered: the root is not
 // waiting on a person, and the entry of its architect's row was raised by a resume that the claim
 // of run has not been given.
+//
+// The wait is read as record.Issue.AwaitingPerson, the reading the second stall arm makes (admit's
+// architectClaimUnreachable), rather than as the phase alone. The two answer alike for every
+// record the sweep reads: the store refuses a root in awaiting_person that names no ask and no
+// gate version it waits on (issues_awaiting_shape), and it reads such a root's wait back whenever
+// either is set (record's scanIssue), so a root standing in awaiting_person always carries its
+// Awaiting.
 func resumeOwed(root record.Issue, entry record.PhaseEntry, run record.RoleRun) bool {
-	if !entry.Verbatim || root.Phase == phase.AwaitingPerson {
+	if !entry.Verbatim || root.AwaitingPerson() {
 		return false
 	}
-	var given int64
-	if run.Claim != nil {
-		given = run.Claim.GivenEntry
-	}
-	return given < entry.Entry
+	return GivenEntry(run) < entry.Entry
 }
 
 // ArchitectCarried is whether a hand-over created root at the generation it stands at
@@ -197,6 +200,18 @@ func lastStartRow(run record.RoleRun) int64 {
 		return 0
 	}
 	return run.Claim.LastStartRow
+}
+
+// GivenEntry is the phase entry run's claim was last queued a task of
+// (record.RoleClaim.GivenEntry), and 0 where the daemon holds no claim row of the role, which was
+// given nothing. It is the one reading of that number the rules over a role's entry make:
+// OwedEntry, resumeOwed and the admission pass's record of what each owed role was given (admit's
+// owedOf).
+func GivenEntry(run record.RoleRun) int64 {
+	if run.Claim == nil {
+		return 0
+	}
+	return run.Claim.GivenEntry
 }
 
 // SendArchitectStart writes the start of root's architect again, for the entry its phases row

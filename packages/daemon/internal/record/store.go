@@ -1334,17 +1334,17 @@ func (s *Postgres) ArchitectLaunches(ctx context.Context, tx pgx.Tx, trees []str
 	return launches, nil
 }
 
-func (s *Postgres) ArchitectServed(ctx context.Context, tx pgx.Tx, tree string) (uint64, error) {
-	var served int64
-	err := tx.QueryRow(ctx, `select serving_generation from claims
-		where role = $1 and issue = $2 and tree = $2`, string(claim.RoleArchitect), tree).Scan(&served)
+func (s *Postgres) ArchitectServed(ctx context.Context, tx pgx.Tx, tree string) (uint64, int64, error) {
+	var served, entry int64
+	err := tx.QueryRow(ctx, `select serving_generation, served_entry from claims
+		where role = $1 and issue = $2 and tree = $2`, string(claim.RoleArchitect), tree).Scan(&served, &entry)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, nil
+		return 0, 0, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("read the run the architect of %s last served: %w", tree, err)
+		return 0, 0, fmt.Errorf("read what the architect of %s last served: %w", tree, err)
 	}
-	return uint64(served), nil
+	return uint64(served), entry, nil
 }
 
 func (s *Postgres) ForgetKeptDecisions(ctx context.Context, tx pgx.Tx, tree string, kept KeptDecisions, row int64) error {
@@ -2983,15 +2983,18 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // a reader of a role run reads as no work (supervise.Delivery.Relaunch; workflow's owed and
 // readyWorkerTask).
 //
-// The task is read as the entry it is of and the two moments of its handshake: queued when the
-// delivery was written, confirmed when a turn of the claim's worker took it. Those are what say
-// an architect took nothing — a task of the entry its claim was given, standing unconfirmed —
-// which the admission pass reads of every root it weighs (admit's architectStalls).
+// The task is read as the entry it is of, the two moments of its handshake — queued when the
+// delivery was written, confirmed when a turn of the claim's worker took it — and whether a let-go
+// took it back from a turn (interrupted), with the moment the claim's agent last said it was ready
+// (last_ready). Those are what say an architect took nothing — a task of the entry its claim was
+// given, standing unconfirmed, counted for a task a let-go took back from the relaunched agent's
+// ready — which the admission pass reads of every root it weighs (admit's architectStalls).
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
 	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark, c.given_entry,
-		c.update_round, c.step_at, c.turn_started_at,
+		c.last_ready, c.update_round, c.step_at, c.turn_started_at,
 		c.activity_at, c.activity_background, c.activity_next_reminder_at,
-		d.claim_token is not null, coalesce(d.delivery_id, ''), coalesce(d.generation, 0), coalesce(d.phase, ''), coalesce(d.entry, 0), d.queued_at, d.confirmed_at
+		d.claim_token is not null, coalesce(d.delivery_id, ''), coalesce(d.generation, 0), coalesce(d.phase, ''), coalesce(d.entry, 0), d.queued_at, d.confirmed_at,
+		coalesce(d.interrupted, false)
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
 		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
@@ -3003,6 +3006,9 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		var pending bool
 		var task supervise.Delivery
 		var queued, confirmed *time.Time
+		// last_ready is nullable (migration 20261029121000_claim_death_and_start_causes): a claim
+		// whose agent has never said it was ready has none, and the zero time is what says so.
+		var ready *time.Time
 		// Both step columns are nullable (migration 20261107052815_claim_step_record): a claim
 		// whose agent has neither stepped nor begun a turn has neither, and the zero time left
 		// in the step record is what says so to its reader (supervise.StepRecord.LastStep).
@@ -3013,9 +3019,12 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		// rule that reads them (workflow.SilentPhaseWorker).
 		var reported, reminder *time.Time
 		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
-			&held.GivenEntry, &held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
-			&pending, &task.ID, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed); err != nil {
+			&held.GivenEntry, &ready, &held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
+			&pending, &task.ID, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed, &task.Interrupted); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
+		}
+		if ready != nil {
+			held.LastReady = ready.UTC()
 		}
 		if stepped != nil {
 			held.Step.At = *stepped

@@ -180,8 +180,10 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 }
 
 // architectTookNothing is the first arm: the architect's claim holds the task of the entry it
-// was given, that task was queued more than workflow.StrandedReleaseWake ago, and no turn of the
-// claim has confirmed it. It answers what the record says, and "" for a root it does not read.
+// was given, no turn of the claim has confirmed it, and it has stood so more than
+// workflow.StrandedReleaseWake since the moment the arm counts it from (tookNothingSince): its
+// queueing, or, for a task a let-go took back from a turn, the later of its queueing and the
+// relaunched agent's ready. It answers what the record says, and "" for a root it does not read.
 //
 // The task is read as the delivery carrying the entry the claim was given — the task the claim's
 // own handshake was written from (supervise.Claim.Handshake), whose two times the state shows
@@ -207,18 +209,67 @@ func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root re
 		return "", nil
 	}
 	task := held.Pending
-	if task.Entry == 0 || task.Entry != held.GivenEntry || !task.ConfirmedAt.IsZero() {
+	if task.Entry == 0 || task.Entry != held.GivenEntry || !task.ConfirmedAt.IsZero() || task.QueuedAt.IsZero() {
 		return "", nil
 	}
-	if task.QueuedAt.IsZero() || now.Sub(task.QueuedAt) <= workflow.StrandedReleaseWake {
+	since, counted := tookNothingSince(*held)
+	if !counted || now.Sub(since) <= workflow.StrandedReleaseWake {
 		return "", nil
 	}
 	served, err := a.architectServed(ctx, tx, root, row, run)
 	if err != nil || !served {
 		return "", err
 	}
-	return fmt.Sprintf("the task of phase entry %d was queued to the architect's claim of %s at %s. No turn of that claim has confirmed it. The root stands at %s. The daemon writes no second start while that task stands.",
-		task.Entry, root.Key, task.QueuedAt.UTC().Format(time.RFC3339), root.Phase), nil
+	unconfirmed := "No turn of that claim has confirmed it."
+	if task.Interrupted {
+		unconfirmed = fmt.Sprintf("A let-go of the claim's process took it back from a turn of it, and no turn has confirmed it since %s, "+
+			"the later of its queueing and the moment the claim's relaunched agent was ready.", since.UTC().Format(time.RFC3339))
+	}
+	return fmt.Sprintf("the task of phase entry %d was queued to the architect's claim of %s at %s. %s The root stands at %s. The daemon writes no second start while that task stands.",
+		task.Entry, root.Key, task.QueuedAt.UTC().Format(time.RFC3339), unconfirmed, root.Phase), nil
+}
+
+// tookNothingSince is the moment the first arm counts the pending task of held from, and false
+// where it does not count that task at all. held holds a pending task.
+//
+// A task no let-go took back is counted from its queueing, in whatever state the claim stands:
+// no turn ever confirmed it, so the architect took nothing of it, and a failed claim that holds it
+// raises the second arm beside this one.
+//
+// A task a let-go took back from a turn (supervise.Delivery.Interrupted) is one a turn of the
+// architect did confirm. Every relaunch takes the claim's task back so (supervise's
+// Machine.interrupted): a death, an out-of-memory kill, the stale-plugin relaunch, a repoint, the
+// stall backstop and a held suspension's deadline. The take-back copies the task under a new id,
+// keeps its QueuedAt, clears its confirmation and marks it, and the task waits for the relaunch to
+// send it again. Counted from its queueing, it would raise the arm on the first pass of the
+// relaunch of an architect whose task was queued more than ten minutes ago, about an architect
+// that worked the task, and spend the arm's one mark for the run.
+//
+// So such a task is counted only while the claim's agent can take a prompt, which is the states
+// ready, working and idle. A claim enters them only through its agent's ready (supervise's ready,
+// the one move out of registered into ready), which writes the claim's last ready
+// (record.RoleClaim.LastReady) on every launch, a relaunch's included, so the task is counted from
+// the later of its queueing and that ready: a task the relaunched agent has been able to take for
+// more than the bound with no turn confirming it raises the arm. The mark is never cleared
+// (supervise.Delivery.Interrupted), so a task a later refusal takes back again is still counted
+// from that ready, which is then the later moment anyway. The other states count nothing. In
+// queued, launch_uncertain, launching, shim_connected and registered the relaunch has not yet
+// brought up an agent that can take a prompt. A suspended claim has no process: its task waits
+// for the resume, whose ready counts it again. A failed or a retired claim has no process either,
+// and no start reaches it without a relaunch, which is the second arm's reading.
+func tookNothingSince(held record.RoleClaim) (time.Time, bool) {
+	task := held.Pending
+	if !task.Interrupted {
+		return task.QueuedAt, true
+	}
+	switch held.State {
+	case supervise.StateReady, supervise.StateWorking, supervise.StateIdle:
+		if held.LastReady.After(task.QueuedAt) {
+			return held.LastReady, true
+		}
+		return task.QueuedAt, true
+	}
+	return time.Time{}, false
 }
 
 // architectClaimUnreachable is the second arm: the root is in the workflow, no start of its run is

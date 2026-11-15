@@ -507,20 +507,23 @@ func (h EntryHandshake) confirmed(d Delivery) EntryHandshake {
 	return h
 }
 
-// unconfirmed is h once the daemon took back the confirmation of the task d: a refusal or a busy
-// answer said the turn that confirmed it was not d's, so the worker never took it, or a let-go cut
-// that turn off before anything said whose it was (interrupted, confirmationInDoubt), so nothing
-// says the worker took it. Where that confirmation is the one h recorded — d is of h's entry and
-// run, and its ConfirmedAt is h's — h is unconfirmed again, and the task's next real confirmation
-// is recorded in its place. Any other take-back leaves h as it stands: one of a task of another
-// entry or of no entry, and one of a later confirmation of h's entry, after the first one stood.
-func (h EntryHandshake) unconfirmed(d Delivery) EntryHandshake {
+// unconfirmed is h once the daemon took back the confirmation of the task d, and whether that
+// changed h: a refusal or a busy answer said the turn that confirmed it was not d's, so the worker
+// never took it, or a let-go cut that turn off before anything said whose it was (interrupted,
+// confirmationInDoubt), so nothing says the worker took it. Where that confirmation is the one h
+// recorded — d is of h's entry and run, and its ConfirmedAt is h's — h is unconfirmed again, the
+// task's next real confirmation is recorded in its place, and the answer is true. Any other
+// take-back leaves h as it stands and answers false: one of a task of another entry or of no
+// entry, and one of a later confirmation of h's entry, after the first one stood. The bool is
+// what its callers read to know whether the claim's write must carry the handshake, rather than
+// comparing two handshakes that hold times.
+func (h EntryHandshake) unconfirmed(d Delivery) (EntryHandshake, bool) {
 	if d.Entry == 0 || d.Entry != h.Entry || d.Generation != h.Generation ||
 		d.ConfirmedAt.IsZero() || !d.ConfirmedAt.Equal(h.ConfirmedAt) {
-		return h
+		return h, false
 	}
 	h.ConfirmedAt = time.Time{}
-	return h
+	return h, true
 }
 
 // StepRecord is the claim's record of its agent's last step: the last call the agent made, when
