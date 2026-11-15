@@ -62,7 +62,17 @@ type Config struct {
 	// TestPostgres has this launcher serve the pod's own PostgreSQL for tests (testpg.go), which
 	// only an issue pod's container does (RolesDir set). The deployment asks for it with
 	// `runtime.kubernetes.test_postgres`.
-	TestPostgres   bool
+	TestPostgres bool
+	// MicroVM says the pod runs in a GKE Sandbox microVM rather than under gVisor (--microvm). It
+	// comes from the pod as built, never from the daemon's acknowledgement, whose settings are the
+	// configuration of the moment: a pod kept since its issue moved to the other sandbox still
+	// runs where it was built.
+	MicroVM bool
+	// Metadata has this launcher serve the pod-local metadata endpoint (metadata.go), which only a
+	// microVM issue pod's container does (MicroVM and RolesDir set): a microVM's pod does not reach
+	// the node's metadata server. The deployment asks for it with
+	// `runtime.kubernetes.sandbox.microvm.metadata`.
+	Metadata       *MetadataConfig
 	Stdout, Stderr io.Writer
 	// StopGrace is the container shutdown and natural-exit descendant cleanup budget. Every role
 	// of an issue pod's container is given it whole, since they stop together.
@@ -138,6 +148,17 @@ func Run(ctx context.Context, cfg Config) error {
 		m.gitLocks = sweep
 	}
 	locks := sweep.serve(ctx)
+	// The pod-local metadata endpoint, before any role starts: a role's first Google client finds
+	// it listening, and a role is told its address only once it listens (metadataEnv). Its server
+	// is waited on with the roles below, as the test database's ticker is.
+	var metadata <-chan struct{}
+	if cfg.Metadata != nil {
+		var served string
+		metadata, served = serveMetadata(ctx, cfg, managers[0].log.linef)
+		for _, m := range managers {
+			m.metadata = served
+		}
+	}
 	// The pod's own test database, before any role starts: a role that starts at once finds the
 	// server serving its DSN (serveTestPG). Its ticker is waited on with the roles below, so Run
 	// returns with nothing of the launcher's still running.
@@ -156,6 +177,9 @@ func Run(ctx context.Context, cfg Config) error {
 	running.Wait()
 	if testPG != nil {
 		<-testPG
+	}
+	if metadata != nil {
+		<-metadata
 	}
 	<-locks
 	return ctx.Err()
@@ -315,6 +339,9 @@ func (c Config) validate() error {
 	case c.PodUID == "":
 		return errors.New("launcher: no pod UID")
 	}
+	if err := c.validateMetadata(); err != nil {
+		return err
+	}
 	if c.RolesDir == "" {
 		switch {
 		case c.Token == "":
@@ -373,6 +400,34 @@ func (c Config) validateSessionDatabase() error {
 		return nil
 	}
 	return fmt.Errorf("launcher: the session database is named in part: no %s", strings.Join(missing, ", no "))
+}
+
+// validateMetadata refuses the metadata endpoint anywhere but in a microVM issue pod's container,
+// and named in part: the pool and the identity provider together make the token exchange's
+// audience. A gVisor pod reaches the node's metadata server, which the endpoint would shadow, and
+// the controller's pod is never a microVM's.
+func (c Config) validateMetadata() error {
+	if c.Metadata == nil {
+		return nil
+	}
+	var missing []string
+	for _, named := range []struct{ flag, value string }{
+		{"--metadata-workload-pool", c.Metadata.WorkloadPool},
+		{"--metadata-identity-provider", c.Metadata.IdentityProvider},
+	} {
+		if named.value == "" {
+			missing = append(missing, named.flag)
+		}
+	}
+	switch {
+	case len(missing) != 0:
+		return fmt.Errorf("launcher: the metadata endpoint is named in part: no %s", strings.Join(missing, ", no "))
+	case !c.MicroVM:
+		return errors.New("launcher: the metadata endpoint serves a microVM's pod: it needs --microvm")
+	case c.RolesDir == "":
+		return errors.New("launcher: the metadata endpoint is an issue pod's container: it needs --roles-dir")
+	}
+	return nil
 }
 
 func tcpAddress(addr string) (string, error) {
@@ -463,6 +518,9 @@ type manager struct {
 	// check is the launcher process's one install of the shared public leak check, which every
 	// role manager of the container shares as it shares restore.
 	check *checkInstall
+	// metadata is the address this launcher serves the pod-local metadata endpoint at, which
+	// every generation it starts is told (metadataEnv); "" when it serves none.
+	metadata string
 }
 
 // state reports the actual child to the current daemon connection, if one is up. A state change
@@ -602,6 +660,10 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// The pod's own test database: the DSN this launcher serves, over whatever the daemon's start
 	// command carried, and no such variable at all when this launcher serves none (testPGEnv).
 	env = testPGEnv(env, m.cfg.TestPostgres)
+	// The pod-local metadata endpoint: its address, over whatever the daemon's start command
+	// carried, when this launcher serves it, and the environment as it is when it does not
+	// (metadataEnv).
+	env = metadataEnv(env, m.metadata)
 	process, err := m.command(command, env)
 	if err != nil {
 		return abandon(err)
