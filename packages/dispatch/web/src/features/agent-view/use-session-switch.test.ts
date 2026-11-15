@@ -183,6 +183,41 @@ test("a delivery Dispatch later fails itself ends the switch, saying no answer c
   expect(hook.result.current.pending).toBe(false);
 });
 
+const KEPT = "Kept for the session: it is delivered when the agent comes back (Send)";
+
+// A kept switch waits for the agent on its agent subject, so no answer can come before the
+// deadline: the switch ends at once on the words the card says, and the deadline changes nothing.
+test("a send Dispatch answers with a kept attempt ends at once with the kept words", async () => {
+  jest.useFakeTimers();
+  const hook = renderSwitch();
+  const kept = switchMessage("s1", "/model anthropic/model-b", [
+    attempt({ envelope_id: null, state: "kept" }),
+  ]);
+  await pick(hook, MODEL_B, kept);
+  expect(hook.result.current.status).toBe(KEPT);
+  expect(hook.result.current.pending).toBe(false);
+
+  hook.rerender({ thread: [{ message: kept, replies: [] }] });
+  act(() => {
+    jest.advanceTimersByTime(30_000);
+  });
+  expect(hook.result.current.status).toBe(KEPT);
+});
+
+test("a delivery Dispatch later keeps ends the switch with the kept words", async () => {
+  const hook = renderSwitch();
+  const sent = switchMessage("s1", "/model anthropic/model-b", [attempt({ state: "pending" })]);
+  await pick(hook, MODEL_B, sent);
+  expect(hook.result.current.pending).toBe(true);
+
+  const kept = switchMessage("s1", "/model anthropic/model-b", [
+    attempt({ envelope_id: null, state: "kept" }),
+  ]);
+  hook.rerender({ thread: [{ message: kept, replies: [] }] });
+  expect(hook.result.current.status).toBe(KEPT);
+  expect(hook.result.current.pending).toBe(false);
+});
+
 test("no answer in 30 seconds from the send's answer ends the switch; a late reply replaces it", async () => {
   jest.useFakeTimers();
   const hook = renderSwitch();

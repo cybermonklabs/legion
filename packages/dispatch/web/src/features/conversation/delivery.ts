@@ -31,12 +31,30 @@ export function deliveryMode(value: string): MessageDeliveryMode | undefined {
   return DELIVERY_CAPABILITIES.find((known) => known === value);
 }
 
-/** `value` as an attempt's state. Dispatch writes one of the three the route table carries as a
+/** `value` as an attempt's state. Dispatch writes one of the four the route table carries as a
  *  plain string; one this build does not know reads as `sent`, which is what every surface
- *  already showed for it - each tests for `failed` and for `pending`, and draws anything else as
- *  sent. */
+ *  already showed for it - each tests for `failed`, `pending` and `kept`, and draws anything else
+ *  as sent. */
 export function deliveryOutcomeState(value: string): DeliveryOutcome["state"] {
-  return value === "failed" || value === "pending" ? value : "sent";
+  return value === "failed" || value === "pending" || value === "kept" ? value : "sent";
+}
+
+/**
+ * The words every surface says an attempt Dispatch kept with, around the name of the session it
+ * is kept for: `Kept for <target>: it is delivered when the agent comes back (<Mode>)`. The
+ * listener held no record of the session, so Dispatch stored the message on the session's agent
+ * subject, and the session reads it when it registers again. A surface that draws agents passes
+ * an agent part and draws the three parts; one that says text joins them.
+ */
+export function keptParts<Target>(
+  target: Target,
+  mode: MessageDeliveryMode
+): [string, Target, string] {
+  return [
+    "Kept for ",
+    target,
+    `: it is delivered when the agent comes back (${MODE_LABELS[mode]})`,
+  ];
 }
 
 /**
@@ -82,7 +100,10 @@ export function broadcastDelivery(
 
 /** The shape every delivery attempt shares, whatever its row type spells the fields. */
 export interface DeliveryOutcome {
-  readonly state: "pending" | "sent" | "failed";
+  /** `kept`: Dispatch stored the message for a session the listener held no record of, and the
+   *  session reads it when it registers again (`keptParts`). It is no failure, so no surface sends
+   *  it again: a send under a new key would reach the agent twice when it comes back. */
+  readonly state: "pending" | "sent" | "failed" | "kept";
   /** ISO-8601, as both `MessageDelivery.created_at` and `CommentDelivery.created_at` carry it. */
   readonly createdAt: string;
   readonly duplicate?: boolean;

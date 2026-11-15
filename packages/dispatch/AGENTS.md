@@ -378,7 +378,7 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   session, nothing there being run, so the bare name goes in, without the slash and without the
   publisher's `skill:` prefix. On `/agents`, only an attempt
   whose `accepted_as` is `user_turn` reads `Delivered to <session>'s conversation` with no retry
-  row, even after a later `failed` (`takenAsUserTurn` in
+  row, even after a later `failed`, and a kept attempt has none either (`nothingToResend` in
   `features/conversation/TargetedMessageCard.tsx`); every other attempt, a Claude Code session's
   or an older plugin's included, keeps today's states. The page refreshes on `message.accepted`.
   A pick in the live view's model or thinking picker (INFRA-195, `SessionSettings.tsx`) is the

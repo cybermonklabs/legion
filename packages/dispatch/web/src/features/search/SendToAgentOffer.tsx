@@ -2,7 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { issueQuery } from "../../api/queries";
-import type { IssueDetails } from "../../api/types";
+import type { IssueDetails, MessageDeliveryMode } from "../../api/types";
+import { keptParts } from "../conversation/delivery";
 import { claimHoldingFromRead } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
@@ -15,11 +16,18 @@ import { type SendToAgent, sendToAgent } from "./send-to-agent";
 export const SEND_TO_AGENT_GROUP_ID = "search-group-send-to-agent";
 export const SEND_TO_AGENT_OPTION_ID = "search-option-send-to-agent";
 
-/** Where the offer stands once a press has been made: the send out, the message sent, or a
- *  refusal in the person's words. Nothing pressed is no state at all (`useWordsState`). */
+/** Where the offer stands once a press has been made: the send out, the message sent, the message
+ *  kept for the agent until it comes back, or a refusal in the person's words. Nothing pressed is
+ *  no state at all (`useWordsState`). */
 type OfferState =
   | { readonly kind: "sending"; readonly words: string }
   | { readonly agent: string; readonly kind: "sent"; readonly words: string }
+  | {
+      readonly agent: string;
+      readonly kind: "kept";
+      readonly mode: MessageDeliveryMode;
+      readonly words: string;
+    }
   | { readonly kind: "refused"; readonly refusal: string; readonly words: string };
 
 /**
@@ -87,11 +95,14 @@ export function useSendToAgentOffer({
   const approve = (session: string) => {
     setState({ kind: "sending", words });
     send(writes, { block, issue, session, words }).then(
-      (undelivered) => {
+      (result) => {
+        const agent = text.label({ id: session, kind: "session" });
         setState(
-          undelivered === undefined
-            ? { agent: text.label({ id: session, kind: "session" }), kind: "sent", words }
-            : { kind: "refused", refusal: undelivered, words }
+          result.kind === "refused"
+            ? { kind: "refused", refusal: result.refusal, words }
+            : result.kind === "kept"
+              ? { agent, kind: "kept", mode: result.mode, words }
+              : { agent, kind: "sent", words }
         );
       },
       (error: unknown) => {
@@ -124,7 +135,7 @@ export function useSendToAgentOffer({
   };
 }
 
-/** The one line the bar says about the message it is sending, sent, or could not send. */
+/** The one line the bar says about the message it is sending, sent, kept, or could not send. */
 function SendToAgentSaid({
   issue,
   state,
@@ -146,6 +157,13 @@ function SendToAgentSaid({
     return (
       <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="alert">
         Could not send it to the agent on {issue}: {state.refusal}
+      </p>
+    );
+  }
+  if (state.kind === "kept") {
+    return (
+      <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="status">
+        {keptParts(`${state.agent}, the agent on ${issue}`, state.mode).join("")}.
       </p>
     );
   }

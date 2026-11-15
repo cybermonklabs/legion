@@ -175,7 +175,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
     case "message.created":
       return "sent a message";
     case "message.delivery":
-      return "delivered a message";
+      // A kept message reaches the agent only when it comes back, so it is not delivered yet.
+      return event.payload.state === "kept" ? "kept a message for an agent" : "delivered a message";
     case "message.accepted":
       return "took a message as its own turn";
     case "message.answered":

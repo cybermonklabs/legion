@@ -191,6 +191,53 @@ test("a broadcast answered 201 with a recipient still delivering is made and del
   }
 });
 
+// A recipient whose copy Dispatch kept, for a session the listener held no record of, has not
+// read it yet, so the strip does not count the broadcast as delivered.
+test("a broadcast whose recipient's copy was kept says so rather than delivered", async () => {
+  const input = press("Ship it.", "key-1").input;
+  const client = signedIn();
+  const createBroadcast = spyOn(api, "createBroadcast").mockResolvedValueOnce(
+    created(input, "kept")
+  );
+  const getBroadcast = spyOn(api, "getBroadcast").mockResolvedValue(created(input, "kept"));
+  const writes = new Writes(client, keptTab().page(), memoryFiles());
+  try {
+    enqueueBroadcast(writes, press("Ship it.", "key-1"));
+    await waitFor(() =>
+      expect(broadcastRows(writes.rows()).map((row) => row.status)).toEqual(["sent"])
+    );
+    const view = render(
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(
+          MemoryRouter,
+          null,
+          createElement(BroadcastSends, {
+            onDiscard: () => {},
+            onRestore: () => {},
+            onRetry: () => {},
+            onStop: () => {},
+            restoreRefusal: null,
+            rows: broadcastRows(writes.rows()),
+          })
+        )
+      )
+    );
+    try {
+      expect(screen.getByRole("status").textContent).toContain(
+        "Sent to 1 agent — kept for 1 agent until it comes back"
+      );
+      expect(screen.getByRole("status").textContent).not.toContain("delivered");
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    createBroadcast.mockRestore();
+    getBroadcast.mockRestore();
+  }
+});
+
 // A refused broadcast stays failed, holding its draft, and no longer holds the line: the next one
 // goes; its Retry goes under a new key since Dispatch refused it.
 test("a refused broadcast does not hold the line, and its Retry takes a new key", async () => {

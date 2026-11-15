@@ -37,8 +37,13 @@ export const messageDeliveryFields = {
    * second transaction after it, so no Envoy send holds a database connection. A retry
    * resumes a pending attempt no live sender still holds, under its original idempotency key,
    * so the listener deduplicates a send that did land.
+   *
+   * `kept` is an attempt whose session the listener still held no record of when Dispatch's
+   * take-over window ended (the time Dispatch retries a send to a session the listener does not
+   * know). Dispatch then stored the message on that session's agent subject itself, and the
+   * session reads it when it registers again.
    */
-  state: z.enum(["pending", "sent", "failed"]),
+  state: z.enum(["pending", "sent", "failed", "kept"]),
   error: z.string().nullable(),
   reply_id: z.string().nullable(),
   created_at: z.string(),
@@ -138,7 +143,11 @@ export const messageDeliveryEventPayloadFields = {
   session_id: z.string(),
   target: z.string().optional(),
   title: z.string(),
-  state: z.enum(["sent", "failed"]),
+  /** `kept`: the listener still held no record of the session when Dispatch's take-over window
+   *  ended, so Dispatch stored the message on the session's agent subject itself, and the session
+   *  reads it when it registers again. A host built before `kept` refuses this state and reads
+   *  the payload as it came (`dispatch-inbound-parity.test.ts`). */
+  state: z.enum(["sent", "failed", "kept"]),
   /** The stream already held this message: an earlier attempt landed, so this one is recognised as
    *  a repeat and not handed to the recipient again (`DELIVERY_DUPLICATE_WINDOW_MS`). Absent means
    *  false. */

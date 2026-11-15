@@ -286,7 +286,8 @@ export async function sendToAgentCommand(context: CommandContext): Promise<Dispa
   const session = stringArg(args, "session");
   const inReplyTo = optionalString(args, "in_reply_to");
   // The route answers once the first attempt has settled, so its state is what says whether
-  // the session has the words or whether Dispatch is still trying.
+  // the session has the words, whether Dispatch is still trying, or whether Dispatch kept them
+  // for a session the listener held no record of, which reads them when it registers again.
   const message = await client.agentMessage(session, {
     body: stringArg(args, "body"),
     delivery: stringArg(args, "delivery") as MessageDeliveryMode,
@@ -303,7 +304,9 @@ export async function sendToAgentCommand(context: CommandContext): Promise<Dispa
         ? `its delivery failed: ${attempt.error ?? "the listener gave no reason"}`
         : attempt.state === "pending"
           ? "its delivery is still on its way"
-          : `it reached that session as ${attempt.delivery}`;
+          : attempt.state === "kept"
+            ? `it is kept for that session: it is delivered when the agent comes back (${attempt.delivery})`
+            : `it reached that session as ${attempt.delivery}`;
   return {
     text: `Sent message ${message.id} to session ${session}; ${arrival}. ${readBack}`,
     details: {

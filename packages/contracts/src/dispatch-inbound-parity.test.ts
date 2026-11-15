@@ -1325,3 +1325,34 @@ describe("the inbound parsers read every recorded frame as they did", () => {
     });
   }
 });
+
+/**
+ * What an envoy-client host does with a Dispatch payload (`dispatchPayload`,
+ * `packages/envoy-client/src/delivery.ts`): it keeps its parser's reading where the parser takes
+ * the payload, and the payload as it came where the parser refuses it. A host keeps the parser it
+ * was built with, so a host built before a value was added reads a frame carrying it this way.
+ */
+function hostPayload(parser: z.ZodType, payload: unknown): unknown {
+  const parsed = parser.safeParse(payload);
+  return parsed.success ? parsed.data : payload;
+}
+
+// Dispatch settles an attempt `kept` when the listener held no record of its session, and says so
+// in a `message.delivery` receipt that reaches hosts built before the state. The recorded parser
+// above is the one such a host has.
+describe("a message.delivery receipt in the state kept", () => {
+  const kept: Frame = { ...WHOLE.messageDelivery, state: "kept" };
+
+  test("today's parser keeps it whole", () => {
+    expect(NEW.messageDelivery.parse(kept)).toEqual(kept);
+  });
+
+  test("a host built before the state refuses it and reads the receipt as it came, with no throw", () => {
+    expect(OLD.messageDelivery.safeParse(kept).success).toBe(false);
+    let read: unknown;
+    expect(() => {
+      read = hostPayload(OLD.messageDelivery, kept);
+    }).not.toThrow();
+    expect(read).toEqual(kept);
+  });
+});

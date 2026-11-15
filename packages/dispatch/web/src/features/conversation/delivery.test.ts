@@ -4,6 +4,7 @@ import { DELIVERY_DUPLICATE_WINDOW_MS, RECEIPT_TIMEOUT_CAUSE } from "@legion/con
 import {
   broadcastDelivery,
   type DeliveryOutcome,
+  deliveryOutcomeState,
   duplicateText,
   isSafeRetry,
   plainDelivery,
@@ -47,6 +48,21 @@ test("the boundary itself is outside the promise", () => {
 test("a delivered attempt has no failure to retry", () => {
   expect(isSafeRetry(attempt({ state: "sent" }), now)).toBe(false);
   expect(isSafeRetry(attempt({ state: "pending" }), now)).toBe(false);
+});
+
+// A kept attempt is waiting for its agent on the session's agent subject. A same-mode Retry would
+// be a second frame there, so however young the attempt, it is no failure to retry.
+test("a kept attempt is not a safe retry", () => {
+  expect(isSafeRetry(attempt({ state: "kept" }), now)).toBe(false);
+});
+
+// The route table carries the state as a plain string: a `kept` read as `sent`, the reading of an
+// unknown state, would draw the card as delivered and offer its mode changes.
+test("an attempt's state reads as each state Dispatch writes, and an unknown one as sent", () => {
+  for (const state of ["pending", "sent", "failed", "kept"] as const) {
+    expect(deliveryOutcomeState(state)).toBe(state);
+  }
+  expect(deliveryOutcomeState("parked")).toBe("sent");
 });
 
 test("an attempt the stream already had is not a safe retry either", () => {

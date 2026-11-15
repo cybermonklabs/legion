@@ -316,6 +316,28 @@ test("a failed attempt offers the same-mode retry and the mode changes", async (
   }
 });
 
+// A kept copy waits for the agent on its agent subject. Unlike a failure, a mode change here
+// would put a second copy in front of the agent when it comes back, so the row offers nothing.
+test("a kept recipient says when it is delivered and offers nothing", async () => {
+  const page = renderBroadcast(broadcast([attempt({ state: "kept" })]));
+  try {
+    const row = await screen.findByRole("article", { name: "Planner" });
+    expect(
+      within(row).getByText(
+        wholeText("Kept for Planner: it is delivered when the agent comes back (Send)")
+      )
+    ).toBeTruthy();
+    expect(
+      within(row)
+        .queryAllByRole("button")
+        .map((button) => button.textContent)
+    ).toEqual([]);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 test("a delivered recipient offers nothing", async () => {
   const page = renderBroadcast(broadcast([attempt({ envelope_id: "e1", state: "sent" })]));
   try {

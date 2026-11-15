@@ -1259,6 +1259,56 @@ describe("executeDispatchTool", () => {
     expect(byRef.details).toMatchObject({ issue: "LEGION-3", message: "message-9" });
   });
 
+  // Dispatch answers `dispatch send-to-agent` once the first attempt has settled. An attempt it
+  // kept, for a session the listener held no record of, has not reached the session: the session
+  // reads it when it registers again, so the answer says that and not that it arrived. The message
+  // belongs to no issue, so a Legion pane's LEGION_ISSUE adds no `--issue` the command would
+  // refuse, and a call with no LEGION_ISSUE needs none.
+  test("send-to-agent says a kept message is delivered when the agent comes back", async () => {
+    const session = "01234567-0000-4000-8000-000000000001";
+    const bodies: unknown[] = [];
+    const answer = (state: string) => async (url: RequestInfo | URL, init?: RequestInit) => {
+      const target = new URL(String(url));
+      if (target.pathname !== `/api/v1/agents/${session}/messages`) {
+        throw new Error(`unexpected request: ${target.pathname}`);
+      }
+      bodies.push(JSON.parse(init?.body as string));
+      return response({
+        id: "message-7",
+        issue_key: null,
+        deliveries: [{ attempt: 1, delivery: "steer", error: null, session_id: session, state }],
+      });
+    };
+    const send = (state: string, env: Record<string, string>) =>
+      executeDispatchTool({
+        tool: "dispatch_send_to_agent",
+        args: { session, body: "DSP-1: write the rota up.", delivery: "steer" },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env,
+        exec: repoExec("owner/repo"),
+        fetchImpl: answer(state) as typeof fetch,
+      });
+    const readBack = "dispatch read --message message-7 reads the conversation back.";
+
+    const kept = await send("kept", { LEGION_ISSUE: "LEGION-3" });
+    expect(kept.text).toBe(
+      `Sent message message-7 to session ${session}; it is kept for that session: it is ` +
+        `delivered when the agent comes back (steer). ${readBack}`
+    );
+    expect(kept.details).toMatchObject({ delivery: "kept", message: "message-7", session });
+    const sent = await send("sent", {});
+    expect(sent.text).toBe(
+      `Sent message message-7 to session ${session}; it reached that session as steer. ${readBack}`
+    );
+    // Neither call carried an issue to Dispatch.
+    expect(bodies).toEqual([
+      { body: "DSP-1: write the rota up.", delivery: "steer" },
+      { body: "DSP-1: write the rota up.", delivery: "steer" },
+    ]);
+  });
+
   // Once the session has answered, other text is its follow-up: Dispatch threads it under the
   // session's first reply and answers 201 with a message whose parent is that reply, not the
   // human's message.

@@ -259,8 +259,9 @@ export function BroadcastSends({
  * delivery itself, so the row reads the broadcast again as the live feed reports each delivery
  * (`["broadcast"]`, which every recipient's delivery event refreshes): delivering while any
  * recipient's attempt is still pending, then delivered - or not, to a recipient whose attempt
- * failed, which the broadcast's own page retries. The broadcast is made either way; nothing here
- * is a write still unconfirmed.
+ * failed, which the broadcast's own page retries, or kept, for a recipient the listener held no
+ * record of, which reads it when it comes back. The broadcast is made either way; nothing here is
+ * a write still unconfirmed.
  */
 function SentBroadcast({ created }: { created: BroadcastCreated }): ReactNode {
   const read = useQuery({
@@ -274,6 +275,7 @@ function SentBroadcast({ created }: { created: BroadcastCreated }): ReactNode {
   const excluded = created.excluded ?? [];
   const delivering = states.filter((state) => state === "pending").length;
   const failed = states.filter((state) => state === "failed").length;
+  const kept = states.filter((state) => state === "kept").length;
   return (
     <>
       <Link
@@ -288,7 +290,9 @@ function SentBroadcast({ created }: { created: BroadcastCreated }): ReactNode {
         ? ` — delivering to ${agentCount(delivering)}…`
         : failed > 0
           ? ` — not delivered to ${agentCount(failed)}`
-          : " — delivered"}
+          : kept > 0
+            ? ` — kept for ${agentCount(kept)} until ${kept === 1 ? "it comes" : "they come"} back`
+            : " — delivered"}
     </>
   );
 }

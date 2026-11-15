@@ -3,6 +3,7 @@ import { DELIVERY_DUPLICATE_WINDOW_MS, RECEIPT_TIMEOUT_CAUSE } from "@legion/con
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { wholeText } from "../../__tests__/whole-text";
 import { answeredWithErrorGuidance, duplicateText, safeRetryGuidance } from "./delivery";
 import { type TargetedMessageAttempt, TargetedMessageCard } from "./TargetedMessageCard";
 
@@ -120,6 +121,44 @@ test("a duplicate attempt says the listener already had the message", () => {
 test("an ordinary sent attempt still reads as sent", () => {
   const view = render(card({ attempts: [attempt({ delivery: "steer", state: "sent" })] }));
   try {
+    expect(screen.getByText("Sent to planner (Send)")).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
+// Dispatch kept the message for a session the listener held no record of, and the agent reads it
+// when it comes back. A Retry or a mode change from this card would put a second copy in front of
+// the agent then, so the card offers none, even over an earlier failed attempt that had them.
+test("a kept attempt says when it is delivered and offers nothing to resend", () => {
+  const view = render(
+    card({
+      attempts: [
+        attempt({ error: "no live session s1" }),
+        attempt({ attempt: 2, delivery: "btw", state: "kept" }),
+      ],
+    })
+  );
+  try {
+    // A kept BTW is not yet asking: the agent has not read it.
+    expect(
+      screen.getByText("Kept for planner: it is delivered when the agent comes back (BTW)")
+    ).toBeTruthy();
+    expect(screen.getByText(wholeText("Attempt 1: Failed: no live session s1"))).toBeTruthy();
+    expect(screen.queryAllByRole("button").map((button) => button.textContent)).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("an earlier kept attempt reads as kept", () => {
+  const view = render(
+    card({
+      attempts: [attempt({ state: "kept" }), attempt({ attempt: 2, state: "sent" })],
+    })
+  );
+  try {
+    expect(screen.getByText(wholeText("Attempt 1: Kept"))).toBeTruthy();
     expect(screen.getByText("Sent to planner (Send)")).toBeTruthy();
   } finally {
     view.unmount();

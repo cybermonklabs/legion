@@ -11,7 +11,14 @@ import {
 import { type AgentPart, AgentParts } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
 import type { DwellRef } from "../shell/useDwell";
-import { duplicateText, failureGuidance, isSafeRetry, MODE_LABELS, withGuidance } from "./delivery";
+import {
+  duplicateText,
+  failureGuidance,
+  isSafeRetry,
+  keptParts,
+  MODE_LABELS,
+  withGuidance,
+} from "./delivery";
 import { ReplyButton } from "./ReplyButton";
 
 /** The current live capabilities behind a stored delivery target - a bare session, or a role
@@ -54,26 +61,32 @@ export interface TargetedMessageAttempt {
   /** The listener already held this message, so this attempt reached it and changed nothing. */
   readonly duplicate?: boolean;
   readonly error?: string | null;
-  readonly state: "pending" | "sent" | "failed";
+  readonly state: "pending" | "sent" | "failed" | "kept";
   /** The session this attempt reached (an agent part, so it is drawn by `AgentName`), else the
    *  address it was aimed at; a role address is text. */
   readonly targetName?: AgentPart;
 }
 
-/** Whether the session took a targeted message as its user's own turn: its latest attempt says
- *  so, as the session recorded it with Dispatch. Such a message has nothing to retry, and that
- *  outranks a `failed` the send recorded afterwards, since the session already said it took it. */
-export function takenAsUserTurn(deliveries: readonly TargetedMessageAttempt[]): boolean {
-  return deliveries.at(-1)?.acceptedAs === "user_turn";
+/** Whether a targeted message has nothing to send again, as its latest attempt records it with
+ *  Dispatch. The session took the message as its user's own turn, which outranks a `failed` the
+ *  send recorded afterwards, since the session already said it took it. Or Dispatch kept the
+ *  message for the session, which reads it when it registers again, so a send under a new key
+ *  would reach the agent twice when it comes back. */
+export function nothingToResend(deliveries: readonly TargetedMessageAttempt[]): boolean {
+  const latest = deliveries.at(-1);
+  return latest?.acceptedAs === "user_turn" || latest?.state === "kept";
 }
 
 /** The headline one targeted message gets: who answered it, that it reached the session's own
- *  conversation, why it failed, that it is still going out, that it is a BTW waiting on an
- *  answer, or that it was delivered, naming the mode as the composer does (`MODE_LABELS`). It is
- *  `AgentPart`s, so the agents it names keep their identity until `AgentParts` draws them.
- *  `asking` is that BTW branch, whose line ends in a separator because it carries a timestamp:
- *  the two belong to one decision, so the caller reads it here rather than restating the
- *  condition.
+ *  conversation, why it failed, that Dispatch kept it for the session, that it is still going
+ *  out, that it is a BTW waiting on an answer, or that it was delivered, naming the mode as the
+ *  composer does (`MODE_LABELS`). It is `AgentPart`s, so the agents it names keep their identity
+ *  until `AgentParts` draws them. `asking` is that BTW branch, whose line ends in a separator
+ *  because it carries a timestamp: the two belong to one decision, so the caller reads it here
+ *  rather than restating the condition.
+ *
+ *  A kept attempt is tested before the BTW: the agent has not read a kept BTW yet, so no answer
+ *  is on its way until it comes back.
  *
  *  A BTW is tested before `duplicate`: an outstanding BTW is still waiting on its answer even
  *  when the send that carried it changed nothing, so the human must keep seeing that one is
@@ -102,6 +115,7 @@ function deliveryHeadline(
     };
   }
   const mode = delivery?.delivery ?? "steer";
+  if (delivery?.state === "kept") return { parts: keptParts(targetName, mode), asking: false };
   if (delivery?.state === "pending")
     return { parts: ["Sending to ", targetName, ` (${MODE_LABELS[mode]})`], asking: false };
   if (mode === "btw") {
@@ -116,15 +130,17 @@ function deliveryHeadline(
  *  never carries the safe-retry promise. */
 function attemptSummary(attempt: TargetedMessageAttempt, targetName: AgentPart): AgentPart[] {
   if (attempt.state === "failed") return [`Failed: ${attempt.error ?? "delivery failed"}`];
+  if (attempt.state === "kept") return ["Kept"];
   if (attempt.duplicate === true) return [duplicateText];
   const verb = attempt.state === "pending" ? "Sending" : "Sent";
   return [`${verb} to `, attempt.targetName ?? targetName, ` (${MODE_LABELS[attempt.delivery]})`];
 }
 
 /** What became of a targeted message: answered, taken into the session's conversation as the
- *  person's own turn, failed, asking (BTW), or sent - then the earlier attempts, oldest first.
- *  Shared by the card and by a delivered reply in its thread. `retryRow` is whether the surface
- *  shows `DeliveryRetry` beneath it, whose buttons the failure's guidance names. */
+ *  person's own turn, failed, kept for the session, asking (BTW), or sent - then the earlier
+ *  attempts, oldest first. Shared by the card and by a delivered reply in its thread. `retryRow`
+ *  is whether the surface shows `DeliveryRetry` beneath it, whose buttons the failure's guidance
+ *  names. */
 export function DeliveryStatus({
   answeredBy,
   deliveries,
@@ -169,7 +185,9 @@ export function DeliveryStatus({
  *  only inside `DELIVERY_DUPLICATE_WINDOW_MS`, and only for an attempt that actually failed and
  *  that the session did not answer with an error. Offering it otherwise would be offering a
  *  second delivery, or no delivery, under a promise of one. The mode-change actions have no such
- *  limit: they are a different key and are honestly labelled "instead". */
+ *  limit: they are a different key and are honestly labelled "instead". No surface shows the row
+ *  for a message with nothing to resend (`nothingToResend`), where they would reach the agent
+ *  twice. */
 export function DeliveryRetry({
   canAside,
   canBtw,
@@ -301,7 +319,7 @@ export function TargetedMessageCard({
   turnID,
 }: TargetedMessageCardProps): ReactNode {
   // Narrowed once, so the render below needs no second test of the same condition.
-  const retry = answeredBy === undefined && !takenAsUserTurn(deliveries) ? onRetry : undefined;
+  const retry = answeredBy === undefined && !nothingToResend(deliveries) ? onRetry : undefined;
   return (
     <li
       aria-current={current ? "true" : undefined}

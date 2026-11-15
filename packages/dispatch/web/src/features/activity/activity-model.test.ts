@@ -154,6 +154,30 @@ test("a mention receipt says whether the mention reached its target", () => {
   ]);
 });
 
+// A message Dispatch kept for a session the listener held no record of has not reached the agent,
+// so its receipt's line does not say it was delivered.
+test("a message receipt says when the message was kept for its agent", () => {
+  const receipt = (state: "sent" | "kept"): DispatchEvent => ({
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-10-25T00:00:00Z",
+    id: 1,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      attempt: 1,
+      delivery: "steer",
+      message_id: "message-1",
+      session_id: "planner",
+      state,
+      title: "Planner",
+    },
+    seq: 1,
+    type: "message.delivery",
+  });
+  expect(activityDescription(receipt("kept"))).toEqual(["kept a message for an agent"]);
+  expect(activityDescription(receipt("sent"))).toEqual(["delivered a message"]);
+});
+
 test("a recorded handoff names its phase and version", () => {
   expect(
     activityDescription({

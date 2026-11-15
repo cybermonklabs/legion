@@ -199,6 +199,34 @@ test("approving sends one message naming the issue and the words, and the bar sa
   }
 });
 
+// Dispatch keeps the words for a session the listener held no record of: the agent has not read
+// them, so the bar says when it will rather than that they were sent, and the message is made, so
+// the row does not come back for a second press.
+test("a send Dispatch kept for the agent says it is delivered when the agent comes back", async () => {
+  const user = userEvent.setup();
+  const bar = openBar(sessionClaim, "live");
+  bar.createAgentMessage.mockResolvedValue({
+    deliveries: [{ delivery: "aside", state: "kept" }],
+  } as Message);
+  try {
+    await typeWords(user);
+    await user.click(await waitFor(() => screen.getByText(offerLabel)));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("search-send-to-agent-said").textContent).toMatch(
+        new RegExp(
+          `^Kept for .+, the agent on ${issueKey}: it is delivered when the agent comes back \\(Aside\\)\\.$`
+        )
+      )
+    );
+    expect(screen.getByTestId("search-send-to-agent-said").getAttribute("role")).toBe("status");
+    expect(screen.queryByText(offerLabel)).toBeNull();
+    expect(bar.createAgentMessage).toHaveBeenCalledTimes(1);
+  } finally {
+    bar.restore();
+  }
+});
+
 test("the row is absent with no claim, a person's claim, a holder that stopped, or no registry", async () => {
   const user = userEvent.setup();
   const absent: [string, IssueClaim | null, IssueClaimHolderState | null][] = [

@@ -518,6 +518,20 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "answers") {
       return response({ session_id: SESSION, since: AT, total: 0, items: [] });
     }
+    // `dispatch send-to-agent`: the session's direct message, answered once its first attempt
+    // reached the session.
+    if (rest === "messages" && method === "POST") {
+      return response(
+        {
+          ...messageBody(),
+          issue_key: null,
+          deliveries: [
+            { attempt: 1, delivery: "aside", error: null, session_id: segments[3], state: "sent" },
+          ],
+        },
+        201
+      );
+    }
   }
   if (segments[2] === "issues" && segments.length >= 4) {
     if (rest === "" && (method === "GET" || method === "PATCH")) {

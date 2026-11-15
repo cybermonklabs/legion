@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { Message, MessageRead } from "../../api/types";
-import { rowAnsweredWithError } from "../conversation/delivery";
+import type { Message, MessageDelivery, MessageRead } from "../../api/types";
+import { deliveryMode, keptParts, rowAnsweredWithError } from "../conversation/delivery";
 import { storedMessages } from "./stored-messages";
 
 /** How long the page waits for the session to answer a switch, from the moment Dispatch answered
@@ -60,13 +60,19 @@ const NO_ANSWER = `No answer came from the session within ${SWITCH_ANSWER_DEADLI
 const ANSWER_LOST =
   "The switch was sent, but Dispatch lost its answer; the session's reply shows in the thread. The header shows the model and thinking level the session last reported.";
 
+/** The line a switch ends on when Dispatch kept it for its session: the session reads it only
+ *  when it registers again, so no answer comes before the deadline. */
+function keptLine(attempt: Pick<MessageDelivery, "delivery">): string {
+  return keptParts("the session", deliveryMode(attempt.delivery) ?? "steer").join("");
+}
+
 /**
  * The session's answer to the switch `messageId`, as the stored thread holds it: its reply, quoted
- * exactly, or, while the switch still waits, its latest attempt failing with an error. A failed
- * attempt is the session's answer only when the session's own error reply failed it
- * (`rowAnsweredWithError`); one Dispatch failed itself means no answer came. A delivery the session
- * accepted as its user's turn has not failed, whatever a later send recorded. Undefined while there
- * is neither.
+ * exactly, or, while the switch still waits, its latest attempt failing with an error or kept for
+ * the session (`keptLine`). A failed attempt is the session's answer only when the session's own
+ * error reply failed it (`rowAnsweredWithError`); one Dispatch failed itself means no answer came.
+ * A delivery the session accepted as its user's turn has not failed, whatever a later send
+ * recorded. Undefined while there is none of these.
  */
 function storedAnswer(
   stored: readonly MessageRead[],
@@ -88,6 +94,7 @@ function storedAnswer(
   const deliveries = switched.deliveries ?? [];
   if (deliveries.some((attempt) => attempt.accepted_as === "user_turn")) return undefined;
   const attempt = deliveries.at(-1);
+  if (attempt?.state === "kept") return keptLine(attempt);
   if (attempt?.state !== "failed" || attempt.error === null) return undefined;
   return rowAnsweredWithError(attempt)
     ? `The session answered: ${attempt.error}`
@@ -99,11 +106,12 @@ function storedAnswer(
  * `/effort`, so it ends when the session answers that message, which `stored` (the session's
  * stored thread, refetched on each message event) carries:
  *
- * 1. Dispatch's answer to the send already records a failed attempt (no live session took it).
+ * 1. Dispatch's answer to the send already records a failed attempt (no live session took it) or
+ *    a kept one (`keptLine`).
  * 2. The session's reply to the message appears, including one already there when the send
  *    answered.
  * 3. The message's latest attempt turns failed with an error: the session's own error reply, or a
- *    failure Dispatch recorded itself, which means no answer came.
+ *    failure Dispatch recorded itself, which means no answer came. Or it turns kept.
  * 4. `SWITCH_ANSWER_DEADLINE_MS` passes from the send's answer with none of these.
  *
  * A reply to the latest switch that lands after its deadline replaces the no-answer line. Only the
@@ -170,16 +178,16 @@ export function useSessionSwitch(
         return answer;
       }
       const attempt = (answer.deliveries ?? []).at(-1);
-      if (attempt?.state === "failed") {
-        const reason = attempt.error ?? "the attempt failed";
+      const ended =
+        attempt?.state === "kept"
+          ? keptLine(attempt)
+          : attempt?.state === "failed"
+            ? `No answer came from the session: ${attempt.error ?? "the attempt failed"}`
+            : undefined;
+      if (ended !== undefined) {
         setCurrent((previous) =>
           previous?.id === id
-            ? {
-                ...previous,
-                messageId: answer.id,
-                phase: "ended",
-                status: `No answer came from the session: ${reason}`,
-              }
+            ? { ...previous, messageId: answer.id, phase: "ended", status: ended }
             : previous
         );
         return answer;
