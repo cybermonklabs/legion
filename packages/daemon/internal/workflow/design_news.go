@@ -451,8 +451,10 @@ func sinceWords(item NewsChange, taker string) string {
 // version. An empty taker, in the architect's summary, names each issue the item is owed to. An
 // item that changed nothing of the work (record.DesignChanges.WorkUnchanged) never reaches it: its
 // callers say why nothing changed in place of a list (nothingChanged, architectNews). So a read set
-// that names nothing here is one from a Dispatch that predates its unchanged answer, which says
-// neither, and the line says only what that Dispatch said.
+// that names nothing here is a first approval (from version 0, which the reconcile records read with
+// nothing named and never asks Dispatch about, handled by the From 0 case below), or one from a
+// Dispatch that predates its unchanged answer, which says neither, and the line says only what that
+// Dispatch said.
 func changeLines(tree string, item NewsChange, taker string) []string {
 	changes := item.Changes
 	var lines []string

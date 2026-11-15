@@ -153,7 +153,7 @@ func TestTheChangeSetNamesAChangedSectionByItsHeading(t *testing.T) {
 // A change to the text above the first `##` section, and to nothing else, is named: that run of
 // the text outside every `##` section is named under the heading "" and occurrence 0, at its
 // place before the first section, and the `##` section after it, left as it was, is not named.
-func TestAChangeBeforeTheFirstSectionNamesTheTextOutsideEverySection(t *testing.T) {
+func TestAChangeBeforeTheFirstSectionNamesTheRunBeforeTheFirstSection(t *testing.T) {
 	handler := newTestHandler(t)
 	artifactID := uploadVersions(t, handler, "plan.md",
 		"# Plan\n\nThe plan ships in May.\n\n## Goal\n\nShip the service behind a flag.\n",
@@ -358,7 +358,7 @@ const appendixRun = "# Appendix\n\nBackground.\n"
 // beside such a run names the section it names without one, and the run keeps its place among the
 // units, so it is not named although another section now stands before it. Each case is one pair
 // of consecutive versions of one document, compared on its own.
-func TestATopLevelHeadingLiftedAboveASectionNamesTheTextOutsideEverySectionMoved(t *testing.T) {
+func TestATopLevelHeadingLiftedAboveASectionNamesEachRunWhereItStands(t *testing.T) {
 	cases := []struct {
 		name          string
 		before, after string
@@ -426,7 +426,10 @@ func TestATopLevelHeadingLiftedAboveASectionNamesTheTextOutsideEverySectionMoved
 // stands is one run changed after the section before it; one added between two sections is added
 // there; one removed is removed after the section the earlier version held it after. Two runs
 // that change at once are each named, in document order: the title's before the first section,
-// then the `#` heading's after its section.
+// then the `#` heading's after its section. A `#` heading the document holds twice, with the same
+// words, is two runs: removing one copy names that copy removed where it stood, and adding a copy
+// names it added where it now stands, and the other copy, which keeps its words and its place, is
+// not named, nor is any section that kept its place.
 func TestTheChangeSetNamesEachRunOutsideTheSectionsWhereItStands(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -456,6 +459,18 @@ func TestTheChangeSetNamesEachRunOutsideTheSectionsWhereItStands(t *testing.T) {
 			before: sectionedPlan(goalSection, appendixRun, scopeSection),
 			after:  "# Plan for May\n\n" + goalSection + "\n# Appendix\n\nMore background.\n\n" + scopeSection,
 			want:   []servedSection{runBeforeTheFirstSection("changed"), runAfterSection("Goal", 0, "changed")},
+		},
+		{
+			name:   "one of two copies of a `#` heading removed",
+			before: sectionedPlan(goalSection, appendixRun, scopeSection, appendixRun, risksSection),
+			after:  sectionedPlan(goalSection, scopeSection, appendixRun, risksSection),
+			want:   []servedSection{runAfterSection("Goal", 0, "removed")},
+		},
+		{
+			name:   "a second copy of a `#` heading added above the first",
+			before: sectionedPlan(goalSection, scopeSection, appendixRun, risksSection),
+			after:  sectionedPlan(goalSection, appendixRun, scopeSection, appendixRun, risksSection),
+			want:   []servedSection{runAfterSection("Goal", 0, "added")},
 		},
 	}
 	texts := make([]string, 0, 2*len(cases))
@@ -547,6 +562,18 @@ func TestTheChangeSetEitherNamesWhatChangedOrReportsNoChange(t *testing.T) {
 			name:   "an added section",
 			before: sectionedPlan(goalSection, scopeSection),
 			after:  sectionedPlan(goalSection, scopeSection, risksSection),
+			want:   named,
+		},
+		{
+			name:   "one of two copies of a `#` heading removed",
+			before: sectionedPlan(goalSection, appendixRun, scopeSection, appendixRun, risksSection),
+			after:  sectionedPlan(goalSection, scopeSection, appendixRun, risksSection),
+			want:   named,
+		},
+		{
+			name:   "a second copy of a `#` heading added",
+			before: sectionedPlan(goalSection, scopeSection, appendixRun, risksSection),
+			after:  sectionedPlan(goalSection, appendixRun, scopeSection, appendixRun, risksSection),
 			want:   named,
 		},
 	}

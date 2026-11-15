@@ -12,4 +12,5 @@ body: |-
   `POST /api/v1/issues/{key}/results` answers `400 RESULT_INPUT`, and a `last_read_seq` on
   `PUT /api/v1/me/issues/{key}/state` answers `400 INVALID_STATE`. Each answered `500` before. The
   `attempt` of a reply on `POST /api/v1/messages/{id}/reply` and `POST /api/v1/comments/{id}/reply`
-  is refused before any query, with the `404` each route already answered for it.
+  is refused after the route reads its message or comment and before the query that reads the
+  attempt's delivery, with the `404` each route already answered for it.

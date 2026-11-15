@@ -1272,10 +1272,11 @@ type cutVersion struct {
 }
 
 // cutUnit is one top-level unit of a cut version: a `##` section, or one run of the text outside
-// every section. key names it across the two versions (placeKey), and text is its text with the
-// blank lines at its end removed. after is where a run stands: the key of the `##` section
-// directly before it, or the zero key, which no `##` section has, for a run above the first
-// section. A section's after is the zero key and is never read.
+// every section. key names it across the two versions (placeKey): a section's is its own from the
+// cut, and a run's holds its text alone until keyRuns names it across the two. text is its text
+// with the blank lines at its end removed. after is where a run stands: the key of the `##`
+// section directly before it, or the zero key, which no `##` section has, for a run above the
+// first section. A section's after is the zero key and is never read.
 type cutUnit struct {
 	key   placeKey
 	text  string
@@ -1304,13 +1305,17 @@ func (unit cutUnit) named(change string) artifactSectionChange {
 }
 
 // placeKey names one top-level unit of a cut version across its versions: a `##` section by its
-// key (section), or one run of the text outside every section by its own text (run) and by how
-// many runs before it hold that same text (occurrence). A run's section is the zero key, which no
-// `##` section has, and a run's text is never empty, so a run and a section never share a
-// placeKey and no unit has the zero placeKey.
+// key (section), and a run of the text outside every section by its own text (run) and then in one
+// of two ways (keyRuns). A run both versions hold with the same text at the same place is named by
+// that place (placed, at), and every other run by how many of the other runs of its version before
+// it hold the same text (occurrence). A run's section is the zero key, which no `##` section has,
+// and a run's text is never empty, so a run and a section never share a placeKey and no unit has
+// the zero placeKey; placed tells a run named by its place from one named by its occurrence.
 type placeKey struct {
 	section    sectionKey
 	run        string
+	placed     bool
+	at         sectionKey
 	occurrence int
 }
 
@@ -1353,14 +1358,16 @@ func compareVersions(before, after string) (artifactChanges, error) {
 // earlier and later, in the order changesByKey reports them. A `##` section is paired across the
 // versions by its key. A run of the text outside every section is named by three rules, in turn:
 //
-//   - a run both versions hold, by its text and occurrence (placeKey), is in its place when it
-//     stands in the longest common subsequence of the two versions' units, and moved, where the
-//     later version holds it, when it stands outside it (movedUnits);
+//   - a run both versions hold is one run in both: first a run with the same text at the same
+//     place, and then, among the runs left, the n-th run of a text in each version (keyRuns). Such
+//     a run is in its place when it stands in the longest common subsequence of the two versions'
+//     units, and moved, where the later version holds it, when it stands outside it (movedUnits);
 //   - of the runs left, two that stand at one place, above the first section or after the same
 //     `##` section, are one run whose text changed (runsPairedByPlace);
 //   - a run left after that is added when the later version holds it, and removed when the
 //     earlier does.
 func nameChanges(changes *artifactChanges, earlier, later cutVersion) {
+	keyRuns(earlier.units, later.units)
 	paired := runsPairedByPlace(earlier.units, later.units)
 	changesByKey(earlier.units, later.units,
 		func(unit cutUnit) placeKey {
@@ -1381,6 +1388,49 @@ func nameChanges(changes *artifactChanges, earlier, later cutVersion) {
 		func(block cutBlock, change string) {
 			changes.Blocks = append(changes.Blocks, artifactBlockChange{ID: block.id, Type: block.node.Type, Change: change})
 		})
+}
+
+// keyRuns sets the key of each run of the text outside every section of both versions, which
+// cutUnits keyed by its text alone, so that the runs both versions hold share one key (placeKey).
+// A run of earlier and a run of later with the same text at the same place, above the first
+// section or after the same `##` section, share a key naming that place: a place holds at most
+// one run of a version, so the text and the place name one run in each. Every other run is keyed
+// by its text and by how many of the runs left in its version before it hold the same text, so
+// the n-th of the runs left with one text in earlier and in later share a key, which is a run that
+// moved. A run that both versions hold where they hold it is never counted among the others, so
+// one copy of a repeated text added or removed shifts the count of no other copy.
+func keyRuns(earlier, later []cutUnit) {
+	type spot struct {
+		text  string
+		after sectionKey
+	}
+	inEarlier := map[spot]struct{}{}
+	for _, unit := range earlier {
+		if unit.isRun() {
+			inEarlier[spot{unit.text, unit.after}] = struct{}{}
+		}
+	}
+	inBoth := map[spot]struct{}{}
+	for _, unit := range later {
+		if _, held := inEarlier[spot{unit.text, unit.after}]; unit.isRun() && held {
+			inBoth[spot{unit.text, unit.after}] = struct{}{}
+		}
+	}
+	for _, units := range [][]cutUnit{earlier, later} {
+		left := map[string]int{}
+		for index := range units {
+			unit := &units[index]
+			if !unit.isRun() {
+				continue
+			}
+			if _, held := inBoth[spot{unit.text, unit.after}]; held {
+				unit.key = placeKey{run: unit.text, placed: true, at: unit.after}
+				continue
+			}
+			unit.key = placeKey{run: unit.text, occurrence: left[unit.text]}
+			left[unit.text]++
+		}
+	}
 }
 
 // readCutVersion parses one stored version with the parser every read of a stored text uses
@@ -1416,8 +1466,8 @@ func readCutVersion(markdown string) (cutVersion, error) {
 // and the text above the first `##`, or the text from a `#` heading that closes a section to the
 // next `##`, with the blank lines at its end removed. So each place holds at most one run, and a
 // change to the title or to the text under a `#` heading is named like a change to any section.
-// A run is keyed by its text and by how many runs before it hold the same text, and stands after
-// the section that closed where it starts, or above the first section (cutUnit's after).
+// A run stands after the section that closed where it starts, or above the first section
+// (cutUnit's after), and is keyed by its text alone: keyRuns keys it across the two versions.
 func cutUnits(doc *pmdoc.Node, text string, offsets []pmdoc.BlockOffset) []cutUnit {
 	headings := map[string]struct{}{}
 	for _, child := range doc.Children {
@@ -1428,7 +1478,6 @@ func cutUnits(doc *pmdoc.Node, text string, offsets []pmdoc.BlockOffset) []cutUn
 	}
 	var units []cutUnit
 	seen := map[string]int{"": 1}
-	runs := map[string]int{}
 	// key is the open section's key, and last the key of the section that closed last: the zero
 	// key until one has, which is the place of a run above the first section.
 	var key, last sectionKey
@@ -1437,8 +1486,7 @@ func cutUnits(doc *pmdoc.Node, text string, offsets []pmdoc.BlockOffset) []cutUn
 	start, free := -1, 0
 	keepOutside := func(end int) {
 		if run := strings.TrimRight(text[free:end], "\n"); run != "" {
-			units = append(units, cutUnit{key: placeKey{run: run, occurrence: runs[run]}, text: run, after: last})
-			runs[run]++
+			units = append(units, cutUnit{key: placeKey{run: run}, text: run, after: last})
 		}
 	}
 	closeAt := func(end int) {
@@ -1512,7 +1560,7 @@ func cutTypedBlocks(doc *pmdoc.Node, stored string) []cutBlock {
 // its first unit stands as early in later as the first of any sequence that long can, then its
 // second, and so on. So of two units that swapped places, the one later holds second is moved,
 // and a section lifted from last to first is the one moved, its neighbours' sequence being the
-// only longest one. A run holds its own text by its key, so a run moved is a `#` heading's text
+// only longest one. A run's key holds its text (keyRuns), so a run moved is a `#` heading's text
 // standing at another place, and a section moved across a `#` heading names whichever of the two
 // the later version holds second.
 //
