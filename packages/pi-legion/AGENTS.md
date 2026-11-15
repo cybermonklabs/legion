@@ -749,11 +749,13 @@ listener of an earlier release names no `kept_until` and answers a repeated key 
 for 72 hours, so such an answer clears the key, and the next attempt mints a new one. The stall
 watch's notice of a stuck tool call (`src/stall-evidence.ts`), to the architect or, for a root
 architect's own call, to the controller, also sends no `keep` field, and a kept answer reports that
-no owner was told. A reminder is dropped when the daemon's record says this role no longer works
-this phase or that the daemon has failed this role's claim (the `read_record` state, bounded at 5 s
-and failing open otherwise, since an unreachable daemon is exactly when a stalled worker must still
-be nudged). A worker the daemon relaunched into an open phase is reminded from a timer
-`LEGION_STALL_RESUME_MS` after its claim boots, since nothing else would wake it.
+no owner was told. A kept notice that no session takes in its hour comes back to this worker's
+session as a dead letter, an Envoy card that names it. A reminder is dropped when the daemon's
+record says this role no longer works this phase or that the daemon has failed this role's claim
+(the `read_record` state, bounded at 5 s and failing open otherwise, since an unreachable daemon
+is exactly when a stalled worker must still be nudged). A worker the daemon relaunched into an open
+phase is reminded from a timer `LEGION_STALL_RESUME_MS` after its claim boots, since nothing else
+would wake it.
 
 A turn the provider refused earns no reminder at all, neither the continuation nor a timer's.
 `session_stop` classifies the settling message (`turnEndOf`): a reply Oh My Pi stopped at `error`
