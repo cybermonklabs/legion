@@ -1344,6 +1344,140 @@ describe("a document write that superseded a person's approval", () => {
     expect(result.text).toContain("dispatch plan-approve");
     expect(result.text).not.toContain("dispatch request-approval");
   });
+
+  // A role belongs to an issue's documents alone, and the slug fallback that names a role-less
+  // `plan-md` a plan exists for an issue document whose role column a rolling deploy left null
+  // (dispatch://INFRA-3327/comment/6a7a54ba-a1c3-4de8-a7b7-504a422f48cf). So an issue's plan.md
+  // with no role is still a plan and names `dispatch plan-approve`, while a project document named
+  // plan.md is a plain document: a person's approval of it comes back through a request, which
+  // Dispatch then accepts, and `dispatch plan-approve`, which takes an issue alone, cannot reach
+  // it. Each document is answered as Dispatch answers it: no role key on either.
+  const roleLessPlan = {
+    id: "artifact-43",
+    issue_key: "DSP-42",
+    project: "DSP",
+    name: "plan.md",
+    slug: "plan-md",
+    primary: false,
+  };
+  const projectPlan = {
+    id: "artifact-91",
+    issue_key: null,
+    project: "DSP",
+    name: "plan.md",
+    slug: "plan-md",
+    primary: false,
+  };
+  test.each([
+    ["dispatch_artifact", "an issue's plan.md with no role", planUpload, roleLessPlan, true],
+    ["dispatch_doc_edit", "an issue's plan.md with no role", planEdit, roleLessPlan, true],
+    [
+      "dispatch_artifact",
+      "a project document named plan.md",
+      { project: "DSP", name: "plan.md", content: "# Plan\n\nTwo.\n", force: true },
+      projectPlan,
+      false,
+    ],
+    [
+      "dispatch_doc_edit",
+      "a project document named plan.md",
+      {
+        project: "DSP",
+        artifact: "plan.md",
+        ops: [{ op: "replace", find: "One.", with: "Two." }],
+      },
+      projectPlan,
+      false,
+    ],
+  ])("%s on %s a person approved names the command that restores it", async (tool, _which, args, document, isPlan) => {
+    const superseded = { approved_version: 1, version: 2, approved_by: "alice" };
+    const staled =
+      document.issue_key === null
+        ? { decision_blocks: 0, decision_blocks_added: 0, superseded_approval: superseded }
+        : advice({ superseded_approval: superseded });
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const target = new URL(String(url));
+      const method = init?.method ?? "GET";
+      const body = init?.body === undefined ? {} : JSON.parse(String(init.body));
+      if (target.pathname === "/api/v1/issues/DSP-42" && method === "GET") {
+        return response({
+          key: "DSP-42",
+          title: "Original title",
+          status: "in_progress",
+          labels: [],
+          route: null,
+          parent: null,
+          external_links: [],
+          primary_artifact_id: "artifact-42",
+          artifacts: [
+            {
+              id: "artifact-42",
+              issue_key: "DSP-42",
+              project: "DSP",
+              name: "spec.md",
+              slug: "spec",
+              primary: true,
+            },
+            roleLessPlan,
+          ],
+        });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "GET") {
+        return response([roleLessPlan]);
+      }
+      if (target.pathname === "/api/v1/projects/DSP/artifacts" && method === "GET") {
+        return response([projectPlan]);
+      }
+      if (
+        (target.pathname === "/api/v1/projects/DSP/artifacts/plan-md" ||
+          target.pathname === "/api/v1/projects/DSP/artifacts/plan.md") &&
+        method === "GET"
+      ) {
+        return response(projectPlan);
+      }
+      if (target.pathname === "/api/v1/markdown/round-trip" && method === "POST") {
+        return response({ markdown: body.markdown });
+      }
+      if (
+        (target.pathname === "/api/v1/issues/DSP-42/artifacts" ||
+          target.pathname === "/api/v1/projects/DSP/artifacts") &&
+        method === "POST"
+      ) {
+        return response(withAdvice({ artifact: document, version: { number: 2 } }, staled));
+      }
+      if (target.pathname === `/api/v1/artifacts/${document.id}/edits` && method === "POST") {
+        return response(
+          withAdvice({ applied: 1, version: { number: 2 }, token: "sha256:edited" }, staled)
+        );
+      }
+      if (target.pathname === "/api/v1/projects/DSP/architecture-sources" && method === "GET") {
+        return new Response("[]", { headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected request: ${method} ${target.pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool,
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec(),
+      fetchImpl: fetchImpl as typeof fetch,
+      subscriptions: async () => [],
+    });
+
+    expect(result.text).toContain("Stored version 2, superseding version 1, which alice approved.");
+    if (isPlan) {
+      expect(result.text).toContain("`dispatch plan-approve --issue DSP-42 --version 2`");
+      expect(result.text).not.toContain("dispatch request-approval");
+    } else {
+      expect(result.text).toContain("Request approval with `dispatch request-approval`");
+      expect(result.text).not.toContain("plan-approve");
+    }
+  });
 });
 
 // The server sends `moved_approval_request` only on a write whose version took an open approval

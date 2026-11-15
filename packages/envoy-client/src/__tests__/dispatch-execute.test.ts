@@ -9140,6 +9140,109 @@ describe("executeDispatchTool", () => {
     }
   });
 
+  // The slug fallback that names a role-less `plan-md` a plan holds for an issue's documents alone
+  // (dispatch://INFRA-3327/comment/6a7a54ba-a1c3-4de8-a7b7-504a422f48cf): an issue's plan.md with
+  // no role is still a plan, whose stale approval names `dispatch plan-approve`, and a project
+  // document named plan.md is a plain document, whose stale approval comes back through a
+  // request, as any other document's does. Each document is answered as Dispatch answers it: no
+  // role key on either.
+  test("a stale approval of a plan.md is a plan's on an issue alone, whatever its role column holds", async () => {
+    const hash = "cd".repeat(32);
+    const staleByAlice = {
+      kind: "person",
+      state: "stale",
+      latest_version: 4,
+      version: 3,
+      by: { kind: "user", id: "alice" },
+      content_sha256: hash,
+      content_sha256_source: "insert",
+    };
+    const versions = [{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }];
+    const issuePlan = {
+      id: "artifact-43",
+      issue_key: "DSP-42",
+      project: "DSP",
+      slug: "plan-md",
+      name: "plan.md",
+      primary: false,
+      kind: "doc",
+      versions,
+      approval: staleByAlice,
+    };
+    const projectPlan = {
+      ...issuePlan,
+      id: "artifact-91",
+      issue_key: null,
+      ref_key: "DSP/plan-md",
+    };
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          title: "Native workspace",
+          status: "in_progress",
+          primary_artifact_id: "artifact-42",
+          open_asks: [],
+          artifacts: [
+            { id: "artifact-42", slug: "spec", name: "spec.md", primary: true, project: "DSP" },
+            issuePlan,
+          ],
+        });
+      }
+      if (target.pathname === "/api/v1/projects/DSP/artifacts") return response([projectPlan]);
+      if (
+        target.pathname === "/api/v1/projects/DSP/artifacts/plan-md" ||
+        target.pathname === "/api/v1/projects/DSP/artifacts/plan.md"
+      ) {
+        return response(projectPlan);
+      }
+      if (
+        target.pathname === "/api/v1/artifacts/artifact-43/versions/4" ||
+        target.pathname === "/api/v1/artifacts/artifact-91/versions/4"
+      ) {
+        return response({ markdown: "# Plan\n\nFour.", number: 4, sha256: hash });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/comments") return response([]);
+      if (target.pathname === "/api/v1/artifacts/artifact-91/comments") return response([]);
+      if (target.pathname === "/api/v1/artifacts/artifact-91/asks") return response([]);
+      if (target.pathname === "/api/v1/references") return response(emptyGraph("artifact"));
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+    const run = (tool: string, args: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool,
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+    const approvalOf = (text: string) =>
+      text.split("\n").find((row) => row.startsWith("Approval:")) ?? "";
+
+    for (const result of [
+      await run("dispatch_read", { issue: "DSP-42", artifact: "plan.md" }),
+      await run("dispatch_doc_read", { issue: "DSP-42", artifact: "plan.md", version: 4 }),
+    ]) {
+      const line = approvalOf(result.text);
+      expect(line).toStartWith("Approval: approved v3 by alice, changed since (now v4) - ");
+      expect(line).toContain("dispatch plan-approve");
+      expect(line).not.toMatch(/request[ -]approval/);
+    }
+    for (const result of [
+      await run("dispatch_read", { project: "DSP", artifact: "plan.md" }),
+      await run("dispatch_doc_read", { project: "DSP", artifact: "plan.md", version: 4 }),
+    ]) {
+      const line = approvalOf(result.text);
+      expect(line).toStartWith("Approval: approved v3 by alice, changed since (now v4) - ");
+      expect(line).toContain("request approval again");
+      expect(line).not.toContain("plan-approve");
+    }
+  });
+
   test("dispatch_doc_read tells the agent when the document's approval went stale", async () => {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const target = new URL(String(url));

@@ -164,3 +164,42 @@ func TestPlanReviewTakesAPlanRowThatCarriesNoRole(t *testing.T) {
 		t.Fatalf("approval request on a role-less plan: status=%d code=%s body=%s", refused.Code, code, refused.Body.String())
 	}
 }
+
+// A role belongs to an issue's documents alone: documentRole gives a project's document none, and
+// the slug fallback of documentPlays exists for an issue document whose role column a rolling
+// deploy left null. So a project document named plan.md is a plain document, as the architect
+// ruled (dispatch://INFRA-3327/comment/6a7a54ba-a1c3-4de8-a7b7-504a422f48cf): a person's
+// approval of it is requested as any other project document's is, and no plan review takes it.
+// The project's notes.md is the control: its request opens an ask the same way.
+func TestAProjectDocumentNamedPlanIsAPlainDocument(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{})
+	createInteractionIssue(t, handler, "PROJPLAN", "A project with documents", "A spec\n")
+	type requested struct {
+		Ask *struct {
+			ID string `json:"id"`
+		} `json:"ask"`
+	}
+	for _, name := range []string{"notes.md", "plan.md"} {
+		document := uploadDocument(t, handler, "/api/v1/projects/PROJPLAN", name, "# "+name+"\n\nOne.\n")
+		if document.Artifact.IssueKey != nil {
+			t.Fatalf("%s = %#v, want a project document under no issue", name, document.Artifact)
+		}
+		response := sessionRequest(t, handler, http.MethodPost,
+			"/api/v1/artifacts/"+document.Artifact.ID+"/approval-requests", map[string]any{"actor": sessionActor()})
+		if response.Code != http.StatusCreated {
+			t.Fatalf("approval request on the project's %s: status=%d body=%s", name, response.Code, response.Body.String())
+		}
+		if opened := decodeBody[requested](t, response); opened.Ask == nil || opened.Ask.ID == "" {
+			t.Fatalf("approval request on the project's %s opened no ask: body=%s", name, response.Body.String())
+		}
+		if name != "plan.md" {
+			continue
+		}
+		reviewed := sessionRequest(t, handler, http.MethodPost,
+			"/api/v1/artifacts/"+document.Artifact.ID+"/plan-reviews", map[string]any{"actor": sessionActor(), "version": 1})
+		code, _ := refusalOf(t, reviewed)
+		if reviewed.Code != http.StatusConflict || code != "NOT_PLAN_DOCUMENT" {
+			t.Fatalf("plan review of the project's plan.md: status=%d code=%s body=%s", reviewed.Code, code, reviewed.Body.String())
+		}
+	}
+}
