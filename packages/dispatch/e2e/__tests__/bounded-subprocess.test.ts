@@ -245,6 +245,22 @@ test("a child's name hides each password libpq reads and keeps the rest", () => 
       "postgres://127.0.0.1:5433/?password=&dbname=mine",
       "postgres://127.0.0.1:5433/?password=&dbname=mine",
     ],
+    "a PGPASSWORD assignment in lower case": [
+      "pgpassword=sekrit psql -c 'select 1'",
+      "pgpassword=*** psql -c 'select 1'",
+    ],
+    "a PGPASSWORD assignment with a single-quoted value": [
+      "PGPASSWORD='se kr it' psql",
+      "PGPASSWORD=*** psql",
+    ],
+    "an empty PGPASSWORD assignment, which holds no password": [
+      "PGPASSWORD= psql",
+      "PGPASSWORD= psql",
+    ],
+    "variables libpq does not read": [
+      "DB_PASSWORD=x MY_PGPASSWORD=x psql",
+      "DB_PASSWORD=x MY_PGPASSWORD=x psql",
+    ],
   };
   expect(
     Object.fromEntries(Object.entries(forms).map(([form, [text]]) => [form, masked(text)])),
@@ -253,10 +269,11 @@ test("a child's name hides each password libpq reads and keeps the rest", () => 
   ).toEqual(Object.fromEntries(Object.entries(forms).map(([form, [, shown]]) => [form, shown])));
   // `named` itself, for what it does beyond `masked`: an entry named PGPASSWORD, the variable
   // libpq reads a password from, hides its whole value, spaces and all, and one the caller takes
-  // away still says so; an entry is masked as `NAME=value`, so a variable named PASSWORD is
-  // hidden too; a line break in a value is escaped only after `masked` has read it; and each
-  // argument and each entry is masked on its own, so an empty `password=` at the end of one
-  // leaves the next whole.
+  // away still says so; an argument that assigns PGPASSWORD, as `env` or a shell's `-c` takes it,
+  // hides its value; an entry is masked as `NAME=value`, so a variable named PASSWORD is hidden
+  // too; a line break in a value is escaped only after `masked` has read it; and each argument
+  // and each entry is masked on its own, so an empty `password=` at the end of one leaves the
+  // next whole.
   expect(
     {
       given: named({
@@ -279,6 +296,14 @@ test("a child's name hides each password libpq reads and keeps the rest", () => 
         argv: ["psql", "host=127.0.0.1 password=", "-c", "select 1"],
         from: import.meta.url,
       }),
+      assignedByEnv: named({
+        argv: ["env", "PGPASSWORD=sekrit", "psql", "-c", "select 1"],
+        from: import.meta.url,
+      }),
+      assignedInAShell: named({
+        argv: ["bash", "-c", "PGPASSWORD=sekrit psql -c 'select 1'"],
+        from: import.meta.url,
+      }),
     },
     "A child's name printed part of a password, or a mask reached past its own argument or " +
       "variable and hid a part of the command or the environment that is no password."
@@ -292,6 +317,12 @@ test("a child's name hides each password libpq reads and keeps the rest", () => 
       "DATABASE_URL=host=127.0.0.1 password= PGHOST=127.0.0.1",
     emptyInAnArgument:
       "e2e/__tests__/bounded-subprocess.test.ts | psql host=127.0.0.1 password= -c select 1 | " +
+      "this process's environment",
+    assignedByEnv:
+      "e2e/__tests__/bounded-subprocess.test.ts | env PGPASSWORD=*** psql -c select 1 | " +
+      "this process's environment",
+    assignedInAShell:
+      "e2e/__tests__/bounded-subprocess.test.ts | bash -c PGPASSWORD=*** psql -c 'select 1' | " +
       "this process's environment",
   });
 });

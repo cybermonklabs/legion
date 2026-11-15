@@ -431,51 +431,62 @@ const passwordKey = [..."password"]
   })
   .join("");
 
-/** The value of a `password` keyword, as in `host=h password=*** dbname=d`, or of a `password`
- *  query parameter, as in `postgres://h/?password=***&dbname=d`, which `masked` hides. The key
- *  reads `password` percent-decoded and in any case, and stands at the start of the text or after
- *  a character no key holds, which is anything but a letter, a digit, `_` or `%`: after
- *  whitespace, `?` or `&` where libpq reads it, and after `=` or a quote where a variable, a flag
- *  or JSON holds the connection string. Whitespace may stand on either side of its `=`, as libpq
- *  reads `password = sekrit`, and it is kept as written. The value starts after that whitespace
- *  and runs to the next whitespace, `&`, quote or backslash, or, where it opens with `'`, as
- *  libpq quotes a value holding a space, to the `'` that closes it. An empty value, as in
- *  `password=`, `password=&dbname=d` or `password=''`, holds no password and is left as it is. No
- *  other key is hidden: `dbname=mine`, `passwords=x` and `mypassword=x` stay, but in
- *  `password= dbname=mine` libpq reads `dbname=mine` as the password, and it is hidden. */
+/** The value of a `password` keyword, as in `host=h password=*** dbname=d`, of a `password`
+ *  query parameter, as in `postgres://h/?password=***&dbname=d`, or of a `PGPASSWORD`
+ *  assignment, as in `PGPASSWORD=*** psql`, which `masked` hides. The `password` key reads
+ *  `password` percent-decoded and in any case. `PGPASSWORD` is read in any case, as a shell or
+ *  `env` writes the variable libpq reads a password from, with no whitespace on either side of
+ *  its `=`, since a shell ends the assignment at whitespace. Either key stands at the start of the
+ *  text or after a character no key holds, which is anything but a letter, a digit, `_` or `%`:
+ *  after whitespace, `?` or `&` where libpq or a shell reads it, and after `=` or a quote where a
+ *  variable, a flag or JSON holds the connection string. Whitespace may stand on either side of
+ *  the `password` key's `=`, as libpq reads `password = sekrit`, and it is kept as written. The
+ *  value starts after that whitespace and runs to the next whitespace, `&`, quote or backslash,
+ *  or, where it opens with `'`, as libpq and a shell quote a value holding a space, to the `'`
+ *  that closes it. An empty value, as in `password=`, `password=&dbname=d`, `password=''` or
+ *  `PGPASSWORD=`, holds no password and is left as it is. No other key is hidden: `dbname=mine`,
+ *  `passwords=x` and `mypassword=x` stay, but in `password= dbname=mine` libpq reads
+ *  `dbname=mine` as the password, and it is hidden. */
 const passwordParameter = new RegExp(
-  String.raw`(?<![\w%])(${passwordKey}\s*=\s*)(?:'(?:[^'\\]|\\[\s\S])+'?|[^\s&"'\\]+)`,
+  String.raw`(?<![\w%])(pgpassword=|${passwordKey}\s*=\s*)` +
+    String.raw`(?:'(?:[^'\\]|\\[\s\S])+'?|[^\s&"'\\]+)`,
   "gi"
 );
 
-/** `text` with two kinds of password written as `***`: a URL's userinfo password
- *  (`urlPassword`), and the value of a `password` keyword or query parameter, its name read
- *  percent-decoded and in any case (`passwordParameter`). A child's environment and command can
- *  hold a database URL: `harness-stacks.test.ts` gives a child `LEGION_TEST_PG_DSN` as its
- *  `DATABASE_URL` and inside a stacks JSON, and `replace-blocks-guard.test.ts` gives its driver a
- *  connection string in each of these forms. The cost line and the failure go to the run's
- *  stderr, which CI keeps in a public log, so neither may print a password. Two forms still show:
- *  a value not opened with `'` that holds a raw `&`, quote or backslash shows what follows that
- *  character, and a URL password holding a quote or backslash is not matched, so it shows whole.
- *  Hiding more than a password costs a reader part of a word, as `urlPassword` does where a URL
- *  with no password holds a later `@`; hiding less would put a password in that log. `named`
- *  gives this each argument and each environment entry on its own, so a mask never reaches past
- *  the word it is given: a value that ends in an empty `password=` leaves the next variable
- *  whole. */
+/** `text` with three kinds of password written as `***`: a URL's userinfo password
+ *  (`urlPassword`); the value of a `password` keyword or query parameter, its name read
+ *  percent-decoded and in any case; and the value of a `PGPASSWORD=value` assignment inside a
+ *  word, in any case, as `env PGPASSWORD=… psql` and `bash -c "PGPASSWORD=… psql"` start a child
+ *  (both `passwordParameter`). A variable libpq does not read, such as `DB_PASSWORD`, is not
+ *  hidden. A child's environment and command can hold a database URL: `harness-stacks.test.ts`
+ *  gives a child `LEGION_TEST_PG_DSN` as its `DATABASE_URL` and inside a stacks JSON, and
+ *  `replace-blocks-guard.test.ts` gives its driver a connection string in each of these forms.
+ *  The cost line and the failure go to the run's stderr, which CI keeps in a public log, so
+ *  neither may print a password. Two forms still show: a value not opened with `'` that holds a
+ *  raw `&`, quote or backslash shows what follows that character, as a shell's `PGPASSWORD="…"`
+ *  does from its opening `"`, and a URL password holding a quote or backslash is not matched, so
+ *  it shows whole. Hiding more than a password costs a reader part of a word, as `urlPassword`
+ *  does where a URL with no password holds a later `@`; hiding less would put a password in that
+ *  log. `named` gives this each argument and each environment entry on its own, so a mask never
+ *  reaches past the word it is given: a value that ends in an empty `password=` leaves the next
+ *  variable whole. */
 export function masked(text: string): string {
   return text.replace(urlPassword, "$1:***@").replace(passwordParameter, "$1***");
 }
 
 /** What the cost line and the failure call a child: the file that started it, the command with
  *  its arguments, and the environment the caller gave it, with what `masked` hides written as
- *  `***` wherever it stands: a URL's userinfo password, and the value of a `password` keyword or
- *  query parameter, its name read percent-decoded and in any case. Each argument, and each
- *  environment entry as `NAME=value`, is masked on its own, before they are joined and before
- *  `oneLine` escapes their breaks, so a mask never reaches past its own word: the environment is
- *  what tells two children apart, and a mask that ran on into the next variable would hide it. An
- *  entry named `PGPASSWORD`, the variable libpq reads a password from, prints as `PGPASSWORD=***`
- *  whatever its value holds, spaces included, and one the caller takes away still prints as
- *  `PGPASSWORD=`.
+ *  `***` wherever it stands: a URL's userinfo password, the value of a `password` keyword or
+ *  query parameter, its name read percent-decoded and in any case, and the value of a
+ *  `PGPASSWORD=value` assignment inside a word. Each argument, and each environment entry as
+ *  `NAME=value`, is masked on its own, before they are joined and before `oneLine` escapes their
+ *  breaks, so a mask never reaches past its own word: the environment is what tells two children
+ *  apart, and a mask that ran on into the next variable would hide it. `PGPASSWORD` is the
+ *  variable libpq reads a password from: an entry of that name prints as `PGPASSWORD=***`
+ *  whatever its value holds, spaces included, one the caller takes away still prints as
+ *  `PGPASSWORD=`, and an argument that assigns it, as `env PGPASSWORD=… psql` or
+ *  `bash -c "PGPASSWORD=… psql"` starts a child, has that value hidden by `masked`. A variable
+ *  libpq does not read, such as `DB_PASSWORD`, is not hidden.
  *
  *  The environment here is read BY NAME: every entry of `env` but the three of
  *  `environmentFloor`, sorted by name, whatever this process's own value for a name is. Reading
