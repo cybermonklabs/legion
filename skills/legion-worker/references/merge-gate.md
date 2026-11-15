@@ -137,8 +137,17 @@ as the fingerprint decides (*The reviewer*, below, and
   architect is told the reason when the review's own webhook arrived, so the reviewer submits again at the head it read.
   A `COMMENT` decides nothing. After a
   forward merge, compute the fingerprint (*The unchanged-diff check* in
-  `skill://legion-worker/references/conflicts-and-rewrites.md`) at the
-  `commit_id` of your last submitted review and at the new head. Equal and that review was
+  `skill://legion-worker/references/conflicts-and-rewrites.md`) at the head your last submitted
+  review read and at the new head.
+  That head is the `head` of that review's Legion footer, never the review's `commit_id`, because GitHub can move a review's `commit_id` onto a later head: on cybermonklabs/legion#3516, review 5908357397 was submitted at 01:10:46Z at `e9a820cf`, and on 2026-11-15 its `commit_id` read `6019bdc9`, the forward merge committed at 05:20:10Z whose first parent is `e9a820cf`, so a fingerprint taken at `commit_id` compares the new head with itself.
+  This read lists the reviews the reviewer submitted, each with the session and the head its last Legion footer names, and its pages concatenate oldest first, so its last line is your last submitted review:
+
+  ```bash
+  gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submitted_at, footer: ([.body // "" | scan("<!-- legion: (\\{.*?\\}) -->")] | last | .[0]? // "" | try fromjson catch {})} | select(.footer.phase == "review") | [.id, .state, .submitted_at, .footer.session, (.footer.head // "no head")] | @tsv'
+  ```
+
+  A footer that names no head, written before the footer carried one, leaves the full SHA that review's body names as the head it read; a body that names none either leaves no head to take the fingerprint at, which is a new round.
+  Equal and that review was
   `APPROVE`: submit one more `APPROVE` naming the new head by SHA, its body naming both SHAs
   and the fingerprint — a confirmation, not a round; no thermo pass, no thread pass. Equal and
   that review was `COMMENT` or `REQUEST_CHANGES`: continue that round against the new head;
