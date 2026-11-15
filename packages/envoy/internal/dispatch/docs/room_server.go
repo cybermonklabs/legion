@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -133,6 +134,29 @@ func (r *roomServer) closeWhenFree(ctx context.Context, room string, try func() 
 		}
 		wait = min(2*wait, roomInUseLongestWait)
 	}
+}
+
+// awaitLoaded waits until ygo is loading no room under room's name, or ctx ends between looks. A
+// room ygo is loading holds its name in the server's rooms (Server.Rooms) and is reported absent
+// (Server.GetDoc) until its load hook has returned and ygo publishes it, or until its load fails
+// and gives the name up (failRoomLoad, theorem-labs/ygo v1.55.1-theorem.6,
+// provider/websocket/server.go:1763-1779,2077-2086). So this answers once the name holds a
+// published room or none. ygo's one wait on a load is its CloseRoom's, which closes the room it
+// waited for, so this looks again, waiting from roomInUseFirstWait doubling to
+// roomInUseLongestWait, as closeWhenFree waits for a room's callers.
+func (r *roomServer) awaitLoaded(ctx context.Context, room string) error {
+	wait := roomInUseFirstWait
+	for r.GetDoc(room) == nil && slices.Contains(r.Rooms(), room) {
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		wait = min(2*wait, roomInUseLongestWait)
+	}
+	return nil
 }
 
 // closeHeld runs attempt, one try at closing room by a caller holding room's gate, after

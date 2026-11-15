@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
@@ -536,16 +537,20 @@ func TestRebuildingADocumentNearTheScanTotalLeavesItWithASmallScanTotalAndReadin
 // admitted again once the rebuild answered, joined it, and was told someone else had rebuilt the
 // document; where she had typed into that room first, her typing was dropped with it.
 //
-// The load here is the one a cold socket makes: its admission read the history and offered it
-// (offerPreload), and the room's load takes it while the stored head is still the one it was read
-// at (takePreload). That head is read, and then held until the rebuild has committed, as a decode
-// of a large history holds a load between its read and its hook.
+// The load is the one Bob's reconnect made: a cold socket opened while the rebuild runs, once the
+// rebuild has looked for a resident room and found none, whose admission reads the history and
+// offers it (offerPreload) to the room's load, which takes it while the stored head is still the
+// one it was read at (takePreload). The rebuild is held before it replaces the history (RebuildTx)
+// until that head is read, and the load is held after reading it until the rebuild has committed,
+// as a decode of a large history holds a load between its read and its hook.
 func TestARoomLoadThatReadTheHistoryARebuildReplacedIsRefusedOnceTheRebuildCommits(t *testing.T) {
 	state := tangledHistory(t, 2_000, roomScanTotal-honestHandoffScans)
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	storeHistory(t, service, artifactID, state)
 	closeResidentRoom(t, service, artifactID)
+	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
+	t.Cleanup(server.Close)
 	var mu sync.Mutex
 	var decoded [][]byte
 	service.bootstrapping = func(room string, state []byte) {
@@ -560,52 +565,105 @@ func TestARoomLoadThatReadTheHistoryARebuildReplacedIsRefusedOnceTheRebuildCommi
 		defer mu.Unlock()
 		return append([][]byte(nil), decoded[from:]...)
 	}
-	ctx := context.Background()
-	tree, loaded, _, err := service.loadTree(ctx, artifactID)
-	if err != nil || loaded == nil || !bytes.Equal(loaded.Update, state) {
-		t.Fatalf("the admission's read of the stored history: %v, want the tangled history", err)
-	}
-	service.offerPreload(artifactID, loaded, admissionRendering{tree: tree})
-	heads := &heldHead{VersionedStore: service.persistence, room: artifactID, armed: make(chan struct{}, 1), read: make(chan struct{}), release: make(chan struct{})}
+	paused := &pausedRebuild{VersionedStore: service.persistence, room: artifactID, reached: make(chan struct{}), resume: make(chan struct{})}
+	heads := &heldHead{VersionedStore: paused, room: artifactID, armed: make(chan struct{}, 1), read: make(chan struct{}), release: make(chan struct{})}
 	service.persistence = heads
+	var resumeOnce, releaseOnce sync.Once
+	resume := func() { resumeOnce.Do(func() { close(paused.resume) }) }
+	release := func() { releaseOnce.Do(func() { close(heads.release) }) }
+	t.Cleanup(resume)
+	t.Cleanup(release)
+	ctx := context.Background()
+	rebuilt := make(chan error, 1)
+	go func() {
+		rebuilt <- joinedWrite(service, func(ctx context.Context) error {
+			_, _, err := service.RebuildDocument(ctx, artifactID, nil, model.Actor{Kind: "user", ID: "alice"})
+			return err
+		})
+	}()
+	select {
+	case <-paused.reached:
+	case err := <-rebuilt:
+		t.Fatalf("the rebuild answered %v before it replaced the history", err)
+	case <-time.After(time.Minute):
+		t.Fatal("the rebuild never came to replace the history")
+	}
 	heads.armed <- struct{}{}
-	loading := make(chan error, 1)
-	go func() { loading <- service.warmLiveDocument(ctx, artifactID) }()
+	type dial struct {
+		peer *docstest.Peer
+		err  error
+	}
+	dialed := make(chan dial, 1)
+	go func() {
+		url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
+		peer, err := docstest.DialContext(ctx, url, http.Header{"X-Dispatch-User": []string{"bob"}}, artifactID, crdt.New())
+		dialed <- dial{peer, err}
+	}()
 	select {
 	case <-heads.read:
-	case err := <-loading:
-		t.Fatalf("the room loaded without reading its head (%v)", err)
-	case <-time.After(30 * time.Second):
-		t.Fatal("the room's load never read its head")
+	case answer := <-dialed:
+		t.Fatalf("the socket was answered (%v) before its room's load read the head", answer.err)
+	case <-time.After(time.Minute):
+		t.Fatal("the socket's room load never read its head")
 	}
-	if _, _, err := rebuildDocument(t, service, artifactID, nil); err != nil {
-		close(heads.release)
-		t.Fatalf("rebuild the document while its room loads: %v", err)
+	resume()
+	select {
+	case err := <-rebuilt:
+		if err != nil {
+			t.Fatalf("rebuild the document while a socket's room loads: %v", err)
+		}
+	case <-time.After(2 * time.Minute):
+		t.Fatal("the rebuild never answered")
 	}
-	close(heads.release)
-	err = <-loading
-	if published := decodedSince(0); err == nil || len(published) != 0 {
-		t.Fatalf("the load that read the history before the rebuild committed answered %v and decoded %d states (the replaced history: %v), want it refused with nothing decoded",
-			err, len(published), len(published) == 1 && bytes.Equal(published[0], state))
+	release()
+	var answer dial
+	select {
+	case answer = <-dialed:
+	case <-time.After(time.Minute):
+		t.Fatal("the socket was never answered")
 	}
-	if !errors.Is(err, ErrServiceUnavailable) {
-		t.Fatalf("the load that read the replaced history was refused with %v, want %v, which a browser retries", err, ErrServiceUnavailable)
+	if published := decodedSince(0); answer.err == nil || len(published) != 0 {
+		if answer.peer != nil {
+			answer.peer.Close()
+		}
+		t.Fatalf("the socket whose room load read the history before the rebuild committed was answered (refused: %v) and its load decoded %d states (the replaced history: %v), want it refused with nothing decoded",
+			answer.err, len(published), len(published) == 1 && bytes.Equal(published[0], state))
 	}
 
 	if err := service.warmLiveDocument(ctx, artifactID); err != nil {
 		t.Fatalf("load the rebuilt room: %v", err)
 	}
-	rebuilt, err := service.persistence.Load(ctx, artifactID)
+	rebuiltHistory, err := service.persistence.Load(ctx, artifactID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	published := decodedSince(0)
-	if len(published) != 1 || !bytes.Equal(published[0], rebuilt.Update) {
+	if len(published) != 1 || !bytes.Equal(published[0], rebuiltHistory.Update) {
 		t.Fatalf("the next load decoded %d states, want the rebuilt history alone", len(published))
 	}
 	if retired := retiredClientsOf(decodedHistory(t, published[0])); len(retired) == 0 {
 		t.Fatal("the room the next load published lists no retired client, so a browser holding the replaced history would not be refused")
 	}
+}
+
+// pausedRebuild is the service's store with its first replacement of room's history (RebuildTx)
+// held until resume closes: reached closes once that replacement is asked for.
+type pausedRebuild struct {
+	VersionedStore
+	room    string
+	reached chan struct{}
+	resume  chan struct{}
+	once    sync.Once
+}
+
+func (p *pausedRebuild) RebuildTx(ctx context.Context, tx pgx.Tx, room string, loaded persistence.Version, seed []byte) (RebuildReport, error) {
+	if room == p.room {
+		p.once.Do(func() {
+			close(p.reached)
+			<-p.resume
+		})
+	}
+	return p.VersionedStore.RebuildTx(ctx, tx, room, loaded, seed)
 }
 
 // heldHead is the service's store with its first read of room's head once armed held, after the
@@ -630,6 +688,178 @@ func (h *heldHead) Head(ctx context.Context, room string) (persistence.Version, 
 	default:
 	}
 	return head, err
+}
+
+// A browser that opens a document once its rebuild has committed is served the rebuilt history,
+// and what it types is stored, even where the document's room was still loading as the rebuild
+// began: a load whose hook passed its check of the rebuild's hold just before the rebuild took it,
+// and that ygo had not yet published when the rebuild looked for a resident room. ygo reports a
+// room it is loading as absent (Server.GetDoc), so the rebuild found none, closed none, and the
+// load went on to publish a room of the history the rebuild then replaced, with the old head and
+// no list of the clients it retired. Until the catch-up closed that room, a browser that opened
+// the document after the rebuild joined it: it was served the replaced history, what it typed was
+// refused at the store, which no longer held the items it was typed against, and on its
+// reconnect the rebuilt room refused the history it held as DOC_REBUILT, so the page dropped its
+// unsent rows as rows of a rebuilt document (pending-sync.ts, addsParking) and told the person
+// someone else had rebuilt it. The person who clicked the rebuild is the one who opens it next.
+//
+// The load is held inside its hook, past the hold's check, at the render the hook makes of the
+// state it decoded (admissionRendered), and released once the rebuild is reading the history -
+// it has looked for a resident room by then - or, for a rebuild that waits for the load instead,
+// once it has waited two seconds. The catch-up's close of a room whose history was replaced is
+// held for the rest of the test, so a room left standing on the replaced history is still there
+// for the browser to open, as it was in the window the catch-up takes to arrive.
+func TestABrowserOpeningADocumentAfterItsRebuildIsServedTheRebuiltHistoryThoughItsRoomWasLoadingAsTheRebuildBegan(t *testing.T) {
+	state := tangledHistory(t, 2_000, roomScanTotal-honestHandoffScans)
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	storeHistory(t, service, artifactID, state)
+	closeResidentRoom(t, service, artifactID)
+	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
+	t.Cleanup(server.Close)
+	closesHeld := make(chan struct{})
+	t.Cleanup(func() { close(closesHeld) })
+	service.beforeCloseBehindHeadLock = func(room string) {
+		if room == artifactID {
+			<-closesHeld
+		}
+	}
+	loadHeld, loadReleased := make(chan struct{}), make(chan struct{})
+	var holdLoad, releaseLoad sync.Once
+	release := func() { releaseLoad.Do(func() { close(loadReleased) }) }
+	t.Cleanup(release)
+	service.admissionRendered = func(room string) {
+		if room == artifactID {
+			holdLoad.Do(func() {
+				close(loadHeld)
+				<-loadReleased
+			})
+		}
+	}
+	ctx := context.Background()
+	loading := make(chan error, 1)
+	go func() { loading <- service.warmLiveDocument(ctx, artifactID) }()
+	select {
+	case <-loadHeld:
+	case err := <-loading:
+		t.Fatalf("the room loaded without rendering its state (%v)", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the room's load never rendered its state")
+	}
+	reads := &observedLoad{VersionedStore: service.persistence, room: artifactID, read: make(chan struct{})}
+	service.persistence = reads
+	rebuilt := make(chan error, 1)
+	go func() {
+		rebuilt <- joinedWrite(service, func(ctx context.Context) error {
+			_, _, err := service.RebuildDocument(ctx, artifactID, nil, model.Actor{Kind: "user", ID: "alice"})
+			return err
+		})
+	}()
+	var rebuildErr error
+	rebuildEnded := false
+	for held := false; !held && !rebuildEnded; {
+		select {
+		case rebuildErr = <-rebuilt:
+			rebuildEnded = true
+		case <-time.After(time.Millisecond):
+			_, held = service.rebuilding.Load(artifactID)
+		}
+	}
+	if !rebuildEnded {
+		select {
+		case <-reads.read:
+		case rebuildErr = <-rebuilt:
+			rebuildEnded = true
+		case <-time.After(2 * time.Second):
+		}
+	}
+	release()
+	if !rebuildEnded {
+		select {
+		case rebuildErr = <-rebuilt:
+		case <-time.After(2 * time.Minute):
+			t.Fatal("the rebuild never answered")
+		}
+	}
+	if rebuildErr != nil {
+		t.Fatalf("rebuild the document while its room loads: %v", rebuildErr)
+	}
+	select {
+	case <-loading:
+	case <-time.After(time.Minute):
+		t.Fatal("the room's load never answered")
+	}
+
+	const typed = "typed after the rebuild "
+	alice := connectPeer(t, server.URL, artifactID, "alice")
+	awaitAnswer(t, alice, "the document after its rebuild")
+	served := len(retiredClientsOf(alice.Doc))
+	into := firstText(alice.Doc.GetXmlFragment(fragmentName))
+	if into == nil {
+		t.Fatal("the document the browser was served holds no text to type into")
+	}
+	if _, err := alice.Send(func(txn *crdt.Transaction) { into.Insert(txn, 0, typed, nil) }); err != nil {
+		t.Fatal(err)
+	}
+	storedHolds := func(within time.Duration) bool {
+		for deadline := time.Now().Add(within); ; time.Sleep(50 * time.Millisecond) {
+			loaded, err := service.persistence.Load(ctx, artifactID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rendering, err := renderDocument(decodedHistory(t, loaded.Update)); err == nil && strings.Contains(rendering, typed) {
+				return true
+			}
+			if time.Now().After(deadline) {
+				return false
+			}
+		}
+	}
+	ending := func(peer *docstest.Peer, within time.Duration) string {
+		select {
+		case <-peer.Ended:
+			if closed := peer.Closed(); closed != nil {
+				return fmt.Sprintf("%d %s", closed.Code, closed.Text)
+			}
+			return "no close frame"
+		case <-time.After(within):
+			return "nothing: still connected"
+		}
+	}
+	stored := storedHolds(15 * time.Second)
+	if served > 0 && stored {
+		if ended := ending(alice, 0); ended != "nothing: still connected" {
+			t.Fatalf("the room ended the browser of the rebuilt history with %s", ended)
+		}
+		return
+	}
+	// What became of the browser and its typing, which the failure reports.
+	ended := ending(alice, 15*time.Second)
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
+	reconnectEnded := "a reconnect that failed"
+	if reconnected, err := docstest.DialContext(ctx, url, http.Header{"X-Dispatch-User": []string{"alice"}}, artifactID, alice.Doc); err != nil {
+		reconnectEnded = fmt.Sprintf("a reconnect that failed: %v", err)
+	} else {
+		defer reconnected.Close()
+		reconnectEnded = ending(reconnected, 30*time.Second)
+	}
+	t.Fatalf("a browser that opened the document once its rebuild had committed was served a document listing %d retired clients (want the rebuilt one, which lists them); what it typed reached the stored history: %t (after 15 s, and %t after its reconnect); the room then ended its socket with %s, and its reconnect with what it held met %s",
+		served, stored, storedHolds(0), ended, reconnectEnded)
+}
+
+// observedLoad is the service's store with read closed at its first read of room's history.
+type observedLoad struct {
+	VersionedStore
+	room string
+	read chan struct{}
+	once sync.Once
+}
+
+func (o *observedLoad) Load(ctx context.Context, room string) (persistence.LoadResult, error) {
+	if room == o.room {
+		o.once.Do(func() { close(o.read) })
+	}
+	return o.VersionedStore.Load(ctx, room)
 }
 
 // A browser that held a document before its rebuild still holds the history the rebuild replaced,

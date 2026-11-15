@@ -364,18 +364,31 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: document %s is already being rebuilt", ErrDocumentLive, artifactID)
 	}
 	ledgerFrom(ctx).holdRebuild(artifactID)
-	// A room still loading is not resident yet, so the check below does not see it, and it reads
-	// the history this transaction is about to replace. One that cannot load fails it. One that
-	// loads - a history near a cap - is refused at the room's load hook, which runs after that
-	// read: by the hold while it stands, and once the commit lifts it, by the mark the hold
-	// leaves on the load under way as it goes (Ledger.endRebuilds, markRoomLoadRebuilt). Without
-	// the mark a load that read before the commit and reached its hook after it published a room
-	// of the replaced history, with no list of the clients this rebuild retires, which a browser
-	// joining it took and handed back to the rebuilt room on its reconnect. A load that starts
-	// once the rebuild commits reads the rebuilt head: versions only increase, so its room holds
-	// the rebuilt update and none it would mistake for it. A room stays resident for
-	// roomIdleTimeout after its last editor leaves, and ygo's idle sweep that then evicts it runs
-	// every 30 seconds, so the refusal names two minutes.
+	// A room still loading is not resident yet: ygo reports it absent until its load hook has
+	// returned and it is published (Server.GetDoc), so the check below does not see it, and it
+	// reads the history this transaction is about to replace. Each load whose hook runs from here
+	// on is refused there: by the hold while it stands, and once the commit lifts it, by the mark
+	// the hold leaves on the load under way as it goes (Ledger.endRebuilds, markRoomLoadRebuilt).
+	// Without the mark a load that read before the commit and reached its hook after it published
+	// a room of the replaced history, with no list of the clients this rebuild retires, which a
+	// browser joining it took and handed back to the rebuilt room on its reconnect.
+	//
+	// That leaves a load whose hook had passed the hold's check before the hold was taken. Unseen
+	// by the check below, it published a room of the replaced history while this transaction ran,
+	// and that room served every browser that opened the document until the catch-up closed it
+	// after the commit: the person who asked for this rebuild, opening it again, was served the
+	// replaced history, what they typed there was refused at the store, which no longer held the
+	// items it was typed against, and their reconnect was refused as a holder of that history, so
+	// the page dropped what they had typed and told them someone else had rebuilt the document. So
+	// the rebuild waits out any load of the room first (awaitLoaded): a room that load published is
+	// resident when the check below looks, and is judged and closed as any resident room is - what
+	// was typed in it flushed into the history this rebuild reads - or the rebuild refused for its
+	// caller to retry, as for any resident room a caller is still inside. Every load that can still
+	// publish is one this wait sees: the hold, taken above, is checked by every hook that runs
+	// after it. A load that starts once the rebuild commits reads the rebuilt head: versions only
+	// increase, so its room holds the rebuilt update and none it would mistake for it. A room stays
+	// resident for roomIdleTimeout after its last editor leaves, and ygo's idle sweep that then
+	// evicts it runs every 30 seconds, so the refusal names two minutes.
 	//
 	// The other envoy-dispatch processes' rooms are asked the same through a holds query below: a
 	// member that answers it holds a room of the document refuses the rebuild as this server's
@@ -392,6 +405,9 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// struct a keystroke, and the room's tracked state runs at or above its encode between
 	// re-bases - so a room judged near was once closed and then answered DOCUMENT_LOADS, which
 	// offered the rebuild and refused it on the same click.
+	if err := s.srv.awaitLoaded(ctx, artifactID); err != nil {
+		return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: wait for document %s's room to load before its rebuild: %v", ErrServiceUnavailable, artifactID, err)
+	}
 	var decided string
 	if live := s.srv.GetDoc(artifactID); live != nil {
 		// The check decodes the room's whole state, so it waits for its grant of the copy-heap
