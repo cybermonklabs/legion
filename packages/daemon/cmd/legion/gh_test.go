@@ -1297,6 +1297,8 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 		{"another argv under the same variable", "sjawhar/legion", []string{"api", "--hostname", "github.com", "repos/sjawhar/legion", "--jq", ".name"}},
 		{"a variable naming no repository", "sjawhar/legion/pulls", []string{"api", "--hostname", "github.com", "repos/sjawhar/legion/pulls", "--jq", ".visibility"}},
 		{"the GraphQL read of another repository under the variable", "sjawhar/legion", leakguard.VisibilityGraphQLArgs("sjawhar/other")},
+		{"another GraphQL query under the variable", "sjawhar/legion", graphQLOf("query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { description } }")},
+		{"a GraphQL mutation under the variable", "sjawhar/legion", graphQLOf(inventedMutation)},
 	} {
 		t.Run("checked: "+tc.name, func(t *testing.T) {
 			code, stdout, stderr, ghRan, checked := call(t, ghCheckRefuses, "", map[string]string{leakguard.VisibilityReadVar: tc.slug}, tc.args...)
@@ -1310,11 +1312,20 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 	}
 }
 
+// graphQLOf is the guard's GraphQL visibility read of sjawhar/legion with query in place of the
+// guard's own, and inventedMutation a mutation to put there: `legion gh` must check either one
+// like any other call, whatever PUBLIC_LEAK_CHECK_VISIBILITY_READ names.
+func graphQLOf(query string) []string {
+	return []string{"api", "--hostname", "github.com", "graphql", "--include", "-f", "query=" + query, "-f", "owner=sjawhar", "-f", "name=legion"}
+}
+
+const inventedMutation = "mutation($owner: String!, $name: String!) { createIssue(input: {repositoryId: $owner, title: $name}) { issue { id } } }"
+
 // ghVisibilityRead lets through the shared check's visibility callback and the guard's own REST
 // and GraphQL visibility reads, each for exactly the repository PUBLIC_LEAK_CHECK_VISIBILITY_READ
-// names, and nothing else: not the GraphQL read of another repository, not another query, not
-// the read with a field added, not the read with no variable, and not a variable naming no
-// repository.
+// names, and nothing else: not the GraphQL read of another repository, not another query, not a
+// mutation, not the read with a field added, not the read with no variable, and not a variable
+// naming no repository.
 func TestGhVisibilityReadLetsThroughOnlyTheExactReads(t *testing.T) {
 	const slug = "sjawhar/legion"
 	env := map[string]string{leakguard.VisibilityReadVar: slug}
@@ -1329,7 +1340,8 @@ func TestGhVisibilityReadLetsThroughOnlyTheExactReads(t *testing.T) {
 		{"the guard's REST read", leakguard.VisibilityReadWithHeadersArgs(slug), env, true},
 		{"the guard's GraphQL read", graphql, env, true},
 		{"the GraphQL read of another repository", leakguard.VisibilityGraphQLArgs("sjawhar/other"), env, false},
-		{"another GraphQL query", []string{"api", "--hostname", "github.com", "graphql", "--include", "-f", "query={viewer{login}}", "-f", "owner=sjawhar", "-f", "name=legion"}, env, false},
+		{"another GraphQL query", graphQLOf("{viewer{login}}"), env, false},
+		{"a GraphQL mutation", graphQLOf(inventedMutation), env, false},
 		{"the GraphQL read with a field added", append(slices.Clone(graphql), "-f", "extra=1"), env, false},
 		{"the GraphQL read with no variable", graphql, map[string]string{}, false},
 		{
@@ -1344,6 +1356,59 @@ func TestGhVisibilityReadLetsThroughOnlyTheExactReads(t *testing.T) {
 				t.Errorf("ghVisibilityRead(%q) = %v, want %v", tc.argv, got, tc.want)
 			}
 		})
+	}
+}
+
+// The guard's own visibility reads run with the token of the repository they read, the REST read
+// and the GraphQL read alike. The REST read names its repository in its endpoint; the GraphQL read
+// names it only in variables, which the resolver reads as an owner alone, so its directory comes
+// from the repository PUBLIC_LEAK_CHECK_VISIBILITY_READ names, which ghVisibilityRead has matched
+// to the read's exact argv. The bundle holds sjawhar/legion's own directory beside sjawhar's, and
+// both reads of sjawhar/legion take it; sjawhar/legion-smoke has none, and both reads of it take
+// sjawhar's.
+func TestLegionGhRunsTheGuardsVisibilityReadsWithTheRepositorysToken(t *testing.T) {
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The stub records the GH_CONFIG_DIR and the argv of every run, then answers as the
+	// package's stand-in does: a help request with the saved help, a visibility read with public.
+	stub := filepath.Join(t.TempDir(), "gh")
+	script := "#!/bin/sh\nprintf '%s|%s\\n' \"$GH_CONFIG_DIR\" \"$*\" >>\"${GH_STANDIN_RECORD:-/dev/null}\"\n" +
+		strings.TrimPrefix(ghStandInPrefix(help), "#!/bin/sh\n") + "exit 0\n"
+	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wrappers := ghWrapperDir(t)
+	for _, tc := range []struct {
+		slug, dir string
+	}{
+		{"sjawhar/legion", filepath.Join(root, "sjawhar", "legion")},
+		{"sjawhar/legion-smoke", filepath.Join(root, "sjawhar")},
+	} {
+		for _, read := range []struct {
+			name string
+			args []string
+		}{
+			{"REST", leakguard.VisibilityReadWithHeadersArgs(tc.slug)},
+			{"GraphQL", leakguard.VisibilityGraphQLArgs(tc.slug)},
+		} {
+			t.Run(read.name+" "+tc.slug, func(t *testing.T) {
+				record := filepath.Join(t.TempDir(), "gh")
+				code, stdout, stderr := legionGh(t, map[string]string{
+					"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+					"PATH": wrappers + ":" + os.Getenv("PATH"), "GH_STANDIN_RECORD": record,
+					leakguard.VisibilityReadVar: tc.slug,
+				}, read.args...)
+				if code != 0 || stdout != "public\n" {
+					t.Fatalf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 0 and gh's answer", read.args, code, stdout, stderr)
+				}
+				if want := tc.dir + "|" + strings.Join(read.args, " ") + "\n"; !strings.Contains(readRecord(t, record), want) {
+					t.Errorf("gh recorded\n%s\nwant the read run with %s:\n%s", readRecord(t, record), tc.dir, want)
+				}
+			})
+		}
 	}
 }
 

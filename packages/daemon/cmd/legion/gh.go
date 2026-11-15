@@ -127,6 +127,10 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// This process is the guard's own request. Its enclosing user call records the source of
 		// that request, so logging it again would count one wrapped call twice.
 		logCall = false
+		// Its token is the repository's, which ghVisibilityRead matched to the read's exact argv.
+		// The GraphQL read names that repository only in variables, read above as an owner alone.
+		owner, name, _ := strings.Cut(env[leakguard.VisibilityReadVar], "/")
+		target.owner, target.repo = strings.ToLower(owner), name
 	} else {
 		guard := leakguard.New(leakguard.Options{
 			OnVisibility: func(source leakguard.VisibilitySource) {

@@ -119,10 +119,16 @@ func graphQLRead(record, status string, remaining int, body, stderr string, exit
 	return script + fmt.Sprintf("exit %d\n", exit)
 }
 
-// graphQLAnswers is a GraphQL read that answers visibility, as GitHub answers for a repository
-// the installation can read.
+// graphQLAnswers is a GraphQL read that answers visibility for theRepo, as GitHub answers for a
+// repository the installation can read.
 func graphQLAnswers(record, visibility string) string {
-	return graphQLRead(record, "HTTP/2.0 200 OK", 12221, `{"data":{"repository":{"visibility":"`+visibility+`"}}}`, "", 0)
+	return graphQLRead(record, "HTTP/2.0 200 OK", 12221, answerBody(theRepo, visibility), "", 0)
+}
+
+// answerBody is the body of a GraphQL answer naming the repository nameWithOwner and its
+// visibility.
+func answerBody(nameWithOwner, visibility string) string {
+	return `{"data":{"repository":{"nameWithOwner":"` + nameWithOwner + `","visibility":"` + visibility + `"}}}`
 }
 
 // graphQLRateLimited is a GraphQL read GitHub refuses for GraphQL's own spent limit: the status
@@ -338,22 +344,34 @@ func TestVisibilityWithoutRESTDecidesThePush(t *testing.T) {
 	}
 }
 
-// Of what GraphQL says, PUBLIC, PRIVATE and INTERNAL alone are an answer, and a rate limit of
-// GraphQL's own alone sends the read on to ls-remote: an error of type RATE_LIMITED, the status
-// 403 with no points left, and GitHub's secondary rate limit. Everything else refuses the call,
-// naming the spent core limit, its reset and what GraphQL said, and runs no ls-remote: a
-// visibility GitHub does not define or in another case, NOT_FOUND, an error beside the data, no
-// repository, no data, a body that is no JSON, a refused credential and a gh that cannot reach
-// GitHub. None is read as private or public.
+// Of what GraphQL says, PUBLIC, PRIVATE and INTERNAL for the repository asked about alone are an
+// answer, and a rate limit of GraphQL's own, read from the error response alone, alone sends the
+// read on to ls-remote: errors all of type RATE_LIMITED, the status 403 with no points left, and
+// GitHub's secondary rate limit. Everything else refuses the call, naming the spent core limit,
+// its reset and what GraphQL said, and runs no ls-remote: a visibility GitHub does not define or
+// in lower case, another repository than the one asked about (GitHub resolves a renamed one's old
+// name), NOT_FOUND, any error beside the data or beside RATE_LIMITED, no repository, no data, a
+// body that is not one whole JSON document, a refused credential and a gh that cannot reach
+// GitHub. A wrong private or internal would skip the rule pass for a public repository, so none
+// of these is read as an answer. gh's standard error is apart from the body it prints.
 func TestVisibilityTakesOnlyAnAnswerGraphQLGives(t *testing.T) {
 	now := time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)
 	reset := now.Add(30 * time.Minute)
 	answers := func(visibility string) func(string) string {
 		return func(record string) string { return graphQLAnswers(record, visibility) }
 	}
-	prints := func(status string, remaining int, body, stderr string) func(string) string {
-		return func(record string) string { return graphQLRead(record, status, remaining, body, stderr, 1) }
+	prints := func(status string, remaining int, body, stderr string, exit int) func(string) string {
+		return func(record string) string { return graphQLRead(record, status, remaining, body, stderr, exit) }
 	}
+	const (
+		ok         = "HTTP/2.0 200 OK"
+		notFound   = `{"type":"NOT_FOUND","path":["repository"],"message":"Could not resolve to a Repository with the name '` + theRepo + `'."}`
+		rateLimit  = `{"type":"RATE_LIMITED","message":"API rate limit already exceeded for installation ID 1."}`
+		forbidden  = `{"type":"FORBIDDEN","message":"Resource not accessible by integration"}`
+		secondary  = "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."
+		ghRefusal  = "gh: Resource not accessible by integration"
+		ghNotFound = "gh: Could not resolve to a Repository with the name '" + theRepo + "'."
+	)
 	for _, tc := range []struct {
 		name    string
 		graphql func(record string) string
@@ -366,39 +384,87 @@ func TestVisibilityTakesOnlyAnAnswerGraphQLGives(t *testing.T) {
 		{name: "PUBLIC", graphql: answers("PUBLIC"), want: Public},
 		{name: "PRIVATE", graphql: answers("PRIVATE"), want: Private},
 		{name: "INTERNAL", graphql: answers("INTERNAL"), want: Internal},
-		{name: "a visibility in lower case", graphql: answers("public"), fails: `"public" as the visibility`},
+		{
+			name:    "the repository asked about in other capitals",
+			graphql: prints(ok, 12221, answerBody("Invented-Org/Invented-Repo", "PRIVATE"), "", 0),
+			want:    Private,
+		},
+		{
+			name:    "a warning on gh's standard error",
+			graphql: prints(ok, 12221, answerBody(theRepo, "PRIVATE"), "warning: invented", 0),
+			want:    Private,
+		},
+		{name: "public in lower case", graphql: answers("public"), fails: `"public" as the visibility`},
+		{name: "private in lower case", graphql: answers("private"), fails: `"private" as the visibility`},
+		{name: "internal in lower case", graphql: answers("internal"), fails: `"internal" as the visibility`},
 		{name: "an empty visibility", graphql: answers(""), fails: `"" as the visibility`},
 		{name: "a visibility GitHub does not define", graphql: answers("SECRET"), fails: `"SECRET" as the visibility`},
+		{
+			name:    "another repository, as GitHub answers a renamed one's old name",
+			graphql: prints(ok, 12221, answerBody("invented-org/renamed-repo", "PRIVATE"), "", 0),
+			fails:   `GraphQL answered for the repository "invented-org/renamed-repo", not ` + theRepo,
+		},
+		{
+			name:    "no repository name",
+			graphql: prints(ok, 12221, `{"data":{"repository":{"visibility":"PRIVATE"}}}`, "", 0),
+			fails:   `GraphQL answered for the repository "", not ` + theRepo,
+		},
 		{name: "NOT_FOUND", graphql: graphQLNotFound, fails: "NOT_FOUND: Could not resolve to a Repository"},
 		{
-			name: "an error beside the data",
-			graphql: prints("HTTP/2.0 200 OK", 12221,
-				`{"data":{"repository":{"visibility":"PUBLIC"}},"errors":[{"type":"FORBIDDEN","message":"Resource not accessible by integration"}]}`,
-				"gh: Resource not accessible by integration"),
-			fails: "FORBIDDEN: Resource not accessible by integration",
+			name:    "NOT_FOUND then RATE_LIMITED",
+			graphql: prints(ok, 0, `{"data":{"repository":null},"errors":[`+notFound+`,`+rateLimit+`]}`, ghNotFound, 1),
+			fails:   "NOT_FOUND: Could not resolve to a Repository",
 		},
 		{
-			name: "no repository",
-			graphql: func(record string) string {
-				return graphQLRead(record, "HTTP/2.0 200 OK", 12221, `{"data":{"repository":null}}`, "", 0)
-			},
-			fails: "GraphQL answered no repository",
+			name:    "RATE_LIMITED then NOT_FOUND",
+			graphql: prints(ok, 0, `{"data":{"repository":null},"errors":[`+rateLimit+`,`+notFound+`]}`, ghNotFound, 1),
+			fails:   "NOT_FOUND: Could not resolve to a Repository",
 		},
 		{
-			name: "no data",
-			graphql: func(record string) string {
-				return graphQLRead(record, "HTTP/2.0 200 OK", 12221, `{"data":null}`, "", 0)
-			},
-			fails: "GraphQL answered no repository",
+			name:    "NOT_FOUND in a 403 with no points left",
+			graphql: prints("HTTP/2.0 403 Forbidden", 0, `{"data":{"repository":null},"errors":[`+notFound+`]}`, ghNotFound, 1),
+			fails:   "NOT_FOUND: Could not resolve to a Repository",
 		},
 		{
-			name:    "a body that is no JSON",
-			graphql: prints("HTTP/2.0 502 Bad Gateway", 12221, "<html>bad gateway</html>", "gh: HTTP 502"),
-			fails:   "with no GraphQL answer",
+			name:    "an error beside a public visibility",
+			graphql: prints(ok, 12221, `{"data":{"repository":{"nameWithOwner":"`+theRepo+`","visibility":"PUBLIC"}},"errors":[`+forbidden+`]}`, ghRefusal, 1),
+			fails:   "FORBIDDEN: Resource not accessible by integration",
+		},
+		{
+			name:    "an error beside a private visibility",
+			graphql: prints(ok, 12221, `{"data":{"repository":{"nameWithOwner":"`+theRepo+`","visibility":"PRIVATE"}},"errors":[`+forbidden+`]}`, ghRefusal, 1),
+			fails:   "FORBIDDEN: Resource not accessible by integration",
+		},
+		{
+			name:    "an error beside an internal visibility",
+			graphql: prints(ok, 12221, `{"data":{"repository":{"nameWithOwner":"`+theRepo+`","visibility":"INTERNAL"}},"errors":[`+forbidden+`]}`, ghRefusal, 1),
+			fails:   "FORBIDDEN: Resource not accessible by integration",
+		},
+		{
+			name:    "the secondary limit's words outside an error response",
+			graphql: prints(ok, 12221, `{"data":{"repository":null},"errors":[`+notFound+`]}`, "gh: "+secondary, 1),
+			fails:   "NOT_FOUND: Could not resolve to a Repository",
+		},
+		{name: "no repository", graphql: prints(ok, 12221, `{"data":{"repository":null}}`, "", 0), fails: "GraphQL answered no repository"},
+		{name: "no data", graphql: prints(ok, 12221, `{"data":null}`, "", 0), fails: "GraphQL answered no repository"},
+		{
+			name:    "a second document after the answer",
+			graphql: prints(ok, 12221, answerBody(theRepo, "PUBLIC")+answerBody(theRepo, "PRIVATE"), "", 0),
+			fails:   "without one whole GraphQL answer",
+		},
+		{
+			name:    "bytes after the answer",
+			graphql: prints(ok, 12221, answerBody(theRepo, "PRIVATE")+"invented", "", 0),
+			fails:   "without one whole GraphQL answer",
+		},
+		{
+			name:    "a body that is not JSON",
+			graphql: prints("HTTP/2.0 502 Bad Gateway", 12221, "<html>bad gateway</html>", "gh: HTTP 502", 1),
+			fails:   "without one whole GraphQL answer",
 		},
 		{
 			name:    "a refused credential",
-			graphql: prints("HTTP/2.0 401 Unauthorized", 12221, `{"message":"Bad credentials","status":"401"}`, "gh: Bad credentials (HTTP 401)"),
+			graphql: prints("HTTP/2.0 401 Unauthorized", 12221, `{"message":"Bad credentials","status":"401"}`, "gh: Bad credentials (HTTP 401)", 1),
 			fails:   "exited 1",
 		},
 		{
@@ -411,15 +477,13 @@ func TestVisibilityTakesOnlyAnAnswerGraphQLGives(t *testing.T) {
 		{name: "RATE_LIMITED", graphql: graphQLRateLimited, want: Public, lsRemote: true},
 		{
 			name:     "the status 403 with no points left",
-			graphql:  prints("HTTP/2.0 403 Forbidden", 0, `{"message":"API rate limit exceeded for installation ID 1."}`, "gh: API rate limit exceeded for installation ID 1. (HTTP 403)"),
+			graphql:  prints("HTTP/2.0 403 Forbidden", 0, `{"message":"API rate limit exceeded for installation ID 1."}`, "gh: API rate limit exceeded for installation ID 1. (HTTP 403)", 1),
 			want:     Public,
 			lsRemote: true,
 		},
 		{
-			name: "the secondary rate limit",
-			graphql: prints("HTTP/2.0 403 Forbidden", 12221,
-				`{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`,
-				"gh: You have exceeded a secondary rate limit. (HTTP 403)"),
+			name:     "the secondary rate limit",
+			graphql:  prints("HTTP/2.0 403 Forbidden", 12221, `{"message":"`+secondary+`"}`, "gh: "+secondary+" (HTTP 403)", 1),
 			want:     Public,
 			lsRemote: true,
 		},

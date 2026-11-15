@@ -146,6 +146,10 @@ type child struct {
 	stdin io.Reader
 	// files are the child's descriptors from 3 up, as exec.Cmd.ExtraFiles takes them.
 	files []*os.File
+	// stderr, where it is not nil, takes the child's standard error apart from the standard
+	// output run answers, which the GraphQL visibility read needs to read gh's body alone
+	// (Guard.graphQLVisibility). Nil answers the two together.
+	stderr io.Writer
 }
 
 // program is where name is, read from the base environment's PATH rather than from this
@@ -164,8 +168,9 @@ func program(base []string, name string) string {
 }
 
 // run runs c under ctx and answers its exit status and everything it printed, out and err
-// together. The error is a child that could not be run at all: one that did not start, or one the
-// end of ctx stopped, which is a *stoppedError. A status is an answer, and no status is not.
+// together unless c.stderr takes err. The error is a child that could not be run at all: one that
+// did not start, or one the end of ctx stopped, which is a *stoppedError. A status is an answer,
+// and no status is not.
 func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	// One read of the base environment for the child, which both the program lookup and the
 	// child's own environment are built from.
@@ -181,6 +186,9 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	killed := procgroup.Configure(cmd)
 	var printed bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &printed, &printed
+	if c.stderr != nil {
+		cmd.Stderr = c.stderr
+	}
 	started := time.Now()
 	err := procgroup.Err(cmd.Run())
 	switch {

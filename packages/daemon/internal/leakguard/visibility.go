@@ -1,6 +1,7 @@
 package leakguard
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -253,8 +254,9 @@ func VisibilityReadWithHeadersArgs(slug string) []string {
 }
 
 // visibilityQuery is the GraphQL query of the guard's GraphQL read (VisibilityGraphQLArgs): the
-// visibility of the repository its two variables name.
-const visibilityQuery = "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { visibility } }"
+// name and the visibility of the repository its two variables name. The name is what the answer is
+// checked against (Guard.graphQLVisibility).
+const visibilityQuery = "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { nameWithOwner visibility } }"
 
 // VisibilityGraphQLArgs is the guard's GraphQL read of slug's visibility, gh's own name aside: the
 // second read Guard.Visibility makes when GitHub refuses the REST read for a spent rate limit
@@ -296,64 +298,89 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 
 // graphQLVisibility reads slug's visibility from GitHub's GraphQL API through gh, as the same
 // installation as the REST read and with the same VisibilityReadVar and GH_HOST
-// (Guard.ghVisibility), under the caller's bound. GraphQL's budget is separate from the core REST
-// one: at 2026-11-15T09:34:29Z `gh api rate_limit` showed installation 171972716 with 12,221 of
-// its 12,500 GraphQL points left, and GraphQL reads have answered while core reads were refused.
+// (Guard.ghVisibility), under the caller's bound. `legion gh` runs it with the token of the
+// repository that variable names, as it runs the REST read (its ghVisibilityRead). GraphQL's
+// budget is separate from the core REST one: at 2026-11-15T09:34:29Z `gh api rate_limit` showed
+// installation 171972716 with 12,221 of its 12,500 GraphQL points left, and GraphQL reads have
+// answered while core reads were refused.
 //
-// PUBLIC, PRIVATE and INTERNAL are the answer. A refusal for GraphQL's own rate limit is a
-// *rateLimitError: the status 403 or 429 with no requests left, GitHub's secondary rate limit,
-// or an error of type RATE_LIMITED, which GitHub can send with the status 200. Anything else is an
-// error that Guard.Visibility refuses the call on, and never an answer: an error beside the data,
-// such as NOT_FOUND for a repository GitHub could not resolve (which is also what an
-// installation that cannot see a private repository is told), no repository, a visibility
-// GraphQL does not define, a body that is no JSON, gh exiting non-zero, and a gh that the
-// caller's bound stopped, after which no bound is left for another read.
+// gh's standard output alone is read: the status line, the headers and a body that must be one
+// whole JSON document, with nothing after it but space. gh's own error line goes to its standard
+// error, which only the refusal quotes.
+//
+// A wrong private or internal answer is the one that can leak, since it skips the rule pass for a
+// public repository; so every way this read can be wrong refuses the call instead. PUBLIC, PRIVATE
+// and INTERNAL are the answer only where the answered repository's nameWithOwner is slug, case
+// aside: GitHub can resolve a renamed or moved repository's old name to the repository under its
+// new one, which is not the repository the push names. A refusal for GraphQL's own rate limit is
+// a *rateLimitError, read from the error response alone (graphQLLimitSpent): the status 403 or
+// 429 with no points left, a Retry-After, or a message naming the secondary rate limit; or errors
+// every one of which is of type RATE_LIMITED, which GitHub can send with the status 200. Anything
+// else is an error that Guard.Visibility refuses the call on, and never an answer: any error that
+// is not RATE_LIMITED, beside RATE_LIMITED ones or beside data, such as NOT_FOUND for a repository
+// GitHub could not resolve (which is also what an installation that cannot see a private
+// repository is told); no repository; another repository; a visibility GraphQL does not define; a
+// body that is not one whole JSON document; gh exiting non-zero; and a gh that the caller's bound
+// stopped, after which no bound is left for another read.
 func (g *Guard) graphQLVisibility(ctx context.Context, slug string) (Visibility, error) {
+	var stderr bytes.Buffer
 	status, printed, err := g.run(ctx, child{
-		argv: append([]string{"gh"}, VisibilityGraphQLArgs(slug)...),
-		env:  []string{VisibilityReadVar + "=" + slug, "GH_HOST=github.com"},
+		argv:   append([]string{"gh"}, VisibilityGraphQLArgs(slug)...),
+		env:    []string{VisibilityReadVar + "=" + slug, "GH_HOST=github.com"},
+		stderr: &stderr,
 	})
 	if err != nil {
 		return "", err
 	}
-	if limited := rateLimitFrom(printed); limited != nil {
-		return "", limited
-	}
 	masked := maskPath(slug)
 	body := visibilityBody(printed)
-	said := strings.ReplaceAll(strings.TrimSpace(body), slug, masked)
+	said := strings.ReplaceAll(strings.TrimSpace(strings.TrimSpace(body)+" "+strings.TrimSpace(stderr.String())), slug, masked)
 	var answer struct {
 		Data *struct {
 			Repository *struct {
-				Visibility string `json:"visibility"`
+				NameWithOwner string `json:"nameWithOwner"`
+				Visibility    string `json:"visibility"`
 			} `json:"repository"`
 		} `json:"data"`
 		Errors []struct {
 			Type    string `json:"type"`
 			Message string `json:"message"`
 		} `json:"errors"`
+		Message string `json:"message"`
 	}
-	// The first JSON value alone: gh prints its own error line after the body when GraphQL
-	// answers errors.
-	if err := json.NewDecoder(strings.NewReader(body)).Decode(&answer); err != nil {
-		return "", fmt.Errorf("gh api graphql for %s exited %d with no GraphQL answer: %s", masked, status, said)
+	decoder := json.NewDecoder(strings.NewReader(body))
+	whole := decoder.Decode(&answer) == nil
+	if whole {
+		_, err := decoder.Token()
+		whole = errors.Is(err, io.EOF)
 	}
-	if len(answer.Errors) > 0 {
+	httpStatus, headers := responseHeaders(printed)
+	if whole && len(answer.Errors) > 0 {
 		errs := make([]string, len(answer.Errors))
+		limitedOnly := true
 		for i, e := range answer.Errors {
-			if e.Type == "RATE_LIMITED" {
-				_, headers := responseHeaders(printed)
-				return "", limitResettingAt(headers)
-			}
+			limitedOnly = limitedOnly && e.Type == "RATE_LIMITED"
 			errs[i] = e.Type + ": " + strings.ReplaceAll(e.Message, slug, masked)
 		}
+		if limitedOnly {
+			return "", limitResettingAt(headers)
+		}
 		return "", fmt.Errorf("GraphQL answered %s with %s", masked, strings.Join(errs, "; "))
+	}
+	if graphQLLimitSpent(httpStatus, headers, answer.Message) {
+		return "", limitResettingAt(headers)
+	}
+	if !whole {
+		return "", fmt.Errorf("gh api graphql for %s exited %d without one whole GraphQL answer: %s", masked, status, said)
 	}
 	if status != 0 {
 		return "", fmt.Errorf("gh api graphql for %s exited %d: %s", masked, status, said)
 	}
 	if answer.Data == nil || answer.Data.Repository == nil {
 		return "", fmt.Errorf("GraphQL answered no repository for %s: %s", masked, said)
+	}
+	if answered := answer.Data.Repository.NameWithOwner; !strings.EqualFold(answered, slug) {
+		return "", fmt.Errorf("GraphQL answered for the repository %q, not %s", maskPath(answered), masked)
 	}
 	switch answer.Data.Repository.Visibility {
 	case "PUBLIC":
@@ -365,6 +392,18 @@ func (g *Guard) graphQLVisibility(ctx context.Context, slug string) (Visibility,
 	default:
 		return "", fmt.Errorf("GraphQL answered %q as the visibility of %s, which is none GitHub defines", answer.Data.Repository.Visibility, masked)
 	}
+}
+
+// graphQLLimitSpent is whether a GraphQL error response says GraphQL's own rate limit refused
+// the read, from that response alone: the status 403 or 429, with no points left, a Retry-After,
+// or a message naming the secondary rate limit. Text elsewhere in gh's output says nothing.
+func graphQLLimitSpent(status int, headers map[string]string, message string) bool {
+	if status != 403 && status != 429 {
+		return false
+	}
+	lower := strings.ToLower(message)
+	return headers["x-ratelimit-remaining"] == "0" || headers["retry-after"] != "" ||
+		strings.Contains(lower, "secondary rate limit") || strings.Contains(lower, "secondary rate-limit")
 }
 
 // githubOrigin is the scheme and host of the read without a credential: the repository's URL
