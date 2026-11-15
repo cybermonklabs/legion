@@ -26,6 +26,7 @@ import { labelsOf, scrubSecrets } from "./models";
 import { renderPrompt } from "./recipes";
 import { renderChecked } from "./render";
 import type { ReplayedDocument } from "./replay";
+import { bytesDigestOf } from "./reserve";
 import {
   CACHE_VERSION,
   cachePath,
@@ -1015,6 +1016,24 @@ async function modelsFileOf(omp: string): Promise<string | null> {
 }
 
 /**
+ * What a run that reads the reserve adds to its digest (`reserve.ts`) for the agent it scores,
+ * which lives outside the repository: the bytes of the executable, the version it prints, and the
+ * bytes of the models file every profile copies. An upgrade of the agent or a change of its
+ * models is then another run, which the reserve's registration does not name.
+ */
+async function agentInputsOf(omp: string): Promise<string[]> {
+  const executable = omp.includes("/") ? omp : (Bun.which(omp) ?? omp);
+  const child = Bun.spawn({ cmd: [omp, "--version"], stdout: "pipe", stderr: "ignore" });
+  const [printed, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+  const models = await modelsFileOf(omp);
+  return [
+    `agent ${await bytesDigestOf(executable)}`,
+    `agent version ${code === 0 ? JSON.stringify(printed.trim()) : `exit ${code}`}`,
+    `agent models ${models === null ? "none" : await bytesDigestOf(models)}`,
+  ];
+}
+
+/**
  * The environment one agent run is given: its own home, `PATH`, `TMPDIR` where this process has
  * one, and the two variables the run needs to reach the model gateway, `ANTHROPIC_BASE_URL` and
  * `ANTHROPIC_API_KEY`. So the agent does get this session's model credential, here and in the
@@ -1229,7 +1248,7 @@ async function fresh(flags: Flags): Promise<number> {
   const log = (line: string): void => {
     process.stderr.write(`${line}\n`);
   };
-  const corpus = await readCorpus(flags.corpus);
+  const corpus = await readCorpus(flags.corpus, { inputs: () => agentInputsOf(flags.omp) });
   const out = await outDirectory(flags.out);
   await mkdir(out, { recursive: true });
   refuseReportsOutside(await readShapes(out), corpus.byCaseId, out);

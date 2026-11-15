@@ -668,6 +668,13 @@ function countsTable(draw: Draw): string {
 
 async function draw(flags: Flags): Promise<number> {
   const corpus = await readCorpus(flags.corpus);
+  if (corpus.reserve.readUnder !== null && flags.seed === undefined) {
+    // The rule's item 4: the final test is drawn by a seed registered then, so a draw that reads
+    // the reserve takes the one its registration's digest holds, never one made here.
+    throw new UsageError(
+      `a draw that reads the reserve takes --seed, the seed its registration names\n\n${USAGE}`
+    );
+  }
   const directory = await outDirectory(flags.out);
   const cut = cutTime(flags.cut);
   const config = await dispatchConfig();

@@ -26,9 +26,10 @@ export const RESERVE_READS: readonly ReserveRead[] = [];
 
 /**
  * The record that ended the reserve, as a dispatch:// reference, or null while it holds: the claim
- * run's result, once the claim has read its final test, or the owner's written release. Item 6
- * ends the reserve at the draw, but the final test that draw takes is read by the claim run after
- * it, so the code holds every reserved case until this record exists. Once it does, no case is
- * held: a reserve that ended is development data.
+ * run's result, once the claim has read its final test, or the owner's written release. Once it is
+ * set no case is held, the drawn final test included: every reserved case is development data and
+ * any run reads it. Item 6 ends the reserve's pool at the draw, but the final test that draw takes
+ * is still read once, by the claim run after it, so this record is never set at the draw: only
+ * the claim's result or a release sets it.
  */
 export const RESERVE_ENDED: string | null = null;

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import type { Dirent } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, isAbsolute, join } from "node:path";
+import { createReadStream, type Dirent } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
+import { basename, join } from "node:path";
 import type { CaseRow } from "./build-corpus";
 import { RESERVE_ENDED, RESERVE_READS, type ReserveRead } from "./claim";
 import type { DispatchEvent } from "./dispatch-read";
@@ -104,19 +104,79 @@ export const BUNDLE_DIRECTORIES = ["scripts/approval-eval", "skills/approval-rev
 /** What under those directories is outside the bundle: the registration itself, and the tests. */
 const OUTSIDE_BUNDLE = ["scripts/approval-eval/claim.ts", "scripts/approval-eval/__tests__"];
 
+/** Options whose value names a directory a run reads or writes: the digest takes it as a path. */
+const PATH_OPTIONS: readonly string[] = [
+  "--corpus",
+  "--out",
+  "--round",
+  "--run",
+  "--slices",
+  "--cache",
+];
+
+/**
+ * Options whose value can name a file a run reads: the digest takes the value as written and the
+ * bytes of the file at the trimmed value, as the commands trim it. `--omp` names an executable,
+ * which a bare name finds on `PATH`.
+ */
+const FILE_OPTIONS: readonly string[] = [
+  "--arms",
+  "--distillation",
+  "--backlog-roots",
+  "--cases",
+  "--fixtures",
+  "--omp",
+];
+
+/**
+ * The environment that chooses the servers a run reads: the model server, and the Dispatch server
+ * its documents and neighbours come from. Credentials are left out: a rolled key is no other run.
+ */
+export const RESULT_ENVIRONMENT = ["ANTHROPIC_BASE_URL", "DISPATCH_URL"] as const;
+
+/** A run as its digest reads it. */
+export interface Run {
+  /** The arguments as `process.argv` gives them: the runtime, the command, then its own. */
+  argv: readonly string[];
+  env: Readonly<Record<string, string | undefined>>;
+  /**
+   * Lines a command adds for what it runs from outside the repository, read only when a digest is
+   * made (`fresh-agent.ts`: the agent it runs and that agent's models file).
+   */
+  inputs?: () => Promise<readonly string[]>;
+}
+
+/** The bundle holds something a run digest cannot cover, so no registration can name the run. */
+export class BundleError extends Error {
+  override readonly name = "BundleError";
+}
+
+/** The sha256 of a file's bytes, following a link to it, or `missing` where no file is there. */
+export async function bytesDigestOf(path: string): Promise<string> {
+  const found = await stat(path).catch(() => null);
+  if (!found?.isFile()) return "missing";
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
 /**
  * The digest of one run, which `claim.ts` registers: the sha256 of a text that names the command,
- * every file of the bundle by its path and the sha256 of its bytes, and each argument of the run.
- * An argument that names a file is taken by the sha256 of that file's bytes, so an arms file
- * (`--arms`) or a distillation (`--distillation`) is pinned by what it holds. One that names a
- * directory, or an absolute path that does not exist yet (an `--out`), is taken as a path, so where
- * a corpus or an output lives does not change the digest. Any other argument is taken as written.
+ * every file of the bundle by its path and the sha256 of its bytes, each argument of the run, the
+ * environment `RESULT_ENVIRONMENT` names, and the lines the command adds (`Run.inputs`). An
+ * argument is taken by what its option means. A `PATH_OPTIONS` value is taken as a path, so where
+ * a corpus or an output lives does not change the digest. A `FILE_OPTIONS` value is taken as
+ * written and by the bytes of its file, so an arms file (`--arms`) or a distillation
+ * (`--distillation`) is pinned by what it holds. Every other value is taken as written: an arm, a
+ * model, a number, never looked up on the disk. A link in the bundle is refused (`BundleError`),
+ * since a change behind it would not change the digest.
  *
- * What it leaves open: a registered run can be made again until the reserve ends, and the files
- * inside a directory an argument names (a corpus, a draw) are not in the digest.
+ * What it leaves open: a registered run can be made again until the reserve ends; the files inside
+ * a directory an argument names (a corpus, a draw, an `--out` that holds an earlier run's evidence
+ * or answers) are not in the digest; and what the model and Dispatch servers answer is live.
  */
-export async function runDigestOf(argv: readonly string[], root: string): Promise<string> {
-  const lines = ["approval-eval run digest 1", `command ${basename(argv[1] ?? "")}`];
+export async function runDigestOf(run: Run, root: string): Promise<string> {
+  const lines = ["approval-eval run digest 2", `command ${basename(run.argv[1] ?? "")}`];
   const files: string[] = [];
   for (const directory of BUNDLE_DIRECTORIES) {
     const found = await filesUnder(root, directory);
@@ -124,20 +184,26 @@ export async function runDigestOf(argv: readonly string[], root: string): Promis
     else files.push(...found);
   }
   files.sort();
-  for (const file of files) {
-    const bytes = await readFile(join(root, file));
-    lines.push(`file ${file} ${createHash("sha256").update(bytes).digest("hex")}`);
-  }
-  for (const argument of argv.slice(2)) {
+  for (const file of files) lines.push(`file ${file} ${await bytesDigestOf(join(root, file))}`);
+  let option: string | null = null;
+  for (const argument of run.argv.slice(2)) {
     const equals = argument.startsWith("--") ? argument.indexOf("=") : -1;
     if (equals > 0) {
-      lines.push(`flag ${argument.slice(0, equals)}`, await valueLine(argument.slice(equals + 1)));
+      const name = argument.slice(0, equals);
+      lines.push(`flag ${name}`, await valueLine(name, argument.slice(equals + 1), run.env));
+      option = null;
     } else if (argument.startsWith("-")) {
       lines.push(`flag ${argument}`);
+      option = argument;
     } else {
-      lines.push(await valueLine(argument));
+      lines.push(await valueLine(option, argument, run.env));
+      option = null;
     }
   }
+  for (const name of RESULT_ENVIRONMENT) {
+    lines.push(`env ${name} ${JSON.stringify(run.env[name] ?? null)}`);
+  }
+  for (const line of (await run.inputs?.()) ?? []) lines.push(`input ${line}`);
   return createHash("sha256")
     .update(`${lines.join("\n")}\n`, "utf8")
     .digest("hex");
@@ -157,20 +223,23 @@ async function filesUnder(root: string, directory: string): Promise<string[] | n
     if (OUTSIDE_BUNDLE.includes(path)) continue;
     if (entry.isDirectory()) found.push(...((await filesUnder(root, path)) ?? []));
     else if (entry.isFile()) found.push(path);
+    else
+      throw new BundleError(`${path} is not a regular file or directory, so no digest covers it`);
   }
   return found;
 }
 
-/** One argument value as the digest takes it: a file by its bytes, a path as a path, else its text. */
-async function valueLine(value: string): Promise<string> {
-  const found = await stat(value).catch(() => null);
-  if (found?.isFile()) {
-    return `value file ${createHash("sha256")
-      .update(await readFile(value))
-      .digest("hex")}`;
-  }
-  if (found?.isDirectory() || (found === null && isAbsolute(value))) return "value path";
-  return `value ${JSON.stringify(value)}`;
+/** One argument value as the digest takes it, by the option it is the value of. */
+async function valueLine(option: string | null, value: string, env: Run["env"]): Promise<string> {
+  if (option !== null && PATH_OPTIONS.includes(option)) return "value path";
+  const written = `value ${JSON.stringify(value)}`;
+  if (option === null || !FILE_OPTIONS.includes(option)) return written;
+  const trimmed = value.trim();
+  const path =
+    option === "--omp" && !trimmed.includes("/")
+      ? (Bun.which(trimmed, { PATH: env.PATH ?? "" }) ?? trimmed)
+      : trimmed;
+  return `${written} ${await bytesDigestOf(path)}`;
 }
 
 /** What `claim.ts` registers: the reads of the reserve, and the record that ended it. */
@@ -191,16 +260,15 @@ export type ReserveAccess =
 
 /**
  * What a run may do with the reserve, from `APPROVAL_EVAL_RESERVE`'s value, the registration, the
- * run's arguments as `process.argv` gives them, and the repository root. A reserve that ended holds
- * nothing, whatever the variable says. With the variable unset, the reserve is held.
- * `read:<reference>` reads it only when the registration lists that reference with this run's
- * digest. Any other value is refused, and a refusal of a reference names the run's digest, which is
- * what a registration copies.
+ * run, and the repository root. A reserve that ended holds nothing, whatever the variable says.
+ * With the variable unset, the reserve is held. `read:<reference>` reads it only when the
+ * registration lists that reference with this run's digest. Any other value is refused, and a
+ * refusal of a reference names the run's digest, which is what a registration copies.
  */
 export async function reserveAccessOf(
   value: string | undefined,
   registration: Registration,
-  argv: readonly string[],
+  run: Run,
   root: string
 ): Promise<ReserveAccess> {
   if (registration.ended !== null) return { kind: "ended", record: registration.ended };
@@ -212,19 +280,25 @@ export async function reserveAccessOf(
       reason: `${RESERVE_VARIABLE} takes read:<reference>, naming a read claim.ts registers, or no value at all`,
     };
   }
-  const run = await runDigestOf(argv, root);
+  let digest: string;
+  try {
+    digest = await runDigestOf(run, root);
+  } catch (error) {
+    if (error instanceof BundleError) return { kind: "refused", reason: error.message };
+    throw error;
+  }
   const named = registration.reads.filter((read) => read.reference === reference);
-  if (named.some((read) => read.run === run)) return { kind: "read", reference };
+  if (named.some((read) => read.run === digest)) return { kind: "read", reference };
   const why =
     named.length === 0
       ? `claim.ts registers no read under ${reference}`
       : `claim.ts registers ${reference} for other runs, and a change to a file of the bundle, ` +
-        "an argument, a file an argument names or the command changes a run's digest";
+        "an argument, a file an argument names, the servers or the command changes a run's digest";
   return {
     kind: "refused",
     reason:
       `${why}. The reserve of INFRA-2897's next final test opens only for a read that claim.ts ` +
-      `lists, committed before the read. This run's digest is ${run}`,
+      `lists, committed before the read. This run's digest is ${digest}`,
   };
 }
 
