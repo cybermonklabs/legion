@@ -735,7 +735,7 @@ func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
-		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), root, 1, now, due)
+		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), root, 1, "", now, due)
 	}); err != nil {
 		t.Fatalf("record the running root and the catch-up its re-admission's start wrote: %v", err)
 	}
