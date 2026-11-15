@@ -10,9 +10,12 @@ import (
 )
 
 // ghPinnedCheckPortSHA256 is the sha256 of the public_leak_check.py ghPinnedCheckReads was ported
-// from, leak-check-v15's. TestGhReadsAreProvenAgainstThePinnedCheck fails while it is not
-// ghReadsProvenCheck's sha256, so a bump of the pin fails until this port moves with it.
-const ghPinnedCheckPortSHA256 = "86d087b3c70ee36907dfca54fec83dcff77f2cd87d888de914145f7f122bc554"
+// from, leak-check-v17's. Its gh_guard, is_read, READ_ALL, READ_TWO, collect and api_read, and the
+// 164 definitions they reach, are leak-check-v15's byte for byte but GIT_CONFIG_ARGS, which gained
+// `-c log.follow=false` and which no read rule uses, so the port did not change at the move.
+// TestGhReadsAreProvenAgainstThePinnedCheck fails while it is not ghReadsProvenCheck's sha256, so
+// a bump of the pin fails until this port moves with it.
+const ghPinnedCheckPortSHA256 = "84565f62c749c53a982d9bf1de331d320bbbe1c3da4b18981938ea7e8289146b"
 
 // ghPinnedCheckReads says whether the pinned check, the public_leak_check.py whose sha256 is
 // ghPinnedCheckPortSHA256, reads argv, a gh call's arguments, as a read in its gh_guard: whether

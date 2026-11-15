@@ -27,8 +27,8 @@ const ghCheckedOnlyVisibility = "checked-only"
 // rows, then write its tag here and the sha256 of its public_leak_check.py, `git show
 // <tag>:leak-check/public_leak_check.py | sha256sum` in the shared check's own repository.
 var ghReadsProvenCheck = struct{ tag, sha256 string }{
-	tag:    "leak-check-v15",
-	sha256: "86d087b3c70ee36907dfca54fec83dcff77f2cd87d888de914145f7f122bc554",
+	tag:    "leak-check-v17",
+	sha256: "84565f62c749c53a982d9bf1de331d320bbbe1c3da4b18981938ea7e8289146b",
 }
 
 // ghRateLimitRead is the exact `gh api rate_limit`, a GitHub API call with no repository content,
