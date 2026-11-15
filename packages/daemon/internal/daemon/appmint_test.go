@@ -130,6 +130,12 @@ func bootsOrExits(t *testing.T, cfg config.Config, tokens appauth.Tokens, within
 // bootsOrExitsLogging is bootsOrExits with the daemon logging to log.
 func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Tokens, within time.Duration, log *slog.Logger) error {
 	t.Helper()
+	return bootsOrExitsOn(t, cfg, tokens, repositoriesGitHub(t), within, log)
+}
+
+// bootsOrExitsOn is bootsOrExitsLogging with the daemon reading GitHub's REST API at githubAPI.
+func bootsOrExitsOn(t *testing.T, cfg config.Config, tokens appauth.Tokens, githubAPI string, within time.Duration, log *slog.Logger) error {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
@@ -138,7 +144,7 @@ func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Tokens,
 			runtime:        fakeRuntime(fake.NewRuntime(), &built{}).runtime,
 			clock:          stillClock{},
 			workflowTokens: tokens,
-			githubAPI:      repositoriesGitHub(t),
+			githubAPI:      githubAPI,
 		})
 	}()
 	stopped := false

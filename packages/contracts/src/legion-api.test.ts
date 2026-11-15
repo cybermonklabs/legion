@@ -1380,7 +1380,7 @@ test("a claim carries the leak check's cause beside its failure", () => {
 // or above the contract carries the two numbers — the contract the daemon declares and the one
 // it shaped the body to — and the body it narrows for a caller below it carries no such key at
 // all, since a key added to a narrowed body is exactly what the narrowing exists to prevent. The
-// daemon writes that narrowing to its own log instead (`api.recordShaping`). From contract 135 on,
+// daemon writes that narrowing to its own log instead (`api.recordShaping`). From contract 145 on,
 // a reader served the body whole, the operator's `legion state --json` among them, is told the
 // daemon's own number as the caller's too, which is the golden's mark. A daemon from 75 to 132
 // served that reader the daemon's number alone, and the schema reads that mark as well.

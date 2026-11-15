@@ -444,32 +444,32 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// shapedAnswersContract, the seven bands above it that these rows compare (the settings
 		// band at podUpdateGraceContract is servedShape's), so the issues it is served carry no
 		// answer, no entry number, no tree quiet time and no `mergeWait`, its claim views no leak
-		// check's cause and neither of the two keys contract 135 added, and its admission block
+		// check's cause and neither of the two keys contract 145 added, and its admission block
 		// no held list.
 		{name: "a pod at recordFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), rounds: true, wakes: true, stall: true, refresh: true, contract: recordFieldsContract},
 		// The band at whyAndLineFieldsContract: the answers and the line's own fields are served
 		// too, and the leak check's cause, the entry numbers, the held list, the tree quiet time,
-		// `mergeWait` and the claim views' keys of contract 135 are held back.
+		// `mergeWait` and the claim views' keys of contract 145 are held back.
 		{name: "a pod at whyAndLineFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, contract: whyAndLineFieldsContract},
 		// The band at leakCheckCauseContract: the cause is served too, and the entry numbers,
 		// the held list, the tree quiet time, `mergeWait` and the claim views' keys of contract
-		// 135 are the five bands left above it.
+		// 145 are the five bands left above it.
 		{name: "a pod at leakCheckCauseContract", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, contract: leakCheckCauseContract},
 		// The band from phaseEntriesContract to below heldContract: the entry numbers are
 		// served too, and the held list, the tree quiet time, `mergeWait` and the claim views'
-		// keys of contract 135 are the four bands left above it.
+		// keys of contract 145 are the four bands left above it.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, contract: phaseEntriesContract},
 		// The band from heldContract to below quietTimeContract: the held list is served too,
-		// and the tree quiet time, `mergeWait` and the claim views' keys of contract 135 are the
+		// and the tree quiet time, `mergeWait` and the claim views' keys of contract 145 are the
 		// three key-carrying bands left above it.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, contract: heldContract},
 		// The band from quietTimeContract to below mergeWaitContract: the tree quiet time is
-		// served too, and `mergeWait` and the claim views' keys of contract 135 are the two bands
+		// served too, and `mergeWait` and the claim views' keys of contract 145 are the two bands
 		// left above it. The strip of 132 takes a word of the line's `kind` and no key, so it
 		// changes no column of this table; waiting_on_issue_test.go reads that word.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, contract: quietTimeContract},
 		// The band from mergeWaitContract to below shapedAnswersContract: `mergeWait` is served
-		// too, and the claim views' keys of contract 135 are the one band left above it.
+		// too, and the claim views' keys of contract 145 are the one band left above it.
 		{name: "a pod at mergeWaitContract", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: mergeWaitContract},
 		// A pod whose claims record shapedAnswersContract, the newest contract the route serves
 		// a body down by. Such a pod is in no pod reading: podContracts leaves out a claim at
@@ -508,13 +508,13 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// pod at recordFieldsContract is served every claim view key the decided record added
 			// and neither the issues' answers, nor the leak check's cause, nor the entry numbers,
 			// nor the held list, nor the tree quiet time, nor `mergeWait`, nor the claim views'
-			// keys of contract 135, the seven bands between it and this daemon's own that these
+			// keys of contract 145, the seven bands between it and this daemon's own that these
 			// rows compare; a pod at whyAndLineFieldsContract is served the answers and none of the
 			// other six; a pod at leakCheckCauseContract is served the cause and none of the five
 			// above it; a pod at phaseEntriesContract is served the entry numbers and none of the
 			// four above it; a pod at heldContract is served the held list and none of the three
 			// above it; a pod at quietTimeContract is served the measure and neither `mergeWait`
-			// nor the claim views' keys of contract 135; and a pod at mergeWaitContract is served
+			// nor the claim views' keys of contract 145; and a pod at mergeWaitContract is served
 			// `mergeWait` and not those keys.
 			if tc.rounds && tc.stall {
 				want := full
@@ -632,7 +632,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					}
 					// Every row that reaches here is below shapedAnswersContract, below
 					// leakCheckCauseContract and below recordFieldsContract too, so none of its
-					// callers is served the two keys contract 135 added to a claim view, the
+					// callers is served the two keys contract 145 added to a claim view, the
 					// `leakCheckCause` contract 87 added or the six the decided record added.
 					for _, key := range roundReportKeys {
 						delete(view, key)

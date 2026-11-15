@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+    A Dispatch process whose stop runs on past its delivery durable's hold now publishes no
+    hand-back at all, where before it handed back the messages it was holding and those of the
+    handlers it gave up. A hand-back names the durable rather than the consumer the message came
+    from, so one published after the hold lapsed landed on the durable the next holder's
+    take-over had recreated, moved that message's pending entry and had the new holder handed it
+    a second time - two processes reading one pull request or workflow run at once. Nothing is
+    lost by the silence: no such message was acknowledged, so the take-over's recreate at the
+    durable's ack floor hands each of them to the new holder once. A holder whose hold is still
+    live hands its messages back as it always did, so a graceful stop still reaches the standby
+    within seconds rather than after the ack wait.
+time: 2026-11-09T11:40:00.000000000Z
+custom:
+    Issue: pr2461

@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  A rate limit GitHub answers is written to the shared `github_rate_limits` ledger even when the
+  caller's time runs out while it is written, so the other Dispatch processes are held by it. Before,
+  a CI reconcile pass at its bound cut the write off and logged `GitHub's rate limit was not
+  recorded`. A reconcile pass that meets such a limit as its bound falls now logs
+  `rate_limited=true` rather than only `deadline_reached=true`.

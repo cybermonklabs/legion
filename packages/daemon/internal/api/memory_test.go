@@ -258,7 +258,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// waitingOnIssueContract reads as a pod at quietTimeContract.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, contract: quietTimeContract},
 		{name: "a pod at waitingOnIssueContract", remote: statePodAddr + ":41000", claims: podClaims(waitingOnIssueContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, contract: waitingOnIssueContract},
-		// The band from 133 to 134, from mergeWaitContract to below this daemon's own: what each
+		// The band from 133 to 144, from mergeWaitContract to below this daemon's own: what each
 		// reviewing root's round waits on from GitHub is served too, and every key a later row of
 		// stateNarrowings adds is held back.
 		{name: "a pod at mergeWaitContract", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: mergeWaitContract},
@@ -452,7 +452,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 						delete(view, "step")
 					}
 					// A caller below shapedAnswersContract is served no claim view carrying the
-					// two keys contract 135 added to one, which is every band of this table but
+					// two keys contract 145 added to one, which is every band of this table but
 					// the last three rows.
 					if tc.contract < shapedAnswersContract {
 						for _, key := range roundReportKeys {

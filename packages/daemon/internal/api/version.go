@@ -6,8 +6,10 @@ package api
 // `packages/contracts/src/legion-api.ts`), the pane environment it reads — every variable
 // the tmux runtime sets on a pane (`internal/runtime/tmux/spawn.go`'s `panePairs`) and the Sandbox
 // runtime on a pod's worker container (`internal/runtime/sandbox/manifest.go`'s
-// `mainEnvironment`) — and the command line and environment of a pod's `workspace-init provision`
+// `mainEnvironment`) — the command line and environment of a pod's `workspace-init provision`
 // container (`initContainers` in `internal/runtime/sandbox/podkind.go`, and `initEnvironment`),
+// and the command line of a pod's `legion launcher` container (each pod kind's
+// `launcherContainer` in `internal/runtime/sandbox/podkind.go`, and `sessionProxyFlags`), both of
 // which the image's own `legion` reads. The installed plugin declares the
 // number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
 // gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
@@ -1195,7 +1197,7 @@ package api
 // `mergeState`, `pass`, `lastTurnStart` and `lastTurnEnd` are keys a plugin of an older contract
 // does not name, which one built before sjawhar/legion#2788 refuses the body for and one built
 // after strips, so the boot gate and `legion probe-image` are what refuse the mixed pair.
-// (The entry at 135 below serves this contract's own shape down, so none of the keys above
+// (The entry at 145 below serves this contract's own shape down, so none of the keys above
 // reaches a caller under 86. Three claim-view keys ride with the four this entry names and are
 // served down with them: `lastDeathCause`, `lastStartFailure` and `lastReady`. Two more keys go
 // at 86 beside `checksVerdict`. `checksVerdict` and `HandoffCompleteResponse.note` are written
@@ -1206,7 +1208,7 @@ package api
 // `merge_queue_role` — leave those records for the same reason read a second way:
 // `legionSettings` types two keys and passes the rest loosely, and `projects` is typed by
 // nothing, so no reader names those keys at all. The `ready` this contract takes out of the
-// request is read by name again for the plugins below 86 that still send it, which entry 135
+// request is read by name again for the plugins below 86 that still send it, which entry 145
 // says.)
 // (This branch took 42, then 43 when main landed the consumer-lag state at 43;
 // main landed the background-task contract at 44 and the Dispatch handoff records at 45, and
@@ -1744,7 +1746,25 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
 //
-// 135: dispatch://INFRA-2694 -- the daemon shapes every answer down to the contract the caller's
+// 137: INFRA-3621 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
+// `--session-impersonate-service-account <email>`, a fourth session flag after the three that name
+// the Cloud SQL session database (`sessionProxyAccountFlag` after `sessionProxyFlagNames`,
+// `internal/runtime/sandbox/manifest.go`). The daemon renders it
+// only when `runtime.kubernetes.session_database.impersonate_service_account` is set, and the
+// launcher's session proxy then impersonates that Google service account with the pod's own
+// credentials and signs in to Cloud SQL as it (`connectorOptions`, `internal/sessionproxy`). A
+// launcher built before 137 exits 2 on the unknown flag in every pod the daemon creates with it,
+// so the image probe, which holds the image's pi-legion to this number, refuses such an image at
+// boot instead, as it did for 27's new flag. A deployment that sets no account renders no fourth
+// flag, and its pods carry the command they carried before. (The number was the lowest above
+// main's 132 that no open pull request of cybermonklabs/legion declared at 2026-11-15T02:27Z, read
+// with the `take` of .github/scripts/check-daemon-api-contract.sh. It stays above main's 133 at the
+// forward merge of 2026-11-15 that brought in 2e546572 (#3937's 133, the entry above), and the same
+// reading at 2026-11-15T03:57Z found no other open pull request declaring 137: it passed over 134
+// (#4017 and #4021), 135 (#3659) and 136 (#3575 and #3730). Read the base's own number and every
+// open pull request again at every forward merge rather than from this line.)
+//
+// 145: dispatch://INFRA-2694 -- the daemon shapes every answer down to the contract the caller's
 // own plugin speaks, and reads every request an older plugin still sends, so a roll that replaces
 // one pod at a time leaves the `legion` tool working in every pod it has not replaced yet. A
 // request carries the caller's contract in the
@@ -1786,6 +1806,12 @@ package api
 // `treeMovedAt` and `quietHours` (`withoutQuietTime`, the band of `quietTimeContract`).
 // Contract 133 is one of them too: a caller below 133 is served every issue without
 // `mergeWait` (`withoutMergeWait`, the band of `mergeWaitContract`).
+// Contract 137 is served with no code of its own here: it moved no key path, no value and no
+// request field, and changed no answer's status or meaning (its flag is on the launcher's command
+// line, which the image probe holds, entry 137 above), so a caller at 137 is served what a caller
+// at 133 is, and its records are 133's under its own number. main's #3983 took no number and so
+// belongs to 137: the sentence of `HANDOFF_NO_RUN` and when `fresh_session` restarts a phase,
+// which move no key and reach every caller alike.
 // main's #3982 replaced `settings.pod_update_retask_hours` and `settings.pod_update_notice_hours`
 // with `settings.pod_update_grace_minutes`. #3982 merged when main declared 111 and took no
 // contract number of its own. An unnumbered change belongs to the first contract number whose
@@ -1883,7 +1909,9 @@ package api
 // taken 115, and 127 at the merge that brought main in at 123 (#3793), where open heads held
 // 124, 125 and 126, and 133 at the merge that brought main in at 132 (#3715), where no open
 // head declared a number above 131, and 135 before the push that followed, when #3937 had taken
-// 133 and #4021 134, and 135 again at the merge that brought main in at 133 (#3937). 87 was
+// 133 and #4021 134, and 135 again at the merge that brought main in at 133 (#3937), and 144
+// at the merge that brought main in at 137 (#4046), where open heads held 138 to 143, and 145
+// before the push that followed, when #4021 had taken 144. 87 was
 // free when this head took it and was gone when the
 // head was pushed: the gate holds a head against main alone and sees no other head's number, so
 // a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request of this
@@ -1910,4 +1938,4 @@ package api
 // answers.go gives the two answers this change adds as their arrival, and it is the last number
 // of answers.go's SupportedContracts, which names the constant rather than its number for that
 // reason.)
-const DaemonAPIVersion = 135
+const DaemonAPIVersion = 145
