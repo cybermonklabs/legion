@@ -50,8 +50,13 @@ var ErrListenerClosed = errors.New("worker stream listener closed")
 type HelloResolver func(bootToken string) (c claim.Token, generation uint64, stale bool, ok bool, err error)
 
 // LauncherResolver accepts a role launcher's independent hello. It is separate from HelloResolver:
-// a launcher never binds a claim's child shim connection or emits an agent Event.
-type LauncherResolver func(shimwire.LauncherHello) (LauncherHandler, string)
+// a launcher never binds a claim's child shim connection or emits an agent Event. An accepted
+// launcher's acknowledgement is the resolver's whole answer, which the listener writes as it is
+// given: every member the daemon hands a launcher on that line (the memory guard's settings,
+// shimwire.LauncherHelloAck.MemoryGuard, among them) is decided where the launcher is accepted,
+// so a change that adds a member edits the one constructor that builds the ack and never this
+// listener. A refusal returns the zero ack, which nothing writes.
+type LauncherResolver func(shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string)
 
 // LauncherHandler owns one authenticated launcher connection after the listener has written its
 // acknowledgement. It reads launcher state/results and writes start/stop commands; returning ends
@@ -395,7 +400,7 @@ func (l *Listener) hello(nc net.Conn, src *bufio.Reader) (*Conn, LauncherHandler
 		if resolver == nil {
 			return nil, nil, reason
 		}
-		handler, reason := resolver(launcherHello)
+		handler, ack, reason := resolver(launcherHello)
 		if handler == nil {
 			if reason == "" {
 				reason = "launcher refused"
@@ -405,7 +410,7 @@ func (l *Listener) hello(nc net.Conn, src *bufio.Reader) (*Conn, LauncherHandler
 		if err := nc.SetReadDeadline(time.Time{}); err != nil {
 			return nil, nil, "connection closed before launcher_hello_ack"
 		}
-		if err := shimwire.NewWriter(nc).WriteFrame(shimwire.LauncherHelloAck{}); err != nil {
+		if err := shimwire.NewWriter(nc).WriteFrame(ack); err != nil {
 			return nil, nil, "connection closed before launcher_hello_ack"
 		}
 		return nil, handler, ""

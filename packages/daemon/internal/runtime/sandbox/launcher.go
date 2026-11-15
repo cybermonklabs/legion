@@ -50,7 +50,11 @@ type launchers struct {
 	// A launchers built without the pair restores nothing.
 	saved    runtime.SavedWorkspaceBundle
 	restored runtime.WorkspaceBundleRestored
-	log      *slog.Logger
+	// guardKilled takes a memory guard's report of one process it ended into the daemon's fact
+	// path (Options.MemoryGuardKilled). A launchers built without it reads the frame, logs that
+	// no receiver took it, and drops it (memoryKilled).
+	guardKilled runtime.MemoryGuardKilled
+	log         *slog.Logger
 }
 
 type launcherSession struct {
@@ -87,9 +91,10 @@ type launcherSession struct {
 	leakCheckInstalled bool
 }
 
-func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored, log *slog.Logger) *launchers {
+func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
+	guardKilled runtime.MemoryGuardKilled, log *slog.Logger) *launchers {
 	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
-		saved: saved, restored: restored, log: log}
+		saved: saved, restored: restored, guardKilled: guardKilled, log: log}
 }
 
 // accept registers a launcher connection of the pod of issue, created at podCreated. The newest
@@ -154,6 +159,8 @@ func (s *launcherSession) ServeLauncher(conn net.Conn, reader *bufio.Reader, wri
 			s.deliver(bundleWaiter(value.ID, value.Index), value)
 		case shimwire.LauncherRestored:
 			s.owner.restoreReported(s, value)
+		case shimwire.LauncherMemoryKill:
+			s.owner.memoryKilled(s, value)
 		default:
 			return
 		}
@@ -581,6 +588,54 @@ func (d *launchers) restoreReported(s *launcherSession, report shimwire.Launcher
 	}
 	d.log.Info("launcher bundle: the pod's launcher restored the released workspace's saved work, which is dropped from the database",
 		"issue", s.issue, "launcher", s.token, "sequence", report.ID, "release", report.Release)
+}
+
+// memoryKilled hands the daemon one process the pod's memory guard ended with SIGKILL, as
+// the launcher reported it on the connection of the role whose process it was
+// (shimwire.LauncherMemoryKill). The launcher sends it unasked, and only on a connection whose
+// acknowledgement carried guard settings, which is a daemon that knows the frame.
+//
+// The issue, the role and the pod the kill is credited to are the session's own, as the hello's
+// authentication bound them (launcherCredential), and never anything the frame says: a launcher
+// cannot tell another role, issue or pod of a kill. The report's guard and sequence are what
+// apply it once however often it arrives (the event id the daemon applies it under).
+//
+// A report the frame's own rule refuses (LauncherMemoryKill.Validate), and one on a session of no
+// issue, which is the controller's pod, whose role has no issue to hold its note, are logged
+// naming the launcher and dropped. None of the drops closes the connection: closing costs the
+// launcher a redial a second later (ServeLauncher's `default: return`) over a frame the daemon
+// could not have used anyway, and the launcher's other frames would go with it.
+//
+// It runs on the launcher's own frame loop rather than in a goroutine of its own, as
+// restoreReported does and under the same bounded context: two reports of one launcher reach the
+// fact path in the order the guard made them, and the cost is the one that precedent already
+// accepts, the launcher's other frames waiting behind one fact's transaction.
+func (d *launchers) memoryKilled(s *launcherSession, report shimwire.LauncherMemoryKill) {
+	if err := report.Validate(); err != nil {
+		d.log.Warn("launcher memory guard: the pod's launcher sent a kill report the daemon cannot apply, which is dropped; the connection stays open",
+			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "error", err)
+		return
+	}
+	if s.issue == "" {
+		d.log.Warn("launcher memory guard: a launcher of no issue reported a kill, and no issue holds a note for its role, so it is dropped; the connection stays open",
+			"launcher", s.token, "pod", s.podUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID)
+		return
+	}
+	if d.guardKilled == nil {
+		// A runtime built with no receiver drops every report of every pod, and nothing else
+		// shows it: no role is told why its process is gone. So the drop names the line that sets
+		// the receiver.
+		d.log.Warn("launcher memory guard: the pod's launcher reported a kill and this runtime has no receiver for it, which is dropped; "+
+			"the daemon sets one in internal/daemon/kubernetes.go's sandboxRuntime (opts.MemoryGuardKilled)",
+			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
+	defer cancel()
+	if err := d.guardKilled(ctx, s.issue, s.token, s.podUID, report); err != nil {
+		d.log.Warn("launcher memory guard: the pod's launcher reported a kill the daemon could not record, which is dropped",
+			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "error", err)
+	}
 }
 
 // bundleFrames are the slices that carry issue's saved bundle. The sequence's id is the issue, the
