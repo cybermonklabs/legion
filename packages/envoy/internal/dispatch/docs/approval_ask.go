@@ -53,14 +53,15 @@ func OpenApprovalAskForDocuments(ctx context.Context, tx pgx.Tx, artifactIDs []s
 	return nil, fmt.Errorf("read open approval ask: %w", err)
 }
 
-// MoveApprovalAsk advances the open approval ask naming the document to version, a new settled
-// version of it whose text is markdown; a request that names two documents moves whichever of
-// them was written. mover is the actor whose edit moved the request: the caller knows it even
-// when the version credits more than one author. The row and its thread stay open;
-// requested_version records that the agent must hand it back before a human sees it in Waiting on
-// you again. Only the first move since the request was opened or handed back wakes anyone, even
-// when a thread reply already left it waiting on its agent; a later one, while a document's
-// requested_version is already below the version it named, is quiet
+// MoveApprovalAsk advances the open approval ask naming the document to version, a settled version
+// of it whose text is markdown: the version its caller just wrote, or, at a reopen, the latest
+// version a settlement wrote while the issue was closed (FollowClosedIssueVersions). A request
+// that names two documents moves whichever of them was written. mover is the actor whose edit
+// moved the request: the caller knows it even when the version credits more than one author. The
+// row and its thread stay open; requested_version records that the agent must hand it back before
+// a human sees it in Waiting on you again. Only the first move since the request was opened or
+// handed back wakes anyone, even when a thread reply already left it waiting on its agent; a later
+// one, while a document's requested_version is already below the version it named, is quiet
 // (model.AskEditEventPayload.Quiet, the rule RewriteApprovalAsk also applies). When the document
 // waits on the human (its requested_version is the version the request names) and markdown is
 // byte for byte the stored text of that version (restoresVersionText), its requested_version
