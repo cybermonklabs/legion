@@ -160,7 +160,7 @@ run_check() {
   queries=$(wc -l < "$root/stub/pr-queries" | tr -d ' ')
 }
 
-all_four_files='packages/daemon/internal/api/version.go, packages/contracts/fixtures/daemon-api/version.json, packages/pi-legion/package.json, packages/claude-envoy/package.json'
+number_sites='packages/daemon/internal/api/version.go, packages/contracts/fixtures/daemon-api/version.json, packages/contracts/fixtures/daemon-api/state.json, packages/contracts/fixtures/daemon-api/contract-shapes.json, packages/contracts/fixtures/daemon-api/request-shapes.json, packages/pi-legion/package.json, packages/claude-envoy/package.json'
 
 echo "case: a tree equal to its base that touches the declaration"
 root=$(fixture equal)
@@ -178,7 +178,7 @@ check "names both numbers and the base it read" \
   "$(contains "$out" 'declares daemon API contract 7, which is not above the 7 the base carries (the tip of main)')"
 check "names the free number" \
   "$(contains "$out" 'Take 8, the lowest number above the base.s that no open pull request declares,')"
-check "names every file that holds the number" "$(contains "$out" "$all_four_files")"
+check "names every file that holds the number" "$(contains "$out" "$number_sites")"
 check "reads the open pull requests once" "$(is "$queries" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
@@ -194,7 +194,7 @@ check "exits 1" "$(is "$status" 1)"
 check "names both numbers" \
   "$(contains "$out" 'declares daemon API contract 8, which is not above the 9 the base carries')"
 check "names the free number above the base, not above the tree" "$(contains "$out" 'Take 10,')"
-check "names every file that holds the number" "$(contains "$out" "$all_four_files")"
+check "names every file that holds the number" "$(contains "$out" "$number_sites")"
 check "reads the open pull requests once" "$(is "$queries" 1)"
 
 echo "case: a tree above its base, the merge group of two entries that both picked that number"

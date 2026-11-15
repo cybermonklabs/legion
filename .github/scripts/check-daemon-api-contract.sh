@@ -66,10 +66,21 @@ from urllib.parse import quote
 
 DECLARATION = "packages/daemon/internal/api/version.go"
 WORKFLOW = ".github/workflows/ci.yaml"
-# Every file that holds the number. They move together, so a refusal names all of them.
+# Every file that holds the daemon's current number, whichever change declares it. They move
+# together at a renumber, so a refusal names all of them. state.json holds it twice
+# (`contract.daemon` and `contract.caller`, which TestStateGolden compares), contract-shapes.json
+# in the record of every answer at the daemon's own contract, and request-shapes.json in its one
+# record of each route, which is the daemon's own contract's. A record, a `since` or a constant
+# of a lower contract keeps its number, since it names a contract that has shipped; and a number
+# a change writes for itself alone (its place in answers.go's SupportedContracts, a constant of
+# its own, a `since` in answers.json or enumerated-fields.json) is that change's to move, and the
+# Go suite of packages/daemon/internal/api names each one it leaves behind.
 SITES = (
     DECLARATION,
     "packages/contracts/fixtures/daemon-api/version.json",
+    "packages/contracts/fixtures/daemon-api/state.json",
+    "packages/contracts/fixtures/daemon-api/contract-shapes.json",
+    "packages/contracts/fixtures/daemon-api/request-shapes.json",
     "packages/pi-legion/package.json",
     "packages/claude-envoy/package.json",
 )
