@@ -17835,7 +17835,7 @@ console.log(JSON.stringify(args));
   // read that answers logs nothing: what it gives reaches the model, or is what the model has.
   test("a failed read whose cached list keeps the placed bytes logs why, once per read, and a read that answers logs nothing", async () => {
     answeringDispatch("Go the second way.");
-    const answering = globalThis.fetch;
+    const answering = rowFetch();
     let failing = false;
     globalThis.fetch = async (input, init) =>
       failing && new URL(input.toString()).host === "dispatch.test"
