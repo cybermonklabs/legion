@@ -801,12 +801,17 @@ const waitingLineNamedCap = 10
 // runs — declares one experiment and carries an empty `experiments`, and reading that key alone
 // would print `experiments: none` while every issue holds a memory assignment.
 //
-// It counts issues, and not the trees a tree experiment is drawn for, because the state carries
-// no tree: a draw would have to stand for its tree, and it cannot. Every issue of a tree carries
-// its root's draw, and a tree handed over as one of its own carries its old tree's draw verbatim
-// — the arm, the mode and the instant alike — so two trees share one draw and no draw is a
-// tree's name. It names no issue either: the per-issue answers are in `legion state --json`,
-// where a line per issue would print hundreds on a live deployment.
+// It counts issues, and not the trees a tree experiment is drawn for, because the state shows
+// every draw on the issues it applies to. Each issue's `assignments` holds its tree's tree-unit
+// rows and its own issue-unit rows: a tree row is the whole tree's answer, which every issue of
+// the tree is shown (internal/projection's assignmentViews). So one count, of issues, serves an
+// experiment of either unit. A count of trees, read off api.Issue.Tree, would fit a tree
+// experiment alone, and even there it would not count draws. A child handed over as a tree of its
+// own becomes the root of its own tree (internal/admit's readmit sets its Tree to its own key),
+// and it carries its old tree's tree-unit rows verbatim — the arm, the mode and the instant alike
+// (record.Postgres.CarryAssignments) — so two trees hold one draw. It names no issue either: the
+// per-issue answers are in `legion state --json`, where a line per issue would print hundreds on
+// a live deployment.
 //
 // Every project declares at least the memory experiment, so there is always a line: a project
 // whose settings carry no `memory` block and no experiment of its own declares that one at mode

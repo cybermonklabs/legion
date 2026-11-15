@@ -422,8 +422,9 @@ What each part is for:
   The controller is in no memory group, a tree drawn `none` runs exactly as it ran before the block
   existed, and a block with no `instructions` appends nothing.
   `legion state` prints one line per declared experiment, the `memory` line among them, counting
-  the issues that hold each arm — the state names no tree, and a tree handed over as one of its
-  own carries its old tree's draw verbatim, so trees cannot be counted from it — and
+  the issues that hold each arm — every issue carries each answer that applies to it, and a child
+  handed over as a tree of its own takes its old tree's draw verbatim, so a count of trees would
+  count one draw more than once — and
   `legion state --json` shows each issue its tree's group, the mode it was drawn under and when.
 - **`projects.<KEY>.experiments`** (optional) declares the experiments the project draws its trees
   and its issues into, by the name each draw records:
@@ -1274,9 +1275,11 @@ Closing the terminal leaves the project without one, and the daemon logs
   deployment reads a `memory` line too — `memory: none` until a tree is drawn, and counts of
   `none (off)` after, which is the line such a deployment read before any experiment was
   declared.
-  The lines count issues rather than the trees a tree experiment is drawn for, because the state
-  names no tree and a tree handed over as one of its own carries its old tree's draw verbatim, so
-  two trees can share one draw.
+  The lines count issues rather than the trees a tree experiment is drawn for, because each issue
+  in the state carries every answer that applies to it: its tree's for a tree experiment and its
+  own for an issue experiment, so one count serves both kinds. A count of trees would fit a tree
+  experiment alone, and even there it would not count draws: a child handed over as a tree of its
+  own takes its old tree's draw verbatim, so two trees hold one draw.
   A daemon older than contract 139, which is the daemon the documented rollback leaves, serves
   no `assignments`, so the `memory` line counts an issue that carries none from its
   `memoryGroup` and `memoryDrawMode`, wherever `memoryGroup` is set, and reads as the

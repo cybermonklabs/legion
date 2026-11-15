@@ -2002,11 +2002,14 @@ func TestTheShippedWordsNameTheWaitingLineBlock(t *testing.T) {
 // An operator reading plain `legion state` is told, for each experiment the deployment declares,
 // how many issues hold each of its arms: one line per experiment, in the order the settings name
 // them, which is the project's file's order, and `none` after the name of an experiment no issue
-// holds. It counts issues rather than trees because the state names no tree: every issue of a
-// tree carries its tree's draw, and a tree handed over as one of its own carries its old tree's
-// draw verbatim, so one draw is two trees' and no draw is a tree's name. The lines name no
-// issue: the keys stay in `--json`, where a line per issue would print hundreds on a live
-// deployment.
+// holds. It counts issues rather than trees because the state shows every draw on the issues it
+// applies to: each issue's `assignments` holds its tree's tree-unit rows and its own issue-unit
+// rows (internal/projection's assignmentViews), so one count serves an experiment of either unit.
+// A count of trees would fit a tree experiment alone, and even there it would not count draws: a
+// child handed over as a tree of its own becomes the root of its own tree and carries its old
+// tree's tree-unit rows verbatim (record.Postgres.CarryAssignments), so two trees hold one draw.
+// The lines name no issue: the keys stay in `--json`, where a line per issue would print hundreds
+// on a live deployment.
 func TestPlainStateCountsTheIssuesInEachDeclaredExperimentsArms(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`

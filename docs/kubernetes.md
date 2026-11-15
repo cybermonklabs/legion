@@ -5690,7 +5690,10 @@ each issue's pod (every role of it alike) and the image probe's.
   A project with no block at all is the pod every deployment built before the block existed.
   Every issue of `GET /legion/v1/state` carries its tree's `memoryGroup` (`memory` or `none`), `memoryDrawMode` and `memoryDrawnAt`, the three absent together while nothing has drawn for the tree (daemon API contract 49);
   `settings` carries the project's block;
-  and `legion state` prints one line per declared experiment, the `memory` line among them, counting the issues that hold each arm and naming no issue, since the state names no tree and a handed-over tree carries its old tree's draw verbatim.
+  and `legion state` prints one line per declared experiment, the `memory` line among them, counting the issues that hold each arm and naming no issue.
+  It counts issues because every issue of the state carries each answer that applies to it, its tree's for a tree experiment and its own for an issue experiment, so one count serves either kind.
+  A count of trees would fit a tree experiment alone, and even there it would not count draws:
+  a child handed over as a tree of its own takes its old tree's draw verbatim, the draw time included, so two trees hold one draw.
 
 - **`projects.<KEY>.experiments`** declares the experiments the project draws its trees and its issues into, as a mapping of an experiment's name to its block, read and kept in the file's order.
   An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it once:
