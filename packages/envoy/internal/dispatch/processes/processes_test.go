@@ -673,3 +673,13 @@ func TestALiveRowsHeartbeatChecksNoPeer(t *testing.T) {
 	}
 	requireNotLost(t, registration, "a live process beside a disagreeing peer")
 }
+
+// The owner lock counts a row of an earlier build in the fleet for store.OwnerLockLegacyWindow
+// after its last heartbeat, which its documents state as until the row is pruned: the two are one
+// duration, declared in two packages only because the store cannot import this one.
+func TestTheOwnerLockLegacyWindowIsThePruneAge(t *testing.T) {
+	if store.OwnerLockLegacyWindow != PruneAge {
+		t.Errorf("store.OwnerLockLegacyWindow is %s and PruneAge %s; want them equal, so a row of an earlier build counts in the owner lock's fleet until it is pruned",
+			store.OwnerLockLegacyWindow, PruneAge)
+	}
+}

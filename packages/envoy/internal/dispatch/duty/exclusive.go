@@ -28,7 +28,8 @@ type Leases interface {
 // at lockProjectCopies) - so a lease can never collide with one of those, whatever its name hashes
 // to. Within the two-key space the other namespaces are the copy locks'
 // (docs.copiedAsksLockNamespace, "COPY"), the owner locks' (store.OwnerLockNamespace, "OWNR"),
-// the test hooks' (the api package's testHookLockNamespace, "HOOK", taken only under
+// the owner lock gate's (store.OwnerLockGateNamespace, "OWNG"), the test hooks' (the api
+// package's testHookLockNamespace, "HOOK", taken only under
 // DISPATCH_TEST_HOOKS), a conditional edit's admission's
 // (docs.conditionalEditQueueLockNamespace), the issue dependencies' (api's
 // lockProjectIssueDependencies), the deployment's own issue dependencies' (api's

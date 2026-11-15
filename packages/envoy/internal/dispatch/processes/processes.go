@@ -19,7 +19,10 @@
 // document schema numbers the process reads and creates, which the document socket's admission
 // takes (docs.Service.authorize), its embedder's identity, and whether it stores files in a bucket;
 // and the owner lock protocol it serialises an owner's writers by (migration 20261115100924),
-// which every owner lock's fleet read takes (store.LockOwner).
+// which every owner lock's fleet read takes (store.LockOwner): a row at 0 counts there until it is
+// deregistered or pruned (store.OwnerLockLegacyWindow, PruneAge), and its insert, an earlier
+// build's registration or the return of its lapsed row, takes the owner lock gate (migration
+// 20261115200014).
 package processes
 
 import (
@@ -41,14 +44,15 @@ import (
 
 // The registry's intervals. Variables rather than constants only so this package's tests can
 // shorten them, and cmd/dispatch's test hooks with them. The live window, how recent a heartbeat
-// must be for its process to count as live, is store.ProcessLiveWindow: the owner lock's fleet
-// read measures by it too, and the store cannot import this package.
+// must be for its process to count as live, is store.ProcessLiveWindow.
 var (
 	// HeartbeatInterval is how often a registered process stamps its row's heartbeat_at.
 	HeartbeatInterval = 5 * time.Second
 	// PruneAge is how old a heartbeat must be before the prune loop deletes its row: a process
 	// that died without deregistering (killed, out of memory, its node lost) leaves its row
-	// behind, and long past store.ProcessLiveWindow nothing reads it.
+	// behind, and long past store.ProcessLiveWindow nothing reads it but the owner lock's fleet
+	// read, which counts a row of an earlier build until it is pruned
+	// (store.OwnerLockLegacyWindow, the same ten minutes).
 	PruneAge = 10 * time.Minute
 	// PruneInterval is the prune loop's period, and the period of its lease (duty.Exclusive).
 	PruneInterval = time.Minute

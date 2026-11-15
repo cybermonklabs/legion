@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,29 +20,22 @@ import (
 // A writer of this build beside a writer of an earlier build. That build serialises an owner's
 // writers on the owner's row - its close takes the issue's row `for no key update` first and holds
 // it until it commits - and never takes the owner's advisory lock (store.OwnerLockProtocol), so
-// while one of its processes is live a route of this build takes the row too, in its read phase,
-// before it reads what its write decides on (store.LockOwner). Each row here registers such a
-// process, holds the issue's row on the test's own connection as that build's writer holds it,
-// sends a request of this build, lets that writer's write land and commits it: the request must
-// decide on what it wrote. The control registers nothing: the request then reads in its read
-// phase without waiting, and meets the row only in its write phase.
+// while it is in the fleet a route of this build takes the row too, in its read phase, before it
+// reads what its write decides on (store.LockOwner). Each row here registers such a process, holds
+// the issue's row on the test's own connection as that build's writer holds it, sends a request of
+// this build, lets that writer's write land and commits it: the request must decide on what it
+// wrote. The control registers nothing: the request then reads in its read phase without waiting,
+// and meets the row only in its write phase.
 
-// registerEarlierBuildProcess writes a server_processes row as a live process of a build before
-// the owner lock protocol leaves it: no owner_lock_protocol, so the column's default 0. Its
-// heartbeat is the database's now(); stamp stamps it again, so a slow run keeps it live.
-func registerEarlierBuildProcess(t *testing.T, database *store.Store) (stamp func()) {
+// registerEarlierBuildProcess writes a server_processes row as a process of a build before the
+// owner lock protocol leaves it: no owner_lock_protocol, so the column's default 0, which keeps
+// that build in the fleet for store.OwnerLockLegacyWindow, however slow the run.
+func registerEarlierBuildProcess(t *testing.T, database *store.Store) {
 	t.Helper()
-	var instance string
-	if err := database.Pool.QueryRow(context.Background(), `
+	if _, err := database.Pool.Exec(context.Background(), `
 		insert into server_processes (instance, commit, signing_keys)
-		values (gen_random_uuid(), 'earlier0build', '{fingerprint}') returning instance::text`).Scan(&instance); err != nil {
+		values (gen_random_uuid(), 'earlier0build', '{fingerprint}')`); err != nil {
 		t.Fatalf("register a process of an earlier build: %v", err)
-	}
-	return func() {
-		if _, err := database.Pool.Exec(context.Background(),
-			`update server_processes set heartbeat_at = now() where instance = $1::uuid`, instance); err != nil {
-			t.Fatalf("stamp the earlier build's heartbeat: %v", err)
-		}
 	}
 }
 
@@ -143,17 +137,14 @@ func TestACommentResolveIsRefusedOnAnIssueAnEarlierBuildClosesWhileItIsUnderWay(
 		t.Run(fleet.name, func(t *testing.T) {
 			fixture := newItemRowFixture(t, testServerOptions{}, "Closed meanwhile", "A spec.\n")
 			comment := createThreadComment(t, fixture.handler, fixture.issueKey, map[string]any{"body": "Resolve this."}, "alice")
-			stamp := func() {}
 			if fleet.earlier {
-				stamp = registerEarlierBuildProcess(t, fixture.database)
+				registerEarlierBuildProcess(t, fixture.database)
 			}
-			stamp()
 			outcome := runEarlierBuildRace(t, fixture, earlierBuildRace{
 				send: func(handler http.Handler) *httptest.ResponseRecorder {
 					return dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/resolve", nil, "alice")
 				},
 				meanwhile: func(t *testing.T, holder pgx.Tx) {
-					stamp()
 					if _, err := holder.Exec(context.Background(),
 						`update issues set status = 'done', closed_at = now() where key = $1`, fixture.issueKey); err != nil {
 						t.Fatalf("close the issue as the earlier build: %v", err)
@@ -192,18 +183,15 @@ func TestALabelAddedBesideAnEarlierBuildsLabelKeepsBoth(t *testing.T) {
 	for _, fleet := range fleetRaceCases {
 		t.Run(fleet.name, func(t *testing.T) {
 			fixture := newItemRowFixture(t, testServerOptions{}, "Labelled meanwhile", "A spec.\n")
-			stamp := func() {}
 			if fleet.earlier {
-				stamp = registerEarlierBuildProcess(t, fixture.database)
+				registerEarlierBuildProcess(t, fixture.database)
 			}
-			stamp()
 			outcome := runEarlierBuildRace(t, fixture, earlierBuildRace{
 				send: func(handler http.Handler) *httptest.ResponseRecorder {
 					return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+fixture.issueKey,
 						map[string]any{"labels_add": []string{"this-build"}}, "alice")
 				},
 				meanwhile: func(t *testing.T, holder pgx.Tx) {
-					stamp()
 					if _, err := holder.Exec(context.Background(),
 						`update issues set labels = array_append(labels, 'earlier-build') where key = $1`, fixture.issueKey); err != nil {
 						t.Fatalf("add the earlier build's label: %v", err)
@@ -239,4 +227,187 @@ func issueLabels(t *testing.T, database *store.Store, key string) []string {
 		t.Fatal(fmt.Errorf("read the issue's labels: %w", err))
 	}
 	return labels
+}
+
+// earlierBuildArrivals are the two inserts with which an earlier build arrives in the fleet, as
+// its boot sends them: its dashboard publish, the first thing it writes, and its registration.
+// Neither names owner_lock_protocol, so each takes the owner lock gate exclusively and stamps the
+// earlier build's mark (migration 20261115200014_owner_lock_legacy_gate).
+var earlierBuildArrivals = []struct {
+	name, insert string
+}{
+	{"its dashboard publish", `
+		insert into dashboard_builds (build, entry, commit) values (gen_random_uuid()::text, '/assets/index-earlier.js', 'earlier0build')
+		on conflict (build) do update set last_started_at = now()`},
+	{"its registration", `
+		insert into server_processes (instance, commit, dashboard_build, signing_keys)
+		values (gen_random_uuid(), 'earlier0build', '', '{fingerprint}')
+		on conflict (instance) do update set heartbeat_at = now()`},
+}
+
+// An earlier build that arrives while a write of this build is between its owner lock and its
+// write phase waits for that write to commit, and a write the earlier build makes once it has
+// arrived lands after it and is kept. The write of this build is a PATCH adding a label, sent with
+// no earlier build in the fleet, so it reads the labels under its owner lock alone and holds the
+// owner lock gate shared; it naming a repository is the test's pause: the test holds the mapping's
+// row, which the PATCH takes `for key share` as its write phase opens (checkIssueRepoMapped), and
+// which no writer of the issue's row takes. The earlier build then arrives on a connection of its
+// own - its dashboard publish, or its registration - and, once arrived, adds its own label as its
+// writers do, the issue's row first. The arrival waits on the gate until the PATCH commits, so the
+// earlier build's label is added to the PATCH's. Without the gate the arrival goes through at once,
+// the earlier build's label is written while the PATCH waits, and the PATCH then writes the labels
+// it read over it. A write of this build after the arrival takes the issue's row in its read phase.
+func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing.T) {
+	for _, arrival := range earlierBuildArrivals {
+		t.Run(arrival.name, func(t *testing.T) {
+			fixture := newItemRowFixture(t, testServerOptions{}, "Arrived meanwhile", "A spec.\n")
+			mapRouteRepository(t, fixture)
+			ctx := context.Background()
+			handler, pid := oneConnectionHandler(t, fixture.deps)
+			pause, err := fixture.database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pause.Rollback(ctx)
+			if _, err := pause.Exec(ctx, `select 1 from repo_projects where repo = 'owner/repo' for update`); err != nil {
+				t.Fatalf("hold the repository mapping's row: %v", err)
+			}
+			answered := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				answered <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+fixture.issueKey,
+					map[string]any{"labels_add": []string{"this-build"}, "repo": "owner/repo"}, "alice")
+			}()
+			if answer, early := storetest.WaitForQueuedBehind(t, pause, pid, answered, 10*time.Second); early {
+				t.Fatalf("the PATCH answered status=%d body=%s before it reached its write phase; want it to wait on the mapping's row there",
+					answer.Code, answer.Body.String())
+			}
+			if mode, granted := gateHeldBy(t, fixture.database, pid); mode != "ShareLock" || !granted {
+				t.Fatalf("the PATCH, with no earlier build in the fleet, holds the owner lock gate as %q (granted %t); want it held shared", mode, granted)
+			}
+
+			arrivalConn, err := fixture.database.Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer arrivalConn.Release()
+			arrivalPID := arrivalConn.Conn().PgConn().PID()
+			arrived := make(chan error, 1)
+			began := time.Now()
+			go func() {
+				_, err := arrivalConn.Exec(ctx, arrival.insert)
+				arrived <- err
+			}()
+			waited := false
+			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+				select {
+				case err := <-arrived:
+					if err != nil {
+						t.Fatalf("%s: %v", arrival.name, err)
+					}
+					t.Errorf("%s went through in %s while this build's PATCH, which read no earlier build in the fleet, was between its owner lock and its write; want it to wait for that PATCH (the owner lock gate)",
+						arrival.name, time.Since(began).Round(time.Millisecond))
+				default:
+					if err := fixture.database.Pool.QueryRow(ctx, `select $2::integer = any(pg_blocking_pids($1))`, arrivalPID, pid).Scan(&waited); err != nil {
+						t.Fatal(err)
+					}
+					if !waited {
+						if time.Now().After(deadline) {
+							t.Fatalf("%s neither went through nor waited for the PATCH within 10s", arrival.name)
+						}
+						continue
+					}
+				}
+				break
+			}
+			earlierWrite := func() {
+				tx, err := fixture.database.Pool.Begin(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback(ctx)
+				if _, err := tx.Exec(ctx, `select 1 from issues where key = $1 for no key update`, fixture.issueKey); err != nil {
+					t.Fatalf("take the issue's row as the earlier build's writer: %v", err)
+				}
+				if _, err := tx.Exec(ctx, `update issues set labels = array_append(labels, 'earlier-build') where key = $1`, fixture.issueKey); err != nil {
+					t.Fatalf("add the earlier build's label: %v", err)
+				}
+				if err := tx.Commit(ctx); err != nil {
+					t.Fatalf("commit the earlier build's label: %v", err)
+				}
+			}
+			if waited {
+				select {
+				case err := <-arrived:
+					t.Fatalf("%s ended (%v) while the PATCH it waited for was still under way", arrival.name, err)
+				case <-time.After(300 * time.Millisecond):
+				}
+				if err := pause.Rollback(ctx); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case err := <-arrived:
+					if err != nil {
+						t.Fatalf("%s: %v", arrival.name, err)
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatalf("%s did not go through within 10s of the PATCH's write phase", arrival.name)
+				}
+				t.Logf("%s waited %s, until the PATCH committed", arrival.name, time.Since(began).Round(time.Millisecond))
+				earlierWrite()
+			} else {
+				earlierWrite()
+				if err := pause.Rollback(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case answer := <-answered:
+				if answer.Code != http.StatusOK {
+					t.Fatalf("the PATCH answered status=%d body=%s", answer.Code, answer.Body.String())
+				}
+			case <-time.After(itemRowOwnerLockFinish):
+				t.Fatalf("the PATCH never answered within %s of the mapping's row being let go", itemRowOwnerLockFinish)
+			}
+			if labels := issueLabels(t, fixture.database, fixture.issueKey); !slices.Contains(labels, "earlier-build") || !slices.Contains(labels, "this-build") {
+				t.Errorf("the issue's labels are %v, want both this build's and the earlier build's: the label the earlier build added once it had arrived was lost under the PATCH that read the labels before it", labels)
+			}
+
+			outcome := runEarlierBuildRace(t, fixture, earlierBuildRace{
+				send: func(handler http.Handler) *httptest.ResponseRecorder {
+					return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+fixture.issueKey,
+						map[string]any{"labels_add": []string{"this-build-again"}}, "alice")
+				},
+				meanwhile: func(t *testing.T, holder pgx.Tx) {
+					if _, err := holder.Exec(ctx, `update issues set labels = array_append(labels, 'earlier-build-again') where key = $1`, fixture.issueKey); err != nil {
+						t.Fatalf("add the earlier build's second label: %v", err)
+					}
+				},
+			})
+			if !outcome.rowLockedReadPhase() {
+				t.Errorf("the PATCH after %s waited on %q, want the issue's row in its read phase (store.LockOwner beside an earlier build)", arrival.name, outcome.waitingOn)
+			}
+			if labels := issueLabels(t, fixture.database, fixture.issueKey); !slices.Contains(labels, "earlier-build-again") || !slices.Contains(labels, "this-build-again") {
+				t.Errorf("the issue's labels after the second race are %v, want both second labels", labels)
+			}
+		})
+	}
+}
+
+// gateHeldBy is the owner lock gate as backend pid holds or waits for it, by pg_locks: its mode
+// ("ShareLock", "ExclusiveLock"; "" when pid neither holds nor waits for it) and whether it is
+// granted.
+func gateHeldBy(t *testing.T, database *store.Store, pid uint32) (mode string, granted bool) {
+	t.Helper()
+	err := database.Pool.QueryRow(context.Background(), `
+		select mode, granted from pg_locks
+		where locktype = 'advisory' and database = (select oid from pg_database where datname = current_database())
+		  and classid::bigint = $1 and objid::bigint = $2 and objsubid = 2 and pid = $3`,
+		store.OwnerLockGateNamespace, store.OwnerLockGateKey, pid).Scan(&mode, &granted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false
+	}
+	if err != nil {
+		t.Fatalf("read the owner lock gate of backend %d: %v", pid, err)
+	}
+	return mode, granted
 }

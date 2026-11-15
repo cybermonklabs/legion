@@ -167,13 +167,14 @@ const projectCopiesLock = `select pg_advisory_xact_lock($1, hashtext($2))`
 
 // copiedAsksLockNamespace is the first key of every copy lock ("COPY"). The two-key form is taken
 // with a namespace of its own by each family of locks that uses it: the copy locks, the owner
-// locks (store.LockOwner, "OWNR"), duty's leases (duty.leaseNamespace, "LOOP"), a conditional
-// edit's admission (conditionalEditQueueLockNamespace) and the test hooks (the api package's
+// locks (store.LockOwner, "OWNR"), the owner lock gate (store.OwnerLockGateNamespace, "OWNG"),
+// duty's leases (duty.leaseNamespace, "LOOP"), a conditional edit's admission
+// (conditionalEditQueueLockNamespace) and the test hooks (the api package's
 // testHookLockNamespace, "HOOK", taken only under DISPATCH_TEST_HOOKS), and with the hashtext of
 // a name by the issue-dependency locks (api's lockProjectIssueDependencies and the deployment's
-// own, lockDeploymentIssueDependencies), the repository-mapping locks (one mapping's write, api's
-// lockRepoProjectWrite, and the rename graph's own, api's refuseRepoRenameChain) and the delivery
-// session-group locks; no two of those first keys are equal.
+// own, lockDeploymentIssueDependencies) and the repository-mapping locks (one mapping's write,
+// api's lockRepoProjectWrite, and the rename graph's own, api's refuseRepoRenameChain); no two of
+// those first keys are equal.
 const copiedAsksLockNamespace int32 = 0x434F5059
 
 // lockProjectCopies serialises, for a project document, its project's copy bookkeeping: a
@@ -195,7 +196,9 @@ const copiedAsksLockNamespace int32 = 0x434F5059
 // project's rank allocation, an agent's artifacts, the migration runner's - whatever the project's
 // name hashes to. Within the two-key space only the copy locks take copiedAsksLockNamespace: the
 // server's other namespaces of it are the owner locks' (store.OwnerLockNamespace), which every
-// writer of an owner's rows takes, internal/dispatch/duty's (duty.leaseNamespace), under which a
+// writer of an owner's rows takes, the owner lock gate's (store.OwnerLockGateNamespace), which a
+// writer takes shared before its owner lock while no earlier build is in the fleet,
+// internal/dispatch/duty's (duty.leaseNamespace), under which a
 // background loop holds the lease that keeps one process at a time running its periodic pass, the
 // test hooks' (the api package's testHookLockNamespace, under DISPATCH_TEST_HOOKS alone), under
 // which each process marks itself as one a hook call must reach, a conditional edit's admission's

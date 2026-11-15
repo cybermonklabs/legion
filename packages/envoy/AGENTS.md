@@ -1399,7 +1399,7 @@ Settlement cannot move it: `tokenAttrs` hashes neither block ids nor server-owne
 So a chain of guarded edits passes each response's token as the next `precondition.document` and reads the document once.
 
 The room lock and the document's **owner** — the artifact itself for a project document, its issue otherwise — are governed by two rules, both load-bearing.
-**Level:** writers of one owner serialise on the owner's transaction advisory lock (`store.LockOwner`, below), and on a row lock of the owner only beside a live process of an earlier build (below), and no lock on `issues`, `artifacts`, `projects` or `asks` is `for update`.
+**Level:** writers of one owner serialise on the owner's transaction advisory lock (`store.LockOwner`, below), and on a row lock of the owner only while an earlier build is in the fleet (below), and no lock on `issues`, `artifacts`, `projects` or `asks` is `for update`.
 `TestNoForUpdateOnOwnerTables` (`api/lock_level_test.go`) enforces both over the way these locks are written:
 it refuses `for update` on those four tables, and any row lock (`for update`, `for no key update`, `for share`, `for key share`) on `issues`, `artifacts` or `projects` outside the owner lock's own: the write phase's, the events' `lockEventOwner`, and the one the read phase takes beside the advisory lock, `store`'s `ownerRowLockStatement`.
 It reads a lock clause spelled in a string literal, or in a chain of literals and package-level constants, `var`s included, resolved to a fixpoint, which is every site here.
@@ -1408,7 +1408,7 @@ What `for update` costs is the `for key share` a foreign key takes:
 under it an insert into `doc_updates`, `doc_snapshots`, `doc_checkpoints`, `comments`, or any child table added later waits on the owner row, and a durable writer holding the room lock then deadlocks against whoever holds that row.
 The owner row is locked in a transaction's write phase:
 `lockEventOwner` takes it `for no key update` to read the sequence an append continues, under the owner lock it takes first, so no other writer of this build holds it then, and that level never blocks the key share.
-While a process of an earlier build is live, the read phase takes it too, at the same level or `for share`, right after the owner lock (below).
+While an earlier build is in the fleet, the read phase takes it too, at the same level or `for share`, right after the owner lock (below).
 One transaction would still need `for update` on these tables:
 one that deletes such a row or changes a key column, which is what the weaker level does not cover.
 Nothing does either today; the check refuses it if something starts to, and that red is the prompt to revisit this rule, not to reach for a weaker level that would not hold.
@@ -1427,24 +1427,27 @@ With the order broken, a project-document upload that takes the room lock before
 
 **The owner lock and the two phases of a write.**
 `store.LockOwner` (`store/ownerlock.go`) is `pg_advisory_xact_lock(0x4F574E52, hashtext('<kind>:<key>'))`, kind `issue`, `artifact` (a project document) or `project`:
-a two-key namespace of its own (`OWNR`), apart from the copy locks' (`COPY`), duty's leases' (`LOOP`) and every single-key lock.
+a two-key namespace of its own (`OWNR`), apart from the owner lock gate's (`OWNG`, below), the copy locks' (`COPY`), duty's leases' (`LOOP`) and every single-key lock.
 `LockOwners` takes several in one statement, sorted and deduplicated by lock key rather than by owner name, so two owners whose names hash alike never lock in opposite orders;
 `TryLockOwners` is the advisory form of `skip locked` a background pass takes; `LockOwnersShared` is the Inbox's Mark all read's and its dismissal's.
 The lock and the read it guards are always two statements (`store.LockOwnerAndRead` and `LockOwnersAndRead` send them in one round trip, as one batch):
 under READ COMMITTED a statement's snapshot is taken before it waits, so `select pg_advisory_xact_lock(...), closed_at from issues ...` would read the row as it stood before the wait and let a write land on an issue closed meanwhile (`TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused`).
-While every live server process is of this build, no lock taken before the write phase is a row lock, so a write transaction holds no transaction id until its first write:
+While no earlier build is in the fleet, no lock taken before the write phase is a row lock, so a write transaction holds no transaction id until its first write:
 its read phase - the owner lock, its reads, every document operation's work and its write advice - holds none, a writer waiting its turn on the owner lock holds none (`TestTwoWritersOfOneOwnerSerializeWithoutATransactionID`), and its write phase sends its statements as one pipelined batch and commits (`ledger.Commit`, above).
 A reader that waits for every older transaction id to end therefore waits only for other writes' statements.
 One cost remains: the read phase still holds its pooled connection, idle in transaction.
 `refreshAnchors`' writes ride in the same batch: one `unnest` update per table whose anchors moved (`asks`, `comments`), writing only the quote and the orphan flag, and a `*.anchor_refreshed` append per changed anchor, so they add statements to the server's work but no round trip.
 A release before this one serialises an owner's writers on the owner's row, which it takes first and holds to its commit, and never takes the advisory lock.
-So each server process registers the protocol it serialises by (`server_processes.owner_lock_protocol`: 1 here, `store.OwnerLockProtocol`; 0, the default, for an earlier build's row), and every read-phase owner lock statement answers in its own statement, at no round trip, whether a live process registers 0 (`legacyFleet`).
-While one does, the owner lock also takes each owner's row, in a statement of its own after the advisory lock and before the read it guards (`lockOwnerRows`): `for no key update`, `for share` for `LockOwnersShared`, `skip locked` for `TryLockOwners`, documents then issues then projects, each kind's keys in byte order, the order the earlier build takes them in.
+So each server process registers the protocol it serialises by (`server_processes.owner_lock_protocol`: 1 here, `store.OwnerLockProtocol`; 0, the default, for an earlier build's row), and names it in the `dashboard_builds` row its boot publishes (migration `20261115200014_owner_lock_legacy_gate`).
+An earlier build is in the fleet while a row of it at 0 has heartbeated within `store.OwnerLockLegacyWindow` (10 minutes, the registry's prune age), or while its last arrival is that recent: its dashboard publish, the first thing its boot writes, its registration or its lapsed row's return.
+Each arrival's insert fires `owner_lock_legacy_arrival`, which takes the owner lock gate (`pg_advisory_xact_lock(0x4F574E47, 0)`, `store.OwnerLockGateNamespace`) exclusively and stamps `owner_lock_legacy_mark`.
+Every read-phase owner lock statement is one call of `public.owner_lock`, at no round trip of its own: it reads the fleet (`public.owner_lock_fleet`), and when it finds no earlier build it takes the gate shared and reads again behind it, then it takes the advisory locks.
+So the gate comes before every owner lock of a transaction, an arrival waits for every transaction that read no earlier build, and every owner lock after the arrival commits reads the earlier build in the fleet; `QueueLockOwner`, a write phase's retake, carries neither.
+While an earlier build is in the fleet, the owner lock takes no gate and takes each owner's row, in a statement of its own after the advisory lock and before the read it guards (`lockOwnerRows`): `for no key update`, `for share` for `LockOwnersShared`, `skip locked` for `TryLockOwners`, documents then issues then projects, each kind's keys in byte order, the order the earlier build takes them in.
 The row comes after the advisory lock, never before it: a writer of this build in the advisory mode holds the lock and takes the row in its write phase.
 Those row locks give the read phase a transaction id, the cost of the overlap, and `LockOwnersAndRead` sends its read again behind them, one round trip more.
+An arrival's transaction holds the gate to its commit, and a write that reads no earlier build waits for it meanwhile: a first publish holds it across its assets' upload.
 A process logs each change of its mode once (`store.LastOwnerLockMode`).
-A process of an earlier build that registers after a transaction's lock statement has started, as a rollback starts one, is not seen by that transaction:
-its read phase, up to its write phase's row lock, is not excluded by that build's writers.
 
 **One caller, one connection.**
 Nothing holding a connection of the shared pool (`store.Pool`)

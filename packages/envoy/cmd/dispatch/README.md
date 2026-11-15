@@ -1250,14 +1250,24 @@ So for each surface the two builds share, this is what build N+1 may change whil
 - **Owner locks.**
   Both builds' writers of one issue, document or project exclude each other, so a write of either build decides on what the other committed.
   Each process registers the owner lock protocol it serialises those writers by (`server_processes.owner_lock_protocol`, migration `20261115100924_server_processes_owner_lock_protocol`): a build that takes the owner's row first and holds it to its commit, as every build before that migration does, reads the column's default 0, and a build that takes the owner's advisory lock first (`store.LockOwner`) registers 1.
-  While a live process registers 0, a build at 1 takes the owner's row too, right after the advisory lock and before the read the write decides on, and otherwise it takes the advisory lock alone.
+  A build at 1 names 1 in the `dashboard_builds` row its boot publishes too (migration `20261115200014_owner_lock_legacy_gate`), and an earlier build's row reads 0.
+  An earlier build is in the fleet while a row of it in `server_processes` has heartbeated within the last 10 minutes (`store.OwnerLockLegacyWindow`, the registry's prune age), so until it is deregistered or pruned, or while 10 minutes have not passed since it last arrived.
+  It arrives at its dashboard publish, the first thing its boot writes and before any write an owner lock guards: a publish that fails ends its boot, which serves nothing.
+  An earlier build that serves no dashboard (its web dist holds no `index.html`, `dashboard.ErrNoBuild`) arrives at its registration instead, after its boot's repairs and background passes have begun writing; the image never runs that way, since it sets `DISPATCH_WEB_DIST` to the web app it ships (`packages/envoy/docker/Dockerfile`).
+  The registration of an earlier build's process, and the return of its lapsed row, arrive too.
+  Each arrival's insert, a row at 0, fires a trigger (`owner_lock_legacy_arrival`) that takes the owner lock gate, a transaction advisory lock of its own (`store.OwnerLockGateNamespace`), exclusively, and stamps the arrival's time in `owner_lock_legacy_mark`.
+  While an earlier build is in the fleet, a build at 1 takes the owner's row too, right after the advisory lock and before the read the write decides on, and takes no gate.
+  While none is, it takes the gate shared before its first owner lock, in the owner lock's own statement (`public.owner_lock`), reads the fleet again behind it, and takes the advisory lock alone.
+  So an earlier build's arrival waits for every transaction of this build that read no earlier build, and every owner lock after the arrival commits reads the earlier build in the fleet.
+  What it costs: the arrival's transaction holds the gate until it commits, and a write of this build that reads no earlier build queues behind it meanwhile.
+  A first publish of a build holds it across the upload of its assets, which comes after the insert in every earlier build; a publish of a build already stored uploads nothing.
+  After an earlier build's boot, a build at 1 takes the owner's row for 10 minutes, as every write did before it moved to the advisory lock, even once the earlier build has stopped.
   A build that changes how it serialises an owner's writers registers a new protocol and keeps taking what the protocols still live take, the same way.
-  A process of a build at 0 that starts while a write of a build at 1 is between its lock and its first write, as a rollback starts one, is not seen by that write.
 
 The two-build test checks this rule (`cmd/dispatch/twobuild_*_test.go`, `go test -tags twobuild
 ./cmd/dispatch`, CI job `dispatch-two-builds`).
 `packages/envoy/scripts/build-dispatch-build.sh` builds the previous release from its commit, and the test runs it beside this tree on one Postgres, cloned at this tree's schema, and one NATS.
-It drives each build's `dispatch` command against the other build's server, reads and edits each build's stored documents and opens their document socket on the other build, passes messages both ways while it checks that the stream and consumer settings stay as they are, and races a write of each build on one issue, the previous build's committing first.
+It drives each build's `dispatch` command against the other build's server, reads and edits each build's stored documents and opens their document socket on the other build, passes messages both ways while it checks that the stream and consumer settings stay as they are, races a write of each build on one issue, the previous build's committing first, and boots the previous build, with its web app, while a write of this tree is between its owner lock and its write.
 It also runs the page admission across the earlier build's departure.
 Beside the previous release, a page of this tree is admitted by that release's numbers, and it stays writable throughout when they are this tree's own.
 The first rollout of the fleet's numbers needs a release before the fleet columns, so `build-dispatch-build.sh` builds `legion-envoy-v30.20.2` as well (the first-rollout build), and the test runs it and holds a page of this tree read-only while that build's process is live and writable once that process has left.

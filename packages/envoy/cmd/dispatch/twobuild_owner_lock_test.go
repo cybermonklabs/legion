@@ -4,10 +4,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -223,5 +225,141 @@ func TestTwoBuildsSerialiseOneOwnersWritersBothWays(t *testing.T) {
 		}
 	})
 
+	current.WaitForOutput(t, "owner locks now take the owner's row too")
+}
+
+// ───── the previous build's boot beside a write of this build in flight ─────
+
+// gateWaiter is the backend of the previous build that waits for the owner lock gate behind the
+// backend blocker, exclusively, as an earlier build's arrival takes it (store.OwnerLockGateNamespace,
+// migration 20261115200014_owner_lock_legacy_gate), with the statement it waits in; 0 when none
+// does.
+func gateWaiter(t *testing.T, database *store.Store, blocker uint32) (uint32, string) {
+	t.Helper()
+	var pid uint32
+	var query string
+	err := database.Pool.QueryRow(context.Background(), `
+		select activity.pid, activity.query
+		from pg_stat_activity activity join pg_locks lock on lock.pid = activity.pid
+		where activity.datname = current_database() and activity.application_name = $1
+		  and lock.locktype = 'advisory' and not lock.granted and lock.mode = 'ExclusiveLock'
+		  and lock.classid::bigint = $2 and lock.objid::bigint = $3 and lock.objsubid = 2
+		  and $4::integer = any(pg_blocking_pids(activity.pid))`,
+		previousApplication, store.OwnerLockGateNamespace, store.OwnerLockGateKey, blocker).Scan(&pid, &query)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ""
+	}
+	if err != nil {
+		t.Fatalf("read the backends waiting for the owner lock gate: %v", err)
+	}
+	return pid, query
+}
+
+// The previous build boots, with its web app as the image ships it, while a write of this build
+// is between its owner lock and its write phase: a PATCH adding a label, sent while no earlier
+// build was in the fleet, so it read the labels under the advisory lock alone and holds the owner
+// lock gate shared. Its naming a repository is the test's pause: the test holds the mapping's row,
+// which the PATCH takes `for key share` as its write phase opens, and which no writer of the issue
+// takes. The previous build's boot publishes its dashboard before it writes anything else, and
+// that publish's insert takes the gate exclusively, so the boot waits there until the PATCH
+// commits; once it serves, a label it adds lands after the PATCH's and both are kept. Without the
+// gate the previous build boots at once, its label is written while the PATCH waits, and the
+// PATCH then writes the labels it read over it.
+func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing.T) {
+	builds := newTwoBuilds(t)
+	current := builds.startNamed(t, false, currentApplication)
+	project := uniqueProjectKey(t, "GATE")
+	current.createProject(t, project, "Owner lock gate")
+	issue, _ := current.createIssueIn(t, project, "Labelled across a boot", "A spec.\n")
+	current.call(t, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", fmt.Sprintf(`{"project":%q}`, project), http.StatusOK)
+	ctx := context.Background()
+
+	pause, err := builds.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pause.Rollback(ctx)
+	if _, err := pause.Exec(ctx, `select 1 from repo_projects where repo = 'owner/repo' for update`); err != nil {
+		t.Fatalf("hold the repository mapping's row: %v", err)
+	}
+	patched := crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
+		body: `{"labels_add":["current-build"],"repo":"owner/repo"}`}.send()
+	patchPID, waitingOn := queuedBackend(t, builds.database, pause, currentApplication, regexp.MustCompile(`repo_projects`), 20*time.Second)
+	t.Logf("this build's PATCH waits in %q", waitingOn)
+
+	options := builds.options(nil)
+	options.Binary, options.WebDist = builds.build.path("envoy-dispatch"), builds.build.path("web")
+	options.BindsItsPort = true
+	started := time.Now()
+	builds.a = startDispatchProcessWith(t, builds.databaseURL(t)+"&application_name="+previousApplication, options)
+	previous := builds.a
+
+	var gatePID uint32
+	var gateQuery string
+	booted := false
+	for deadline := time.Now().Add(60 * time.Second); gatePID == 0 && !booted; {
+		if gatePID, gateQuery = gateWaiter(t, builds.database, patchPID); gatePID != 0 {
+			break
+		}
+		booted = previous.healthyWithin(50*time.Millisecond) == nil
+		if !booted && time.Now().After(deadline) {
+			t.Fatalf("the %s neither served nor waited for the owner lock gate within 60s:\n%s", builds.previousName(), previous.Output.String())
+		}
+	}
+	labelPrevious := crossBuildWrite{process: previous, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
+		body: `{"labels_add":["previous-build"]}`}
+	if booted {
+		t.Errorf("the %s served %s after it started while this build's PATCH, which read no earlier build in the fleet, was between its owner lock and its write; want its boot to wait at its dashboard publish for that PATCH (the owner lock gate)",
+			builds.previousName(), time.Since(started).Round(time.Millisecond))
+		if answer := <-labelPrevious.send(); answer.status != http.StatusOK {
+			t.Fatalf("the %s's PATCH answered %s", builds.previousName(), answer)
+		}
+		if err := pause.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		t.Logf("the %s's boot waits for the owner lock gate %s after it started, in %q", builds.previousName(),
+			time.Since(started).Round(time.Millisecond), gateQuery)
+		if !strings.Contains(gateQuery, "insert into dashboard_builds") {
+			t.Errorf("the %s waits for the gate in %q, want its dashboard publish's insert", builds.previousName(), gateQuery)
+		}
+		const held = 3 * time.Second
+		if previous.healthyWithin(held) == nil {
+			t.Fatalf("the %s served while this build's PATCH it waits for was still under way", builds.previousName())
+		}
+		if pid, _ := gateWaiter(t, builds.database, patchPID); pid != gatePID {
+			t.Fatalf("after %s the %s's backend waiting for the gate is %d, want %d still waiting", held, builds.previousName(), pid, gatePID)
+		}
+		released := time.Now()
+		if err := pause.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+		previous.waitHealthy(t)
+		t.Logf("the %s served %s after this build's PATCH was let go, %s after it started", builds.previousName(),
+			time.Since(released).Round(time.Millisecond), time.Since(started).Round(time.Millisecond))
+		if answer := <-labelPrevious.send(); answer.status != http.StatusOK {
+			t.Fatalf("the %s's PATCH answered %s", builds.previousName(), answer)
+		}
+	}
+	select {
+	case answer := <-patched:
+		if answer.status != http.StatusOK {
+			t.Fatalf("this build's PATCH answered %s", answer)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("this build's PATCH never answered within 60s of the mapping's row being let go")
+	}
+	var labels []string
+	if err := builds.database.Pool.QueryRow(ctx, `select labels from issues where key = $1`, issue).Scan(&labels); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(labels, "previous-build") || !slices.Contains(labels, "current-build") {
+		t.Errorf("the issue's labels are %v; want this build's and the %s's both: the label the %s added once it served was lost under this build's PATCH, which read the labels before it",
+			labels, builds.previousName(), builds.previousName())
+	}
+	if answer := <-(crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
+		body: `{"labels_add":["current-build-again"]}`}.send()); answer.status != http.StatusOK {
+		t.Fatalf("this build's second PATCH answered %s", answer)
+	}
 	current.WaitForOutput(t, "owner locks now take the owner's row too")
 }

@@ -15,29 +15,56 @@ import (
 
 // OwnerLockNamespace is the first key of every owner lock ("OWNR"). Postgres keeps the two-key
 // advisory key space apart from the single-key one, and within it the other namespaces of this
-// module are the copy locks' (docs.copiedAsksLockNamespace, "COPY"), the duty leases'
-// (duty.leaseNamespace, "LOOP"), the API's test hooks' (api.testHookLockNamespace, "HOOK") and
-// the hashtext of a name (the dependency, repository-mapping and delivery session-group locks),
-// none of which is this value, so an owner lock never waits on one of those whatever its owner
-// hashes to. It is exported, with LockKey, so a test reads an owner's lock out of pg_locks by the
-// keys this file takes it with rather than by spelling them again (api/files_test.go).
+// module are the owner lock gate's (OwnerLockGateNamespace, "OWNG"), the copy locks'
+// (docs.copiedAsksLockNamespace, "COPY"), the duty leases' (duty.leaseNamespace, "LOOP"), a
+// conditional edit's admission's (docs.conditionalEditQueueLockNamespace, "QUEU"), the API's test
+// hooks' (api.testHookLockNamespace, "HOOK") and the hashtext of a name (the dependency and
+// repository-mapping locks), none of which is this value, so an owner lock never waits on one of
+// those whatever its owner hashes to. It is exported, with LockKey, so a test reads an owner's lock
+// out of pg_locks by the keys this file takes it with rather than by spelling them again
+// (api/files_test.go).
 const OwnerLockNamespace int32 = 0x4F574E52
+
+// OwnerLockGateNamespace and OwnerLockGateKey are the two keys of the owner lock gate ("OWNG", 0),
+// a transaction advisory lock that migration 20261115200014_owner_lock_legacy_gate's functions take
+// and nothing in Go does: every read-phase owner lock of a transaction that finds no earlier build
+// in the fleet takes it shared before its first owner lock (public.owner_lock_fleet), and the
+// arrival of an earlier build - its dashboard publish, or its registration - takes it exclusively
+// (public.owner_lock_legacy_arrival), so that arrival waits for every such transaction to end. Its
+// first key is a namespace of its own among the module's two-key locks (OwnerLockNamespace's
+// list). They are exported, and spelled here as the migration spells them, so a test reads the
+// gate out of pg_locks.
+const (
+	OwnerLockGateNamespace int32 = 0x4F574E47
+	OwnerLockGateKey       int32 = 0
+)
 
 // OwnerLockProtocol is the owner lock protocol this build registers in server_processes
 // (owner_lock_protocol, migration 20261115100924_server_processes_owner_lock_protocol;
-// processes.Register): 1, a build that serialises an owner's writers on its advisory lock
-// (LockOwner) and takes the owner's row only in its write phase. A row at 0, the column's
-// default, is a process of a build before this one, which serialises them on the owner's row
-// alone: it takes the row `for no key update` (the Inbox `for share`) first and holds it for its
-// whole transaction, and never takes the advisory lock.
+// processes.Register) and names in the dashboard_builds row it publishes (migration
+// 20261115200014_owner_lock_legacy_gate; dashboard.Publish): 1, a build that serialises an
+// owner's writers on its advisory lock (LockOwner) and takes the owner's row only in its write
+// phase. A row at 0, the column's default, is written by a build before this one, which
+// serialises them on the owner's row alone: it takes the row `for no key update` (the Inbox `for
+// share`) first and holds it for its whole transaction, and never takes the advisory lock.
 const OwnerLockProtocol = 1
+
+// OwnerLockLegacyWindow is how long an earlier build stays in the fleet the owner lock reads
+// (public.owner_lock_fleet): while a server_processes row at owner lock protocol 0 has heartbeated
+// within it, or while the mark its arrival stamped (owner_lock_legacy_mark) is younger than it.
+// It is processes.PruneAge, so a row of an earlier build counts until it is deregistered or
+// pruned, and the mark covers an earlier build's boot from its dashboard publish to its
+// registration, which comes long within it. A variable rather than a constant only so tests can
+// shorten it.
+var OwnerLockLegacyWindow = 10 * time.Minute
 
 // ProcessLiveWindow is how recent a server process's heartbeat must be, by the database's now(),
 // for the process to count as live: three heartbeats (processes.HeartbeatInterval), so one slow or
 // lost update does not drop a process that still serves. It is the registry's live window
-// (processes.Live), declared here because the owner lock's fleet read measures by it too
-// (legacyFleet), and this package cannot import that one. A variable rather than a constant only
-// so tests can shorten it, and cmd/dispatch's test hooks with it (DISPATCH_TEST_PROCESS_HEARTBEAT).
+// (processes.Live), which the CI reconcile passes, the document socket's schema admission and the
+// registry's own admission read; the owner lock's fleet read does not, and counts a row of an
+// earlier build over OwnerLockLegacyWindow instead. A variable rather than a constant only so
+// tests can shorten it, and cmd/dispatch's test hooks with it (DISPATCH_TEST_PROCESS_HEARTBEAT).
 var ProcessLiveWindow = 15 * time.Second
 
 // OwnerKind names what owns a collaboration: an issue, a document no issue owns (a project
@@ -105,59 +132,51 @@ type OwnerLocker interface {
 	Query(ctx context.Context, sql string, arguments ...any) (pgx.Rows, error)
 }
 
-// legacyFleet is the fleet read every read-phase owner lock statement carries as its column
-// legacy_fleet, $3 being ProcessLiveWindow in seconds: whether any live process (its heartbeat
-// within the live window of the database's now(), as processes.Live measures it) registers owner
-// lock protocol 0, a build that serialises on the owner row (OwnerLockProtocol). It rides in the
-// lock's own statement, so the read costs no statement and no round trip. It reads the statement's
-// snapshot, taken before the lock's wait: a process that registers while the statement waits, or
-// after it, is not seen by this transaction (cmd/dispatch/README.md, "Two builds at once").
-const legacyFleet = `exists (
-			select from server_processes
-			where owner_lock_protocol = 0 and heartbeat_at > now() - make_interval(secs => $3)
-		) as legacy_fleet`
-
-// The owner lock statements. Each names its result owner_lock and spells its key's text type, so
-// a session waiting on one is told apart in pg_stat_activity from a wait on the copy lock
-// (docs.projectCopiesLock), and no scan of this module's SQL mistakes one for the other. The
-// read phase's statements carry the fleet read (legacyFleet); the write phase's (QueueLockOwner),
-// which takes again a lock the transaction holds, carries none.
+// The owner lock statements. Each names what it calls owner_lock and spells its keys' text type,
+// so a session waiting on one is told apart in pg_stat_activity from a wait on the copy lock
+// (docs.projectCopiesLock), and no scan of this module's SQL mistakes one for the other.
+//
+// A read phase's owner lock is one call of public.owner_lock (migration
+// 20261115200014_owner_lock_legacy_gate), $1 OwnerLockNamespace, $2 the owners' lock keys and $3
+// OwnerLockLegacyWindow in seconds. It runs the fleet read first (public.owner_lock_fleet):
+// whether an earlier build is in the fleet, a server_processes row at owner lock protocol 0 that
+// heartbeated within the window or the mark an earlier build's arrival stamped within it. When it
+// finds none it takes the owner lock gate shared (OwnerLockGateNamespace) and reads again under a
+// snapshot of its own, so an arrival that held the gate exclusively and committed while this one
+// waited is read. Then it takes the owners' locks: exclusive or shared, every key once in the
+// order of its hash, or tried, each key in the order given. Every row it answers carries the fleet
+// read as legacy_fleet; a try answers one row per owner it took, the others one row.
+//
+// One function rather than one statement of several calls, because Postgres fixes no order among
+// the expressions of one statement, and the gate must come before every owner lock of the
+// transaction: a transaction that held an owner lock and then queued for the gate behind an
+// arrival, which itself waits for a holder of the gate that waits for that owner lock, waits in a
+// cycle that Postgres undoes only at its deadlock check, deadlock_timeout later, by moving the
+// shared request ahead of the arrival. The function is one statement and one round trip, as the
+// statement it replaced was.
+//
+// The write phase's statement (QueueLockOwner), which takes again a lock the transaction holds,
+// carries no fleet read and takes no gate: the transaction's read phase took both.
 const (
-	ownerLock = `select pg_advisory_xact_lock($1, hashtext($2::text)) as owner_lock`
-	// ownerLockFleet is ownerLock with the fleet read.
-	ownerLockFleet = `select pg_advisory_xact_lock($1, hashtext($2::text)) as owner_lock, ` + legacyFleet
-	// ownersLock takes the locks of several owners in one statement, in the order of their second
-	// key, and answers the fleet read on each row. The subquery is sorted and deduplicated before
-	// the outer select calls the lock function on each row it hands up, and a subquery with ORDER
-	// BY or DISTINCT is never flattened into its parent, so the calls run in that order.
-	ownersLock = `
-		select pg_advisory_xact_lock($1, keyed.hash) as owner_lock, ` + legacyFleet + `
-		from (select distinct hashtext(owner) as hash from unnest($2::text[]) as owner order by hash) as keyed`
-	// ownersLockShared is ownersLock in shared mode (LockOwnersShared).
-	ownersLockShared = `
-		select pg_advisory_xact_lock_shared($1, keyed.hash) as owner_lock, ` + legacyFleet + `
-		from (select distinct hashtext(owner) as hash from unnest($2::text[]) as owner order by hash) as keyed`
-	// ownersTryLock tries the lock of each owner without waiting and answers the owners it took,
-	// each with the fleet read. A try never waits, so the order it tries them in cannot close a
-	// cycle.
-	ownersTryLock = `
-		select owner, ` + legacyFleet + `
-		from unnest($2::text[]) with ordinality as listed(owner, place)
-		where pg_try_advisory_xact_lock($1, hashtext(owner))
-		order by place`
+	ownerLock        = `select pg_advisory_xact_lock($1, hashtext($2::text)) as owner_lock`
+	ownersLock       = `select locked_key, legacy_fleet from public.owner_lock('exclusive', $1, $2::text[], $3) as owner_lock`
+	ownersLockShared = `select locked_key, legacy_fleet from public.owner_lock('shared', $1, $2::text[], $3) as owner_lock`
+	ownersTryLock    = `select locked_key, legacy_fleet from public.owner_lock('try', $1, $2::text[], $3) as owner_lock`
 )
 
 // OwnerLockMode is which owner lock a transaction of this process took, by its fleet read
-// (legacyFleet).
+// (public.owner_lock_fleet, the owner lock statements above).
 type OwnerLockMode int32
 
 const (
 	// OwnerLockModeUnknown is a process that has taken no owner lock yet.
 	OwnerLockModeUnknown OwnerLockMode = iota
-	// OwnerLockAdvisory is the advisory lock alone: no live process serialises on the owner row.
+	// OwnerLockAdvisory is the advisory lock alone, behind the owner lock gate taken shared: no
+	// earlier build, which serialises on the owner row, is in the fleet.
 	OwnerLockAdvisory
 	// OwnerLockAdvisoryAndRow is the advisory lock and then the owner's row, before any read the
-	// lock guards: a live process of an earlier build serialises on that row (lockOwnerRows).
+	// lock guards, and no gate: an earlier build, which serialises on that row, is in the fleet
+	// (lockOwnerRows).
 	OwnerLockAdvisoryAndRow
 )
 
@@ -192,11 +211,11 @@ func noteOwnerLockMode(legacy bool) {
 		return
 	}
 	if legacy {
-		slog.Info("dispatch: owner locks now take the owner's row too: a live server process of an earlier build serialises on the owner row (owner_lock_protocol 0)",
-			"was", previous.String(), "mode", mode.String())
+		slog.Info("dispatch: owner locks now take the owner's row too: an earlier build, which serialises on the owner row, is in the fleet (owner_lock_protocol 0)",
+			"was", previous.String(), "mode", mode.String(), "window", OwnerLockLegacyWindow)
 		return
 	}
-	slog.Info("dispatch: owner locks take the advisory lock alone: no live server process serialises on the owner row",
+	slog.Info("dispatch: owner locks take the advisory lock alone: no earlier build, which serialises on the owner row, is in the fleet",
 		"was", previous.String(), "mode", mode.String())
 }
 
@@ -208,13 +227,18 @@ func noteOwnerLockMode(legacy bool) {
 // transaction id, so a transaction holds one only from its first write on.
 //
 // A build before this one serialises on the owner row instead, and its writers never take this
-// lock, so while one of its processes is live (the fleet read the lock's statement carries,
-// legacyFleet) LockOwner also takes the owner's row `for no key update`, in a statement of its
-// own right after the lock and before any read the lock guards (lockOwnerRows). That row lock
-// assigns the transaction its id from there on, which is the cost of a fleet with an earlier
-// build in it. The order is the lock and then the row, never the other way round: a writer of
-// this build in the advisory mode holds the lock and takes the row in its write phase
+// lock, so while one is in the fleet (the fleet read the lock's statement makes before it takes
+// the lock, public.owner_lock_fleet) LockOwner also takes the owner's row `for no key update`, in a
+// statement of its own right after the lock and before any read the lock guards (lockOwnerRows).
+// That row lock assigns the transaction its id from there on, which is the cost of a fleet with an
+// earlier build in it. The order is the lock and then the row, never the other way round: a writer
+// of this build in the advisory mode holds the lock and takes the row in its write phase
 // (events.lockEventOwner), so taking the row first would wait for it while it waits for the lock.
+//
+// While no earlier build is in the fleet, the statement takes the owner lock gate shared before
+// the lock (OwnerLockGateNamespace) and holds it to the transaction's end, so an earlier build that
+// arrives meanwhile - its dashboard publish, or its registration - waits for this transaction to
+// end before it writes anything, and every owner lock after that arrival reads it in the fleet.
 //
 // The lock and the read it guards must be separate statements. Under READ COMMITTED a statement's
 // snapshot is taken when it starts, before it waits, so a statement that both took this lock and
@@ -234,8 +258,8 @@ func LockOwner(ctx context.Context, q OwnerLocker, owner Owner) error {
 // the same key share one lock, and ordering by name could take that lock before a third owner's in
 // one transaction and after it in another, a cycle Postgres breaks with `deadlock detected`. Sorted
 // by key, every transaction takes any two keys in the same order. As with LockOwner, the reads the
-// locks guard come in statements after this one, and while the fleet read answers that a process
-// of an earlier build is live, the owners' rows are taken between the two (lockOwnerRows).
+// locks guard come in statements after this one, and while the fleet read answers that an earlier
+// build is in the fleet, the owners' rows are taken between the two (lockOwnerRows).
 func LockOwners(ctx context.Context, q OwnerLocker, owners ...Owner) error {
 	if len(owners) == 0 {
 		return nil
@@ -251,8 +275,8 @@ func LockOwners(ctx context.Context, q OwnerLocker, owners ...Owner) error {
 }
 
 // lockOwnerKeys takes the advisory locks of owners, at least one, in one statement
-// (lockOwnersStatement), and answers its fleet read: whether a live process serialises on the
-// owner row. It records the answer (noteOwnerLockMode).
+// (lockOwnersStatement), and answers its fleet read: whether an earlier build, which serialises on
+// the owner row, is in the fleet. It records the answer (noteOwnerLockMode).
 func lockOwnerKeys(ctx context.Context, q OwnerLocker, owners []Owner) (bool, error) {
 	lock, args := lockOwnersStatement(owners)
 	rows, err := q.Query(ctx, lock, args...)
@@ -360,14 +384,10 @@ func QueueLockOwner(b *WriteBatch, owner Owner) {
 	b.Queue(fmt.Sprintf("lock %s %s", owner.Kind, owner.Key), ownerLock, OwnerLockNamespace, owner.LockKey())
 }
 
-// lockOwnersStatement is the read-phase statement that takes the locks of owners, at least one,
-// and answers the fleet read, and its arguments: ownerLockFleet for one owner, ownersLock for
-// several.
+// lockOwnersStatement is the read-phase statement that takes the exclusive locks of owners, at
+// least one, behind the fleet read and the gate (ownersLock), and its arguments.
 func lockOwnersStatement(owners []Owner) (string, []any) {
-	if len(owners) == 1 {
-		return ownerLockFleet, []any{OwnerLockNamespace, owners[0].LockKey(), ProcessLiveWindow.Seconds()}
-	}
-	return ownersLock, []any{OwnerLockNamespace, lockKeys(owners), ProcessLiveWindow.Seconds()}
+	return ownersLock, []any{OwnerLockNamespace, lockKeys(owners), OwnerLockLegacyWindow.Seconds()}
 }
 
 // lockOwnersFailed is err, the failure of lockOwnersStatement's statement, naming what it locked.
@@ -497,10 +517,10 @@ func lockOwnerRows(ctx context.Context, q OwnerLocker, owners []Owner, level row
 // session waiting on it in pg_stat_activity (api/inbox_dismiss_race_test.go).
 const OwnersLockShared = ownersLockShared
 
-// OwnerLockStatement is the statement LockOwner runs for one owner in a read phase, with its
-// fleet read, exported so a test can find a session waiting on it in pg_stat_activity
+// OwnerLockStatement is the statement LockOwner and LockOwners run in a read phase, for one owner
+// or several, exported so a test can find a session waiting on it in pg_stat_activity
 // (cmd/dispatch/shutdown_test.go).
-const OwnerLockStatement = ownerLockFleet
+const OwnerLockStatement = ownersLock
 
 // LockOwnersShared takes the locks of every owner in owners in shared mode, in one statement. A
 // shared lock conflicts with LockOwner's exclusive one exactly as `for share` conflicted with the
@@ -508,8 +528,8 @@ const OwnerLockStatement = ownerLockFleet
 // that writes only rows every owner writer orders itself against, and must not interleave with
 // one (the Inbox's Mark all read and its dismissal, api's lockInboxReadOwners), waits for the
 // writer that holds the owner and holds off the next one. The reads it guards come in statements
-// after this one, as LockOwner's do, and while the fleet read answers that a process of an
-// earlier build is live, the owners' rows are taken `for share` between the two (lockOwnerRows),
+// after this one, as LockOwner's do, and while the fleet read answers that an earlier build is in
+// the fleet, the owners' rows are taken `for share` between the two (lockOwnerRows),
 // which is the lock that build's Inbox takes. The owners are sorted and deduplicated by the lock's
 // key as LockOwners sorts them, so a transaction taking several waits for them in the one order
 // every other transaction does. It runs the same statement however many owners it takes, so a
@@ -519,7 +539,7 @@ func LockOwnersShared(ctx context.Context, q OwnerLocker, owners ...Owner) error
 	if len(owners) == 0 {
 		return nil
 	}
-	rows, err := q.Query(ctx, ownersLockShared, OwnerLockNamespace, lockKeys(owners), ProcessLiveWindow.Seconds())
+	rows, err := q.Query(ctx, ownersLockShared, OwnerLockNamespace, lockKeys(owners), OwnerLockLegacyWindow.Seconds())
 	if err != nil {
 		return fmt.Errorf("lock owners %v for share: %w", lockKeys(owners), err)
 	}
@@ -540,11 +560,14 @@ func LockOwnersShared(ctx context.Context, q OwnerLocker, owners ...Owner) error
 // is read in a statement after this one. Run on the pool, outside a transaction, a lock it takes is
 // released when its statement ends, which makes it a probe of whether anyone holds the owner.
 //
-// While the fleet read answers that a process of an earlier build is live, the rows of the owners
-// it took are tried too, `for no key update skip locked`, and an owner whose row it did not take -
-// a writer of that build holds it, or it has no row - is left out of the answer. Its advisory lock
+// While the fleet read answers that an earlier build is in the fleet, the rows of the owners it
+// took are tried too, `for no key update skip locked`, and an owner whose row it did not take - a
+// writer of that build holds it, or it has no row - is left out of the answer. Its advisory lock
 // stays held to the end of the transaction, as a transaction lock does: that holds off this
-// build's writers of that owner for the rest of the pass, and excludes nothing else.
+// build's writers of that owner for the rest of the pass, and excludes nothing else. While the
+// fleet read answers that none is, the statement takes the owner lock gate shared before it tries
+// the first owner, as every read-phase owner lock does (LockOwner), and waits for it: only the
+// owners' locks are tried.
 func TryLockOwners(ctx context.Context, q OwnerLocker, owners ...Owner) ([]Owner, error) {
 	if len(owners) == 0 {
 		return nil, nil
@@ -555,7 +578,7 @@ func TryLockOwners(ctx context.Context, q OwnerLocker, owners ...Owner) ([]Owner
 		keys[index] = owner.LockKey()
 		byKey[keys[index]] = owner
 	}
-	rows, err := q.Query(ctx, ownersTryLock, OwnerLockNamespace, keys, ProcessLiveWindow.Seconds())
+	rows, err := q.Query(ctx, ownersTryLock, OwnerLockNamespace, keys, OwnerLockLegacyWindow.Seconds())
 	if err != nil {
 		return nil, fmt.Errorf("try owner locks: %w", err)
 	}

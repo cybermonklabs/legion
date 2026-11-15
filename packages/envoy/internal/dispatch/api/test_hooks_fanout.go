@@ -47,8 +47,9 @@ const (
 	// so it can never collide with the single-key locks internal/dispatch/docs takes, and apart
 	// from the other two-key namespaces of the server: the loop leases' (duty.leaseNamespace,
 	// "LOOP"), the copy locks' (docs.copiedAsksLockNamespace, "COPY"), the owner locks'
-	// (store.OwnerLockNamespace, "OWNR"), a conditional edit's admission's
-	// (docs.conditionalEditQueueLockNamespace, "QUEU"), the issue dependencies'
+	// (store.OwnerLockNamespace, "OWNR"), the owner lock gate's (store.OwnerLockGateNamespace,
+	// "OWNG"), a conditional edit's admission's (docs.conditionalEditQueueLockNamespace, "QUEU"),
+	// the issue dependencies'
 	// (lockProjectIssueDependencies), the deployment's own issue dependencies'
 	// (lockDeploymentIssueDependencies), one repository mapping's write (lockRepoProjectWrite) and
 	// the rename graph's own (refuseRepoRenameChain). The second key is the listening connection's
