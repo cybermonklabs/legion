@@ -264,6 +264,52 @@ func TestATargetedMessageWithNoPublisherFails(t *testing.T) {
 	}
 }
 
+// Dispatch queues a message only on the subject of the session its target names. A listener that
+// answers the read of s1 with another session's record puts that session on the attempt, whether
+// the record reads gone or the send to it then finds none; queued, the message would go onto that
+// other session's subject. So it is not queued, and the attempt settles failed with the answer.
+func TestATargetedMessageWhoseAttemptNamesAnotherSessionIsNotQueued(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		registry string
+	}{
+		{name: "the read answers another session gone",
+			registry: `{"session_id":"s2","title":"planner","state":"gone","capabilities":["aside","btw","steer"]}`},
+		{name: "the read answers another session whose send finds none",
+			registry: `{"session_id":"s2","title":"planner","capabilities":["aside","btw","steer"]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
+					_, _ = w.Write([]byte(tc.registry))
+				case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = w.Write([]byte(`{"error":"no live session s2","state":"gone"}`))
+				default:
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = w.Write([]byte(`{"error":"not found"}`))
+				}
+			}))
+			t.Cleanup(listener.Close)
+			handler, _, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+
+			created := postAgentMessage(t, handler, "s1", map[string]any{"body": "Restart the deploy.", "delivery": "steer"}, "alice")
+			if created.Code != http.StatusCreated {
+				t.Fatalf("direct message: status=%d body=%s", created.Code, created.Body.String())
+			}
+			attempt := decodeBody[model.Message](t, created).Deliveries
+			if len(attempt) != 1 || attempt[0].State != "failed" || attempt[0].Error == nil ||
+				*attempt[0].Error != "no live session s2" {
+				t.Fatalf("delivery whose attempt names s2 = %#v, want it failed with the listener's answer", attempt)
+			}
+			if published := publishedBy(t, deps); len(published) != 0 {
+				t.Fatalf("published %#v for a message to s1, want nothing: the attempt names another session", published)
+			}
+		})
+	}
+}
+
 // A sender queues a message only while it still holds the attempt. Here the session answers the
 // attempt while the sender waits between its tries, so the sender's renew finds the attempt no
 // longer its own: it publishes nothing, since the session already has the message, and the

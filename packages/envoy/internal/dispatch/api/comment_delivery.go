@@ -95,7 +95,7 @@ func (s *server) resolveMentionTarget(
 	// whose requested id is kept on the attempt row, from a capability refusal. A read that
 	// did not answer gives no session id here, so it sets no pin; an existing attempt keeps
 	// the one it holds only through the coalesce(session_id, ...) update further down.
-	if sessionID != "" && !strings.HasPrefix(resolveError, "no live session ") {
+	if sessionID != "" && !strings.HasPrefix(resolveError, noLiveSessionPrefix+" ") {
 		item.SessionID = new(sessionID)
 	}
 	return item
@@ -137,7 +137,7 @@ func (s *server) sendResolvedDelivery(
 		return sendOutcome{failure: target.ResolveError}
 	}
 	if target.SessionID == nil {
-		return sendOutcome{failure: "no live session"}
+		return sendOutcome{failure: noLiveSessionPrefix}
 	}
 	send, err := s.deps.Envoy.Send(ctx, listenerSendInput(
 		*target.SessionID, target.Delivery, body, idempotencyKey, urgency, wanted, frame, connectedOnly,

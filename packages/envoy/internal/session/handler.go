@@ -35,9 +35,10 @@ type HandleAgentResult struct {
 // entry is that resolved session record, nil when none was resolved; both paths deliver through
 // it (Resolve) rather than resolving it a second time, so the record the caller read - the
 // store's own word for it, not just this listener's cache - is the one delivery acts on.
-// noRecord is whether that read answered that the session has no record (nats.ErrKeyNotFound),
-// so the session reads gone, as against a read that did not answer, which leaves entry nil too
-// and says nothing of the session.
+// gone is whether that read answered that the session is gone (nats.ErrKeyNotFound): the bucket
+// holds no record of it, or holds one that reads gone (cmd/listener's liveSessionEntry refuses
+// such a record with the same error), as against a read that did not answer, which leaves entry
+// nil too and says nothing of the session.
 //
 // storedSeq is the stream sequence the delivery resolves under: the durable path's copy of a
 // stored message carries its own, and a core path's message, which is not the durable's copy of
@@ -51,20 +52,20 @@ func HandleAgentMessage(
 	machineID string,
 	interest *store.Interest,
 	entry *SessionEntry,
-	noRecord bool,
+	gone bool,
 	storedSeq uint64,
 	captured bool,
 ) HandleAgentResult {
 	// Interest path: the stored subscription names this listener, which owns the session.
 	if interest != nil && interest.MachineID == machineID {
-		// A session with no record is one whose registration was deleted - a released Legion
-		// role's, say - while its interest row waits for the reaper, which keeps it for minutes.
-		// That is the same absence the direct path below answers, so it gets the same zero
-		// result: the caller holds the message for its window and then gives it up with the wake
-		// that brings the session back. A NAK here would fail it on every redelivery and never
-		// report the wake. A read that did not answer is no word of absence, so it still fails
-		// below.
-		if entry == nil && noRecord {
+		// A gone session is one whose registration was deleted - a released Legion role's, say -
+		// or whose record outlived its gone horizon, while its interest row waits for the reaper,
+		// which keeps it for minutes. That is the same absence the direct path below answers, so
+		// it gets the same zero result: the caller holds the message for its window and then
+		// gives it up with the wake that brings the session back. A NAK here would fail it on
+		// every redelivery and never report the wake. A read that did not answer is no word of
+		// absence, so it still fails below.
+		if entry == nil && gone {
 			return HandleAgentResult{}
 		}
 		if err := Resolve(item, sessionID, entry, storedSeq, captured); err != nil {

@@ -22,6 +22,13 @@ import (
 // send's own 404 are that fact, so a person sees one outcome for it. A session either store holds
 // is the listener's to queue, and it answers the send stopped (deliveryOutcome).
 //
+// queueForUnknownSession builds the subject from the attempt's session (attemptSessionID), and
+// for a record the registry calls gone that is the id the listener answered rather than the one
+// the message's target names (resolveDeliveryTarget). So the attempt's session must be the very
+// id of the target's parsed session route, and an attempt naming any other session is not
+// queued: the subject is always that of the session the validated route names, never one an
+// answer put in its place.
+//
 // A role target keeps its failure: a role whose holder is gone names no session to queue for,
 // and a role's message does not belong on the subject of a session that held the role once. A
 // send that asks for a running session (connectedOnly, a model or thinking switch) keeps it too,
@@ -30,11 +37,11 @@ func (s *server) mayQueueForUnknownSession(
 	message model.Message, pending pendingMessageDelivery, connectedOnly bool, failure string,
 ) bool {
 	if s.deps.AgentPublisher == nil || connectedOnly || pending.resolved.attemptSessionID == "" ||
-		!strings.HasPrefix(failure, "no live session") {
+		!strings.HasPrefix(failure, noLiveSessionPrefix) {
 		return false
 	}
 	route, err := model.ParseRoute(messageTarget(message.Target))
-	return err == nil && route.Kind == "session"
+	return err == nil && route.Kind == "session" && route.ID == pending.resolved.attemptSessionID
 }
 
 // queueForUnknownSession queues a targeted message for a session no store of the listener's holds:

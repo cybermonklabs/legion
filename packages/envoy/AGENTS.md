@@ -139,7 +139,7 @@ Each item below names a task and where its code is, then notes on it.
 - **Session delivery**: `internal/session/session.go`
 
   what a delivery to a resolved session comes to (`session.Resolve(item, sessionID, entry, storedSeq, captured)`, `captured` being whether the deployed stream captures the topic, `bus.Client.DeployedStreamCaptures`, which the caller reads from its own bus client): the session's own consumer relays the message, or the entry records no way of receiving at all (`session.ErrNoSessionRecord`, which a nil entry gives too).
-  The agent path reaches it through one call, `session.HandleAgentMessage(item, sessionID, machineID, interest, entry, noRecord, storedSeq, captured)`, `noRecord` being whether the caller's read of the session bucket answered that the session has no record.
+  The agent path reaches it through one call, `session.HandleAgentMessage(item, sessionID, machineID, interest, entry, gone, storedSeq, captured)`, `gone` being whether the caller's read of the session bucket answered that the session is gone: the bucket holds no record of it, or holds one that reads gone (`liveSessionEntry` refuses such a record with the same `nats.ErrKeyNotFound`).
 
 - **Session consumers**: `internal/bus/session_consumers.go`, `cmd/listener/session_delivery.go`, `cmd/listener/session_relay.go`
 
@@ -4157,8 +4157,8 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   That cause is deferred, and so is a bucket read that did not answer, which says nothing about the session:
   it leaves no entry, and the branch where no stored subscription names an owner (`session.HandleAgentMessage`, `internal/session/handler.go`) answers an attempt with no entry as undelivered and carrying no error at all: it drops `session.ErrNoSessionRecord` there, and that shape - undelivered, with no error - is what holds the window open (`cmd/listener/delivery.go`, the result `unplaceableAgentDelivery` takes).
   What is given up at once is a core delivery or a message whose JetStream metadata cannot be read, which nothing would redeliver or bound.
-  On the interest path a session with no record gets that same shape (`noRecord`, `session.HandleAgentMessage`):
-  an interest row naming this listener outlives a deleted registration for minutes, a released Legion role's among them, so such a copy is held for the window and then given up with the agent wake (`reportAgentWake`) that brings the pod back.
+  On the interest path a gone session gets that same shape (`gone`, `session.HandleAgentMessage`), whether the bucket holds no record of it or one that reads gone:
+  an interest row naming this listener outlives a deleted registration, or a record past the gone horizon, for minutes, a released Legion role's among them, so such a copy is held for the window and then given up with the agent wake (`reportAgentWake`) that brings the pod back.
   The interest path's other failures never reach that branch: a record that names no way of receiving, and a record read that did not answer, NAK with an error and are counted `failed`.
   A fanout delivery that fails to a session that is live is NAK'd for retry (up to MaxDeliver attempts over the stream's MaxAge window);
   one whose session is not live is counted a dead delivery and acknowledged.
