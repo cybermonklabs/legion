@@ -8,12 +8,24 @@ import {
   optionsOf,
   outDirectory,
   recordOf,
+  type SnapshotReserve,
   stringOf,
   UsageError,
   verdictOf,
 } from "./corpus-io";
 import { type DispatchEvent, pageEventLog } from "./dispatch-read";
-import { type IssueParents, noteAskRoot, noteIssueParent, reserveOf, treeRootOf } from "./reserve";
+import {
+  type IssueParents,
+  noteAskRoot,
+  noteIssueParent,
+  REGISTRATION,
+  REPOSITORY_ROOT,
+  RESERVE_VARIABLE,
+  type ReserveAccess,
+  reserveAccessOf,
+  reserveOf,
+  treeRootOf,
+} from "./reserve";
 import { TREES_FILE, TREES_VERSION, TreeLog, type TreesFile } from "./trees";
 
 /**
@@ -31,11 +43,14 @@ import { TREES_FILE, TREES_VERSION, TreeLog, type TreesFile } from "./trees";
  *
  * The same walk reads each issue's `parent` as every whole-issue event records it, so each case
  * carries the root of its issue's tree at its ask's first opening and at the build's pinned event.
- * The reserve of INFRA-2897's next final test reads them (`reserve.ts`), and the build prints how
- * many of its cases the reserve holds from every command. The walk also keeps every parent link
- * any of those events recorded, every ask's first opening and every change of a parent, and
- * writes them by tree to `trees.json` for each tree that holds a case (`trees.ts`): the claim's
- * draw groups by those trees (the reserve's item 6).
+ * The reserve of INFRA-2897's next final test reads them (`reserve.ts`). While the reserve holds,
+ * the build writes none of its cases to `corpus.jsonl`, only their count to `snapshot.json`, so no
+ * read of the file, by a command here or by anything else, meets a reserved case or its answer;
+ * only a build under a read `claim.ts` registers (the claim run's own build) writes them
+ * (`writeCorpus`). The walk also keeps every parent link any of those events recorded, every
+ * ask's first opening and every change of a parent, and writes them by tree to `trees.json` for
+ * each tree that holds a case (`trees.ts`): the claim's draw groups by those trees (the reserve's
+ * item 6).
  *
  * Nothing it writes goes into this repository: `--out` is an absolute path outside the workspace,
  * since a corpus of a production log is large and the workspace is snapshotted whole.
@@ -52,6 +67,12 @@ Options:
                        are written. An absolute path outside this repository's workspace.
   --through <event id> The last event of the walk, which pins the build. With none, the log is
                        walked once to learn its newest event id, and that id is the pin.
+
+Environment:
+  APPROVAL_EVAL_RESERVE=read:<reference>
+                       Writes the reserved cases of INFRA-2897's next final test to corpus.jsonl
+                       too, only for a read claim.ts registers with this build's digest. Without
+                       it the build leaves them out and records how many in snapshot.json.
 
 Exit status: 0 when the corpus was built, 1 when it holds no case, 2 when the build could not
 run.`;
@@ -152,7 +173,7 @@ export interface CaseRow {
 type CaseSeed = Omit<CaseRow, "confounds">;
 
 /** What the build read, so a later run can tell one corpus from another. */
-interface Snapshot {
+export interface Snapshot {
   person: string;
   throughEventId: number;
   eventsRead: number;
@@ -355,7 +376,60 @@ export function countsOf(rows: readonly CaseRow[]): Counts {
   return counts;
 }
 
-function report(counts: Counts, snapshot: Snapshot, directory: string): string {
+/**
+ * Writes `corpus.jsonl` and `snapshot.json` into `directory`, by what this build may do with the
+ * reserve of INFRA-2897's next final test (`reserveAccessOf`). While the reserve holds, no case it
+ * holds is written to `corpus.jsonl`, and `snapshot.json` records how many cases on how many
+ * issues were left out: the hold is the file's, not only its reader's, so a scorer that opens the
+ * file itself meets no reserved case and no answer to one. A build under a read `claim.ts`
+ * registers writes them and records that read; once the reserve ended, every case is written and
+ * none is held. Returns what `snapshot.json` records of the reserve.
+ */
+export async function writeCorpus(
+  directory: string,
+  rows: readonly CaseRow[],
+  snapshot: Snapshot,
+  access: Exclude<ReserveAccess, { kind: "refused" }>
+): Promise<SnapshotReserve> {
+  const ended = access.kind === "ended" ? access.record : null;
+  const held = new Set(rows.filter((row) => reserveOf(row, ended) === "held"));
+  const reserve: SnapshotReserve = {
+    leftOut: access.kind === "held",
+    cases: held.size,
+    issues: new Set([...held].map((row) => row.issueKey)).size,
+    readUnder: access.kind === "read" ? access.reference : null,
+  };
+  const written = reserve.leftOut ? rows.filter((row) => !held.has(row)) : rows;
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, "corpus.jsonl"),
+    written.map((row) => `${JSON.stringify(row)}\n`).join(""),
+    "utf8"
+  );
+  await writeFile(
+    join(directory, "snapshot.json"),
+    `${JSON.stringify({ ...snapshot, reserve }, null, 2)}\n`
+  );
+  return reserve;
+}
+
+/** What the report says the build did with the reserved cases. */
+function reserveLine(reserve: SnapshotReserve): string {
+  if (reserve.leftOut) {
+    return `${reserve.cases}, left out of corpus.jsonl, so no command and no reader meets them (reserve.ts)`;
+  }
+  if (reserve.readUnder !== null) {
+    return `${reserve.cases}, written to corpus.jsonl under ${reserve.readUnder}, a read claim.ts registers`;
+  }
+  return "none: the reserve ended (claim.ts), and every case is written";
+}
+
+function report(
+  counts: Counts,
+  snapshot: Snapshot,
+  reserve: SnapshotReserve,
+  directory: string
+): string {
   const verdicts = counts.approvalByVerdict;
   return [
     `corpus for ${snapshot.person} through event ${snapshot.throughEventId}`,
@@ -368,13 +442,24 @@ function report(counts: Counts, snapshot: Snapshot, directory: string): string {
     `    question             ${counts.byKind.question}`,
     `  cases with their words ${counts.withWordsByKind.approval} approval,` +
       ` ${counts.withWordsByKind.question} question`,
-    `  reserved cases         ${counts.reserved}, written and held from every command (reserve.ts)`,
+    `  reserved cases         ${reserveLine(reserve)}`,
     `  written to             ${directory}`,
   ].join("\n");
 }
 
 async function build(flags: Flags): Promise<number> {
   const directory = await outDirectory(flags.out);
+  // Asked before the walk, so a build refused the reserve reads nothing first.
+  const access = await reserveAccessOf(
+    process.env[RESERVE_VARIABLE],
+    REGISTRATION,
+    { argv: process.argv, env: process.env },
+    REPOSITORY_ROOT
+  );
+  if (access.kind === "refused") {
+    console.error(access.reason);
+    return 2;
+  }
   const readStartedAt = new Date().toISOString();
   let through = flags.through;
   if (through === undefined) {
@@ -423,13 +508,7 @@ async function build(flags: Flags): Promise<number> {
     readStartedAt,
     readFinishedAt,
   };
-  await mkdir(directory, { recursive: true });
-  await writeFile(
-    join(directory, "corpus.jsonl"),
-    rows.map((row) => `${JSON.stringify(row)}\n`).join(""),
-    "utf8"
-  );
-  await writeFile(join(directory, "snapshot.json"), `${JSON.stringify(snapshot, null, 2)}\n`);
+  const reserve = await writeCorpus(directory, rows, snapshot, access);
   await writeFile(join(directory, "counts.json"), `${JSON.stringify(counts, null, 2)}\n`);
   const treesFile: TreesFile = {
     version: TREES_VERSION,
@@ -439,7 +518,7 @@ async function build(flags: Flags): Promise<number> {
     ),
   };
   await writeFile(join(directory, TREES_FILE), `${JSON.stringify(treesFile)}\n`);
-  console.log(report(counts, snapshot, directory));
+  console.log(report(counts, snapshot, reserve, directory));
   if (rows.length === 0) {
     console.error(`no case: ${flags.person} answered no ask through event ${through}`);
     return 1;

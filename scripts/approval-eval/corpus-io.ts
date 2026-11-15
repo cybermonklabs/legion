@@ -50,6 +50,19 @@ export class CorpusError extends CannotRunError {
   override readonly name = "CorpusError";
 }
 
+/**
+ * What a build did with the reserve of INFRA-2897's next final test (`writeCorpus` in
+ * `build-corpus.ts`): whether it left the reserved cases out of `corpus.jsonl` because the
+ * reserve held, how many cases the reserve holds and on how many issues, and the read `claim.ts`
+ * registers that the build wrote them under, null where it wrote them under none.
+ */
+export interface SnapshotReserve {
+  leftOut: boolean;
+  cases: number;
+  issues: number;
+  readUnder: string | null;
+}
+
 /** What a build read, as `snapshot.json` holds it. */
 export interface CorpusSnapshot {
   person: string;
@@ -58,6 +71,8 @@ export interface CorpusSnapshot {
   keptEvents: number;
   readStartedAt: string;
   readFinishedAt: string;
+  /** What the build did with the reserve; null for a corpus built before builds recorded it. */
+  reserve: SnapshotReserve | null;
 }
 
 /** One built corpus, read back whole: what it was built from, and every case of it. */
@@ -242,7 +257,10 @@ export async function outDirectory(out: string): Promise<string> {
  * unless a test names another). Any other read of the reserve is refused, with the run's digest.
  * Once the registration records that the reserve ended, nothing is held. A corpus built before the
  * build recorded what the reserve reads of a case, holding a case the reserve could hold, is
- * refused: only a new build can say whether that case is reserved.
+ * refused: only a new build can say whether that case is reserved. A corpus whose build held the
+ * reserve has none of its cases in `corpus.jsonl` (`writeCorpus` in `build-corpus.ts`), only their
+ * count in `snapshot.json`, so a read of the reserve over it, or any read once the reserve ended,
+ * is refused: the cases it would read are not there, and only a new build writes them.
  */
 export async function readCorpus(
   corpus: string,
@@ -259,6 +277,18 @@ export async function readCorpus(
   const readUnder = access.kind === "read" ? access.reference : null;
   const ended = access.kind === "ended" ? access.record : null;
   const snapshot = snapshotOf(directory, await textOf(directory, "snapshot.json"));
+  const leftOut = snapshot.reserve?.leftOut === true ? snapshot.reserve : null;
+  if (leftOut !== null && leftOut.cases > 0 && access.kind !== "held") {
+    const what = `${counted(leftOut.cases, "case")} on ${counted(leftOut.issues, "issue")}`;
+    throw new CorpusError(
+      access.kind === "read"
+        ? `${directory} was built while the reserve held, so its build left the ${what} of ` +
+            "INFRA-2897's next final test out of corpus.jsonl and a read of the reserve finds none " +
+            "of them here: build the corpus under a read claim.ts registers for that build"
+        : `${directory} was built while the reserve held, so it lacks the reserve's ${what}, ` +
+            `which are development data since the reserve ended (${access.record}): build it again`
+    );
+  }
   const lines = (await textOf(directory, "corpus.jsonl")).split("\n");
   const rows: CaseRow[] = [];
   const byCaseId = new Map<string, CaseRow>();
@@ -277,6 +307,13 @@ export async function readCorpus(
       );
     }
     if (reserve === "held") {
+      if (leftOut !== null) {
+        throw new CorpusError(
+          `${join(directory, "corpus.jsonl")} line ${index + 1}: case ${row.caseId} is one the ` +
+            "reserve holds, and snapshot.json says this corpus's build left every such case out " +
+            "of the file: build it again"
+        );
+      }
       reservedCases += 1;
       if (row.issueKey !== null) reservedIssues.add(row.issueKey);
       if (readUnder === null) continue;
@@ -284,12 +321,16 @@ export async function readCorpus(
     rows.push(row);
     byCaseId.set(row.caseId, row);
   }
-  if (reservedCases > 0) {
-    const what = `${counted(reservedCases, "case")} on ${counted(reservedIssues.size, "issue")}`;
+  const held = leftOut ?? { cases: reservedCases, issues: reservedIssues.size };
+  if (held.cases > 0) {
+    const what = `${counted(held.cases, "case")} on ${counted(held.issues, "issue")}`;
     console.error(
-      readUnder === null
-        ? `reserve: held out ${what} for INFRA-2897's next final test (reserve.ts)`
-        : `reserve: read ${what} of INFRA-2897's next final test, under ${readUnder}`
+      leftOut !== null
+        ? `reserve: held out ${what} for INFRA-2897's next final test, which its build left out ` +
+            "of corpus.jsonl (reserve.ts)"
+        : readUnder === null
+          ? `reserve: held out ${what} for INFRA-2897's next final test (reserve.ts)`
+          : `reserve: read ${what} of INFRA-2897's next final test, under ${readUnder}`
     );
   }
   if (rows.length === 0) {
@@ -300,7 +341,7 @@ export async function readCorpus(
     snapshot,
     rows,
     byCaseId,
-    reserve: { cases: reservedCases, issues: reservedIssues.size, readUnder },
+    reserve: { cases: held.cases, issues: held.issues, readUnder },
   };
 }
 
@@ -462,7 +503,35 @@ function snapshotOf(directory: string, text: string): CorpusSnapshot {
     keptEvents: numberOf(record?.keptEvents) ?? 0,
     readStartedAt: stringOf(record?.readStartedAt) ?? "",
     readFinishedAt: stringOf(record?.readFinishedAt) ?? "",
+    reserve: record?.reserve === undefined ? null : snapshotReserveOf(path, record.reserve),
   };
+}
+
+/**
+ * What `snapshot.json` records of the reserve, as `writeCorpus` writes it. Any other shape is
+ * refused: a reader that guessed could take a file that left the reserved cases out for one that
+ * holds them, or the other way round.
+ */
+function snapshotReserveOf(path: string, value: unknown): SnapshotReserve {
+  const record = recordOf(value);
+  const leftOut = record?.leftOut;
+  const cases = numberOf(record?.cases);
+  const issues = numberOf(record?.issues);
+  const readUnder = record?.readUnder === null ? null : stringOf(record?.readUnder);
+  if (
+    typeof leftOut !== "boolean" ||
+    cases === null ||
+    !Number.isSafeInteger(cases) ||
+    cases < 0 ||
+    issues === null ||
+    !Number.isSafeInteger(issues) ||
+    issues < 0 ||
+    (readUnder === null && record?.readUnder !== null) ||
+    (leftOut && readUnder !== null)
+  ) {
+    throw new CorpusError(`${path} records the reserve in a shape no build writes`);
+  }
+  return { leftOut, cases, issues, readUnder };
 }
 
 /** One line of a corpus's `corpus.jsonl` read back, which a build wrote. */

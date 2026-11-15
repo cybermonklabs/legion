@@ -11,6 +11,10 @@
  * here and the run's digest (`runDigestOf` in `reserve.ts`) is the one listed with it. A refused
  * run prints its digest, which is what a registration copies.
  *
+ * The claim run's build (`build-corpus.ts`) is one of its registered commands: a build that holds
+ * the reserve writes none of its cases to `corpus.jsonl`, and `readCorpus` refuses a read of the
+ * reserve over such a corpus, so the claim's draw reads a corpus its own registered build wrote.
+ *
  * This file is outside the run digest, so a registration does not change the digest it registers.
  */
 

@@ -28,10 +28,13 @@ import type { DispatchEvent } from "./dispatch-read";
  * A reserved tree, by its root's key, that a read has already spent is in `MOVED_TO_DEVELOPMENT`,
  * with the record of that read, and is held no more.
  *
- * `readCorpus` (`corpus-io.ts`) holds the reserved cases out of every corpus it reads, so every
- * command here skips them, unless `APPROVAL_EVAL_RESERVE` is `read:<reference>` and `claim.ts`
- * registers that reference for this run's digest (`reserveAccessOf`). Once `claim.ts` records
- * that the reserve ended, no case is held.
+ * `build-corpus.ts` writes no reserved case to the `corpus.jsonl` it builds, only their count to
+ * its `snapshot.json`, so the file itself holds none for any reader to meet, and `readCorpus`
+ * (`corpus-io.ts`) holds the reserved cases out of every corpus it reads, an older build's
+ * included, so every command here skips them; each does so unless `APPROVAL_EVAL_RESERVE` is
+ * `read:<reference>` and `claim.ts` registers that reference for this run's digest
+ * (`reserveAccessOf`), the claim run's build among its commands. Once `claim.ts` records that the
+ * reserve ended, no case is held.
  */
 
 /** The cut: an ask that opened at or after it can be reserved by its tree. */
