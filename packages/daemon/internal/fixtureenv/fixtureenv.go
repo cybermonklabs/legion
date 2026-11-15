@@ -5,7 +5,7 @@
 // pod's own work, read and write the conversation of every agent of the deployment, or have its
 // own push refused by the pod's leak guard. Guard takes them out of a test process's own
 // environment, so every command it starts and everything it runs in-process inherits none;
-// Isolated hands one command none of them and a home of the test's.
+// Isolated hands one command none of the variables and a home of the test's.
 package fixtureenv
 
 import (
@@ -16,7 +16,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 )
 
@@ -69,13 +68,13 @@ func withoutImageWrappers(path string) string {
 	if err != nil {
 		return path
 	}
-	entries := filepath.SplitList(path)
-	found, _ := lookpath.Others(path, "git", "")
-	for _, git := range slices.Backward(found) {
-		if os.SameFile(git.Info, image) {
-			entries = slices.Delete(entries, git.Index, git.Index+1)
+	entries := slices.DeleteFunc(filepath.SplitList(path), func(entry string) bool {
+		if entry == "" {
+			return false
 		}
-	}
+		git, err := os.Stat(filepath.Join(entry, "git"))
+		return err == nil && os.SameFile(git, image)
+	})
 	return strings.Join(entries, string(filepath.ListSeparator))
 }
 
@@ -232,23 +231,15 @@ func RequireGuarded(t testing.TB) {
 //     Pi places a session in, which in a Legion pod is the deployment's own, holding every agent's
 //     conversation; a fixture that carried them would have whatever it starts read and write it.
 //
-// Its PATH is the process's without a directory of Legion's image wrappers
-// (withoutImageWrappers), for what the command starts by name: jj's push runs the git that PATH
-// names. The command itself is looked up on the test process's own PATH, which Guard keeps clear
-// of them.
-//
 // GIT_ALLOW_PROTOCOL=file lets git use no transport but local files, whatever a repository's own
 // configuration allows (git-config(1), protocol.allow): a push or fetch that still named a network
-// remote is refused before it connects. A caller's own JJ_USER, GIT_AUTHOR_NAME or PATH appended
-// after these wins, as exec.Cmd takes the last value of a key.
+// remote is refused before it connects. A caller's own JJ_USER or GIT_AUTHOR_NAME appended after
+// these wins, as exec.Cmd takes the last value of a key.
 func Isolated(home string) []string {
 	env := slices.DeleteFunc(os.Environ(), func(entry string) bool {
 		key, _, _ := strings.Cut(entry, "=")
-		return guarded(key) || key == "HOME" || key == "XDG_CONFIG_HOME" || key == "XDG_STATE_HOME" || key == "PATH"
+		return guarded(key) || key == "HOME" || key == "XDG_CONFIG_HOME" || key == "XDG_STATE_HOME"
 	})
-	if path, ok := os.LookupEnv("PATH"); ok {
-		env = append(env, "PATH="+withoutImageWrappers(path))
-	}
 	env = append(env, Home(home)...)
 	return append(env,
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0",

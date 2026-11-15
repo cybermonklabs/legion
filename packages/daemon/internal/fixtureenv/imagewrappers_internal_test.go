@@ -9,12 +9,11 @@ import (
 
 // A pod's PATH leads with /opt/legion/bin, whose git runs Legion's leak guard on every push and
 // whose jj refuses a push whose git is any other, so a test's push to a local bare repository
-// under its own empty home is refused in a pod and passes on CI. Isolated takes every directory
-// whose git is the image's git wrapper off the PATH it hands a command, Guard off the process's
-// own PATH, and Live gives the process's PATH back to a live proof. A directory holding a link to
-// the wrapper goes too; a test's own copy of the wrapper, which is no link, stays, and so does
-// every other entry, in order.
-func TestGuardAndIsolatedTakeLegionsWrapperDirectoriesOffPath(t *testing.T) {
+// under its own empty home is refused in a pod and passes on CI. Guard takes every directory whose
+// git is the image's git wrapper off the process's PATH, and Live gives that PATH back to a live
+// proof. A directory holding a link to the wrapper goes too; a test's own copy of the wrapper,
+// which is no link, stays, and so does every other entry, in order.
+func TestGuardTakesLegionsWrapperDirectoriesOffPath(t *testing.T) {
 	root := t.TempDir()
 	dirs := map[string]string{}
 	for _, name := range []string{"image", "linked", "copied", "tools"} {
@@ -37,16 +36,6 @@ func TestGuardAndIsolatedTakeLegionsWrapperDirectoriesOffPath(t *testing.T) {
 	pod := strings.Join([]string{dirs["image"], dirs["linked"], dirs["copied"], dirs["tools"]}, string(filepath.ListSeparator))
 	want := strings.Join([]string{dirs["copied"], dirs["tools"]}, string(filepath.ListSeparator))
 	t.Setenv("PATH", pod)
-
-	var isolated []string
-	for _, entry := range Isolated(t.TempDir()) {
-		if value, ok := strings.CutPrefix(entry, "PATH="); ok {
-			isolated = append(isolated, value)
-		}
-	}
-	if len(isolated) != 1 || isolated[0] != want {
-		t.Errorf("Isolated holds PATH %q, want one, %s", isolated, want)
-	}
 
 	// A process Guard has not run in yet, as a TestMain's is.
 	guardedKeep, unguarded = nil, nil
