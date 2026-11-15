@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -311,8 +312,8 @@ func (p *projectPause) Paused(ctx context.Context, held store.Pause, asked []sto
 // wake pacing and sends the task the claim holds where it may now go; the hold of each pod with a
 // live role ends (endLiveHolds); every outbox lane of the project with a row is woken, so the rows
 // the pause held run now (outbox.wakeUnfinished); and one admission pass is applied
-// (applyControllerTick, the pass the controller's tick applies). The resume launches no role
-// itself: each held row launches its role through the pacing when it runs.
+// (applyResumePass). The resume launches no role itself: each held row launches its role through
+// the pacing when it runs.
 func (p *projectPause) Resumed(ctx context.Context, ended store.Pause) {
 	for _, m := range p.supervisor.supervised() {
 		token := m.View().Claim.Token
@@ -322,7 +323,21 @@ func (p *projectPause) Resumed(ctx context.Context, ended store.Pause) {
 	if r := p.workflow.outboxWake.Load(); r != nil {
 		r.wakeUnfinished(ctx)
 	}
-	p.workflow.applyControllerTick(ctx, p.now())
+	p.applyResumePass(ctx, ended)
+}
+
+// applyResumePass applies the resume's one admission pass as a fact of its own
+// (intake.ProjectResumed), keyed on the ended pause, through the workflow's handlers: admission
+// promotes on it as on every fact that is not a Dispatch issue, and nothing else acts on it. It is
+// not the controller's tick, which would also queue the controller a tick notice: the resume
+// wakes nobody by itself. A failed pass is logged; the next fact or tick promotes the line.
+func (p *projectPause) applyResumePass(ctx context.Context, ended store.Pause) {
+	w := p.workflow
+	eventID := fmt.Sprintf("project-resumed:%s:%d", p.project, ended.ID)
+	if _, err := intake.ApplyFact(ctx, w.pool, "pause", eventID, intake.ProjectResumed{Pause: ended.ID}, w.handlers...); err != nil {
+		p.log.Error("pause: the resume's admission pass failed; the next fact or tick promotes the line",
+			"pause", ended.ID, "error", err)
+	}
 }
 
 // endLiveHolds ends the hold of each pod of the project in which a role is live (decision 13): that
@@ -351,22 +366,10 @@ func (p *projectPause) endLiveHolds(ctx context.Context, ended store.Pause) {
 	}
 }
 
-// endLiveHold ends issue's pod hold where a role of the pod is live, and answers whether it did.
+// endLiveHold ends issue's pod hold where a role of the pod is live, and answers whether it did
+// (store.Store.EndLivePausePodHold, under the issue's lock).
 func (p *projectPause) endLiveHold(ctx context.Context, issue string) (bool, error) {
-	var ended bool
-	err := p.store.Tx(ctx, func(tx pgx.Tx) error {
-		ended = false
-		if err := store.LockIssueForPause(ctx, tx, issue); err != nil {
-			return err
-		}
-		live, err := store.IssueHasLiveRoleTx(ctx, tx, p.token, issue)
-		if err != nil || !live {
-			return err
-		}
-		ended, err = store.EndPausePodHoldTx(ctx, tx, issue, store.PausePodHoldResumed, p.now().UTC())
-		return err
-	})
-	return ended, err
+	return p.store.EndLivePausePodHold(ctx, p.token, issue, store.PausePodHoldResumed, p.now().UTC())
 }
 
 // askBootStops is the boot's pass while the project is paused (decision 5): once every claim is

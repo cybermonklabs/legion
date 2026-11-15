@@ -107,6 +107,26 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 			image: true, want: IdleHoldTreeNotLive,
 		},
 		{
+			name:  "the project is paused",
+			view:  func() pods.IdleView { v := idleChild(); v.Paused = true; return v }(),
+			image: true, want: IdleHoldPaused,
+		},
+		{
+			// The resume ended the pause, and no role of the pod has been ready since.
+			name:  "a pause holds the pod",
+			view:  func() pods.IdleView { v := idleChild(); v.PauseHeld = true; return v }(),
+			image: true, want: IdleHoldPauseHeld,
+		},
+		{
+			name: "the project is paused and its pod holds no live claim",
+			view: func() pods.IdleView {
+				v := idleChild()
+				v.Paused, v.Claims[0].State = true, supervise.StateSuspended
+				return v
+			}(),
+			image: true, want: IdleHoldPaused,
+		},
+		{
 			name:  "a bundle of the pod's work is still waiting to be restored",
 			view:  func() pods.IdleView { v := idleChild(); v.BundleUnrestored = true; return v }(),
 			image: true, want: IdleHoldBundleUnrestored,
@@ -370,6 +390,20 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 			sandbox: true, want: IdleHoldUnownedTreeNotLive,
 		},
 		{
+			// The pause stopped every role and kept the pod; the resume ended the pause, and no
+			// role of the pod has been ready since.
+			name:    "a pause holds the pod",
+			view:    func() pods.IdleView { v := unownedIssue(); v.PauseHeld = true; return v }(),
+			sandbox: true, want: IdleHoldUnownedPauseHeld,
+		},
+		{
+			// A project paused now holds no pod in this rule: the release's own transaction
+			// refuses the mark while the project is paused (store.ReleaseIdleIssue).
+			name:    "the project is paused and no pause holds the pod",
+			view:    func() pods.IdleView { v := unownedIssue(); v.Paused = true; return v }(),
+			sandbox: true, want: IdleHoldNone,
+		},
+		{
 			name:    "a release of that Sandbox is already under way",
 			view:    func() pods.IdleView { v := unownedIssue(); v.Releasing = true; return v }(),
 			sandbox: true, want: IdleHoldUnownedReleasing,
@@ -444,7 +478,7 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 // it kept: two holds that printed the same would make the record unreadable.
 func TestEveryIdleHoldHasANameOfItsOwn(t *testing.T) {
 	seen := map[string]IdleHold{}
-	for hold := IdleHoldNone; hold <= IdleHoldUnownedNotIdle; hold++ {
+	for hold := IdleHoldNone; hold <= IdleHoldUnownedPauseHeld; hold++ {
 		name := hold.String()
 		if name == "unknown" {
 			t.Fatalf("hold %d has no name", int(hold))
@@ -454,7 +488,7 @@ func TestEveryIdleHoldHasANameOfItsOwn(t *testing.T) {
 		}
 		seen[name] = hold
 	}
-	if got := IdleHold(int(IdleHoldUnownedNotIdle) + 1).String(); got != "unknown" {
+	if got := IdleHold(int(IdleHoldUnownedPauseHeld) + 1).String(); got != "unknown" {
 		t.Fatalf("an unmapped hold prints %q, want unknown", got)
 	}
 }

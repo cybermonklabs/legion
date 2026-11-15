@@ -571,6 +571,25 @@ func (p *PodRecords) TakeHeldPodWake(ctx context.Context, tx pgx.Tx, issue strin
 	return true, CancelPodBackstops(ctx, tx, p.project, issue, role)
 }
 
+// PauseOf is the id of the open pause of issue's project, 0 while the project runs, read inside
+// the caller's transaction with its row locked for share (LockIssuePauseTx): a wake the workflow
+// takes while the project is paused is a held wake of that pause (TakeHeldPodWake, decision 15 of
+// dispatch://INFRA-3759), and the resume's end of the pause waits for the wake to commit.
+func (p *PodRecords) PauseOf(ctx context.Context, tx pgx.Tx, issue string) (int64, error) {
+	held, open, err := LockIssuePauseTx(ctx, tx, issue)
+	if err != nil || !open {
+		return 0, err
+	}
+	return held.ID, nil
+}
+
+// StoppedByPause is whether the claim's newest stop is a pause's, newer than issue's newest pod
+// release (StoppedByPauseTx): the session a wake of it brings back is one a pause stopped in a
+// pod the pause kept (decision 16 of dispatch://INFRA-3759).
+func (p *PodRecords) StoppedByPause(ctx context.Context, tx pgx.Tx, issue string, token claim.Token) (bool, error) {
+	return StoppedByPauseTx(ctx, tx, p.project, issue, token)
+}
+
 // ClosePodGoneResume closes the open resume of issue's role when the pod that resume was waiting
 // for has gone away: a release of the issue, of whatever kind, recorded since the wake was taken
 // (newestPodRelease, seen_release). Without it that row would refuse every later wake of the role

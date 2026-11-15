@@ -450,6 +450,22 @@ func LockOpenPauseTx(ctx context.Context, tx pgx.Tx, project string) (Pause, boo
 	return readOpenPause(ctx, tx, project, " for share")
 }
 
+// issueProject is the Dispatch key of issue's project, the spelling project_pauses holds: the
+// part of the key before its dash, as the outbox's split_part(outbox.issue, '-', 1) reads it.
+func issueProject(issue string) string {
+	project, _, _ := strings.Cut(issue, "-")
+	return project
+}
+
+// LockIssuePauseTx is the open pause of issue's project with its row locked for share, and
+// whether one is open: what a wake the workflow takes inside a fact's transaction reads to mark a
+// wake the pause holds (decision 15 of dispatch://INFRA-3759, PodRecords.PauseOf). The resume's
+// end of that pause then waits for the fact to commit, and sets the stuck clock of the held wake
+// it wrote (SetProjectResumeClocksTx).
+func LockIssuePauseTx(ctx context.Context, tx pgx.Tx, issue string) (Pause, bool, error) {
+	return readOpenPause(ctx, tx, issueProject(issue), " for share")
+}
+
 // LockPauseTx is pause id read with its row locked for share: the stop transaction of decision 6
 // takes it on the pause its suspension carries, open or ended, so a resume that would end it
 // waits for the stop's records to commit. A pause no row holds is an error.
@@ -878,19 +894,104 @@ func (s *Store) OpenPausePodHolds(ctx context.Context, project string) ([]PauseP
 	if err != nil {
 		return nil, fmt.Errorf("read the pod holds of %s: %w", project, err)
 	}
+	holds, err := scanPausePodHolds(rows)
+	if err != nil {
+		return nil, fmt.Errorf("read the pod holds of %s: %w", project, err)
+	}
+	return holds, nil
+}
+
+// PausePodHoldsSince is every hold of project's pods that stands, or that ended after since, by
+// issue and then by when it began: what one sweep of the update rounds reads (decision 12 of
+// dispatch://INFRA-3759). A round waits over a pod a hold stands on, and its bound moves by the
+// time a hold kept its pod after the round opened, so since is the opening of the oldest round
+// the sweep reads. project is the Dispatch key.
+func (s *Store) PausePodHoldsSince(ctx context.Context, project string, since time.Time) ([]PausePodHold, error) {
+	rows, err := s.pool.Query(ctx, `select `+pausePodHoldColumns+` from project_pause_pod_holds
+		where project = $1 and (ended_at is null or ended_at > $2) order by issue, held_at`, project, since)
+	if err != nil {
+		return nil, fmt.Errorf("read the pod holds of %s since %s: %w", project, since.Format(time.RFC3339), err)
+	}
+	holds, err := scanPausePodHolds(rows)
+	if err != nil {
+		return nil, fmt.Errorf("read the pod holds of %s since %s: %w", project, since.Format(time.RFC3339), err)
+	}
+	return holds, nil
+}
+
+func scanPausePodHolds(rows pgx.Rows) ([]PausePodHold, error) {
 	defer rows.Close()
 	var holds []PausePodHold
 	for rows.Next() {
 		h, err := scanPausePodHold(rows)
 		if err != nil {
-			return nil, fmt.Errorf("read the pod holds of %s: %w", project, err)
+			return nil, err
 		}
 		holds = append(holds, h)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the pod holds of %s: %w", project, err)
+	return holds, rows.Err()
+}
+
+// EndLivePausePodHold ends, at at for the reason end, the hold that stands on issue's pod where a
+// role of the pod is live, in a transaction of its own, and answers whether it ended one: the
+// resume's end of the holds of pods with a live role (PausePodHoldResumed) and the end at a role's
+// ready (PausePodHoldReady, decision 13 of dispatch://INFRA-3759). The live role is read under the
+// issue's lock (LockIssueForPause), so a stop transaction of a role of the same pod commits first
+// and the read sees it: a hold that stop opened stays, since no role of the pod runs then.
+// project is the project token, as the claims table holds it.
+func (s *Store) EndLivePausePodHold(ctx context.Context, project, issue string, end PausePodHoldEnd, at time.Time) (bool, error) {
+	var ended bool
+	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		ended = false
+		if err := LockIssueForPause(ctx, tx, issue); err != nil {
+			return err
+		}
+		live, err := IssueHasLiveRoleTx(ctx, tx, project, issue)
+		if err != nil || !live {
+			return err
+		}
+		ended, err = EndPausePodHoldTx(ctx, tx, issue, end, at)
+		return err
+	})
+	return ended, err
+}
+
+// endTreePausePodHoldsTx ends, at at, the hold that stands on the pod of each issue of tree, and
+// answers the issues whose hold it ended: the tree's cleanup has deleted every Sandbox of the
+// tree (CleanupReservedTree), so a hold of one of its pods holds nothing (PausePodHoldDeleted,
+// decision 13 of dispatch://INFRA-3759). Each hold ends under its issue's lock, in key order.
+func endTreePausePodHoldsTx(ctx context.Context, tx pgx.Tx, tree string, at time.Time) ([]string, error) {
+	rows, err := tx.Query(ctx, `select h.issue from project_pause_pod_holds h join issues i on i.key = h.issue
+		where i.tree = $1 and h.ended_at is null order by h.issue`, tree)
+	if err != nil {
+		return nil, fmt.Errorf("read the pod holds of tree %s: %w", tree, err)
 	}
-	return holds, nil
+	issues, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the pod holds of tree %s: %w", tree, err)
+	}
+	for _, issue := range issues {
+		if _, err := EndPausePodHoldTx(ctx, tx, issue, PausePodHoldDeleted, at); err != nil {
+			return nil, err
+		}
+	}
+	return issues, nil
+}
+
+// StoppedByPauseTx is whether the newest stop of claim token is a pause's that ended `stopped`
+// after issue's newest pod release, through tx: then a wake of the claim brings back a session
+// the pause stopped in a pod it kept, and the wake's task says so (decision 16 of
+// dispatch://INFRA-3759, workflow.WakeTask). A release recorded after that stop took the pod, and
+// the release's words are the true ones. project is the project token, as pod_releases holds it.
+func StoppedByPauseTx(ctx context.Context, tx pgx.Tx, project, issue string, token claim.Token) (bool, error) {
+	var paused bool
+	if err := tx.QueryRow(ctx, `select coalesce((select s.ended_as = 'stopped' and s.ended_at > coalesce(
+			(select max(r.at) from pod_releases r where r.project = $1 and r.issue = $2), '-infinity'::timestamptz)
+		from project_pause_stops s where s.claim = $3 order by s.id desc limit 1), false)`,
+		project, issue, string(token)).Scan(&paused); err != nil {
+		return false, fmt.Errorf("read whether a pause stopped %s last: %w", token, err)
+	}
+	return paused, nil
 }
 
 // IssueHasLiveRoleTx is whether any claim of issue is live through tx: not suspended, failed or

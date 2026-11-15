@@ -135,6 +135,11 @@ type workflowRuntime struct {
 	idleStore   *store.Store
 	idleRuntime issuePods
 	idleTick    time.Duration
+	// now is the daemon's one clock (overrides.clock, the machines' clock, the wall clock in
+	// production), which the engine stamps its deadlines with (workflow.Config.Clock) and the
+	// idle, wake and stuck passes read their now from, so a test clock moves all of them
+	// together; nil, in a runtime a test builds by hand, is the wall clock (clockNow).
+	now func() time.Time
 	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
 	// so it waits out its own period rather than the daemon's minute.
 	entrySweep time.Duration
@@ -352,7 +357,11 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, repo ghrepo.Reposito
 // wake the engine causes may run, the catch-up a start writes in place of a launch (workflow's
 // claimReady), and nil while the operator paces nothing, which is the engine's reading of the
 // pacing off — the catch-up is then due at once, as it always was.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Tokens, githubAPI string, reserve func(time.Time) time.Time) (opened *workflowRuntime, _ error) {
+//
+// clock is the daemon's one clock (the machines', overrides.clock), which the engine and this
+// runtime's idle, wake and stuck passes read (workflowRuntime.now); production passes the wall
+// clock.
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Tokens, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -392,7 +401,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		failed: make(chan error, 1), mappingChanged: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
 		mergeStateRunning: map[string]bool{},
-		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI,
+		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock,
 		commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos,
 		defaultBranches:         newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
 	}
@@ -447,6 +456,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// limiter run built for both lanes. A deployment that paces nothing passes no reserve at all,
 	// which is the pacing off: the engine then writes that catch-up due at once, as it always did.
 	engineCfg.Reserve = reserve
+	// The engine stamps its deadlines on the daemon's one clock, which the machines and this
+	// runtime's passes read too (gap finding 1 of dispatch://INFRA-3759).
+	engineCfg.Clock = clock
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
 	// The project's `memory` block decides what each tree admission opens is drawn: a project the

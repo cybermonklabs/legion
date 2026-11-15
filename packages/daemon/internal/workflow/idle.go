@@ -120,6 +120,19 @@ const (
 	// IdleHoldUnownedNotIdle: the pod did something inside the quiet period, so the period has
 	// not passed and the pod is not this rule's to take yet.
 	IdleHoldUnownedNotIdle
+
+	// The three holds below are a project's pause's (decision 12 of dispatch://INFRA-3759): two
+	// of the idle rule's and one of the second rule's, whose name carries the unowned_ prefix as
+	// the nine above do.
+
+	// IdleHoldPaused: the issue's project is paused, and a pause starts no release.
+	IdleHoldPaused
+	// IdleHoldPauseHeld: a pause holds the pod. The pause stopped its roles and kept it, and it
+	// stays until a role of it is ready again or something deletes it (decision 13).
+	IdleHoldPauseHeld
+	// IdleHoldUnownedPauseHeld: a pause holds the pod no claim can use now. Its roles are the
+	// pause's to bring back in this pod, so the second rule leaves it to them.
+	IdleHoldUnownedPauseHeld
 )
 
 var idleHoldNames = map[IdleHold]string{
@@ -153,6 +166,10 @@ var idleHoldNames = map[IdleHold]string{
 	IdleHoldUnownedTreeNotLive:       "unowned_tree_not_live",
 	IdleHoldUnownedReleasing:         "unowned_releasing",
 	IdleHoldUnownedNotIdle:           "unowned_not_idle",
+
+	IdleHoldPaused:           "paused",
+	IdleHoldPauseHeld:        "pause_held",
+	IdleHoldUnownedPauseHeld: "unowned_pause_held",
 }
 
 // String is the hold's recorded name, which a reader of the daemon's release records reads.
@@ -189,6 +206,11 @@ type IdleDecision struct {
 //   - the issue is in the workflow and its tree is live: neither the issue nor its root has left
 //     the workflow, and neither lingers (pods.InWorkflowNotLingering). A pod in that state is a
 //     close's to stop;
+//
+//   - the issue's project is not paused (IdleHoldPaused), and no pause holds the pod
+//     (IdleHoldPauseHeld). A pause keeps every pod of its project and starts no release, and a
+//     pod it held stays after the resume until a role of it is ready again (decision 12 of
+//     dispatch://INFRA-3759);
 //
 //   - no bundle of the issue's unpushed work is waiting to be restored. A release saves that
 //     work out of the pod it deletes, and the pod that replaces it puts it back; until a
@@ -241,6 +263,12 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	}
 	if !pods.InWorkflowNotLingering(view.Standing(), view.RootStanding(), record.OutOfWorkflow) {
 		return IdleDecision{Hold: IdleHoldTreeNotLive}
+	}
+	if view.Paused {
+		return IdleDecision{Hold: IdleHoldPaused}
+	}
+	if view.PauseHeld {
+		return IdleDecision{Hold: IdleHoldPauseHeld}
 	}
 	if view.BundleUnrestored {
 		return IdleDecision{Hold: IdleHoldBundleUnrestored}
@@ -346,6 +374,12 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //   - the runtime holds the issue's Sandbox. Where it does not, the pod this rule would release
 //     is already gone and nothing of it is reserved (IdleHoldUnownedSandboxGone);
 //
+//   - no pause holds the pod (pods.IdleView.PauseHeld). A pause stopped its roles and kept it,
+//     and it stays until a role of it is ready again or something deletes it
+//     (IdleHoldUnownedPauseHeld). A project paused now is no conjunct here: the release's own
+//     transaction refuses to mark any release while the project is paused
+//     (store.Store.ReleaseIdleIssue, decision 12 of dispatch://INFRA-3759);
+//
 //   - no claim records a process (pods.IdleClaim.HasProcess). A stopped claim that still records
 //     a locator is one the teardown's own fence refuses (claimMayRun in internal/store/claims.go,
 //     read through issueStopFences), so a release marked for such an issue could never finish:
@@ -391,6 +425,9 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 	}
 	if !sandboxPresent {
 		return IdleDecision{Hold: IdleHoldUnownedSandboxGone}
+	}
+	if view.PauseHeld {
+		return IdleDecision{Hold: IdleHoldUnownedPauseHeld}
 	}
 	for _, c := range view.Claims {
 		if c.HasProcess {

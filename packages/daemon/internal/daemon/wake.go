@@ -36,6 +36,15 @@ const (
 	// not restated here.
 )
 
+// clockNow is the daemon's one clock as this runtime reads it (workflowRuntime.now), and the
+// wall clock in a runtime a test builds by hand with none.
+func (w *workflowRuntime) clockNow() time.Time {
+	if w.now == nil {
+		return time.Now()
+	}
+	return w.now()
+}
+
 // listenerLive is whether the Envoy listener has said it is alive and reporting within
 // listenerReadyWindow (store.Store.ListenerLive): the one gate the idle rule reads before it
 // releases anything. A daemon that has read no report at all, and one whose newest report is
@@ -44,7 +53,8 @@ func (w *workflowRuntime) listenerLive(ctx context.Context) bool {
 	if w.idleStore == nil {
 		return false
 	}
-	live, at, found, err := w.idleStore.ListenerLive(ctx, w.projectID, time.Now(), listenerReadyWindow)
+	now := w.clockNow()
+	live, at, found, err := w.idleStore.ListenerLive(ctx, w.projectID, now, listenerReadyWindow)
 	switch {
 	case err != nil:
 		w.log.Warn("idle release: could not read the listener's liveness report; releasing nothing", "error", err)
@@ -52,7 +62,7 @@ func (w *workflowRuntime) listenerLive(ctx context.Context) bool {
 		w.log.Info("idle release: the Envoy listener has not once reported itself ready to this daemon; releasing nothing")
 	case !live:
 		w.log.Warn("idle release: the Envoy listener's newest report is too old to release a pod on; a released pod would not be woken by a role or agent message",
-			"reported", at.Format(time.RFC3339), "age", time.Since(at).Truncate(time.Second).String(), "window", listenerReadyWindow.String())
+			"reported", at.Format(time.RFC3339), "age", now.Sub(at).Truncate(time.Second).String(), "window", listenerReadyWindow.String())
 	}
 	return live
 }
@@ -75,7 +85,7 @@ func (w *workflowRuntime) tickWakes(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			now := time.Now().UTC()
+			now := w.clockNow().UTC()
 			w.fireDueBackstops(ctx, now)
 			w.warnStuckResumes(ctx, now)
 		}
@@ -107,11 +117,16 @@ func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 	}
 }
 
-// warnStuckResumes warns about each resume whose wake ran out of workflow.StrandedReleaseWake
-// with the woken role still having taken no turn, and marks it, so each is warned about once.
-// The warning names the issue, the role and the step the resume is waiting on, which is what an
-// operator needs to tell "the pod never came back" from "the pod came back and the agent never
-// took its task".
+// warnStuckResumes warns about each resume whose stuck clock ran out of
+// workflow.StrandedReleaseWake with the woken role still having taken no turn, and marks it, so
+// each is warned about once. The warning names the issue, the role and the step the resume is
+// waiting on, which is what an operator needs to tell "the pod never came back" from "the pod
+// came back and the agent never took its task".
+//
+// The clock is the resume's stuck clock (store.PodResume.ClockAt), which starts at the wake and
+// moves to the moment the wake pacing let the launch out, or a project's resume ended the pause
+// that held it; the read passes over a paused project's resumes (decision 14 of
+// dispatch://INFRA-3759).
 func (w *workflowRuntime) warnStuckResumes(ctx context.Context, now time.Time) {
 	stuck, err := w.idleStore.StuckPodResumes(ctx, w.projectID, now.Add(-workflow.StrandedReleaseWake))
 	if err != nil {
@@ -125,7 +140,7 @@ func (w *workflowRuntime) warnStuckResumes(ctx context.Context, now time.Time) {
 		w.log.Warn("wake: a released pod's resume has had no first turn since its wake",
 			"issue", resume.Issue, "role", resume.Role, "kind", resume.Kind,
 			"waiting", w.stuckResumeStep(ctx, resume), "wake", resume.At.UTC().Format(time.RFC3339),
-			"after", now.Sub(resume.At).Truncate(time.Second).String())
+			"clock", resume.ClockAt.UTC().Format(time.RFC3339), "after", now.Sub(resume.ClockAt).Truncate(time.Second).String())
 		if err := w.idleStore.MarkPodResumeStuck(ctx, resume.ID); err != nil {
 			w.log.Warn("wake: could not mark a resume stuck", "issue", resume.Issue, "role", resume.Role, "error", err)
 		}
@@ -153,6 +168,10 @@ func (w *workflowRuntime) stuckResumeStep(ctx context.Context, resume store.PodR
 // notice or a phase-ended message gives the role no delivery to confirm, so the turn itself —
 // not a confirmation — is what says the pod came back and took its work.
 //
+// A ready claim also ends a pause's hold of its pod (decision 13 of dispatch://INFRA-3759): a role
+// of the pod runs again, so the pod is in the state a released pod's wake leaves it in
+// (endPodHoldAtReady).
+//
 // It is a supervisor terminal callback, so it runs on the machine's own goroutine and must not
 // block it; a failed stamp is logged and the resume keeps its zero time.
 func (w *workflowRuntime) podResume(c supervise.Claim, state supervise.ClaimState) {
@@ -173,7 +192,26 @@ func (w *workflowRuntime) podResume(c supervise.Claim, state supervise.ClaimStat
 		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		w.stampPodResume(ctx, c.Issue, c.Role, mark, what)
+		if state == supervise.StateReady {
+			w.endPodHoldAtReady(ctx, c)
+		}
 	}()
+}
+
+// endPodHoldAtReady ends the pause's hold of c's pod at c's ready (store.EndLivePausePodHold,
+// PausePodHoldReady): the first ready of a role of the pod ends it, and every later ready finds
+// none. It is ended under the issue's lock where a role of the pod is live, so a stop transaction
+// of the same pod that commits first, and opens a hold because no role runs any more, keeps its
+// hold. A failed end is logged, and the next ready of a role of the pod ends it.
+func (w *workflowRuntime) endPodHoldAtReady(ctx context.Context, c supervise.Claim) {
+	ended, err := w.idleStore.EndLivePausePodHold(ctx, w.projectID, c.Issue, store.PausePodHoldReady, w.clockNow().UTC())
+	switch {
+	case err != nil:
+		w.log.Warn("pause: could not end a pod's hold at a role's ready; the next ready of a role of the pod ends it",
+			"claim", c.Token, "issue", c.Issue, "error", err)
+	case ended:
+		w.log.Info("pause: a pod's hold ended; a role of the pod is ready", "claim", c.Token, "issue", c.Issue)
+	}
 }
 
 // stampPodResume writes one observation onto the newest resume of issue's role that has not
@@ -190,7 +228,7 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 	if !found {
 		return
 	}
-	if err := mark(ctx, id, time.Now().UTC()); err != nil {
+	if err := mark(ctx, id, w.clockNow().UTC()); err != nil {
 		w.log.Warn("wake: could not stamp a resume", "issue", issue, "role", role, "observation", what, "error", err)
 	}
 }

@@ -161,14 +161,16 @@ type outbox struct {
 
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
 // suspension, an idle release's own two decisions and the bundle it saves, a stop's wait for a
-// stored claim's machine, a workflow tree close's cleanup, and a project pause's stop of a role.
+// stored claim's machine, a workflow tree close's cleanup, a project pause's stop of a role, and
+// the end of a pause's hold of a pod a deletion took.
 type outboxTrees interface {
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
 	IssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
 	IssueReleaseStop(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	IssueReleaseSave(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error
-	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool) ([]claim.Role, bool, error)
+	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool,
+		paused store.ReleaseCancelPause) (store.ReleaseCancelled, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
 	PutWorkspaceBundle(ctx context.Context, issue string, release int64, bundle runtime.WorkspaceBundle) error
 	WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error)
@@ -184,6 +186,7 @@ type outboxTrees interface {
 	ArmPodBackstop(ctx context.Context, backstop store.PodWakeBackstop) error
 	PauseByID(ctx context.Context, id int64) (store.Pause, error)
 	EndPauseStop(ctx context.Context, pause int64, token claim.Token, end store.PauseStopEnd, at time.Time) (bool, error)
+	EndPausePodHold(ctx context.Context, issue string, end store.PausePodHoldEnd, at time.Time) (bool, error)
 }
 
 func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, log *slog.Logger) *outbox {
@@ -659,18 +662,7 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 	case record.LingerClose:
 		return r.linger(ctx, row, value)
 	case record.IssueSuspend:
-		if r.supervisor == nil {
-			return errors.New("issue suspension executor has no claim supervisor")
-		}
-		suspender, ok := r.supervisor.deps.Runtime.(runtime.IssueSuspender)
-		if !ok {
-			return nil
-		}
-		closing := store.IssueClose{Issue: row.Issue, Tree: value.Tree, IssueGeneration: value.Generation,
-			TreeGeneration: value.TreeGeneration, Row: row.ID}
-		return suspender.SuspendIssue(ctx, row.Issue, value.Tree, func(ctx context.Context) (bool, error) {
-			return r.trees.IssueSuspension(ctx, r.project, closing, record.OutOfWorkflow)
-		})
+		return r.suspendIssue(ctx, row, value)
 	case record.IssueBundle:
 		return r.bundleIssueWorkspace(ctx, row, value)
 	case record.IssueRelease:
@@ -2266,6 +2258,49 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 	return nil
 }
 
+// suspendIssue is the issue_suspend executor, the durable effect of a close, a park, a linger or a
+// production check's look: the runtime suspends the issue's Sandbox under its pod lock once the
+// store authorizes the close (store.IssueSuspension), waits its pod out and deletes it
+// (runtime.IssueSuspender). A pod the runtime deleted, or found gone, once the store authorized
+// it, ends the pause's hold of that pod (podDeleted).
+func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value record.IssueSuspend) error {
+	if r.supervisor == nil {
+		return errors.New("issue suspension executor has no claim supervisor")
+	}
+	suspender, ok := r.supervisor.deps.Runtime.(runtime.IssueSuspender)
+	if !ok {
+		return nil
+	}
+	closing := store.IssueClose{Issue: row.Issue, Tree: value.Tree, IssueGeneration: value.Generation,
+		TreeGeneration: value.TreeGeneration, Row: row.ID}
+	authorized := false
+	if err := suspender.SuspendIssue(ctx, row.Issue, value.Tree, func(ctx context.Context) (bool, error) {
+		act, err := r.trees.IssueSuspension(ctx, r.project, closing, record.OutOfWorkflow)
+		authorized = act && err == nil
+		return act, err
+	}); err != nil || !authorized {
+		return err
+	}
+	return r.podDeleted(ctx, row.Issue, "the issue's close, park, linger or production check deleted its pod")
+}
+
+// podDeleted ends the hold a project's pause has on issue's pod once a row has deleted that pod
+// (decision 13 of dispatch://INFRA-3759): the issue's suspension (suspendIssue) and a release's
+// teardown (releaseIssue). The tree's cleanup ends the holds of its pods in its own transaction
+// (store.CleanupReservedTree). The end takes the issue's lock (store.EndPausePodHoldTx), as every
+// writer of a pod hold does. A failed end fails the row, whose retry deletes nothing more, since
+// the pod is gone, and ends the hold.
+func (r *outbox) podDeleted(ctx context.Context, issue, why string) error {
+	ended, err := r.trees.EndPausePodHold(ctx, issue, store.PausePodHoldDeleted, r.now().UTC())
+	if err != nil {
+		return err
+	}
+	if ended {
+		r.log.Info("pause: a pod's hold ended; the pod was deleted", "issue", issue, "reason", why)
+	}
+	return nil
+}
+
 // bundleIssueWorkspace is the first act of an idle pod's release: it asks the shim of the role
 // the release named — a process still running in the pod, because this row runs before the
 // `release` rows that stop them — for the git bundle of the unpushed work of the workspace every
@@ -2292,10 +2327,17 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 	if err != nil {
 		return err
 	}
-	if decision.Act != store.ReleaseActs {
+	switch decision.Act {
+	case store.ReleaseOver:
 		r.log.Info("outbox release save finished without acting: the pod's release is over",
 			"row", row.ID, "issue", row.Issue)
 		return nil
+	case store.ReleaseCancel:
+		// The project is paused: the pause saves no workspace and deletes no pod, so the release
+		// is cancelled before its save, whatever reached its roles first (decision 12 and
+		// departure 4 of dispatch://INFRA-3759).
+		hold, why := releaseHold(decision.Cause)
+		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
 	}
 	bundler, ok := r.supervisor.deps.Runtime.(runtime.WorkspaceBundler)
 	if !ok {
@@ -2418,6 +2460,11 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		hold, why := releaseHold(decision.Cause)
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
 	}
+	// The pod is gone: the hold a project's pause had on it holds nothing now (decision 13 of
+	// dispatch://INFRA-3759).
+	if err := r.podDeleted(ctx, row.Issue, "a release's teardown deleted the pod"); err != nil {
+		return err
+	}
 	if decision.SuspendsNoRole {
 		r.log.Info("outbox: released the pod of an issue no role can use; the release suspended no role, so no session is waiting for a wake",
 			"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation,
@@ -2482,21 +2529,32 @@ func (r *outbox) issueSandboxName(issue string) string {
 // on without it left the pod standing with its roles resumed and a copy of their work waiting
 // in the database for the issue's next pod, which would restore it over everything they pushed
 // in between.
+//
+// A cancel while the project is paused queues no resume: the store records each role the release
+// had stopped as stopped by the pause, holds the pod, and arms the open phase's worker's backstop
+// as the stop transaction arms one (decision 12 of dispatch://INFRA-3759). The backstop is the
+// idle release's own (outbox.backstop), and the open phase's worker is the workflow's rule
+// (workflow.OpenPhaseRole).
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
-	// The second answer is whether the release that was cancelled suspended no role: such a
-	// release resumes nothing, so the empty set of resumed roles is the whole story rather than
-	// a release whose claims another path took over, and the line must not say that the issue's
-	// roles go on in the pod, since no role of this issue is running anywhere.
-	resumed, suspendsNoRole, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow)
+	cancelled, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow,
+		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole})
 	if err != nil {
 		return err
 	}
-	if suspendsNoRole {
+	// A release that suspended no role resumes nothing, so the empty set of resumed roles is the
+	// whole story rather than a release whose claims another path took over, and the line must
+	// not say that the issue's roles go on in the pod, since no role of this issue is running
+	// anywhere.
+	switch {
+	case cancelled.SuspendsNoRole:
 		r.log.Info("outbox: the release of an issue's pod that no role can use did not finish; the pod stands with every claim of it as it was",
 			"issue", issue, "hold", hold.String(), "reason", why)
-	} else {
+	case cancelled.Pause != 0:
+		r.log.Info("outbox: the idle release of an issue's pod did not finish while its project is paused; its roles stay stopped by the pause in the same pod",
+			"issue", issue, "hold", hold.String(), "reason", why, "pause", cancelled.Pause, "stopped", cancelled.Stopped)
+	default:
 		r.log.Info("outbox: the idle release of an issue's pod did not finish; its roles go on in the same pod",
-			"issue", issue, "hold", hold.String(), "reason", why, "resumed", resumed)
+			"issue", issue, "hold", hold.String(), "reason", why, "resumed", cancelled.Resumed)
 	}
 	r.recordPodHold(ctx, issue, hold)
 	return nil

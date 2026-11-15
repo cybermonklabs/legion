@@ -98,7 +98,7 @@ func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 // completes, since that is where the bundle it saved is known (outbox.releaseIssue, through
 // recordPodRelease).
 func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
-	now := time.Now().UTC()
+	now := w.clockNow().UTC()
 	onConfiguredImage := w.idleRuntime.IssuePodRunsConfiguredImage(issue)
 	var decision workflow.IdleDecision
 	var quiet, holding bool
@@ -207,10 +207,14 @@ func (w *workflowRuntime) releaseUnownedPods(ctx context.Context) {
 //
 // A pod the rule kept that was quiet for the whole idle period is recorded as a hold
 // (recordIdleHold), as the idle pass records its own: that is a pod release would have taken and
-// something else stopped. Three of this rule's nine holds are such a hold, and recordableHold is
+// something else stopped. Four of this rule's ten holds are such a hold, and recordableHold is
 // what says which. The release itself is recorded where it completes (outbox.releaseIssue).
+//
+// A pod the rule would release while the project is paused is kept as IdleHoldPaused: the
+// release's transaction marks no release while the project is paused (store.ReleaseIdleIssue,
+// decision 12 of dispatch://INFRA-3759), and the hold says what kept the pod.
 func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (workflow.IdleHold, bool) {
-	now := time.Now().UTC()
+	now := w.clockNow().UTC()
 	if _, present := w.idleRuntime.IssueSandbox(issue); !present {
 		w.log.Debug("unowned release: the pod is kept", "issue", issue,
 			"hold", workflow.IdleHoldUnownedSandboxGone.String())
@@ -234,6 +238,9 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 		since, found := view.QuietSince()
 		quiet = found && now.Sub(since) >= w.idlePeriod
 		holding = view.Holding
+		if decision.Release && view.Paused {
+			decision = workflow.IdleDecision{Hold: workflow.IdleHoldPaused}
+		}
 		if !decision.Release {
 			return store.IdleReleaseMark{}, nil
 		}
@@ -309,6 +316,11 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 // here: each names a pod that stands, past the quiet period, with no live claim in it, and such
 // a pod holds 3 CPU and 19 GiB for as long as it stands. A deployment that sees one of the three
 // every tick is reading capacity held by something that is not work.
+//
+// A project's pause's three holds are recorded too (IdleHoldPaused, IdleHoldPauseHeld,
+// IdleHoldUnownedPauseHeld, decision 12 of dispatch://INFRA-3759): each is a pod release would
+// have taken that the pause kept on purpose, and a deployment that reads them can tell the
+// capacity a pause holds from capacity nothing holds.
 func recordableHold(hold workflow.IdleHold) bool {
 	switch hold {
 	case workflow.IdleHoldNone, workflow.IdleHoldNotIdle, workflow.IdleHoldNoPod,
@@ -406,10 +418,15 @@ func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation 
 // log line carries. The cause is the store's answer and not the row's, so a pod taken up again
 // is one reason in the records wherever the release read it: at a role stop, where the start or
 // the delivery arrives, and at the teardown, where the same read runs again. The store names a
-// cause on every cancel it decides, and those two are all it names.
+// cause on every cancel it decides, and those three are all it names: the pod was given work, the
+// store no longer authorizes the release, or the project was paused before the release saved its
+// workspace (store.ReleaseCausePaused, decision 12 of dispatch://INFRA-3759).
 func releaseHold(cause store.ReleaseCause) (workflow.IdleHold, string) {
-	if cause == store.ReleaseCauseOvertaken {
+	switch cause {
+	case store.ReleaseCauseOvertaken:
 		return workflow.IdleHoldOvertaken, "the pod was given work after its release was marked"
+	case store.ReleaseCausePaused:
+		return workflow.IdleHoldPaused, "the project was paused before the release saved its workspace"
 	}
 	return workflow.IdleHoldUnauthorized, "the store no longer authorizes it"
 }

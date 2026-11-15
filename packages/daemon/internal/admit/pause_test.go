@@ -82,3 +82,38 @@ func TestAPausedProjectPromotesNothingUntilItsPauseEnds(t *testing.T) {
 	}
 	assertConverged(t, pool, behind)
 }
+
+// The resume's one admission pass is a fact of its own (intake.ProjectResumed, decision 22 of
+// dispatch://INFRA-3759): admission promotes on it as on every fact that is not a Dispatch issue,
+// so the root the pause kept waiting takes the free slot at once. It is no controller tick: the
+// controller is registered, and no tick notice is queued.
+func TestTheResumesPassPromotesAndQueuesNoTickNotice(t *testing.T) {
+	pool := migratedPool(t)
+	seedWaiting(t, pool, "LEGION-NEXT", "B")
+	registerController(t, pool)
+	admission := quiet(t, 1)
+	pause := pauseTestProject(t, pool)
+	apply(t, pool, admission, "paused-fact", intake.DispatchIssue{Key: "LEGION-NEXT", ResolvedRepo: "acme/widgets", Seq: 2,
+		Type: "issue.updated", Status: "todo", Title: "LEGION-NEXT", Rank: "B", HandedOver: handed}, engineStub{})
+	if got := slottedKeys(t, pool); len(got) != 0 {
+		t.Fatalf("slots while paused = %v, want none", got)
+	}
+
+	endTestPause(t, pool, pause)
+	if _, err := intake.ApplyFact(context.Background(), pool, "pause", "project-resumed", intake.ProjectResumed{Pause: pause},
+		engineStub{}, admission); err != nil {
+		t.Fatalf("apply the resume's pass: %v", err)
+	}
+
+	if got := slottedKeys(t, pool); !slices.Equal(got, []string{"LEGION-NEXT"}) {
+		t.Fatalf("slots after the resume's pass = %v, want LEGION-NEXT: the pass promotes", got)
+	}
+	var ticks int
+	if err := pool.QueryRow(context.Background(), `select count(*) from outbox
+		where kind = 'controller_notice' and payload->>'kind' = 'tick'`).Scan(&ticks); err != nil {
+		t.Fatalf("read the tick notices: %v", err)
+	}
+	if ticks != 0 {
+		t.Fatalf("tick notices after the resume's pass = %d, want none: the resume wakes nobody by itself", ticks)
+	}
+}

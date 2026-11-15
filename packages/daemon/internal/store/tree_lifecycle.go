@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -223,6 +224,10 @@ type TreeReleaser interface {
 // tree's resources and the reservation is confirmed, after which only a fresh root admission opens
 // the tree's next epoch. A caller whose reservation is no longer current releases nothing. A retry
 // after a failed release runs it again: releasing what is already gone succeeds.
+//
+// The release deletes every pod of the tree, so the transaction that confirms it also ends the
+// pause's hold of each of them (endTreePausePodHoldsTx, decision 13 of dispatch://INFRA-3759): a
+// hold of a deleted pod would hold nothing, and a project release would name a pod that is gone.
 func (s *Store) CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser TreeReleaser) error {
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
 		if err := treelifecycle.CheckReservation(ctx, tx, project, tree, epoch); err != nil {
@@ -244,6 +249,9 @@ func (s *Store) CleanupReservedTree(ctx context.Context, project, tree string, e
 		return fmt.Errorf("release the resources of tree %s: %w", tree, err)
 	}
 	return s.Tx(ctx, func(tx pgx.Tx) error {
+		if _, err := endTreePausePodHoldsTx(ctx, tx, tree, time.Now().UTC()); err != nil {
+			return err
+		}
 		return treelifecycle.ConfirmCleanup(ctx, tx, project, tree, epoch)
 	})
 }

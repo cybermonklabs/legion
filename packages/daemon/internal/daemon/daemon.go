@@ -348,7 +348,10 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// served on the default branch the daemon holds or waited out (nameMapping), never a refused
 	// boot. The boot budget bounds none of them, as it does not bound the plugin gate or the image
 	// probe: the work after them has a budget of its own.
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake)
+	// The workflow reads the machines' clock (overrides.clock, the wall clock in production), so a
+	// test clock moves the engine's deadlines and the idle, wake and stuck passes with the
+	// machines (gap finding 1 of dispatch://INFRA-3759).
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {
@@ -2352,6 +2355,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			runtime:      cfg.Runtime.Name,
 			admissionCap: cfg.AdmissionCap,
 			startedAt:    startedAt,
+			now:          p.clock.Now,
 			secretsLogin: p.secretsLogin,
 			deployment:   s.deployment,
 			reports:      s.capabilityReports,
@@ -2450,7 +2454,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		// transaction refuses nothing but itself a second connection.
 		report, cancel := context.WithTimeout(store.ForConcurrentWorker(serving), strandedReportTimeout)
 		defer cancel()
-		reportStranded(report, st, projectRecords{Store: record.NewStore(), project: cfg.Project}, cfg.Project, p.project, cfg.Gates.Steps(), s.log)
+		reportStranded(report, st, projectRecords{Store: record.NewStore(), project: cfg.Project}, cfg.Project, p.project, cfg.Gates.Steps(), p.clock.Now, s.log)
 		if p.strandedReported != nil {
 			p.strandedReported()
 		}
@@ -2509,6 +2513,9 @@ type source struct {
 	runtime      string
 	admissionCap int
 	startedAt    time.Time
+	// now is the daemon's one clock (overrides.clock, the wall clock in production), the moment
+	// the state is read at; nil, in a source a test builds by hand, is the wall clock.
+	now func() time.Time
 	// secretsLogin is the daemon's own agent-secrets token login client (newSecretsLogin), read
 	// through LoginStatus for the state route; nil when the deployment enrolls no pod.
 	secretsLogin *agentsecrets.Client
@@ -2699,7 +2706,12 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	}
 	claims = ofProject(claims, s.projectToken)
 	records := projectRecords{Store: s.records, project: s.project}
+	// The state's now is the daemon's one clock, which the wakes' stuck clocks are judged against
+	// (gap finding 1 of dispatch://INFRA-3759); a source a test builds by hand reads the wall clock.
 	now := time.Now().UTC()
+	if s.now != nil {
+		now = s.now().UTC()
+	}
 	// What nothing will wake, judged before the projection and handed to it: an issue whose
 	// claim is stranded carries that answer on its own view (api.WhyView), and the judgement is
 	// the daemon's own over the store, the gated steps and the released wakes, which
