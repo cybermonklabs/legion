@@ -1651,6 +1651,16 @@ type Store interface {
 	// it: claims.generation counts the claim's launches, and the claim is kept from one run to
 	// the next.
 	ArchitectServed(ctx context.Context, tx pgx.Tx, tree string) (uint64, int64, error)
+	// TreeMembersRun is whether an issue of tree other than its root stands past
+	// phase.Admitted in the workflow (InWorkflow): its status is none of OutOfWorkflowStatuses
+	// and its phase is neither admitted nor done. Those are the members a
+	// re-admission's promotion starts again (admit's startMidPhaseMembers, which passes over a
+	// member at admitted and one out of the workflow), and a member a person set todo once its
+	// own first phase has started. It is what says a root architect's tree has work under way
+	// whatever its claim has served (workflow.ArchitectStart.MembersRun). It answers one bool
+	// from an exists over the tree's own issues (issues_tree), where TreeIssues would read every
+	// member's whole record, done ones included.
+	TreeMembersRun(ctx context.Context, tx pgx.Tx, tree string) (bool, error)
 	// KeepReadmittedApproval keeps, for root's next architect start, the step whose document a
 	// person approved, the version they approved and that document's latest version, which its
 	// re-admission found above the approved one before it cleared the old generation's gate; a

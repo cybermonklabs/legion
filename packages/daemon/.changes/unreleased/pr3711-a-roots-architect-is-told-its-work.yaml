@@ -9,7 +9,12 @@ body: |-
   `phases` record like every phase worker, every start that hands it new work raises that row's
   entry, and the entry sweep sends the work of that entry again when the start is lost: a task the
   derivation wrote is derived again from the record, and the task a person's answer resumed is
-  sent as written. The question which role works a phase answers the architect for `admitted`.
+  sent as written. A start of a newer entry takes the place of a task of an earlier run or entry
+  that the architect's claim still holds and that no turn took, unless a prompt of that task is
+  still waiting on its result, so a re-admitted architect's first prompt is the re-admission's
+  task rather than the run before's; what the older task named of a person's decisions is told by
+  the catch-up of the architect's next ready. The question which role works a phase answers the
+  architect for `admitted`.
   The state carries each root's handshake with its architect (`entryQueuedAt`,
   `entryConfirmedAt`) and the arms that hold for it (`architectStalls`), under daemon API contract
   146, and `legion state` prints those arms. The project's controller gets an `architect-stalled`

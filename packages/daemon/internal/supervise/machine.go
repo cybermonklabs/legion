@@ -847,7 +847,9 @@ type Deps struct {
 	// next runs — which can be after a park, a hand back to `todo` or a linger, generations later.
 	// Such a task names a person's decisions, which its own confirmation tells (daemon's
 	// settleKept, the claim store's putDelivery), so it is held rather than dropped: false keeps it
-	// pending, unsent and uncharged, and the start of the root's next run sends it (queue). It is
+	// pending, unsent and uncharged, and the start of the root's next run sends it (StartedBy,
+	// queue) — unless that start's own task supersedes it (supersedes), which retires it unsent
+	// and leaves the decisions it names for the catch-up that follows. It is
 	// asked only about a root architect's task of a run — never a phase worker's, never a task of
 	// no run such as an operator's or a production check's. nil sends every delivery.
 	RootHears func(ctx context.Context, c Claim, d Delivery) (bool, error)
@@ -1619,14 +1621,24 @@ func (c Claim) ReleasedLaunch() bool {
 // Deps.RootHears): this start is the root running again, so the held task goes now, before the
 // start's own work — including when that start carries no task of its own to deliver, where
 // nothing else would ask.
-func (m *Machine) StartedBy(ctx context.Context, row int64) error {
+//
+// The one held task it does not send is one the start's own task supersedes (task, the request
+// the start delivers once the claim is brought back, nil for a start that carries none;
+// supersedes): a tree's root architect's task of an earlier run, or of a lower entry of the same
+// run, that nothing of is in the agent's hands. Sent here, it would be the re-admitted architect's
+// first prompt — a task saying what was true of a run that is over (dispatch://INFRA-2614 R3) —
+// and the start's own task, the one the transition that raised the newer entry wrote (R4), would
+// wait behind its turn. The start's delivery retires it unsent instead (queue), which releases
+// the decisions it names for the catch-up that follows to tell. A start of no entry supersedes
+// nothing, so a held task is sent at it as before.
+func (m *Machine) StartedBy(ctx context.Context, row int64, task *RequestDeliver) error {
 	m.mu.Lock()
 	defer m.unlock()
 	if m.current().RuleHolds() {
 		return fmt.Errorf("start row %d of %s: %w", row, m.claim.Token, m.current().RuleHoldError())
 	}
 	if row <= m.claim.LastStartRow {
-		return m.sendPending(ctx)
+		return m.releaseHeld(ctx, row, task)
 	}
 	m.claim.LastStartRow = row
 	if m.held != nil {
@@ -1635,6 +1647,18 @@ func (m *Machine) StartedBy(ctx context.Context, row int64) error {
 	}
 	if err := m.persist(ctx); err != nil {
 		return err
+	}
+	return m.releaseHeld(ctx, row, task)
+}
+
+// releaseHeld is StartedBy's send of the pending task, which it skips for a task the start's own
+// task supersedes (supersedes, the one rule queue applies when that task arrives).
+func (m *Machine) releaseHeld(ctx context.Context, row int64, task *RequestDeliver) error {
+	if p := m.claim.Pending; p != nil && task != nil && m.supersedes(*p, *task) {
+		m.log.Info("supervise: the start's own task supersedes the held task, so the held task is not sent; the start's delivery retires it",
+			"row", row, "held", p.ID, "heldGeneration", p.Generation, "heldEntry", p.Entry,
+			"generation", task.Generation, "entry", task.Entry)
+		return nil
 	}
 	return m.sendPending(ctx)
 }

@@ -1347,6 +1347,19 @@ func (s *Postgres) ArchitectServed(ctx context.Context, tx pgx.Tx, tree string) 
 	return uint64(served), entry, nil
 }
 
+// TreeMembersRun takes the workflow's statuses and the two phases from their one statement
+// (OutOfWorkflowStatuses, InWorkflow's phase.Done, phase.Admitted) as parameters rather than
+// spelling them into the select.
+func (s *Postgres) TreeMembersRun(ctx context.Context, tx pgx.Tx, tree string) (bool, error) {
+	var run bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from issues
+		where tree = $1 and key <> $1 and phase <> $2 and phase <> $3 and status <> all($4::text[]))`,
+		tree, string(phase.Admitted), string(phase.Done), OutOfWorkflowStatuses).Scan(&run); err != nil {
+		return false, fmt.Errorf("read whether a member of %s stands past admitted in the workflow: %w", tree, err)
+	}
+	return run, nil
+}
+
 func (s *Postgres) ForgetKeptDecisions(ctx context.Context, tx pgx.Tx, tree string, kept KeptDecisions, row int64) error {
 	if len(kept.Decisions) > 0 {
 		refs, at := keptMarks(kept)

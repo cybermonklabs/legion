@@ -69,6 +69,12 @@ type ArchitectStart struct {
 	// architect claim or its claim has retired no such task. A confirmed task of no entry, such as
 	// a wake's, leaves it where it stood (supervise's retirePending, Claim.ServingEntry).
 	ServedEntry int64
+	// MembersRun says an issue of the root's tree other than the root stands past phase.Admitted
+	// in the workflow (record.Store.TreeMembersRun): a member a re-admission's promotion starts
+	// again (admit's startMidPhaseMembers), or one whose own first phase has started. The
+	// derivation reads it for a root at phase.Admitted alone (its fourth and fifth rules), so the
+	// reader reads it for such a root alone.
+	MembersRun bool
 	// Decided is what a person decided on the tree while nobody in it could hear them, as
 	// KeptDecisionsTask writes it, empty where there is nothing.
 	Decided string
@@ -78,8 +84,9 @@ type ArchitectStart struct {
 // (ArchitectStart), all but Decided: whether a hand-over carried the root in at its generation
 // (ArchitectCarried) and, for such a root, whether its phase is over by its own terminating fact
 // (PhaseFinished), the design gate rows it holds under steps, the design-gate steps the deployment
-// gates, and the run and the phase entry its tree's architect claim last served. It is the one
-// reader of them, which every derivation of a root architect's task reads them through.
+// gates, the run and the phase entry its tree's architect claim last served, and, for a root at
+// phase.Admitted, whether a member of its tree runs. It is the one reader of them, which every
+// derivation of a root architect's task reads them through.
 //
 // Decided is the caller's because it is what tells a task composed now from a held task narrowed.
 // A task composed now names what its tree is owed and nothing claims (ParkedDecisionTask, which
@@ -98,6 +105,16 @@ type ArchitectStart struct {
 // every reader after the promotion, whose write clears the mark, the same answer again. The pull
 // request PhaseFinished reads is read for a carried root alone, and only in merging, the one phase
 // it answers for.
+//
+// Whether a member runs is read in the caller's transaction, at the moment the task is composed,
+// by each of the three that compose it. Admission's promotion composes it (StartArchitect) after
+// the re-admission has set the root back to admitted and cleared its generation, which rewrites no
+// member's phase or status (record.Store.ClearTreeGeneration), and before it starts again the
+// members that stood mid-phase (admit's startMidPhaseMembers), which writes start rows and no
+// member's record; so the read finds exactly the members that promotion starts. The sweep's
+// send of an entry the derivation raised (SendArchitectStart) and the daemon's narrowing of a
+// held task at its send (NarrowRootTask, the daemon's rootTask) each read the members as they
+// stand when that send is made.
 func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep,
 	root record.Issue,
 ) (ArchitectStart, error) {
@@ -109,14 +126,18 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 	if start.Served, start.ServedEntry, err = store.ArchitectServed(ctx, tx, root.Tree); err != nil {
 		return ArchitectStart{}, err
 	}
-	if root.Phase != phase.Admitted {
-		if start.Carried, err = ArchitectCarried(ctx, tx, store, root); err != nil {
+	if root.Phase == phase.Admitted {
+		if start.MembersRun, err = store.TreeMembersRun(ctx, tx, root.Tree); err != nil {
 			return ArchitectStart{}, err
 		}
-		if start.Carried {
-			if start.PhaseFinished, err = PhaseFinished(ctx, store, tx, root); err != nil {
-				return ArchitectStart{}, err
-			}
+		return start, nil
+	}
+	if start.Carried, err = ArchitectCarried(ctx, tx, store, root); err != nil {
+		return ArchitectStart{}, err
+	}
+	if start.Carried {
+		if start.PhaseFinished, err = PhaseFinished(ctx, store, tx, root); err != nil {
+			return ArchitectStart{}, err
 		}
 	}
 	return start, nil
@@ -158,18 +179,21 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 //     admission slot, an open child under it or an issue it is blocked by (a root released for
 //     that wait, record.Issue.ReleasedForWaitAt, among them), and the daemon starts that phase
 //     itself once nothing holds it, so that shape is one of its own.
-//  4. The tree's architect has run before: the root's run has stood in a phase of its own
+//  4. The tree has run before: the root's run has stood in a phase of its own
 //     (record.Issue.TakenBack), the tree's architect claim served a run below the root's
-//     generation (Served), or that claim served a phase entry (ServedEntry). The tree ran at an
+//     generation (Served) or served a phase entry (ServedEntry), or the root stands at a
+//     generation after its first while a member of its tree runs (MembersRun). The tree ran at an
 //     earlier generation, and re-admission cleared that generation and its design gate with it,
 //     so the spec is registered again and nothing is decomposed anew.
-//  5. Otherwise nobody has architected this tree, and the task asks for the whole first act.
+//  5. Otherwise nobody has architected this tree, and the task asks for the whole first act. A
+//     member of the tree can run here only at generation 1 (rule 4 takes it after), and the task
+//     then says nothing that member makes false (writeFreshTree).
 //
 // A root a hand-over carried in that stands at phase.Admitted falls past rule 1 to rules 3, 4 and
 // 5. That is right: a child handed over before it ever started has no phase of its own to take up,
 // and it writes its own spec like any tree nobody has architected.
 //
-// Three readings of rule 4 are worth stating, because they are easy to get wrong.
+// Four readings of rule 4 are worth stating, because they are easy to get wrong.
 //
 // The rule reads what the claim served, and not the claim's generation, which counts its
 // launches: the claim is kept from one run to the next, so after relaunches in an earlier run its
@@ -201,20 +225,31 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // tree whose earlier generation ended with no phase of its own, whose claim served no entry and no
 // earlier run, falls through to rule 5.
 //
+// A member that runs says the tree ran before only past the root's first generation, and it says
+// so whatever the claim served. A tree's members are started by its own run: a child released
+// under its architect's decomposition, or a child a person set todo, which waits at admitted for
+// its slot and its tree's gate (workflow's enterChild) and runs once admission starts its first
+// phase. A member still running when the root comes back at a later generation therefore ran in
+// an earlier one, and the re-admission's promotion starts it again (admit's startMidPhaseMembers).
+// That holds where the architect's claim served nothing: an architect that never confirmed its
+// first task, whose tree's children ran all the same. At generation 1 there is no earlier run to
+// carry on from, so a member that runs there leaves the root at rule 5.
+//
 // Each shape ends in a closing sentence of its own, which says what starts the tree's next work,
 // and every clause of it holds of the root the shape is written for (dispatch://INFRA-2614, R3).
-// Only the fresh tree is told that nothing else starts it and that no message is coming: it holds
-// no gate row, so no person has a step of it to review, and a child released under its closed
-// gate waits for that gate (api's WaveReleaseResponse). A carried root is told whether the
-// promotion that opens its tree starts its phase's worker (admit's startMidPhaseMembers): it does,
-// except where the phase is the architect's own, no role works it, or its merge has ended it. A
-// root whose gate stands part way hears a person's review of a registered step as a notice. A
-// root whose gate is open has its first phase started by the daemon. A tree that ran at an
-// earlier generation has its members that stood mid-phase started again by its re-admission, whose
-// notices reach the architect. The text is for the architect alone, and no reader of a task reads
-// it back: what wrote an entry's task is a fact of the record (record.PhaseRow.EntryVerbatim, which
-// SendArchitectStart reads), and whether a held task carries the first-task instruction is the
-// entry it is of (NarrowRootTask).
+// Only the fresh tree is told that nothing else starts it and that no message is coming, and only
+// while no member of its tree runs: it holds no gate row, so no person has a step of it to review,
+// and a child released under its closed gate waits for that gate (api's WaveReleaseResponse). A
+// fresh tree whose member runs is told instead that its own first phase waits for its gate. A
+// carried root is told whether the promotion that opens its tree starts its phase's worker
+// (admit's startMidPhaseMembers): it does, except where the phase is the architect's own, no role
+// works it, or its merge has ended it. A root whose gate stands part way hears a person's review
+// of a registered step as a notice. A root whose gate is open has its first phase started by the
+// daemon. A tree that ran at an earlier generation has its members that stood mid-phase started
+// again by its re-admission, whose notices reach the architect. The text is for the architect
+// alone, and no reader of a task reads it back: what wrote an entry's task is a fact of the record
+// (record.PhaseRow.EntryVerbatim, which SendArchitectStart reads), and whether a held task carries
+// the first-task instruction is the entry it is of (NarrowRootTask).
 //
 // Decided leads every shape rather than replacing it, since a person's decision is read first and
 // a tree that owes one still has to be taken up.
@@ -234,7 +269,8 @@ func ArchitectStartTask(start ArchitectStart) string {
 		writeGateOpen(&task, start)
 	case len(start.Gate.Rows) > 0:
 		writeGateStanding(&task, start)
-	case start.Root.TakenBack, start.Served > 0 && start.Served < start.Root.Generation, start.ServedEntry > 0:
+	case start.Root.TakenBack, start.Served > 0 && start.Served < start.Root.Generation, start.ServedEntry > 0,
+		start.MembersRun && start.Root.Generation > 1:
 		writeEarlierGeneration(&task, start)
 	default:
 		writeFreshTree(&task, start)
@@ -244,12 +280,23 @@ func ArchitectStartTask(start ArchitectStart) string {
 
 // writeFreshTree writes the task of a tree nobody has architected: the whole first act, since
 // nothing of this tree has been claimed, decomposed or registered.
+//
+// Where a member of the tree runs (MembersRun, which reaches here at generation 1 alone), the
+// task says neither that nothing in the tree runs nor that nothing else starts it and no message
+// is coming: that member's worker runs, and its notices reach the architect. It closes on what
+// holds of the root itself, that its own first phase starts only once its design gate opens. It
+// still asks for the decomposition, since the architect files the children its spec names and
+// reads the ones already filed in Dispatch.
 func writeFreshTree(task *strings.Builder, start ArchitectStart) {
-	fmt.Fprintf(task, "%s is yours and %s %d, holding an admission slot while nothing in it runs. "+
+	runs, closing := " while nothing in it runs", " Nothing else starts this tree, and no message is coming."
+	if start.MembersRun {
+		runs, closing = "", " Its own first phase starts only once its design gate opens."
+	}
+	fmt.Fprintf(task, "%s is yours and %s %d, holding an admission slot%s. "+
 		"Take it up in this turn, as your role says: claim it in Dispatch, have its root spec written and %s, then",
-		start.Root.Key, ArchitectFreshTreeLabel, start.Root.Generation, ArchitectDecompositionLabel)
+		start.Root.Key, ArchitectFreshTreeLabel, start.Root.Generation, runs, ArchitectDecompositionLabel)
 	writeGateAsk(task, start.Gate.Steps, "")
-	task.WriteString(" Nothing else starts this tree, and no message is coming.")
+	task.WriteString(closing)
 }
 
 // writeCarriedPhase writes the task of a root a hand-over carried in. It stands in the phase that

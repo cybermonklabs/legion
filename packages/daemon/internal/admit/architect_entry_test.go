@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -247,5 +248,55 @@ func TestAQueuedRootTheDerivationServesNoTaskRaisesNoArchitectEntry(t *testing.T
 	}
 	if row := architectRow(t, pool, root); row.Entry != 0 || row.EntryTask != "" {
 		t.Fatalf("%s's architect row = entry %d carrying %q, want neither: nothing was handed to it", root, row.Entry, row.EntryTask)
+	}
+}
+
+// A root parked at admitted while a child of its tree stood in planning, whose architect was given
+// its first task and never confirmed it, is a tree that ran at an earlier generation, though its
+// architect's claim served nothing: no run and no entry. A person hands it back, and the
+// re-admission's promotion gives its architect the earlier generation's shape — register the spec
+// again, decompose nothing anew — rather than the fresh tree's, which says nothing in the tree
+// runs, asks for every child of a decomposition and closes on nothing else starting it: the same
+// promotion starts the planner of that child again (startMidPhaseMembers). What tells it is the
+// member that runs (workflow.ArchitectStart.MembersRun, at a generation after the first).
+func TestAReadmittedTreeWhoseMemberRunsGetsTheEarlierGenerationsShapeThoughItsArchitectServedNothing(t *testing.T) {
+	pool := migratedPool(t)
+	admission := newAdmission(t, 1, nil)
+	const root, child = "LEGION-841", "LEGION-842"
+	until := fixedNow.Add(72 * time.Hour)
+	putIssue(t, pool, record.Issue{Key: root, Tree: root, Project: testProject, Title: "root", Phase: phase.Admitted,
+		Generation: 1, Status: "backlog", Rank: "A", HandedOver: true, LingerUntil: &until,
+		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
+	token := putWorkerClaim(t, pool, root, root, claim.RoleArchitect, 1, supervise.StateSuspended, supervise.SuspendedByDaemon)
+	if _, err := pool.Exec(context.Background(), `update claims set serving_generation = 0, given_entry = 1, served_entry = 0 where token = $1`,
+		string(token)); err != nil {
+		t.Fatalf("record the architect claim of %s as given its first task and serving nothing: %v", root, err)
+	}
+	putArchitectRow(t, pool, root, 1, fixedNow.Add(-time.Hour))
+	planner := midPhaseChild(t, pool, root, child, phase.Planning, "in_progress")
+
+	apply(t, pool, admission, "readmitted", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 5,
+		Type: "issue.updated", Status: "todo", Title: "root", Rank: "A", HandedOver: true}, admission.engine)
+
+	if readmitted := issue(t, pool, root); readmitted.Generation != 2 || readmitted.Phase != phase.Admitted || readmitted.TakenBack {
+		t.Fatalf("the re-admitted %s = generation %d at %s, taken back %t; want generation 2 at admitted, its run never in a phase of its own",
+			root, readmitted.Generation, readmitted.Phase, readmitted.TakenBack)
+	}
+	start := assertArchitectEntry(t, pool, root, 2)
+	if !strings.Contains(start.Task, workflow.ArchitectReadmittedLabel) {
+		t.Fatalf("the re-admission's architect task of %s = %q, want the shape of a tree that ran at an earlier generation, labelled %q",
+			root, start.Task, workflow.ArchitectReadmittedLabel)
+	}
+	for _, untrue := range []string{workflow.ArchitectFreshTreeLabel, workflow.ArchitectDecompositionLabel, "while nothing in it runs",
+		"Nothing else starts this tree, and no message is coming."} {
+		if strings.Contains(start.Task, untrue) {
+			t.Fatalf("the re-admission's architect task of %s = %q; it holds %q, which is false of a tree whose child in planning "+
+				"this promotion starts again", root, start.Task, untrue)
+		}
+	}
+	starts := startsOf(t, pool, child)
+	if len(starts) != 1 || starts[0].role != claim.RolePlanner || starts[0].task == "" {
+		t.Fatalf("the starts of %s = %+v, want its planner's (claim %s), carrying its resume task: the promotion starts the child "+
+			"that stood in planning again", child, starts, planner)
 	}
 }

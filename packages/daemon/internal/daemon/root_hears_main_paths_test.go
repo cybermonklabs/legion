@@ -515,8 +515,10 @@ func toldInPlacePath(r *mainPathRig) string {
 // count is the same as main's own, which sends everything (Deps.RootHears nil).
 //
 // The negative control is the same root parked again while its start task waits on a ready claim:
-// there the answer says no, the task is held rather than prompted to an architect no run of the
-// root owns, and the start of the root's next run is what releases it.
+// there the answer says no, and the task is held rather than prompted to an architect no run of
+// the root owns. The start of the root's next run carries a task of a newer entry, which takes the
+// held task's place: the held task is retired unsent, and the decision it named is told by the
+// catch-up that start writes.
 func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 	for _, path := range mainPaths {
 		t.Run(path.name, func(t *testing.T) {
@@ -565,8 +567,8 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 
 	// The same root as the fresh admission, parked again before the architect it launched comes up:
 	// the start's task waits on a ready claim while the root has nobody to hear it. The answer holds
-	// it there — unsent, still pending — and the start of the root's next run is what sends it.
-	t.Run("a task of a parked root is held until the root runs again", func(t *testing.T) {
+	// it there — unsent, still pending — for as long as the root is parked.
+	t.Run("a task of a parked root is held, then superseded by the start of the root's next run", func(t *testing.T) {
 		rig := newMainPathRig(t, true)
 		rig.put(rig.waitingRoot())
 		ref := rig.decide(mainPathAsk)
@@ -591,21 +593,55 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 			}
 		}
 
-		// A person hands the root back. The re-admission's start is what releases the held task,
-		// and its own task — the one the derivation writes for a tree that ran at an earlier
-		// generation (workflow.ArchitectStartTask) — waits behind that held delivery, so the
-		// architect is prompted with the held task alone.
+		// A person hands the root back. The re-admission's start carries the root's task of
+		// generation 2 at a newer entry: the first act again, since the architect took nothing of
+		// generation 1 (workflow.ArchitectStartTask's last rule). That task supersedes the held one
+		// (supervise's supersedes), so the start does not send the held task first
+		// (supervise.Machine.StartedBy), its delivery retires the held task unsent, and the
+		// architect's first prompt is the re-admission's own task (dispatch://INFRA-2614 R3, R4).
+		// The decision the held task named is released with it, so no delivery holds it, and the
+		// catch-up the start writes for the running architect (the outbox's start, workflow's
+		// claimReady) names it and claims it.
 		rig.handBack()
 		rig.runStarts()
 		prompts := rig.prompts()
-		if len(prompts) != 1 || prompts[0].DeliveryID != pending.ID || !strings.Contains(prompts[0].Message, ref) {
-			t.Fatalf("after the re-admission the architect was prompted %+v, want the held task %s naming %s once",
-				prompts, pending.ID, ref)
+		if len(prompts) != 1 || prompts[0].DeliveryID == pending.ID ||
+			!strings.Contains(prompts[0].Message, workflow.ArchitectFreshTreeLabel+" 2") || strings.Contains(prompts[0].Message, ref) {
+			t.Fatalf("after the re-admission the architect was prompted %+v, want generation 2's own task alone, not the held task %s",
+				prompts, pending.ID)
 		}
-		for _, call := range rig.asked.about(pending.ID)[len(refused):] {
+		if now := rig.machine().Claim().Pending; now == nil || now.ID != prompts[0].DeliveryID || now.Generation != 2 {
+			t.Fatalf("after the re-admission the architect holds %#v, want generation 2's task %s in the held task's place",
+				now, prompts[0].DeliveryID)
+		}
+		if asked := rig.asked.about(pending.ID); len(asked) != len(refused) {
+			t.Fatalf("RootHears was asked about the held task %s after the re-admission (%+v), want it retired unsent",
+				pending.ID, asked[len(refused):])
+		}
+		asked := rig.asked.about(prompts[0].DeliveryID)
+		if len(asked) == 0 {
+			t.Fatalf("the task prompted as %s was never put to RootHears; every root architect's task of a run is", prompts[0].DeliveryID)
+		}
+		for _, call := range asked {
 			if !call.hears {
 				t.Fatalf("RootHears answered no for %#v after the root was admitted again, want yes", call)
 			}
+		}
+		kept := keptDecisions(t, rig.pool, rig.records, rig.key)
+		if len(kept) != 1 || kept[0].Ref != ref || kept[0].HeldBy.Claim != "" || kept[0].ClaimedBy == 0 {
+			t.Fatalf("%s keeps %#v, want %s held by no delivery and claimed by the catch-up that names it", rig.key, kept, ref)
+		}
+		named := false
+		for _, row := range catchUpRows(t, rig.pool, rig.key) {
+			payload, err := record.DecodeOutboxPayload(row)
+			if err != nil {
+				t.Fatalf("decode the catch-up %d of %s: %v", row.ID, rig.key, err)
+			}
+			notice, ok := payload.(record.Notice)
+			named = named || (ok && row.ID == kept[0].ClaimedBy && notice.CatchUp != nil && strings.Contains(notice.CatchUp.Decided, ref))
+		}
+		if !named {
+			t.Fatalf("no catch-up of %s claims and names %s, want the one the re-admission's start wrote", rig.key, ref)
 		}
 	})
 }

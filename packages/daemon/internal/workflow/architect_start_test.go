@@ -54,6 +54,14 @@ func rootAt(p phase.Phase) record.Issue {
 // admittedRoot is that root at the phase every tree the workflow opens stands in.
 func admittedRoot() record.Issue { return rootAt(phase.Admitted) }
 
+// firstGenerationRoot is that root at admitted in its tree's first run, which no earlier
+// generation stands behind.
+func firstGenerationRoot() record.Issue {
+	root := admittedRoot()
+	root.Generation = 1
+	return root
+}
+
 // registeredSpec is the gate rows of a root that registered its spec at version 1, which no
 // person has answered.
 func registeredSpec() map[record.DesignStep]record.DesignGate {
@@ -108,6 +116,13 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 			name:  "a tree nobody has architected, under a deployment that gates no step",
 			start: ArchitectStart{Root: admittedRoot()},
 			want:  freshLead + " register that spec at its current version, which opens the design gate with no approval." + freshClosing,
+		},
+		{
+			name:  "a tree nobody has architected at generation 1, a member of which runs",
+			start: ArchitectStart{Root: firstGenerationRoot(), Gate: record.TreeGate{Steps: specGated}, MembersRun: true},
+			want: "LEGION-208 is yours and its tree is open at generation 1, holding an admission slot. " +
+				"Take it up in this turn, as your role says: claim it in Dispatch, have its root spec written and every child of your decomposition filed, then" +
+				" request approval of its primary document and register that step of its design gate." + gateStandingClosing,
 		},
 		{
 			name: "a root a hand-over carried in",
@@ -201,6 +216,11 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 			start: ArchitectStart{Root: admittedRoot(), Served: 1},
 			want:  readmittedLead + " register that spec again at its current version, which opens the design gate with no approval. Decompose nothing anew." + readmittedClosing,
 		},
+		{
+			name:  "a tree re-admitted while a member of it runs, whose architect claim served nothing",
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, MembersRun: true},
+			want:  readmittedLead + " request approval of its primary document and register that step of its design gate again. Decompose nothing anew." + readmittedClosing,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ArchitectStartTask(tc.start); got != tc.want {
@@ -286,17 +306,19 @@ func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 	}
 }
 
-// The rule that chooses the shape, case by case. Five readings of it are easy to get wrong: a
+// The rule that chooses the shape, case by case. Six readings of it are easy to get wrong: a
 // root at admitted whose architect claim served the root's own generation and no phase entry, and
 // whose run never stood in a phase of its own, is a tree nobody has architected, since a task of
 // this run and of no entry, a wake's, says nothing of an earlier run; a claim that served a phase
 // entry ran the tree before whatever run it served, which is the claim the upgrade leaves a
 // re-admitted tree of the release before (served entry 1, no run) and a claim that served a wake's
-// task of the root's own generation after an entry of an earlier one; a root a hand-over carried
-// in stands in the phase that came with it whatever its gate rows say; a carried root that never
-// left admitted has no phase of its own to take up, so it reads as any other root standing there;
-// and a root whose gate rows open its gate reads apart from one whose rows stand part way, since
-// the daemon starts its first phase itself.
+// task of the root's own generation after an entry of an earlier one; a root re-admitted while a
+// member of its tree runs ran at an earlier generation though its claim served nothing, and the
+// same member at generation 1 leaves the tree one nobody has architected, told nothing that
+// member makes false; a root a hand-over carried in stands in the phase that came with it
+// whatever its gate rows say; a carried root that never left admitted has no phase of its own to
+// take up, so it reads as any other root standing there; and a root whose gate rows open its gate
+// reads apart from one whose rows stand part way, since the daemon starts its first phase itself.
 func TestTheArchitectTaskShapeRule(t *testing.T) {
 	registered := registeredSpec()
 	carried := func(gate record.TreeGate, taken bool) ArchitectStart {
@@ -313,6 +335,8 @@ func TestTheArchitectTaskShapeRule(t *testing.T) {
 		name  string
 		start ArchitectStart
 		label string
+		// never is what the task must not say, where the case names it.
+		never []string
 	}{
 		{
 			name:  "a tree with no architect claim and no gate row",
@@ -333,6 +357,18 @@ func TestTheArchitectTaskShapeRule(t *testing.T) {
 			name:  "an architect claim that served an earlier entry and a task of the root's own generation",
 			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Served: 2, ServedEntry: 1},
 			label: ArchitectReadmittedLabel,
+		},
+		{
+			name:  "a root re-admitted while a member of its tree runs, whose architect claim served nothing",
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, MembersRun: true},
+			label: ArchitectReadmittedLabel,
+			never: []string{ArchitectFreshTreeLabel, ArchitectDecompositionLabel, "while nothing in it runs", freshClosing},
+		},
+		{
+			name:  "a root at generation 1 while a member of its tree runs, whose architect claim served nothing",
+			start: ArchitectStart{Root: firstGenerationRoot(), Gate: record.TreeGate{Steps: specGated}, MembersRun: true},
+			label: ArchitectFreshTreeLabel,
+			never: []string{"while nothing in it runs", freshClosing},
 		},
 		{
 			name:  "an architect claim that served the generation before",
@@ -396,8 +432,14 @@ func TestTheArchitectTaskShapeRule(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if task := ArchitectStartTask(tc.start); !strings.Contains(task, tc.label) {
+			task := ArchitectStartTask(tc.start)
+			if !strings.Contains(task, tc.label) {
 				t.Fatalf("the architect's start task is %q, want the shape labelled %q", task, tc.label)
+			}
+			for _, untrue := range tc.never {
+				if strings.Contains(task, untrue) {
+					t.Fatalf("the architect's start task is %q; it says %q, which is false of a tree a member of which runs", task, untrue)
+				}
 			}
 		})
 	}
@@ -464,6 +506,66 @@ func TestTheArchitectTaskReadsTheRunItsArchitectServedAndNotItsLaunches(t *testi
 			}
 			if tc.label != ArchitectReadmittedLabel && strings.Contains(task, ArchitectReadmittedLabel) {
 				t.Fatalf("the architect's start task is %q, want no task of the fourth rule's shape: its claim took no task of an earlier run", task)
+			}
+		})
+	}
+}
+
+// Whether a member of the tree runs is read from the record (ArchitectStartOf, through
+// record.Store.TreeMembersRun): an issue of the root's tree other than the root, standing past
+// phase.Admitted in the workflow. Each case is the root of architectEntryRoot at admitted, at
+// generation 2, whose architect claim served nothing, beside one other issue:
+//   - a child in planning, in the workflow, runs, so the tree ran at an earlier generation;
+//   - a child at admitted waits for its first phase and runs nothing;
+//   - a child in planning that Dispatch has taken out of the workflow runs nothing;
+//   - a child whose phase is done runs nothing, whatever its status says;
+//   - an issue in planning of another tree is no member of this one.
+func TestTheArchitectStartReadsWhetherAMemberOfTheTreeRuns(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		tree   string
+		stands phase.Phase
+		status string
+		runs   bool
+	}{
+		{name: "a child in planning", stands: phase.Planning, status: "in_progress", runs: true},
+		{name: "a child at admitted", stands: phase.Admitted, status: "todo"},
+		{name: "a child in planning taken out of the workflow", stands: phase.Planning, status: "backlog"},
+		{name: "a child whose phase is done", stands: phase.Done, status: "in_progress"},
+		{name: "an issue in planning of another tree", tree: "LEGION-300", stands: phase.Planning, status: "in_progress"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			pool := migratedPool(t)
+			root := architectEntryRoot()
+			root.Generation = 2
+			seedIssue(t, pool, root)
+			member := architectEntryRoot()
+			member.Key, member.Phase, member.Status, member.Generation = "LEGION-209", tc.stands, tc.status, 1
+			if tc.tree != "" {
+				member.Tree = tc.tree
+			}
+			parent := member.Tree
+			member.Parent = &parent
+			seedIssue(t, pool, member)
+			var start ArchitectStart
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				var err error
+				start, err = ArchitectStartOf(ctx, tx, record.NewStore(), specGated, root)
+				return err
+			}); err != nil {
+				t.Fatalf("read what the architect's first task is derived from: %v", err)
+			}
+			if start.MembersRun != tc.runs {
+				t.Fatalf("the reader says a member of %s runs = %t beside %s at %s (%s), want %t",
+					root.Key, start.MembersRun, member.Key, member.Phase, member.Status, tc.runs)
+			}
+			want := ArchitectFreshTreeLabel
+			if tc.runs {
+				want = ArchitectReadmittedLabel
+			}
+			if task := ArchitectStartTask(start); !strings.Contains(task, want) {
+				t.Fatalf("the architect's start task is %q, want the shape labelled %q", task, want)
 			}
 		})
 	}
