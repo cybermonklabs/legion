@@ -146,7 +146,7 @@ as the fingerprint decides (*The reviewer*, below, and
   gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submitted_at, footer: ([.body // "" | scan("<!-- legion: (\\{.*?\\}) -->")] | last | .[0]? // "" | try fromjson catch {})} | select(.footer.phase == "review") | [.id, .state, .submitted_at, .footer.session, (.footer.head // "no head")] | @tsv'
   ```
 
-  A footer that names no head, written before the footer carried one, leaves the full SHA that review's body names as the head it read; a body that names none either leaves no head to take the fingerprint at, which is a new round.
+  A footer that names no head (all seven of the reviewer's reviews on #3516 name only the session and the phase) leaves the full SHA that review's body names as the head it read; a body that names none either leaves no head to take the fingerprint at, which is a new round.
   Equal and that review was
   `APPROVE`: submit one more `APPROVE` naming the new head by SHA, its body naming both SHAs
   and the fingerprint — a confirmation, not a round; no thermo pass, no thread pass. Equal and
