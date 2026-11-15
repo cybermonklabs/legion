@@ -219,6 +219,46 @@ func TestCreateIssueDuplicateIgnoresACitedIssueKey(t *testing.T) {
 	}
 }
 
+func TestCreateIssueDuplicateCreatesATitleThatNamesAnotherIssue(t *testing.T) {
+	handler := newTestHandler(t)
+	createDuplicateTestProject(t, handler, "TEST")
+
+	// Issues filed from one template, one for each issue they concern, share every scored word:
+	// the key each title names is the only difference, and the gate scores no key. Without the
+	// title rule the second create scores 1.0 against the first and is refused.
+	reviewed12 := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Review TEST-12 against its verification.md",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	reviewed15 := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Review TEST-15 against its verification.md",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	if reviewed15.Key != "TEST-2" {
+		t.Fatalf("create naming TEST-15 = %q, want TEST-2", reviewed15.Key)
+	}
+
+	// The same issue reviewed twice is still a near copy, and the refusal names only the issue
+	// whose title names the same key.
+	body := requireDuplicateRefusal(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Review TEST-12 against its verification.md",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	if len(body.Candidates) != 1 || body.Candidates[0].Key != reviewed12.Key {
+		t.Fatalf("candidates = %#v, want only %s", body.Candidates, reviewed12.Key)
+	}
+
+	// A title that names no issue is scored as before: a copy of the text with the key left out
+	// of the title is still a near copy of both.
+	body = requireDuplicateRefusal(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Review against its verification.md",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	if len(body.Candidates) != 2 {
+		t.Fatalf("candidates = %#v, want %s and %s", body.Candidates, reviewed12.Key, reviewed15.Key)
+	}
+}
+
 func TestCreateIssueDuplicateScopesTheGateToTheProjectAndSkipsExternal(t *testing.T) {
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
