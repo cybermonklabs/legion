@@ -4,6 +4,7 @@ import type { CaseKind } from "./build-corpus";
 import { CorpusError, listOf, recordOf, stringOf } from "./corpus-io";
 import type { ExcludedCase, SliceTargets, UndrawableKind } from "./draw";
 import type { IssueFacts } from "./never-decide";
+import type { ParentChange, TreeOutcome } from "./trees";
 
 /**
  * The two files one draw writes that are read back, each with one owner: `draw.json`, the
@@ -99,20 +100,33 @@ export interface DrawExcluded {
 
 /**
  * Where a draw's report slice, the final test, came from: the reserve of INFRA-2897's next final
- * test, read under a registration of `claim.ts` (`reserve.ts`, item 6 of the rule).
+ * test, read under a registration of `claim.ts`, by item 6 of the reserve's version 2
+ * (`reserve.ts`, `trees.ts`).
  */
 export interface FinalTestDraw {
   /** The reference of the registered read the corpus was read under. */
   reference: string;
-  /** The groups whose every case after the cut the reserve holds: the only ones report takes. */
+  /** The drawn groups item 6 leaves eligible: the only ones report takes. */
   groups: number;
+  /** How many trees with a case after the cut fell under each of item 6's outcomes. */
+  outcomes: Record<TreeOutcome, number>;
   /**
-   * The cases the reserve holds that went to another slice than report: their group holds a case
-   * the reserve does not hold, which a scorer may have read, or report had no room for the group.
-   * A group goes into one slice whole, so such a case is development data from this draw on. A
-   * reserved case the draw left out of every slice is under `excluded`, as every such case is.
+   * The cases of trees in which an ask opened before the reserve's cut (item 6 a): they went to
+   * no slice, and those the reserve holds stay held until it ends.
+   */
+  beforeCut: { total: number; cases: string[] };
+  /**
+   * The cases the reserve holds that went to another slice than report: their tree failed item
+   * 6 (b), (c) or (d), or report had no room for it. A group goes into one slice whole, so such a
+   * case is development data from this draw on. A reserved case the draw left out of every slice
+   * is under `excluded`, as every such case is.
    */
   heldOutsideReport: { total: number; cases: string[] };
+  /**
+   * For each tree with a case after the cut, taken or left out, every change of an issue's parent
+   * made after the tree's first ask opened, with the actor that made it (item 6).
+   */
+  parentChanges: Array<{ group: string; outcome: TreeOutcome; changes: ParentChange[] }>;
 }
 
 /**

@@ -127,7 +127,7 @@ const PATH_OPTIONS: readonly string[] = [
  */
 const FILE_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   "analyze.ts": ["--cases"],
-  "draw.ts": ["--backlog-roots"],
+  "draw.ts": ["--backlog-roots", "--scorer-records", "--round-sessions"],
   "fresh-agent.ts": ["--omp"],
   "refusals.ts": ["--fixtures", "--distillation"],
   "run-round.ts": ["--arms", "--distillation"],

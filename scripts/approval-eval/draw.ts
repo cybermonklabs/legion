@@ -42,6 +42,15 @@ import {
 import { type RenderGuard, renderChecked, renderDocument } from "./render";
 import { replayCase } from "./replay";
 import { RESERVE_VARIABLE, readReferenceOf, reserveOf } from "./reserve";
+import {
+  changesAfterAskOf,
+  idsInFiles,
+  readTrees,
+  TREE_OUTCOMES,
+  type TreeGrouping,
+  type TreeOutcome,
+  treeGroupingOf,
+} from "./trees";
 
 /**
  * Draws the post-cut cases of a corpus into the four slices the pre-analysis plan's table names:
@@ -69,16 +78,21 @@ import { RESERVE_VARIABLE, readReferenceOf, reserveOf } from "./reserve";
  * case of this corpus carries the option the person chose, so one that does not is the corpus
  * read wrongly and not a case to pass over.
  *
- * The report slice is the final test (`analyze.ts` calls it "the test set"), and the rule of
- * INFRA-2897's next final test (`reserve.ts`, item 6) draws that test from the reserved requests
- * only, its development and calibration sets from all others. So a draw over a corpus read under
- * a registered read of the reserve puts a group into report only when the reserve holds every
- * case of it after the cut, counting the cases the draw leaves out, and such a group tries report
- * before the other slices. A group holding one case the reserve does not hold, which a live
- * scorer may have read, never goes into report: it goes to a development slice whole, and the
- * reserved cases it holds are named there. A reserved case the draw leaves out is counted where
- * every left-out case is. A draw that reads no reserve draws as before, and `draw.json` records
- * that its report slice is no final test.
+ * The report slice is the final test (`analyze.ts` calls it "the test set"), and item 6 of the
+ * reserve's version 2 (`reserve.ts`, dispatch://INFRA/artifact/infra-2897-final-test-reserve-md)
+ * says which groups it may take. A draw over a corpus read under a registered read of the reserve
+ * is the claim's: it groups the cases by issue tree over every parent link the log recorded
+ * (`trees.json`, `trees.ts`) instead of by issue, and puts each group under item 6, over every
+ * case of the corpus in it and not only the drawn ones. A group in which any ask of anyone opened
+ * before the reserve's cut (a) gives no case to any slice. A group holding a case the reserve does
+ * not hold, or one whose root at its ask's opening the rule does not pick (b), one with an ask a
+ * scorer's record names (c, `--scorer-records`), or one with an ask a session of the claim's round
+ * opened (d, `--round-sessions`), goes to a development slice whole, and the reserved cases it
+ * holds are named there. Only the other groups may go into report, and they try it first.
+ * `draw.json` counts the groups under each outcome and lists, for each group with any, the parent
+ * changes made after its first ask opened, with the actor that made each. A draw that reads no
+ * reserve groups by issue as before, and `draw.json` records that its report slice is no final
+ * test.
  *
  * What is pinned and what is live. The cases are the corpus's, and each document is read at the
  * version the corpus pins, so those are the same bytes on every run. The one live reading is
@@ -102,15 +116,17 @@ import { RESERVE_VARIABLE, readReferenceOf, reserveOf } from "./reserve";
  */
 
 const USAGE = `usage: bun scripts/approval-eval/draw.ts --corpus <dir> --cut <date> --out <dir> \\
-  [--seed <n>] [--backlog-roots <file>] [--cache <dir>]
+  [--seed <n>] [--backlog-roots <file>] [--cache <dir>] \\
+  [--scorer-records <file>]... [--round-sessions <file>]
 
 Draws the post-cut cases of a corpus into the fit, report, anchor and reserve slices. Under a
 registered read of INFRA-2897's reserve (APPROVAL_EVAL_RESERVE, claim.ts), which takes the
---seed its registration names, report, the final test, takes only the groups the reserve holds
-whole, and they try it first.
+--seed its registration names, the cases are grouped by issue tree and report, the final test,
+takes only the groups item 6 of the reserve's version 2 leaves eligible, and they try it first.
 
 Options:
-  --corpus <dir>          Required. A directory holding corpus.jsonl and snapshot.json.
+  --corpus <dir>          Required. A directory holding corpus.jsonl and snapshot.json, and
+                          trees.json for a draw under a read of the reserve.
   --cut <date>            Required. An ISO 8601 time, for example 2026-11-05T00:00:00Z. A case
                           answered at or after it is drawn; a case answered before it is
                           training.
@@ -124,6 +140,11 @@ Options:
                           the corpus alone.
   --cache <dir>           Where the never-decide rule's answers are kept between runs. Without
                           it every case is asked of the model again.
+  --scorer-records <file> Required under a read of the reserve, and refused without one; may be
+                          given more than once. A record of what a live scorer read: every id
+                          it names counts as an ask the scorer read (item 6 c).
+  --round-sessions <file> Required under a read of the reserve, and refused without one. The ids
+                          of the sessions of the round that makes the claim (item 6 d).
 
 Exit status: 0 when the draw was written, 2 when it could not run.`;
 
@@ -145,6 +166,9 @@ export const KINDS: readonly CaseKind[] = ["approval", "question"];
 
 /** What a case is grouped by, which `draw.json` records and a later reading of it reads. */
 export const GROUP_KEY = "issue";
+
+/** What a draw under a read of the reserve groups by: the issue tree over every parent link. */
+export const TREE_GROUP_KEY = "tree";
 
 /** How many option a question must offer to be judged as a choice at all. */
 const LEAST_OPTIONS = 2;
@@ -200,6 +224,8 @@ interface Flags {
   seed: number | undefined;
   backlogRoots: string | undefined;
   cache: string | undefined;
+  scorerRecords: string[];
+  roundSessions: string | undefined;
 }
 
 /** One post-cut case as the draw was given it: the row, the rule's answer and its document. */
@@ -283,12 +309,14 @@ export interface Draw {
 }
 
 /**
- * What a draw under a registered read of the reserve is given: the read's reference, and which
- * cases the reserve holds. Only a group whose every case it holds may go into report.
+ * What a draw under a registered read of the reserve is given: the read's reference, which cases
+ * the reserve holds, and the trees item 6 groups the cases by, each with its outcome. Only an
+ * eligible group may go into report.
  */
 export interface FinalTestSource {
   reference: string;
   holds: (row: CaseRow) => boolean;
+  grouping: TreeGrouping;
 }
 
 /** One group of cases, which goes into one slice whole. */
@@ -315,18 +343,19 @@ function shuffled<T>(items: readonly T[], seed: number): T[] {
 }
 
 /**
- * The group a case belongs to: its issue, whether it is an approval request or a question. A
- * document belongs to one issue, so this key holds together every case one document held
- * together and the cases of two documents of one issue besides. A case naming no issue is its
- * own group, since nothing else is known to share it.
+ * The group a case belongs to. Under a read of the reserve it is the case's issue tree over every
+ * parent link the log recorded (`trees.ts`). Otherwise it is its issue, whether it is an approval
+ * request or a question: a document belongs to one issue, so this key holds together every case
+ * one document held together and the cases of two documents of one issue besides. A case naming
+ * no issue is its own group, since nothing else is known to share it.
  */
-function groupKeyOf(drawCase: DrawCase): string {
-  const row = drawCase.row;
+function groupKeyOf(row: CaseRow, finalTest: FinalTestSource | null): string {
+  if (finalTest !== null) return finalTest.grouping.groupOf(row);
   return `${GROUP_KEY}:${row.issueKey ?? row.askId}`;
 }
 
 /** The slices and the counts each starts at. */
-function emptyDraw(seed: number): Draw {
+function emptyDraw(seed: number, groupKey: string): Draw {
   const counts = {} as Record<SliceName, Record<CaseKind, number>>;
   const slices = {} as DrawnSlices;
   for (const slice of SLICES) {
@@ -338,7 +367,7 @@ function emptyDraw(seed: number): Draw {
     targets: TARGETS,
     slices,
     counts,
-    groupKey: GROUP_KEY,
+    groupKey,
     groupCount: 0,
     groups: { approval: 0, question: 0 },
     held: [],
@@ -364,10 +393,13 @@ const DEVELOPMENT_ORDER: readonly SliceName[] = SLICES.filter((slice) => slice !
  * out, the rest are grouped, the groups are shuffled under `seed`, and each group goes into the
  * first slice its whole size still fits.
  *
- * Under `finalTest`, a draw over a registered read of the reserve, report takes only a group
- * whose every case the reserve holds, the cases left out above counted too, and such a group
- * tries report first; every other group skips report. The reserved cases that went to another
- * slice are named in `finalTest.heldOutsideReport`.
+ * Under `finalTest`, a draw over a registered read of the reserve, the groups are the issue trees
+ * and each carries its outcome under item 6, read over every case of the corpus in it. A group
+ * whose outcome is `ask-before-cut` gives no case to any slice: its cases are named in
+ * `finalTest.beforeCut`. Only an `eligible` group tries report, and it tries report first; every
+ * other group skips it. The reserved cases that went to another slice are named in
+ * `finalTest.heldOutsideReport`, and each group's parent changes after its first ask opened in
+ * `finalTest.parentChanges`.
  *
  * It throws `DrawError` over an approval case whose answer names no option, which is the corpus
  * read wrongly rather than a case to leave out.
@@ -377,17 +409,11 @@ export function drawSlices(
   seed: number,
   finalTest: FinalTestSource | null = null
 ): Draw {
-  const draw = emptyDraw(seed);
+  const draw = emptyDraw(seed, finalTest === null ? GROUP_KEY : TREE_GROUP_KEY);
   const drawable: DrawCase[] = [];
-  // The groups holding a case the reserve does not hold, read over every case given, so a case
-  // the draw leaves out below still keeps its group out of the final test: a scorer may have
-  // read it, and a group goes to one set whole.
-  const readGroups = new Set<string>();
-  if (finalTest !== null) {
-    for (const drawCase of cases) {
-      if (!finalTest.holds(drawCase.row)) readGroups.add(groupKeyOf(drawCase));
-    }
-  }
+  const outcomeOf = (key: string): TreeOutcome =>
+    finalTest?.grouping.outcomes.get(key) ?? "not-held-at-opening";
+  const beforeCut: string[] = [];
   const leaveOut = (row: CaseRow, undrawableKind: UndrawableKind, reason: string): void => {
     draw.undrawable.push({ caseId: row.caseId, kind: row.kind, reason, undrawableKind });
     draw.undrawableByKind[undrawableKind] += 1;
@@ -399,6 +425,12 @@ export function drawSlices(
         `the approval case ${row.caseId} names no option the person chose, which the corpus ` +
           "build cannot produce: the draw stops rather than passing over it"
       );
+    }
+    if (finalTest !== null && outcomeOf(groupKeyOf(row, finalTest)) === "ask-before-cut") {
+      // Item 6 (a): an ask of the tree opened before the cut, so a scorer may have read the tree
+      // before any of its cases came; it gives no case to any slice of the claim's draw.
+      beforeCut.push(row.caseId);
+      continue;
     }
     if (drawCase.hold.held) {
       const heldKind = drawCase.hold.kind;
@@ -447,7 +479,7 @@ export function drawSlices(
   for (const drawCase of [...drawable].sort((one, other) =>
     one.row.caseId < other.row.caseId ? -1 : 1
   )) {
-    const key = groupKeyOf(drawCase);
+    const key = groupKeyOf(drawCase.row, finalTest);
     const group = groups.get(key);
     if (group === undefined) {
       groups.set(key, {
@@ -466,10 +498,9 @@ export function drawSlices(
   for (const group of shuffled(ordered, seed)) {
     draw.groupCount += 1;
     for (const kind of KINDS) if (group.counts[kind] > 0) draw.groups[kind] += 1;
-    const wholeInReserve = finalTest !== null && !readGroups.has(group.key);
-    if (wholeInReserve) finalTestGroups += 1;
-    const order =
-      finalTest === null ? SLICES : wholeInReserve ? FINAL_TEST_ORDER : DEVELOPMENT_ORDER;
+    const eligible = finalTest !== null && outcomeOf(group.key) === "eligible";
+    if (eligible) finalTestGroups += 1;
+    const order = finalTest === null ? SLICES : eligible ? FINAL_TEST_ORDER : DEVELOPMENT_ORDER;
     let taken: SliceName = "reserve";
     for (const slice of order) {
       if (slice === "reserve") break;
@@ -502,10 +533,26 @@ export function drawSlices(
     }
   }
   if (finalTest !== null) {
+    const outcomes = Object.fromEntries(TREE_OUTCOMES.map((outcome) => [outcome, 0])) as Record<
+      TreeOutcome,
+      number
+    >;
+    const parentChanges: FinalTestDraw["parentChanges"] = [];
+    const keys = [...new Set(cases.map((drawCase) => groupKeyOf(drawCase.row, finalTest)))].sort();
+    for (const key of keys) {
+      const outcome = outcomeOf(key);
+      outcomes[outcome] += 1;
+      const tree = finalTest.grouping.groups.get(key);
+      const changes = tree === undefined ? [] : changesAfterAskOf(tree);
+      if (changes.length > 0) parentChanges.push({ group: key, outcome, changes });
+    }
     draw.finalTest = {
       reference: finalTest.reference,
       groups: finalTestGroups,
+      outcomes,
+      beforeCut: { total: beforeCut.length, cases: beforeCut },
       heldOutsideReport: { total: heldOutsideReport.length, cases: heldOutsideReport },
+      parentChanges,
     };
   }
   return draw;
@@ -680,6 +727,8 @@ function readFlags(argv: readonly string[]): Flags {
     seed?: string;
     "backlog-roots"?: string;
     cache?: string;
+    "scorer-records"?: string[];
+    "round-sessions"?: string;
   };
   try {
     ({ values } = parseArgs({
@@ -691,6 +740,8 @@ function readFlags(argv: readonly string[]): Flags {
         seed: { type: "string" },
         "backlog-roots": { type: "string" },
         cache: { type: "string" },
+        "scorer-records": { type: "string", multiple: true },
+        "round-sessions": { type: "string" },
       },
       strict: true,
       allowPositionals: false,
@@ -717,6 +768,8 @@ function readFlags(argv: readonly string[]): Flags {
     seed,
     backlogRoots: values["backlog-roots"]?.trim() || undefined,
     cache: values.cache?.trim() || undefined,
+    scorerRecords: (values["scorer-records"] ?? []).map((path) => path.trim()).filter(Boolean),
+    roundSessions: values["round-sessions"]?.trim() || undefined,
   };
 }
 
@@ -740,11 +793,24 @@ function countsTable(draw: Draw): string {
 }
 
 async function draw(flags: Flags): Promise<number> {
-  if (readReferenceOf(process.env[RESERVE_VARIABLE]) && flags.seed === undefined) {
+  const reading = Boolean(readReferenceOf(process.env[RESERVE_VARIABLE]));
+  if (reading && flags.seed === undefined) {
     // The rule's item 6: the final test is drawn by a seed registered then, so a draw that asks to
     // read the reserve takes the one its registration's digest holds, and stops before the read.
     throw new UsageError(
       `a draw that reads the reserve takes --seed, the seed its registration names\n\n${USAGE}`
+    );
+  }
+  if (reading && (flags.scorerRecords.length === 0 || flags.roundSessions === undefined)) {
+    // Item 6 (c) and (d) are checked before the claim reads, so the draw that reads stops here.
+    throw new UsageError(
+      "a draw that reads the reserve takes --scorer-records and --round-sessions, which item 6 " +
+        `(c) and (d) check its trees against\n\n${USAGE}`
+    );
+  }
+  if (!reading && (flags.scorerRecords.length > 0 || flags.roundSessions !== undefined)) {
+    throw new UsageError(
+      `--scorer-records and --round-sessions are read only by a draw that reads the reserve\n\n${USAGE}`
     );
   }
   const corpus = await readCorpus(flags.corpus);
@@ -753,6 +819,32 @@ async function draw(flags: Flags): Promise<number> {
   const config = await dispatchConfig();
   const post = corpus.rows.filter((row) => answeredTime(row) >= cut);
   const seed = flags.seed ?? newSeed();
+  // Only a registered read opens the reserve (`readCorpus`), so a corpus read under one is the
+  // claim's: it groups by tree, and its report slice is the final test item 6 allows. The trees
+  // and the scorers' and round's records are read before any case is rendered, so a corpus or a
+  // file the claim cannot check stops the draw before it spends a model call.
+  let finalTest: FinalTestSource | null = null;
+  if (corpus.reserve.readUnder !== null) {
+    const trees = await readTrees(corpus.directory);
+    if (trees.throughEventId !== corpus.snapshot.throughEventId) {
+      throw new DrawError(
+        `the corpus's trees were written through event ${trees.throughEventId} and its cases ` +
+          `through ${corpus.snapshot.throughEventId}: they are not one build`
+      );
+    }
+    const holds = (row: CaseRow): boolean => reserveOf(row) === "held";
+    finalTest = {
+      reference: corpus.reserve.readUnder,
+      holds,
+      grouping: treeGroupingOf(corpus.rows, trees, {
+        holds,
+        readAskIds: await idsInFiles(flags.scorerRecords),
+        roundSessions: await idsInFiles(
+          flags.roundSessions === undefined ? [] : [flags.roundSessions]
+        ),
+      }),
+    };
+  }
   console.log(`corpus            ${corpus.directory}`);
   console.log(`cut               ${new Date(cut).toISOString()}`);
   console.log(`post-cut cases    ${post.length}`);
@@ -779,12 +871,6 @@ async function draw(flags: Flags): Promise<number> {
     `cache             ${flags.cache ?? "none, so every case is asked of the model again"}`
   );
   const rendered = await drawCasesOf(post, issues, config, ruleOptions);
-  // Only a registered read opens the reserve (`readCorpus`), so a corpus read under one is the
-  // claim's, and its report slice is the final test the rule draws from the reserve alone.
-  const finalTest: FinalTestSource | null =
-    corpus.reserve.readUnder === null
-      ? null
-      : { reference: corpus.reserve.readUnder, holds: (row) => reserveOf(row) === "held" };
   const drawn = drawSlices(rendered.cases, seed, finalTest);
   console.log("");
   console.log(countsTable(drawn));
@@ -817,10 +903,20 @@ async function draw(flags: Flags): Promise<number> {
     drawn.finalTest === null
       ? "final test        none: the reserve was not read, so report holds cases a live scorer " +
           "may have read"
-      : `final test        report from the reserve alone, read under ${drawn.finalTest.reference}: ` +
-          `${drawn.finalTest.groups} groups the reserve holds whole; ` +
-          `${drawn.finalTest.heldOutsideReport.total} reserved cases went to another slice`
+      : `final test        report from the reserve's item 6 alone, read under ` +
+          `${drawn.finalTest.reference}: ${drawn.finalTest.groups} eligible groups drawn; ` +
+          `${drawn.finalTest.heldOutsideReport.total} reserved cases went to another slice; ` +
+          `${drawn.finalTest.beforeCut.total} cases on trees with an ask before the cut went ` +
+          "to no slice"
   );
+  if (drawn.finalTest !== null) {
+    for (const outcome of TREE_OUTCOMES) {
+      console.log(`  trees ${outcome.padEnd(24)}${drawn.finalTest.outcomes[outcome]}`);
+    }
+    console.log(
+      `  trees with a parent change after an ask opened  ${drawn.finalTest.parentChanges.length}`
+    );
+  }
   console.log("");
   for (const slice of SLICES) {
     const ids = drawn.slices[slice].slice(0, IDS_SHOWN);
