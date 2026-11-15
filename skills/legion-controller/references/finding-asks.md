@@ -57,7 +57,8 @@ The work goes to whoever already owns that code. You file an issue only when nob
    architect reads a comment on its root, so the evidence stays unhandled, and catch-up step 4
    lists it again at your next start. A kept publish waits one hour, until the `kept_until` its
    answer names, for the role's next live holder. If no session takes it in that hour, Envoy
-   drops it and sends your session a message that names it. Publish it again at your next wake.
+   drops it, and when your publish named your session, sends your session a message that names
+   it, unless it dropped it more than an hour late. Publish it again at your next wake.
    Once the root leaves `admission.trees`, no running tree owns the code, and step 4 files it.
    File nothing while a tree owns it: a second issue splits the work.
 4. No running tree owns that code: file it on the repository where the fix belongs, in the

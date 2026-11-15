@@ -169,11 +169,11 @@ func resolveRole(ctx context.Context, deps Deps, role string) (roles.Resolution,
 // holder's own live mention, which is the very case in which every copy of the comment bound
 // for that session's own topic is left to the mention (destinations.leftToMention) - and the
 // skip stands for whatever else keys a copy there. Nothing else delivers a role copy - a keep
-// waits for the role's next claim and a forward is the holder's one copy - so a copy dropped
-// from the list would let the owner's next event of the same role reach that holder first,
-// which is why this differs from the mention rule's own hold of a mentioned session's copy
-// (destinations.leftTo), left out of the list because the mention delivers that comment to
-// that very session.
+// waits up to its hour for the role's next live holder and a forward is the holder's one copy -
+// so a copy dropped from the list would let the owner's next event of the same role reach that
+// holder first, which is why this differs from the mention rule's own hold of a mentioned
+// session's copy (destinations.leftTo), left out of the list because the mention delivers that
+// comment to that very session.
 //
 // The wait is the attempt's own lease and nothing longer (model.DeliveryClaimLapse): past it the
 // attempt reads resumed or abandoned rather than live, no mention is live any more, and the copy

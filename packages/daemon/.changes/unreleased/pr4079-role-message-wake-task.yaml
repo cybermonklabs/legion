@@ -4,5 +4,5 @@ body: |-
   says that Envoy keeps a role message for one hour, that a message kept for the role reaches the
   woken session as an Envoy card that shows `kept_at`, possibly before the task, unless its hour
   ended first, that Envoy tells the sender when it drops one, and that a message sent with
-  `keep: false` is not kept. The role prompts say the same in their sentence about a message to a
-  released role.
+  `keep: false` is not kept. The role prompts' sentence about a message to a released role now says
+  that Envoy keeps it for one hour and tells its sender if no session takes it by then.

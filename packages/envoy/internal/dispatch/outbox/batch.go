@@ -354,12 +354,12 @@ type batchEvent struct {
 	// is left out and holds none of the owner's later events back: the mention is on its way to
 	// that very session - its own attempt names it, or an unpinned attempt this read resolved to
 	// it does - so the session has the comment before the owner's later events reach it,
-	// whichever way the send ends. A role copy is nobody else's to deliver - a keep waits for
-	// the role's next claim, and a forward is the holder's one copy - and a copy waiting on an
-	// attempt whose holder could not be named is nobody else's either, that mention being as
-	// likely to be pinned elsewhere, so leaving either out would let the owner's next event
-	// overtake it at that session, and it stays in the list holding its key instead
-	// (planChains).
+	// whichever way the send ends. A role copy is nobody else's to deliver - a keep waits up to
+	// its hour for the role's next live holder, and a forward is the holder's one copy - and a
+	// copy waiting on an attempt whose holder could not be named is nobody else's either, that
+	// mention being as likely to be pinned elsewhere, so leaving either out would let the
+	// owner's next event overtake it at that session, and it stays in the list holding its key
+	// instead (planChains).
 	delivered      map[string]struct{}
 	destinationsOf []destination
 	resolveErr     error

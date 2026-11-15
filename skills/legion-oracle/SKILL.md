@@ -20,9 +20,10 @@ If the deployment instructions (the `# Deployment instructions` part of your sys
 already hold the answer. Then end your turn: the reply arrives as a delivery that starts your next
 one, and research before it duplicates the role's work. If no live session holds the role, the
 publish answers that Envoy kept the question for one hour, until its `kept_until`, and the next
-session to hold the role live in that hour is handed it once. If none does, Envoy drops it and
-sends your session a message that names it. Nobody can answer you now, so put that kept answer in
-your output and research at once rather than wait for it.
+session to hold the role live in that hour is handed it once. If none does, Envoy drops it, and
+when your publish named your session, sends your session a message that names it, unless it
+dropped it more than an hour late. Nobody can answer you now, so put that kept answer in your
+output and research at once rather than wait for it.
 
 Run steps 1 and 2, in parallel if you choose, since neither needs the other's result. Run step 3
 when the question names a library, and step 4 when it asks for general practice, each only when

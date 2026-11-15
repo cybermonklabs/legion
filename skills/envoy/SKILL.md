@@ -138,7 +138,7 @@ Every topic starts with `notifications.`.
   When no live session holds the role, Envoy keeps the message for one hour: the answer says it was kept, and its `kept_until` is the time that hour ends.
   That holds when nobody claims the role, and when its holder is not `live`: the answer then also names the holder, its `holder_state` (`unresponsive` or `gone`) and its `last_seen`.
   The next session to hold the role live before `kept_until` is handed the message once, and that can be the same holder when it answers again.
-  If no session takes it by then, Envoy drops it and sends your session a message that names it.
+  If no session takes it by then, Envoy drops it, and when your publish named your session, sends your session a message that names it, unless it dropped it more than an hour late.
   An `unresponsive` holder is not dead, so start no replacement for it and take nothing from it.
   A forward the stream did not store for a live holder within about 4 seconds errs, and you see that error after about 8 seconds, because the client tries once more.
   Neither a kept answer nor an error releases the role's claim: a holder whose `holder_state` is `unresponsive` keeps its role.

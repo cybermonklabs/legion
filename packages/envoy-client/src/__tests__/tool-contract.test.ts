@@ -251,7 +251,7 @@ describe("publishConfirmationText", () => {
     const unclaimed = await publish("legion-architect");
     expect(unclaimed).toMatchObject({ kept: true, keptReason: "unclaimed", keptUntil });
     expect(publishConfirmationText(unclaimed, named)).toBe(
-      `published event-kept. Envoy kept it for the role until ${until}: no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it.`
+      `published event-kept. Envoy kept it for the role until ${until}: no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late.`
     );
     // A publish that named no session is sent no such message, so its line promises none.
     const unnamed = publishConfirmationText(unclaimed, { senderNamed: false });
@@ -272,7 +272,7 @@ describe("publishConfirmationText", () => {
     });
     const warned = publishConfirmationText(unresponsive, named);
     expect(warned).toBe(
-      `published event-kept. Envoy kept it for the role until ${until}: its holder ses_reviewer is unresponsive, so no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it. ${UNRESPONSIVE_RULE}`
+      `published event-kept. Envoy kept it for the role until ${until}: its holder ses_reviewer is unresponsive, so no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late. ${UNRESPONSIVE_RULE}`
     );
     expect(warned).toContain("An unresponsive session is not dead");
     expect(warned).toContain("Start no replacement for it");
@@ -283,7 +283,7 @@ describe("publishConfirmationText", () => {
     expect(gone).toMatchObject({ keptReason: "holder_lapsed", holder: "ses_merger" });
     expect(gone.lastSeen).toBeUndefined();
     expect(publishConfirmationText(gone, named)).toBe(
-      `published event-kept. Envoy kept it for the role until ${until}: its holder ses_merger is gone, so no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it.`
+      `published event-kept. Envoy kept it for the role until ${until}: its holder ses_merger is gone, so no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late.`
     );
 
     // A listener of an earlier release names no time: the line says kept, with no time, and
@@ -302,7 +302,7 @@ describe("publishConfirmationText", () => {
     expect(description).toContain("The listener then keeps the message for one hour.");
     expect(description).toContain("its kept_until is the time that hour ends");
     expect(description).toContain(
-      "If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message."
+      "If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late."
     );
     expect(description).toContain(
       "For a holder that is not live, the result also names that holder and its state."
@@ -690,22 +690,28 @@ describe("publishConfirmationText counts", () => {
   const named = { senderNamed: true };
 
   test("counts the other sessions that get the message, and how many run now", () => {
-    const text = publishConfirmationText({ envelope, recipients: 3, recipientsConnected: 2 }, named);
+    const text = publishConfirmationText(
+      { envelope, recipients: 3, recipientsConnected: 2 },
+      named
+    );
 
     expect(text).toBe("published evt_02 to 3 other sessions (2 running now)");
   });
 
   test("one other session takes the singular", () => {
-    expect(publishConfirmationText({ envelope, recipients: 1, recipientsConnected: 1 }, named)).toBe(
-      "published evt_02 to 1 other session (1 running now)"
-    );
-    expect(publishConfirmationText({ envelope, recipients: 1, recipientsConnected: 0 }, named)).toBe(
-      "published evt_02 to 1 other session (0 running now)"
-    );
+    expect(
+      publishConfirmationText({ envelope, recipients: 1, recipientsConnected: 1 }, named)
+    ).toBe("published evt_02 to 1 other session (1 running now)");
+    expect(
+      publishConfirmationText({ envelope, recipients: 1, recipientsConnected: 0 }, named)
+    ).toBe("published evt_02 to 1 other session (0 running now)");
   });
 
   test("a count of none says the message reached nobody, and names the topic", () => {
-    const text = publishConfirmationText({ envelope, recipients: 0, recipientsConnected: 0 }, named);
+    const text = publishConfirmationText(
+      { envelope, recipients: 0, recipientsConnected: 0 },
+      named
+    );
 
     expect(text).toBe(
       "published evt_02; no other session subscribes to notifications.team.deploy-squad.all, so no other session gets it"

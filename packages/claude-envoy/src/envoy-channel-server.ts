@@ -1861,8 +1861,8 @@ export async function executeEnvoyTool(
       // The answer the model reads, its line first: the counts of a stored topic's answer, a role
       // holder, or a kept answer, which is a success of its own, all in the words the Oh My Pi
       // plugin uses (`publishConfirmationText`). This server always names its own session as the
-      // source, so the listener sends that session a message for a kept copy no session took, and
-      // the line says so.
+      // source, so the listener sends that session a message for a kept copy no session took,
+      // unless it drops the copy more than an hour late, and the line says so.
       return {
         message: publishConfirmationText(result, { senderNamed: true }),
         event_id: result.envelope.event_id,

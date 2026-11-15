@@ -3845,14 +3845,14 @@ describe("envoy OMP extension", () => {
       expect(description).toContain("The listener then keeps the message for one hour.");
       expect(description).toContain("its kept_until is the time that hour ends");
       expect(description).toContain(
-        "If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message."
+        "If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late."
       );
 
       const unclaimed = await publish(named, "notifications.role.legion-architect");
       expect(published[0]).toMatchObject({ source_session: "ses_named" });
       expect(unclaimed?.isError).toBeFalsy();
       expect(unclaimed?.content[0]?.text).toBe(
-        `published evt_kept. Envoy kept it for the role until ${until}: no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it.`
+        `published evt_kept. Envoy kept it for the role until ${until}: no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late.`
       );
       expect(unclaimed?.details).toEqual({
         event_id: "evt_kept",
@@ -3866,7 +3866,7 @@ describe("envoy OMP extension", () => {
       // is not dead and that the sender starts no replacement for it.
       const unresponsive = await publish(named, "notifications.role.reviewer");
       expect(unresponsive?.content[0]?.text).toBe(
-        `published evt_kept. Envoy kept it for the role until ${until}: its holder ses_reviewer is unresponsive, so no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it. ${UNRESPONSIVE_RULE}`
+        `published evt_kept. Envoy kept it for the role until ${until}: its holder ses_reviewer is unresponsive, so no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late. ${UNRESPONSIVE_RULE}`
       );
       expect(unresponsive?.content[0]?.text).toContain("Start no replacement for it");
       expect(unresponsive?.details).toEqual({

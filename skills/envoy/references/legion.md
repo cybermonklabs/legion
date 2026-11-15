@@ -40,7 +40,7 @@ Read this in a Legion pane before you touch a role claim, or when a Legion role 
   The listener reports the wake at the keep.
   Its sweep reports the wake again every five minutes while the message has at least 20 minutes of its hour left and no live session holds the role.
   The woken session gets the message as an Envoy card with `kept_at`, and the card can come before the task the daemon gives the woken role.
-  If the role is not back inside the hour, Envoy drops the message and sends the sender's session a message that names it.
+  If the role is not back inside the hour, Envoy drops the message, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
 
 - Never forward these failure payloads to an architect, because the daemon already acts on them.
 

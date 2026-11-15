@@ -112,8 +112,8 @@ func (l *keptLaneUnderClaim) keep(t *testing.T, role, prefix string, count int) 
 	return keys
 }
 
-// deliver hands item to the role lane as a core message, the way Dispatch's outbox publishes a
-// role-routed event. It is this lane's own delivery configuration rather than the harness's,
+// deliver hands item to the role lane as a core message, the way a client publishes a role topic
+// straight onto NATS. It is this lane's own delivery configuration rather than the harness's,
 // because the keep the lane makes for a role with no live holder hands that lane over in a
 // goroutine of its own (keepForNextHolder): that handover resolves whoever holds the role by
 // the time it runs, so it must forward through the stand-in this rig records, and not through
@@ -614,12 +614,13 @@ func TestAHandoverOfAnEmptyKeptLaneResolvesNoHolder(t *testing.T) {
 	}
 }
 
-// Dispatch's outbox publishes a role-routed event straight onto the role lane as a core message,
-// and sends it once: it marks the event published as soon as NATS accepted it, which for a role
-// topic is a flush with no receipt behind it, reads no no_holder exception and never sends that
-// event again. So an event routed to a role no session held was dropped. The role lane keeps
-// every message it finds no live holder for, so the listener keeps this one, and the role's next
-// claim is handed it.
+// A role topic published straight onto the role lane as a core message is sent once: NATS
+// accepting it is a flush with no receipt behind it, and its sender reads no no_holder exception
+// and never sends it again. Dispatch's outbox sent its role-routed events that way until it
+// forwarded them to the holder itself (.dispatch/architecture/dispatch-outbox.md), and an event
+// routed to a role no session held was dropped. The role lane keeps every message it finds no live
+// holder for, so the listener keeps this one, and the role's next live holder is handed it inside
+// its hour.
 func TestADispatchRoleRoutedEventToAnUnheldRoleReachesTheNextHolder(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const (

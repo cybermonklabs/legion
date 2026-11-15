@@ -209,11 +209,11 @@ test("a kept publish says until when it is kept", async () => {
   expect(description).toContain("The listener then keeps the message for one hour.")
   expect(description).toContain("its kept_until is the time that hour ends")
   expect(description).toContain(
-    "If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message.",
+    "If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late.",
   )
 
   expect(await publish("notifications.role.legion-architect")).toEqual({
-    message: `published evt-kept. Envoy kept it for the role until ${until}: no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it.`,
+    message: `published evt-kept. Envoy kept it for the role until ${until}: no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late.`,
     event_id: "evt-kept",
     topic: "notifications.role.legion-architect",
     kept: true,
@@ -226,7 +226,7 @@ test("a kept publish says until when it is kept", async () => {
   // not dead and that the sender starts no replacement for it.
   const unresponsive = await publish("notifications.role.reviewer")
   expect(unresponsive).toEqual({
-    message: `published evt-kept. Envoy kept it for the role until ${until}: its holder ses_reviewer is unresponsive, so no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it. ${UNRESPONSIVE_RULE}`,
+    message: `published evt-kept. Envoy kept it for the role until ${until}: its holder ses_reviewer is unresponsive, so no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late. ${UNRESPONSIVE_RULE}`,
     event_id: "evt-kept",
     topic: "notifications.role.reviewer",
     holder: "ses_reviewer",

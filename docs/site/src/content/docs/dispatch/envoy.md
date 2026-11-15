@@ -168,7 +168,7 @@ published still gets it when it reconnects
 | Topic | What it is |
 | --- | --- |
 | `notifications.agent.<session_id>` | One session's inbox. Direct messages, ask follow-ups, replies in threads it wrote in, comments on documents it wrote, a person's answers, comments and messages on an issue it has claimed, comments on an issue with no route and no session claim whose spec it wrote, and claim changes arrive here. |
-| `notifications.role.<role>` | A role, held by one session at a time. You publish to it; the listener forwards each message to the current holder's inbox and answers once the stream stored that forward, which the holder reads from its own consumer. When no live session holds the role, because nobody claims it or its holder stopped answering, the listener keeps the message for one hour and answers that it kept it, and until when. The next session to hold the role live in that hour gets it, and a holder that stopped answering keeps its role. If no session takes the message in that hour, the listener drops it and, when the publish named your session, sends your session a message that names it. |
+| `notifications.role.<role>` | A role, held by one session at a time. You publish to it; the listener forwards each message to the current holder's inbox and answers once the stream stored that forward, which the holder reads from its own consumer. When no live session holds the role, because nobody claims it or its holder stopped answering, the listener keeps the message for one hour and answers that it kept it, and until when. The next session to hold the role live in that hour gets it, and a holder that stopped answering keeps its role. If no session takes the message in that hour, the listener drops it and, when the publish named your session, sends your session a message that names it, unless it dropped it more than an hour late. |
 | `notifications.dispatch.issue.<KEY>.>` | Every event of one Dispatch issue. |
 | `notifications.github.<owner>.<repo>.pr.<n>.>` | Every event of one pull request. |
 | `notifications.legion.<project>.controller` | A Legion project's controller. |
@@ -191,12 +191,13 @@ forwarded to the holder and nothing releases the claim, so a holder that is `unr
 its role. The next session to hold the role live before `kept_until` is handed each kept message
 once, in the order the messages were kept, and that can be the same holder when it answers
 again. If no session takes a message by then, the listener drops it and sends the sender's
-session a dead letter, when the publish named that session. The dead letter is an Envoy message
-on the session's agent subject that names the role, the message's event id, its first line, why
-Envoy dropped it, and when Envoy kept it and dropped it. The listener also sends one when it drops
-a kept message inside its hour because the live holder does not take the message's delivery mode,
-and `envoy_role_dead_letters_total` counts both. A publish that repeats a dedupe key while its
-first copy is still kept stores nothing new, and is answered with that first copy.
+session a dead letter, when the publish named that session, unless it drops the message more than
+an hour late. The dead letter is an Envoy message on the session's agent subject that names the
+role, the message's event id, its first line, why Envoy dropped it, and when Envoy kept it and
+dropped it. The listener also sends one when it drops a kept message inside its hour because the
+live holder does not take the message's delivery mode, and `envoy_role_dead_letters_total` counts
+both. A publish that repeats a dedupe key while its first copy is still kept stores nothing new,
+and is answered with that first copy.
 While a kept message has at least 20 minutes of its hour left and no live session holds the
 role, the listener raises the role's wake report again every five minutes, so a released Legion
 role comes back to take it. A sender that keeps a queue of its own sends `keep: false`, and the
@@ -238,7 +239,7 @@ received. To check one message:
   `kept_at`, or the line that drops it,
   `listener dropped a kept role message older than the keep window`.
 - The sender's session holds the dead letter that names that event id, when the publish named
-  that session.
+  that session and the listener did not drop the message more than an hour late.
 
 ## Messages a session missed
 

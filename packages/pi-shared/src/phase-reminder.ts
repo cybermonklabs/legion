@@ -45,9 +45,9 @@ import type { StallLimits } from "./stall-limits";
  * keeps it for an architect role no live session holds and answers 202 kept, which tells no
  * architect (`tellArchitect`). `keptUntil` says whether the next attempt may send the same key
  * again: a listener that names it answers a repeat with the copy it still holds, or keeps a new
- * copy once that copy's hour has ended. A listener of an earlier release names none, and answers
- * a repeat inside its stream's 72-hour duplicate window as the first copy, which it may already
- * have dropped.
+ * copy once that copy has been forwarded or its hour has ended. A listener of an earlier release
+ * names none, and answers a repeat inside its stream's 72-hour duplicate window as the first copy,
+ * which it may already have dropped.
  */
 export type EnvoyPublish = (
   input: PublishInput
@@ -354,10 +354,10 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       // the role live, and its wake report can bring a released architect back. That has told no
       // architect yet, and a copy no session takes in its hour is dropped, so the run's next
       // reminder publishes the notice again. A listener that names `keptUntil` answers a repeat of
-      // the key with the copy it still holds, or keeps a new copy once the first one's hour has
-      // ended, so the key stays. A listener of an earlier release names no time and answers a
-      // repeat inside its stream's duplicate window as the first copy, which it may have dropped
-      // already: the key is cleared, so the next attempt mints a new one.
+      // the key with the copy it still holds, or keeps a new copy once the first one has been
+      // forwarded or its hour has ended, so the key stays. A listener of an earlier release names
+      // no time and answers a repeat inside its stream's duplicate window as the first copy, which
+      // it may have dropped already: the key is cleared, so the next attempt mints a new one.
       if (answer.kept === true) {
         if (answer.keptUntil === undefined) {
           reportKey = undefined;

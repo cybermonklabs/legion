@@ -1052,7 +1052,7 @@ func TestAKeptCopyReachesTheHolderThatClaimedTheRoleUnderTheKeep(t *testing.T) {
 // redelivers from it - the Legion daemon's notice queue, and a phase worker's stall reminder -
 // publishes through the route and opts out on its request instead
 // (TestAPublishWithKeepFalseToAnUnheldRoleIsRefusedAndKeepsNothing). So an ordinary raw role
-// publish, Dispatch's role-routed events among them, is kept and raises no exception.
+// publish is kept and raises no exception.
 func TestTheRoleLaneKeepsARawRolePublishForTheRolesNextHolder(t *testing.T) {
 	const role = "lane-keep-raw"
 	harness := newListenerDeliveryHarness(t)

@@ -24,9 +24,9 @@ once four seconds pass without one. A role message no live holder can take is ke
 hour: the next session to hold the role live in that hour is handed it once, and the publish
 answers 202 with `kept_until`, the end of that hour. If no session takes it, the listener drops
 it and sends a dead letter, an Envoy card that names it, to the session the publish named as its
-source. A `notifications.team.<name>` topic is stored like any other followed topic; every other
-`notifications.` topic the stream does not capture is refused by name, at publish and at
-subscribe, because no session would ever be delivered it.
+source, unless it drops it more than an hour late. A `notifications.team.<name>` topic is stored
+like any other followed topic; every other `notifications.` topic the stream does not capture is
+refused by name, at publish and at subscribe, because no session would ever be delivered it.
 
 This extension claims the role for the session the host has open, and every automatic claim is
 soft: it names the session it continues, which is a fork's or branch's parent, or the session

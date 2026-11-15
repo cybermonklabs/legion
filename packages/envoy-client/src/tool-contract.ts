@@ -228,7 +228,7 @@ export const envoyToolSpecs = [
   },
   {
     name: "envoy_publish",
-    description: `Publish an Envoy message to a notifications. topic. ${STORED_DELIVERY} A role or built-in topic is delivered as its guide says. A role message has three possible answers. First, a live session holds the role, and the stream stores the forward for that holder's consumer. Its 200 says the stream stored it. It does not say that the holder read it. It names the holder and the state the listener resolved the holder in. Second, no live session holds the role: nobody claims it, or its holder is unresponsive or gone. The listener then keeps the message for one hour. This is a success. The result says that the listener kept the message, and its kept_until is the time that hour ends. For a holder that is not live, the result also names that holder and its state. The next session to hold the role live before kept_until gets the message. That can be the same holder when it answers again. If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message. Third, the listener keeps nothing and errs, which tells you to reach the agent some other way: the holder refuses the message, or the forward is not stored within four seconds. A team topic (such as notifications.team.deploy-squad.all) is stored like every other, so a session subscribed to it that was away still receives it when it returns, and one that subscribes after you publish does not. A notifications. topic no stream subject captures is refused by name: nothing would store it. ${PUBLISH_COUNTS} ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT}`,
+    description: `Publish an Envoy message to a notifications. topic. ${STORED_DELIVERY} A role or built-in topic is delivered as its guide says. A role message has three possible answers. First, a live session holds the role, and the stream stores the forward for that holder's consumer. Its 200 says the stream stored it. It does not say that the holder read it. It names the holder and the state the listener resolved the holder in. Second, no live session holds the role: nobody claims it, or its holder is unresponsive or gone. The listener then keeps the message for one hour. This is a success. The result says that the listener kept the message, and its kept_until is the time that hour ends. For a holder that is not live, the result also names that holder and its state. The next session to hold the role live before kept_until gets the message. That can be the same holder when it answers again. If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late. Third, the listener keeps nothing and errs, which tells you to reach the agent some other way: the holder refuses the message, or the forward is not stored within four seconds. A team topic (such as notifications.team.deploy-squad.all) is stored like every other, so a session subscribed to it that was away still receives it when it returns, and one that subscribes after you publish does not. A notifications. topic no stream subject captures is refused by name: nothing would store it. ${PUBLISH_COUNTS} ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT}`,
     arguments: (schema) => ({ topic: schema.string(), ...messageArguments(schema) }),
     operation: EnvoyToolOperation.publish,
   },
@@ -371,10 +371,11 @@ export function sendConfirmationText(result: {
  * session holds the role: nobody claims it, or its holder is not live, which the line names with
  * its state and, for an unresponsive one, with the rule that such a session is not dead.
  * `senderNamed` is whether the publish named the sending session as its source: only then does the
- * listener send that session a message when no session takes the copy in its hour, so only then
- * does the line promise one. It is required, so a host that leaves it out fails to compile rather
- * than promise a message that never comes. A listener of an earlier release names no time and
- * sends no such message, so its kept answer reads as kept with no time.
+ * listener send that session a message when no session takes the copy in its hour, unless it drops
+ * the copy more than an hour late, so only then does the line promise one. It is required, so a
+ * host that leaves it out fails to compile rather than promise a message that never comes. A
+ * listener of an earlier release names no time and sends no such message, so its kept answer
+ * reads as kept with no time.
  */
 export function publishConfirmationText(
   result: {
@@ -423,7 +424,9 @@ export function publishConfirmationText(
         : "The next session to hold the role before then gets it."
     );
     if (result.keptUntil !== undefined && options.senderNamed) {
-      sentences.push("If none does, Envoy drops it and sends you a message that names it.");
+      sentences.push(
+        "If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late."
+      );
     }
     // Last, so that "before then" above can only mean kept_until, never a time the rule names.
     if (lapsed && result.holderState === "unresponsive") sentences.push(UNRESPONSIVE_RULE);

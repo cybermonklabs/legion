@@ -273,7 +273,7 @@ writes, and a request the starting gate turns away while the routes are still op
 | `delivered` | A role forward the stream acknowledged storing for its holder |
 | `skipped` | Nothing to deliver: the session's own consumer holds the message and the relay of that consumer delivers it, the durable's subject matches no session of this machine, or a role message would echo back to the session that holds the role |
 | `dedupe` | A repeat the dedupe cache recognised as already delivered, or the attempt cache as already attempted |
-| `kept` | A role message no live holder could take, kept for the session that claims the role next |
+| `kept` | A role message no live holder could take, kept for one hour for the next session to hold the role live, and dropped at the end of that hour if none does |
 | `failed` | The delivery, the role forward, or the delivery-mode guard before either, failed |
 | `unplaceable_no_record` | An agent delivery given up: no session record this listener could read |
 
@@ -408,8 +408,8 @@ most once for a role in each five-minute interval across every listener. `GET /v
 still answers 404 for an unheld or lapsed role: only the publish route gained the kept answer. A
 sender that keeps a queue of its own and redelivers from it asks not to be kept (`keep: false` in
 the publish body) and gets the 404. The Legion daemon's notice queue does. The opt-out is the
-route's alone: a message published straight onto a role lane is always kept, Dispatch's
-role-routed events among them, which the outbox sends once and reads no exception for.
+route's alone: a message published straight onto a role lane is always kept. Dispatch's
+role-routed events do not cross the lane: the outbox keeps its own copies on the kept lane (below).
 
 A released Legion role gets the copies kept for it when it comes back. The release ends the
 role's process and leaves its claim standing. The session's record is gone at most about five
@@ -424,7 +424,8 @@ of the running process, so in a new pod it starts empty and holds only what that
 To check one message, read the session's transcript for the card with that event id and `kept_at`.
 The listener's log holds the forward of that event id, `listener role forwarded` with `kept_at`, or
 the drop line `listener dropped a kept role message older than the keep window`. The sender's
-session holds the dead letter that names that event id, when the publish named that session.
+session holds the dead letter that names that event id, when the publish named that session and
+the copy was not dropped as stale.
 
 Every other `notifications.` topic the route takes is published to the stream and answered `200`
 once the stream stored it. The route forwards it to nobody: each session that registered the
