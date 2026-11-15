@@ -902,9 +902,10 @@ function readAll(client: DispatchQueryClient, reads: Reads) {
   );
 }
 
-// A page after a reload holds nothing when its kept picks start again: the value Dispatch last
-// confirmed is the one its first answer carries, before the newest pick is shown over it.
-test("picks kept across a reload and refused put back the priority of Dispatch's first answer after it, on every surface", async () => {
+// Case 3 of the roll-back row: a page after a reload holds nothing when its kept picks start
+// again, so the value Dispatch last confirmed is the field in its newest answer since the reload -
+// not its first, and never one from before it - read before the newest pick is shown over it.
+test("picks kept across a reload and refused put back the priority of Dispatch's newest answer since it, on every surface, before the issue is read again", async () => {
   const refuse = Promise.withResolvers<void>();
   const patchIssue = answerIssuePatches()
     .mockImplementationOnce(() => Promise.withResolvers<Issue>().promise)
@@ -912,11 +913,22 @@ test("picks kept across a reload and refused put back the priority of Dispatch's
       await refuse.promise;
       throw closed();
     });
+  let surfaces: RenderResult | undefined;
   try {
     const after = await pickTwiceAndReload(0);
-    // Dispatch holds P1, the priority before either pick.
-    await readAll(after, dispatchReads());
-    expect(cachedPriorities(after)).toEqual({ detail: 3, inbox: 3, list: 3 });
+    // The page after the reload draws the issue, its project's list and the Inbox: its first
+    // answers carry P1, the priority Dispatch held before either pick.
+    const reads = dispatchReads();
+    surfaces = renderIn(after, <Surfaces reads={reads} />);
+    await waitFor(() =>
+      expect(shownPriorities()).toEqual({ detail: "P3", inbox: "P3", list: "P3" })
+    );
+    // Another person sets P2, and the next answers carry it.
+    reads.store(2);
+    await readAll(after, reads);
+    expect(shownPriorities()).toEqual({ detail: "P3", inbox: "P3", list: "P3" });
+    // The reads the refusal starts are held until what it put back is checked.
+    const answerReads = reads.hold();
 
     await act(async () => refuse.resolve());
     await waitFor(() =>
@@ -926,15 +938,21 @@ test("picks kept across a reload and refused put back the priority of Dispatch's
           .map((row) => row.status)
       ).toEqual(["refused", "refused"])
     );
-    expect(cachedPriorities(after)).toEqual({ detail: 1, inbox: 1, list: 1 });
+    expect(cachedPriorities(after)).toEqual({ detail: 2, inbox: 2, list: 2 });
+    expect(shownPriorities()).toEqual({ detail: "P2", inbox: "P2", list: "P2" });
+    await act(async () => answerReads());
+    expect(shownPriorities()).toEqual({ detail: "P2", inbox: "P2", list: "P2" });
   } finally {
+    surfaces?.unmount();
     patchIssue.mockRestore();
   }
 });
 
-// A lapse lets go of every value confirmed (`reset`), and the app empties its cache (`AuthGate`):
-// the same person's sign-in reads everything afresh while the pick is still out.
-test("a pick refused after a lapse and the same person's sign-in puts back the priority of Dispatch's first answer after the sign-in, on every surface", async () => {
+// Case 4 of the roll-back row: a lapse lets go of every value confirmed (`reset`), and the app
+// empties its cache (`AuthGate`) and draws the page again once the same person signs in, while
+// the pick is still out: the value put back is the field in Dispatch's newest answer since that
+// sign-in.
+test("a pick refused after a lapse and the same person's sign-in puts back the priority of Dispatch's newest answer since the sign-in, on every surface, before the issue is read again", async () => {
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementationOnce(() => save.promise);
   const client = signedIn();
@@ -945,6 +963,7 @@ test("a pick refused after a lapse and the same person's sign-in puts back the p
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
     ),
   });
+  let surfaces: RenderResult | undefined;
   try {
     await act(async () => {
       picker.result.current.submit(0);
@@ -956,17 +975,32 @@ test("a pick refused after a lapse and the same person's sign-in puts back the p
       client.removeQueries({ predicate: (query) => query.queryKey[0] !== "whoami" });
     });
     act(() => writes.signedIn("alice"));
-    // Dispatch holds P1, the priority before the pick.
-    await readAll(client, dispatchReads());
-    expect(cachedPriorities(client)).toEqual({ detail: 0, inbox: 0, list: 0 });
+    // The page drawn after the sign-in: its first answers carry P1, the priority Dispatch held
+    // before the pick.
+    const reads = dispatchReads();
+    surfaces = renderIn(client, <Surfaces reads={reads} />);
+    await waitFor(() =>
+      expect(shownPriorities()).toEqual({ detail: "P0", inbox: "P0", list: "P0" })
+    );
+    // Another person sets P2, and the next answers carry it.
+    reads.store(2);
+    await readAll(client, reads);
+    expect(shownPriorities()).toEqual({ detail: "P0", inbox: "P0", list: "P0" });
+    // The reads the refusal starts are held until what it put back is checked.
+    const answerReads = reads.hold();
 
     await act(async () => {
       save.reject(closed());
       await save.promise.catch(() => undefined);
     });
     await waitFor(() => expect(writes.rows()).toEqual([]));
-    expect(cachedPriorities(client)).toEqual({ detail: 1, inbox: 1, list: 1 });
+    expect(picker.result.current.retry).toBeDefined();
+    expect(cachedPriorities(client)).toEqual({ detail: 2, inbox: 2, list: 2 });
+    expect(shownPriorities()).toEqual({ detail: "P2", inbox: "P2", list: "P2" });
+    await act(async () => answerReads());
+    expect(shownPriorities()).toEqual({ detail: "P2", inbox: "P2", list: "P2" });
   } finally {
+    surfaces?.unmount();
     picker.unmount();
     patchIssue.mockRestore();
   }
@@ -1057,6 +1091,59 @@ test("a read that answers after the pick landed with the value from before it do
   }
 });
 
+// A read sent before a write of the field landed is older than that write's answer, whenever it
+// arrives: P2 lands while P0 waits behind it and three reads sent before the landing are out;
+// their answers, carrying P1 from before P2, land after it, and P0 is then refused. What it puts
+// back is P2, Dispatch's answer to the landing, not P1.
+test("a read sent before a pick landed that answers after it is older than the landing: a refusal after it puts back the landed value", async () => {
+  const save = Promise.withResolvers<Issue>();
+  const refusal = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => save.promise)
+    .mockImplementationOnce(() => refusal.promise);
+  const client = signedIn();
+  const reads = dispatchReads();
+  const surfaces = renderIn(client, <Surfaces reads={reads} />);
+  const picker = renderIn(client, <CachedPriority reads={reads} />);
+  const user = userEvent.setup();
+  try {
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 2 }]));
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    const answerEarlyReads = reads.hold();
+    const early = Promise.all(
+      [detailKey, listKey, inboxKey].map((queryKey) => client.refetchQueries({ queryKey }))
+    );
+    reads.store(2);
+    await act(async () => {
+      save.resolve({ ...issue, priority: 2 });
+      await save.promise;
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 2 }, { priority: 0 }]));
+    await act(async () => {
+      answerEarlyReads();
+      await early;
+    });
+    expect(shownPriorities()).toEqual({ detail: "P0", inbox: "P0", list: "P0" });
+    // The reads the refusal starts are held until what it put back is checked.
+    const answerReads = reads.hold();
+
+    await act(async () => {
+      refusal.reject(closed());
+      await refusal.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    expect(cachedPriorities(client)).toEqual({ detail: 2, inbox: 2, list: 2 });
+    expect(shownPriorities()).toEqual({ detail: "P2", inbox: "P2", list: "P2" });
+    await act(async () => answerReads());
+    expect(shownPriorities()).toEqual({ detail: "P2", inbox: "P2", list: "P2" });
+  } finally {
+    surfaces.unmount();
+    picker.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
 test("a refused priority pick with no newer live pick puts back the confirmed priority and shows its fixed line with Retry", async () => {
   const patchIssue = answerIssuePatches().mockRejectedValueOnce(
     new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-1 is closed" })
@@ -1082,10 +1169,11 @@ test("a refused priority pick with no newer live pick puts back the confirmed pr
   }
 });
 
-// The sequence that tells the value Dispatch last confirmed from the value before a pick: P1
-// goes out, P2 waits behind it, P1 is refused while P2 is live, then P2 is refused. The value on
-// screen before the pick of P2 was P1, which Dispatch never stored; what it last confirmed is the
-// P3 the issue showed at the first pick.
+// Case 1 of the roll-back row, the sequence that tells the value Dispatch last confirmed from the
+// value before a pick: P1 goes out, P2 waits behind it, P1 is refused while P2 is live, then P2 is
+// refused. The value on screen before the pick of P2 was P1, which Dispatch never stored; what it
+// last confirmed is the P3 the issue showed at the first pick, which shows before the issue's
+// read again answers.
 test("a refused pick whose older pick was refused before it puts back the priority shown at the first pick, not the older pick, with the fixed line and Retry, and reads the issue again", async () => {
   const first = Promise.withResolvers<Issue>();
   const second = Promise.withResolvers<Issue>();
@@ -1147,6 +1235,62 @@ test("a refused pick whose older pick was refused before it puts back the priori
     await act(async () => answerReads());
     expect(select().value).toBe("3");
     expect(bodies(patchIssue)).toEqual([{ priority: 1 }, { priority: 2 }]);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// Case 2 of the roll-back row: the value Dispatch last confirmed is the field in its newest
+// answer, kept apart from the pick shown over it. P1 is out when a read of the issue answers with
+// P0, which another person set; P1 is then refused, and from the refusal until the app's read of
+// the issue answers, the page shows P0, not the P3 from before the pick. That read is the app's
+// one read of the issue after the refusal: Dispatch answers it with P2, which another person set
+// meanwhile, and the page then shows P2.
+test("a refused pick puts back the priority of Dispatch's newest answer, another person's P0 read while it was out, until the app's one read of the issue after it answers with another", async () => {
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementationOnce(() => save.promise);
+  const client = signedIn();
+  client.setQueryData(detailKey, { ...details, priority: 3 });
+  client.setQueryData(listKey, [{ ...summary, priority: 3 }]);
+  client.setQueryData(inboxKey, [{ ...inboxRow, priority: 3 }]);
+  const reads = dispatchReads();
+  reads.store(3);
+  const detailRead = mock(reads.detail);
+  const view = renderIn(client, <CachedPriority reads={{ ...reads, detail: detailRead }} />);
+  const user = userEvent.setup();
+  try {
+    const select = () => prioritySelects()[0] as HTMLSelectElement;
+    await user.selectOptions(select(), "1");
+    await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 1 }]));
+    // Another person sets P0, and a read of the issue answers with it while P1 is out: P1 stays
+    // shown over it.
+    reads.store(0);
+    await act(() => client.refetchQueries({ queryKey: detailKey }));
+    expect(select().value).toBe("1");
+    expect(cachedPriorities(client)).toEqual({ detail: 1, inbox: 1, list: 1 });
+    // Another person sets P2 before the refusal. The read the refusal starts is held until what
+    // the refusal put back is checked.
+    reads.store(2);
+    const answerReads = reads.hold();
+    const readsBefore = detailRead.mock.calls.length;
+
+    await act(async () => {
+      save.reject(closed());
+      await save.promise.catch(() => undefined);
+    });
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
+    expect(within(alert).getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(select().value).toBe("0");
+    expect(cachedPriorities(client)).toEqual({ detail: 0, inbox: 0, list: 0 });
+    await waitFor(() => expect(detailRead.mock.calls.length).toBe(readsBefore + 1));
+    expect(select().value).toBe("0");
+
+    await act(async () => answerReads());
+    await waitFor(() => expect(select().value).toBe("2"));
+    expect(client.getQueryData<IssueDetails>(detailKey)?.priority).toBe(2);
+    expect(detailRead.mock.calls.length).toBe(readsBefore + 1);
   } finally {
     view.unmount();
     patchIssue.mockRestore();

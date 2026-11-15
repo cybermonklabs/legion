@@ -9,6 +9,7 @@ import {
   lastEventSeq,
   listRead,
   logReads,
+  PICK_HOLD_MS,
   savesEnded,
   storedValues,
   watchShown,
@@ -1163,11 +1164,15 @@ test("picker keeps a pick on screen: the priority on the project board, over a l
   }
 });
 
-// SLOW(>=2s): a pick's save held three seconds, two drags across lanes behind it, and dnd-kit's
-// landings.
+// The board split by priority: with every save of the issue held at least `PICK_HOLD_MS`, a pick
+// on a card and then two drags of it, each to another priority lane. The row sends no write of
+// its own straight to the server: the project's list read waits for the board's moves
+// (`boardMovesSettled`), so no answer of it lands while they are out.
+// SLOW(>=2s): three saves each held three seconds, two drags across lanes, dnd-kit's landings and
+// a reload.
 test("picker keeps a pick on screen: a card dragged to another priority lane while its pick is out stays in that lane", async ({
   browser,
-}) => {
+}, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const anchor = await createIssue({ project: "CORE", title: "P0 card" });
   const issue = await createIssue({ project: "CORE", title: "Picked card" });
@@ -1182,7 +1187,6 @@ test("picker keeps a pick on screen: a card dragged to another priority lane whi
   try {
     const shown = await watchShown(page, `Priority of ${issue.key}`);
     const held = await holdIssuePatches(page, issue.key);
-    const reads = logReads(page, listRead("project", "CORE"));
     await page.goto("/projects/CORE");
     await openBoard(page);
     await page.getByRole("button", { name: "Show lanes" }).click();
@@ -1196,17 +1200,9 @@ test("picker keeps a pick on screen: a card dragged to another priority lane whi
     await expect.poll(() => held.sent.length).toBe(1);
     const p1Lane = page.getByRole("region", { name: "P1 lane" });
     await expect(p1Lane.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
-    // A rename of the other card, straight to the server: its live event has the board read the
-    // project's list again, and the answer, carrying P3, lands while the pick's save is held. A
-    // read that starts once the move below is made waits for the move (`boardMovesSettled`).
-    const renamedAt = Date.now();
-    await patchIssue(anchor.key, { title: "P0 card, renamed while a save is out" });
-    await expect(
-      page.getByRole("article", { name: `${anchor.key} P0 card, renamed while a save is out` })
-    ).toBeVisible();
 
     // The pick is still out when the card is dragged into the P0 lane: the move joins the
-    // issue's line behind it, and the server will store the move's priority last.
+    // issue's line behind it, and the server will store the move's priority after the pick's.
     const p0Todo = page.getByRole("region", { name: "P0 lane" }).getByRole("region", {
       name: "Todo",
     });
@@ -1227,12 +1223,22 @@ test("picker keeps a pick on screen: a card dragged to another priority lane whi
     held.release();
     await savesEnded(page, held);
 
-    expectReadWhileHeld(reads, held, renamedAt);
+    // Every save of the issue - the pick's and each drag's - was held at least `PICK_HOLD_MS`.
+    const holds = held.sent.map((patch) => ({
+      body: patch.body,
+      heldMs: (patch.endedAt ?? Number.NaN) - patch.arrivedAt,
+    }));
+    console.log(`PICK-HOLDS [${testInfo.project.name}] ${JSON.stringify(holds)}`);
+    expect(holds.length, `the pick's save and each drag's: ${JSON.stringify(holds)}`).toBe(3);
+    expect(
+      holds.every((hold) => hold.heldMs >= PICK_HOLD_MS),
+      `every save of the issue was held at least ${PICK_HOLD_MS} ms: ${JSON.stringify(holds)}`
+    ).toBe(true);
+
     expect(
       shown.values.slice(fromPick, fromDrop).some((value) => value.split("|").includes("3")),
-      `every value the card showed from the pick to the drop: ${JSON.stringify(shown.values.slice(fromPick, fromDrop))}`
+      `every value the card showed from the pick to the first drop: ${JSON.stringify(shown.values.slice(fromPick, fromDrop))}`
     ).toBe(false);
-
     expect(
       shown.values.slice(fromDrop, fromSecondDrop),
       "every value the card showed from the first drop to the second"
@@ -1244,6 +1250,10 @@ test("picker keeps a pick on screen: a card dragged to another priority lane whi
     await expect(p2Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
     expect(await storedValues(issue.key, "priority", seq)).toEqual([1, 0, 2]);
     expect(await getIssue(issue.key)).toMatchObject({ priority: 2 });
+    // A fresh read of the board, once every save has ended: the card is in the P2 lane.
+    await page.reload();
+    await expect(p2Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    await expect(picker).toHaveValue("2");
   } finally {
     await context.close();
   }

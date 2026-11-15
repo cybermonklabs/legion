@@ -418,8 +418,24 @@ test("picker keeps a pick on screen: a reload shows the newest pick from its fir
     held.release();
     await savesEnded(page, held);
 
-    // The reloaded page read the issue while the first save was still out.
-    expectReadWhileHeld(reads, held, reloadedAt);
+    // The reloaded page's first read of the issue was answered while the P1 it sent again was
+    // held: that answer, carrying P3, landed under the newest pick.
+    const timeline = JSON.stringify({ reads, reloadedAt, saves: held.sent });
+    const resent = held.sent.find(
+      (patch) =>
+        patch.arrivedAt >= reloadedAt &&
+        JSON.stringify(patch.body) === JSON.stringify({ priority: 1 })
+    );
+    const firstRead = reads.find((read) => read.sentAt >= reloadedAt);
+    expect(resent, `the reloaded page sent P1 again: ${timeline}`).toBeDefined();
+    expect(
+      firstRead?.answeredAt !== undefined &&
+        resent !== undefined &&
+        resent.endedAt !== undefined &&
+        firstRead.answeredAt >= resent.arrivedAt &&
+        firstRead.answeredAt <= resent.endedAt,
+      `the first read of the issue after the reload was answered while the resent P1 was held: ${timeline}`
+    ).toBe(true);
 
     // From the reloaded document's first frame: no picker until the page draws one, and then P2
     // alone, the pick the store sends last.
