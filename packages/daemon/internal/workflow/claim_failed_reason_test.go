@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -408,6 +409,49 @@ func TestAWorkerDiedsReasonCarriesTheSentenceOnOneBoundedLine(t *testing.T) {
 			}
 			if tc.cause != "" && (notices[0].Failure == nil || notices[0].Failure.Detail != sentence) {
 				t.Errorf("the held phase's worker-died carries the failure record %+v, want the sentence whole in its detail", notices[0].Failure)
+			}
+		})
+	}
+}
+
+// The bound the supervisor's sentence is cut to counts runes, and the cut falls between two
+// characters: a provider's message in a script of multi-byte characters is cut at
+// runtime.PodEndRunes runes and not bytes. The case fails a tree architect's claim with a
+// sentence of a thousand characters, of two, three and four bytes in turn, and reads its reason:
+// valid UTF-8, the cut sentence quoted and the mark after its closing quote, and the quotes
+// holding whole characters, as many as the bound keeps beside the mark. The negative control is
+// deathSentence cutting the sentence at runtime.PodEndRunes bytes: the quotes held 200, 134 and
+// 100 runes of the three sentences, and the three-byte one's ended in the first byte of a
+// character.
+func TestAWorkerDiedsReasonCutsTheSentenceBetweenCharacters(t *testing.T) {
+	keep := runtime.PodEndRunes - utf8.RuneCountInString(deathReasonCut)
+	for _, char := range []string{"é", "€", "𝄞"} {
+		t.Run(fmt.Sprintf("%d bytes a character", len(char)), func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"})
+
+			if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "claim-failed",
+				intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleArchitect, Reason: strings.Repeat(char, 1000)},
+				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				t.Fatalf("ApplyFact the failed claim: %v", err)
+			}
+			notices := noticesOfKind(t, pool, "LEGION-208", "worker-died")
+			if len(notices) != 1 {
+				t.Fatalf("the outbox holds %d worker-died notices, want one", len(notices))
+			}
+			reason := notices[0].Reason
+			quoted, marked := strings.CutSuffix(reason, deathReasonCut)
+			text, err := strconv.Unquote(quoted)
+			if !utf8.ValidString(reason) || !marked || err != nil {
+				t.Fatalf("the worker-died reads %.200q, want valid UTF-8: the cut sentence quoted and %q after its closing quote", reason, deathReasonCut)
+			}
+			if !utf8.ValidString(text) {
+				t.Errorf("the worker-died's quotes hold %.200q, which ends in part of a character: the cut fell inside one", text)
+			}
+			if want := strings.Repeat(char, keep); text != want {
+				t.Errorf("the worker-died's quotes hold %d runes in %d bytes, want %d whole characters %q, the runes the bound keeps beside the mark",
+					utf8.RuneCountInString(text), len(text), keep, char)
 			}
 		})
 	}

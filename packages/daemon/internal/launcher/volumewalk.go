@@ -16,8 +16,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
-// The size walk the trimmer's report carries: what is on the pod's volume, directory by
-// directory, so that the issue's architect reading a report can see which tool filled it rather
+// The size walk the trimmer's report carries: what is on the pod's volume, target by target
+// (targets), so that the issue's architect reading a report can see which tool filled it rather
 // than only that it is full. It is apart from the sweep in every way that matters — the sweep's
 // budget does not bound it, it is made at most once an hour, and it deletes nothing — so it
 // lives in a file of its own beside the sweep's (volumetrim.go).
@@ -42,7 +42,7 @@ const (
 	volumeSizeDay  = 24 * time.Hour
 )
 
-// The two immediate children of the volume root whose directories are measured first, because a
+// The two immediate children of the volume root whose targets are measured first, because a
 // walk that ends early must lose the least useful numbers. Everything the trimmer may delete is
 // under one of them — $TMPDIR, the cache home and bun's install cache under scratch, the build
 // cache under go (ReclaimableRoots) — and the rest of the volume is a role's work, which a
@@ -94,8 +94,8 @@ type walkResult struct {
 	MissingOmitted int
 }
 
-// miss names one directory the walk did not measure, and why where a read was refused, or counts
-// it once Missing holds as many as a report names.
+// miss names one target the walk did not measure, and why where a read was refused, or counts it
+// once Missing holds as many as a report names.
 func (r *walkResult) miss(path, reason string) {
 	if len(r.Missing) >= shimwire.VolumeReportSizesMissing {
 		r.MissingOmitted++
@@ -136,14 +136,14 @@ func (r *walkResult) keep(size shimwire.LauncherVolumeSize) {
 	}
 }
 
-// measured is one directory as a measurement read it. The path a report carries is not here:
+// measured is one target as a measurement read it. The path a report carries is not here:
 // run fills it from the root it opened and the names it listed, so a size always names the
 // place on the volume whose bytes the number is, whatever a measurement met (run).
 type measured struct {
 	size shimwire.LauncherVolumeSize
 	// cut is the budget or the container's stop ending this measurement where it stood. The
-	// number is not the whole of the directory, so the walk reports it as missing rather than
-	// as a size a reader would take for the directory's own.
+	// number is not the whole of the target, so the walk reports it as missing rather than as
+	// a size a reader would take for the target's own.
 	cut bool
 	// unread is why the walk left the target unmeasured: the kernel refused its own lstat, or a
 	// directory's open or listing (unreadReason), the listing perhaps after a first batch of it
@@ -161,10 +161,10 @@ type measured struct {
 	refused      int
 	refusedName  string
 	refusedDepth int
-	// depth is how many levels below the directory the one being read lies: the
-	// measurement's own scratch, which is all fail needs to tell the directory itself from one
-	// below it and all a refusal needs of where it is, so that no path below the directory is
-	// built or kept whatever the depth of the tree.
+	// depth is how many levels below the target the one being read lies: the measurement's own
+	// scratch, which is all fail needs to tell the target itself from a directory below it and
+	// all a refusal needs of where it is, so that no path below the target is built or kept
+	// whatever the depth of the tree.
 	depth int
 }
 
@@ -353,9 +353,9 @@ func (w sizeWalk) cut(result *walkResult, targets []walkTarget) {
 	}
 }
 
-// unreadReason is why the walk left a directory unmeasured, as its entry in Missing carries it:
-// the read the kernel refused and its answer, `openat: permission denied`, with no path, since
-// the entry names the directory already. An error that carries no answer of the kernel's is
+// unreadReason is why the walk left a target unmeasured, as its entry in Missing carries it: the
+// read the kernel refused and its answer, `openat: permission denied`, with no path, since the
+// entry names the target already. An error that carries no answer of the kernel's is
 // written whole.
 func unreadReason(err error) string {
 	op := ""

@@ -356,15 +356,19 @@ func TestTheWalkKeepsAsManyUnmeasuredDirectoriesAsAReportNamesAndCountsTheRest(t
 // measurement is: a role can make any number of directories under /legion/scratch, and the walk
 // opens and lists each child of the volume root to find its targets. The budget here is spent
 // before the walk begins, and the volume root holds two thousand children, eight batches of
-// names, each with a directory of its own: the walk ends on its budget part way through the
-// listing and measures nothing. Where the budget's cancel reaches the listing while the root's
-// own names are read, the walk names the volume root alone as unmeasured
-// (TestTheWalksBudgetCutsTheListingOfTheVolumeRootBetweenItsBatches); where it reaches it later,
-// it names one directory for each child, a child of the root it never listed among them by the
-// child's own path. Which of the two the case meets is the scheduler's, since the budget cancels
-// the walk from a goroutine of its own (run). The negative control is the walk arming its budget
-// after the listing, as it did at b7085e21: it listed every child and named only the targets two
-// levels down, which is neither.
+// names, each with a directory of its own, and one child more, which the budget's clock makes as
+// the walk arms it. The walk ends on its budget, measures nothing, and names what it did not
+// measure, with no reason: the volume root alone where the budget's cancel reaches the listing
+// while the root's own names are read
+// (TestTheWalksBudgetCutsTheListingOfTheVolumeRootBetweenItsBatches), and otherwise each of the
+// 2,001 children once, as the target it holds where the walk had listed the child and as itself
+// where it had not, up to the report's cap and counted past it (cut). Where the cut lands is the
+// scheduler's, since the budget cancels the walk from a goroutine of its own (run), and a cut
+// after fifty children names only targets the walk had listed, so the case holds the walk to
+// what it names and not to where the cut landed. The negative control is the walk arming its
+// budget after the listing, as it did at b7085e21: it listed 2,000 children, the one made as the
+// budget was armed not among them, and measured a target before it saw the budget spent in 49
+// of 50 runs; it failed all 50.
 func TestTheWalksBudgetCutsTheListingOfItsTargets(t *testing.T) {
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := t.TempDir()
@@ -375,6 +379,10 @@ func TestTheWalksBudgetCutsTheListingOfItsTargets(t *testing.T) {
 	measurements := 0
 	walk := sizeWalk{root: root, now: clock.now, budget: volumeWalkBudget,
 		after: func(time.Duration) (<-chan time.Time, func()) {
+			// One child more, made as the walk arms its budget: a walk that lists its targets
+			// after arming the budget lists this child too, and one that armed it after its
+			// listing does not.
+			mkdirFixture(t, filepath.Join(root, fmt.Sprintf("child-%04d", children), "inner"))
 			spent := make(chan time.Time)
 			close(spent)
 			return spent, func() {}
@@ -387,17 +395,27 @@ func TestTheWalksBudgetCutsTheListingOfItsTargets(t *testing.T) {
 
 	result := walk.run(context.Background())
 
-	if !result.Partial || len(result.Sizes) != 0 || measurements != 0 {
-		t.Errorf("the walk whose budget was spent before it began is partial %t with %d sizes after %d measurements, want partial and nothing measured",
-			result.Partial, len(result.Sizes), measurements)
+	if !result.Partial || len(result.Sizes) != 0 || result.SizesOmitted != 0 || measurements != 0 {
+		t.Errorf("the walk whose budget was spent before it began is partial %t with %d sizes kept and %d counted after %d measurements, want partial and nothing measured",
+			result.Partial, len(result.Sizes), result.SizesOmitted, measurements)
 	}
-	rootAlone := result.MissingOmitted == 0 && slices.Equal(result.Missing, []shimwire.LauncherVolumeMissing{{Path: root}})
-	unlisted := slices.ContainsFunc(result.Missing, func(missing shimwire.LauncherVolumeMissing) bool {
-		return filepath.Dir(missing.Path) == root
-	})
-	if total := len(result.Missing) + result.MissingOmitted; !rootAlone && (!unlisted || total != children) {
-		t.Errorf("the walk names %d directories as unmeasured, beginning %v, want the volume root alone or one for each of the %d children, a child it never listed among them: it listed every child after its budget ran out",
-			total, result.Missing[:min(3, len(result.Missing))], children)
+	if result.MissingOmitted == 0 && slices.Equal(result.Missing, []shimwire.LauncherVolumeMissing{{Path: root}}) {
+		return
+	}
+	named := map[string]bool{}
+	for _, missing := range result.Missing {
+		child := missing.Path
+		if filepath.Base(missing.Path) == "inner" {
+			child = filepath.Dir(missing.Path)
+		}
+		if filepath.Dir(child) != root || missing.Reason != "" || named[child] {
+			t.Errorf("the walk names %+v as unmeasured, want each child of the root once, as itself or as the target it holds, with no reason", missing)
+		}
+		named[child] = true
+	}
+	if total := len(result.Missing) + result.MissingOmitted; total != children+1 {
+		t.Errorf("the walk names %d entries as unmeasured and counts %d more, %d in all, want the volume root alone or one for each of the %d children the root held when the budget was armed",
+			len(result.Missing), result.MissingOmitted, total, children+1)
 	}
 }
 
@@ -483,6 +501,41 @@ func TestTheWalksBudgetCutsTheListingOfTheVolumeRootBetweenItsBatches(t *testing
 	if total := len(result.Missing) + result.MissingOmitted; total != len(want) || !slices.Equal(result.Missing, want) {
 		t.Errorf("the listing names %d directories as unmeasured, beginning %v, want %v: the volume root alone",
 			total, result.Missing[:min(3, len(result.Missing))], want)
+	}
+}
+
+// A listing nothing cuts keeps every batch of its names, and not only the first: a child of the
+// volume root holding more names than a batch (walkEntriesBatch) is listed whole, and each of its
+// directories is a target the walk measures. The case walks a volume root whose scratch holds
+// three hundred directories, two batches of names, under a budget that never runs out. The
+// negative control is readBatched keeping its first batch alone: the walk measured 256 of the
+// three hundred, named none of the rest as unmeasured and was not partial.
+func TestTheWalkListsEveryBatchOfAChildItIsNotCutIn(t *testing.T) {
+	const dirs = 300
+	if dirs <= walkEntriesBatch {
+		t.Fatalf("the case's scratch holds %d directories, want more than the %d of one batch", dirs, walkEntriesBatch)
+	}
+	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
+	root := t.TempDir()
+	want := make([]string, 0, dirs)
+	for at := range dirs {
+		name := fmt.Sprintf("%04d", at)
+		mkdirFixture(t, filepath.Join(root, "scratch", name))
+		want = append(want, name)
+	}
+	var got []string
+	result := walkOf(root, clock, &fakeTicks{}, func(ctx context.Context, dir *dirHandle, name string, at time.Time) measured {
+		got = append(got, name)
+		return measureTree(ctx, dir, name, at)
+	}).run(context.Background())
+
+	if !slices.Equal(got, want) {
+		t.Errorf("the walk measured %d targets, %v … %v, want the %d directories of scratch in the order they sort",
+			len(got), got[:min(3, len(got))], got[max(0, len(got)-3):], dirs)
+	}
+	if total := len(result.Sizes) + result.SizesOmitted; result.Partial || len(result.Missing) != 0 || total != dirs {
+		t.Errorf("the walk is partial %t, names %d entries as unmeasured and carries %d sizes, want %d sizes and nothing unmeasured",
+			result.Partial, len(result.Missing), total, dirs)
 	}
 }
 
@@ -747,7 +800,10 @@ func TestAWalkThatMetARefusedReadSaysWhereAndNotThatItEndedEarly(t *testing.T) {
 }
 
 // A walk its budget cut is the one that ended early, and its report and its log line say so,
-// with what it did not reach: the target it was cut in and every one after it.
+// with what it did not reach: the target it was cut in and every one after it. The line says
+// the walk was cut before it reached every target, and not every directory, since a regular
+// file can be a target of its own (sizeWalk.targets); the negative control for that word is the
+// line as it stood at a3f5d0965f3f, which said "every directory".
 func TestAWalkThatWasCutSaysSoWithWhatItDidNotReach(t *testing.T) {
 	f := newTrimFixture(t, 1)
 	tr := f.trimmer()
@@ -770,7 +826,7 @@ func TestAWalkThatWasCutSaysSoWithWhatItDidNotReach(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("the trimmer wrote %d lines of the walk, want one: %q", len(lines), f.linesWritten())
 	}
-	for _, want := range []string{"was cut by its budget or the container's stop before it reached every directory",
+	for _, want := range []string{"was cut by its budget or the container's stop before it reached every target",
 		"measured 2 sizes", fmt.Sprintf("left %d unmeasured", len(report.SizesMissing)), strconv.Quote(report.SizesMissing[0].Path)} {
 		if !strings.Contains(lines[0], want) {
 			t.Errorf("the walk's line does not say %q: %s", want, lines[0])

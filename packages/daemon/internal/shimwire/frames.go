@@ -311,10 +311,12 @@ const (
 //
 // UsedBytes and FreeBytes are the volume as the sweep's last reading saw it, and FreedBytes what
 // the sweep freed, read from the volume itself and never counted from the bytes unlinked: a
-// deletion the kernel has not accounted for yet is not space anything can use. StopReason is why
-// the sweep stopped, in the trimmer's own words, and RefusedReads the /proc reads the kernel
-// refused that no report has carried yet, of this sweep and of earlier ones that sent no report:
-// one per process it could not read, or one for /proc itself when /proc could not be listed.
+// deletion the kernel has not accounted for yet is not space anything can use. FreedBytes is the
+// sweep's first reading's used bytes less its last's, so it is negative where the roles wrote
+// more while the sweep ran than the sweep removed. StopReason is why the sweep stopped, in the
+// trimmer's own words, and RefusedReads the /proc reads the kernel refused that no report has
+// carried yet, of this sweep and of earlier ones that sent no report: one per process it could
+// not read, or one for /proc itself when /proc could not be listed.
 //
 // Sizes are the size walk's targets (LauncherVolumeSize) and SizesAt when they were
 // measured: a report made between walks carries the last walk's numbers with that walk's time,

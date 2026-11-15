@@ -611,13 +611,15 @@ func (d *launchers) restoreReported(s *launcherSession, report shimwire.Launcher
 // off is not sent again: that trimmer sends nothing more. That is the same bargain
 // restoreReported makes with its delete, for the same reason.
 //
-// A report the frame's own rule refuses — one naming no trimmer, which is the identity the
-// notice bounds count a restarted roles container apart by, and one whose episode is below the 1
-// the trimmer counts from (LauncherVolumeReport.Validate) — is logged with the reason and
+// A report the frame's own rule refuses (LauncherVolumeReport.Validate) — one naming no trimmer,
+// which is the identity the notice bounds count a restarted roles container apart by, one whose
+// episode is below the 1 the trimmer counts from, and one holding more entries in a list than
+// that list's cap, every entry of which the notice would carry — is logged with the reason and
 // dropped, as the launcher drops a bundle slice it cannot validate (internal/launcher's
 // bundleRestore.receive). The connection is not closed on it: closing costs a redial a second of
-// the one role's connection that carries the pod's reports (ServeLauncher's `default: return`)
-// over a frame the daemon could not have counted anyway.
+// the one role's connection that carries the pod's reports (ServeLauncher's `default: return`),
+// and it would not have the report sent again: nothing acknowledges this frame, and a launcher
+// holds a report only where its send failed (internal/launcher's deliver).
 //
 // It runs on the launcher's own frame loop rather than in a goroutine of its own, as
 // restoreReported does and under the same bounded context: two reports of one launcher then
@@ -626,7 +628,7 @@ func (d *launchers) restoreReported(s *launcherSession, report shimwire.Launcher
 // frames wait behind one row's write.
 func (d *launchers) volumeReported(s *launcherSession, report shimwire.LauncherVolumeReport) {
 	if err := report.Validate(); err != nil {
-		d.log.Warn("launcher volume: the pod's cache trimmer sent a report the daemon cannot count, which is dropped; the connection stays open",
+		d.log.Warn("launcher volume: the pod's cache trimmer sent a report the daemon refuses, which is dropped; the connection stays open",
 			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "trimmer", report.Trimmer, "episode", report.Episode, "error", err)
 		return
 	}

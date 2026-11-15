@@ -3750,6 +3750,43 @@ func TestOneReportPerSweepThatEndsAboveTheLowMarkAndNoneWhenItReachesIt(t *testi
 	})
 }
 
+// The lines a sweep ends on say what the sweep freed, and a sweep the roles outwrote, whose last
+// reading of the volume is above its first, freed nothing: the sweep's line says the volume grew
+// by that many bytes while the sweep ran, and the pause's line after it by that many points, as
+// the notice the daemon makes of its report says it (internal/workflow's volumeNoticeReason),
+// and neither says the sweep freed a negative number. The case sweeps a volume whose every
+// reading after the interval's own is half a point above it. The negative control is the two
+// lines as they stood at a3f5d0965f3f, which read `40 entries deleted, -250000000 B freed` and
+// `the sweep freed -0.50 points of the volume, under 1`.
+func TestTheLineOfASweepTheRolesOutwroteSaysTheVolumeGrew(t *testing.T) {
+	const grown = fixtureVolumeBytes / 200
+	f := newTrimFixture(t, 10)
+	f.useVolume(func(call int) volumeUsage {
+		used := percentBytes(90)
+		if call > 1 {
+			used += grown
+		}
+		return volumeUsage{UsedBytes: used, AvailableBytes: fixtureVolumeBytes - used}
+	})
+	f.setSettings(trimSettings())
+	tr := f.trimmer()
+	f.start(tr)
+
+	// The pause's line is written after the sweep's, so the tick waits for it.
+	f.tick("no new sweep for the next")
+	for _, want := range []string{
+		fmt.Sprintf("entries deleted, the volume grew by %d B while the sweep ran, leaving the volume at", grown),
+		fmt.Sprintf("the volume grew by 0.50 points while the sweep ran, so the sweep freed under 1: no new sweep for the next %d intervals", volumeQuietIntervals),
+	} {
+		if said := f.logged(want); said != 1 {
+			t.Errorf("the trimmer wrote %d lines saying %q, want one: %q", said, want, f.linesWritten())
+		}
+	}
+	if said := f.logged(fmt.Sprintf("-%d", grown)) + f.logged("B freed") + f.logged("freed -"); said != 0 {
+		t.Errorf("the trimmer wrote %d lines of bytes or points freed by a sweep that freed none: %q", said, f.linesWritten())
+	}
+}
+
 // A report the connection refuses is held and sent on the next attempt, as the launcher's
 // bundleRestore holds its own confirmation: a report the daemon never got is a volume nobody
 // was told about. An answer with no settings discards it, because the daemon that sent that
@@ -3889,6 +3926,54 @@ func TestAReportThatReplacesAHeldOneSaysOnceWhatItLeavesOut(t *testing.T) {
 	}
 	if said := f.logged("leaves out"); said != 2 {
 		t.Errorf("the trimmer wrote %d lines of what a report leaves out, want one for A and one for B: %q", said, f.linesWritten())
+	}
+}
+
+// A report that replaces a held one is bounded again once the held one's faults and refused
+// reads are in it (carryHeld), so the report finally sent holds no list past its cap however
+// many sends failed before it. The case makes three reports, A, B and C, each with the three
+// faults and the twenty-five refused reads a report may hold, none of them alike, whose sends
+// all fail, and then lets the held report through. What is sent keeps A's refused reads, the
+// first, and C's faults, the newest, counts the other fifty refused reads and six faults, and is
+// one the daemon takes (LauncherVolumeReport.Validate). The negative control is deliver holding
+// carryHeld's report with no bound after it: the report sent named 75 refused reads and carried
+// nine faults, counting none, and the daemon refused it for the refused reads past their cap.
+func TestAReportSentAfterHeldOnesItReplacedIsWithinTheCaps(t *testing.T) {
+	f := newTrimFixture(t, 0)
+	tr := f.trimmer()
+	f.refuseSends(errors.New("the bound connection is gone"))
+	full := func(name string) shimwire.LauncherVolumeReport {
+		report := shimwire.LauncherVolumeReport{Trimmer: tr.id, Episode: 1, RaisedBy: shimwire.VolumeEpisodeFirst, StopReason: name}
+		for at := range shimwire.VolumeReportFaults {
+			report.Faults = append(report.Faults, fmt.Sprintf("panic %d of %s's interval", at, name))
+		}
+		for at := range shimwire.VolumeReportRefusedReads {
+			report.RefusedReads = append(report.RefusedReads, fmt.Sprintf("process %d of %s: /proc/%d/fd: permission denied", at, name, at))
+		}
+		return report
+	}
+
+	for _, name := range []string{"A", "B", "C"} {
+		tr.deliver(tr.bound(full(name)))
+	}
+	f.refuseSends(nil)
+	tr.flush()
+
+	sent := f.reports()
+	if len(sent) != 1 || sent[0].StopReason != "C" {
+		t.Fatalf("the trimmer sent %d reports once the connection took them, want report C alone: %+v", len(sent), sent)
+	}
+	report := sent[0]
+	if want := full("A").RefusedReads; !slices.Equal(report.RefusedReads, want) || report.RefusedReadsOmitted != 2*shimwire.VolumeReportRefusedReads {
+		t.Errorf("the report sent names %d refused reads and counts %d more, want A's %d and the %d of B and C counted",
+			len(report.RefusedReads), report.RefusedReadsOmitted, shimwire.VolumeReportRefusedReads, 2*shimwire.VolumeReportRefusedReads)
+	}
+	if want := full("C").Faults; !slices.Equal(report.Faults, want) || report.FaultsOmitted != 2*shimwire.VolumeReportFaults {
+		t.Errorf("the report sent carries %d faults and counts %d more, want C's %d and the %d of A and B counted",
+			len(report.Faults), report.FaultsOmitted, shimwire.VolumeReportFaults, 2*shimwire.VolumeReportFaults)
+	}
+	if err := report.Validate(); err != nil {
+		t.Errorf("the daemon would refuse the report sent: %v", err)
 	}
 }
 

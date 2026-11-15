@@ -208,14 +208,15 @@ func (t *trimmer) report(ctx context.Context, out sweepOutcome) shimwire.Launche
 }
 
 // What one report may carry. Every list and every string below is the pod's own and not this
-// package's: a directory name two levels under /legion is whatever a role made, and
-// /legion/scratch is writable by the role uid (measured in an issue pod of this deployment at
-// 2026-11-11T08:05Z: `drwx--S--- legion legion /legion/scratch`, the role process is uid 1000,
-// and `test -w /legion/scratch` succeeds). So the size of the frame must be one this package
-// chose rather than one the pod's roles happened to make, as Observation.PodEnd is bounded
-// where it is built (runtime.PodEndRunes). How many entries each list may hold is shimwire's
-// (shimwire.VolumeReportSizes and the three beside it), which the daemon holds a report to as
-// well (shimwire.LauncherVolumeReport.Validate); the runes each string may hold are below.
+// package's: a name two levels under /legion, a directory's or a file's, is whatever a role
+// made, and /legion/scratch is writable by the role uid (measured in an issue pod of this
+// deployment at 2026-11-11T08:05Z: `drwx--S--- legion legion /legion/scratch`, the role process
+// is uid 1000, and `test -w /legion/scratch` succeeds). So the size of the frame must be one this
+// package chose rather than one the pod's roles happened to make, as Observation.PodEnd is
+// bounded where it is built (runtime.PodEndRunes). How many entries each list may hold is
+// shimwire's (shimwire.VolumeReportSizes and the three beside it), which the daemon holds a
+// report to as well (shimwire.LauncherVolumeReport.Validate); the runes each string may hold are
+// below.
 //
 // The bound is here, where the report is assembled, so the frame can never reach the writer's
 // own refusal: a line over shimwire.MaxFrameBytes is refused by the writer, deliver then holds

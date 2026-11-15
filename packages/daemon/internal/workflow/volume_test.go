@@ -476,9 +476,12 @@ func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
 // none of ` followed by nothing, with the unreadable directory's bytes given as the directory's
 // own. A directory the walk could not open is told as one it measured none of, with the read the
 // kernel refused, and as no size. A walk its budget cut is told as cut, beside what it measured
-// none of, and where it names nothing as unmeasured the sentence carries no empty list. The
-// negative control is fullSweep's own sizes, which the walk read whole and which no row tells as
-// a lower bound.
+// none of, and where it names nothing as unmeasured the sentence carries no empty list; it is cut
+// before it reached every target, and not every directory, since a regular file can be a target
+// of its own (internal/launcher's sizeWalk.targets). The negative control is fullSweep's own
+// sizes, which the walk read whole and which no row tells as a lower bound, and for the cut
+// walk's word the sentence as it stood at a3f5d0965f3f, which said "before it reached every
+// directory".
 func TestTheNoticeTellsADirectoryReadInPartAndAWalkThatWasCutApart(t *testing.T) {
 	const pack, under = "/legion/feed/pack", "/legion/feed/pack/under"
 	for _, tc := range []struct {
@@ -510,14 +513,14 @@ func TestTheNoticeTellsADirectoryReadInPartAndAWalkThatWasCutApart(t *testing.T)
 			sweep: func(sweep *record.VolumeNearFull) {
 				sweep.SizesPartial, sweep.SizesMissing, sweep.SizesMissingOmitted = true, []record.VolumeMissing{{Path: "/legion/uv/cache"}}, 3
 			},
-			want: []string{"the size walk was cut before it reached every directory",
+			want: []string{"the size walk was cut before it reached every target",
 				`the size walk measured none of "/legion/uv/cache" and 3 more it leaves out`},
 			not: []string{"at least", "ended early"},
 		},
 		{
 			name:  "a cut walk that names nothing as unmeasured",
 			sweep: func(sweep *record.VolumeNearFull) { sweep.SizesPartial = true },
-			want:  []string{"the size walk was cut before it reached every directory"},
+			want:  []string{"the size walk was cut before it reached every target"},
 			not:   []string{"measured none of"},
 		},
 	} {

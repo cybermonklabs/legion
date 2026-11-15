@@ -210,7 +210,7 @@ type trimmer struct {
 	cover                RoleCover
 	self                 int
 	roots                []ReclaimableRoot
-	// measure is one directory of the size walk, the seam a test blocks to drive the walk's
+	// measure is one target of the size walk, the seam a test blocks to drive the walk's
 	// budget (measureTree, volumewalk.go). It is given the handle the walk holds on the
 	// directory that holds the target and the target's own name in it, never a path: a name
 	// with no separator is the one read a handle resolves by its descriptor alone, which is
@@ -567,13 +567,26 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 	}
 	// The reading is written as the sweep left it rather than as another "the volume is" line,
 	// which is the interval reading alone: an operator reading the pod's log counts the
-	// readings to see the trimmer is alive.
-	t.logf(volumeTrimLog+"the sweep ended: %s. %d entries deleted, %d B freed, leaving the volume at %.1f%% (used %d B, free %d B)",
-		out.reason, out.deletions, out.freed, out.last.Percent(), out.last.UsedBytes, out.last.AvailableBytes)
+	// readings to see the trimmer is alive. A sweep whose last reading is above its first freed
+	// nothing, and this line and the pause's below say the volume grew by the difference while
+	// the sweep ran, as the notice of its report says it (internal/workflow's
+	// volumeNoticeReason).
+	freed := fmt.Sprintf("%d B freed", out.freed)
+	if out.freed < 0 {
+		// The magnitude as uint64, which holds it for every int64, the least one included.
+		freed = fmt.Sprintf("the volume grew by %d B while the sweep ran", uint64(-out.freed))
+	}
+	t.logf(volumeTrimLog+"the sweep ended: %s. %d entries deleted, %s, leaving the volume at %.1f%% (used %d B, free %d B)",
+		out.reason, out.deletions, freed, out.last.Percent(), out.last.UsedBytes, out.last.AvailableBytes)
 	if out.freedPoints < volumeSweepMinFreedPoints {
 		t.pause = volumeQuietIntervals
-		t.logf(volumeTrimLog+"the sweep freed %.2f points of the volume, under %.0f: no new sweep for the next %d intervals",
-			out.freedPoints, volumeSweepMinFreedPoints, volumeQuietIntervals)
+		if out.freedPoints < 0 {
+			t.logf(volumeTrimLog+"the volume grew by %.2f points while the sweep ran, so the sweep freed under %.0f: no new sweep for the next %d intervals",
+				-out.freedPoints, volumeSweepMinFreedPoints, volumeQuietIntervals)
+		} else {
+			t.logf(volumeTrimLog+"the sweep freed %.2f points of the volume, under %.0f: no new sweep for the next %d intervals",
+				out.freedPoints, volumeSweepMinFreedPoints, volumeQuietIntervals)
+		}
 	}
 	if out.report {
 		t.anchorAt(percent)
@@ -708,10 +721,11 @@ func (t *trimmer) sizes(ctx context.Context) walkResult {
 // measured, and how many of them only in part, count the sizes the walk dropped from its fifty
 // too (walkResult.SizesOmitted, PartlyOmitted).
 //
-// The names are the pod's own: a role may make a directory of any name two levels under the
-// volume root, and any number of them, so each list takes the bound the frame takes (bound) and
-// each path is quoted, rather than joining a list of a size and a content nothing here chose. A
-// reader who needs the whole of either list has the report's own, bounded the same way.
+// The names are the pod's own: a role may make a directory or a file of any name two levels
+// under the volume root, and any number of them, so each list takes the bound the frame takes
+// (bound) and each path is quoted, rather than joining a list of a size and a content nothing
+// here chose. A reader who needs the whole of either list has the report's own, bounded the same
+// way.
 func walkShortfall(walk walkResult) string {
 	// The walk keeps no more sizes than a report carries (walkResult.keep).
 	var partly []string
@@ -728,7 +742,7 @@ func walkShortfall(walk walkResult) string {
 	var line strings.Builder
 	line.WriteString("the size walk ")
 	if walk.Partial {
-		line.WriteString("was cut by its budget or the container's stop before it reached every directory: it ")
+		line.WriteString("was cut by its budget or the container's stop before it reached every target: it ")
 	}
 	fmt.Fprintf(&line, "measured %d sizes", len(walk.Sizes)+walk.SizesOmitted)
 	if partlyAll > 0 {
@@ -853,11 +867,13 @@ type sweepEntry struct {
 // the three that reach it from outside — the budget, the settings and the container's stop.
 // Those three cut the listing where it stands, inside the walk of one entry included
 // (newestModTime). Once deleting has begun they are taken at the next entry boundary or inside
-// an entry's pre-delete re-read (newerThan), which comes before that entry's removal begins, and
-// every other ending at the next entry boundary, so no ending of the sweep's own leaves an entry
-// half removed. The container's kill at the end of its grace is none of them: it can land inside
-// the removal of one large entry, which is then left part-removed on the volume and is an
-// ordinary entry to the next sweep (remove).
+// an entry's pre-delete re-read (newerThan), which comes before that entry's removal begins; a
+// /proc read the kernel refused at a refresh of the used-path set is taken at the next entry
+// boundary or after an entry's pre-delete re-read and before its removal begins (guard,
+// remove); and every other ending at the next entry boundary, so no ending of the sweep's own
+// leaves an entry half removed. The container's kill at the end of its grace is none of them: it
+// can land inside the removal of one large entry, which is then left part-removed on the volume
+// and is an ordinary entry to the next sweep (remove).
 //
 // first is the interval's own reading, which is the sweep's first: it was taken moments ago, and
 // the difference between it and the sweep's last reading is what the sweep freed. Progress is

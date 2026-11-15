@@ -1283,14 +1283,14 @@ func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeC
 // growing by that many bytes while it ran, and never as a negative number freed.
 //
 // Everything that comes from the pod rather than from this package is rendered with %q: a
-// directory two levels under /legion is a name a role of that pod chose — /legion/scratch is
-// writable by the role uid — and the sentence is read by the architect's own agent session, so a
-// newline in such a name must be text inside the sentence and not a line of its own, with
-// nothing to mark it as data. The trimmer's identifier and what raised its episode are rendered
-// the same way, although the launcher mints the one and takes the other from one of three
-// constants: the frame's own rule checks only that the identifier is present and reads neither
-// one's contents (shimwire.LauncherVolumeReport.Validate), so the sentence's safety rests on
-// this daemon rather than on the sender being Legion's own launcher. The structured Volume
+// name two levels under /legion, a directory's or a file's, is one a role of that pod chose —
+// /legion/scratch is writable by the role uid — and the sentence is read by the architect's own
+// agent session, so a newline in such a name must be text inside the sentence and not a line of
+// its own, with nothing to mark it as data. The trimmer's identifier and what raised its episode
+// are rendered the same way, although the launcher mints the one and takes the other from one of
+// three constants: the frame's own rule checks only that the identifier is present and reads
+// neither one's contents (shimwire.LauncherVolumeReport.Validate), so the sentence's safety rests
+// on this daemon rather than on the sender being Legion's own launcher. The structured Volume
 // member keeps the raw name, which is data a reader computes
 // with rather than prose.
 //
@@ -1358,11 +1358,12 @@ func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
 	if report.SizesOmitted > 0 {
 		fmt.Fprintf(&out, "; %d more sizes are left out of this report", report.SizesOmitted)
 	}
-	// Two facts and not one: a walk that was cut ended early, and a directory the walk measured
-	// none of may be one it could not open while it went on to its end, which is told with the
-	// read the kernel refused (record.VolumeNearFull, record.VolumeMissing).
+	// Two facts and not one: a walk that was cut ended early, and a target the walk measured
+	// none of may be one whose read the kernel refused while the walk went on to its end — a
+	// directory it could not open or list, a file whose lstat was refused — which is told with
+	// the read the kernel refused (record.VolumeNearFull, record.VolumeMissing).
 	if report.SizesPartial {
-		out.WriteString("; the size walk was cut before it reached every directory")
+		out.WriteString("; the size walk was cut before it reached every target")
 	}
 	if len(report.SizesMissing) > 0 {
 		fmt.Fprintf(&out, "; the size walk measured none of %s", missingList(report.SizesMissing))
@@ -1403,7 +1404,7 @@ func quotedList(list []string) string {
 	return strings.Join(quoted, ", ")
 }
 
-// missingList is the directories a size walk measured none of as quotedList writes a list, each
+// missingList is the targets a size walk measured none of as quotedList writes a list, each
 // followed by the reason the kernel gave where it has one, quoted the same way: the reason comes
 // from the pod as the path does.
 func missingList(list []record.VolumeMissing) string {

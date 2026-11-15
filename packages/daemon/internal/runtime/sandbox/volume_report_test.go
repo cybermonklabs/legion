@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -204,13 +205,16 @@ func TestALauncherWithNoVolumeSeamStillServesTheReport(t *testing.T) {
 	}
 }
 
-// A report the frame's own rule refuses never reaches the seam: one naming no trimmer, which is
-// the identity the notice bounds count a restarted roles container apart by, and one whose
-// episode is below the 1 the trimmer counts from (LauncherVolumeReport.Validate). Each is logged
-// with the reason the rule gives and dropped, and the connection is left open, because closing
-// it costs a redial a second for every role of the pod over a frame the daemon could not have
-// counted anyway. The control is the valid report after them, which reaches the seam on the same
-// connection.
+// A report the frame's own rule refuses never reaches the seam (LauncherVolumeReport.Validate):
+// one naming no trimmer, which is the identity the notice bounds count a restarted roles
+// container apart by, one whose episode is below the 1 the trimmer counts from, and one holding
+// more entries in a list than that list's cap, every entry of which the notice would carry. Each
+// is logged as a report the daemon refuses, with the reason the rule gives, and dropped, and the
+// connection is left open: closing it costs a redial a second for every role of the pod, and
+// would not have the report sent again. The control is the valid report after them, which
+// reaches the seam on the same connection. The negative control for the line's words is the
+// warning as it stood at a3f5d0965f3f, which called each of the three a report the daemon cannot
+// count.
 func TestAVolumeReportTheFramesRuleRefusesIsDroppedAndLeavesTheConnection(t *testing.T) {
 	logs := &bytes.Buffer{}
 	seam := newVolumeSeam()
@@ -221,9 +225,14 @@ func TestAVolumeReportTheFramesRuleRefusesIsDroppedAndLeavesTheConnection(t *tes
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
 	writer := shimwire.NewWriter(peer)
 
+	overCap := shimwire.LauncherVolumeReport{Trimmer: "trim-1", Episode: 1, RaisedBy: shimwire.VolumeEpisodeFirst, UsedBytes: 48 << 30}
+	for at := range shimwire.VolumeReportRefusedReads + 1 {
+		overCap.RefusedReads = append(overCap.RefusedReads, fmt.Sprintf("process %d: /proc/%d/fd: permission denied", at, at))
+	}
 	for _, refused := range []shimwire.LauncherVolumeReport{
 		{Episode: 1, RaisedBy: shimwire.VolumeEpisodeFirst, UsedBytes: 48 << 30},
 		{Trimmer: "trim-1", Episode: 0, RaisedBy: shimwire.VolumeEpisodeFirst, UsedBytes: 48 << 30},
+		overCap,
 	} {
 		if err := writer.WriteFrame(refused); err != nil {
 			t.Fatalf("write the report the frame's rule refuses: %v", err)
@@ -241,7 +250,12 @@ func TestAVolumeReportTheFramesRuleRefusesIsDroppedAndLeavesTheConnection(t *tes
 		t.Fatalf("the seam was given trimmer %q episode %d, want the valid report alone: a report the frame's rule refuses must be dropped",
 			got.report.Trimmer, got.report.Episode)
 	}
-	for _, want := range []string{"carries no trimmer", "episode is 0", "the connection stays open"} {
+	const refusedLine = "the pod's cache trimmer sent a report the daemon refuses, which is dropped; the connection stays open"
+	if said := strings.Count(logs.String(), refusedLine); said != 3 {
+		t.Errorf("the daemon logged %d lines saying %q, want one for each of the three reports it dropped: %s", said, refusedLine, logs.String())
+	}
+	for _, want := range []string{"carries no trimmer", "episode is 0",
+		fmt.Sprintf("refusedReads holds %d entries, past the %d a report may hold", shimwire.VolumeReportRefusedReads+1, shimwire.VolumeReportRefusedReads)} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("the daemon logged no line holding %q for the reports it dropped: %s", want, logs.String())
 		}

@@ -661,7 +661,7 @@ func volumeSizes(sizes []shimwire.LauncherVolumeSize) []record.VolumeSize {
 	return kept
 }
 
-// volumeMissing is the walk's unmeasured directories, each with its reason, as volumeSizes says.
+// volumeMissing is the walk's unmeasured targets, each with its reason, as volumeSizes says.
 func volumeMissing(missing []shimwire.LauncherVolumeMissing) []record.VolumeMissing {
 	if len(missing) == 0 {
 		return nil

@@ -404,10 +404,12 @@ type Notice struct {
 // the first episode, Episode the trimmer's own episode number and RaisedBy what raised it
 // (shimwire.VolumeEpisodeFirst, VolumeEpisodeRecovery, VolumeEpisodeRise). UsedBytes and
 // FreeBytes are the volume as the sweep's last reading saw it and FreedBytes what the sweep
-// freed, read from the volume and never counted from the bytes unlinked. StopReason is why the
-// sweep stopped, in the trimmer's own words, and RefusedReads the /proc reads the kernel refused
-// that no report had carried yet, of this sweep and of earlier ones that sent no report: one per
-// process the trimmer could not read, or one for /proc itself when /proc could not be listed.
+// freed, read from the volume and never counted from the bytes unlinked: the sweep's first
+// reading's used bytes less its last's, negative where the roles wrote more while the sweep ran
+// than the sweep removed. StopReason is why the sweep stopped, in the trimmer's own words, and
+// RefusedReads the /proc reads the kernel refused that no report had carried yet, of this sweep
+// and of earlier ones that sent no report: one per process the trimmer could not read, or one for
+// /proc itself when /proc could not be listed.
 //
 // Sizes are the size walk's targets with their two age splits (VolumeSize), SizesAt when they
 // were measured — a report made between walks carries the last walk's numbers with that walk's
