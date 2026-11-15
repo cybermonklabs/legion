@@ -15,7 +15,9 @@ envoy_subscribe(["notifications.slack.T01234567.C01234567.thread.1_000.>"])
 
 ## Ghost Wispr
 
-Topics are `notifications.ghostwispr.<session>.<kind>`, where `kind` is `session.started`, `session.ended` or `summary.ready`. The summary is prose and the payload structured; A `summary.ready` payload carries `status`, `summary` (capped; `body_truncated` when cut), `summary_preset`, `timestamp` and `version`.
+Topics are `notifications.ghostwispr.<session>.<kind>`, where `kind` is `session.started`, `session.ended` or `summary.ready`. The summary is prose and the payload structured. Every payload carries `session_id`, and `started_at`, `ended_at`, `drive_folder_url` (a link to the session's Google Drive folder) and `session_url` (a link to the session) when the recorder sends them.
+
+A current recorder sends no title or summary text, because the stream keeps an envelope for 72 hours and no deletion can recall it. Read the current title, summary and transcript from `drive_folder_url` or `session_url`. An older recorder still sends `title`, and its `summary.ready` payload `summary` (capped; `body_truncated` when cut); a `summary.ready` payload also carries `status`, `summary_preset`, `timestamp` and `version` when the recorder sends them.
 
 ```text
 envoy_subscribe(["notifications.ghostwispr.session-example.summary.ready"])

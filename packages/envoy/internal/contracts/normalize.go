@@ -1641,10 +1641,18 @@ func ghostWisprSummary(eventType string, body map[string]any) string {
 	return OneLineSummary(summary)
 }
 
+// ghostWisprPayload copies the event's fields. A current unit sends no title or summary text,
+// because the stream keeps an envelope for its whole retention window and no deletion on the unit
+// can recall it; it sends when the session ran and where its current text is, so a reader fetches
+// that text itself. An older unit still sends its title and summary, and both pass when present.
 func ghostWisprPayload(eventType string, body map[string]any) string {
 	normalizedEventType := normalizeGhostWisprEventType(eventType)
 	data := map[string]string{"event_type": normalizedEventType}
 	data["session_id"] = ghostWisprSummarySessionID(body)
+	data["started_at"] = nestedString(body, "payload", "started_at")
+	data["ended_at"] = nestedString(body, "payload", "ended_at")
+	data["drive_folder_url"] = nestedString(body, "payload", "drive_folder_url")
+	data["session_url"] = nestedString(body, "payload", "session_url")
 	data["title"] = nestedString(body, "payload", "title")
 	data["duration"] = nestedNumberString(body, "payload", "duration")
 	data["created_at"] = stringValue(body["created_at"])
