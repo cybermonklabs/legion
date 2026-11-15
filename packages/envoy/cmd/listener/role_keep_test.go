@@ -531,7 +531,9 @@ func TestAClaimForwardsEachKeptRoleMessageToItsNewHolderExactlyOnce(t *testing.T
 // A kept copy the stream has held longer than roleKeepWindow is not handed to a later holder: a
 // role token names a tree role rather than one run, so a holder generations later is not the
 // addressee its sender had. It is dropped, counted and logged once, and the cursor moves past it,
-// so the role's next claim does not see it again.
+// so the role's next claim does not see it again. Its publish named no sender session, so no dead
+// letter is sent for it: the count and the line say the listener kept it, and that it was not
+// stale, its hour having ended a minute before the drop.
 //
 // The age is measured against the stream's own store time, which no caller may choose, so the test
 // moves the drain's clock rather than holding a copy for an hour.
@@ -541,14 +543,19 @@ func TestAKeptRoleMessageOlderThanTheKeepWindowIsDroppedAndTheCursorMovesPastIt(
 		role   = "kept-expired"
 		holder = "ses_kept_expired_claimant"
 	)
-	var forwards atomic.Int32
+	var forwards, deadLetters atomic.Int32
 	cfg := harness.config
 	cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
 		forwards.Add(1)
 		return nil
 	})
+	cfg.publishDeadLetter = func(context.Context, string, contracts.Envelope, string) error {
+		deadLetters.Add(1)
+		return nil
+	}
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-expired-1")
-	if _, kept := keepRoleMessage(cfg, role, item); !kept {
+	kept, ok := keepRoleMessage(cfg, role, item)
+	if !ok {
 		t.Fatalf("keep the role message; the listener log says why:\n%s", harness.logs.String())
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
@@ -565,14 +572,26 @@ func TestAKeptRoleMessageOlderThanTheKeepWindowIsDroppedAndTheCursorMovesPastIt(
 	if forwards.Load() != 0 {
 		t.Fatalf("a kept copy older than %s was forwarded %d times, want none", roleKeepWindow, forwards.Load())
 	}
+	if deadLetters.Load() != 0 {
+		t.Fatalf("a kept copy whose publish named no sender session was sent %d dead letters, want none", deadLetters.Load())
+	}
 	const dropLine = "listener dropped a kept role message older than the keep window"
 	if dropped := strings.Count(harness.logs.String(), dropLine); dropped != 1 {
 		t.Fatalf("the drop is logged %d times, want once:\n%s", dropped, harness.logs.String())
 	}
+	lines := logRecordsNamed(harness.logs.String(), dropLine, role)
+	if len(lines) != 1 || lines[0]["event_id"] != item.EventID || lines[0]["source_session"] != "" ||
+		lines[0]["kept_by"] != "listener" || lines[0]["stale"] != false || lines[0]["sequence"] != float64(kept.sequence) {
+		t.Fatalf("the drop lines are %v, want one naming event %s, no source_session, kept_by listener, stale false and sequence %d:\n%s",
+			lines, item.EventID, kept.sequence, harness.logs.String())
+	}
 	scrape := httptest.NewRecorder()
 	harness.metrics.Handler().ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	if want := "test_role_kept_expired 1"; !strings.Contains(scrape.Body.String(), want) {
+	if want := `test_role_kept_expired{kept_by="listener",stale="false"} 1`; !strings.Contains(scrape.Body.String(), want) {
 		t.Fatalf("metrics do not hold %s:\n%s", want, scrape.Body.String())
+	}
+	if strings.Contains(scrape.Body.String(), "test_role_dead_letters{") {
+		t.Fatalf("metrics count a dead letter for a copy that names no sender session:\n%s", scrape.Body.String())
 	}
 
 	// The copy is still on the lane and is now well inside the window; a cursor that had not

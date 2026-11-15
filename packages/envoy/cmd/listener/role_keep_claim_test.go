@@ -70,8 +70,12 @@ func TestADrainThatFailedAForwardLeavesThatCopyAndTheRestToTheNextDrain(t *testi
 		}
 		return errors.New("the forward this listener ended on")
 	})
-	if err := drainKeptRole(ctx, failing, role, time.Now); err == nil {
-		t.Fatalf("the drain whose second forward failed reported no error, so this test no longer reaches the moment it is about")
+	// The handover ends on the walk its pass after that failure makes with no live holder, which
+	// stops at the copy the failed forward left and fails nothing, so it reports no error. That
+	// its first walk ended on that forward is what attempted says below, and what the next drain
+	// is handed.
+	if err := drainKeptRole(ctx, failing, role, time.Now); err != nil {
+		t.Fatalf("the drain whose second forward failed reported %v; want none: its last walk had no live holder and stopped at the copy that forward left", err)
 	}
 	if !slices.Equal(attempted, keys[:2]) {
 		t.Fatalf("the first drain attempted %v, want the first two copies %v", attempted, keys[:2])

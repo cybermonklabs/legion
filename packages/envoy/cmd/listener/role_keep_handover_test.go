@@ -410,22 +410,80 @@ func TestAHandoverResolvesTheHolderOfAWalkAfterThePauseBeforeIt(t *testing.T) {
 	if len(attempts) != 1 {
 		t.Fatalf("the handover forwarded %v; only the first was attempted while %s held the role, and the copies behind it belong to whoever claims it next", attempts, holder)
 	}
-	// A handover reports the error of its last walk, which is the forward this one failed: one
-	// that reported none no longer ends its first walk where this test needs it to.
-	if err == nil {
-		t.Fatalf("the handover of role %s's kept lane reported no error, so its first walk no longer ends on a forward that failed", role)
+	// A handover reports the error of its last walk, and its last walk here is the one the pass
+	// after the pause made with no live holder, which stops at the first copy still inside its
+	// hour and fails nothing, so the handover reports no error.
+	if err != nil {
+		t.Fatalf("the handover of role %s's kept lane reported %v; want none: its last walk had no live holder and stopped at the copy that waits for the next one", role, err)
+	}
+	// What shows that its first walk ended on the forward it failed is the cursor that walk left:
+	// a claim written, then released, with no copy passed, so the copy the forward never reached
+	// is the first one the role's next holder is handed. A walk that ended anywhere else wrote
+	// no cursor, or one past a copy.
+	stored, err := harness.client.ReadKeptRoleCursor(ctx, role)
+	if err != nil {
+		t.Fatalf("read role %s's drain cursor: %v", role, err)
+	}
+	if stored.Sequence == 0 || stored.Cursor != (bus.KeptRoleCursor{}) {
+		t.Fatalf("role %s's drain cursor is %+v at %d; want its first walk's claim released with no copy passed, so its first walk no longer ends on a forward that failed",
+			role, stored.Cursor, stored.Sequence)
 	}
 }
 
-// The sweep is the backstop under which no kept lane waits for a claim that does not come. A
-// handover runs in a goroutine of the process that started it, so a listener restarted or replaced
-// mid-handover ends it with copies behind its cursor, and nothing starts another: a keep happens
-// only while a role has no live holder, and a live holder claims no second time. One pass of the
-// sweep hands such a lane to the role's live holder with no claim and no keep behind it.
+// sweepOnce makes one pass of the kept-role sweep over cfg, as the sweep's loop makes each
+// (startKeptRoleSweep), and returns once every handover the pass started has ended: it takes back
+// every slot of the pass's pool, which a handover the sweep started gives back as its last act,
+// after its walks and the wake report it raises (sweepKeptRoleLanes).
+func sweepOnce(ctx context.Context, cfg listenerDeliveryHandlerConfig) {
+	slots := make(chan struct{}, roleKeepSweepHandovers)
+	sweepKeptRoleLanes(ctx, cfg, slots)
+	for range roleKeepSweepHandovers {
+		slots <- struct{}{}
+	}
+}
+
+// sweptRoleWakes is every wake report the stream holds for role that a sweep raised: the reports
+// on bus.LegionWakeTopic named by an interval of role's (sweptRoleWakeID), in the order the
+// stream stored them. A test's stream is its own (testnats.URL), so it holds that test's reports
+// alone.
+func sweptRoleWakes(t *testing.T, client *bus.Client, role string) []contracts.Envelope {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var found []contracts.Envelope
+	for next := uint64(1); ; {
+		stored, err := client.NextStoredMessage(ctx, bus.LegionWakeTopic, next)
+		if errors.Is(err, natsgo.ErrMsgNotFound) {
+			return found
+		}
+		if err != nil {
+			t.Fatalf("read the wake reports on %s from %d: %v", bus.LegionWakeTopic, next, err)
+		}
+		next = stored.Sequence + 1
+		var item contracts.Envelope
+		if err := json.Unmarshal(stored.Data, &item); err != nil {
+			t.Fatalf("decode the wake report stored at %d: %v", stored.Sequence, err)
+		}
+		if strings.HasPrefix(item.DedupeKey, "legion.wake.role."+role+".") {
+			found = append(found, item)
+		}
+	}
+}
+
+// The sweep is the backstop under which no kept copy waits past its hour, and it walks every lane
+// the stream holds a copy on, whether or not a session claims the role. A handover runs in a
+// goroutine of the process that started it, so a listener restarted or replaced mid-handover ends
+// it with copies behind its cursor, and nothing starts another: a keep happens only while a role
+// has no live holder, and a live holder claims no second time. One pass of the sweep hands such a
+// lane to the role's live holder with no claim and no keep behind it. The same pass walks a lane
+// whose role no session claims, which the sweep used to pass over: its copy, inside its hour,
+// reaches nobody, and it wakes its role again (raiseKeptRoleWake), where the claimed lane, whose
+// holder is live, wakes nothing.
 func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-sweep-stranded"
+		unheld = "kept-sweep-unheld"
 		holder = "ses_kept_sweep_stranded"
 		copies = 3
 	)
@@ -443,6 +501,10 @@ func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
 		}
 		keys = append(keys, roleForwardDedupePrefix+item.DedupeKey)
 	}
+	unheldItem := listenerTestEnvelope(contracts.RoleTopicPrefix+unheld, "kept-sweep-unheld-00")
+	if _, kept := keepRoleMessage(cfg, unheld, unheldItem); !kept {
+		t.Fatalf("keep the copy of the role no session claims; the listener log says why:\n%s", harness.logs.String())
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	first, err := harness.client.NextStoredMessage(ctx, bus.KeptRoleSubject(role), 1)
@@ -458,7 +520,7 @@ func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
 
-	sweepKeptRoleLanes(ctx, cfg)
+	sweepOnce(ctx, cfg)
 
 	left := map[string]bool{keys[1]: true, keys[2]: true}
 	for deadline := time.After(30 * time.Second); len(left) > 0; {
@@ -471,6 +533,18 @@ func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
 		case <-deadline:
 			t.Fatalf("the sweep left %d of the copies behind role %s's cursor on its lane:\n%s", len(left), role, harness.logs.String())
 		}
+	}
+	select {
+	case key := <-forwards:
+		t.Fatalf("the sweep forwarded %s as well, want only the two copies behind role %s's cursor:\n%s", key, role, harness.logs.String())
+	default:
+	}
+	if wakes := sweptRoleWakes(t, harness.client, unheld); len(wakes) != 1 {
+		t.Fatalf("the sweep raised %d wake reports for role %s, which no session claims and whose copy is young, want one: the sweep passed its lane over:\n%s",
+			len(wakes), unheld, harness.logs.String())
+	}
+	if wakes := sweptRoleWakes(t, harness.client, role); len(wakes) != 0 {
+		t.Fatalf("the sweep raised %d wake reports for role %s, whose holder is live, want none", len(wakes), role)
 	}
 }
 

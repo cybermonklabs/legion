@@ -78,11 +78,28 @@ type listenerDeliveryHandlerConfig struct {
 	// session to read when it answers again.
 	fanoutUnresponsiveSkips *metrics.Counter
 	deliveryDuration        *metrics.Histogram
-	// roleKeptExpired counts the kept role messages a claim's drain dropped unforwarded because
-	// the stream had held them longer than roleKeepWindow (envoy_role_kept_expired_total,
-	// drainKeptRole). A reading that climbs says roles are being claimed long after the messages
-	// meant for them were sent, which is a routing problem rather than a delivery one.
+	// roleKeptExpired counts the kept role copies a walk dropped at the end of their hour
+	// (envoy_role_kept_expired_total, keptRoleDroppedReport), whether or not a session held the
+	// role, under two labels: kept_by, listener or dispatch_outbox for a copy Dispatch's outbox
+	// kept (isOutboxCopy), and stale, true for a copy no walk had claimed whose hour ended more
+	// than an hour before the walk that dropped it (roleKeepStaleAge). A listener copy dropped
+	// with stale false is one whose sender is sent a dead letter when its publish named one, so
+	// a reading that climbs says messages kept for roles go unread by any holder in their hour.
 	roleKeptExpired *metrics.Counter
+	// roleDeadLetters counts the dead letters a walk sent the sender of a kept copy it dropped
+	// (envoy_role_dead_letters_total, reportKeptRoleDeadLetter), under the label result: stored
+	// for one the stream took, refused for one it refused for good, which is not sent again.
+	roleDeadLetters *metrics.Counter
+	// roleKeptUndecodable counts the kept copies a walk ended because no read can decode them
+	// (envoy_role_kept_undecodable_total, judgeKeptRoleCopy).
+	roleKeptUndecodable *metrics.Counter
+	// publishDeadLetter stores a dead letter, item, on subject - the agent subject of the session
+	// whose kept copy a walk dropped - under the Nats-Msg-Id msgID, and returns the stream's
+	// refusal or failure; a duplicate the stream drops is no error (endKeptCopyWithDeadLetter).
+	// main.go sets it to client.PublishStoredAs, and so does every test that builds a config,
+	// while a test that must fail a dead letter's publish alone, with the cursor's writes going
+	// through, replaces it on its copy.
+	publishDeadLetter func(ctx context.Context, subject string, item contracts.Envelope, msgID string) error
 	// unplaceableRetryWindow is how long an agent delivery this listener cannot place is held
 	// in the stream and redelivered before it is given up with a record of its own
 	// (agentSubjectDelivery). main.go reads it from ENVOY_UNPLACEABLE_RETRY_WINDOW, defaulting
@@ -110,9 +127,11 @@ type listenerDeliveryHandlerConfig struct {
 	// now is the listener's clock, which a kept copy's age and the end of its hour are measured
 	// by, against the time the stream stored the copy: the keep's answer (storeKeptRoleCopy), the
 	// handovers the claim and the keep start (runKeptRoleDrain) and the sweep's
-	// (sweepKeptRoleLanes). It is required: main.go sets it to time.Now, and so does every test
-	// that builds a config, while a test that must cross a copy's hour moves this clock rather
-	// than waiting the hour out, since the store time is the stream's own and no caller chooses it.
+	// (sweepKeptRoleLanes), and the sweep's repeated wake report, which it dates and names the
+	// interval of (raiseKeptRoleWake). It is required: main.go sets it to time.Now, and so does
+	// every test that builds a config, while a test that must cross a copy's hour moves this clock
+	// rather than waiting the hour out, since the store time is the stream's own and no caller
+	// chooses it.
 	now func() time.Time
 }
 
@@ -485,13 +504,14 @@ func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleC
 // whichever holder a copy of the bucket names, and the lane is a core subscription with no
 // redelivery, so a kept copy is how the message waits for a read that answers. Every kept copy
 // goes only to a live holder: the handover the keep starts resolves the holder again and forwards
-// the copy where that holder is live, and the kept-role sweep starts a handover when that one
-// could not (sweepKeptRoleLanes). A holder the resolution finds lapsed ends a handover with no
-// outcome (handOverKeptRole), the sweep's as well, so the copy then waits on the lane, with no
-// delivery exception published for it, until a handover - a claim's, a keep's or the sweep's -
-// finds a live holder: the holder answering again, or a successor that claimed the role. The walk
-// that handover makes forwards the copy while it is inside its hour (roleKeepWindow) and drops it
-// with a WARN once it is older.
+// the copy where that holder is live, and the kept-role sweep hands every lane over again each
+// pass (sweepKeptRoleLanes). A handover that finds no live holder, the holder lapsed among the
+// cases, forwards nothing (handOverKeptRole), so the copy then waits on the lane, with no delivery
+// exception published for it, until a handover - a claim's, a keep's or the sweep's - finds a
+// live holder: the holder answering again, or a successor that claimed the role. The walk that
+// handover makes forwards the copy while it is inside its hour (roleKeepWindow); once it is older,
+// the first walk that reads it drops it with a WARN, with a holder or without one, and sends its
+// sender a dead letter (judgeKeptRoleCopy).
 //
 // Every other case leaves its branch as it was before the kept lane: an unclaimed role whose keep
 // failed is no_holder; a lapsed holder whose keep failed, a holder whose session read failed and a
