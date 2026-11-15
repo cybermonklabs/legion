@@ -358,9 +358,10 @@ function showEverywhere(client: QueryClient, showings: readonly Showing[]): void
 /** What a client's picks are doing: every live one - joined its line, and neither landed nor
  *  refused, discarded, dropped or stopped - by write id; each live write of another kind that sets
  *  a field the watch shows (`follow`), by write id, and each board move not yet answered that sets
- *  one, each with what it sets; the newest place in a line it has seen; and each query that was
- *  reading when a write of a field shown on it landed (`holdReads`), by hash, with what to put
- *  back over the answer of that read. */
+ *  one, each with what it sets; the newest place in a line it has seen; and each query whose read
+ *  out is older than the value Dispatch last confirmed for a field shown on it, as a landing of a
+ *  write of the field or a put back left it (`holdReads`), by hash, with what to put back over the
+ *  answer of that read. */
 interface Watch {
   readonly live: Map<number, Write<IssueFieldPick>>;
   readonly followed: Map<number, readonly IssueFieldPick[]>;
@@ -562,32 +563,39 @@ function newestPicks(client: QueryClient, watch: Watch, issueKey?: string): Show
   });
 }
 
-/** Records, as the value Dispatch last confirmed, how `data` - the answer of a read of `query` -
- *  shows each field the watch shows (`watchedFields`), where that answer is no older than what is
- *  recorded for the field: a read is as new as its request (`sentAt`), so one sent before a
- *  write of the field landed is older than that write's answer, whenever it arrives. A pick a
+/** Records, as the value Dispatch last confirmed, how the answer of the read of `query` that just
+ *  landed shows each field the watch shows (`watchedFields`), where that answer is no older than
+ *  what is recorded for the field: a read is as new as its request (`sentAt`), so one sent before
+ *  a write of the field landed is older than that write's answer, whenever it arrives. A pick a
  *  reload or a sign-in after a lapse takes up starts with nothing recorded - its page holds
  *  nothing yet, or the lapse let go of every value confirmed (`reset`) - so only answers since
- *  count. Read before the pick is shown over the answer, which keeps the two apart. */
-function confirmFrom(client: QueryClient, watch: Watch, query: Query, data: unknown): void {
+ *  count. The answer is the one the read returned (`query.promise`, which the fetch settles before
+ *  it puts the answer in the cache), not the query's data, which keeps it apart from the picks
+ *  shown over it: the issue's query keeps the issue it holds, picks and all, over an answer older
+ *  than that issue (`issueQuery`). That promise hands the answer on a moment later, so the fields,
+ *  the moment and the record they go in are taken now. */
+function confirmFrom(client: QueryClient, watch: Watch, query: Query): void {
   const at = sentAt.get(query) ?? 0;
   const looks = confirmedOf(client);
-  for (const pick of watchedFields(watch)) {
-    const name = fieldName(pick);
-    const recorded = looks.get(name);
-    if (recorded !== undefined && recorded.at > at) continue;
-    const look = lookIn(query.queryKey, data, pick);
-    if (look !== undefined) looks.set(name, { at, look });
-  }
+  const fields = watchedFields(watch);
+  void query.promise?.then((answer) => {
+    for (const pick of fields) {
+      const name = fieldName(pick);
+      const recorded = looks.get(name);
+      if (recorded !== undefined && recorded.at > at) continue;
+      const look = lookIn(query.queryKey, answer, pick);
+      if (look !== undefined) looks.set(name, { at, look });
+    }
+  });
 }
 
 /** What one change of the client's cache does to its picks. An answer of a read, or a merge of
  *  another write's answer, on a cache a pick shows on has each field a pick of which is live shown
  *  again over it as the newest live write of that field - a read's answer first recorded as what
- *  Dispatch last confirmed where it is the newest answer (`confirmFrom`); an answer of a read that
- *  was out when a write of a field shown on it landed (`holdReads`) has that landed value shown
- *  again over it, and ends its hold, as a new read of that query, its failure or its cancelling
- *  does. */
+ *  Dispatch last confirmed where it is the newest answer (`confirmFrom`); an answer of a read
+ *  older than the value a landing or a put back left for a field shown on it (`holdReads`) has
+ *  that value shown again over it, and ends its hold, as a new read of that query, its failure or
+ *  its cancelling does. */
 function answered(client: QueryClient, watch: Watch, event: QueryCacheNotifyEvent): void {
   if (writing) return;
   const { query } = event;
@@ -611,7 +619,7 @@ function answered(client: QueryClient, watch: Watch, event: QueryCacheNotifyEven
   }
   if (action.type === "success" && cacheOf(query.queryKey) !== undefined) {
     const data = query.state.data;
-    if (fetched) confirmFrom(client, watch, query, data);
+    if (fetched) confirmFrom(client, watch, query);
     const showings = new Map(fetched && held !== undefined ? held : []);
     for (const showing of newestPicks(client, watch)) showings.set(fieldName(showing), showing);
     const next = shownOn(client, query.queryKey, data, [...showings.values()]);
@@ -650,7 +658,8 @@ function follow(client: QueryClient, watch: Watch): void {
  *  landed, it is what Dispatch last confirmed for the field, which shows unless a newer live
  *  write of it does, and where none does, over the answer of each read out then as well
  *  (`holdReads`); refused, discarded or stopped, the field shows as its newest live write, or
- *  else as Dispatch last confirmed it, and the issue is read again (`putBack`). */
+ *  else as Dispatch last confirmed it, over each older read out then as well, and the issue is
+ *  read again (`putBack`). */
 function ended(client: QueryClient, watch: Watch, outcome: WriteOutcome): void {
   const followed = watch.followed.get(outcome.write.id);
   if (followed === undefined) return;
@@ -660,10 +669,8 @@ function ended(client: QueryClient, watch: Watch, outcome: WriteOutcome): void {
       putBack(client, watch, pick);
       continue;
     }
-    const look = confirmLanding(client, pick, outcome.answer);
-    if (showNewestOr(client, watch, pick, look)) {
-      holdReads(client, watch, { field: pick.field, issueKey: pick.issueKey, look });
-    }
+    const landing = confirmLanding(client, pick, outcome.answer);
+    if (showNewestOr(client, watch, pick, landing.look)) holdReads(client, watch, pick, landing);
   }
   release(client, watch);
 }
@@ -788,17 +795,18 @@ function confirmedOf(client: QueryClient): Map<string, Confirmed> {
 }
 
 /** Records `answer`, Dispatch's answer to a write of `pick`'s field that landed, as the value it
- *  last confirmed for that field, newer than every read sent before now, and answers it; a
- *  landing Dispatch kept no answer for stored the write's value all the same. */
-function confirmLanding(client: QueryClient, pick: IssueFieldPick, answer: unknown): Look {
+ *  last confirmed for that field, newer than every read sent before now, and answers that record;
+ *  a landing Dispatch kept no answer for stored the write's value all the same. */
+function confirmLanding(client: QueryClient, pick: IssueFieldPick, answer: unknown): Confirmed {
   const looks = confirmedOf(client);
   const name = fieldName(pick);
   const look =
     answer === null
       ? { fields: { ...looks.get(name)?.look.fields, ...pickLook(pick).fields } }
       : issueLook(pick.field, answer as Issue);
-  looks.set(name, { at: ++clock, look });
-  return look;
+  const landing = { at: ++clock, look };
+  looks.set(name, landing);
+  return landing;
 }
 
 /** Has the client read again what a pick of `issueKey` showed on, as Dispatch now holds it. */
@@ -808,21 +816,33 @@ function readAgain(client: QueryClient, issueKey: string): void {
   void client.invalidateQueries({ queryKey: inboxKey });
 }
 
-/** Holds each read out now on a cache a pick shows on, which may have been composed before
- *  `landed`, the answer of a write of its field that landed, and so answer with the value from
- *  before it: over that answer the landed value shows again (`answered`). The client's watch,
- *  begun where there is none, holds them until each answers or is cancelled. */
-function holdReads(client: QueryClient, watch: Watch | undefined, landed: Showing): void {
+/** Holds each read out now on a cache a pick shows on that was sent before the answer `record`
+ *  comes from, the value Dispatch last confirmed for `of`'s field - a landing's answer, or a
+ *  read's: such a read is older than that answer, whenever it arrives, and can answer with the
+ *  value from before it, so over its answer the confirmed value shows again (`answered`). The
+ *  client's watch, begun where there is none, holds them until each answers or is cancelled. */
+function holdReads(
+  client: QueryClient,
+  watch: Watch | undefined,
+  of: Pick<IssueFieldPick, "field" | "issueKey">,
+  record: Confirmed
+): void {
   const reading = client
     .getQueryCache()
     .getAll()
-    .filter((query) => query.state.fetchStatus !== "idle" && cacheOf(query.queryKey) !== undefined);
+    .filter(
+      (query) =>
+        query.state.fetchStatus !== "idle" &&
+        cacheOf(query.queryKey) !== undefined &&
+        (sentAt.get(query) ?? 0) < record.at
+    );
   if (reading.length === 0) return;
   const holding = watch ?? watchOf(client);
-  const name = fieldName(landed);
+  const name = fieldName(of);
+  const showing: Showing = { field: of.field, issueKey: of.issueKey, look: record.look };
   for (const query of reading) {
     const showings = holding.held.get(query.queryHash) ?? new Map<string, Showing>();
-    showings.set(name, landed);
+    showings.set(name, showing);
     holding.held.set(query.queryHash, showings);
   }
 }
@@ -847,16 +867,19 @@ function showNewestOr(
 }
 
 /** Shows `of`'s field as its newest live write, or, where none is left, as Dispatch last
- *  confirmed it, and reads the issue again then; each other field of the issue a pick of which is
- *  live shows as its newest live write too. What a pick or a followed write that ended without
+ *  confirmed it - over the answer of each read out then that is older than that value as well
+ *  (`holdReads`) - and reads the issue again then; each other field of the issue a pick of which
+ *  is live shows as its newest live write too. What a pick or a followed write that ended without
  *  landing leaves. */
 function putBack(
   client: QueryClient,
   watch: Watch | undefined,
   of: Pick<IssueFieldPick, "field" | "issueKey">
 ): void {
-  const look = confirmed.get(client)?.get(fieldName(of))?.look;
-  if (showNewestOr(client, watch, of, look)) readAgain(client, of.issueKey);
+  const record = confirmed.get(client)?.get(fieldName(of));
+  if (!showNewestOr(client, watch, of, record?.look)) return;
+  if (record !== undefined) holdReads(client, watch, of, record);
+  readAgain(client, of.issueKey);
 }
 
 /** The name of this kind of write, which a reload finds it by. */
@@ -884,7 +907,8 @@ const KIND = "issue-field";
  * not own: landed, its answer is the value Dispatch last confirmed, which shows where no live
  * write of the field is left, over the answer of each read out at the landing too; refused,
  * discarded or stopped, the field shows as its newest live write, or else as Dispatch last
- * confirmed it, and the issue is read again (`ended`).
+ * confirmed it, over the answer of each read out then that is older than that value too, and the
+ * issue is read again (`ended`).
  *
  * Landed, it merges Dispatch's answer and records it as the value Dispatch last confirmed. Where
  * a live write of the field is left, the newest of them shows. Where none is, the landed value
@@ -894,16 +918,18 @@ const KIND = "issue-field";
  * each read out at the landing the landed value shows again, and a read that begins after the
  * landing answers for itself. Refused, discarded or dropped (`undone`), the newest live write of
  * the field shows, so a pick a newer one took out puts nothing back; where none is left, the
- * value Dispatch last confirmed (`confirmed`) shows and the caches are read again (`putBack`).
- * That value is the field in the newest answer Dispatch gave, kept apart from the pick shown over
- * it: what the caches showed at the first pick of a run, unless a live write of the field of
- * another kind put it there, then each newer answer of a read (`confirmFrom`) or of a write of
- * the field that landed (`confirmLanding`), a read being as new as its request, whether a pick
- * was live when it was sent or not, so one sent before a landing is older than it whenever it
- * arrives. After a reload, or a lapse that let go of every value confirmed, the caches hold
- * nothing at the first pick, so only the answers since count. The watch ends once no pick is
- * live, no board move is followed and no read is held. Whoever is signed in changing lets go of
- * every value confirmed (`reset`).
+ * value Dispatch last confirmed (`confirmed`) shows, over the answer of each read out then that
+ * was sent before the answer that value comes from too, and the caches are read again
+ * (`putBack`). That value is the field in the newest answer Dispatch gave, kept apart from the
+ * pick shown over it: what the caches showed at the first pick of a run, unless a live write of
+ * the field of another kind put it there, then each newer answer of a read as the read returned
+ * it, before the issue's query keeps an older one out or a pick is shown over it (`confirmFrom`),
+ * or of a write of the field that landed (`confirmLanding`), a read being as new as its request,
+ * whether a pick was live when it was sent or not, so one sent before a landing is older than it
+ * whenever it arrives. After a reload, or a lapse that let go of every value confirmed, the
+ * caches hold nothing at the first pick, so only the answers since count. The watch ends once no
+ * pick is live, no board move is followed and no read is held. Whoever is signed in changing lets
+ * go of every value confirmed (`reset`).
  */
 export const issueFieldWrite = defineWriteKind<IssueFieldPick>({
   kept: keptPick,
@@ -911,10 +937,10 @@ export const issueFieldWrite = defineWriteKind<IssueFieldPick>({
     const watch = watches.get(client);
     watch?.live.delete(write.id);
     const { detail } = write;
-    const look = confirmLanding(client, detail, answer);
+    const landing = confirmLanding(client, detail, answer);
     if (answer !== null) asOwnWrite(() => mergeIssue(client, answer as Issue));
-    if (showNewestOr(client, watch, detail, look)) {
-      holdReads(client, watch, { field: detail.field, issueKey: detail.issueKey, look });
+    if (showNewestOr(client, watch, detail, landing.look)) {
+      holdReads(client, watch, detail, landing);
       readAgain(client, detail.issueKey);
     }
     const current = watches.get(client);
