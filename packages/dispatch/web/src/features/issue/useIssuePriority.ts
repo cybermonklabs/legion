@@ -1,18 +1,9 @@
 import type { IssuePriority } from "../../api/types";
-import { useIssueFieldWrite } from "./useIssueFieldWrite";
+import { type IssueFieldWrite, useIssueFieldWrite } from "./useIssueFieldWrite";
 
-export interface IssuePriorityWrite {
-  /** True after a save failed until the next attempt starts. */
-  failed: boolean;
-  pending: boolean;
-  /** Repeats the refused save; undefined while nothing is refused, and for a refused save with a
-   *  newer live write of the priority, which the screen shows and Dispatch stores last. */
-  retry: (() => void) | undefined;
-  /** Saves `priority`: a pick of the page's write store, joined to the issue's line as it is
-   *  made, which takes out a pick of the priority still waiting there unsent; the newest is the
-   *  one saved. */
-  submit: (priority: IssuePriority | null) => void;
-}
+/** The priority's write, without `error`: a refused one shows a fixed line (`PriorityControl`),
+ *  not the server's reason. `submit` takes a priority, or null to unset it. */
+export type IssuePriorityWrite = Omit<IssueFieldWrite<IssuePriority | null>, "error">;
 
 /**
  * The one way the SPA writes an issue's priority. Every surface that renders it (issue header,

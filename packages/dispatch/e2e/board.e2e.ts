@@ -10,6 +10,8 @@ import {
   listRead,
   logReads,
   PICK_HOLD_MS,
+  pagePicker,
+  readAnsweredSince,
   savesEnded,
   storedValues,
   watchShown,
@@ -1273,7 +1275,7 @@ test("picker keeps a pick on screen: a pick made on the issue page shows on the 
     const held = await holdIssuePatches(page, key);
     const reads = logReads(page, listRead("project", "CORE"));
     await page.goto(`/issues/${key}`);
-    const picker = page.getByRole("main").getByRole("combobox", { name: `Priority of ${key}` });
+    const picker = pagePicker(page, `Priority of ${key}`);
     await expect(picker).toHaveValue("3");
 
     await picker.selectOption("1");
@@ -1294,9 +1296,7 @@ test("picker keeps a pick on screen: a pick made on the issue page shows on the 
     const renamedAt = Date.now();
     await patchIssue(other, { title: renamed });
     await expect(page.getByRole("article", { name: `${other} ${renamed}` })).toBeVisible();
-    await expect
-      .poll(() => reads.some((read) => read.sentAt >= renamedAt && read.answeredAt !== undefined))
-      .toBe(true);
+    await expect.poll(() => readAnsweredSince(reads, renamedAt)).toBe(true);
     await nextFrames(page);
     await expect(card.getByRole("combobox", { name: `Priority of ${key}` })).toHaveValue("1");
     held.release();

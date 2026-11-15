@@ -15,12 +15,13 @@ import {
   holdIssuePatches,
   lastEventSeq,
   logReads,
+  pagePicker,
   savesEnded,
   storedValues,
   watchShown,
 } from "./pick-writes";
 import { navigateInApp } from "./sends";
-import { expect, type Page, test } from "./test";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -166,12 +167,6 @@ async function issueAtP3(): Promise<string> {
   return issue.key;
 }
 
-/** The issue page's own picker of `field` of `issueKey`, by its accessible name: the Inbox drawer
- *  draws outside `main`. */
-function issuePicker(page: Page, field: "Priority" | "Repository", issueKey: string) {
-  return page.getByRole("main").getByRole("combobox", { name: `${field} of ${issueKey}` });
-}
-
 // SLOW(>=2s): two saves each held three seconds, around a reload.
 test("picker keeps the newest pick: a reload before the saves end sends both picks, and the server stores the last", async ({
   browser,
@@ -182,7 +177,7 @@ test("picker keeps the newest pick: a reload before the saves end sends both pic
   try {
     const page = await context.newPage();
     const held = await holdIssuePatches(page, key);
-    const picker = issuePicker(page, "Priority", key);
+    const picker = pagePicker(page, `Priority of ${key}`);
     await page.goto(`/issues/${key}`);
     await expect(picker).toHaveValue("3");
 
@@ -218,7 +213,7 @@ test("picker keeps the newest pick: a pick made after leaving and coming back is
   try {
     const page = await context.newPage();
     const held = await holdIssuePatches(page, key);
-    const picker = issuePicker(page, "Priority", key);
+    const picker = pagePicker(page, `Priority of ${key}`);
     await page.goto(`/issues/${key}`);
     await expect(picker).toHaveValue("3");
 
@@ -230,7 +225,7 @@ test("picker keeps the newest pick: a pick made after leaving and coming back is
     // Another issue and back: the picker that made P1 is gone, and P2 is made on the one the
     // return mounts, while P0 is still out.
     await navigateInApp(page, `/issues/${other.key}`);
-    await expect(issuePicker(page, "Priority", other.key)).toBeVisible();
+    await expect(pagePicker(page, `Priority of ${other.key}`)).toBeVisible();
     await navigateInApp(page, `/issues/${key}`);
     await expect(picker).toHaveValue("1");
     await picker.selectOption("2");
@@ -255,8 +250,7 @@ test("picker keeps the newest pick: a pick made after leaving and coming back is
 
 // Two picks made while one save is out are one request, the newest, and the badge shows the
 // newest pick from each pick until every save has ended - through the moment the first save ends
-// while the newest is still out, which is where a picker that kept its own queue fell back to the
-// first.
+// while the newest is still out.
 // SLOW(>=2s): two saves each held three seconds.
 test("picker keeps the newest pick: two picks made while a save is out send only the newest, which the badge shows until every save ends", async ({
   browser,
@@ -268,7 +262,7 @@ test("picker keeps the newest pick: two picks made while a save is out send only
     const page = await context.newPage();
     const shown = await watchShown(page, `Priority of ${key}`, "main");
     const held = await holdIssuePatches(page, key);
-    const picker = issuePicker(page, "Priority", key);
+    const picker = pagePicker(page, `Priority of ${key}`);
     await page.goto(`/issues/${key}`);
     await expect(picker).toHaveValue("3");
     await expect.poll(() => shown.values.at(-1)).toBe("3");
@@ -318,7 +312,7 @@ test("picker keeps a pick on screen: the priority on the issue page, over a read
     const shown = await watchShown(page, `Priority of ${key}`, "main");
     const held = await holdIssuePatches(page, key);
     const reads = logReads(page, detailRead(key));
-    const picker = issuePicker(page, "Priority", key);
+    const picker = pagePicker(page, `Priority of ${key}`);
     await page.goto(`/issues/${key}`);
     await expect(picker).toHaveValue("3");
 
@@ -362,7 +356,7 @@ test("picker keeps a pick on screen: the repository on the issue page, over a re
     const shown = await watchShown(page, `Repository of ${issue.key}`, "main");
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, detailRead(issue.key));
-    const picker = issuePicker(page, "Repository", issue.key);
+    const picker = pagePicker(page, `Repository of ${issue.key}`);
     await page.goto(`/issues/${issue.key}`);
     await expect(picker).toHaveValue("acme/widgets");
 
@@ -403,7 +397,7 @@ test("picker keeps a pick on screen: a reload shows the newest pick from its fir
     const shown = await watchShown(page, `Priority of ${key}`, "main");
     const held = await holdIssuePatches(page, key);
     const reads = logReads(page, detailRead(key));
-    const picker = issuePicker(page, "Priority", key);
+    const picker = pagePicker(page, `Priority of ${key}`);
     await page.goto(`/issues/${key}`);
     await expect(picker).toHaveValue("3");
 

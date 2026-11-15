@@ -1,9 +1,10 @@
-import type {
-  Mutation,
-  Query,
-  QueryCacheNotifyEvent,
-  QueryClient,
-  QueryKey,
+import {
+  type Mutation,
+  matchMutation,
+  type Query,
+  type QueryCacheNotifyEvent,
+  type QueryClient,
+  type QueryKey,
 } from "@tanstack/react-query";
 
 import { issuePatchRequest, type WriteRequest } from "../../api/client";
@@ -11,9 +12,11 @@ import { mergeIssue } from "../../api/issue-cache";
 import { boardMoveMutationKey, inboxQuery, projectDefaultAssigneesQuery } from "../../api/queries";
 import type { InboxRow, Issue, IssueDetails, IssuePriority, IssueSummary } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
+import type { BoardMoveVariables } from "../project/board-moves";
 import { type Shape, shape } from "../writes/write-storage";
 import {
   defineWriteKind,
+  isLive,
   type Write,
   type WriteOutcome,
   type Writes,
@@ -32,13 +35,13 @@ export type IssueField = keyof IssueFieldValues;
 
 /** One pick as the write store holds it and a reload restores it: the issue, the field, and the
  *  value picked. */
-export type IssueFieldPick<F extends IssueField = IssueField> = {
-  readonly [K in F]: {
+export type IssueFieldPick = {
+  readonly [K in IssueField]: {
     readonly field: K;
     readonly issueKey: string;
     readonly value: IssueFieldValues[K];
   };
-}[F];
+}[IssueField];
 
 const keptPick = shape.either(
   shape.record({
@@ -169,19 +172,21 @@ function lookOf(
   return { ...look, waiting: new Map(rows.map((each) => [each.id, each.waiting_on_person])) };
 }
 
+/** The row of `issueKey` in the first list of issues the client holds that has one. */
+function listedIssue(client: QueryClient, issueKey: string): IssueSummary | undefined {
+  for (const query of client.getQueryCache().getAll()) {
+    if (cacheOf(query.queryKey) !== "list" || !Array.isArray(query.state.data)) continue;
+    const row = (query.state.data as IssueSummary[]).find((each) => each.key === issueKey);
+    if (row !== undefined) return row;
+  }
+  return undefined;
+}
+
 /** How `field` of `issueKey` shows in the client's caches now - its detail, else its row of a
  *  list of issues, else an Inbox row of it - or undefined where none holds the issue. */
 function cachedLook(client: QueryClient, { field, issueKey }: IssueFieldPick): Look | undefined {
   const issue =
-    client.getQueryData<IssueDetails>(["issue", issueKey]) ??
-    client
-      .getQueryCache()
-      .getAll()
-      .filter((query) => cacheOf(query.queryKey) === "list")
-      .flatMap((query) =>
-        Array.isArray(query.state.data) ? (query.state.data as IssueSummary[]) : []
-      )
-      .find((row) => row.key === issueKey);
+    client.getQueryData<IssueDetails>(["issue", issueKey]) ?? listedIssue(client, issueKey);
   return lookOf(
     field,
     issue,
@@ -248,15 +253,16 @@ function showOnInboxRow(row: InboxRow, showing: Showing, fallback: string | unde
   return moved.waiting_on_person === person ? moved : { ...moved, waiting_on_person: person };
 }
 
-/** `rows` with each changed by `change`: `rows` itself where none changes. */
+/** `rows` with each changed by `change`: `rows` itself where none changes, copied from the first
+ *  that does. */
 function mapRows<R>(rows: readonly R[], change: (row: R) => R): readonly R[] {
-  let changed = false;
-  const next = rows.map((row) => {
+  let next: R[] | undefined;
+  for (const [index, row] of rows.entries()) {
     const after = change(row);
-    changed ||= after !== row;
-    return after;
-  });
-  return changed ? next : rows;
+    if (next === undefined && after !== row) next = rows.slice(0, index);
+    next?.push(after);
+  }
+  return next ?? rows;
 }
 
 /** The default assignee of `issueKey`'s project where the client holds the defaults read. */
@@ -323,14 +329,19 @@ function shownOn(
  *  writes is a pick shown, not an answer of Dispatch's. */
 let writing = false;
 
-/** Puts `data` under `queryKey`, as this module's own write. */
-function put(client: QueryClient, queryKey: QueryKey, data: unknown): void {
+/** Runs `change`, a write of this module's own to the client's cache. */
+function asOwnWrite(change: () => void): void {
   writing = true;
   try {
-    client.setQueryData(queryKey, data);
+    change();
   } finally {
     writing = false;
   }
+}
+
+/** Puts `data` under `queryKey`, as this module's own write. */
+function put(client: QueryClient, queryKey: QueryKey, data: unknown): void {
+  asOwnWrite(() => client.setQueryData(queryKey, data));
 }
 
 /** Shows every one of `showings` on each cache of `client` that draws its issue, writing only
@@ -376,12 +387,6 @@ function watchedFields(watch: Watch): IssueFieldPick[] {
   ];
 }
 
-/** Whether `write` may still reach Dispatch: waiting its turn, or out, within its deadline or
- *  past it and still being tried. A refused or discarded write is not. */
-function isLive(write: Write): boolean {
-  return write.status === "queued" || write.status === "sending" || write.status === "late";
-}
-
 /** What `body`, a request's or a board move's change of `issueKey`, sets `field` to, as a pick of
  *  it; undefined where it sets no such field. */
 function fieldIn(body: unknown, issueKey: string, field: IssueField): IssueFieldPick | undefined {
@@ -390,21 +395,20 @@ function fieldIn(body: unknown, issueKey: string, field: IssueField): IssueField
   return keptPick(pick) ? pick : undefined;
 }
 
-/** What the request of `write`, a write on the line of `issueKey` of any kind - a pick, a board
- *  move to another lane, a key of the issue page - sets `field` to, as a pick of it; undefined
- *  where it sets no such field. */
+/** What the request of `write`, a write on the line of `of`'s issue of any kind - a pick, a board
+ *  move to another lane, a key of the issue page - sets `of`'s field to, as a pick of it;
+ *  undefined where it sets no such field. */
 function pickIn(
   writes: Writes,
   write: Write,
-  issueKey: string,
-  field: IssueField
+  of: Pick<IssueFieldPick, "field" | "issueKey">
 ): IssueFieldPick | undefined {
-  if (write.target !== `issue:${issueKey}`) return undefined;
-  return fieldIn(writes.requestOf(write.id)?.body, issueKey, field);
+  if (write.target !== `issue:${of.issueKey}`) return undefined;
+  return fieldIn(writes.requestOf(write.id)?.body, of.issueKey, of.field);
 }
 
 /** A move of a card on a project's board (`useBoardMoves`): a mutation of its board's scope,
- *  whose variables name the issue (`key`) and its change (`input`). */
+ *  whose variables name the issue and its change (`BoardMoveVariables`, `moveChange`). */
 type BoardMove = Mutation;
 
 /** The key every board move carries (`boardMoveMutationKey`), whatever its project. */
@@ -420,15 +424,23 @@ function newestJoin(writes: Writes): number {
   return writes.rows().reduce((newest, row) => Math.max(newest, row.joined), 0);
 }
 
+/** What `move` changes, as its variables name it: the issue (`key`) and its change (`input`);
+ *  undefined where they name no issue. */
+function moveChange(
+  move: BoardMove
+): { readonly input: unknown; readonly issueKey: string } | undefined {
+  const variables = move.state.variables;
+  if (typeof variables !== "object" || variables === null) return undefined;
+  const { input, key } = variables as { readonly [name in keyof BoardMoveVariables]?: unknown };
+  return typeof key === "string" ? { input, issueKey: key } : undefined;
+}
+
 /** What `move` sets each field of its issue to, as picks of them. */
 function movePicks(move: BoardMove): IssueFieldPick[] {
-  const variables = move.state.variables;
-  if (typeof variables !== "object" || variables === null) return [];
-  const issueKey = Reflect.get(variables, "key");
-  const input = Reflect.get(variables, "input");
-  if (typeof issueKey !== "string") return [];
+  const change = moveChange(move);
+  if (change === undefined) return [];
   return (["assignee", "priority", "repo"] as const).flatMap((field) => {
-    const pick = fieldIn(input, issueKey, field);
+    const pick = fieldIn(change.input, change.issueKey, field);
     return pick === undefined ? [] : [pick];
   });
 }
@@ -451,11 +463,12 @@ function moveRank(move: BoardMove): number {
 function moveOfRow(moves: readonly BoardMove[], writes: Writes, row: Write): BoardMove | undefined {
   const body = JSON.stringify(writes.requestOf(row.id)?.body);
   return moves.find((move) => {
-    const variables = move.state.variables;
-    if (typeof variables !== "object" || variables === null) return false;
-    const issueKey = Reflect.get(variables, "key");
-    const input = Reflect.get(variables, "input");
-    return row.target === `issue:${String(issueKey)}` && JSON.stringify(input) === body;
+    const change = moveChange(move);
+    return (
+      change !== undefined &&
+      row.target === `issue:${change.issueKey}` &&
+      JSON.stringify(change.input) === body
+    );
   });
 }
 
@@ -478,13 +491,13 @@ export interface FieldWrite {
  *  a move still waits is newer than the move although it goes out first, until the move lands. */
 export function fieldWritesOf(
   client: QueryClient,
-  { field, issueKey }: Pick<IssueFieldPick, "field" | "issueKey">
+  of: Pick<IssueFieldPick, "field" | "issueKey">
 ): FieldWrite[] {
   const writes = writesOf(client);
   const moves = pendingMoves(client);
   const found: FieldWrite[] = [];
   for (const row of writes.rows()) {
-    const pick = pickIn(writes, row, issueKey, field);
+    const pick = pickIn(writes, row, of);
     if (pick === undefined) continue;
     const ofPick = row.kind === KIND;
     const move = ofPick ? undefined : moveOfRow(moves, writes, row);
@@ -492,7 +505,7 @@ export function fieldWritesOf(
     found.push({ id: row.id, live: isLive(row), ofPick, pick, rank });
   }
   for (const move of moves) {
-    const pick = movePicks(move).find((each) => sameField(each, { field, issueKey }));
+    const pick = movePicks(move).find((each) => sameField(each, of));
     if (!move.state.isPaused || pick === undefined) continue;
     found.push({ id: undefined, live: true, ofPick: false, pick, rank: moveRank(move) });
   }
@@ -506,23 +519,22 @@ export function newerWriteOf(client: QueryClient, pick: Write<IssueFieldPick>): 
   return fieldWritesOf(client, pick.detail).some((write) => write.live && write.rank > pick.joined);
 }
 
-/** How `field` of `issueKey` shows while writes of it are live: as the newest of them
+/** How `of`'s field shows while writes of it are live: as the newest of them
  *  (`fieldWritesOf`), whichever control made it - of the watch's live picks, and of every other
  *  live write of the field, a board move among them. Undefined while none is live. */
 function newestWrite(
   client: QueryClient,
   watch: Watch | undefined,
-  issueKey: string,
-  field: IssueField
+  of: Pick<IssueFieldPick, "field" | "issueKey">
 ): Showing | undefined {
   let newest: { readonly pick: IssueFieldPick; readonly rank: number } | undefined;
   for (const write of watch?.live.values() ?? []) {
-    if (!sameField(write.detail, { field, issueKey })) continue;
+    if (!sameField(write.detail, of)) continue;
     if (newest === undefined || write.joined > newest.rank) {
       newest = { pick: write.detail, rank: write.joined };
     }
   }
-  for (const write of fieldWritesOf(client, { field, issueKey })) {
+  for (const write of fieldWritesOf(client, of)) {
     // A pick is read from the watch's live picks alone: the store shows it a moment before its
     // kind is told of it (`started`), which records first what the cache showed before it. Of
     // two moves dropped between the same two joins, the later is newer.
@@ -531,7 +543,8 @@ function newestWrite(
     }
     newest = write;
   }
-  return newest === undefined ? undefined : { field, issueKey, look: pickLook(newest.pick) };
+  if (newest === undefined) return undefined;
+  return { field: of.field, issueKey: of.issueKey, look: pickLook(newest.pick) };
 }
 
 /** How each field of an issue the watch shows (`watchedFields`) shows - of `issueKey`'s fields
@@ -544,7 +557,7 @@ function newestPicks(client: QueryClient, watch: Watch, issueKey?: string): Show
     if (issueKey === undefined || pick.issueKey === issueKey) fields.set(fieldName(pick), pick);
   }
   return [...fields.values()].flatMap((pick) => {
-    const showing = newestWrite(client, watch, pick.issueKey, pick.field);
+    const showing = newestWrite(client, watch, pick);
     return showing === undefined ? [] : [showing];
   });
 }
@@ -573,7 +586,8 @@ function confirmFrom(client: QueryClient, watch: Watch, query: Query, data: unkn
  *  again over it as the newest live write of that field - a read's answer first recorded as what
  *  Dispatch last confirmed where it is the newest answer (`confirmFrom`); an answer of a read that
  *  was out when a write of a field shown on it landed (`holdReads`) has that landed value shown
- *  again over it, and ends its hold, as a new read of that query or its failure does. */
+ *  again over it, and ends its hold, as a new read of that query, its failure or its cancelling
+ *  does. */
 function answered(client: QueryClient, watch: Watch, event: QueryCacheNotifyEvent): void {
   if (writing) return;
   const { query } = event;
@@ -585,8 +599,14 @@ function answered(client: QueryClient, watch: Watch, event: QueryCacheNotifyEven
   if (event.type !== "updated") return;
   const { action } = event;
   const fetched = action.type === "success" && action.manual !== true;
+  // A read cancelled (`cancelQueries`) is given up: the query takes back the state it had before
+  // the read, idle, and the read's answer never lands.
+  const givenUp = action.type === "setState" && query.state.fetchStatus === "idle";
   const held = watch.held.get(query.queryHash);
-  if (held !== undefined && (fetched || action.type === "fetch" || action.type === "error")) {
+  if (
+    held !== undefined &&
+    (fetched || givenUp || action.type === "fetch" || action.type === "error")
+  ) {
     watch.held.delete(query.queryHash);
   }
   if (action.type === "success" && cacheOf(query.queryKey) !== undefined) {
@@ -614,7 +634,7 @@ function follow(client: QueryClient, watch: Watch): void {
   for (const row of writes.rows()) {
     if (row.kind === KIND || !isLive(row) || watch.followed.has(row.id)) continue;
     const sets = [...fields.values()].flatMap((of) => {
-      const pick = pickIn(writes, row, of.issueKey, of.field);
+      const pick = pickIn(writes, row, of);
       return pick === undefined ? [] : [pick];
     });
     if (sets.length > 0) watch.followed.set(row.id, sets);
@@ -641,10 +661,9 @@ function ended(client: QueryClient, watch: Watch, outcome: WriteOutcome): void {
       continue;
     }
     const look = confirmLanding(client, pick, outcome.answer);
-    const newer = newestWrite(client, watch, pick.issueKey, pick.field);
-    const landed: Showing = { field: pick.field, issueKey: pick.issueKey, look };
-    showEverywhere(client, [...newestPicks(client, watch, pick.issueKey), newer ?? landed]);
-    if (newer === undefined) holdReads(client, watch, landed);
+    if (showNewestOr(client, watch, pick, look)) {
+      holdReads(client, watch, { field: pick.field, issueKey: pick.issueKey, look });
+    }
   }
   release(client, watch);
 }
@@ -692,7 +711,7 @@ function watchOf(client: QueryClient): Watch {
     // An observer's change of options names no mutation while the observer has made none,
     // whatever the event's type says.
     const move: BoardMove | undefined = event.mutation;
-    if (move === undefined || move.options.mutationKey?.[0] !== boardMoves[0]) return;
+    if (move === undefined || !matchMutation({ mutationKey: boardMoves }, move)) return;
     if (event.type === "added") {
       // Made now: its variables are set as it starts, in the change that follows.
       movesMade.set(move, Math.max(watch.lastJoin, newestJoin(writes)));
@@ -792,7 +811,7 @@ function readAgain(client: QueryClient, issueKey: string): void {
 /** Holds each read out now on a cache a pick shows on, which may have been composed before
  *  `landed`, the answer of a write of its field that landed, and so answer with the value from
  *  before it: over that answer the landed value shows again (`answered`). The client's watch,
- *  begun where there is none, holds them until each answers. */
+ *  begun where there is none, holds them until each answers or is cancelled. */
 function holdReads(client: QueryClient, watch: Watch | undefined, landed: Showing): void {
   const reading = client
     .getQueryCache()
@@ -808,6 +827,25 @@ function holdReads(client: QueryClient, watch: Watch | undefined, landed: Showin
   }
 }
 
+/** Shows `of`'s field as its newest live write, or, where none is left, as `fallback` where it
+ *  is given; each other field of the issue a pick of which is live shows as its newest live write
+ *  too. Whether no live write of the field is left. */
+function showNewestOr(
+  client: QueryClient,
+  watch: Watch | undefined,
+  of: Pick<IssueFieldPick, "field" | "issueKey">,
+  fallback: Look | undefined
+): boolean {
+  const live = watch === undefined ? [] : newestPicks(client, watch, of.issueKey);
+  const newest = newestWrite(client, watch, of)?.look;
+  const look = newest ?? fallback;
+  showEverywhere(
+    client,
+    look === undefined ? live : [...live, { field: of.field, issueKey: of.issueKey, look }]
+  );
+  return newest === undefined;
+}
+
 /** Shows `of`'s field as its newest live write, or, where none is left, as Dispatch last
  *  confirmed it, and reads the issue again then; each other field of the issue a pick of which is
  *  live shows as its newest live write too. What a pick or a followed write that ended without
@@ -817,18 +855,8 @@ function putBack(
   watch: Watch | undefined,
   of: Pick<IssueFieldPick, "field" | "issueKey">
 ): void {
-  const live = watch === undefined ? [] : newestPicks(client, watch, of.issueKey);
-  const newer = newestWrite(client, watch, of.issueKey, of.field);
-  if (newer !== undefined) {
-    showEverywhere(client, [...live, newer]);
-    return;
-  }
   const look = confirmed.get(client)?.get(fieldName(of))?.look;
-  showEverywhere(
-    client,
-    look === undefined ? live : [...live, { field: of.field, issueKey: of.issueKey, look }]
-  );
-  readAgain(client, of.issueKey);
+  if (showNewestOr(client, watch, of, look)) readAgain(client, of.issueKey);
 }
 
 /** The name of this kind of write, which a reload finds it by. */
@@ -884,22 +912,9 @@ export const issueFieldWrite = defineWriteKind<IssueFieldPick>({
     watch?.live.delete(write.id);
     const { detail } = write;
     const look = confirmLanding(client, detail, answer);
-    if (answer !== null) {
-      writing = true;
-      try {
-        mergeIssue(client, answer as Issue);
-      } finally {
-        writing = false;
-      }
-    }
-    const live = watch === undefined ? [] : newestPicks(client, watch, detail.issueKey);
-    const newer = newestWrite(client, watch, detail.issueKey, detail.field);
-    if (newer !== undefined) {
-      showEverywhere(client, [...live, newer]);
-    } else {
-      const landed: Showing = { field: detail.field, issueKey: detail.issueKey, look };
-      showEverywhere(client, [...live, landed]);
-      holdReads(client, watch, landed);
+    if (answer !== null) asOwnWrite(() => mergeIssue(client, answer as Issue));
+    if (showNewestOr(client, watch, detail, look)) {
+      holdReads(client, watch, { field: detail.field, issueKey: detail.issueKey, look });
       readAgain(client, detail.issueKey);
     }
     const current = watches.get(client);

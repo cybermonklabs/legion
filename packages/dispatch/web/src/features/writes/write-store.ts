@@ -83,6 +83,12 @@ export interface WriteBase<D = unknown> {
  *  or discarded. */
 export type Write<D = unknown> = WriteBase<D> & WriteState;
 
+/** Whether `write` may still reach Dispatch: waiting its turn, or out, within its deadline or
+ *  past it and still being tried. A refused or discarded write is not. */
+export function isLive(write: Write): boolean {
+  return write.status === "queued" || write.status === "sending" || write.status === "late";
+}
+
 /** `write` apart from where it stands, for a new state to be put on. */
 function baseOf<D>(write: Write<D>): WriteBase<D> {
   const { detail, id, inline, joined, key, kind, label, login, presentation, pressedAt } = write;

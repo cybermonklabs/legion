@@ -4,11 +4,12 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
+import { bodies, signedInHolding } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
-import { DispatchQueryClient } from "../../api/query-client";
+import type { DispatchQueryClient } from "../../api/query-client";
 import type { Issue, IssueDetails, RepoProject, UpdateIssueInput } from "../../api/types";
 import { writesOf } from "../writes/write-store";
 import { AssigneeControl } from "./AssigneeControl";
@@ -102,16 +103,6 @@ function dispatch() {
   };
 }
 
-/** The page's query client, signed in, holding CORE-1 as Dispatch last answered it. */
-function signedIn(): DispatchQueryClient {
-  const client = new DispatchQueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  client.setQueryData(detailKey, details);
-  return client;
-}
-
 /** Each picker as the issue page renders it: with the field it reads from the issue. */
 function Picker({
   field,
@@ -146,7 +137,8 @@ async function renderPicker(field: "assignee" | "repo") {
   );
   const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue(mappings);
   const server = dispatch();
-  const client = signedIn();
+  // The page's query client, signed in, holding CORE-1 as Dispatch last answered it.
+  const client = signedInHolding([detailKey, details]);
   const view = render(
     <QueryClientProvider client={client}>
       <Picker field={field} read={server.read} />
@@ -170,11 +162,6 @@ async function renderPicker(field: "assignee" | "repo") {
       listUsers.mockRestore();
     },
   };
-}
-
-/** What each save Dispatch received carried. */
-function bodies(patchIssue: { mock: { calls: unknown[][] } }): unknown[] {
-  return patchIssue.mock.calls.map((call) => call[1]);
 }
 
 /** Each write of CORE-1's line in the store: its label, its line and where it stands. */

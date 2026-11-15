@@ -19,6 +19,8 @@ import {
   holdIssuePatches,
   listRead,
   logReads,
+  pagePicker,
+  readAnsweredSince,
   savesEnded,
   watchCell,
   watchShown,
@@ -1256,9 +1258,7 @@ test("picker keeps a pick on screen: the priority on the table of an item of the
     // pick's save is held.
     const movedAt = Date.now();
     await patchIssue(other.key, { status: "testing" });
-    await expect
-      .poll(() => reads.some((read) => read.sentAt >= movedAt && read.answeredAt !== undefined))
-      .toBe(true);
+    await expect.poll(() => readAnsweredSince(reads, movedAt)).toBe(true);
     await nextFrames(page);
     held.release();
     await savesEnded(page, held);
@@ -1307,9 +1307,7 @@ test("picker keeps a pick on screen: the priority on a table of the Priorities v
     // answer, carrying P3, lands while the pick's save is held.
     const movedAt = Date.now();
     await patchIssue(other.key, { status: "testing" });
-    await expect
-      .poll(() => reads.some((read) => read.sentAt >= movedAt && read.answeredAt !== undefined))
-      .toBe(true);
+    await expect.poll(() => readAnsweredSince(reads, movedAt)).toBe(true);
     await nextFrames(page);
     held.release();
     await savesEnded(page, held);
@@ -1347,9 +1345,7 @@ test("picker keeps a pick on screen: the assignee in the table of an item of the
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, listRead("advances", item.id));
     await page.goto(`/issues/${issue.key}`);
-    const picker = page
-      .getByRole("main")
-      .getByRole("combobox", { name: `Assignee of ${issue.key}` });
+    const picker = pagePicker(page, `Assignee of ${issue.key}`);
     await expect(picker).toHaveValue("bob");
 
     // Its people are read once the reader reaches for the control.
@@ -1363,17 +1359,13 @@ test("picker keeps a pick on screen: the assignee in the table of an item of the
     await navigateInApp(page, `/priorities/${item.id}`);
     await expect(page.getByRole("columnheader", { name: /^Assignee/ })).toBeVisible();
     await expect(page.locator(`tr[data-issue-row="${issue.key}"]`)).toBeVisible();
-    await expect
-      .poll(() => reads.some((read) => read.sentAt >= openedAt && read.answeredAt !== undefined))
-      .toBe(true);
+    await expect.poll(() => readAnsweredSince(reads, openedAt)).toBe(true);
     // A status move of the item's other issue, straight to the server: its live event has the
     // table read the work under the item again, and the answer, carrying bob, lands while the
     // pick's save is held.
     const movedAt = Date.now();
     await patchIssue(other.key, { status: "testing" });
-    await expect
-      .poll(() => reads.some((read) => read.sentAt >= movedAt && read.answeredAt !== undefined))
-      .toBe(true);
+    await expect.poll(() => readAnsweredSince(reads, movedAt)).toBe(true);
     await nextFrames(page);
     held.release();
     await savesEnded(page, held);

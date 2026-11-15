@@ -1,14 +1,16 @@
 /** What the browser rows of dispatch://INFRA-299 ("picker keeps the newest pick", "picker keeps a
  *  pick on screen") hold, log and read: each save of an issue held by Playwright's route control
  *  with the window it was held in, each read of a list or of the issue with when it was sent and
- *  answered, what the server stored from the issue's own events, and every value a control or a
- *  table's cell shows at every animation frame. The rows live in the spec files of the pages they
- *  drive (`project.e2e.ts`, `board.e2e.ts`, `issues-table.e2e.ts`, `inbox-drawer.e2e.ts`,
- *  `inbox-reading-pane.e2e.ts`); this module holds no row. */
+ *  answered, what the server stored from the issue's own events, every value a control or a
+ *  table's cell shows at every animation frame, and the issue page's own picker. The rows live in
+ *  the spec files of the pages they drive (`project.e2e.ts`, `board.e2e.ts`,
+ *  `issues-table.e2e.ts`, `inbox-drawer.e2e.ts`, `inbox-reading-pane.e2e.ts`); this module holds
+ *  no row. */
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, type Page, type Request } from "@playwright/test";
+import { expect, type Locator, type Page, type Request } from "@playwright/test";
 
+import type { IssueField } from "../web/src/features/issue/issue-field-writes";
 import { getIssueEvents } from "./api";
 import { keptWrites } from "./keyed-writes";
 
@@ -124,6 +126,11 @@ export function listRead(param: string, value: string): (url: URL) => boolean {
 /** The Inbox's read, `GET /api/v1/inbox`. */
 export const inboxRead = (url: URL): boolean => url.pathname === "/api/v1/inbox";
 
+/** Whether one of `reads` was sent at or after `since` and has been answered. */
+export function readAnsweredSince(reads: readonly LoggedRead[], since: number): boolean {
+  return reads.some((read) => read.sentAt >= since && read.answeredAt !== undefined);
+}
+
 /**
  * Asserts that one of `reads` was sent at or after `since` - the write that starts it - and was
  * both sent and answered inside the window one of `held`'s saves was held in: the read whose
@@ -158,8 +165,11 @@ export function expectReadWhileHeld(
   ).toBe(true);
 }
 
-/** A field of an issue a picker sets. */
-export type PickedField = "assignee" | "priority" | "repo";
+/** The issue page's own picker named `name` (an `aria-label`, such as `Priority of CORE-1`): the
+ *  Inbox drawer draws outside `main`. */
+export function pagePicker(page: Page, name: string): Locator {
+  return page.getByRole("main").getByRole("combobox", { name });
+}
 
 /** The sequence of the newest event of `issueKey`: the events a row reads after it are the
  *  writes the row made. */
@@ -173,13 +183,13 @@ export async function lastEventSeq(issueKey: string): Promise<number> {
  *  server's order. Each is a save the server received and applied. */
 export async function storedValues(
   issueKey: string,
-  field: PickedField,
+  field: IssueField,
   afterSeq: number
 ): Promise<unknown[]> {
   const events = await getIssueEvents(issueKey);
   return events.flatMap((event) => {
     if (event.type !== "issue.updated" || Number(event.seq) <= afterSeq) return [];
-    const payload: { changed?: string[] } & Partial<Record<PickedField, unknown>> = event.payload;
+    const payload: { changed?: string[] } & Partial<Record<IssueField, unknown>> = event.payload;
     return payload.changed?.includes(field) === true ? [payload[field]] : [];
   });
 }
@@ -193,6 +203,18 @@ export interface Shown {
 
 let watchedNames = 0;
 
+/** Exposes to every document `page` loads a binding of its own, which records each value it is
+ *  given that differs from the one before, and returns its name and what it has recorded. */
+async function exposeShown(page: Page): Promise<{ binding: string; shown: Shown }> {
+  const values: string[] = [];
+  watchedNames += 1;
+  const binding = `__dispatchShown${watchedNames}`;
+  await page.exposeBinding(binding, (_source, value: string) => {
+    if (values.at(-1) !== value) values.push(value);
+  });
+  return { binding, shown: { values } };
+}
+
 /**
  * Records every value the controls named `name` (an `aria-label`, such as `Priority of CORE-1`)
  * show in `page`, read at every animation frame of every document the page loads from now on -
@@ -202,12 +224,7 @@ let watchedNames = 0;
  * loads the document a row watches.
  */
 export async function watchShown(page: Page, name: string, within = ":root"): Promise<Shown> {
-  const values: string[] = [];
-  watchedNames += 1;
-  const binding = `__dispatchShown${watchedNames}`;
-  await page.exposeBinding(binding, (_source, value: string) => {
-    if (values.at(-1) !== value) values.push(value);
-  });
+  const { binding, shown } = await exposeShown(page);
   await page.addInitScript(
     ({ binding, name, within }: { binding: string; name: string; within: string }) => {
       const report = Reflect.get(window, binding) as (value: string) => Promise<void>;
@@ -233,7 +250,7 @@ export async function watchShown(page: Page, name: string, within = ":root"): Pr
     },
     { binding, name, within }
   );
-  return { values };
+  return shown;
 }
 
 /**
@@ -245,12 +262,7 @@ export async function watchShown(page: Page, name: string, within = ":root"): Pr
  * drawn. Call it before the page loads the document a row watches.
  */
 export async function watchCell(page: Page, issueKey: string, column: string): Promise<Shown> {
-  const values: string[] = [];
-  watchedNames += 1;
-  const binding = `__dispatchShown${watchedNames}`;
-  await page.exposeBinding(binding, (_source, value: string) => {
-    if (values.at(-1) !== value) values.push(value);
-  });
+  const { binding, shown } = await exposeShown(page);
   await page.addInitScript(
     ({ binding, column, issueKey }: { binding: string; column: string; issueKey: string }) => {
       const report = Reflect.get(window, binding) as (value: string) => Promise<void>;
@@ -276,5 +288,5 @@ export async function watchCell(page: Page, issueKey: string, column: string): P
     },
     { binding, column, issueKey }
   );
-  return { values };
+  return shown;
 }

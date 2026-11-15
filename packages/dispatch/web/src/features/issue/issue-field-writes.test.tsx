@@ -12,12 +12,13 @@ import {
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
+import { bodies, signedInHolding } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api, issuePatchRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { issueQuery, projectIssuesQuery } from "../../api/queries";
-import { DispatchQueryClient } from "../../api/query-client";
+import type { DispatchQueryClient } from "../../api/query-client";
 import type {
   InboxRow,
   Issue,
@@ -198,14 +199,7 @@ function dispatchReads(): Reads {
 /** The page's query client, signed in, holding CORE-1 as Dispatch last answered it on its detail,
  *  its project's list and the Inbox. */
 function signedIn(): DispatchQueryClient {
-  const client = new DispatchQueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  client.setQueryData(detailKey, details);
-  client.setQueryData(listKey, [summary]);
-  client.setQueryData(inboxKey, [inboxRow]);
-  return client;
+  return signedInHolding([detailKey, details], [listKey, [summary]], [inboxKey, [inboxRow]]);
 }
 
 /** A priority picker, as every surface renders one: with the priority it reads from the issue. */
@@ -267,11 +261,6 @@ function prioritySelects(): HTMLSelectElement[] {
 /** A save Dispatch answers by storing the change: its answer is the issue with it. */
 const stores = (_key: string, input: UpdateIssueInput): Promise<Issue> =>
   Promise.resolve({ ...issue, ...input } as Issue);
-
-/** Every save the server received, by what it carried. */
-function bodies(patchIssue: { mock: { calls: unknown[][] } }): unknown[] {
-  return patchIssue.mock.calls.map((call) => call[1]);
-}
 
 test("each pick joins the issue's line in the write store when it is made", async () => {
   const patchIssue = answerIssuePatches().mockImplementation(
@@ -696,6 +685,79 @@ test("an older pick's refusal reported with no Retry stays while a save of anoth
   }
 });
 
+// A refused save of the field of another kind - the priority set from the issues table - that the
+// reader retries from the Pending changes list while an older pick is out joins the back of the
+// line, behind the pick: from its Retry on it is a newer live write of the field. Its landing ends
+// the pick's refusal reported with no Retry, as a newer pick's does.
+test("an older pick's refusal reported with no Retry ends once a save of the field retried before that refusal lands", async () => {
+  const table = Promise.withResolvers<Issue>();
+  const first = Promise.withResolvers<Issue>();
+  const again = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => table.promise)
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => again.promise);
+  const client = signedIn();
+  const reads = dispatchReads();
+  const view = renderIn(
+    client,
+    <>
+      <CachedPriority reads={reads} />
+      <PendingWritesIndicator />
+    </>
+  );
+  const user = userEvent.setup();
+  try {
+    const select = () => prioritySelects()[0] as HTMLSelectElement;
+    // P3 from the table goes out first, and the pick of P0 waits behind it.
+    act(() => {
+      void writesOf(client)
+        .run({
+          detail: null,
+          kind: plainWrite,
+          label: "CORE-1 set to P3 from the issues table",
+          presentation: "indicator",
+          request: issuePatchRequest(issue.key, { priority: 3 }),
+          target: `issue:${issue.key}`,
+        })
+        .catch(() => undefined);
+    });
+    await user.selectOptions(select(), "0");
+    await act(async () => {
+      table.reject(closed());
+      await table.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 3 }, { priority: 0 }]));
+    // P0 is out when the reader retries P3: it joins the line again, behind P0.
+    const pending = within(screen.getByTestId("pending-writes"));
+    await user.click(pending.getByRole("button", { name: "Retry" }));
+    await act(async () => {
+      first.reject(closed());
+      await first.promise.catch(() => undefined);
+    });
+    await waitFor(() =>
+      expect(bodies(patchIssue)).toEqual([{ priority: 3 }, { priority: 0 }, { priority: 3 }])
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
+    expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(select().value).toBe("3");
+
+    reads.store(3);
+    await act(async () => {
+      again.resolve({ ...issue, priority: 3 });
+      await again.promise;
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    // Dispatch holds P3, saved after the refused pick: the refusal has nothing left to report.
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(select().value).toBe("3");
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
 /** Two pickers of CORE-1's priority, on the issue page and in the Inbox drawer opened over it,
  *  each with its own report. */
 function renderTwoPickers(client: DispatchQueryClient, reads: Reads): RenderResult {
@@ -826,10 +888,7 @@ async function pickTwiceAndReload(pressedAgo: number) {
     const pressedAt = write.pressedAt - pressedAgo;
     window.sessionStorage.setItem(name, JSON.stringify({ ...write, pressedAt }));
   }
-  const after = new DispatchQueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  after.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const after = signedInHolding();
   writesOf(after).resume("alice");
   return after;
 }
@@ -1087,6 +1146,46 @@ test("a read that answers after the pick landed with the value from before it do
   } finally {
     surfaces.unmount();
     picker.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// A read held at a landing that the page then cancels (`cancelQueries`, as a board's drop, the
+// Inbox's writes and a components save do) is given up: its answer never lands, so its hold ends
+// with it. With no pick live and no other read held, the client's watch of its picks ends too, and
+// with it each listener the watch keeps - of the cache, the store, its outcomes and the board's
+// moves, the last of which the client's mutation cache counts.
+test("a read held at a landing that is then cancelled lets go of its hold, and the watch of the client's picks ends", async () => {
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const client = signedIn();
+  const reads = dispatchReads();
+  const view = renderIn(client, <CachedPriority reads={reads} />);
+  const user = userEvent.setup();
+  const watching = () => client.getMutationCache().hasListeners();
+  const answerReads = reads.hold();
+  try {
+    expect(watching()).toBe(false);
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 2 }]));
+    expect(watching()).toBe(true);
+    // A read of the project's list reaches Dispatch before the save does, and is out when it
+    // lands: the landing holds it.
+    void client.prefetchQuery({ queryFn: reads.list, queryKey: listKey });
+    reads.store(2);
+    await act(async () => {
+      save.resolve({ ...issue, priority: 2 });
+      await save.promise;
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    expect(watching()).toBe(true);
+
+    await act(() => client.cancelQueries({ queryKey: listKey }));
+    expect(client.getQueryState(listKey)?.fetchStatus).toBe("idle");
+    expect(watching()).toBe(false);
+  } finally {
+    answerReads();
+    view.unmount();
     patchIssue.mockRestore();
   }
 });

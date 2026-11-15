@@ -1,13 +1,5 @@
-import {
-  createAsk,
-  createIssue,
-  createProject,
-  getAsk,
-  getIssue,
-  patchIssue,
-  setAgentStreamResponder,
-} from "./api";
-import { attachShot, drawer, peekTrigger, seedAsk, session } from "./inbox-drawer";
+import { getAsk, getIssue, patchIssue, setAgentStreamResponder } from "./api";
+import { attachShot, drawer, peekTrigger, seedAsk } from "./inbox-drawer";
 import {
   detailRead,
   expectReadWhileHeld,
@@ -15,11 +7,13 @@ import {
   inboxRead,
   lastEventSeq,
   logReads,
+  pagePicker,
+  readAnsweredSince,
   savesEnded,
   storedValues,
   watchShown,
 } from "./pick-writes";
-import { expect, type Page, test } from "./test";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -78,22 +72,11 @@ test("a half-typed message in a live conversation survives opening the drawer, a
 // every save has ended.
 
 /** A project, and an issue of it at P3 that `assignee` holds, with a question open on it that
- *  nobody has handed on, so it has a row in the Inbox of whoever holds the issue. */
+ *  nobody has handed on (`seedAsk`), so it has a row in the Inbox of whoever holds the issue. */
 async function issueWithQuestion(assignee: string): Promise<{ askId: string; key: string }> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Picked under a held save" });
-  await patchIssue(issue.key, { assignee, priority: 3 });
-  const ask = await createAsk(
-    issue.key,
-    { options: [{ label: "Yes" }, { label: "No" }], question: "Ship it behind a flag?" },
-    session
-  );
-  return { askId: ask.id, key: issue.key };
-}
-
-/** The issue page's own picker named `name`: the drawer draws outside `main`. */
-function pagePicker(page: Page, name: string) {
-  return page.getByRole("main").getByRole("combobox", { name });
+  const { askId, issueKey } = await seedAsk("Ship it behind a flag?");
+  await patchIssue(issueKey, { assignee, priority: 3 });
+  return { askId, key: issueKey };
 }
 
 // SLOW(>=2s): two saves each held three seconds, with the drawer opened over the issue page.
@@ -184,11 +167,7 @@ test("picker keeps a pick on screen: the assignee on the issue page and on its I
     const renamedAt = Date.now();
     await patchIssue(key, { title: renamed });
     await expect
-      .poll(() =>
-        [detailReads, inboxReads].every((reads) =>
-          reads.some((read) => read.sentAt >= renamedAt && read.answeredAt !== undefined)
-        )
-      )
+      .poll(() => [detailReads, inboxReads].every((reads) => readAnsweredSince(reads, renamedAt)))
       .toBe(true);
     await expect(drawer(page).getByRole("combobox", { name: `Priority of ${key}` })).toBeVisible();
     held.release();

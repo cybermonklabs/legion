@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { newSendKey } from "../../lib/send-key";
 import { retriesUnderItsKey, WriteDiscardedError } from "../writes/keyed-write";
+import { waitingToSend } from "../writes/PendingWritesIndicator";
 import { ofKind, useWrites, type Write, type Writes } from "../writes/write-store";
 import {
   fieldWritesOf,
@@ -17,9 +18,11 @@ import {
 } from "./issue-field-writes";
 
 export interface IssueFieldWrite<Value> {
-  /** The server's reason after a refused save, until the next attempt. */
+  /** The server's reason after a refused save, until the next pick here; a refusal reported with
+   *  no Retry also ends once a newer write of the field lands. */
   error: string | undefined;
-  /** True after a save failed until the next attempt starts. */
+  /** True after a save failed, until the next pick here; a refusal reported with no Retry also
+   *  ends once a newer write of the field lands. */
   failed: boolean;
   /** True while a pick made here is in the store, not yet landed, refused or taken out. */
   pending: boolean;
@@ -87,9 +90,13 @@ export function useIssueFieldWrite<F extends IssueField>(
   const [refused, setRefused] = useState<Refused<Value> | undefined>(undefined);
   /** The report shown, for the listener of the issue's line below, which outlives a render. */
   const reported = useRef<Refused<Value> | undefined>(undefined);
+  /** Notes the writes of the field while a refusal reported with no Retry stands (the listener
+   *  below); undefined while no picker listens. */
+  const noting = useRef<(() => void) | undefined>(undefined);
   const report = (next: Refused<Value> | undefined): void => {
     reported.current = next;
     setRefused(next);
+    noting.current?.();
   };
   /** The last pick here the reader stopped, which a pick of the same value makes again. */
   const stopped = useRef<{ readonly key: string; readonly value: Value } | undefined>(undefined);
@@ -107,25 +114,25 @@ export function useIssueFieldWrite<F extends IssueField>(
       target: `issue:${issueKey}`,
     });
     // `run` joins the write to its line before it answers, so the store holds it now.
-    const joined = picksOf(writes, pick).find((row) => row.key === key);
+    const picks = picksOf(writes, pick);
+    const joined = picks.find((row) => row.key === key);
     if (joined === undefined) {
       throw new Error(`${pickLabel(pick)}: the store holds no write under the key it just ran`);
     }
-    for (const other of picksOf(writes, pick)) {
-      if (other.id !== joined.id && other.status === "queued" && !other.sent) {
-        writes.discard(other.id);
-      }
+    for (const other of picks) {
+      if (other.id !== joined.id && waitingToSend(other)) writes.discard(other.id);
     }
     press.then(
       () => setOut((count) => count - 1),
       (error: unknown) => {
         setOut((count) => count - 1);
-        // This engine took it out for a newer pick: no refusal of Dispatch's.
+        // Taken out - by a newer pick here, or by the reader's Discard in the Pending changes
+        // list: no refusal of Dispatch's.
         if (error instanceof WriteDiscardedError) return;
         const refusal = error instanceof Error ? error : new Error(String(error));
         if (retriesUnderItsKey(refusal)) stopped.current = { key, value };
-        // A newer live write of the field is left in the line, and the screen shows it: the
-        // refusal is reported, with no Retry to join behind it.
+        // Where a newer live write of the field is left in the line, the screen shows it, and the
+        // refusal is reported with no Retry to join behind it.
         report({
           message: refusal.message,
           retryable: !newerWriteOf(client, joined),
@@ -153,19 +160,25 @@ export function useIssueFieldWrite<F extends IssueField>(
   // A refusal reported with no Retry stands for the newer writes of its field the screen shows.
   // At each outcome of one: landed, Dispatch holds a newer value and the report has nothing left
   // to say; refused or discarded with none left live, the refused pick is one with no newer live
-  // write of its field, which Retry may pick again. A write of the field is noted, with its place
-  // in the person's order, while the store holds it, since an outcome names a write the store has
-  // let go of, whose request it no longer tells; a board move still waiting its turn is noted once
-  // it joins the line, before its outcome. The listener lives with the picker, so no outcome falls
-  // between a refusal and it.
+  // write of its field, which Retry may pick again. While such a report stands, each write of the
+  // field is noted, with its place in the person's order, while the store holds it, since an
+  // outcome names a write the store has let go of, whose request it no longer tells: those the
+  // store holds as the report is made, and each after; a board move still waiting its turn is
+  // noted once it joins the line, before its outcome. The listener lives with the picker, so no
+  // outcome falls between a refusal and it.
   useEffect(() => {
     const of = { field, issueKey };
     const ofField = new Map<number, number>();
     const note = () => {
+      if (reported.current?.retryable !== false) {
+        ofField.clear();
+        return;
+      }
       for (const { id, rank } of fieldWritesOf(client, of)) {
         if (id !== undefined && !ofField.has(id)) ofField.set(id, rank);
       }
     };
+    noting.current = note;
     note();
     const stopNoting = writes.subscribe(note);
     const stopHearing = writes.onOutcome((outcome) => {
@@ -184,8 +197,10 @@ export function useIssueFieldWrite<F extends IssueField>(
       const next = outcome.kind === "landed" ? undefined : { ...current, retryable: true };
       reported.current = next;
       setRefused(next);
+      ofField.clear();
     });
     return () => {
+      noting.current = undefined;
       stopNoting();
       stopHearing();
     };

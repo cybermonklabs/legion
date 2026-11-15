@@ -13,6 +13,12 @@ export const staleBoardMessage =
 
 const everyIssue = () => true;
 
+/** What one board move sends: the issue (`key`) and its change (`input`). */
+export interface BoardMoveVariables {
+  readonly input: UpdateIssueInput;
+  readonly key: string;
+}
+
 /**
  * The one path every board move takes - pointer, touch and keyboard drops alike. `moveCard`
  * places the card optimistically, sends the PATCH naming the visible neighbours, and refetches
@@ -54,7 +60,7 @@ export function useBoardMoves(
   // the header's status, its fields, a components save.
   const patch = useKeyedWrite({
     inline: true,
-    label: ({ key }: { input: UpdateIssueInput; key: string }) => `${key} moved on the board`,
+    label: ({ key }: BoardMoveVariables) => `${key} moved on the board`,
     target: ({ key }) => `issue:${key}`,
     request: ({ input, key }) => issuePatchRequest(key, input),
     mutationKey: boardMoveMutationKey(project),
