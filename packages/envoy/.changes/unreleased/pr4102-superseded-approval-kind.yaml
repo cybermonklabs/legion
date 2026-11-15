@@ -1,7 +1,0 @@
-kind: Added
-body: |-
-  A document write's `superseded_approval` advice carries `kind`, the kind of the review whose
-  approval the write made stale: `person` or `plan_review`, as a document read's `approval.kind`
-  is. A client can then tell a plan review's approval from a person's. A plan's approval comes
-  back only through a new plan review, recorded with `dispatch plan-approve`, because Dispatch
-  refuses a request for a person's approval of a plan.

@@ -55,9 +55,8 @@ func TestDocumentEditAdviceNamesTheApprovalItSuperseded(t *testing.T) {
 	if superseded == nil {
 		t.Fatalf("advice = %#v, want the approval the edit superseded", advice)
 	}
-	if superseded.ApprovedVersion != approved || superseded.Version != approved+1 || superseded.ApprovedBy != "alice" ||
-		superseded.Kind != "person" {
-		t.Fatalf("superseded_approval = %#v, want version %d superseding the person's approval of %d by alice",
+	if superseded.ApprovedVersion != approved || superseded.Version != approved+1 || superseded.ApprovedBy != "alice" {
+		t.Fatalf("superseded_approval = %#v, want version %d superseding the approval of %d by alice",
 			superseded, approved+1, approved)
 	}
 
@@ -67,10 +66,11 @@ func TestDocumentEditAdviceNamesTheApprovalItSuperseded(t *testing.T) {
 	}
 }
 
-// A plan's approval is its plan review's, never a person's, so the approval a plan edit
-// supersedes names that kind beside the review's session: no request for a person's approval
-// restores it (Dispatch refuses one on a plan, PLAN_APPROVED_BY_REVIEW), and the kind is what the
-// client reads to name `dispatch plan-approve` rather than `dispatch request-approval`.
+// A plan review's approval, recorded through /plan-reviews, goes stale like a person's: the plan
+// edit that supersedes it reports it, named by the review's session. No request for a person's
+// approval restores a plan's approval (Dispatch refuses one on any plan, PLAN_APPROVED_BY_REVIEW,
+// whoever approved it), so the client names `dispatch plan-approve` rather than
+// `dispatch request-approval` for a plan, which it reads from the document's role.
 func TestPlanEditAdviceNamesThePlanReviewsApprovalItSuperseded(t *testing.T) {
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "PLANGATE")
@@ -86,7 +86,7 @@ func TestPlanEditAdviceNamesThePlanReviewsApprovalItSuperseded(t *testing.T) {
 	advice := editAdviceDocument(t, handler, plan.Artifact.ID, "A step the review never read.")
 	superseded := advice.SupersededApproval
 	if superseded == nil || superseded.ApprovedVersion != 1 || superseded.Version != 2 ||
-		superseded.ApprovedBy != "session-plan-review" || superseded.Kind != "plan_review" {
+		superseded.ApprovedBy != "session-plan-review" {
 		t.Fatalf("plan edit superseded_approval = %#v, want version 2 superseding the plan review's "+
 			"approval of 1 by session-plan-review", superseded)
 	}

@@ -462,11 +462,14 @@ type decisionBlockCheck struct {
 
 // supersededApproval is what a document write reports when the version it stored replaced the
 // version a person or a plan review had approved: that approval is now stale, and nothing but a
-// new approval of the new version restores it - a person's review, or for a plan a plan review
-// recorded with `dispatch plan-approve`. Every write that supersedes an approval is reported,
-// whatever the document is: the approval it made stale is a fact about that document and nothing
-// else. The writer is the only one who can be told in time, and only the write that superseded the
-// approval is told: a write on a document whose approval was already stale closed nothing.
+// new approval of the new version restores it. A person's review restores the approval of a
+// document that is not a plan; a plan's comes back through a plan review recorded with
+// `dispatch plan-approve`, since Dispatch refuses a request for a person's approval of any plan
+// (requestArtifactApproval, PLAN_APPROVED_BY_REVIEW), whoever approved it. Every write that
+// supersedes an approval is reported, whatever the document is: the approval it made stale is a
+// fact about that document and nothing else. The writer is the only one who can be told in time,
+// and only the write that superseded the approval is told: a write on a document whose approval
+// was already stale closed nothing.
 //
 // Whether a Legion design gate was among the things that approval held open is what DesignGates
 // answers. Dispatch keeps, issue by issue, which document each gated step records (design_gates,
@@ -481,10 +484,6 @@ type supersededApproval struct {
 	Version int `json:"version"`
 	// ApprovedBy is who gave that approval, as its review records the actor's id.
 	ApprovedBy string `json:"approved_by"`
-	// Kind is who gave that approval, its review's Kind: "person" for a person's, "plan_review"
-	// for a plan review's approval of a plan version, which no request for a person's approval can
-	// restore (requestArtifactApproval refuses a plan, PLAN_APPROVED_BY_REVIEW).
-	Kind string `json:"kind,omitempty"`
 	// DesignGates are the design gates Dispatch's record says this document is: one entry per
 	// issue and step, kept to the issues still in the workflow whose step the project gates.
 	// Omitted when empty, and empty is also what a failed gate read leaves
@@ -619,7 +618,6 @@ func newestReviewAsApproval(ctx context.Context, q docs.Queryer, artifactID stri
 		ApprovedVersion: review.Version,
 		Version:         version,
 		ApprovedBy:      review.Actor.ID,
-		Kind:            review.Kind,
 	}, nil
 }
 

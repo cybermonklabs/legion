@@ -1,4 +1,0 @@
-kind: Added
-body: |-
-  `SupersededApproval` has an optional `kind`: the kind of the review whose approval a document
-  write made stale (`person` or `plan_review`).

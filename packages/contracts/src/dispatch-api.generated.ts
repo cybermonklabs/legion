@@ -6003,7 +6003,6 @@ export interface components {
       approved_by: string;
       approved_version: number;
       design_gates?: components["schemas"]["SupersededApprovalGate"][];
-      kind?: string;
       version: number;
     };
     SupersededApprovalGate: {
