@@ -372,9 +372,6 @@ test("a message to an agent whose session ended after the page loaded is kept fo
     await card.getByRole("button", { exact: true, name: "Planner" }).click();
     const composer = card.getByRole("textbox", { name: "Comment" });
     await expect(composer).toBeVisible();
-    // The server keeps what it kept for the life of its process, which the rows before this one
-    // share, so the row reads only what its own send adds.
-    const keptBefore = (await listKeptMessages()).kept?.length ?? 0;
     // The session ends after the page listed it, so the page still offers it Send, and the
     // registry read Dispatch makes before it sends answers 404 `no live session`.
     await setSessionRecord(planner.session_id, "absent");
@@ -410,8 +407,12 @@ test("a message to an agent whose session ended after the page loaded is kept fo
     ).toEqual([]);
 
     // What Dispatch kept is the envelope the listener's send would have stored: on the session's
-    // own subject, under the send's dedupe key, carrying the delivery frame.
-    const kept = ((await listKeptMessages()).kept ?? []).slice(keptBefore);
+    // own subject, under the send's dedupe key, carrying the delivery frame. The server keeps what
+    // it kept for the life of its process, which the rows before this one share, so the row reads
+    // the envelopes of its own message alone: one, however many attempts or copies it made.
+    const kept = ((await listKeptMessages()).kept ?? []).filter((envelope) =>
+      envelope.dedupe_key?.includes(message.id)
+    );
     expect(kept).toEqual([
       expect.objectContaining({
         dedupe_key: `agent.${planner.session_id}.${message.id}:steer`,
