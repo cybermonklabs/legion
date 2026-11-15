@@ -119,20 +119,21 @@ function issueReserveOf(row: CaseRow, key: string): "held" | "kept" | "unknown" 
 }
 
 /**
- * Version 2's answer. An ask that opened before its cut is kept; one whose opening time is missing
- * or does not parse is placed by its answer, which comes after the opening. `unknown` is a case
- * after the cut from a corpus built before `build-corpus.ts` recorded its tree. A root the build
- * could not follow (`askTreeRoot` null), or a chain that changed after the ask opened, is kept,
- * not held: only a held case can enter the final test, and a scorer may have read this one.
+ * Version 2's answer. An ask that opened before its cut is kept. `unknown` is a case that may have
+ * opened after the cut, from a corpus built before `build-corpus.ts` recorded its tree. A root the
+ * build could not follow (`askTreeRoot` null), a chain that changed after the ask opened, or an
+ * opening time that is missing or does not parse, is kept, not held: only a held case can enter
+ * the final test, and a scorer may have read this one. An answer before the cut still shows an
+ * opening before it.
  */
 function treeReserveOf(row: CaseRow): "held" | "kept" | "unknown" {
   const opened = Date.parse(row.askCreatedAt ?? "");
-  if ((Number.isNaN(opened) ? Date.parse(row.answeredAt) : opened) < TREE_CUT_TIME) return "kept";
+  const answered = Date.parse(row.answeredAt);
+  if (opened < TREE_CUT_TIME || answered < TREE_CUT_TIME) return "kept";
   const root = row.askTreeRoot;
   if (root === undefined || row.askTreeMoved === undefined) return "unknown";
-  if (root === null || row.askTreeMoved || Object.hasOwn(MOVED_TO_DEVELOPMENT, root)) {
-    return "kept";
-  }
+  if (Number.isNaN(opened) || root === null || row.askTreeMoved) return "kept";
+  if (Object.hasOwn(MOVED_TO_DEVELOPMENT, root)) return "kept";
   return pickedRoot(root) ? "held" : "kept";
 }
 

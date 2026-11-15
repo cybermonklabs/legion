@@ -210,8 +210,10 @@ describe("version 2: the tree is the unit", () => {
     expect(reserveOf(treeCase("moved", later, PICKED_ROOT, true))).toBe("kept");
   });
 
-  test("places an ask with no opening time by its answer", () => {
-    expect(reserveOf({ ...treeCase("late", later, PICKED_ROOT), askCreatedAt: null })).toBe("held");
+  test("never holds an ask with no opening time, and keeps one answered before the cut", () => {
+    expect(reserveOf({ ...treeCase("late", later, PICKED_ROOT), askCreatedAt: null })).toBe("kept");
+    const lateOld = { ...treeCase("late-old", later, undefined), askCreatedAt: null };
+    expect(reserveOf(lateOld)).toBe("unknown");
     const early = { ...treeCase("early", "2026-11-15T01:00:00Z", PICKED_ROOT), askCreatedAt: null };
     expect(reserveOf(early)).toBe("kept");
   });
