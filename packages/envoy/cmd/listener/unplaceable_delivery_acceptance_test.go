@@ -690,6 +690,11 @@ func TestACopyForASessionWithNoRecordIsGivenUpWithTheWakeEvenWhenItsInterestName
 			t.Fatalf("%d deferral or give-up lines, want none - the interest path NAKs this record:\n%s", got, logs)
 		}
 		assertDeliveryException(t, run.exceptions, run.item, "delivery_failed")
+		// The failed line is written before the handler's NAK is counted, so the count is waited
+		// for rather than read once.
+		waitFor(t, 5*time.Second, "the failed delivery's NAK to be counted", func() bool {
+			return counterValue(t, metricsBody(t, harness), nakedCounter) >= 1
+		})
 		body := metricsBody(t, harness)
 		if got := counterValue(t, body, nakedCounter); got != 1 {
 			t.Fatalf("%s = %d, want 1 - the failed delivery is NAKed for redelivery:\n%s", nakedCounter, got, body)
