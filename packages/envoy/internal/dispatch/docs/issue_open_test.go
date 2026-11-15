@@ -1940,7 +1940,7 @@ func recordRoomEditSource(service *Service, artifactID string, actor model.Actor
 
 // clearPendingSettlementRow deletes artifactID's pending-settlement row under the document's
 // advisory lock, as the transaction of the settlement that covers the document's edits deletes it
-// (clearSettlementPending), here one that names no editor and so keeps no closed edit source. A
+// (clearSettlementPending), here one that keeps no editor and so forgets any closed edit source. A
 // test stages a document owing no settlement with it, after a staged edit of its own has written
 // the row a landed edit leaves (recordActor).
 func clearPendingSettlementRow(t *testing.T, service *Service, artifactID string) {
@@ -1954,7 +1954,7 @@ func clearPendingSettlementRow(t *testing.T, service *Service, artifactID string
 	if err := lockDocumentRoom(ctx, tx, artifactID); err != nil {
 		t.Fatalf("lock the document to clear the pending settlement of %s: %v", artifactID, err)
 	}
-	if err := clearSettlementPending(ctx, tx, artifactID, false, SettlementActor); err != nil {
+	if err := clearSettlementPending(ctx, tx, artifactID, nil); err != nil {
 		t.Fatalf("clear the pending settlement of %s: %v", artifactID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {

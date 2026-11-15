@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -465,4 +466,111 @@ func waitForNoPendingSettlement(t *testing.T, service *Service, artifactID, what
 		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 		return err == nil && !owed
 	})
+}
+
+// keptClosedEditSource is the editor doc_closed_edit_sources keeps for artifactID, nil for none.
+func keptClosedEditSource(t *testing.T, service *Service, artifactID string) *model.Actor {
+	t.Helper()
+	var raw []byte
+	err := service.store.Pool.QueryRow(context.Background(), `select last_actor from doc_closed_edit_sources where artifact_id = $1`, artifactID).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read the document's closed edit source: %v", err)
+	}
+	var kept model.Actor
+	if err := json.Unmarshal(raw, &kept); err != nil {
+		t.Fatalf("decode the document's closed edit source: %v", err)
+	}
+	return &kept
+}
+
+// A reopen forgets the editor a closed issue's settlement kept for a document the reopen leaves
+// owing no settlement (FollowClosedIssueVersions): no settlement left owed by the reopen names that
+// editor, and a later write that names no editor of its own would otherwise write it back into the
+// pending row it inserts (settlementPendingStatement). alice's edit inside the close margin is
+// settled on the closed issue, which keeps her as the document's closed edit source. The document
+// holds no ask block, so the reopen marks it owing nothing, and forgets alice. A server lifecycle
+// write after it, which credits no one as the reopen's ask-state write does (withLifecycleWrite),
+// leaves the pending row naming nobody, and its settlement's version is SettlementActor's.
+func TestAReopenForgetsTheKeptEditorOfADocumentThatOwesNothing(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	ctx := context.Background()
+	seedServiceText(t, service, artifactID, "Context.\n")
+	settleCurrentGeneration(t, service, artifactID)
+	if err := service.warmLiveDocument(ctx, artifactID); err != nil {
+		t.Fatalf("load the document's room while DOC-1 is open: %v", err)
+	}
+	if _, err := service.store.Pool.Exec(ctx, `update issues set closed_at = now() + interval '1 minute' where key = 'DOC-1'`); err != nil {
+		t.Fatalf("close DOC-1 in the database alone: %v", err)
+	}
+	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
+	service.addConnection(artifactID, 1, alice)
+	editAsPeer(t, service, artifactID, replaceRun("Context.", "Context, typed by alice inside the close margin."))
+	service.removeConnection(artifactID, 1)
+	waitForLandedAppends(t, service, artifactID)
+	service.settle = 20 * time.Millisecond
+	if err := service.resumeOwedSettlements(ctx, 0); err != nil {
+		t.Fatalf("resume the closed issue's owed settlement: %v", err)
+	}
+	waitForNoPendingSettlement(t, service, artifactID, "the closed issue's document to settle alice's edit")
+	service.settle = time.Hour
+	if kept := keptClosedEditSource(t, service, artifactID); kept == nil || !kept.SameAs(alice) {
+		t.Fatalf("the closed issue's settlement kept %+v as the document's closed edit source, want alice: this test is for the reopen forgetting her", kept)
+	}
+
+	reopenTestIssue(t, service)
+	if owed, err := settlementPending(ctx, service.store.Pool, artifactID); err != nil || owed {
+		t.Fatalf("after the reopen the document owes a settlement = %t (%v), want none: this test is for a document the reopen leaves owing nothing", owed, err)
+	}
+	if kept := keptClosedEditSource(t, service, artifactID); kept != nil {
+		t.Fatalf("after the reopen the document keeps %+v as its closed edit source, want none: it owes no settlement", *kept)
+	}
+
+	lastEvent := latestEventID(t, service.store)
+	reopener := model.Actor{Kind: "user", ID: "carol"}
+	if err := joinedWrite(service, func(ctx context.Context) error {
+		_, err := service.ApplyOps(withLifecycleWrite(ctx), artifactID, []model.EditOp{{Op: "insert", After: "end", Markdown: "Written by the server after the reopen.\n"}}, reopener, nil)
+		return err
+	}); err != nil {
+		t.Fatalf("the server's lifecycle write after the reopen: %v", err)
+	}
+	if owed, named, err := readOwedSettlement(ctx, service.store.Pool, artifactID); err != nil || !owed || named != nil {
+		t.Fatalf("after the lifecycle write the document owes %t naming %+v (%v), want it owed naming nobody", owed, named, err)
+	}
+	settleCurrentGeneration(t, service, artifactID)
+	waitForNoPendingSettlement(t, service, artifactID, "the document to settle the lifecycle write")
+	var versions []appendedEvent
+	for _, event := range eventsAfter(t, service.store, lastEvent) {
+		if event.kind == "artifact.version" {
+			versions = append(versions, event)
+		}
+	}
+	if len(versions) != 1 || !versions[0].actor.SameAs(SettlementActor) {
+		t.Fatalf("the settlement of the lifecycle write appended the artifact.version events %+v, want one in the name of %+v", versions, SettlementActor)
+	}
+}
+
+// A settlement on an open issue forgets the editor a closed issue's settlement kept for its
+// document (clearSettlementPending with no kept editor): it named its editor itself. The setup is
+// TestTheSettlementAfterAReopenCreditsTheEditorTheClosedSettlementSaved's: alice's undo brings back
+// the block of an ask a settlement retracted, inside the close margin, and the closed issue's
+// settlement saves it and keeps alice. The reopen marks the document owed, so it keeps alice for
+// that settlement, and the settlement on the open issue deletes her.
+func TestAnOpenIssuesSettlementForgetsTheKeptEditor(t *testing.T) {
+	service, artifactID, alice := settleReturnedAskBlockWhileClosed(t)
+	ctx := context.Background()
+	reopenTestIssue(t, service)
+	if kept := keptClosedEditSource(t, service, artifactID); kept == nil || !kept.SameAs(alice) {
+		t.Fatalf("after the reopen the document keeps %+v as its closed edit source, want alice for the settlement it owes", kept)
+	}
+	if err := service.resumeOwedSettlements(ctx, 0); err != nil {
+		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
+	}
+	waitForNoPendingSettlement(t, service, artifactID, "the reopened issue's document to settle")
+	if kept := keptClosedEditSource(t, service, artifactID); kept != nil {
+		t.Fatalf("after the settlement on the open issue the document keeps %+v as its closed edit source, want none", *kept)
+	}
 }

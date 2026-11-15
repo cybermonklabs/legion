@@ -468,9 +468,10 @@ func Quiet(e model.Event) bool {
 		return true
 	case "ask.edited":
 		// A version move of an approval request that an earlier version already moved since it was
-		// opened or last handed back changes only the version it names, and a move that keeps the
-		// request waiting on the human (a version byte for byte the text the request names,
-		// docs.MoveApprovalAsk) changes only the number that text is stored under.
+		// opened or last handed back changes only the version it names, and a settlement's move
+		// that keeps the request waiting on the human (a settlement's version byte for byte the
+		// text the request names, docs.MoveApprovalAsk) changes only the number that text is
+		// stored under.
 		if quietAskEdit(e.Payload) {
 			return true
 		}

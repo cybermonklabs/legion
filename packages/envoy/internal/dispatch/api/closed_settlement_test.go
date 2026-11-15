@@ -30,13 +30,20 @@ const closedSettlementSpec = "Context\n\n" +
 	":::ask{#withdrawn-decision urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n\n" +
 	":::ask{#answered-decision urgency=\"med\" multiple=\"false\"}\nShip on Monday?\n\n- Yes: Monday.\n- No: Later.\n:::\n"
 
-// newClosedSettlementHandler is the API over a document service whose settle delay is 20 ms, whose
-// identity admits a browser peer's socket (connectBrowserPeer).
+// newClosedSettlementHandler is closedSettlementHandlerSettlingAfter with a settle delay of 20 ms:
+// the settlement a write arms runs while the test does.
 func newClosedSettlementHandler(t *testing.T) (http.Handler, *store.Store, *docs.Service) {
+	t.Helper()
+	return closedSettlementHandlerSettlingAfter(t, 20*time.Millisecond)
+}
+
+// closedSettlementHandlerSettlingAfter is the API over a document service whose settle delay is
+// settle, whose identity admits a browser peer's socket (connectBrowserPeer).
+func closedSettlementHandlerSettlingAfter(t *testing.T, settle time.Duration) (http.Handler, *store.Store, *docs.Service) {
 	t.Helper()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: 20 * time.Millisecond})
+		documentService = docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: settle})
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
 	})

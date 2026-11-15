@@ -305,9 +305,11 @@ export const WrittenAskEditEventPayloadSchema = z
      *  the request was opened or last handed back: before this move, its `requested_version` was
      *  already below the version it named. The payload's `approval.version` is the version after
      *  the move, so the first move satisfies `requested_version < version` too and is not quiet
-     *  for that reason. The second keeps the request waiting on the human: before this move, its
-     *  `requested_version` was the version it named, and the new version stores byte for byte
-     *  the text of that version, so `requested_version` moves with the version. A quiet move
+     *  for that reason. The second is a settlement's move that keeps the request waiting on the
+     *  human: before this move, its `requested_version` was the version it named, and the new
+     *  version, which a settlement wrote, stores byte for byte the text of that version, so
+     *  `requested_version` moves with the version. A version a route writes (a named version, an
+     *  upload, an edit) moves the request to its agent whatever text it stores. A quiet move
      *  changes only the version the request names, so its event, like a human's unnamed
      *  `artifact.version`, carries `notify: false` and reaches no follower. Absent on every other
      *  edit, the first move after an opening or a hand-back included, even when a thread reply

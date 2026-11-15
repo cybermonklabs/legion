@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
@@ -171,7 +170,7 @@ func TestAMarginRewordReachesTheAskInTheEditorsNameAfterTheReopen(t *testing.T) 
 	f := rewordWithdrawnDecisionWhileClosed(t)
 	ctx := context.Background()
 	alice := model.Actor{Kind: "user", ID: "alice"}
-	seq := lastIssueSeq(t, f.database, f.issue)
+	seq := latestIssueSeq(t, f.database, f.issue)
 	if reopened := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+f.issue, map[string]string{"status": "todo"}, "bob"); reopened.Code != http.StatusOK {
 		t.Fatalf("reopen as bob: status=%d body=%s", reopened.Code, reopened.Body.String())
 	}
@@ -179,7 +178,12 @@ func TestAMarginRewordReachesTheAskInTheEditorsNameAfterTheReopen(t *testing.T) 
 		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
 	}
 	awaitRewordedAsk(t, f)
-	edits := askEditsAfter(t, f.database, f.issue, f.ask, seq)
+	var edits []loggedEvent
+	for _, event := range issueEventsAfter(t, f.database, f.issue, seq) {
+		if event.kind == "ask.edited" && event.id == f.ask {
+			edits = append(edits, event)
+		}
+	}
 	if len(edits) != 1 || !edits[0].editedBy.SameAs(alice) || !edits[0].actor.SameAs(alice) || !edits[0].notify {
 		t.Fatalf("after the reopen ask %s has the ask.edited events %+v, want one, edited_by and in the name of alice, whose rewording it takes, and notifying",
 			f.ask, edits)
@@ -271,47 +275,6 @@ func awaitRewordedAsk(t *testing.T, f rewordedWhileClosed) {
 				f.ask, restored.State, restored.Question, rewordedQuestion)
 		}
 	}
-}
-
-// askEdit is one ask.edited event of an ask as the event log stores it: its actor, whether it
-// notifies, and the editor its payload names (model.AskEditEventPayload.EditedBy).
-type askEdit struct {
-	actor    model.Actor
-	notify   bool
-	editedBy model.Actor
-}
-
-// askEditsAfter is every ask.edited event of ask on issue whose sequence is above seq, oldest
-// first.
-func askEditsAfter(t *testing.T, database *store.Store, issue, ask string, seq int) []askEdit {
-	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `
-		select actor, notify, payload->'edited_by'
-		from events where issue_key = $1 and seq > $2 and type = 'ask.edited' and payload->>'id' = $3 order by seq
-	`, issue, seq, ask)
-	if err != nil {
-		t.Fatalf("read the ask.edited events of %s: %v", ask, err)
-	}
-	defer rows.Close()
-	var edits []askEdit
-	for rows.Next() {
-		var edit askEdit
-		var actor, editedBy []byte
-		if err := rows.Scan(&actor, &edit.notify, &editedBy); err != nil {
-			t.Fatalf("read an ask.edited event of %s: %v", ask, err)
-		}
-		if err := json.Unmarshal(actor, &edit.actor); err != nil {
-			t.Fatalf("decode an ask.edited event's actor: %v", err)
-		}
-		if err := json.Unmarshal(editedBy, &edit.editedBy); err != nil {
-			t.Fatalf("decode an ask.edited event's edited_by: %v", err)
-		}
-		edits = append(edits, edit)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read the ask.edited events of %s: %v", ask, err)
-	}
-	return edits
 }
 
 // openAskLists are the open-ask lists openAskListsHolding reads: the issue's own open asks, the

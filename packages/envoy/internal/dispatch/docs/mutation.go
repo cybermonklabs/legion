@@ -37,6 +37,11 @@ type versionWrite struct {
 	// rewrites an open request and appends its ask.edited, a carry appends an artifact.approved in
 	// the reviewer's name, each an event that reaches a person, and such a settlement wakes nobody.
 	closedIssue bool
+	// settlement is set by a settlement's version alone (settlement.commitVersion), the one
+	// version write whose move of the open approval request may keep it waiting on the person
+	// (MoveApprovalAsk's bySettlement). A version a route writes - a named version, an edit, a
+	// summary edit - moves the request to its agent, whatever text it stores.
+	settlement bool
 }
 
 // mergeInto copies src into *dst, allocating *dst if it is nil and src holds anything; a nil or
@@ -2205,12 +2210,12 @@ type renderedTree struct {
 // version writes index references and blocks, move open approval asks to the new version, carry a
 // human's approval to the version by carryApproval's rules (his answer to a decision block is the
 // whole change since the version he approved, the version holds the text he approved with its
-// decision blocks as their rows have them, or it holds that text with the questions a reopen
-// opened again), refresh anchors, and retain their author capture until the enclosing transaction
-// commits. A nil write records no version but keeps a transactional tree mutation's anchors in the
-// same path. A settlement's version of a closed issue's document (versionWrite.closedIssue)
-// neither moves an approval request nor carries an approval: each appends an event that reaches a
-// person, and that settlement wakes nobody.
+// decision blocks as their rows have them, or it holds that text with the questions the close
+// withdrew and the reopen opened again), refresh anchors, and retain their author capture until
+// the enclosing transaction commits. A nil write records no version but keeps a transactional
+// tree mutation's anchors in the same path. A settlement's version of a closed issue's document
+// (versionWrite.closedIssue) neither moves an approval request nor carries an approval: each
+// appends an event that reaches a person, and that settlement wakes nobody.
 func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID string, rendered renderedTree, actor model.Actor, write *versionWrite) (versionWriteResult, error) {
 	markdown, tree := rendered.markdown, rendered.tree
 	if write == nil {
@@ -2260,9 +2265,10 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 	if !write.closedIssue {
 		// The open approval request follows the document version without leaving its thread or
 		// opening another Inbox row. The request then waits on its agent until it is handed back,
-		// unless it waited on the person and this version stores byte for byte the text it named,
-		// which keeps it with the person (MoveApprovalAsk).
-		moved, err := MoveApprovalAsk(ctx, tx, s.events, artifactID, version, markdown, actor, s.serverURL)
+		// unless this is a settlement's version (versionWrite.settlement), the request waited on
+		// the person and this version stores byte for byte the text it named, which keeps it with
+		// the person (MoveApprovalAsk).
+		moved, err := MoveApprovalAsk(ctx, tx, s.events, artifactID, version, markdown, actor, write.settlement, s.serverURL)
 		if err != nil {
 			return versionWriteResult{}, err
 		}
@@ -2272,8 +2278,9 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 		// A human's approval carries to the version this writes by carryApproval's rules: his
 		// answer to a decision block is the whole change since the version he approved, the
 		// version holds the approved text again, its blocks as their rows have them, or it holds
-		// that text with the questions a reopen opened again. It runs after the move, so an open
-		// request already names this version when the carry answers it in his name.
+		// that text with the questions the close withdrew and the reopen opened again. It runs
+		// after the move, so an open request already names this version when the carry answers
+		// it in his name.
 		carried, err := s.carryApproval(ctx, tx, artifactID, version, rendered)
 		if err != nil {
 			return versionWriteResult{}, err

@@ -831,9 +831,22 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// room lock, which that transaction never takes; nor does it take what this settlement goes on
 	// to lock, its events locking only this document's owner row. The pending authors stay unless
 	// this settlement's version lists them (deleted below): a settlement that writes no version
-	// lists no one. On a closed issue the editor this settlement credits is kept past the row, for
-	// the settlement after the reopen to name (clearSettlementPending).
-	if err := clearSettlementPending(ctx, tx, room, st.issueClosed, st.credit.actor); err != nil {
+	// lists no one.
+	//
+	// The row's latest edit source goes with it, and the settlement after a reopen still names it:
+	// before a closed issue's document settled, the row stood through the closed period, and that
+	// settlement named its editor on its events and as the mover of an approval request. So on a
+	// closed issue the editor this settlement credits is kept past the row (clearSettlementPending,
+	// doc_closed_edit_sources), for the reopen's mark to write back into the row it inserts
+	// (settlementPendingStatement) and the reopen's move to name (FollowClosedIssueVersions). A
+	// settlement on an open issue has named its editor itself, and one on a closed issue that
+	// credits SettlementActor names no editor, as the settlement after the reopen, crediting the
+	// same edits, named none then: each forgets the editor an earlier settlement kept.
+	var kept *model.Actor
+	if st.issueClosed && !st.credit.actor.SameAs(SettlementActor) {
+		kept = &st.credit.actor
+	}
+	if err := clearSettlementPending(ctx, tx, room, kept); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	if err := st.reconciliation.nameVersion(ctx, tx, room, st.owner, settledVersion); err != nil {
@@ -845,6 +858,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 			capture:          &st.credit.capture,
 			docUpdateVersion: &st.snapshotCursor,
 			closedIssue:      st.issueClosed,
+			settlement:       true,
 		})
 		if writeErr != nil {
 			// The version a human approved holds an element this build does not know: the version

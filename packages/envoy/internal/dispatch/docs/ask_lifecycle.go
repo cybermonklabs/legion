@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -283,6 +284,165 @@ func (s *Service) MarkReopenOwedAskDocuments(ctx context.Context, issueKey strin
 		return nil
 	}
 	return markSettlementPending(ctx, tx, documents, nil, false, true, nil, false)
+}
+
+// FollowClosedIssueVersions does, at the reopen of issueKey, what writeVersionTx skips for a
+// version that a settlement of a closed issue's document writes (versionWrite.closedIssue): for
+// each document of the issue, in id order, it moves the open approval request that names the
+// document to the document's latest version (MoveApprovalAsk), and then carries an approval to
+// that version (carryStandingApproval), as the version's own write does on an open issue. Before
+// a closed issue's document settled, the first settlement after the reopen wrote that text and
+// did both. Without them a restored request names the version from before the close, so a
+// person's approval from it reviews that version and reads stale, and an approved text that a
+// settlement wrote back while the issue was closed stays without its approval. The issue's reopen
+// calls it once it has restored the asks the close withdrew, so each restored request is open
+// again, and once their events are in, so a request's move and the carry's answer follow its
+// ask.opened.
+//
+// A document whose stored updates are ahead of its latest version (contentChangedSinceVersion) is
+// left to the settlement it owes. The reopen's own ask-state write is such an update, and that
+// settlement's version holds the text the reopen leaves, which its own write compares with the
+// version the request names and with the approved text. A reopen that writes back the text the
+// person was asked about then keeps the request with the person, which a move to the closed
+// issue's version, whose blocks show the close's resolved states, would not.
+//
+// The one case this leaves stale is a document whose stored updates past its latest version render
+// that version again. Its settlement writes no version, since a settlement versions only a
+// rendering that differs from the latest version, so nothing moves the request or runs the carry,
+// and the request keeps naming the version from before the close. Such updates come only after
+// the closed issue's settlement that wrote the latest version, which stored every update it read.
+// So they are a browser's edit and its exact undo, both stored after that settlement and inside
+// the close margin, the one window in which the append gate stores a closed issue's browser
+// update, so that settlement must also have run inside the margin; or the seed of a rebuild, from
+// that version, of a document whose history cannot load. The close's sweep and the ask repair
+// write nothing into a document whose blocks already show the states they write.
+//
+// Nothing is moved or carried twice. MoveApprovalAsk moves nothing when the request already names
+// the latest version, as it does after every version written while the request was open, whose
+// own write moved it. The carry runs only while the newest review approves a version before the
+// latest one: a version whose own write carried an approval, or that this carried at an earlier
+// reopen, is already approved. A version whose own write ran the carry and carried nothing is
+// refused again, since the rule reads its stored text and the rows as they stand. So the ask
+// repair's restore after a reopen, and a later reopen, change nothing more.
+//
+// The move names the editor that a settlement while the issue was closed credited and kept for the
+// document (doc_closed_edit_sources, clearSettlementPending): the edit that moves the request is
+// that editor's, saved in that settlement's version, not the reopener's act, and the version's
+// own write on an open issue names its editor so. Before a closed issue's document settled, the
+// first settlement after the reopen named the same editor, read off the pending row that stood
+// through the closed period, so a move that hands the request to its agent wakes the route and
+// the claimant as it did then. A document with no kept source, whose closed issue's settlements
+// named no editor, is moved in the name of SettlementActor, the actor of a settlement that cannot
+// name the editor: such an ask.edited wakes nobody itself (events.Broker.Notify), the reopen's own
+// ask.opened in the reopener's name does, and it reaches the request's followers as every
+// ask.edited does that is not quiet. The carry's events are in the approver's name, as every
+// carry's are.
+//
+// Once every document is followed, it deletes the kept source of each document of the issue that
+// owes no settlement: no settlement left owed by the reopen names it, and a row a later write
+// inserts naming no editor of its own would name that old editor (settlementPendingStatement).
+// The kept source of a document that owes one stays for that settlement, which deletes it.
+//
+// It runs in the transaction ctx joined (errUnjoined otherwise), and its caller holds the issue's
+// row, as a settlement of each of the issue's documents holds it, so no settlement writes a
+// version, or a kept source, between the read of the latest one and the move. It takes no copy
+// lock and writes no pending row: the move and the carry write asks rows, reviews and events, and
+// the cleanup deletes kept sources alone. It returns the events it appended, in that order, for
+// the caller to publish once it commits, after its own.
+func (s *Service) FollowClosedIssueVersions(ctx context.Context, issueKey string) ([]model.Event, error) {
+	tx, joined := txFromContext(ctx)
+	if !joined {
+		return nil, errUnjoined
+	}
+	rows, err := tx.Query(ctx, issueDocumentEditSources, issueKey)
+	if err != nil {
+		return nil, fmt.Errorf("list the issue's documents: %w", err)
+	}
+	documents, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (closedEditSource, error) {
+		var document closedEditSource
+		err := row.Scan(&document.artifactID, &document.lastActor)
+		return document, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list the issue's documents: %w", err)
+	}
+	var appended []model.Event
+	for _, document := range documents {
+		mover := SettlementActor
+		if document.lastActor != nil {
+			if err := json.Unmarshal(document.lastActor, &mover); err != nil {
+				return nil, fmt.Errorf("decode the closed edit source of document %s: %w", document.artifactID, err)
+			}
+		}
+		followed, err := s.followLatestVersion(ctx, tx, document.artifactID, mover)
+		if err != nil {
+			return nil, fmt.Errorf("follow the latest version of document %s: %w", document.artifactID, err)
+		}
+		appended = append(appended, followed...)
+	}
+	if _, err := tx.Exec(ctx, dropSettledClosedEditSources, issueKey); err != nil {
+		return nil, fmt.Errorf("delete the closed edit sources of the issue's settled documents: %w", err)
+	}
+	return appended, nil
+}
+
+// closedEditSource is one document of an issue as issueDocumentEditSources lists it: its id and
+// the editor a settlement while the issue was closed kept for it, the stored jsonb, nil for none.
+type closedEditSource struct {
+	artifactID string
+	lastActor  []byte
+}
+
+// issueDocumentEditSources lists the documents of the issue $1 in id order, as issueDocumentIDs
+// does, each with its kept closed edit source (doc_closed_edit_sources), null for none.
+const issueDocumentEditSources = `
+	select a.id::text, kept.last_actor
+	from artifacts a left join doc_closed_edit_sources kept on kept.artifact_id = a.id
+	where a.issue_key = $1 and a.kind = 'doc'
+	order by a.id`
+
+// dropSettledClosedEditSources deletes the kept closed edit source of each document of the issue
+// $1 that owes no settlement (FollowClosedIssueVersions).
+const dropSettledClosedEditSources = `
+	delete from doc_closed_edit_sources kept
+	using artifacts a
+	where a.id = kept.artifact_id and a.issue_key = $1 and a.kind = 'doc'
+		and not exists (select from doc_settlements_pending p where p.artifact_id = kept.artifact_id)`
+
+// followLatestVersion is FollowClosedIssueVersions for one document, artifactID, moving its
+// request in mover's name.
+func (s *Service) followLatestVersion(ctx context.Context, tx pgx.Tx, artifactID string, mover model.Actor) ([]model.Event, error) {
+	latest, err := latestVersion(ctx, tx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	owed, err := contentChangedSinceVersion(ctx, tx, artifactID, latest.docUpdateVersion)
+	if err != nil || owed {
+		return nil, err
+	}
+	// The latest version was written while the issue was closed, by a settlement, so the move
+	// keeps the person's turn where that settlement's own version write would have kept it. The
+	// one route that writes a closed issue's version, a rebuild a person gives markdown
+	// (RebuildDocument), is read as a settlement's here too: no stored version says which wrote it.
+	moved, err := MoveApprovalAsk(ctx, tx, s.events, artifactID, latest.Version, latest.markdown, mover, true, s.serverURL)
+	if err != nil {
+		return nil, err
+	}
+	newest, err := NewestReview(ctx, tx, artifactID)
+	if err != nil || newest == nil || newest.State != "approved" || newest.Version >= latest.Number {
+		return moved, err
+	}
+	// The answer carry reads the version's blocks from its tree, as the version's own write reads
+	// the live tree it rendered: the stored text's read-back is that tree.
+	tree, err := pmdoc.ParseRendering(latest.markdown)
+	if err != nil {
+		return moved, skipUnreadableVersion(artifactID, latest.Number, err)
+	}
+	carried, err := s.carryStandingApproval(ctx, tx, artifactID, latest.Number, renderedTree{tree: tree, markdown: latest.markdown}, *newest)
+	if err != nil {
+		return nil, err
+	}
+	return append(moved, carried...), nil
 }
 
 // issueAskStateWrites is what WriteIssueAskStates writes into one document of an issue, read off

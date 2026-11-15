@@ -10,13 +10,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// A version move keeps an approval request with the person when the document waits on the person
-// and the new version stores byte for byte the text of the version the request names: the request
-// names the new version at requested_version too, and its ask.edited is quiet, since the text the
-// person was asked about did not change. A version of another text then moves the request onto its
-// agent as every move does, and wakes its asker, being the first move since the request waited on
-// the person. A version of that same text again, while the request already waits on its agent,
-// keeps it there and is quiet: only a document that waits on the person keeps a turn so.
+// A settlement's version move keeps an approval request with the person when the document waits on
+// the person and the new version stores byte for byte the text of the version the request names:
+// the request names the new version at requested_version too, and its ask.edited is quiet, since
+// the text the person was asked about did not change. A version of another text then moves the
+// request onto its agent as every move does, and wakes its asker, being the first move since the
+// request waited on the person. A version of that same text again, while the request already waits
+// on its agent, keeps it there and is quiet: only a document that waits on the person keeps a turn
+// so. Every move here is a settlement's (bySettlement); a route's version of the named text moves
+// the request to its agent (api's TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson).
 func TestAnApprovalRequestKeepsItsTurnOverAVersionOfTheTextThePersonWasAskedAbout(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -89,8 +91,8 @@ func openStoredApprovalAsk(t *testing.T, database *store.Store, artifactID strin
 }
 
 // moveStoredApprovalAsk writes version number of artifactID with markdown and moves the open
-// approval request to it in the same transaction, as a person's edit does, and returns the events
-// the move appended.
+// approval request to it in the same transaction, as a settlement of a person's edit does
+// (bySettlement), and returns the events the move appended.
 func moveStoredApprovalAsk(t *testing.T, database *store.Store, artifactID string, number int, markdown string) []model.Event {
 	t.Helper()
 	ctx := context.Background()
@@ -106,7 +108,7 @@ func moveStoredApprovalAsk(t *testing.T, database *store.Store, artifactID strin
 		t.Fatalf("write version %d: %v", number, err)
 	}
 	moved, err := MoveApprovalAsk(ctx, tx, events.NewBroker(), artifactID, model.Version{Number: number}, markdown,
-		model.Actor{Kind: "user", ID: "alice"}, "")
+		model.Actor{Kind: "user", ID: "alice"}, true, "")
 	if err != nil {
 		t.Fatalf("move the request to version %d: %v", number, err)
 	}

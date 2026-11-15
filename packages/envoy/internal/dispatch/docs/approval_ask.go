@@ -62,12 +62,20 @@ func OpenApprovalAskForDocuments(ctx context.Context, tx pgx.Tx, artifactIDs []s
 // a human sees it in Waiting on you again. Only the first move since the request was opened or
 // handed back wakes anyone, even when a thread reply already left it waiting on its agent; a later
 // one, while a document's requested_version is already below the version it named, is quiet
-// (model.AskEditEventPayload.Quiet, the rule RewriteApprovalAsk also applies). When the document
-// waits on the human (its requested_version is the version the request names) and markdown is
-// byte for byte the stored text of that version (restoresVersionText), its requested_version
-// moves with its version and the move is quiet: the text the person was asked about did not
-// change, so the request keeps its turn as if it had not moved and wakes nobody.
-func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, serverURL string) ([]model.Event, error) {
+// (model.AskEditEventPayload.Quiet, the rule RewriteApprovalAsk also applies).
+//
+// bySettlement says a settlement wrote version: the settlement's own version write
+// (versionWrite.settlement), or the reopen's follow of a version a settlement wrote while the
+// issue was closed. Only then, when the document waits on the human (its requested_version is the
+// version the request names) and markdown is byte for byte the stored text of that version
+// (restoresVersionText), does its requested_version move with its version, quietly: a settlement
+// saves what the room already holds, such as the blocks a close and a reopen wrote back, so the
+// text the person was asked about did not change and the request keeps its turn as if it had not
+// moved, waking nobody. A version a route writes - a named version, an upload, an edit or a
+// summary edit - moves the request to its agent whatever text it stores, as every move did before
+// the rule: the Legion daemon answers an agent's gate wait with such a version's artifact.version,
+// telling the agent the request is back on its turn, which this keeps true.
+func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, bySettlement bool, serverURL string) ([]model.Event, error) {
 	ask, err := OpenApprovalAsk(ctx, tx, artifactID)
 	if err != nil {
 		return nil, err
@@ -84,7 +92,7 @@ func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 		return nil, err
 	}
 	keepsTurn := false
-	if moved.RequestedVersion == moved.Version {
+	if bySettlement && moved.RequestedVersion == moved.Version {
 		if keepsTurn, err = restoresVersionText(ctx, tx, artifactID, moved.Version, markdown); err != nil {
 			return nil, err
 		}
@@ -111,12 +119,12 @@ func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 // document version move (MoveApprovalAsk) also takes (rewriteApprovalAsk). A version move, a
 // request with a new summary and a request that changes which documents it covers all reword;
 // none hands the request back, so each document's requested_version stays as it was. The one
-// exception is a version move that stores byte for byte the text of the version the person was
-// asked about, which moves that document's requested_version with its version, quietly
-// (MoveApprovalAsk). A move of a request that an earlier version already moved since it was opened
-// or handed back, a document's requested_version below the version it named, is recorded quiet
-// (model.AskEditEventPayload.Quiet): it changes only that version, so like a human's unnamed
-// version it wakes nobody.
+// exception is a settlement's version move that stores byte for byte the text of the version the
+// person was asked about, which moves that document's requested_version with its version,
+// quietly (MoveApprovalAsk). A move of a request that an earlier version already moved since it
+// was opened or handed back, a document's requested_version below the version it named, is
+// recorded quiet (model.AskEditEventPayload.Quiet): it changes only that version, so like a
+// human's unnamed version it wakes nobody.
 func RewriteApprovalAsk(
 	ctx context.Context,
 	tx pgx.Tx,
