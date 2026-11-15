@@ -3434,7 +3434,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The session's record is gone at most about five minutes after its last heartbeat, or at the stop once the daemon's clean stop runs.
   A message to the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases the claim at its next pass (`internal/store/reaper.go`).
   Either way it is kept and raises the role's wake report.
-  When the role comes back, its session claims the role, and each copy kept for the role whose hour has not ended arrives as an Envoy card that carries `kept_at`.
+  When the role comes back, its session registers again or claims the role, and either one hands it each copy kept for the role whose hour has not ended, as an Envoy card that carries `kept_at` (`subscribeHandler`, `roleSetHandler`).
   The card can arrive before the task the daemon gives the woken role (`WakeTask`, `packages/daemon/internal/workflow/wake.go`).
   `envoy_inbox` lists it, but the inbox is the memory of the running process, so in a new pod it starts empty and holds only what that process received.
   To check one message, read the session's transcript for the card with that event id and `kept_at`.

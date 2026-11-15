@@ -642,6 +642,17 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		)
 		answer := rig.kept(rig.listeners[0], roleMessage(role, sender, "hand this to the role's next holder"))
 		held := rig.copyOf(role, answer.EventID)
+		// The clock moves 50 minutes on below, so every claim reads older than
+		// bus.KeptRoleClaimWindow to the listeners the moment it is written: the first listener's
+		// sweep could take over the claim the claim's handover writes on the second listener while
+		// that forward is in flight, and forward the copy again. The first listener's guard is
+		// held for the whole row, so its sweep passes the lane over; the second listener's sweep
+		// walks it before the claim, and the claim's handover makes the one forward.
+		release, taken := rig.listeners[0].cfg.roleKeepDrains.hold(context.Background(), role)
+		if !taken {
+			t.Fatalf("take role %s's handover guard on the first listener", role)
+		}
+		defer release()
 		rig.startSweeps()
 		letSweepsRun()
 		if forwards := rig.lines(hourForwardLine, map[string]any{"role": role}); len(forwards) != 0 {
@@ -867,6 +878,17 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		held := rig.keep(role, listenerCopy(role, sender, "a copy whose dead letter fails once"))
 		seam := &deadLetterSeam{role: role}
 		seam.install(t, rig)
+		// The clock is past the copy's hour, so every claim reads older than
+		// bus.KeptRoleClaimWindow to the listeners the moment it is written: the second listener's
+		// sweep could take over the first walk's claim while that walk's publish is in flight, and
+		// publish the dead letter a third time. The second listener's guard is held for the whole
+		// row, so its sweep passes the lane over, and the walk that takes the claim over is the
+		// first listener's next one.
+		release, taken := rig.listeners[1].cfg.roleKeepDrains.hold(context.Background(), role)
+		if !taken {
+			t.Fatalf("take role %s's handover guard on the second listener", role)
+		}
+		defer release()
 		rig.moveClock(time.Hour + time.Minute)
 		rig.startSweeps()
 		rig.waitDeadLetter(held)
@@ -995,6 +1017,14 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		held := rig.keep(role, listenerCopy(role, sender, "a copy whose dead letter fails until two hours on"))
 		seam := &deadLetterSeam{role: role, failed: func() { rig.setClock(held.stored.Add(2*time.Hour + time.Minute)) }}
 		seam.install(t, rig)
+		// The second listener's sweep passes the lane over, as in row (h): otherwise it can take
+		// the first walk's claim over before that walk's failed publish moves the clock on, and
+		// drop the copy at the age the clock had then.
+		release, taken := rig.listeners[1].cfg.roleKeepDrains.hold(context.Background(), role)
+		if !taken {
+			t.Fatalf("take role %s's handover guard on the second listener", role)
+		}
+		defer release()
 		rig.moveClock(time.Hour + time.Minute)
 		rig.startSweeps()
 		rig.waitDeadLetter(held)
@@ -1189,6 +1219,55 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	})
 }
 
+// TestADeadLetterClaimIsTakenOverForTheReasonItWasMade holds the rule a walk that takes over a
+// dead letter's claim sends that dead letter again by (keptCopyClaimOf, judgeKeptRoleCopy): the
+// claim names the reason the walk that made it ended the copy for (bus.KeptRoleCursor.DeadLetter),
+// and the walk taking it over sends the dead letter again for that reason and no other, whatever
+// the copy's age on its own clock. Rows (h), (n) and (s) above take claims over that the walks of
+// their listeners wrote; this one judges claims at ages those rows' clocks do not reach, an
+// expiry claim on a copy that names a delivery mode among them.
+func TestADeadLetterClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
+	stored := bus.StoredMessage{Sequence: 7, Time: time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)}
+	data, err := json.Marshal(contracts.Envelope{EventID: "evt_claimed", SourceSession: "ses_claim_sender", Payload: `{"delivery":{"mode":"steer"}}`})
+	if err != nil {
+		t.Fatalf("encode the copy: %v", err)
+	}
+	stored.Data = data
+	mode := bus.KeptRoleCursor{Kept: 6, Claiming: 7, DeadLetter: string(deadLetterDeliveryMode)}
+	expiry := bus.KeptRoleCursor{Kept: 6, Claiming: 7, DeadLetter: string(deadLetterExpired)}
+	for _, tc := range []struct {
+		name   string
+		cursor bus.KeptRoleCursor
+		want   keptCopyClaim
+	}{
+		{"a dead letter's claim of the copy before it", bus.KeptRoleCursor{Kept: 5, Claiming: 6, DeadLetter: string(deadLetterDeliveryMode)}, keptCopyUnclaimed},
+		{"a forward's claim", bus.KeptRoleCursor{Kept: 6, Claiming: 7}, keptCopyForwardClaimed},
+		{"a dead letter's claim for the copy's delivery mode", mode, keptCopyModeClaimed},
+		{"a dead letter's claim for the copy's hour", expiry, keptCopyExpiryClaimed},
+	} {
+		if got := keptCopyClaimOf(tc.cursor, stored.Sequence); got != tc.want {
+			t.Fatalf("%s: the claim is %d, want %d", tc.name, got, tc.want)
+		}
+	}
+
+	judged := func(cursor bus.KeptRoleCursor, at time.Duration) keptCopyVerdict {
+		return judgeKeptRoleCopy(listenerDeliveryHandlerConfig{}, "claimed-role", "", session.SessionEntry{}, stored,
+			keptCopyClaimOf(cursor, stored.Sequence), func() time.Time { return stored.Time.Add(at) }, nil)
+	}
+	// A mode claim taken over three hours on is the delivery mode drop it was, with no expired
+	// report.
+	if verdict := judged(mode, 3*time.Hour); verdict.step != keptCopyDeadLetter || verdict.drop.reason != deadLetterDeliveryMode ||
+		verdict.drop.mode != "steer" || verdict.report != nil {
+		t.Fatalf("a mode claim taken over after the hour is judged %+v, want the steer delivery mode's dead letter and no expired report", verdict)
+	}
+	// An expiry claim taken over by a walk whose clock reads the copy inside its hour is the
+	// expired drop it was, reported as one, though the copy names a delivery mode.
+	if verdict := judged(expiry, 59*time.Minute); verdict.step != keptCopyDeadLetter || verdict.drop.reason != deadLetterExpired ||
+		verdict.report == nil {
+		t.Fatalf("an expiry claim taken over by a clock inside the hour is judged %+v, want the expired dead letter with its report", verdict)
+	}
+}
+
 // TestARepeatedKeepIsOneCopyUntilItEnds holds rows (k) and (l) of check k1: a publish that repeats
 // the dedupe key of a copy still on the lane inside its hour stores nothing and is answered with
 // that copy, and one that repeats the key of a copy that was forwarded or whose hour ended is kept
@@ -1317,7 +1396,10 @@ func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
 // registration through POST /v1/interests/subscribe, which renews its claim and claims nothing,
 // hands it the copy kept for it with no sweep running (subscribeHandler). Row (h) is that holder
 // resumed by a new process after a clean stop: its registration states a process its claim does
-// not name, so it renews nothing, and it is handed the copy all the same.
+// not name, so it renews nothing, and it is handed the copy all the same. Row (i) is a resumed
+// process that claims the role before it registers: the claim route's refresh of its session
+// makes it live, so its registration would not read it as returning, and it is handed the copy
+// at that refresh though the claim is refused (roleSetHandler).
 func TestALapsedHolderIsKeptFor(t *testing.T) {
 	t.Run("a a publish to a role whose holder deleted its record is kept and reaches that session once it registers again", func(t *testing.T) {
 		rig := newHourRig(t)
@@ -1511,6 +1593,77 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 		// the handover was started for a role the registration read and did not renew.
 		if claim := storedRoleClaim(t, first.harness.registry, role); claim.HolderSessionID != holder || claim.ClientInstanceID != stopped {
 			t.Fatalf("role %s's claim is %+v, want it still naming %s under process %s", role, claim, holder, stopped)
+		}
+	})
+
+	t.Run("i a holder whose resumed process claims before it registers gets its kept copy with no sweep, even when the claim is refused", func(t *testing.T) {
+		rig := newHourRig(t)
+		const (
+			role    = "hour-lapsed-claimed-again"
+			holder  = "ses_hour_claimed_again_holder"
+			stalled = "hour-process-that-stalled"
+			resumed = "hour-process-that-claims"
+		)
+		frames := startStandIn(t, rig.uri, holder)
+		// The process that stalled registered and claimed the role under its own client instance.
+		// Its record says it last registered past the live window and well inside the gone
+		// horizon, written into the bucket as another writer's record arrives
+		// (storeSessionHeartbeat), so both listeners read it from there and the claim route finds
+		// it; and its claim is inside the live window on the registry's own clock, so another
+		// process's claim of the role is refused while the session is not live.
+		storeSessionHeartbeat(t, rig.client(), holder, time.Now().Add(-(session.LiveWindow + 2*time.Minute)))
+		first := rig.listeners[0]
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := first.harness.registry.SetRoleWithPrevious(ctx, store.RoleClaimRequest{
+			SessionID: holder, MachineID: "test-machine", ClientInstanceID: stalled, Role: role,
+		}); err != nil {
+			t.Fatalf("claim %s for %s under process %s: %v", role, holder, stalled, err)
+		}
+		waitFor(t, 10*time.Second, "both listeners to read "+holder+" as unresponsive and the first to read its claim of "+role, func() bool {
+			for _, l := range rig.listeners {
+				if _, state := l.harness.sessions.Lookup(holder); state != session.Unresponsive {
+					return false
+				}
+			}
+			held, err := first.harness.registry.RolesHeldBy(holder)
+			return err == nil && slices.Contains(held, role)
+		})
+		// The keep's own handover waits on its guard for the whole row, as in row (g).
+		keeper := rig.listeners[1]
+		release, taken := keeper.cfg.roleKeepDrains.hold(context.Background(), role)
+		if !taken {
+			t.Fatalf("take role %s's handover guard on the listener that keeps its copy", role)
+		}
+		defer release()
+		answer := rig.kept(keeper, roleMessage(role, "ses_hour_claimed_again_sender", "are you back before you register?"))
+		if answer.KeptReason != "holder_lapsed" || answer.Holder != holder || answer.HolderState != "unresponsive" {
+			t.Fatalf("the answer is %+v, want kept_reason holder_lapsed naming %s as unresponsive", answer, holder)
+		}
+
+		// A new process resumes the session under the same id and claims the role, stating
+		// itself, before it registers. The claim's renewal is inside the live window, so the claim
+		// is refused 409 as one the role is held under this session id by another process.
+		logs := &strings.Builder{}
+		claimed := claimThrough(t, roleSetHandler(first.route, "test-machine", logging.NewWithWriter("test", logs)), holder, role, resumed)
+		if claimed.Code != http.StatusConflict || !strings.Contains(claimed.Body.String(), `"holder":"`+holder+`"`) {
+			t.Fatalf("the resumed process's claim: status %d %s, want 409 naming %s", claimed.Code, claimed.Body.String(), holder)
+		}
+		refusal := "listener role claim refused: the role is held under this session id by another process"
+		if refused := linesIn(logs.String(), refusal, map[string]any{"role": role, "holder_client_instance_id": stalled, "client_instance_id": resumed}); len(refused) != 1 {
+			t.Fatalf("the claim route's lines are %s, want one refusal of process %s naming process %s as the holder", logs.String(), resumed, stalled)
+		}
+		waitFor(t, 20*time.Second, "the kept copy reaching "+holder+" after its resumed process's refused claim", func() bool {
+			return len(rig.envelopesOn(contracts.AgentSubject(holder))) > 0
+		})
+		if held := rig.envelopesOn(contracts.AgentSubject(holder)); len(held) != 1 || held[0].EventID != answer.EventID {
+			t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", holder, held, answer.EventID)
+		}
+		if got := expectFrames(t, frames, 1, 100*time.Millisecond); got[0].EventID != answer.EventID {
+			t.Fatalf("%s received event %s, want the kept %s", holder, got[0].EventID, answer.EventID)
+		}
+		if claim := storedRoleClaim(t, first.harness.registry, role); claim.HolderSessionID != holder || claim.ClientInstanceID != stalled {
+			t.Fatalf("role %s's claim is %+v, want it still naming %s under process %s", role, claim, holder, stalled)
 		}
 	})
 }

@@ -228,11 +228,11 @@ role's process and leaves its claim standing. The session's record is gone at mo
 minutes after its last heartbeat, or at the stop once the daemon's clean stop runs. A message to
 the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases
 the claim at its next pass. Either way it is kept and wakes the role. When the role comes
-back, its session claims the role, and each message kept for the role whose hour has not ended
-arrives as an Envoy card that carries `kept_at`, the time Envoy kept it. The card can arrive
-before the task the daemon gives the woken role. `envoy_inbox` lists it, but the inbox is the
-memory of the running process, so in a new pod it starts empty and holds only what that process
-received. To check one message:
+back, its session registers again or claims the role, and either one hands it each message kept
+for the role whose hour has not ended, as an Envoy card that carries `kept_at`, the time Envoy
+kept it. The card can arrive before the task the daemon gives the woken role. `envoy_inbox` lists
+it, but the inbox is the memory of the running process, so in a new pod it starts empty and holds
+only what that process received. To check one message:
 
 - The session's transcript holds the card with that event id and `kept_at`.
 - The listener's log holds the forward of that event id, `listener role forwarded` with

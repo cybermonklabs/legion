@@ -106,14 +106,20 @@ const KeptRoleClaimWindow = 60 * time.Second
 type KeptRoleCursor struct {
 	Kept     uint64 `json:"kept"`
 	Claiming uint64 `json:"claiming"`
-	// DeadLetter is set while the claim is a walk's claim of a copy it is ending with a dead
-	// letter to that copy's sender, rather than a forward's: a walk that takes such a claim over
-	// once it is no longer outstanding sends that dead letter again under the same message id,
-	// whatever the copy's age and whoever holds the role, where it judges a forward's claimed copy
-	// as any copy. It is false on a forward's claim and with no claim at all, and left out of the
-	// body then, so those bodies are written exactly as before the field existed. Dispatch's outbox
-	// reads only Kept and Claiming, and a reader that does not know the field ignores it.
-	DeadLetter bool `json:"dead_letter,omitempty"`
+	// DeadLetter names why the claim is a walk's claim of a copy it is ending with a dead letter
+	// to that copy's sender, rather than a forward's: "expired" for a copy whose hour ended, and
+	// "delivery_mode" for a copy the role's live holder does not take for its delivery mode (the
+	// listener's deadLetterReason values, cmd/listener/role_keep.go). A walk that takes such a
+	// claim over once it is no longer outstanding sends that dead letter again under the same
+	// message id and for the reason named here, whatever the copy's age and whoever holds the
+	// role, where it judges a forward's claimed copy as any copy. The reason is written into the
+	// claim because nothing else the walk that takes it over reads can tell it: the copy's age
+	// is measured on that walk's own clock, and the holder that refused the copy's mode may hold
+	// the role no longer. It is empty on a forward's claim and with no claim at all, and left out
+	// of the body then, so those bodies are written exactly as before the field existed.
+	// Dispatch's outbox reads only Kept and Claiming, and it and an earlier listener, neither of
+	// which knows the field, ignore it.
+	DeadLetter string `json:"dead_letter,omitempty"`
 }
 
 // ClaimOutstanding reports whether the copy this cursor claims is still one walk's to forward: a

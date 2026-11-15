@@ -11,19 +11,20 @@ import (
 
 // The drain cursor's body is read by both writers of a role's kept lane - the listener's walk,
 // which is its only writer, and the handover Dispatch's outbox makes behind a keep of its own -
-// so the numbers, the dead-letter mark and the tags they are written under are this package's,
-// not either caller's. A tag that drifted would decode as zero, which reads as a lane drained to
-// its start and leads every handover astray, so the encoding is pinned here: what a walk writes
-// decodes back to itself, and a body written exactly as a walk writes it decodes to the numbers
-// in it. A forward's claim and a cursor with nothing claimed carry no dead_letter key at all, and
-// a body with no dead_letter key decodes with the mark false.
+// so the numbers, the dead letter's reason and the tags they are written under are this
+// package's, not either caller's. A tag that drifted would decode as zero, which reads as a lane
+// drained to its start and leads every handover astray, so the encoding is pinned here: what a
+// walk writes decodes back to itself, and a body written exactly as a walk writes it decodes to
+// the numbers in it. A forward's claim and a cursor with nothing claimed carry no dead_letter key
+// at all, and a body with no dead_letter key decodes with no reason.
 func TestAKeptRoleCursorEncodesUnderTheTagsBothItsReadersExpect(t *testing.T) {
 	for _, tc := range []struct {
 		written bus.KeptRoleCursor
 		body    string
 	}{
 		{bus.KeptRoleCursor{Kept: 11, Claiming: 12}, `{"kept":11,"claiming":12}`},
-		{bus.KeptRoleCursor{Kept: 11, Claiming: 12, DeadLetter: true}, `{"kept":11,"claiming":12,"dead_letter":true}`},
+		{bus.KeptRoleCursor{Kept: 11, Claiming: 12, DeadLetter: "expired"}, `{"kept":11,"claiming":12,"dead_letter":"expired"}`},
+		{bus.KeptRoleCursor{Kept: 11, Claiming: 12, DeadLetter: "delivery_mode"}, `{"kept":11,"claiming":12,"dead_letter":"delivery_mode"}`},
 	} {
 		body, err := json.Marshal(tc.written)
 		if err != nil {
@@ -43,8 +44,8 @@ func TestAKeptRoleCursorEncodesUnderTheTagsBothItsReadersExpect(t *testing.T) {
 
 	// A walk that passed a copy over, or confirmed the one it forwarded, writes the cursor with
 	// nothing claimed; a body with no claiming at all is the same cursor, and one with no
-	// dead_letter is a cursor whose claim is no dead letter's.
-	for _, stored := range []string{`{"kept":7,"claiming":0}`, `{"kept":7}`, `{"kept":7,"claiming":0,"dead_letter":false}`} {
+	// dead_letter, or an empty one, is a cursor whose claim is no dead letter's.
+	for _, stored := range []string{`{"kept":7,"claiming":0}`, `{"kept":7}`, `{"kept":7,"claiming":0,"dead_letter":""}`} {
 		var cursor bus.KeptRoleCursor
 		if err := json.Unmarshal([]byte(stored), &cursor); err != nil {
 			t.Fatalf("decode %s: %v", stored, err)
@@ -58,7 +59,7 @@ func TestAKeptRoleCursorEncodesUnderTheTagsBothItsReadersExpect(t *testing.T) {
 		t.Fatalf("decode a forward's claim: %v", err)
 	}
 	if want := (bus.KeptRoleCursor{Kept: 7, Claiming: 8}); forward != want {
-		t.Fatalf("a claim written with no dead_letter decoded as %+v, want %+v with DeadLetter false", forward, want)
+		t.Fatalf("a claim written with no dead_letter decoded as %+v, want %+v with no DeadLetter reason", forward, want)
 	}
 }
 

@@ -1972,6 +1972,20 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // claim that superseded this one when one has). That runs in a goroutine under a context of its
 // own, so this answer's status and body are exactly what they were and wait for none of it.
 //
+// The refresh of the claimant's registration can make its session live again, as a registration
+// that returns a session does (subscribeHandler): a process that resumed a session claims its role
+// before it registers, and once the refresh has written the entry, its registration reads the
+// session as live already and starts no handover. So a claimant this listener's cache read as not
+// live just before the refresh (session.SessionRegistry.Lookup, read as registerPass reads it) is
+// handed the kept lane of each role the role claim copy names for it (store.Registry.RolesHeldBy),
+// whatever this claim's answer: a claim refused the role held under its own session id by another
+// process, by the grant guard, or for a read that did not answer starts no handover of its own,
+// and the copies of the session's roles would otherwise wait for the sweep. The claimed role is
+// handed over once: by the handover of a claim that landed, and otherwise only where the copy
+// names it for the session. A copy that cannot be served names no role, which leaves the claim's
+// own handover and the sweep. These handovers run as the claim's own does, each in a goroutine
+// started once the answer is written.
+//
 // logger is registerV1Routes's own. Two decisions of this route are logged with it. A soft claim
 // that takes a role from the predecessor it names because the claimant's entry or the
 // predecessor's carries no client instance id, which is the one takeover the route cannot tell
@@ -2102,9 +2116,26 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// (sessionInfo.Port) for as long as the claims keep refreshing the entry, where writing
 		// it out lets it lapse with the entry it came on.
 		entry.Port = 0
+		// Whether the claimant was live before this refresh is read before it, from this
+		// listener's cache with no bucket call, as a registration reads it (registerPass): a
+		// claimant the refresh makes live again is handed its roles' kept lanes, by the rule above.
+		_, before := d.sessions.Lookup(body.SessionID)
 		if err := d.sessions.PutWithin(ctx, body.SessionID, entry); err != nil {
 			writeStoreError(ctx, w, fmt.Errorf("refresh role claimant registration: %w", err), http.StatusServiceUnavailable)
 			return
+		}
+		// landed is set by a claim that landed, whose own handover hands the claimed role's lane
+		// over, so the handovers of a claimant this refresh made live again leave that role out.
+		landed := false
+		if before != session.Live {
+			defer func() {
+				held, _ := d.registry.RolesHeldBy(body.SessionID)
+				for _, role := range held {
+					if !landed || role != body.Role {
+						go runKeptRoleDrain(*d.delivery, role)
+					}
+				}
+			}()
 		}
 		previous := ""
 		if body.Soft {
@@ -2303,6 +2334,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				writeStoreError(ctx, w, err, http.StatusInternalServerError)
 				return
 			}
+			landed = true
 			go runKeptRoleDrain(*d.delivery, body.Role)
 			writeJSON(w, http.StatusOK, item)
 			return
@@ -2892,7 +2924,11 @@ func (d *listenerDeps) registerPass(
 // it and claim nothing. So the registration is the event that makes the holder live again, and the
 // handover starts off it rather than being left to the sweep, which would hold the copies for up to
 // roleWakeInterval and drop each one whose hour ended in that wait while its holder was live
-// (sweepKeptRoleLanes).
+// (sweepKeptRoleLanes). A process that resumed the session can claim its role before it
+// registers, and the claim route's refresh of the session's registration then makes it live
+// again first, so that route hands over the lane of each role the role claim copy names for the
+// session, whether or not its claim lands (roleSetHandler), and this registration reads the
+// session as live already.
 //
 // The set is the roles weighed and not the roles renewed because a session resumed by a new
 // process registers under a client instance its claim does not name: the claim still names the

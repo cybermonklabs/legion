@@ -1185,8 +1185,9 @@ check_send_to_stalled_session_is_stored() {
 # deferred or given up, and nothing may land on the exceptions topic: a stored delivery is not a
 # failed one. The role publish is kept on the role's kept lane for one hour and answered 202 with
 # kept_reason holder_lapsed. The holder keeps its claim through the stall, so no claim follows to
-# hand the lane over: the listener's sweep, every five minutes (main.go), forwards the copy once
-# the holder reads live again.
+# hand the lane over: the registration that makes the holder live again after SIGCONT hands the
+# copy over (subscribeHandler), and the listener's sweep, every five minutes (main.go), is only the
+# backstop behind that handover.
 check_stored_deliveries_arrive_once() {
   local role=ess-stored-$$ issue marker transcript mention direct published record claimed_at
   [ -n "$omp_pid" ] || omp_start || return 1
@@ -1237,10 +1238,13 @@ check_stored_deliveries_arrive_once() {
   wait_until 180 "the session to be live again" state_is "$port_a" "$omp_session" '' live || return 1
   wait_until 600 "the stored deliveries to reach the session's transcript" \
     stored_cards_landed "$transcript" "$marker" || return 1
-  # A wait of its own for the kept role copy: one sweep interval and a minute for the handover and
-  # the card. It ends before the settling sleep below, so a second forward would still land in
-  # time for the count.
-  wait_until 360 "the listener's sweep to forward the kept role copy to the session" \
+  # A wait of its own for the kept role copy: a minute for the card, since the registration that
+  # made the session live again starts the handover itself (subscribeHandler), which forwards the
+  # copy milliseconds after it. The wait keeps no margin for the sweep: the check is not meant to
+  # pass when the registration's handover fails, and it passes then only where a sweep happens to
+  # fall before the card is waited out. It ends before the settling sleep below, so a second
+  # forward would still land in time for the count.
+  wait_until 60 "the registration that made the session live again to hand it the kept role copy" \
     kept_role_card_landed "$transcript" "$marker" || return 1
   # A second copy of a stored delivery would land behind the first, so the count is taken a
   # settling period after all three arrived, and the transcript it was taken from is kept as
@@ -1258,7 +1262,7 @@ check_stored_deliveries_arrive_once() {
     refuse "the listener's log names a failed, deferred or given-up delivery for a stored message" || return 1
   [ ! -s "$work/exceptions.jsonl" ] ||
     refuse "an exception landed on notifications.envoy.exceptions.*: $(head -c 200 "$work/exceptions.jsonl")" || return 1
-  note "the mention and the direct message each arrived once after SIGCONT; the role publish was kept 202 for the unresponsive holder with the claim standing, and the sweep forwarded it once"
+  note "the mention and the direct message each arrived once after SIGCONT; the role publish was kept 202 for the unresponsive holder with the claim standing, and the registration that made the holder live again handed it over once"
 }
 
 # ---- 3c. a Dispatch event routed to a role reaches its holder ------------------------------------------------

@@ -831,13 +831,15 @@ func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, it
 // no NATS grant the outbox does not hold, no change to the lane's cursor and no second publisher.
 //
 // The reads are deps.KeptLanes, the bus client cmd/dispatch passes: a Deps with none makes no
-// handover at all, and its kept copy waits for the role's next claim, keep or sweep, as a Deps
-// with no role reader resolves no holder (errNoRoleReaders).
+// handover at all, and its kept copy waits for the listener's next handover of the lane - the
+// role's next claim, a keep, the registration that makes a session holding the role live again
+// or the claim route's refresh that does (subscribeHandler, roleSetHandler, cmd/listener/api.go),
+// or the sweep - as a Deps with no role reader resolves no holder (errNoRoleReaders).
 //
 // The resolution is made first and is the route's own (resolveRole, forwardOf), so a holder that
 // is the event's actor, one that has stopped heartbeating, a claim that lapsed again and a role
 // still unclaimed are each read here as they are read there, and none of them is forwarded to:
-// the copy waits on the lane for the role's next claim, keep or sweep, as it did before the
+// the copy waits on the lane for the listener's next handover of it, as it did before the
 // handover, nothing is logged for it, and nothing is recorded as handed over, so the batch's next
 // copy of that role finds this one in front of it and declines, as it should. A copy is kept only
 // for a role no live holder can take, so most keeps end on that one claim read, and a claim whose
