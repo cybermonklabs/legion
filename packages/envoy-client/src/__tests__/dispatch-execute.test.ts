@@ -14015,6 +14015,128 @@ describe("executeDispatchTool", () => {
     });
   });
 
+  test("reads each review of a document from a Dispatch log reference, with its version, reviewer and reason", async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          title: "Dispatch issue",
+          status: "open",
+          route: null,
+          open_asks: [],
+          children: [],
+          last_seq: 6,
+        });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/events") {
+        return response([
+          {
+            seq: 2,
+            type: "artifact.approved",
+            actor: { kind: "session", id: "s2" },
+            created_at: "2026-09-09T00:02:00Z",
+            payload: {
+              artifact_id: "artifact-2",
+              name: "plan.md",
+              version: 2,
+              actor: { kind: "session", id: "s2" },
+              reason: null,
+              ask_id: null,
+              kind: "plan_review",
+            },
+          },
+          {
+            seq: 3,
+            type: "artifact.changes_requested",
+            actor: { kind: "user", id: "sami" },
+            created_at: "2026-09-09T00:03:00Z",
+            payload: {
+              artifact_id: "artifact-1",
+              name: "spec.md",
+              version: 13,
+              actor: { kind: "user", id: "sami" },
+              reason:
+                "The rollout section names no owner.\nSay who runs the migrations, and who signs off before the second region goes live.\n\nThe load test the summary promises is missing too.",
+              ask_id: "ask-13",
+              kind: "person",
+            },
+          },
+          {
+            // A Dispatch older than review kinds writes no `kind`.
+            seq: 4,
+            type: "artifact.approved",
+            actor: { kind: "user", id: "alice" },
+            created_at: "2026-09-09T00:04:00Z",
+            payload: {
+              artifact_id: "artifact-1",
+              name: "spec.md",
+              version: 11,
+              actor: { kind: "user", id: "alice" },
+              reason: "Reads clean.",
+              ask_id: "ask-11",
+            },
+          },
+          {
+            seq: 5,
+            type: "artifact.changes_requested",
+            actor: { kind: "user", id: "sami" },
+            created_at: "2026-09-09T00:05:00Z",
+            payload: {
+              artifact_id: "artifact-1",
+              name: "spec.md",
+              version: 8,
+              actor: { kind: "user", id: "sami" },
+              reason: null,
+              ask_id: "ask-8",
+            },
+          },
+          {
+            // A newer Dispatch may write a kind this build does not know.
+            seq: 6,
+            type: "artifact.approved",
+            actor: { kind: "session", id: "s3" },
+            created_at: "2026-09-09T00:06:00Z",
+            payload: {
+              artifact_id: "artifact-1",
+              name: "spec.md",
+              version: 3,
+              actor: { kind: "session", id: "s3" },
+              reason: "",
+              ask_id: null,
+              kind: "robot",
+            },
+          },
+        ]);
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_read",
+      args: { ref: "dispatch://DSP-42/log" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result).toEqual({
+      text: [
+        "Key: DSP-42",
+        "Events:",
+        "- #2 artifact.approved · session s2 · 2026-09-09T00:02:00Z · plan.md v2 approved by plan review",
+        "- #3 artifact.changes_requested · user sami · 2026-09-09T00:03:00Z · spec.md v13 changes requested by a person: The rollout section names no owner. Say who runs the migrations, and who sign…",
+        "- #4 artifact.approved · user alice · 2026-09-09T00:04:00Z · spec.md v11 approved: Reads clean.",
+        "- #5 artifact.changes_requested · user sami · 2026-09-09T00:05:00Z · spec.md v8 changes requested",
+        "- #6 artifact.approved · session s3 · 2026-09-09T00:06:00Z · spec.md v3 approved",
+      ].join("\n"),
+      details: { issue: "DSP-42" },
+    });
+  });
+
   // A message has no other address in the log: its event line carries the reference that reads it.
   test("names each message, comment and ask on the log by its dispatch reference", async () => {
     const messageId = "652aec73-6214-46c0-a230-3b21a0466990";

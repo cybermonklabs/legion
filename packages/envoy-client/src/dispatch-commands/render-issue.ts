@@ -406,6 +406,16 @@ function eventHead(event: DispatchEvent): string | undefined {
       return textHead(
         `${event.payload.name} v${event.payload.version.number}${event.payload.version.summary ? `: ${event.payload.version.summary}` : ""}`
       );
+    case "artifact.approved":
+    case "artifact.changes_requested": {
+      const { name, version, kind, reason } = event.payload;
+      const verb = event.type === "artifact.approved" ? "approved" : "changes requested";
+      // A Dispatch older than review kinds writes none, and a newer one may write a kind this
+      // build does not know: neither names who reviewed.
+      const by =
+        kind === "plan_review" ? " by plan review" : kind === "person" ? " by a person" : "";
+      return textHead(`${name} v${version} ${verb}${by}${reason ? `: ${reason}` : ""}`);
+    }
     case "artifact.human_edited":
       return textHead(humanEditHead(event.payload));
     case "issue.created": {
