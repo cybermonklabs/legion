@@ -1155,14 +1155,15 @@ func readRecord(t *testing.T, path string) string {
 // `legion gh` — the stand-in exits 7 and `legion gh` exits 7 — with the standard input the guard
 // buffered handed to gh in this process's place.
 //
-// Two calls reach gh unchecked. `legion gh auth git-credential` answers git as it always did,
-// with no check run at all, since reading its standard input would break git's protocol. And a
+// Two calls pass unchecked. `legion gh auth git-credential` answers git as it always did, with
+// no check run at all, since reading its standard input would break git's protocol. And a
 // visibility read of the shared check's or of the guard's own (the GraphQL read the guard makes
 // when GitHub refuses its REST read for a spent rate limit) passes when it is exactly that read
 // for exactly the repository PUBLIC_LEAK_CHECK_VISIBILITY_READ names — without it a pod's gh,
 // which is this command, would call the check, whose own read would call it again, without end —
 // while the same variable with any other argv, and a variable naming no repository, are checked
-// like anything else.
+// like anything else. The shared check's own read this command answers itself, through the
+// guard's REST read, which reaches gh.
 func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -1270,8 +1271,8 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 		if checked != "" {
 			t.Errorf("the shared check ran for its own visibility read: %q", checked)
 		}
-		if want := "visibility " + strings.Join(visibility, " ") + "\n"; ghRan != want {
-			t.Errorf("gh recorded %q, want %q", ghRan, want)
+		if want := "visibility " + strings.Join(leakguard.VisibilityReadWithHeadersArgs("sjawhar/legion"), " ") + "\n"; ghRan != want {
+			t.Errorf("gh recorded %q, want the guard's REST read, %q", ghRan, want)
 		}
 	})
 
@@ -1352,8 +1353,12 @@ func TestGhVisibilityReadLetsThroughOnlyTheExactReads(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ghVisibilityRead(tc.argv, tc.env); got != tc.want {
+			repo, got := ghVisibilityRead(tc.argv, tc.env)
+			if got != tc.want {
 				t.Errorf("ghVisibilityRead(%q) = %v, want %v", tc.argv, got, tc.want)
+			}
+			if got && repo.String() != slug {
+				t.Errorf("ghVisibilityRead(%q) read the repository %q, want %s", tc.argv, repo, slug)
 			}
 		})
 	}
@@ -1409,6 +1414,97 @@ func TestLegionGhRunsTheGuardsVisibilityReadsWithTheRepositorysToken(t *testing.
 				}
 			})
 		}
+	}
+}
+
+// `legion gh` answers the shared check's own visibility read itself, by the guard's rule, and
+// prints what `gh api ... --jq .visibility` prints: the word and a newline, exit 0; or, where no
+// read answers, nothing on standard output and exit 1, which the check reads as an unknown
+// visibility and refuses. The guard's reads come back through `legion gh` to the stand-in gh: the
+// REST read, then, with the installation's REST limit spent, the GraphQL read, then a stand-in
+// git's ls-remote, which can answer only public. Neither stream carries the shared check's own
+// refusal, which only the check prints.
+func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrappers := ghWrapperDir(t)
+	const slug = "sjawhar/legion"
+	rest := func(visibility string) string {
+		return "printf '%s\\r\\n' 'HTTP/2.0 200 OK' 'X-Ratelimit-Remaining: 4999' ''\nprintf '%s\\n' " + visibility + "\nexit 0\n"
+	}
+	restSpent := fmt.Sprintf("printf '%%s\\r\\n' 'HTTP/2.0 403 Forbidden' 'X-Ratelimit-Remaining: 0' 'X-Ratelimit-Reset: %d' ''\n", time.Now().Add(30*time.Minute).Unix()) +
+		`printf '%s\n' '{"message":"API rate limit exceeded for installation ID 1."}'` + "\n" +
+		"echo 'gh: API rate limit exceeded for installation ID 1. (HTTP 403)' >&2\nexit 1\n"
+	restFails := "printf '%s\\r\\n' 'HTTP/2.0 500 Internal Server Error' ''\nprintf '%s\\n' '{\"message\":\"invented\"}'\nexit 1\n"
+	graphQL := func(body string, exit int) string {
+		return "echo graphql >> \"$GH_STANDIN_RECORD\"\n" +
+			"printf '%s\\r\\n' 'HTTP/2.0 200 OK' 'X-Ratelimit-Remaining: 12221' ''\n" +
+			"printf '%s' '" + body + "'\n" + fmt.Sprintf("exit %d\n", exit)
+	}
+	answers := func(visibility string) string {
+		return graphQL(`{"data":{"repository":{"nameWithOwner":"`+slug+`","visibility":"`+visibility+`"}}}`, 0)
+	}
+	graphQLLimited := graphQL(`{"errors":[{"type":"RATE_LIMITED","message":"API rate limit already exceeded"}]}`, 1)
+	graphQLNotFound := graphQL(`{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a Repository"}]}`, 1)
+	lists := "printf '%s\\tHEAD\\n' " + strings.Repeat("1", 40) + "\nexit 0\n"
+	refused := "echo 'fatal: could not read Username for '\\''https://github.com'\\'': terminal prompts disabled' >&2\nexit 128\n"
+	for _, tc := range []struct {
+		name          string
+		rest, graphql string
+		git           string
+		// want is what legion gh prints, empty where it answers nothing and exits 1; reads is
+		// the reads the stand-ins recorded, in order.
+		want  string
+		reads string
+	}{
+		{name: "REST answers public", rest: rest("public"), want: "public\n", reads: "rest\n"},
+		{name: "REST answers private", rest: rest("private"), want: "private\n", reads: "rest\n"},
+		{name: "REST is limited and GraphQL answers public", rest: restSpent, graphql: answers("PUBLIC"), want: "public\n", reads: "rest\ngraphql\n"},
+		{name: "REST is limited and GraphQL answers private", rest: restSpent, graphql: answers("PRIVATE"), want: "private\n", reads: "rest\ngraphql\n"},
+		{name: "REST is limited and GraphQL answers internal", rest: restSpent, graphql: answers("INTERNAL"), want: "internal\n", reads: "rest\ngraphql\n"},
+		{name: "REST and GraphQL are limited and ls-remote answers", rest: restSpent, graphql: graphQLLimited, git: lists, want: "public\n", reads: "rest\ngraphql\ngit\n"},
+		{name: "REST and GraphQL are limited and ls-remote is refused", rest: restSpent, graphql: graphQLLimited, git: refused, reads: "rest\ngraphql\ngit\n"},
+		{name: "REST is limited and GraphQL could not resolve the repository", rest: restSpent, graphql: graphQLNotFound, git: lists, reads: "rest\ngraphql\n"},
+		{name: "REST fails another way", rest: restFails, graphql: answers("PRIVATE"), git: lists, reads: "rest\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin, record := t.TempDir(), filepath.Join(t.TempDir(), "reads")
+			stub := filepath.Join(bin, "real-gh")
+			script := "#!/bin/sh\nfor last; do :; done\n" +
+				"if [ \"$last\" = --help ]; then\n" +
+				"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
+				"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
+				"if [ \"$4\" = graphql ]; then\n" + tc.graphql + "fi\n" +
+				"echo rest >> \"$GH_STANDIN_RECORD\"\n" + tc.rest
+			if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho git >> \"$GH_STANDIN_RECORD\"\n"+tc.git), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			code, stdout, stderr := legionGh(t, map[string]string{
+				"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+				"PATH": wrappers + ":" + bin + ":" + os.Getenv("PATH"), "GH_STANDIN_RECORD": record,
+				"XDG_STATE_HOME": t.TempDir(), leakguard.VisibilityReadVar: slug,
+			}, leakguard.VisibilityReadArgs(slug)...)
+			switch {
+			case tc.want != "" && (code != 0 || stdout != tc.want):
+				t.Errorf("legion gh = exit %d, stdout %q, stderr %q; want exit 0 and %q", code, stdout, stderr, tc.want)
+			case tc.want == "" && (code != 1 || stdout != ""):
+				t.Errorf("legion gh = exit %d, stdout %q, stderr %q; want exit 1 and nothing on standard output", code, stdout, stderr)
+			}
+			if got := readRecord(t, record); got != tc.reads {
+				t.Errorf("the stand-ins recorded the reads %q, want %q", got, tc.reads)
+			}
+			for _, refusal := range []string{"cannot read the visibility", "nothing is pushed"} {
+				if strings.Contains(stdout+stderr, refusal) {
+					t.Errorf("legion gh printed the shared check's own refusal %q: stdout %q, stderr %q", refusal, stdout, stderr)
+				}
+			}
+		})
 	}
 }
 

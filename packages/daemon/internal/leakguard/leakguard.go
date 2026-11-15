@@ -54,18 +54,21 @@ type Options struct {
 	// Check is the shared public leak check's path. Empty is the ordinary case, where every call
 	// resolves the check for itself (Resolve); a test fills it with a stand-in of its own.
 	Check string
-	// Visibility reads what GitHub reports a repository slug ("owner/name"). Nil is the ordinary
-	// case, the gh read the shared check itself makes (Guard.ghVisibility).
+	// Visibility is the REST read of what GitHub reports a repository slug ("owner/name"). Nil is
+	// the ordinary case, gh's REST read with headers (Guard.ghVisibility). It replaces that first
+	// read alone: a read it refuses for a spent rate limit still goes on to the GraphQL read and
+	// ls-remote (Guard.Visibility), which a test stands gh and git in for on Env's PATH.
 	Visibility func(ctx context.Context, slug string) (Visibility, error)
 	// Clock supplies the time and bounded wait of a rate-limited visibility read. Nil is wall time.
 	Clock Clock
 	// OnVisibility observes the source of a successful visibility answer. A caller uses it for
 	// audit logging and leaves it nil when it has no audit record of its own.
 	OnVisibility func(VisibilitySource)
-	// Env is the environment every child process starts from: the shared check, that gh read, and
-	// the git commands a push's records are read with. Nil means this process's own
-	// (os.Environ()). The guard adds to it the names that make a credential prompt fail closed
-	// (promptsNothing), and each child's own names on top of those.
+	// Env is the environment the guard's children start from: the shared check, the visibility
+	// reads, and the git commands a push's records are read with. Nil means this process's own
+	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote),
+	// which keeps only the names lsRemoteInherits allows. The guard adds to it the names that make
+	// a credential prompt fail closed (promptsNothing), and each child's own names on top of those.
 	Env []string
 }
 

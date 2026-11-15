@@ -98,6 +98,16 @@ func TestKeptVisibilityRejectsUntrustedEntries(t *testing.T) {
 	}
 }
 
+// boundPastAWait is a test's bound with room for the guard's wait for a near reset, which the
+// guard makes only where the caller's bound leaves room for it (waitFits). The test clock's wait
+// itself takes no time.
+func boundPastAWait(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*rateLimitWaitBound)
+	t.Cleanup(cancel)
+	return ctx
+}
+
 // A rate limit reset close enough to the call's bound is waited out once, then the visibility is
 // read again rather than treating an unchecked call as safe.
 func TestVisibilityRetriesRateLimitAtNearReset(t *testing.T) {
@@ -114,7 +124,7 @@ func TestVisibilityRetriesRateLimitAtNearReset(t *testing.T) {
 			}
 			return Public, nil
 		},
-	}).Visibility(bound(t), "invented-org/invented-repo")
+	}).Visibility(boundPastAWait(t), "invented-org/invented-repo")
 	if err != nil || visibility != Public {
 		t.Fatalf("read visibility = %q, %v; want public after the reset", visibility, err)
 	}
@@ -171,7 +181,7 @@ func TestVisibilityReadsWithoutRESTWhenTheRetryIsStillLimited(t *testing.T) {
 					}
 					return "", &rateLimitError{reset: latest}
 				},
-			}).Visibility(bound(t), "invented-org/invented-repo")
+			}).Visibility(boundPastAWait(t), "invented-org/invented-repo")
 			switch {
 			case tc.want != "":
 				if err != nil || visibility != tc.want {

@@ -107,9 +107,10 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// git-credential` is one: it returned above, before any of this, because it is git's
 	// credential protocol on standard input and standard output and reading that input would
 	// break it. The visibility reads of the shared check and of the guard (ghVisibilityRead) are
-	// another. The exact `gh api rate_limit` GET reads no repository content and GitHub excludes it
-	// from the limit, so it is the third; a method or endpoint other than that exact argv stays
-	// guarded.
+	// another; the shared check's own read this command answers itself, by the guard's rule
+	// (answerVisibilityRead). The exact `gh api rate_limit` GET reads no repository content and
+	// GitHub excludes it from the limit, so it is the third; a method or endpoint other than that
+	// exact argv stays guarded.
 	//
 	// A *leakguard.Refusal and a *leakguard.SetupFailure each refuse the call: a check that did
 	// not run has cleared nothing. Both exit 2, this command's status for a refusal made before
@@ -123,14 +124,16 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	var buffered []byte
 	if rateLimitRead {
 		// This read has no repository or body for the guard to inspect.
-	} else if ghVisibilityRead(args, env) {
+	} else if read, ok := ghVisibilityRead(args, env); ok {
 		// This process is the guard's own request. Its enclosing user call records the source of
 		// that request, so logging it again would count one wrapped call twice.
 		logCall = false
+		if slices.Equal(args, leakguard.VisibilityReadArgs(env[leakguard.VisibilityReadVar])) {
+			return answerVisibilityRead(ctx, read, stdout, stderr)
+		}
 		// Its token is the repository's, which ghVisibilityRead matched to the read's exact argv.
 		// The GraphQL read names that repository only in variables, read above as an owner alone.
-		owner, name, _ := strings.Cut(env[leakguard.VisibilityReadVar], "/")
-		target.owner, target.repo = strings.ToLower(owner), name
+		target.owner, target.repo = strings.ToLower(read.Owner()), read.Name()
 	} else {
 		guard := leakguard.New(leakguard.Options{
 			OnVisibility: func(source leakguard.VisibilitySource) {
@@ -276,31 +279,35 @@ func ghRateLimitRead(argv []string) bool {
 	return slices.Equal(argv, []string{"api", "rate_limit"})
 }
 
-// ghVisibilityRead is whether argv is one of the three visibility reads internal to the shared
-// public leak check and the guard. A pod's gh is `legion gh`, so checking any of them would
-// recurse: the callback makes another call through this command, and the other two are the
-// guard's own visibility lookup.
+// ghVisibilityRead is the repository argv reads, and whether argv is one of the three visibility
+// reads internal to the shared public leak check and the guard. A pod's gh is `legion gh`, so
+// checking any of them would recurse: the callback makes another call through this command, and
+// the other two are the guard's own visibility lookup.
 //
 // The callback is exactly:
 //
 //	gh api --hostname github.com repos/<slug> --jq .visibility
 //
-// The guard's REST read adds `--include` to receive rate-limit headers, and its GraphQL read,
-// made when the REST read is refused for a spent rate limit, is leakguard.VisibilityGraphQLArgs.
-// Each must name exactly the repository the variable names, and that name must parse as a
-// repository GitHub could serve, so a variable someone else set lets through one read of one
-// repository and nothing else.
-func ghVisibilityRead(argv []string, env map[string]string) bool {
+// and this command answers it itself (answerVisibilityRead). The guard's REST read adds
+// `--include` to receive rate-limit headers, and its GraphQL read, made when the REST read is
+// refused for a spent rate limit, is leakguard.VisibilityGraphQLArgs. Each must name exactly the
+// repository the variable names, and that name must parse as a repository GitHub could serve, so
+// a variable someone else set lets through one read of one repository and nothing else.
+func ghVisibilityRead(argv []string, env map[string]string) (ghrepo.Repository, bool) {
 	slug := env[leakguard.VisibilityReadVar]
 	if slug == "" {
-		return false
+		return ghrepo.Repository{}, false
 	}
-	if _, err := ghrepo.Parse(leakguard.VisibilityReadVar, slug); err != nil {
-		return false
+	repo, err := ghrepo.Parse(leakguard.VisibilityReadVar, slug)
+	if err != nil {
+		return ghrepo.Repository{}, false
 	}
-	return slices.Equal(argv, leakguard.VisibilityReadArgs(slug)) ||
+	if slices.Equal(argv, leakguard.VisibilityReadArgs(slug)) ||
 		slices.Equal(argv, leakguard.VisibilityReadWithHeadersArgs(slug)) ||
-		slices.Equal(argv, leakguard.VisibilityGraphQLArgs(slug))
+		slices.Equal(argv, leakguard.VisibilityGraphQLArgs(slug)) {
+		return repo, true
+	}
+	return ghrepo.Repository{}, false
 }
 
 // runGhChild runs the real gh as a child of this process and is the status to exit with: gh's
