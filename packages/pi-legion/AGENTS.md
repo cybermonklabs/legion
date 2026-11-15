@@ -101,7 +101,12 @@ its last entry, which outlast that entry's task and which a tree's own root carr
 architect's claim in every phase, and each tree root carries `architectStalls`, every arm of the
 daemon's architect-stalled reading that holds for its architect at that read, whether or not the
 controller was told of it, and a caller below 146 is served the issues without those three keys),
-after contract 141's experiment assignments
+after contract 144's memory guard
+(dispatch://INFRA-3557: the daemon's answer to an issue pod launcher's hello, `launcher_hello_ack`,
+carries the guard's settings in `memoryGuard`, and the launcher reports each process its guard
+ended in a new `launcher_memory_kill` frame, which names the process by its executable and no
+argument; a launcher that reads an acknowledgement with no settings runs no guard, and no shape the
+plugin parses moves), after contract 141's experiment assignments
 (dispatch://INFRA-2566: each issue of `GET /legion/v1/state` carries `assignments`, one
 `{experiment, variant, mode, drawnAt}` per experiment answer that applies to it, absent from an
 issue no experiment holds an answer for; the reader this plugin parses the state through takes
