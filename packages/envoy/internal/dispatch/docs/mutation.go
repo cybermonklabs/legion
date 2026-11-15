@@ -2258,8 +2258,9 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 	}
 	if !write.closedIssue {
 		// The open approval request follows the document version without leaving its thread or
-		// opening another Inbox row. The request remains waiting on its agent until it is handed
-		// back.
+		// opening another Inbox row. The request then waits on its agent until it is handed back,
+		// unless it waited on the person and this version stores byte for byte the text it named,
+		// which keeps it with the person (MoveApprovalAsk).
 		moved, err := MoveApprovalAsk(ctx, tx, s.events, artifactID, version, markdown, actor, s.serverURL)
 		if err != nil {
 			return versionWriteResult{}, err

@@ -6,4 +6,6 @@ body: |-
   block with `state="resolved"` and records the block's author. It records no edit notice and
   carries no approval. The reopen marks owed each document whose ask blocks wait for it. The
   settlement resumption arms at most 50 documents a pass, those no pass has tried first, and
-  migration `20261114100038` adds `doc_settlements_pending.tried_at` for that order.
+  migration `20261114100038` adds `doc_settlements_pending.tried_at` for that order. An approval
+  request that waits on the person keeps its turn, quietly, when a new version of its document
+  stores byte for byte the text the request names.
