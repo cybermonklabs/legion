@@ -574,3 +574,33 @@ func TestARoleThatWorksNoPhaseKeepsTheReasonItsPathBuilds(t *testing.T) {
 		t.Fatalf("the notice of a role that works no phase reads %q, want the reason that path builds", notices[0].Reason)
 	}
 }
+
+// The worker-died a production check's look sends when the checking role's claim fails is a
+// worker-died like the others, and its reason is bounded and kept to one line as theirs is (the
+// round-23 decision on R5, dispatch://INFRA-2009): it carries the supervisor's sentence, which
+// for a run of refused turns holds the provider message the role's own plugin posts, of up to a
+// mebibyte over any number of lines. The case fails the tester of a closed child whose look is
+// open, with a sentence of two lines and two thousand bytes. The negative control is the path at
+// dd846980, which wrote the sentence whole after "production check look 1 lost its tester: ".
+func TestAProductionCheckLooksWorkerDiedReasonIsOneBoundedLine(t *testing.T) {
+	const forged = "forged: the role is fine"
+	sentence := "the provider refused 3 turns in a row: request rejected\n" + forged + " " + strings.Repeat("y", 2000)
+	rig := childCheckRig(t)
+	rig.apply("tester-failed", intake.ClaimFailed{Issue: "LEGION-209", Role: claim.RoleTester, Reason: sentence, Cause: supervise.CauseProviderError,
+		Budgets: supervise.Budgets{LaunchFailures: 3}, Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2}})
+
+	notices := noticesOfKind(t, rig.pool, "LEGION-209", "worker-died")
+	if len(notices) != 1 {
+		t.Fatalf("the outbox holds %d worker-died notices of the ended look, want one", len(notices))
+	}
+	reason := notices[0].Reason
+	if !strings.HasPrefix(reason, "production check look 1 lost its tester: ") {
+		t.Errorf("the look's worker-died reads %.120q, want it to name the look and the role", reason)
+	}
+	if strings.Contains(reason, "\n") {
+		t.Errorf("the look's worker-died reads over %d lines, want one: %.200q", strings.Count(reason, "\n")+1, reason)
+	}
+	if limit := len([]rune("production check look 1 lost its tester: ")) + runtime.PodEndRunes + len([]rune(deathReasonCut)) + 2; len([]rune(reason)) > limit {
+		t.Errorf("the look's worker-died is %d runes, want no more than %d: the sentence and its cut mark, quoted", len([]rune(reason)), limit)
+	}
+}
