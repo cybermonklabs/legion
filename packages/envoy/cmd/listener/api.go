@@ -2570,6 +2570,15 @@ type registeredSession struct {
 	// before it relays again (sessionRelay.registered). It is read under the session's lock,
 	// from the entry the write below replaces.
 	epochChanged bool
+	// returning says this registration makes the session live again: the record this listener's
+	// cache held for it just before the registration wrote its entry read as not live -
+	// unresponsive, gone with its claims still standing, or not in the cache at all
+	// (session.SessionRegistry.Lookup). Such a holder answers again by registering and claims
+	// nothing, since its claim still names it, so the handler hands each role whose claim this
+	// registration renewed its kept lane (subscribeHandler). It is read under the session's lock,
+	// from the cache with no bucket call, whatever the delivery mode (listenerDeps.registerPass),
+	// and is false on every heartbeat of a session that was live already.
+	returning bool
 }
 
 // sessionEntryWriteError is the session entry's write failing (listenerDeps.registerPass). That
@@ -2806,6 +2815,13 @@ func (d *listenerDeps) registerPass(
 	if !slices.Equal(row.Topics, plan.Topics) {
 		return registered, false, nil, nil
 	}
+	// Whether the session was live before this registration is read before its entry is
+	// written, from this listener's cache with no bucket call, so a heartbeat pays nothing for
+	// it: only a registration that returns the session hands its roles' kept lanes over
+	// (subscribeHandler). A cache that trails the bucket can read a session another listener has
+	// just registered as not live still, which costs a handover that finds nothing to do.
+	_, before := d.sessions.Lookup(body.SessionID)
+	registered.returning = before != session.Live
 	// Every registration answered writes the session's entry: it holds the session's consumer
 	// and is relayed (sessionDelivery.register), which is the only way a message reaches a
 	// session. The entry is what tells every other reader that the session is registered, and
@@ -2858,6 +2874,21 @@ func (d *listenerDeps) registerPass(
 // reading a claim this listener failed to renew as one its holder abandoned
 // (roleOwnSessionVerdict); store.Registry.RenewalFailedWithin says what clears it and how long
 // it stands.
+//
+// A registration that makes its session live again also hands that session the kept lane of each
+// role whose claim it renewed (runKeptRoleDrain), as a claim that lands does (roleSetHandler).
+// Such a holder - one back from unresponsive, or from gone with its claim still standing - answers
+// again by registering and by nothing else: pi-envoy's and claude-envoy's reassertRole read the
+// role, find the session holding it and claim nothing. So the registration is the event that makes
+// the holder live again, and the handover starts off it rather than being left to the sweep, which
+// would hold the copies for up to roleWakeInterval and drop each one whose hour ended in that wait
+// while its holder was live (sweepKeptRoleLanes). It costs one handover per role renewed, and only
+// on a registration that returns its session (registeredSession.returning): a heartbeat of a
+// session that was live already starts none and costs nothing it did not cost before. A handover
+// reads the lane's head before it resolves the holder (readKeptLaneHead, two stream reads), so a
+// role with nothing kept for it costs those two reads, and a cache that trails the bucket and reads
+// a live session as not live costs at worst a handover that finds nothing to do. Each runs in a
+// goroutine under a context of its own, so this answer waits for none of it.
 func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -3040,6 +3071,15 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			logger.Warn("listener subscribe left a role claim unrenewed",
 				slog.String("session_id", body.SessionID),
 				slog.String("error", err.Error()))
+		}
+		// A registration that returns its session hands that session the kept lane of each role
+		// whose claim it renewed, since such a holder claims nothing when it answers again; a
+		// heartbeat of a session that was live already starts no handover
+		// (registeredSession.returning).
+		if registered.returning {
+			for _, role := range renewal.Renewed {
+				go runKeptRoleDrain(*d.delivery, role)
+			}
 		}
 		// The session is known for the next 30 days, with the topics just stored, which are the
 		// filter of the consumer the registration gave it: a registration reaches here only once

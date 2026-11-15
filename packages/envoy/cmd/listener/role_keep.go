@@ -327,13 +327,15 @@ func (g *roleKeepGuards) tryHold(role string) (func(), bool) {
 // (roles.Lapsed: unresponsive, or gone), on the publish route and the role lane alike. No
 // resolution releases a lapsed claim (dispatch://INFRA-392), and the copy kept for it still
 // reaches a live holder: a released Legion session claims its role again when it comes back, and
-// every claim the role route grants starts a handover of the lane (runKeptRoleDrain); the role
-// claim reaper frees a claim whose session is gone, so the role's next claim starts one; and the
-// sweep hands the lane over to a holder that reads live again (sweepKeptRoleLanes). No walk
-// forwards a copy past its hour (roleKeepWindow): a copy no live holder took in that hour is
-// dropped, and its sender is sent a dead letter (judgeKeptRoleCopy). The publish route's 202 names
-// the lapsed holder and its state (roleSend.kept), so its sender still learns what the 404
-// holder_lapsed told it.
+// every claim the role route grants starts a handover of the lane (runKeptRoleDrain); a holder
+// that answers again with its claim still standing registers and claims nothing, and the
+// registration that makes it live again starts a handover of each role whose claim it renewed
+// (subscribeHandler); the role claim reaper frees a claim whose session is gone, so the role's
+// next claim starts one; and the sweep hands the lane over to a holder that reads live again
+// (sweepKeptRoleLanes). No walk forwards a copy past its hour (roleKeepWindow): a copy no live
+// holder took in that hour is dropped, and its sender is sent a dead letter (judgeKeptRoleCopy).
+// The publish route's 202 names the lapsed holder and its state (roleSend.kept), so its sender
+// still learns what the 404 holder_lapsed told it.
 func roleKeepable(result roles.Resolution) bool {
 	return result.State == roles.Unclaimed || result.State == roles.Lapsed
 }
@@ -549,11 +551,12 @@ func keepRoleLaneMessage(cfg listenerDeliveryHandlerConfig, role string, item co
 }
 
 // runKeptRoleDrain hands role's kept lane over to whoever holds the role, under a context of its
-// own (roleKeepHandoverWindow), and logs a handover that failed. It is what the two starts of a
-// handover run in a goroutine of their own - the claim's (roleSetHandler) and the keep's
-// (keepForNextHolder) - since neither the claim's answer nor the keep's caller waits for a stream
-// read or a forward. The sweep starts its handovers itself, under the guard it already took
-// (sweepKeptRoleLanes). A copy's age is measured by the listener's clock (cfg.now).
+// own (roleKeepHandoverWindow), and logs a handover that failed. It is what the three starts of a
+// handover run in a goroutine of their own - the claim's (roleSetHandler), the registration's that
+// makes a holder live again (subscribeHandler) and the keep's (keepForNextHolder) - since neither
+// route's answer nor the keep's caller waits for a stream read or a forward. The sweep starts its
+// handovers itself, under the guard it already took (sweepKeptRoleLanes). A copy's age is
+// measured by the listener's clock (cfg.now).
 func runKeptRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
 	ctx, cancel := context.WithTimeout(context.Background(), roleKeepHandoverWindow)
 	defer cancel()
@@ -561,7 +564,8 @@ func runKeptRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
 }
 
 // reportKeptRoleDrain logs a handover that failed: the one line every start of a handover writes,
-// the claim's and the keep's (runKeptRoleDrain) and the sweep's (sweepKeptRoleLanes).
+// the claim's, the registration's and the keep's (runKeptRoleDrain) and the sweep's
+// (sweepKeptRoleLanes).
 func reportKeptRoleDrain(cfg listenerDeliveryHandlerConfig, role string, err error) {
 	if err == nil {
 		return
@@ -628,9 +632,10 @@ func roleKeepDrainBackoff(last time.Duration) time.Duration {
 }
 
 // drainKeptRole hands role's kept lane to the session that holds the role. It is the whole of a
-// handover under role's own guard: runKeptRoleDrain is the goroutine the claim route and the keep
-// run it in, and tests call it directly for one role's lane. How the handover ended is the
-// sweep's to read (keptRoleHandover), and no caller of this one reads it.
+// handover under role's own guard: runKeptRoleDrain is the goroutine the claim route, the
+// registration route and the keep run it in, and tests call it directly for one role's lane. How
+// the handover ended is the sweep's to read (keptRoleHandover), and no caller of this one reads
+// it.
 //
 // The guard is held for the handover rather than for each of its walks, so two handovers of one
 // role inside this listener run one after the other and the sweep can tell that a role's lane is
@@ -666,13 +671,14 @@ type keptRoleHandover struct {
 // (roles.ResolveHolder) within roleKeepHolderWindow only when that lane holds copies its cursor
 // has not reached, and walks the lane for the holder it found, handing that walk the head it
 // read (walkKeptRole). The lane is read before the holder, so a pass that finds the lane empty
-// ends the handover with no resolution at all: every claim of a role starts a handover and most
-// roles have nothing kept for them, which would otherwise cost each of those claims a claim read
-// and a session read, made from a goroutine its own answer has already outlived. The resolution
-// is taken after the pause the walk before it earned rather than before it: a holder resolved
-// before that pause can have released the role while it ran, and a walk started for it would find
-// that out only at its first read of the role's claim record (roleKeepDrainHolds), ending as a
-// walk that forwarded nothing and spending one of the handover's idle walks.
+// ends the handover with no resolution at all: every claim of a role, and every registration that
+// makes a holder of one live again, starts a handover, and most roles have nothing kept for them,
+// which would otherwise cost each of those starts a claim read and a session read, made from a
+// goroutine its own answer has already outlived. The resolution is taken after the pause the walk
+// before it earned rather than before it: a holder resolved before that pause can have released
+// the role while it ran, and a walk started for it would find that out only at its first read of
+// the role's claim record (roleKeepDrainHolds), ending as a walk that forwarded nothing and
+// spending one of the handover's idle walks.
 //
 // A resolution that finds no live holder - roles.Unclaimed, or roles.Lapsed - walks the lane with
 // no holder instead: the walk ends each copy whose hour ended, and a copy under a dead-letter claim
@@ -684,8 +690,9 @@ type keptRoleHandover struct {
 // raised again (keptRoleHandover).
 //
 // One walk of the lane is bounded - roleKeepDrainMax forwards, roleKeepScanMax copies read,
-// roleKeepDrainWindow of time - and nothing but a claim, a keep or a sweep ever starts a handover.
-// A keep happens only while a role has no live holder and a live holder claims no second time, so
+// roleKeepDrainWindow of time - and nothing but a claim, a keep, a registration that makes a
+// holder live again or a sweep ever starts a handover. A keep happens only while a role has no
+// live holder, a live holder claims no second time and its heartbeats start no handover, so
 // every bound a walk stopped on used to strand the copies behind it on the lane until they aged
 // out unread, with every one of their senders answered 202 kept. The handover walks the lane again
 // instead, for the role's holder as it is then, until the lane is drained, a walk with no holder
@@ -728,10 +735,10 @@ type keptRoleHandover struct {
 // included.
 //
 // now is the clock a copy's age is measured against, the listener's own (cfg.now, which main.go
-// sets to time.Now) wherever a claim, a keep or the sweep starts the handover: a test moves it
-// rather than keeping a copy for an hour, since the age is taken from the stream's own store time,
-// which no caller may choose. An outstanding claim's age is measured the same way, against the
-// time the stream stored the cursor that carries it.
+// sets to time.Now) wherever a claim, a registration, a keep or the sweep starts the handover: a
+// test moves it rather than keeping a copy for an hour, since the age is taken from the stream's
+// own store time, which no caller may choose. An outstanding claim's age is measured the same
+// way, against the time the stream stored the cursor that carries it.
 func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, now func() time.Time) (keptRoleHandover, error) {
 	var (
 		err, readErr   error
@@ -1255,7 +1262,9 @@ type keptCopyVerdict struct {
 //  2. A copy whose hour ended (roleKeepWindow) is dropped, counted and logged
 //     (keptRoleDroppedReport). It is owed a dead letter when the listener kept it and its publish
 //     named a sender session, unless no walk claimed it and its hour ended more than an hour
-//     before (roleKeepStaleAge): a copy a walk claimed is owed one whatever its age.
+//     before (roleKeepStaleAge): a copy a walk claimed is owed one whatever its age. A walk for a
+//     holder names that holder in the dead letter as the session that holds the role now
+//     (keptRoleDrop.holder), since telling the sender no session held the role would be false.
 //  3. A copy inside its hour under a dead letter's claim that this walk takes over is a delivery
 //     mode drop whose dead letter was not confirmed, and it is owed that dead letter again,
 //     whoever holds the role now and whether anyone does.
@@ -1288,7 +1297,7 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 			return keptCopyVerdict{step: keptCopyEnd, item: item, report: report}
 		}
 		return keptCopyVerdict{step: keptCopyDeadLetter, item: item, at: at, report: report,
-			drop: keptRoleDrop{reason: deadLetterExpired, forwarded: claim == keptCopyForwardClaimed}}
+			drop: keptRoleDrop{reason: deadLetterExpired, forwarded: claim == keptCopyForwardClaimed, holder: holder}}
 	}
 	if claim == keptCopyDeadLetterClaimed && owed {
 		// The walk that made the claim knew the holder that did not take the copy, and the
@@ -1347,8 +1356,10 @@ type keptRoleDrop struct {
 	// walk confirmed: the stream may have stored that forward, so the copy may have reached the
 	// holder.
 	forwarded bool
-	// holder is the live session that held the role and does not take the copy's delivery mode,
-	// empty where a walk sends a dead letter again and no longer knows that session.
+	// holder is, for a delivery mode drop, the live session that held the role and does not take
+	// the copy's delivery mode, empty where a walk sends a dead letter again and no longer knows
+	// that session. For an expired copy it is the live session a walk for a holder found when it
+	// dropped the copy, which holds the role now, and empty for a walk with no live holder.
 	holder string
 	// mode is the delivery mode that session does not take, empty where none could be read.
 	mode string
@@ -1364,6 +1375,8 @@ func (d keptRoleDrop) summary() string {
 		return "the session that held the role does not take its delivery mode"
 	case d.forwarded:
 		return "its hour ended before Envoy confirmed that the session that held the role got it"
+	case d.holder != "":
+		return "its hour ended before the session that holds the role now took it"
 	}
 	return "no session held the role in the hour that Envoy kept it"
 }
@@ -1375,6 +1388,9 @@ func (d keptRoleDrop) explanation() string {
 		if d.forwarded {
 			return "Envoy started to send the message to the session that held the role. " +
 				"The hour ended before Envoy confirmed that send. The message may have reached that session. " + readRole
+		}
+		if d.holder != "" {
+			return "The hour ended before session " + d.holder + ", which holds the role now, took the message. " + readRole
 		}
 		return "No session held the role in the hour that Envoy kept the message. " + readRole
 	}

@@ -201,6 +201,19 @@ func (r *hourRig) claim(l *hourListener, sessionID, role string, entry session.S
 	}
 }
 
+// register makes sessionID register through l's POST /v1/interests/subscribe, the heartbeat a
+// running client repeats (registerThrough), on l's route given the session-consumer connection
+// main's listener holds, without which that route refuses every registration
+// (setupSessionConsumers). It states no process, as the claims these tests make name none
+// (claimRoleWith through store.Registry.SetRole, and claim, whose request states no
+// client_instance_id), so the registration renews such a claim as a client's heartbeat renews the
+// claim naming its own process (store.Registry.RenewRoleClaims).
+func (r *hourRig) register(l *hourListener, sessionID string) {
+	r.t.Helper()
+	l.route.consumers = setupSessionConsumers(r.t, l.harness.client)
+	registerThrough(r.t, subscribeHandler(l.route, "test-machine", logging.New("test")), sessionID, "")
+}
+
 // deregister deletes sessionID's record through l's DELETE /v1/sessions/<id> and waits until both
 // listeners read the session as not live, so neither forwards to it from a session cache that has
 // not seen the delete yet.
@@ -779,8 +792,19 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
 
-		if letters := rig.envelopesOn(contracts.AgentSubject(sender)); len(letters) != 1 {
+		letters := rig.envelopesOn(contracts.AgentSubject(sender))
+		if len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want its one dead letter: %+v", len(letters), letters)
+		}
+		// The claim's walk is for the claimant, which holds the role live, so the dead letter
+		// names it and does not say that no session held the role.
+		assertDeadLetterOf(t, letters[0], role, held, held.stored.Add(time.Hour), rig.now(),
+			"The hour ended before session "+holder+", which holds the role now, took the message.")
+		if want := "Envoy dropped your message to role " + role + ": its hour ended before the session that holds the role now took it."; letters[0].PayloadSummary != want {
+			t.Fatalf("the dead letter's summary is %q, want %q", letters[0].PayloadSummary, want)
+		}
+		if strings.Contains(letters[0].Payload, hourExpiryExplained) {
+			t.Fatalf("the dead letter says no session held the role, while %s held it live:\n%s", holder, letters[0].Payload)
 		}
 		if stored := rig.envelopesOn(contracts.AgentSubject(holder)); len(stored) != 0 {
 			t.Fatalf("the claimant's agent subject holds %+v, want nothing: a copy past its hour is not forwarded", stored)
@@ -1245,7 +1269,9 @@ func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
 // message, to a role whose claim names a session that is gone or unresponsive is kept for it as
 // for a role nobody claims, and reaches that session once it registers again, or the session that
 // claims the role once the reaper has freed it. A publish with keep false to such a claim is
-// refused 404 holder_lapsed and keeps nothing.
+// refused 404 holder_lapsed and keeps nothing. Row (g) is R4's holder that answers again: its
+// registration through POST /v1/interests/subscribe, which renews its claim and claims nothing,
+// hands it the copy kept for it with no sweep running (subscribeHandler).
 func TestALapsedHolderIsKeptFor(t *testing.T) {
 	t.Run("a a publish to a role whose holder deleted its record is kept and reaches that session once it registers again", func(t *testing.T) {
 		rig := newHourRig(t)
@@ -1345,6 +1371,46 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 			t.Fatalf("the answer is %+v, want kept_reason holder_lapsed naming %s as unresponsive", answer, holder)
 		}
 		rig.returnTo(holder, answer.EventID, frames)
+	})
+
+	t.Run("g a holder that answers again gets its kept copy at its registration with no sweep", func(t *testing.T) {
+		var registered atomic.Int64
+		rig := newHourRig(t, session.WithSessionClock(func() time.Time { return time.Now().Add(time.Duration(registered.Load())) }))
+		const (
+			role   = "hour-lapsed-returning"
+			holder = "ses_hour_returning_holder"
+		)
+		frames := startStandIn(t, rig.uri, holder)
+		// The holder's record says it last registered past the live window and well inside the
+		// gone horizon: it claimed the role and stopped renewing.
+		registered.Store(int64(-(session.LiveWindow + 2*time.Minute)))
+		claimRoleWith(t, rig.listeners[0].harness, holder, role, liveRoleActEntry)
+		registered.Store(0)
+		// The keep starts a handover of its own on the listener that kept the copy
+		// (keepForNextHolder). Its guard is held for the whole row, so that handover waits and
+		// resolves no holder, and the one handover that can hand the copy over is the one the
+		// holder's registration starts on the other listener.
+		keeper := rig.listeners[1]
+		release, taken := keeper.cfg.roleKeepDrains.hold(context.Background(), role)
+		if !taken {
+			t.Fatalf("take role %s's handover guard on the listener that keeps its copy", role)
+		}
+		defer release()
+		answer := rig.kept(keeper, roleMessage(role, "ses_hour_returning_sender", "are you back yet?"))
+		if answer.KeptReason != "holder_lapsed" || answer.Holder != holder || answer.HolderState != "unresponsive" {
+			t.Fatalf("the answer is %+v, want kept_reason holder_lapsed naming %s as unresponsive", answer, holder)
+		}
+
+		rig.register(rig.listeners[0], holder)
+		waitFor(t, 20*time.Second, "the kept copy reaching "+holder+" at its registration", func() bool {
+			return len(rig.envelopesOn(contracts.AgentSubject(holder))) > 0
+		})
+		if held := rig.envelopesOn(contracts.AgentSubject(holder)); len(held) != 1 || held[0].EventID != answer.EventID {
+			t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", holder, held, answer.EventID)
+		}
+		if got := expectFrames(t, frames, 1, 100*time.Millisecond); got[0].EventID != answer.EventID {
+			t.Fatalf("%s received event %s, want the kept %s", holder, got[0].EventID, answer.EventID)
+		}
 	})
 }
 

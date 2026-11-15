@@ -173,8 +173,9 @@ func (l *keptLaneUnderClaim) keys() []string {
 
 // A role's kept lane is handed over whole, from the one claim that started it. One walk of the
 // lane forwards at most roleKeepDrainMax copies, and nothing starts another drain while the
-// holder stays live: a keep happens only while a role has no live holder, and a live holder
-// claims no second time. A lane of more copies than one walk forwards therefore used to strand
+// holder stays live: a keep happens only while a role has no live holder, a live holder claims no
+// second time, and a heartbeat of a holder that was live already starts no handover
+// (subscribeHandler). A lane of more copies than one walk forwards therefore used to strand
 // every copy past the twentieth until it aged out unread, with every sender answered 202 kept.
 func TestOneClaimHandsOverAKeptLaneLongerThanOneWalkOfIt(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
@@ -471,10 +472,11 @@ func sweptRoleWakes(t *testing.T, client *bus.Client, role string) []contracts.E
 // the stream holds a copy on, whether or not a session claims the role. A handover runs in a
 // goroutine of the process that started it, so a listener restarted or replaced mid-handover ends
 // it with copies behind its cursor, and nothing starts another: a keep happens only while a role
-// has no live holder, and a live holder claims no second time. One pass of the sweep hands such a
-// lane to the role's live holder with no claim and no keep behind it. The same pass walks a lane
-// whose role no session claims: its copy, inside its hour, reaches nobody, and it wakes its role
-// again (raiseKeptRoleWake), where the claimed lane, whose holder is live, wakes nothing.
+// has no live holder, a live holder claims no second time, and a heartbeat of a holder that was
+// live already starts no handover (subscribeHandler). One pass of the sweep hands such a lane to
+// the role's live holder with no claim and no keep behind it. The same pass walks a lane whose
+// role no session claims: its copy, inside its hour, reaches nobody, and it wakes its role again
+// (raiseKeptRoleWake), where the claimed lane, whose holder is live, wakes nothing.
 func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const (

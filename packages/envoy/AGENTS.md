@@ -3472,7 +3472,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   a failed read is no evidence that the role has no holder, nor that it has the holder a copy of the bucket names, and the lane has no redelivery, so a kept copy is how the message waits for a read that answers.
   The handover that keep starts resolves the holder again once a read answers and forwards the copy only to a live holder, and the kept-role sweep starts a handover when that one could not.
   A handover that resolves no live holder forwards nothing (`handOverKeptRole`):
-  the copy waits on the kept lane, with no delivery exception published for it, until a handover - a claim's, a keep's or the sweep's - finds a live holder, the holder answering again or a successor that claimed the role.
+  the copy waits on the kept lane, with no delivery exception published for it, until a handover - a claim's, a keep's, the sweep's, or the one a registration that makes the holder live again starts for each role whose claim it renewed (`subscribeHandler`) - finds a live holder, the holder answering again or a successor that claimed the role.
   That handover forwards the copy while it is inside its hour (`roleKeepWindow`).
   Once the copy is older, the first walk that reads it drops it with a WARN, whether or not a session holds the role, and sends the dead letter above when the copy names a sender session.
   A claim read whose keep failed is `delivery_failed`, as before.

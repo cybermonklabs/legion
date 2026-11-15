@@ -53,7 +53,11 @@ func TestHeartbeatKVWritesPerHeartbeat(t *testing.T) {
 		t.Fatalf("session cache not ready: %v", err)
 	}
 	routes := http.NewServeMux()
-	registerV1Routes(routes, &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}, "test-machine", logging.NewWithWriter("test", io.Discard))
+	// withRoleClaimDrain, because each session's first registration here makes it live and so
+	// hands the kept lane of the role it renewed to it (runKeptRoleDrain). That handover reads the
+	// empty lane and writes no bucket, and the heartbeats counted below, of sessions live already,
+	// start none.
+	registerV1Routes(routes, withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}), "test-machine", logging.NewWithWriter("test", io.Discard))
 
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)

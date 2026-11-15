@@ -3625,7 +3625,9 @@ const (
 )
 
 // interestRig is a listener's /v1 routes over the test's own notification stream, with topics
-// already registered for interestSession.
+// already registered for interestSession. The routes carry the delivery configuration a kept-lane
+// handover runs on (withRoleClaimDrain), as main's do: a registration that makes its session live
+// again hands it the kept lane of each role whose claim it renewed (runKeptRoleDrain).
 type interestRig struct {
 	deps *listenerDeps
 	mux  *http.ServeMux
@@ -3635,7 +3637,7 @@ func newInterestRig(t *testing.T, topics ...string) *interestRig {
 	t.Helper()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, map[string][]string{interestSession: topics}, nil)
-	deps := &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client)}
+	deps := withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client)})
 	mux := http.NewServeMux()
 	registerV1Routes(mux, deps, "test-machine", logging.New("test"))
 	return &interestRig{deps: deps, mux: mux}

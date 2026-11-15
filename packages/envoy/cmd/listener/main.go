@@ -1419,13 +1419,13 @@ func main() {
 		// (unplaceableDeferrals, unplaceable_delivery.go).
 		deferredUnplaceable: newUnplaceableDeferrals(),
 		// One guard per role for the life of the process, held for a whole handover of that
-		// role's kept lane, so the handovers a claim, a keep and the sweep start never walk the
-		// lane together, and the sweep can tell a lane this listener is draining already
-		// (roleKeepGuards, role_keep.go). Every handler and route built from this one value
-		// shares it, as they share the deferral set above.
+		// role's kept lane, so the handovers a claim, a keep, a registration that makes a holder
+		// live again and the sweep start never walk the lane together, and the sweep can tell a
+		// lane this listener is draining already (roleKeepGuards, role_keep.go). Every handler and
+		// route built from this one value shares it, as they share the deferral set above.
 		roleKeepDrains: newRoleKeepGuards(),
 		// The listener's one clock for a kept copy's hour: the keep's answer, and the
-		// handovers the claim, the keep and the sweep start (role_keep.go).
+		// handovers the claim, the keep, the registration and the sweep start (role_keep.go).
 		now: time.Now,
 	}
 	// The role lane's forwards run off its handler (roleForwarder): the handler resolves each
@@ -1624,12 +1624,13 @@ func main() {
 	}
 
 	// Phase 6b0: Walk every kept role lane on the stream. A handover of a role's kept lane runs in a
-	// goroutine of the process that started it, and only a claim or a keep starts one, so a
-	// listener restarted or replaced mid-handover leaves the copies behind its cursor for a claim
-	// that seldom comes inside roleKeepWindow: a live holder claims no second time. A role nobody
-	// holds is handed nothing at all, and its copies must still end at the end of their hour, each
-	// with a dead letter to its sender, while the copies still young wake the role again. This is
-	// the backstop over them, on the reapers' cadence and under their context, with a pass as the
+	// goroutine of the process that started it, and only a claim, a keep or a registration that
+	// makes a holder live again starts one, so a listener restarted or replaced mid-handover leaves
+	// the copies behind its cursor for one of those, which seldom comes inside roleKeepWindow: a
+	// live holder claims no second time and its heartbeats start none. A role nobody holds is
+	// handed nothing at all, and its copies must still end at the end of their hour, each with a
+	// dead letter to its sender, while the copies still young wake the role again. This is the
+	// backstop over them, on the reapers' cadence and under their context, with a pass as the
 	// listener starts. It costs one stream read a pass while no role has a kept lane
 	// (startKeptRoleSweep, role_keep_sweep.go), and its cadence is the interval the repeated wake
 	// report is named by (roleWakeInterval).
