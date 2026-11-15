@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -220,7 +222,8 @@ func TestLsRemoteReadsTheVisibilityWhenTheRateLimitIsSpent(t *testing.T) {
 				t.Fatalf("git ran %d times, want the one ls-remote", len(calls))
 			}
 			want := "--no-replace-objects -c core.quotePath=false -c core.hooksPath=/dev/null -c core.fsmonitor=false " +
-				"-c credential.helper= -c http.extraHeader= -c http." + theURL + ".extraHeader= ls-remote " + theURL + " HEAD"
+				"-c credential.helper= -c http.extraHeader= -c http." + theURL + ".extraHeader= -c http." + theURL + "//.extraHeader= " +
+				"ls-remote " + theURL + " HEAD"
 			if calls[0]["argv"] != want {
 				t.Errorf("git ran as\n%s\nwant\n%s", calls[0]["argv"], want)
 			}
@@ -290,7 +293,7 @@ func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 	} else if _, err := os.Stat(gitHome); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("git's HOME %s is still there after the read (%v), want it removed", gitHome, err)
 	}
-	if resets := " -c credential.helper= -c http.extraHeader= -c http." + theURL + ".extraHeader= ls-remote " + theURL + " "; !strings.Contains(" "+calls[0]["argv"]+" ", resets) {
+	if resets := " -c credential.helper= -c http.extraHeader= -c http." + theURL + ".extraHeader= -c http." + theURL + "//.extraHeader= ls-remote " + theURL + " "; !strings.Contains(" "+calls[0]["argv"]+" ", resets) {
 		t.Errorf("git ran as %q, want the credential helper and the extra headers emptied in front of ls-remote %s", calls[0]["argv"], theURL)
 	}
 	askpass := calls[0]["askpass"]
@@ -349,9 +352,7 @@ func TestLsRemoteKeepsTheCallersTransportButNotItsPrompts(t *testing.T) {
 // with an Authorization header (measured by hand with git 2.47.3 and the caller's HOME); here the
 // server sees no such header, and the answer is private.
 func TestLsRemoteSendsNoNetrcCredential(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("no git on this machine")
-	}
+	git := realGit(t)
 	var mu sync.Mutex
 	var requests, authorized int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -373,7 +374,7 @@ func TestLsRemoteSendsNoNetrcCredential(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	guard := New(Options{Env: append(fixtureenv.Isolated(home), "GIT_ALLOW_PROTOCOL=http", "NETRC="+named)})
+	guard := New(Options{Env: loopbackEnv(home, pathWith(filepath.Dir(git)), "NETRC="+named)})
 	visibility, err := guard.lsRemote(bound(t), server.URL, "private/invented-repo")
 	if err != nil || visibility != Private {
 		t.Fatalf("read %q, %v; want private", visibility, err)
@@ -389,7 +390,8 @@ func TestLsRemoteSendsNoNetrcCredential(t *testing.T) {
 }
 
 // The read without REST ends at its own cap when git never answers, inside a caller's bound
-// that would let it run longer, and the call is refused naming the spent limit and git's stop.
+// that would let it run longer, and the call is refused naming the spent limit and git's stop by
+// a bound no longer than that cap.
 func TestLsRemoteThatHangsEndsAtItsOwnBound(t *testing.T) {
 	saved := lsRemoteBound
 	lsRemoteBound = 2 * time.Second
@@ -410,56 +412,76 @@ func TestLsRemoteThatHangsEndsAtItsOwnBound(t *testing.T) {
 	if err == nil {
 		t.Fatal("the visibility read passed while git never answered")
 	}
-	for _, want := range []string{
-		"the installation's rate limit is spent until " + reset.Format(time.RFC3339),
-		"git ran 2 s and was stopped by its bound of 2 s",
-	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the failure %q does not say %q", err, want)
-		}
+	if want := "the installation's rate limit is spent until " + reset.Format(time.RFC3339); !strings.Contains(err.Error(), want) {
+		t.Errorf("the failure %q does not say %q", err, want)
 	}
+	if got := stopBound(t, err); got > 2 {
+		t.Errorf("git was stopped by a bound of %d s, want the read's own %s, not the caller's minute", got, lsRemoteBound)
+	}
+}
+
+// stopBound is the bound, in whole seconds, that err says git was stopped by, and fails the test
+// where err says no such stop. The bound is read against a ceiling, not for its exact seconds: on
+// a loaded machine git can start late in its bound, which then gives it less than the whole.
+func stopBound(t *testing.T, err error) int64 {
+	t.Helper()
+	match := regexp.MustCompile(`git ran -?\d+ s and was stopped by its bound of (-?\d+) s`).FindStringSubmatch(err.Error())
+	if match == nil {
+		t.Fatalf("the failure %q says no stop of git by a bound", err)
+	}
+	seconds, parseErr := strconv.ParseInt(match[1], 10, 64)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	return seconds
 }
 
 // The read without REST also ends when the caller's context ends, before its own cap: a caller
 // that cancels while git hangs, and one whose deadline comes before lsRemoteBound, each get the
 // call back at once, refused naming the spent limit, its reset and git's stop. Nothing is kept,
-// so the next call reads the visibility again. lsRemoteBound keeps its own two minutes here.
+// so the next call reads the visibility again. lsRemoteBound keeps its own two minutes here. Each
+// caller's context ends only once the stand-in git has started, so it is a running git the end
+// stops on a loaded machine too.
 func TestLsRemoteStopsWithTheCallersContext(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// caller is the caller's context, given the file the stand-in git writes before it
 		// hangs.
 		caller func(t *testing.T, started string) context.Context
-		// stop is what the failure says of git's stop.
-		stop string
+		// stop checks what the failure says of git's stop.
+		stop func(t *testing.T, err error)
 	}{
 		{
 			name: "the caller cancels",
 			caller: func(t *testing.T, started string) context.Context {
 				ctx, cancel := context.WithCancel(bound(t))
 				t.Cleanup(cancel)
-				// The cancel waits for git to start, so that it is git the cancel stops.
-				go func() {
-					for ctx.Err() == nil {
-						if _, err := os.Stat(started); err == nil {
-							cancel()
-							return
-						}
-						time.Sleep(10 * time.Millisecond)
-					}
-				}()
+				whenWritten(ctx, started, cancel)
 				return ctx
 			},
-			stop: "and was stopped by a cancel",
+			stop: func(t *testing.T, err error) {
+				if want := "and was stopped by a cancel"; !strings.Contains(err.Error(), want) {
+					t.Errorf("the failure %q does not say %q", err, want)
+				}
+			},
 		},
 		{
 			name: "the caller's deadline comes first",
-			caller: func(t *testing.T, _ string) context.Context {
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			caller: func(t *testing.T, started string) context.Context {
+				deadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				t.Cleanup(cancel)
+				ctx := &deadlineOnceStarted{Context: deadline, done: make(chan struct{})}
+				whenWritten(bound(t), started, func() {
+					<-deadline.Done()
+					close(ctx.done)
+				})
 				return ctx
 			},
-			stop: "and was stopped by its bound of",
+			stop: func(t *testing.T, err error) {
+				if got := stopBound(t, err); got > 2 {
+					t.Errorf("git was stopped by a bound of %d s, want the caller's deadline of 2 s, not the read's own %s", got, lsRemoteBound)
+				}
+			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -484,16 +506,54 @@ func TestLsRemoteStopsWithTheCallersContext(t *testing.T) {
 			for _, want := range []string{
 				"the installation's rate limit is spent until " + reset.Format(time.RFC3339),
 				"the read without REST could not answer: git ran ",
-				tc.stop,
 			} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the failure %q does not say %q", err, want)
 				}
 			}
+			tc.stop(t, err)
 			if _, err := os.Stat(guard.visibilityCachePath(theRepo)); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("a visibility was kept for the refused read (%v), want none", err)
 			}
 		})
+	}
+}
+
+// whenWritten calls then once the file at path is there, which it looks for every 10 ms, and
+// never where ctx ends first.
+func whenWritten(ctx context.Context, path string, then func()) {
+	go func() {
+		for {
+			if _, err := os.Stat(path); err == nil {
+				then()
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}()
+}
+
+// deadlineOnceStarted is a caller's context with a deadline, which ends at that deadline but not
+// before the test closes done once the stand-in git has started: on a loaded machine git can start
+// after a short deadline has passed, and an end before git starts stops no git. Its Deadline and
+// Value are the embedded context's, so the guard reads the deadline as the caller's bound.
+type deadlineOnceStarted struct {
+	context.Context
+	done chan struct{}
+}
+
+func (c *deadlineOnceStarted) Done() <-chan struct{} { return c.done }
+
+func (c *deadlineOnceStarted) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
 	}
 }
 
@@ -642,17 +702,35 @@ func gitHubStandIn(t *testing.T) *httptest.Server {
 	return server
 }
 
+// realGit is the absolute path of this machine's git, resolved once for the test, which is
+// skipped where there is none.
+func realGit(t *testing.T) string {
+	t.Helper()
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git on this machine")
+	}
+	return git
+}
+
+// loopbackEnv is the environment of a guard whose real git reads a server of the test's own on
+// 127.0.0.1, with home as the caller's home, path as its PATH entry and extra on top. The
+// process's own git may use local files alone (TestMain) and the server is http, and no proxy the
+// machine names may stand between git and the server.
+func loopbackEnv(home, path string, extra ...string) []string {
+	env := append(fixtureenv.Isolated(home), path, "GIT_ALLOW_PROTOCOL=http",
+		"NO_PROXY=127.0.0.1,localhost", "no_proxy=127.0.0.1,localhost")
+	return append(env, extra...)
+}
+
 // The lines lsRemote reads are the ones a real git prints. A server of the test's own stands in
 // for GitHub's smart HTTP endpoint (gitHubStandIn), and the git on this machine reads it with the
 // environment the guard gives it: a repository whose refs it lists is public, one it answers 401
 // for is private, and a 403 or a 404 is no answer.
 func TestLsRemoteReadsWhatARealGitPrints(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("no git on this machine")
-	}
+	git := realGit(t)
 	server := gitHubStandIn(t)
-	// The process's own git may use local files alone (TestMain); this test's server is http.
-	guard := New(Options{Env: append(fixtureenv.Isolated(t.TempDir()), "GIT_ALLOW_PROTOCOL=http")})
+	guard := New(Options{Env: loopbackEnv(t.TempDir(), pathWith(filepath.Dir(git)))})
 	for _, tc := range []struct {
 		owner string
 		want  Visibility
@@ -682,31 +760,42 @@ func TestLsRemoteReadsWhatARealGitPrints(t *testing.T) {
 	}
 }
 
-// No extra header a git wrapper adds reaches the read without REST, however closely its setting
-// names the URL. `legion git --after` runs the host's next git on PATH, and a wrapper there can
-// put a -c of its own in front of the guard's arguments. Here the machine's real git sits behind
-// such a wrapper, which names the stand-in server's own URL for an Authorization header. The
-// server refuses that header 401 for its public repository, as GitHub refuses a bad credential,
-// and the read still answers public. A generic `-c http.extraHeader=` does not clear a header
-// named for the host: without the reset that names the repository's whole URL, this read
-// answers private (measured with git 2.47.3), which would skip the rule pass for a public
-// repository.
+// An extra header a git wrapper adds does not reach the read without REST, whether the wrapper
+// sets it for no URL, for the host, or for the repository's URL with none, one or two slashes
+// after it. `legion git --after` runs the host's next git on PATH, and a wrapper there can put a
+// -c of its own in front of the guard's arguments. Here the machine's real git sits behind such a
+// wrapper, which adds an Authorization header. The stand-in server refuses that header 401 for
+// its public repository, as GitHub refuses a bad credential, and the read still answers public
+// in every case. With the generic reset alone, the host's case reads private; with the generic
+// reset and the one for the repository's URL but not the `//` one, the last case reads private
+// (both measured with git 2.47.3). Either would skip the rule pass for a public repository.
 func TestLsRemoteClearsTheHeaderAGitWrapperAdds(t *testing.T) {
-	git, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("no git on this machine")
-	}
+	git := realGit(t)
 	server := gitHubStandIn(t)
-	bin, record := t.TempDir(), filepath.Join(t.TempDir(), "record")
-	writeProgram(t, bin, "git", "echo ran >> '"+record+"'\n"+
-		"exec '"+git+"' -c 'http."+server.URL+"/.extraHeader=Authorization: Basic aW52ZW50ZWQ6aW52ZW50ZWQ=' \"$@\"\n")
-	// The process's own git may use local files alone (TestMain); this test's server is http.
-	guard := New(Options{Env: append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "GIT_ALLOW_PROTOCOL=http")})
-	visibility, err := guard.lsRemote(bound(t), server.URL, "public/invented-repo")
-	if err != nil || visibility != Public {
-		t.Fatalf("read %q, %v; want public: the wrapper's header reached the request", visibility, err)
-	}
-	if got := countLines(t, record); got != 1 {
-		t.Errorf("the wrapper ran %d times, want once: the read must go through it", got)
+	repo := server.URL + "/public/invented-repo.git"
+	for _, tc := range []struct {
+		name string
+		// key is the setting the wrapper adds the header under.
+		key string
+	}{
+		{name: "for no URL", key: "http.extraHeader"},
+		{name: "for the host", key: "http." + server.URL + "/.extraHeader"},
+		{name: "for the repository's URL", key: "http." + repo + ".extraHeader"},
+		{name: "for the repository's URL and a slash", key: "http." + repo + "/.extraHeader"},
+		{name: "for the repository's URL and two slashes", key: "http." + repo + "//.extraHeader"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin, record := t.TempDir(), filepath.Join(t.TempDir(), "record")
+			writeProgram(t, bin, "git", "echo ran >> '"+record+"'\n"+
+				"exec '"+git+"' -c '"+tc.key+"=Authorization: Basic aW52ZW50ZWQ6aW52ZW50ZWQ=' \"$@\"\n")
+			guard := New(Options{Env: loopbackEnv(t.TempDir(), pathWith(bin))})
+			visibility, err := guard.lsRemote(bound(t), server.URL, "public/invented-repo")
+			if err != nil || visibility != Public {
+				t.Fatalf("read %q, %v; want public: the wrapper's header reached the request", visibility, err)
+			}
+			if got := countLines(t, record); got != 1 {
+				t.Errorf("the wrapper ran %d times, want once: the read must go through it", got)
+			}
+		})
 	}
 }

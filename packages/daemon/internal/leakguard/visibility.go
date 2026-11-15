@@ -315,18 +315,24 @@ func (g *Guard) lsRemoteVisibility(ctx context.Context, slug string, limited *ra
 //     repository's configuration;
 //   - `-c credential.helper=` empties the helper list again on the command line, after anything
 //     a wrapper of the pod's git puts in front of it;
-//   - `-c http.extraHeader=` and `-c http.<origin>/<slug>.git.extraHeader=`, the second naming
-//     the exact URL the read requests, empty the extra headers again after any that a wrapper's
-//     own `-c` added for any URL; outside the image, `legion git --after` runs the host's next
-//     git on PATH, a wrapper of its own included. git keeps the setting whose URL matches the
-//     request most closely and passes over a later one that matches less closely, so a generic
-//     reset alone leaves a header named for the host. Measured with git 2.47.3 against a public
-//     repository on github.com, with a wrapper's header carrying an invented token: a generic
-//     header made ls-remote print lsRemoteRefused's line, and exit 0 after the generic reset; a
-//     header named for http.https://github.com/ printed the line after the generic reset too,
-//     and exited 0 after the reset naming the repository's whole URL. No setting that applies to
-//     the request names it more closely than its whole URL, and of two settings that name it as
-//     closely the later wins, so the second reset also clears a header named for that URL;
+//   - `-c http.extraHeader=`, `-c http.<origin>/<slug>.git.extraHeader=` and, last,
+//     `-c http.<origin>/<slug>.git//.extraHeader=` empty the extra headers again after one that a
+//     wrapper's own `-c` added; outside the image, `legion git --after` runs the host's next git
+//     on PATH, a wrapper of its own included. git keeps the setting whose URL matches the request
+//     most closely and passes over a later one that matches less closely, so a generic reset
+//     alone leaves a header set for the host. git matches http settings against the repository's
+//     URL with a slash appended, and strips one trailing slash from a setting's URL, so a setting
+//     for `<origin>/<slug>.git//` matches more closely than one for the URL itself. The `//`
+//     reset matches as closely as any setting can, and it comes last, which wins a tie. Measured
+//     with git 2.47.3 against a public repository on github.com, with a wrapper's header carrying
+//     an invented token, after `-c credential.helper=`: a generic header made ls-remote print
+//     lsRemoteRefused's line, and it exited 0 after the generic reset; a header for
+//     https://github.com/ printed the line after the generic reset too, and exited 0 after the
+//     reset for the repository's URL; a header for that URL with `//` appended, also with the URL
+//     in capitals, with :443, or with a letter %-escaped, printed the line after both of those
+//     resets, and exited 0 after the `//` reset. Not covered: a wrapper that rewrites the URL
+//     with its own url.<base>.insteadOf to another github.com path, and sets a header for the
+//     rewritten URL, which these resets do not name;
 //   - the guard's prompt settings (promptsNothing) leave git's askpass and its terminal prompt
 //     nothing to answer with, and the URL holds no user and no token.
 //
@@ -346,7 +352,9 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 	defer cancel()
 	url := origin + "/" + slug + ".git"
 	status, printed, err := g.run(ctx, child{
-		argv:    gitArgv("-c", "credential.helper=", "-c", "http.extraHeader=", "-c", "http."+url+".extraHeader=", "ls-remote", url, "HEAD"),
+		argv: gitArgv("-c", "credential.helper=",
+			"-c", "http.extraHeader=", "-c", "http."+url+".extraHeader=", "-c", "http."+url+"//.extraHeader=",
+			"ls-remote", url, "HEAD"),
 		dir:     "/",
 		inherit: lsRemoteInherits,
 		env:     []string{"HOME=" + home, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "LC_ALL=C"},
