@@ -162,7 +162,7 @@
  * own `await` is the wait. That holds only where the `await` is outermost in what the name is
  * bound to, under parentheses and `as` alone.
  *
- * The scan refuses three shapes for a fault they do not have, which are false refusals:
+ * The scan refuses four shapes for a fault they do not have, which are false refusals:
  *
  * - an `await` that stands deeper in what a name is bound to -
  *   `const code = (await runBounded(...)).code`. The name is read as bound to the call, so it is
@@ -176,10 +176,17 @@
  * - a row body that is neither inline nor a function the file declares - `helpers.body`,
  *   `importedFn`, `made`. `isBody` reads it as no body, so `limitOf` reads it as the row's
  *   limit, and the row is refused as one whose limit is no call of `rowLimit` and has no reason
- *   on the line above it.
+ *   on the line above it;
+ * - a limit Bun honours in a spelling the scan does not read: the `timeout` of an options object
+ *   under a quoted or a computed key or in a spread - `{ "timeout": n }`, `{ ["timeout"]: n }`,
+ *   `{ ...{ timeout: n } }` - and a file limit called through a member in brackets -
+ *   `bun["setDefaultTimeout"](n)`. The scan reads no limit there. So a row that waits for a
+ *   bounded child and states its limit so, its own or the file's, is refused as a row that
+ *   states no limit and that the lane's `--timeout` stops. Bun stops it at the limit written
+ *   there. No refusal names such a limit itself, even one with no reason on the line above it.
  *
- * No test file of this directory writes any of the three. The reading of limits misreads these
- * shapes, and no refusal names them:
+ * No test file of this directory writes any of the four. The reading of limits misreads these
+ * shapes, and no refusal says that it misread them:
  *
  * - a `setDefaultTimeout` or `jest.setTimeout` written after a top-level row or hook. It does
  *   not cover that row, since Bun applies it only to what is registered after the call, yet the
@@ -193,12 +200,11 @@
  *   writes;
  * - a 0 written as `0.0`, `0x0` or `0e0`. Bun 1.4.4 reads each as it reads `0`, as no clock, yet
  *   the scan reads as a 0 only a limit written in the digit 0 and underscores, `0` or `0_000`,
- *   and reads these as a limit that stops a row;
- * - a limit Bun honours in a spelling the scan does not read: the `timeout` of an options object
- *   under a quoted or a computed key or in a spread - `{ "timeout": n }`, `{ ["timeout"]: n }`,
- *   `{ ...{ timeout: n } }` - and a call reached through a member in brackets -
- *   `test["each"](t)(..., n)`, `bun["test"](..., n)`, `bun["setDefaultTimeout"](n)`. The scan
- *   reads plain keys and dotted members, so a limit written so is no limit it reads.
+ *   and reads these as a limit that stops a row, so a refusal of such a limit says that it stops
+ *   the row;
+ * - a limit Bun honours in a call reached through a member in brackets -
+ *   `test["each"](t)(..., n)`, `bun["test"](..., n)`. The scan reads no member written in
+ *   brackets, so it reads neither call as a row. No refusal names either call.
  *
  * No test file of this directory writes `setDefaultTimeout` or `jest.setTimeout`, or any of
  * those spellings.

@@ -2140,16 +2140,25 @@ neither inline nor a function the file declares (`test("t", helpers.body)`,
 `test("t", importedFn)`, `test("t", made)`). A name bound to an
 awaited call (`const options = await helpOptions()`) is no wait either, since it
 holds what the call answered, but only where the `await` is outermost.
-The guard refuses three shapes for a fault they do not have, and no test file
+The guard refuses four shapes for a fault they do not have, and no test file
 under `e2e/__tests__/` writes any of them:
 `const code = (await runBounded(...)).code` is read as a waiting name, so a row
 that refers to `code` and states no `rowLimit` is refused although `code` is a
 number; a call is matched to a waiting function of the file by its bare name, so
 a row that declares a name of its own that a waiting function of the file also
-bears (`const helper = ...`) and calls it is refused the same way; and a row
+bears (`const helper = ...`) and calls it is refused the same way; a row
 body that is neither inline nor a function the file declares is read as the
-row's limit, and refused as a limit with no reason. The guard misreads these
-limits, and no refusal names them: a `setDefaultTimeout` or `jest.setTimeout`
+row's limit, and refused as a limit with no reason; and the guard reads no
+`timeout` under a quoted or computed key or in a spread (`{ "timeout": n }`,
+`{ ["timeout"]: n }`, `{ ...{ timeout: n } }`), and no file limit called
+through a member in brackets (`bun["setDefaultTimeout"](n)`), though Bun
+honours each.
+So a row that waits and states its limit so, its own or the file's, is refused
+as a row that states no limit and that the lane's `--timeout` stops.
+Bun stops it at the limit it wrote.
+No refusal names such a limit itself, even one with no reason.
+The guard misreads these limits, and no refusal says that it misread them:
+a `setDefaultTimeout` or `jest.setTimeout`
 written after a top-level row or hook does not cover that row, yet the guard
 reads no order and reads the row as covered; a `setDefaultTimeout` called inside
 a hook or a row body is read as the file's limit, though Bun 1.4.4 applies it
@@ -2157,11 +2166,11 @@ to none of the file's rows; where a file writes several limits, Bun applies to
 each row the last one called before it, while the guard reads the largest
 `rowLimit` among them, or names every one where none is a `rowLimit`; a 0
 written `0.0`, `0x0` or `0e0` sets no clock in Bun 1.4.4, as `0` does, yet the
-guard reads it as a limit that stops a row; and Bun honours a limit the guard
-does not read: a quoted or computed key or a spread (`{ "timeout": n }`,
-`{ ["timeout"]: n }`, `{ ...{ timeout: n } }`), and a member in brackets
-(`test["each"](t)(..., n)`, `bun["test"](..., n)`,
-`bun["setDefaultTimeout"](n)`). No test file under `e2e/__tests__/` writes
+guard reads it as a limit that stops a row, and a refusal of such a limit says
+that it stops the row; and Bun honours a limit in a call through a member in
+brackets (`test["each"](t)(..., n)`, `bun["test"](..., n)`), but the guard
+reads neither call as a row, so no refusal names either.
+No test file under `e2e/__tests__/` writes
 `setDefaultTimeout` or `jest.setTimeout`, or any of those spellings.
 `e2e/__tests__/fixtures/row-limits.fixture.ts` and
 `e2e/__tests__/fixtures/row-limits-spellings.fixture.ts` are its planted
