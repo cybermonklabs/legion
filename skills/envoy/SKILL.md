@@ -19,8 +19,12 @@ Delivery is at-least-once and can come out of order across topics: drop a repeat
 
 - Read the `recipient` in the send result, the session Envoy targeted: if it is not the one you meant, resend to the right id.
 
+- A send answered `queued <id> for <recipient>: the session is stopped …` (`state: stopped`) went to a session that is not running, and nothing of its claims changes.
+  Do not send that message again, because a second send stores a second copy for that session to read.
+  What each send answer means: `skill://envoy/references/deliveries.md`, "What a publish and a send answer".
+
 - When `envoy_send` says the send is not confirmed delivered, send the same message again with the `idempotency_key` the error names, within 72 hours:
-  Envoy drops it as a repeat if the first copy arrived, and the result says when an earlier attempt was already stored.
+  Envoy drops it as a repeat if the first copy arrived, and the result then says the earlier attempt was already stored (its text begins `sent to <recipient> once` for a running session, `queued once for <recipient>` for a stopped one).
   A resend without that key can deliver the message twice.
   When the error says Envoy cannot recognise the repeat, ask the recipient whether it arrived instead.
 
@@ -151,6 +155,9 @@ Every topic starts with `notifications.`.
   A team topic is not kept for a session that subscribes later: a consumer starts where its session is, not at the beginning.
   Every other `notifications.` topic no source in the table uses is refused by name, at publish and at subscribe, because no session would ever receive it.
   A topic outside `notifications.` is refused at publish alone: you may subscribe to one, and nothing is stored under it, so you receive nothing on it.
+
+- A publish answered `published <id>; no other session subscribes to <topic>, so no other session gets it` reached nobody: reach whoever you meant another way.
+  What the counts in a publish answer mean: `skill://envoy/references/deliveries.md`, "What a publish and a send answer".
 
 - How a role claim survives a resume, a fork or a dead process: `skill://envoy/references/roles.md`.
 

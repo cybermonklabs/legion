@@ -70,7 +70,7 @@ func newSessionConsumerReapRig(t *testing.T) *sessionConsumerReapRig {
 	}
 	t.Cleanup(delivery.close)
 	delivery.relay = &recordingRelay{}
-	consumers, err := bus.ConnectSessionConsumers([]string{url}, 0)
+	consumers, err := bus.ConnectSessionConsumers([]string{url}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)
 	}

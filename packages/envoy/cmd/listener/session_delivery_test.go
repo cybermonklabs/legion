@@ -58,7 +58,7 @@ func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessi
 		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}
 	t.Cleanup(delivery.close)
-	observer, err := bus.ConnectSessionConsumers([]string{url}, 0)
+	observer, err := bus.ConnectSessionConsumers([]string{url}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)
 	}
@@ -1132,17 +1132,7 @@ func listenerGrantBeforeSessionConsumers() []string {
 		"$JS.API.INFO",
 	}
 	for _, bucket := range []string{bus.InterestBucket, bus.RoleClaimBucket, bus.SessionBucket, bus.CIStateBucket} {
-		stream := "KV_" + bucket
-		allow = append(allow,
-			"$JS.API.STREAM.INFO."+stream,
-			"$JS.API.STREAM.CREATE."+stream,
-			"$JS.API.DIRECT.GET."+stream+".>",
-			"$JS.API.STREAM.MSG.GET."+stream,
-			"$KV."+bucket+".>",
-			"$JS.API.CONSUMER.CREATE."+stream+".>",
-			"$JS.API.CONSUMER.DELETE."+stream+".>",
-			"$JS.FC."+stream+".>",
-		)
+		allow = append(allow, bucketGrant(bucket)...)
 	}
 	return append(allow, "$JS.API.STREAM.PURGE.KV_"+bus.InterestBucket)
 }

@@ -306,6 +306,10 @@ func TestGitHubAppMintAcceptsPKCS8Key(t *testing.T) {
 // rate limit, on a release with no narrowing as on a narrowed one, is no verdict on the App and
 // not its owner's to fix, so a rate-limited 4xx is upstream, never refused: GitHub's primary limit
 // (a 403 with X-RateLimit-Remaining: 0), a 429, and a 403 whose body names its secondary limit.
+// Each row mints under a Retry on a clock the test sets, and names the attempts it made: a 502
+// and a GitHub it cannot reach are tried three times; a refusal once; and each rate limit here
+// names no wait, which counts as a minute and so ends the mint at its first attempt. A stored
+// value the minter refuses makes no attempt at all.
 func TestGitHubAppMintNamesTheClassOfEachFailure(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
@@ -335,19 +339,22 @@ func TestGitHubAppMintNamesTheClassOfEachFailure(t *testing.T) {
 		value     string
 		class     string
 		rateLimit bool
+		attempts  int
 	}{
-		"stored value is not JSON":           {secrets.GitHubApp{}, "not json", "stored-value", false},
-		"stored key is corrupt":              {secrets.GitHubApp{}, `{"app_id":"1","private_key":"x"}`, "stored-value", false},
-		"GitHub answers 401":                 {github(refused), value, "refused", false},
-		"GitHub answers 403":                 {github(forbidden), value, "refused", false},
-		"GitHub answers 502":                 {github(down), value, "upstream", false},
-		"GitHub cannot be reached":           {secrets.GitHubApp{Base: "http://127.0.0.1:1"}, value, "upstream", false},
-		"GitHub's primary rate limit, 403":   {github(primary), value, "upstream", true},
-		"GitHub answers 429":                 {github(tooMany), value, "upstream", true},
-		"GitHub's secondary rate limit, 403": {github(secondary), value, "upstream", true},
+		"stored value is not JSON":           {secrets.GitHubApp{}, "not json", "stored-value", false, 0},
+		"stored key is corrupt":              {secrets.GitHubApp{}, `{"app_id":"1","private_key":"x"}`, "stored-value", false, 0},
+		"GitHub answers 401":                 {github(refused), value, "refused", false, 1},
+		"GitHub answers 403":                 {github(forbidden), value, "refused", false, 1},
+		"GitHub answers 502":                 {github(down), value, "upstream", false, 3},
+		"GitHub cannot be reached":           {secrets.GitHubApp{Base: "http://127.0.0.1:1"}, value, "upstream", false, 3},
+		"GitHub's primary rate limit, 403":   {github(primary), value, "upstream", true, 1},
+		"GitHub answers 429":                 {github(tooMany), value, "upstream", true, 1},
+		"GitHub's secondary rate limit, 403": {github(secondary), value, "upstream", true, 1},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := tc.app.Mint(t.Context(), mintFor(tc.value, "acme"))
+			app := tc.app
+			app.Retry, _, _ = testRetry(atTheTop)
+			_, err := app.Mint(t.Context(), mintFor(tc.value, "acme"))
 			if got := secrets.MintErrorClass(err); err == nil || got != tc.class {
 				t.Fatalf("Mint = %v (class %s); want class %s", err, got, tc.class)
 			}
@@ -356,6 +363,9 @@ func TestGitHubAppMintNamesTheClassOfEachFailure(t *testing.T) {
 			}
 			if strings.Contains(err.Error(), "few minutes") || strings.Contains(err.Error(), "for installation") {
 				t.Fatalf("Mint = %v quotes GitHub's own text", err)
+			}
+			if got := secrets.MintAttempts(err); got != tc.attempts {
+				t.Fatalf("Mint = %v after %d attempts; want %d", err, got, tc.attempts)
 			}
 		})
 	}

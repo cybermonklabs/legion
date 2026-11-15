@@ -480,6 +480,12 @@ order; that relay, not a subscription of this plugin's, is where the session's m
   path left after two unanswered pings (`natsConnectionOptions`, below) ends in such a reconnect:
   nats.js subscribes the relay subject again on the new connection, and the registration names the
   new epoch.
+  The relay subscription also answers the listener's connection probe, through `receive` in
+  `@legion/envoy-client/consumer-delivery` (the probe's format is in `packages/envoy/AGENTS.md`,
+  "Session consumers"), and nothing in this extension takes part: while the relay subscription
+  is open a send to this session reads `connected`, and once the NATS connection closes, or a
+  session switch moves the relay to another id and drops the old subject, nothing answers and
+  the send reads `stopped`.
 - The answer's one mode is `consumer` (`takeDeliveryAnswer`), and the relay carries the agent
   subject and every followed topic, each of which the stream stores (`streamStores`; the listener
   drops any other `notifications.` topic from the registration and names it in a warning, so a
@@ -795,7 +801,7 @@ checks' mode into the session's own record for the CLI (`checkMode`: block only 
 chose it; `setRecordMode` keys it per session, so a switch never changes another session's mode),
 apart from the verdict's mode (`sessionMode`, block by default); `envoy.ts` turns each write the
 CLI logged as unmarked into an `unmarked` entry, and, where the CLI's own line says the write
-carried asks for a person (`asksCarried`, counted with `newAsks` in
+carried asks for a person (`asksCarried`, counted with `newAskCount` in
 `@legion/envoy-client/askgate-new-asks`), publishes one decision record for it through the
 recorder `registerAskGate` returns, which runs until Dispatch answers it or the shutdown cut ends it.
 The entry is appended before that record starts and the tool result awaits none of it — a session's

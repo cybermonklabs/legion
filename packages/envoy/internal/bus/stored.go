@@ -271,6 +271,62 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 	return reply, nil
 }
 
+// RequestCore sends a core NATS request on subject carrying header and no body, and returns its
+// one reply. It is the request the listener's connection probe makes (cmd/listener): one on a
+// session's relay subject (DeliverSubject) carrying the Envoy-Probe header, whose answer says
+// whether a plugin of that session still subscribes the subject. Its publish is confirmed as
+// requestConfirmed's is (publishConfirmed), so a request the server refuses under the
+// connection's publish permissions returns ErrPublishDenied at once; one publishConfirmed cannot
+// confirm for another reason still waits for its reply, and returns that reason if ctx ends
+// first. A no-responders status reply is nats.ErrNoResponders, as requestConfirmed maps it, and a
+// ctx with no deadline waits storedMessageWait.
+//
+// The reply is taken over a channel subscription of this request's own, not conn.SubscribeSync
+// as requestConfirmed takes it: that call sizes its channel at nats.Options.SubChanLen, 65,536
+// slots by default, so each request would allocate and zero half a megabyte to hold the one reply
+// it waits for, and the send route probes once per send to a session with an entry. The channel
+// holds nats.RequestChanLen replies, as nats.go's own request does: a request has one reply, and
+// the slack is for a subject that draws a second (two processes of one session subscribed to its
+// relay subject), which a one-slot channel would drop as a slow consumer and record on the whole
+// connection, failing another goroutine's publish as unconfirmed.
+//
+// The one error this shape cannot give is the connection's own: nats.go closes a sync
+// subscription's channel when the connection closes and leaves a channel subscription's open, so
+// a request whose connection is closed or drained under it waits out ctx and returns ctx's error,
+// where requestConfirmed returns nats.ErrConnectionClosed at once. The probe counts both as
+// connected, and the case is a shutdown race.
+func (c *Client) RequestCore(ctx context.Context, subject string, header nats.Header) (*nats.Msg, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, storedMessageWait)
+		defer cancel()
+	}
+	if err := c.ensureConnWithContext(ctx); err != nil {
+		return nil, err
+	}
+	conn := c.Connection()
+	inbox := conn.NewInbox()
+	replies := make(chan *nats.Msg, nats.RequestChanLen)
+	subscription, err := conn.ChanSubscribe(inbox, replies)
+	if err != nil {
+		return nil, err
+	}
+	defer subscription.Unsubscribe()
+	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Header: header}, conn.PublishMsg)
+	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
+		return nil, err
+	}
+	select {
+	case reply := <-replies:
+		if len(reply.Data) == 0 && reply.Header.Get("Status") == "503" {
+			return nil, nats.ErrNoResponders
+		}
+		return reply, nil
+	case <-ctx.Done():
+		return nil, cmp.Or(err, ctx.Err())
+	}
+}
+
 // CheckFilterSubject refuses a subject a stored-message read cannot filter on: one NATS does not
 // accept in a subject (checkSubject), or one with a `>` anywhere but as its last token.
 func CheckFilterSubject(subject string) error {

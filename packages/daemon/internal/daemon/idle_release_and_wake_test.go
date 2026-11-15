@@ -256,10 +256,13 @@ func TestIdleReleaseAndWake(t *testing.T) {
 	// Last, because it restarts the daemon: the worker stream binds a port of its own on every
 	// boot, so the launchers of the pods the earlier subtests woke are left dialling the old one.
 	t.Run("AMessageSentDuringTheReleaseReachesTheWokenSessionOnceAcrossARestart", func(t *testing.T) {
-		// First the two the daemon was up for: the role message and the direct message of the
-		// five-wake pass. Each sender's next attempt reaches the woken session exactly once.
+		// First the two the daemon was up for, the role message and the direct message of the
+		// five-wake pass. The role message's sender tries again, keeping nothing, and that next
+		// attempt reaches the woken session exactly once. The direct message needs no next
+		// attempt: the listener stored it when it was sent, so that one send reaches the woken
+		// session exactly once, from the session's own consumer.
 		idleRigRetryPublish(t, rig, rig.issue(idleRigRoleWake), "the role message the sender tried again", "role-retry-1")
-		idleRigRetrySend(t, rig, rig.issue(idleRigAgentWake), "the direct message the sender tried again", "agent-retry-1")
+		idleRigDeliveredOnce(t, rig, rig.issue(idleRigAgentWake), "the direct message, again")
 
 		// Then the same two across a restart, on a pod still released: the listener reports both
 		// wakes while the daemon is down, its durable consumer holds them, and the daemon acts on
@@ -273,12 +276,11 @@ func TestIdleReleaseAndWake(t *testing.T) {
 			"source": "agent", "source_session": idleRigSender, "idempotency_key": "restart-role-1",
 		})
 		idleRigKept(t, status, body, idleRigRoleUnclaimed)
-		if status, body := rig.listener.send(map[string]any{
+		status, body = rig.listener.send(map[string]any{
 			"target_session": session, "message": "sent to the session while the daemon was down",
 			"source": "agent", "source_session": idleRigSender, "idempotency_key": "restart-agent-1",
-		}); status != http.StatusNotFound {
-			t.Fatalf("the send answered %d %s, want 404", status, body)
-		}
+		})
+		idleRigStoredForGone(t, status, body)
 		rig.restart()
 		rig.awaitResumed(issue, 2)
 		// The two wakes the listener reported while the daemon was down reach it on its durable
@@ -308,10 +310,13 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		// The role message was kept for the role's next holder, so the claim the wake's own pod
 		// makes is what hands it over (drainKeptRole) and it reaches the woken session once:
 		// nothing but this pod coming back claims that role, so the kept copy moves no sooner
-		// than the wake. The direct message was kept by nothing — the kept lane is a role's
-		// alone — so its sender's next attempt is what reaches the woken session, once.
+		// than the wake. The direct message was stored on the session's own agent subject when it
+		// was sent, the listener knowing the session from its record (idleRigStoredForGone). The
+		// woken session registers under the same id, and its new consumer starts at the floor
+		// the released one left, so it is handed that message from its own consumer, once, and
+		// its sender has no second attempt to make.
 		idleRigDeliveredOnce(t, rig, issue, "sent while the daemon was down")
-		idleRigRetrySend(t, rig, issue, "sent to the session while the daemon was down", "restart-agent-1")
+		idleRigDeliveredOnce(t, rig, issue, "sent to the session while the daemon was down")
 	})
 
 	rig.kube.requireServed(t)
@@ -378,14 +383,18 @@ func idleRigWakeAll(t *testing.T, rig *idleWakeRig) {
 	})
 	idleRigKept(t, status, body, idleRigRoleUnclaimed)
 
-	// 4. A message sent to the agent subject of a released session.
+	// 4. A message sent to the agent subject of a released session. The session's entry went
+	//    with its pod and the listener's known-session store still holds its record, so the
+	//    listener stores the message on the session's agent subject, answers the sender 200
+	//    stopped and gone, and raises the wake report beside that answer, as it raised it beside
+	//    the 404 such a send was answered before the store. The stored message waits in the
+	//    session's own consumer for the session to run again under the same id.
 	agent := rig.issue(idleRigAgentWake)
-	if status, body := rig.listener.send(map[string]any{
+	status, body = rig.listener.send(map[string]any{
 		"target_session": rig.session(agent), "message": "the direct message, again",
 		"source": "agent", "source_session": idleRigSender, "idempotency_key": "agent-wake-1",
-	}); status != http.StatusNotFound {
-		t.Fatalf("the send answered %d %s, want 404: the session is gone with its pod", status, body)
-	}
+	})
+	idleRigStoredForGone(t, status, body)
 
 	// 5. The backstop, which needs nothing sent: it was armed by the release itself, and the
 	//    test brings its due time forward rather than waiting the period out.
@@ -507,20 +516,44 @@ func idleRigRetryPublish(t *testing.T, rig *idleWakeRig, issue idleRigIssue, mes
 	idleRigDeliveredOnce(t, rig, issue, message)
 }
 
-// idleRigRetrySend is the same for a direct message to the session's agent subject.
-func idleRigRetrySend(t *testing.T, rig *idleWakeRig, issue idleRigIssue, message, key string) {
+// The words a send's answer gives its target (cmd/listener's sendResponse and sendHandler): state
+// stopped is a session nothing holds the relay subject of, or one the listener knows only by its
+// known-session record, and recipient_state gone is a session the registry holds no entry of
+// within the gone horizon.
+const (
+	idleRigSendStopped   = "stopped"
+	idleRigRecipientGone = "gone"
+)
+
+// idleRigSendAnswer is what a send's answer says of its target: the state the listener found it
+// in, its recipient state and its last registration (Unix ms).
+type idleRigSendAnswer struct {
+	State          string `json:"state"`
+	RecipientState string `json:"recipient_state"`
+	LastSeen       int64  `json:"last_seen"`
+}
+
+func idleRigSendAnswerOf(t *testing.T, body string) idleRigSendAnswer {
 	t.Helper()
-	send := func() int {
-		status, _ := rig.listener.send(map[string]any{
-			"target_session": rig.session(issue), "message": message,
-			"source": "agent", "source_session": idleRigSender, "idempotency_key": key,
-		})
-		return status
+	var answer idleRigSendAnswer
+	if err := json.Unmarshal([]byte(body), &answer); err != nil {
+		t.Fatalf("decode the send's answer %q: %v", body, err)
 	}
-	idleRigUntil(t, idleRigPodWait, "a direct message reaching the live session of "+issue.key, func() bool {
-		return send() == http.StatusOK
-	})
-	idleRigDeliveredOnce(t, rig, issue, message)
+	return answer
+}
+
+// idleRigStoredForGone is the answer a send to a released session gets: the session's entry went
+// with its pod and the listener's known-session store still holds its record, so the listener
+// stores the message on the session's agent subject and answers 200, state stopped,
+// recipient_state gone and last_seen the record's. Every field is read, so neither the 404 of a
+// session no store knows nor the answer of a live one can pass for it.
+func idleRigStoredForGone(t *testing.T, status int, body string) {
+	t.Helper()
+	answer := idleRigSendAnswerOf(t, body)
+	if status != http.StatusOK || answer.State != idleRigSendStopped || answer.RecipientState != idleRigRecipientGone || answer.LastSeen <= 0 {
+		t.Fatalf("the send answered %d %s, want 200 stored with state %s, recipient_state %s and the record's last_seen: the session is gone with its pod, and the listener still knows it",
+			status, body, idleRigSendStopped, idleRigRecipientGone)
+	}
 }
 
 // idleRigDeliveredOnce holds the once-ness R3 items 3 and 4 ask of a sender whose message the
@@ -550,14 +583,23 @@ func idleRigDeliveredOnce(t *testing.T, rig *idleWakeRig, issue idleRigIssue, me
 	// one. It holds none of the message's own words, which idleRigCount matches on.
 	after := fmt.Sprintf("the rig's next message to %s, its %dth", issue.key,
 		len(rig.agents.messages(issue.key, string(issue.role))))
-	if status, body := rig.listener.send(map[string]any{
+	status, body := rig.listener.send(map[string]any{
 		"target_session": rig.session(issue), "message": after,
 		"source": "agent", "source_session": idleRigSender, "idempotency_key": after,
-	}); status != http.StatusOK {
-		t.Fatalf("the message sent to the live session of %s after %q answered %d %s, want 200",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("the message sent to the session of %s after %q answered %d %s, want 200",
 			issue.key, message, status, body)
 	}
-	idleRigEventually(t, idleRigRecordWait, "the message sent to "+issue.key+" after the one its wake was for", func() bool {
+	// A woken pod that goes quiet is released afresh within the rig's idle period, so the
+	// session may have gone again since the message reached it. Such a send is stored and
+	// answered stopped, and raises the wake its pod comes back for, so its record waits for a
+	// pod as well as for the delivery.
+	within := idleRigRecordWait
+	if idleRigSendAnswerOf(t, body).State == idleRigSendStopped {
+		within = idleRigPodWait
+	}
+	idleRigEventually(t, within, "the message sent to "+issue.key+" after the one its wake was for", func() bool {
 		return recorded(after) >= 1
 	})
 	if got := recorded(message); got != 1 {
