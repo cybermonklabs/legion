@@ -4,9 +4,11 @@ body: |-
   is spent, and the reset is more than two minutes away, the guard reads the visibility with `git
   ls-remote` of the repository's HTTPS URL, which costs no REST request, instead of refusing the
   write. The read carries no credential: git keeps no `GIT_` variable of the caller's but
-  `GIT_ALLOW_PROTOCOL`, `GIT_SSL_CAINFO` and `GIT_SSL_CAPATH`, and reads no system, user or
-  repository configuration. An answer is public, and the write is scanned. GitHub asking for a
+  `GIT_ALLOW_PROTOCOL`, `GIT_SSL_CAINFO` and `GIT_SSL_CAPATH`, reads no system, user or
+  repository configuration, and runs with an empty `HOME` of its own and no `NETRC`, so libcurl
+  finds no netrc file. An answer is public, and the write is scanned. GitHub asking for a
   credential is private, which is also what a repository that does not exist answers, and the
   write's own request then decides. Any other failure refuses the write as before, naming the
-  spent limit and its reset, with git's output after them. The `legion gh` call log records such
-  an answer as `visibility="ls-remote"`.
+  spent limit and its reset, with git's output after them. The read runs at most two minutes of
+  its own, after any wait for a near reset. The `legion gh` call log records such an answer as
+  `visibility="ls-remote"`.

@@ -1,6 +1,7 @@
 package leakguard
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -81,14 +83,15 @@ func spentRateLimit(reset time.Time, reads string) string {
 }
 
 // recordsItsCall is the start of a stand-in git: it appends to record one line per call, with
-// its arguments, the variables the read without REST sets or must not inherit, and the directory
-// it runs in, each as key=value and separated by tabs (readCalls).
+// its arguments, the variables the read without REST sets or must not inherit, what its HOME
+// holds, and the directory it runs in, each as key=value and separated by tabs (readCalls).
 func recordsItsCall(record string) string {
-	return `printf 'argv=%s\tprompt=%s\taskpass=%s\tnosystem=%s\tglobal=%s\tcount=%s\tkey0=%s\tparameters=%s\tgitdir=%s\tprotocol=%s\tlang=%s\tdir=%s\n' ` +
+	return `printf 'argv=%s\tprompt=%s\taskpass=%s\tnosystem=%s\tglobal=%s\tcount=%s\tkey0=%s\tparameters=%s\tgitdir=%s\tprotocol=%s\tlang=%s\thome=%s\tnetrc=%s\thomeholds=%s\tdir=%s\n' ` +
 		`"$*" "${GIT_TERMINAL_PROMPT-unset}" "${GIT_ASKPASS-unset}" "${GIT_CONFIG_NOSYSTEM-unset}" ` +
 		`"${GIT_CONFIG_GLOBAL-unset}" "${GIT_CONFIG_COUNT-unset}" "${GIT_CONFIG_KEY_0-unset}" ` +
 		`"${GIT_CONFIG_PARAMETERS-unset}" "${GIT_DIR-unset}" "${GIT_ALLOW_PROTOCOL-unset}" ` +
-		`"${LC_ALL-unset}" "$(pwd -P)" >> '` + record + "'\n"
+		`"${LC_ALL-unset}" "${HOME-unset}" "${NETRC-unset}" "$(ls -A "${HOME-/nonexistent}" 2>&1 | tr '\n' ' ')" ` +
+		`"$(pwd -P)" >> '` + record + "'\n"
 }
 
 // readCalls is each call recordsItsCall wrote to record, as its keys and values, and none where
@@ -228,13 +231,19 @@ func TestLsRemoteReadsTheVisibilityWhenTheRateLimitIsSpent(t *testing.T) {
 // The read without REST carries no credential of the pod's. Of the caller's GIT_ variables only
 // the transport one reaches git, so neither the GIT_CONFIG_COUNT block a pod's git gets its
 // credential helper from, nor GIT_CONFIG_PARAMETERS holding an extra Authorization header, nor a
-// GIT_DIR whose configuration could hold either does. git reads no system or user configuration
-// file, runs in / outside any repository, has an askpass that answers nothing, and prints its
-// messages in the English lsRemoteRefused reads.
+// GIT_DIR whose configuration could hold either does. Neither the caller's HOME, whose .netrc
+// libcurl would read, nor NETRC does: git's HOME is an empty directory, made for the read and
+// removed after it. git reads no system or user configuration file, runs in / outside any
+// repository, has an askpass that answers nothing, and prints its messages in the English
+// lsRemoteRefused reads.
 func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
-	bin, record := t.TempDir(), filepath.Join(t.TempDir(), "record")
+	bin, record, home := t.TempDir(), filepath.Join(t.TempDir(), "record"), t.TempDir()
 	writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
-	guard := New(Options{Env: append(fixtureenv.Isolated(t.TempDir()),
+	netrc := "machine github.com\nlogin invented-user\npassword invented-password\n"
+	if err := os.WriteFile(filepath.Join(home, ".netrc"), []byte(netrc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	guard := New(Options{Env: append(fixtureenv.Isolated(home),
 		pathWith(bin),
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=credential.https://github.com.helper",
@@ -243,6 +252,7 @@ func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 		"GIT_CONFIG_GLOBAL="+filepath.Join(t.TempDir(), "gitconfig"),
 		"GIT_DIR="+t.TempDir(),
 		"GIT_ALLOW_PROTOCOL=https",
+		"NETRC="+filepath.Join(home, ".netrc"),
 		"LC_ALL=fr_FR.UTF-8",
 	)})
 	visibility, err := guard.lsRemote(bound(t), githubOrigin, theRepo)
@@ -263,11 +273,19 @@ func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 		"gitdir":     "unset",
 		"protocol":   "https",
 		"lang":       "C",
+		"netrc":      "unset",
+		"homeholds":  "",
 		"dir":        "/",
 	} {
 		if got := calls[0][key]; got != want {
 			t.Errorf("git ran with %s=%q, want %q", key, got, want)
 		}
+	}
+	gitHome := calls[0]["home"]
+	if gitHome == "unset" || gitHome == "" || gitHome == home {
+		t.Errorf("git ran with HOME=%q, want an empty directory of the read's own, not the caller's %s", gitHome, home)
+	} else if _, err := os.Stat(gitHome); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("git's HOME %s is still there after the read (%v), want it removed", gitHome, err)
 	}
 	if !strings.Contains(" "+calls[0]["argv"]+" ", " -c credential.helper= ls-remote "+theURL+" ") {
 		t.Errorf("git ran as %q, want the credential helper emptied in front of ls-remote %s", calls[0]["argv"], theURL)
@@ -278,6 +296,85 @@ func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 	}
 	if status, _, err := guard.run(bound(t), child{argv: []string{askpass}}); err != nil || status == 0 {
 		t.Errorf("the askpass program %s answered %d, %v; want a program that answers no credential", askpass, status, err)
+	}
+}
+
+// No netrc credential reaches the real git of the read without REST, whether the .netrc is in the
+// caller's home or NETRC names it (libcurl reads NETRC from curl 8.16; an older libcurl ignores
+// it). A server of the test's own answers every request 401 with a challenge, as GitHub answers
+// an anonymous read of a private repository, and both netrc files name that server's host.
+// libcurl answers such a challenge with a netrc credential it finds by sending the request again
+// with an Authorization header (measured by hand with git 2.47.3 and the caller's HOME); here the
+// server sees no such header, and the answer is private.
+func TestLsRemoteSendsNoNetrcCredential(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git on this machine")
+	}
+	var mu sync.Mutex
+	var requests, authorized int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		if r.Header.Get("Authorization") != "" {
+			authorized++
+		}
+		mu.Unlock()
+		w.Header().Set("WWW-Authenticate", `Basic realm="invented"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	host, _, _ := strings.Cut(strings.TrimPrefix(server.URL, "http://"), ":")
+	netrc := []byte("machine " + host + "\nlogin invented-user\npassword invented-password\n")
+	home, named := t.TempDir(), filepath.Join(t.TempDir(), "netrc")
+	for _, path := range []string{filepath.Join(home, ".netrc"), named} {
+		if err := os.WriteFile(path, netrc, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	guard := New(Options{Env: append(fixtureenv.Isolated(home), "GIT_ALLOW_PROTOCOL=http", "NETRC="+named)})
+	visibility, err := guard.lsRemote(bound(t), server.URL, "private/invented-repo")
+	if err != nil || visibility != Private {
+		t.Fatalf("read %q, %v; want private", visibility, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if requests == 0 {
+		t.Fatal("git sent the server no request")
+	}
+	if authorized != 0 {
+		t.Errorf("%d of git's %d requests carried an Authorization header: a netrc credential reached the read", authorized, requests)
+	}
+}
+
+// The read without REST ends at its own cap when git never answers, inside a caller's bound
+// that would let it run longer, and the call is refused naming the spent limit and git's stop.
+func TestLsRemoteThatHangsEndsAtItsOwnBound(t *testing.T) {
+	saved := lsRemoteBound
+	lsRemoteBound = 2 * time.Second
+	t.Cleanup(func() { lsRemoteBound = saved })
+	clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
+	reset := clock.Now().Add(30 * time.Minute)
+	bin := t.TempDir()
+	writeProgram(t, bin, "git", "sleep 30\n")
+	started := time.Now()
+	_, err := New(Options{
+		Clock: clock,
+		Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
+		Visibility: func(context.Context, string) (Visibility, error) {
+			return "", &rateLimitError{reset: reset}
+		},
+	}).Visibility(bound(t), theRepo)
+	answeredWithin10s(t, started)
+	if err == nil {
+		t.Fatal("the visibility read passed while git never answered")
+	}
+	for _, want := range []string{
+		"the installation's rate limit is spent until " + reset.Format(time.RFC3339),
+		"git ran 2 s and was stopped by its bound of 2 s",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the failure %q does not say %q", err, want)
+		}
 	}
 }
 

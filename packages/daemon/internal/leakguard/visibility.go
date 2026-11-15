@@ -299,13 +299,18 @@ func (g *Guard) lsRemoteVisibility(ctx context.Context, slug string, limited *ra
 // http.extraHeader carrying an invented token made ls-remote of a public repository print
 // lsRemoteRefused's line. A pod hands its git a credential helper in GIT_CONFIG_KEY_<n>
 // variables, and a repository's own configuration can hold an extra header or a URL rewrite that
-// carries a token. So this git reads no configuration but the command line's:
+// carries a token. So this git reads no configuration but the command line's, and no credential
+// file:
 //
-//   - of the caller's environment it keeps no GIT_ variable but three that carry no credential
-//     (lsRemoteInherits), so no GIT_CONFIG_COUNT block, GIT_CONFIG_PARAMETERS or GIT_DIR reaches
-//     it;
+//   - of the caller's environment it keeps no GIT_ variable but three that carry no credential,
+//     and none of the names libcurl finds a netrc file by (lsRemoteInherits), so no
+//     GIT_CONFIG_COUNT block, GIT_CONFIG_PARAMETERS, GIT_DIR or NETRC reaches it;
+//   - HOME is an empty directory made for this read and removed after it. git turns libcurl's
+//     netrc lookup on, and libcurl reads the .netrc under HOME and sends its credential to a
+//     server that asks for one: measured with git 2.47.3, a server a ~/.netrc named answered
+//     git's request 401, and git sent the request again carrying that netrc credential;
 //   - GIT_CONFIG_NOSYSTEM and GIT_CONFIG_GLOBAL=/dev/null take away the system file and the
-//     user's;
+//     user's, the second also the one under XDG_CONFIG_HOME, which the read keeps;
 //   - it runs in /, a directory only root can write, so it finds no repository and no
 //     repository's configuration;
 //   - `-c credential.helper=` empties the helper list again on the command line, after anything
@@ -313,23 +318,25 @@ func (g *Guard) lsRemoteVisibility(ctx context.Context, slug string, limited *ra
 //   - the guard's prompt settings (promptsNothing) leave git's askpass and its terminal prompt
 //     nothing to answer with, and the URL holds no user and no token.
 //
-// A ~/.netrc is left alone. git's libcurl sends a netrc credential only to a server that has
-// asked for one, and GitHub asks only for a repository that is not public: such a repository
-// reads private, or public where the netrc credential can read it, which only scans more
-// (measured with git 2.47.3: a ~/.netrc holding an invented token left ls-remote of a public
-// repository answering).
+// LC_ALL=C keeps git's messages in the English lsRemoteRefused reads.
 //
-// LC_ALL=C keeps git's messages in the English lsRemoteRefused reads. The read has at most
-// rateLimitWaitBound of the caller's bound, which is as long as the guard would have waited for a
-// near reset, so a server that never answers costs the call no more than that wait.
+// The read runs at most lsRemoteBound, and never past the caller's own bound. That cap is this
+// read's own, not the call's: a call that waited out a near reset and was refused again has spent
+// up to rateLimitWaitBound waiting before this read starts, so the two together can take about
+// twice rateLimitWaitBound where the caller's bound allows that long.
 func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, error) {
-	ctx, cancel := context.WithTimeout(ctx, rateLimitWaitBound)
+	home, err := os.MkdirTemp("", "legion-ls-remote-")
+	if err != nil {
+		return "", fmt.Errorf("the empty home for git ls-remote could not be made: %w", err)
+	}
+	defer os.RemoveAll(home)
+	ctx, cancel := context.WithTimeout(ctx, lsRemoteBound)
 	defer cancel()
 	status, printed, err := g.run(ctx, child{
 		argv:    gitArgv("-c", "credential.helper=", "ls-remote", origin+"/"+slug+".git", "HEAD"),
 		dir:     "/",
 		inherit: lsRemoteInherits,
-		env:     []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "LC_ALL=C"},
+		env:     []string{"HOME=" + home, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "LC_ALL=C"},
 	})
 	if err != nil {
 		return "", err
@@ -345,15 +352,24 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 	}
 }
 
+// lsRemoteBound is the longest the read without REST runs (Guard.lsRemote): as long as the guard
+// waits for a near reset, so a server that never answers costs no more than that wait would
+// have. It is a variable so that a test can shorten it.
+var lsRemoteBound = rateLimitWaitBound
+
 // lsRemoteInherits is which names of the caller's environment the read with no credential keeps
-// (Guard.lsRemote): every name that is not git's own, and of git's own the three that say which
-// transports git may use and which certificates it trusts, none of which can carry a credential.
-// The proxy variables libcurl reads (HTTPS_PROXY and the rest) are not git's and stay, so a pod
-// that reaches GitHub through a proxy reaches it the same way here.
+// (Guard.lsRemote). It keeps every name that is not git's own, and of git's own the three that say
+// which transports git may use and which certificates it trusts, none of which can carry a
+// credential. It drops the names libcurl finds a netrc file by: HOME, which the read sets to an
+// empty directory of its own, NETRC, which names the file outright from curl 8.16, and
+// USERPROFILE, libcurl's second home on Windows. The proxy variables libcurl reads (HTTPS_PROXY
+// and the rest) stay, so a pod that reaches GitHub through a proxy reaches it the same way here.
 func lsRemoteInherits(name string) bool {
 	switch name {
 	case "GIT_ALLOW_PROTOCOL", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH":
 		return true
+	case "HOME", "NETRC", "USERPROFILE":
+		return false
 	}
 	return !strings.HasPrefix(name, "GIT_")
 }
