@@ -170,7 +170,7 @@ export interface CaseRow {
 }
 
 /** A case before the whole corpus is known, which is what its confounds are counted over. */
-type CaseSeed = Omit<CaseRow, "confounds">;
+export type CaseSeed = Omit<CaseRow, "confounds">;
 
 /** What the build read, so a later run can tell one corpus from another. */
 export interface Snapshot {
@@ -355,7 +355,7 @@ function withConfounds(seeds: readonly CaseSeed[]): CaseRow[] {
  * holds (`reserve.ts`) is counted only as reserved: a verdict count that took it in would tell its
  * answer to whoever compares two builds, which the reserve allows no reader.
  */
-export function countsOf(rows: readonly CaseRow[]): Counts {
+export function countsOf(rows: readonly CaseSeed[]): Counts {
   const counts: Counts = {
     total: 0,
     byKind: { approval: 0, question: 0 },
@@ -381,29 +381,31 @@ export function countsOf(rows: readonly CaseRow[]): Counts {
  * reserve of INFRA-2897's next final test (`reserveAccessOf`). While the reserve holds, no case it
  * holds is written to `corpus.jsonl`, and `snapshot.json` records how many cases on how many
  * issues were left out: the hold is the file's, not only its reader's, so a scorer that opens the
- * file itself meets no reserved case and no answer to one. A build under a read `claim.ts`
- * registers writes them and records that read; once the reserve ended, every case is written and
- * none is held. Returns what `snapshot.json` records of the reserve.
+ * file itself meets no reserved case and no answer to one. The confounds are counted over the
+ * cases written, so a kept case's (changes already requested on its document, the cases before
+ * it there, the answers that day before it) tell nothing of a case left out either. A build under
+ * a read `claim.ts` registers writes every case and records that read; once the reserve ended,
+ * every case is written and none is held. Returns what `snapshot.json` records of the reserve.
  */
 export async function writeCorpus(
   directory: string,
-  rows: readonly CaseRow[],
+  seeds: readonly CaseSeed[],
   snapshot: Snapshot,
   access: Exclude<ReserveAccess, { kind: "refused" }>
 ): Promise<SnapshotReserve> {
   const ended = access.kind === "ended" ? access.record : null;
-  const held = new Set(rows.filter((row) => reserveOf(row, ended) === "held"));
+  const held = new Set(seeds.filter((seed) => reserveOf(seed, ended) === "held"));
   const reserve: SnapshotReserve = {
     leftOut: access.kind === "held",
     cases: held.size,
-    issues: new Set([...held].map((row) => row.issueKey)).size,
+    issues: new Set([...held].map((seed) => seed.issueKey)).size,
     readUnder: access.kind === "read" ? access.reference : null,
   };
-  const written = reserve.leftOut ? rows.filter((row) => !held.has(row)) : rows;
+  const rows = withConfounds(reserve.leftOut ? seeds.filter((seed) => !held.has(seed)) : seeds);
   await mkdir(directory, { recursive: true });
   await writeFile(
     join(directory, "corpus.jsonl"),
-    written.map((row) => `${JSON.stringify(row)}\n`).join(""),
+    rows.map((row) => `${JSON.stringify(row)}\n`).join(""),
     "utf8"
   );
   await writeFile(
@@ -492,14 +494,12 @@ async function build(flags: Flags): Promise<number> {
     },
   });
   const readFinishedAt = new Date().toISOString();
-  const rows = withConfounds(
-    [...seeds.values()].map((seed) => ({
-      ...seed,
-      askTreeRoot: askRoots.get(seed.askId) ?? null,
-      issueTreeRoot: seed.issueKey === null ? null : treeRootOf(seed.issueKey, parents),
-    }))
-  );
-  const counts = countsOf(rows);
+  const seeded: CaseSeed[] = [...seeds.values()].map((seed) => ({
+    ...seed,
+    askTreeRoot: askRoots.get(seed.askId) ?? null,
+    issueTreeRoot: seed.issueKey === null ? null : treeRootOf(seed.issueKey, parents),
+  }));
+  const counts = countsOf(seeded);
   const snapshot: Snapshot = {
     person: flags.person,
     throughEventId: through,
@@ -508,18 +508,18 @@ async function build(flags: Flags): Promise<number> {
     readStartedAt,
     readFinishedAt,
   };
-  const reserve = await writeCorpus(directory, rows, snapshot, access);
+  const reserve = await writeCorpus(directory, seeded, snapshot, access);
   await writeFile(join(directory, "counts.json"), `${JSON.stringify(counts, null, 2)}\n`);
   const treesFile: TreesFile = {
     version: TREES_VERSION,
     throughEventId: through,
     groups: trees.groupsOf(
-      rows.map((row) => row.issueKey).filter((key): key is string => key !== null)
+      seeded.map((seed) => seed.issueKey).filter((key): key is string => key !== null)
     ),
   };
   await writeFile(join(directory, TREES_FILE), `${JSON.stringify(treesFile)}\n`);
   console.log(report(counts, snapshot, reserve, directory));
-  if (rows.length === 0) {
+  if (seeded.length === 0) {
     console.error(`no case: ${flags.person} answered no ask through event ${through}`);
     return 1;
   }

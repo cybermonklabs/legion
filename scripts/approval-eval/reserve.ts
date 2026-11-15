@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream, type Dirent } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import type { CaseRow } from "./build-corpus";
+import type { CaseSeed } from "./build-corpus";
 import { RESERVE_ENDED, RESERVE_READS, type ReserveRead } from "./claim";
 import type { DispatchEvent } from "./dispatch-read";
 
@@ -75,7 +75,7 @@ export function pickedRoot(rootKey: string): boolean {
  * `ended` names the record that ended the reserve (`claim.ts`), every case is kept.
  */
 export function reserveOf(
-  row: CaseRow,
+  row: CaseSeed,
   ended: string | null = RESERVE_ENDED
 ): "held" | "kept" | "unknown" {
   if (ended !== null || row.issueKey === null) return "kept";

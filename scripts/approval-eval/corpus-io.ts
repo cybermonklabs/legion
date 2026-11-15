@@ -257,10 +257,12 @@ export async function outDirectory(out: string): Promise<string> {
  * unless a test names another). Any other read of the reserve is refused, with the run's digest.
  * Once the registration records that the reserve ended, nothing is held. A corpus built before the
  * build recorded what the reserve reads of a case, holding a case the reserve could hold, is
- * refused: only a new build can say whether that case is reserved. A corpus whose build held the
- * reserve has none of its cases in `corpus.jsonl` (`writeCorpus` in `build-corpus.ts`), only their
- * count in `snapshot.json`, so a read of the reserve over it, or any read once the reserve ended,
- * is refused: the cases it would read are not there, and only a new build writes them.
+ * refused: only a new build can say whether that case is reserved. A read of the reserve takes
+ * only a corpus whose `snapshot.json` says its build wrote the reserve under that same read (the
+ * claim run's own build, `writeCorpus` in `build-corpus.ts`). A corpus whose build held the
+ * reserve has none of its cases in `corpus.jsonl`, only their count in `snapshot.json`, so a read
+ * of it once the reserve ended is refused too: the cases are not there, and only a new build
+ * writes them.
  */
 export async function readCorpus(
   corpus: string,
@@ -278,15 +280,14 @@ export async function readCorpus(
   const ended = access.kind === "ended" ? access.record : null;
   const snapshot = snapshotOf(directory, await textOf(directory, "snapshot.json"));
   const leftOut = snapshot.reserve?.leftOut === true ? snapshot.reserve : null;
-  if (leftOut !== null && leftOut.cases > 0 && access.kind !== "held") {
+  if (access.kind === "read" && snapshot.reserve?.readUnder !== access.reference) {
+    throw new CorpusError(`${directory} ${notBuiltUnder(snapshot.reserve, access.reference)}`);
+  }
+  if (leftOut !== null && leftOut.cases > 0 && access.kind === "ended") {
     const what = `${counted(leftOut.cases, "case")} on ${counted(leftOut.issues, "issue")}`;
     throw new CorpusError(
-      access.kind === "read"
-        ? `${directory} was built while the reserve held, so its build left the ${what} of ` +
-            "INFRA-2897's next final test out of corpus.jsonl and a read of the reserve finds none " +
-            "of them here: build the corpus under a read claim.ts registers for that build"
-        : `${directory} was built while the reserve held, so it lacks the reserve's ${what}, ` +
-            `which are development data since the reserve ended (${access.record}): build it again`
+      `${directory} was built while the reserve held, so it lacks the reserve's ${what}, ` +
+        `which are development data since the reserve ended (${access.record}): build it again`
     );
   }
   const lines = (await textOf(directory, "corpus.jsonl")).split("\n");
@@ -343,6 +344,26 @@ export async function readCorpus(
     byCaseId,
     reserve: { cases: held.cases, issues: held.issues, readUnder },
   };
+}
+
+/**
+ * Why a read of the reserve under `reference` refuses a corpus: a read takes only the corpus the
+ * claim run's own build wrote under that same read, so a final test is never drawn from a file
+ * whose provenance nothing records, or one another run's build wrote.
+ */
+function notBuiltUnder(reserve: SnapshotReserve | null, reference: string): string {
+  const only = `a read of the reserve under ${reference} takes only a corpus built under that read`;
+  if (reserve === null) {
+    return `was built before builds recorded what they did with the reserve, and ${only}`;
+  }
+  if (reserve.leftOut) {
+    const what = `${counted(reserve.cases, "case")} on ${counted(reserve.issues, "issue")}`;
+    return (
+      `was built while the reserve held, so its build left the ${what} of INFRA-2897's next ` +
+      `final test out of corpus.jsonl, and ${only}`
+    );
+  }
+  return `was built under ${reserve.readUnder ?? "no read of the reserve"}, and ${only}`;
 }
 
 /** A seed for a pick no `--seed` named, which the command prints so the pick can be made again. */

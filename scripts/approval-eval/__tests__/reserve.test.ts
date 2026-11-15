@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CaseRow, countsOf, type Snapshot, writeCorpus } from "../build-corpus";
-import { type Corpus, CorpusError, readCorpus } from "../corpus-io";
+import { type Corpus, CorpusError, readCorpus, type SnapshotReserve } from "../corpus-io";
 import type { DispatchEvent } from "../dispatch-read";
 import { FreshError, type FreshReport, refuseReportsOutside } from "../fresh-agent";
 import { PoolError, type RunOutcomes, refuseRunsOutside } from "../pool-runs";
@@ -243,13 +243,16 @@ afterEach(async () => {
   else process.env[RESERVE_VARIABLE] = variableBefore;
 });
 
-/** A corpus of the given cases, written where `--corpus` reads one back from. */
-async function corpusOnDisk(rows: readonly CaseRow[]): Promise<string> {
+/**
+ * A corpus of the given cases, written where `--corpus` reads one back from, with what its
+ * `snapshot.json` records of the reserve, if anything (none, as a build before builds recorded it).
+ */
+async function corpusOnDisk(rows: readonly CaseRow[], reserve?: SnapshotReserve): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "reserve-"));
   made.push(directory);
   await writeFile(
     join(directory, "snapshot.json"),
-    `${JSON.stringify({ person: "someone", throughEventId: 1 })}\n`,
+    `${JSON.stringify({ person: "someone", throughEventId: 1, reserve })}\n`,
     "utf8"
   );
   await writeFile(
@@ -436,16 +439,31 @@ describe("readCorpus and the reserve", () => {
     expect(printed).toContain("held out 3 cases on 2 issues");
   });
 
-  test("reads them under a reference registered for this run, and records it", async () => {
+  test("reads them under a reference registered for this run, from a corpus built under it", async () => {
     process.env[RESERVE_VARIABLE] = `read:${claim}`;
     const root = await bundleRoot();
     const run = await runDigestOf({ argv: process.argv, env: process.env }, root);
     const registration = { reads: [{ reference: claim, run }], ended: null };
-    const directory = await corpusOnDisk([reserved, open]);
+    const builtUnder = { leftOut: false, cases: 1, issues: 1, readUnder: claim };
+    const directory = await corpusOnDisk([reserved, open], builtUnder);
     const { corpus, printed } = await read(directory, registration, root);
     expect(corpus.rows.map((row) => row.caseId)).toEqual(["reserved", "open"]);
     expect(corpus.reserve.readUnder).toBe(claim);
     expect(printed).toContain(`under ${claim}`);
+  });
+
+  test("refuses a read of the reserve over a corpus no build under that read wrote", async () => {
+    process.env[RESERVE_VARIABLE] = `read:${claim}`;
+    const root = await bundleRoot();
+    const run = await runDigestOf({ argv: process.argv, env: process.env }, root);
+    const registration = { reads: [{ reference: claim, run }], ended: null };
+    const another = { leftOut: false, cases: 1, issues: 1, readUnder: `${claim}-another` };
+    for (const reserve of [undefined, another]) {
+      const directory = await corpusOnDisk([reserved, open], reserve);
+      await expect(readCorpus(directory, { registration, root })).rejects.toThrow(
+        `under ${claim} takes only a corpus built under that read`
+      );
+    }
   });
 
   test("refuses a reference no read registers, and names this run's digest", async () => {
@@ -527,19 +545,54 @@ describe("what a build writes of the reserve", () => {
     readFinishedAt: LATER,
   };
 
-  /** A corpus `writeCorpus` wrote under `access`: its directory, the ids it wrote, both files. */
+  /** A corpus `writeCorpus` wrote under `access`: its directory, the rows it wrote, both files. */
   async function built(rows: readonly CaseRow[], access: Parameters<typeof writeCorpus>[3]) {
     const directory = await mkdtemp(join(tmpdir(), "built-"));
     made.push(directory);
     await writeCorpus(directory, rows, walked, access);
     const text = await readFile(join(directory, "corpus.jsonl"), "utf8");
     const snapshot = JSON.parse(await readFile(join(directory, "snapshot.json"), "utf8"));
-    const ids = text
+    const written: CaseRow[] = text
       .split("\n")
       .filter((line) => line !== "")
-      .map((line) => JSON.parse(line).caseId);
-    return { directory, ids, text, reserve: snapshot.reserve };
+      .map((line) => JSON.parse(line));
+    const ids = written.map((row) => row.caseId);
+    return { directory, ids, written, text, reserve: snapshot.reserve };
   }
+
+  test("counts a kept case's confounds without the cases it left out", async () => {
+    const approval = {
+      documents: [{ artifactId: "spec-1", name: "spec.md", version: 3, requestedVersion: 3 }],
+      artifactSlug: "spec",
+      artifactPrimary: true,
+    };
+    // A reserved request on the document asks for changes; a kept one, opened there before the
+    // cut, is answered an hour later the same day.
+    const first: CaseRow = {
+      ...caseRow("first", PICKED, LATER),
+      approval,
+      verdict: "request_changes",
+    };
+    const kept: CaseRow = {
+      ...caseRow("kept", PICKED, "2026-11-16T02:00:00Z"),
+      approval,
+      askCreatedAt: "2026-11-15T12:00:00Z",
+    };
+    const heldBuild = await built([first, kept], { kind: "held" });
+    expect(heldBuild.ids).toEqual(["kept"]);
+    expect(heldBuild.written[0]?.confounds).toMatchObject({
+      changesAlreadyRequested: false,
+      priorCasesOnDocument: 0,
+      answersThatDayBefore: 0,
+    });
+    const claimBuild = await built([first, kept], { kind: "read", reference: claim });
+    expect(claimBuild.ids).toEqual(["first", "kept"]);
+    expect(claimBuild.written[1]?.confounds).toMatchObject({
+      changesAlreadyRequested: true,
+      priorCasesOnDocument: 1,
+      answersThatDayBefore: 1,
+    });
+  });
 
   test("while the reserve holds, writes none of its cases to corpus.jsonl, only their count", async () => {
     delete process.env[RESERVE_VARIABLE];
