@@ -1666,6 +1666,7 @@ func ghostWisprPayload(eventType string, body map[string]any) string {
 			}
 		}
 		data["summary_preset"] = nestedString(body, "payload", "summary_preset")
+		data["summary_model"] = nestedString(body, "payload", "summary_model")
 		data["timestamp"] = nestedString(body, "payload", "timestamp")
 		data["version"] = nestedNumberString(body, "payload", "version")
 		data["payload_type"] = nestedString(body, "payload", "type")

@@ -3355,7 +3355,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - A Ghost Wispr envelope's payload copies the body's `payload.started_at`, `ended_at`, `drive_folder_url` and `session_url` for every event type, beside `session_id` (`ghostWisprPayload`, `internal/contracts/normalize.go`).
   A current unit sends no title or summary text, because the stream keeps an envelope for its whole retention window and no deletion on the unit can recall it, so a reader fetches the current text through those links.
-  An older unit's `title` and `summary` still pass when present.
+  A `summary_ready` payload also copies `summary_preset` and `summary_model`, and an older unit's `title` and `summary` still pass when present.
 
 - `ENVOY_GHOSTWISPR_SIGNING_SECRET` is optional for trusted Ghost Wispr deployments;
   when unset, skip signature verification explicitly rather than half-verifying missing headers.

@@ -171,13 +171,13 @@ func TestGhostWisprHandlerPassesSessionFields(t *testing.T) {
 	const sessionFields = `"session_id":"20261115090000",` +
 		`"started_at":"2026-11-15T09:00:00Z","ended_at":"2026-11-15T09:42:10Z",` +
 		`"drive_folder_url":"https://drive.google.com/drive/folders/example-folder-id",` +
-		`"session_url":"https://ghost-wispr.example-tailnet.ts.net/sessions/20261115090000"`
+		`"session_url":"https://ghost-wispr.example-tailnet.ts.net/api/sessions/20261115090000"`
 	wantSession := map[string]string{
 		"session_id":       "20261115090000",
 		"started_at":       "2026-11-15T09:00:00Z",
 		"ended_at":         "2026-11-15T09:42:10Z",
 		"drive_folder_url": "https://drive.google.com/drive/folders/example-folder-id",
-		"session_url":      "https://ghost-wispr.example-tailnet.ts.net/sessions/20261115090000",
+		"session_url":      "https://ghost-wispr.example-tailnet.ts.net/api/sessions/20261115090000",
 	}
 	for _, tc := range []struct {
 		name, event, payload string
@@ -198,10 +198,14 @@ func TestGhostWisprHandlerPassesSessionFields(t *testing.T) {
 			omitted: []string{"title", "summary"},
 		},
 		{
-			name:    "summary_ready",
-			event:   "summary_ready",
-			payload: sessionFields + `,"type":"summary_ready","version":3,"duration":2530`,
-			want:    map[string]string{"version": "3", "payload_type": "summary_ready"},
+			name:  "summary_ready",
+			event: "summary_ready",
+			payload: sessionFields + `,"type":"summary_ready","version":3,"duration":2530,` +
+				`"summary_preset":"default","summary_model":"example-model"`,
+			want: map[string]string{
+				"version": "3", "payload_type": "summary_ready",
+				"summary_preset": "default", "summary_model": "example-model",
+			},
 			omitted: []string{"title", "summary"},
 		},
 		{
