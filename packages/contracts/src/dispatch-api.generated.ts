@@ -4015,7 +4015,6 @@ export interface components {
     CreateMessageInput: {
       actor?: components["schemas"]["Actor"] | null;
       body: string;
-      connected_only?: boolean;
       delivery?: null | string;
       in_reply_to?: null | string;
       in_reply_to_block?: null | string;

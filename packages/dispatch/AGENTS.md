@@ -393,10 +393,14 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   `features/agent-view/use-session-switch.ts`): a `/model` or `/effort` line applies to the session
   that reads it, so a session that is not running is refused rather than queued, the attempt
   records `the session is stopped`, and the header says so instead of holding the pickers for its
-  deadline. The field is not what decides it: Dispatch's server holds every targeted message whose
-  body is one such line to a running session with or without it (`isSessionSwitchCommand` in
-  `packages/envoy/internal/dispatch/api/messages.go`), because a tab loaded before the field
-  existed sends the switch without it.
+  deadline. The field is not what decides it: Dispatch's server holds a person's Send or Aside on
+  no issue, no broadcast's copy, whose body is one such line to a running session with or without
+  it (`isSessionSwitch` in `packages/envoy/internal/dispatch/api/messages.go`), the shape the
+  session runs as its own turn, because a tab loaded before the field existed sends the switch
+  without it.
+  Every other message whose body is such a line - an issue message, a mention, a broadcast copy, a
+  BTW or a session's message - reaches the session as a card and changes no model, so it is queued
+  for a stopped session.
 - Every label the dashboard composes for a delivery mode comes from one mapping, `MODE_LABELS` in
   `features/conversation/delivery.ts` (`steer` is Send, `aside` Aside, `btw` BTW), and a session's
   advertised capability reads through `capabilityLabel`; `grep -n 'MODE_LABELS\|capabilityLabel'`

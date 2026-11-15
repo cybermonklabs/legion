@@ -432,13 +432,14 @@ func TestTheSweepLeavesAQueuedAttemptAlone(t *testing.T) {
 }
 
 // An attempt whose sender died between the commit and the settle is resumed by the delivery
-// sweep, which asks for a connected session if the send that opened the attempt did, or if the
-// message is a model or thinking switch (isSessionSwitchCommand). So the switch's own attempt,
-// resumed against a stopped target, is settled failed and nothing is stored for the session -
-// the attempt this release opened, which carries the flag on its row
-// (message_deliveries.connected_only), because the sweep never saw the request, and the attempt
-// an earlier release opened, whose row carries none. An ordinary send's attempt without the flag
-// is queued.
+// sweep, which asks for a connected session if the request that stored the message did, or if the
+// resumed send is a model or thinking switch the session runs as its own turn (isSessionSwitch: a
+// person's Send or Aside on no issue, no broadcast's copy, whose body is one switch line). So the
+// switch's own attempt, resumed against a stopped target, is settled failed and nothing is stored
+// for the session - the attempt a request that asked connected_only opened, which carries the
+// flag on its row (message_deliveries.connected_only), because the sweep never saw the request,
+// and the attempt an earlier release opened, whose row carries none. An ordinary send's attempt
+// without the flag is queued.
 func TestTheSweepResumesAStrandedSwitchAsConnectedOnly(t *testing.T) {
 	for _, test := range []struct {
 		name          string
@@ -600,100 +601,298 @@ func TestARetryOfARefusedSwitchIsRefusedAgainAndQueuesNothing(t *testing.T) {
 	}
 }
 
-// A tab loaded before connected_only existed sends the switch in the shape the release before
-// this one sent - {body, delivery: "steer"} and no connected_only - and Dispatch's own rule holds
-// it to a running session all the same (isSessionSwitchCommand): the send asks the listener for a
-// session that is running now, the stopped session refuses it, the attempt is settled failed with
-// the listener's reason and nothing is stored, a /model and an /effort switch alike and the same
-// switch sent to the session as an issue message too. Attempt 1 records the flag, so every later
-// attempt asks the same. A message in that old shape that is no switch - plain text, or text that
-// only mentions /model - is still queued for the same stopped session.
-func TestASwitchInTheOldShapeIsStillRefusedForAStoppedSession(t *testing.T) {
-	listener := stoppedAndLive(t)
-	handler, database := newTargetedMessageHandler(t, listener.url)
-	issue := createInteractionIssue(t, handler, "TEST", "A switch from an old tab", "before")
-
-	switches := []struct {
-		name    string
-		body    string
-		onIssue bool
+// TestTheSwitchRuleCaseByCase is plan D9's switch rule, one subtest per row of its table ("The
+// switch rule, case by case", dispatch://INFRA-626/artifact/plan-md), every row sent to s1, a
+// session the listener knows and that is not running. A switch is a person's Send or Aside on no
+// issue, no broadcast's copy, whose whole body is one /model or /effort line: the one shape a
+// session runs as its own turn (isUserTurnCandidate in packages/pi-shared/src/accept-user-turn.ts,
+// isSessionSwitch here). Every attempt of one, and every send, is refused 409 "the session is
+// stopped" with nothing stored, whatever its request said and whatever its row holds. The same
+// line in any other shape reaches the session as a card and changes no model, so it is stored for
+// the session and recorded queued like any other message (spec R6). The rule is judged at each
+// send, so an attempt's connected_only carries only what its request asked, which only the agents
+// route takes and only the live view's switch sets.
+func TestTheSwitchRuleCaseByCase(t *testing.T) {
+	const line = "/model anthropic/claude-x"
+	const person, session = `{"kind":"user","id":"alice"}`, `{"kind":"session","id":"s2"}`
+	for _, row := range []struct {
+		name string
+		// refused is the row's answer: every attempt it judges refused 409 "the session is
+		// stopped" with nothing stored, or else stored for the session and recorded queued.
+		refused bool
+		// judge sends the row's cases to s1 and answers the attempts the row judges.
+		judge func(t *testing.T, rig switchRuleRig) []judgedAttempt
 	}{
-		{name: "a model switch", body: "/model anthropic/claude-x"},
-		{name: "a thinking switch", body: "/effort high"},
-		{name: "a model switch sent as an issue message", body: "/model anthropic/claude-x", onIssue: true},
-	}
-	for _, sent := range switches {
-		var message model.Message
-		if sent.onIssue {
-			message = createIssueMessage(t, handler, issue.Key, map[string]any{
-				"body": sent.body, "target": "session:s1", "delivery": "steer",
-			}, "alice")
-		} else {
-			created := postAgentMessage(t, handler, "s1", map[string]any{"body": sent.body, "delivery": "steer"}, "alice")
-			if created.Code != http.StatusCreated {
-				t.Fatalf("%s: status=%d body=%s", sent.name, created.Code, created.Body.String())
-			}
-			message = decodeBody[model.Message](t, created)
-		}
-		attempts := messageAttempts(t, database, message.ID)
-		if len(attempts) != 1 || attempts[0].State != "failed" || attempts[0].Error == nil ||
-			*attempts[0].Error != "the session is stopped" {
-			t.Fatalf("%s: attempts = %#v, want one failed attempt reading \"the session is stopped\"", sent.name, attempts)
-		}
-		if flags := connectedOnlyFlags(t, database, message.ID); !slices.Equal(flags, []bool{true}) {
-			t.Fatalf("%s: attempt 1 carries connected_only %v, want true", sent.name, flags)
-		}
-	}
-	if sends := listener.sentTo("s1"); len(sends) != 0 {
-		t.Fatalf("the listener stored %d sends for the switches, want none", len(sends))
-	}
-	refused := listener.refusedFor("s1")
-	if len(refused) != len(switches) {
-		t.Fatalf("the listener refused %d sends for s1, want the %d switches' own", len(refused), len(switches))
-	}
-	for _, send := range refused {
-		if send["connected_only"] != true {
-			t.Fatalf("a refused switch's send = %#v, want it carrying connected_only", send)
-		}
-	}
-
-	for _, ordinary := range []struct{ name, body string }{
-		{name: "a plain message", body: "hello"},
-		{name: "a message that mentions /model", body: "Run /model anthropic/claude-x when you are back."},
-		{name: "a /model line with more words", body: "/model anthropic/claude-x and then carry on"},
+		{
+			name: "a switch, attempt 1", refused: true,
+			judge: func(t *testing.T, rig switchRuleRig) []judgedAttempt {
+				var judged []judgedAttempt
+				for _, sent := range []struct {
+					what  string
+					input map[string]any
+				}{
+					{what: "a model switch from a tab older than connected_only", input: map[string]any{"body": line, "delivery": "steer"}},
+					{what: "a thinking switch from a tab older than connected_only", input: map[string]any{"body": "/effort high", "delivery": "steer"}},
+					{what: "a model switch sent as an Aside", input: map[string]any{"body": line, "delivery": "aside"}},
+					{what: "the live view's switch", input: map[string]any{"body": line, "delivery": "steer", "connected_only": true}},
+				} {
+					message := rig.send(t, sent.what, sent.input)
+					asked, _ := sent.input["connected_only"].(bool)
+					judged = append(judged, rig.attempt(t, sent.what, message.ID, 1, asked))
+				}
+				return judged
+			},
+		},
+		{
+			name: "a switch, any later attempt", refused: true,
+			judge: func(t *testing.T, rig switchRuleRig) []judgedAttempt {
+				sent := rig.send(t, "the switch", map[string]any{"body": line, "delivery": "steer"})
+				aside := rig.send(t, "the switch sent as an Aside", map[string]any{"body": line, "delivery": "aside"})
+				// An earlier release wrote connected_only on no row: the live view's switch, its
+				// attempt 1 left as that release would have left it.
+				earlier := rig.send(t, "an earlier release's switch",
+					map[string]any{"body": line, "delivery": "steer", "connected_only": true})
+				if _, err := rig.database.Pool.Exec(context.Background(),
+					`update message_deliveries set connected_only = null where message_id = $1`, earlier.ID); err != nil {
+					t.Fatalf("write the switch's attempt 1 as an earlier release wrote it: %v", err)
+				}
+				judged := []judgedAttempt{
+					rig.press(t, "Retry", sent.ID, "steer", 2, false),
+					rig.press(t, "Use Aside instead", sent.ID, "aside", 3, false),
+					rig.press(t, "Use Send instead of the Aside", aside.ID, "steer", 2, false),
+					rig.press(t, "Retry of an earlier release's switch", earlier.ID, "steer", 2, false),
+				}
+				// The sweep resumes the pending attempt a sender that died left: one an earlier
+				// release wrote with no flag, and one the live view's switch wrote with it.
+				unflagged := rig.strand(t, person, line, "steer", false)
+				flagged := rig.strand(t, person, line, "steer", true)
+				rig.sweep(t)
+				return append(judged,
+					rig.attempt(t, "the sweep's resume of an earlier release's switch", unflagged, 1, false),
+					rig.attempt(t, "the sweep's resume of the live view's switch", flagged, 1, true),
+				)
+			},
+		},
+		{
+			name: "the line in an issue message or a mention",
+			judge: func(t *testing.T, rig switchRuleRig) []judgedAttempt {
+				issue := createInteractionIssue(t, rig.handler, "QUE", "A switch line on an issue", "before")
+				message := createIssueMessage(t, rig.handler, issue.Key, map[string]any{
+					"body": line, "target": "session:s1", "delivery": "steer",
+				}, "alice")
+				comment := decodeMentionedComment(t, postMentionedComment(t, rig.handler, issue.Key, map[string]any{
+					"body": line, "mentions": []map[string]string{{"target": "session:s1"}},
+				}))
+				settled := settledCommentDeliveries(t, rig.database, comment.ID)
+				if len(settled) != 1 {
+					t.Fatalf("the mention's attempts = %#v, want one", settled)
+				}
+				return []judgedAttempt{
+					rig.attempt(t, "an issue message", message.ID, 1, false),
+					{what: "a mention", state: settled[0].State, failure: settled[0].Error},
+				}
+			},
+		},
+		{
+			name: "the line in a broadcast copy",
+			judge: func(t *testing.T, rig switchRuleRig) []judgedAttempt {
+				var judged []judgedAttempt
+				for _, delivery := range []string{"steer", "aside"} {
+					what := "a broadcast copy sent in " + delivery
+					response := postBroadcast(t, rig.handler, map[string]any{
+						"body": line, "delivery": delivery, "session_ids": []string{"s1"},
+					}, "alice")
+					if response.Code != http.StatusCreated {
+						t.Fatalf("%s: status=%d body=%s", what, response.Code, response.Body.String())
+					}
+					settled := awaitBroadcastDeliveries(t, rig.handler, decodeBody[broadcastResponse](t, response).ID)
+					if len(settled.Recipients) != 1 || settled.Recipients[0].SessionID != "s1" {
+						t.Fatalf("%s: recipients = %#v, want s1 alone", what, settled.Recipients)
+					}
+					judged = append(judged, rig.attempt(t, what, settled.Recipients[0].Message.ID, 1, false))
+				}
+				return judged
+			},
+		},
+		{
+			name: "the line as BTW",
+			judge: func(t *testing.T, rig switchRuleRig) []judgedAttempt {
+				btw := rig.send(t, "a BTW", map[string]any{"body": line, "delivery": "btw"})
+				refused := rig.send(t, "a switch", map[string]any{"body": line, "delivery": "steer"})
+				return []judgedAttempt{
+					rig.attempt(t, "a BTW", btw.ID, 1, false),
+					rig.press(t, "Use BTW instead of a refused switch", refused.ID, "btw", 2, false),
+				}
+			},
+		},
+		{
+			// No route sends a session's targeted message on no issue, so its rows are written
+			// here: the author alone keeps it from being a switch.
+			name: "the line in a message a session sent",
+			judge: func(t *testing.T, rig switchRuleRig) []judgedAttempt {
+				retried := rig.store(t, session, line)
+				judged := []judgedAttempt{rig.press(t, "a person's Retry of a session's message", retried, "steer", 1, false)}
+				stranded := rig.strand(t, session, line, "steer", false)
+				rig.sweep(t)
+				return append(judged, rig.attempt(t, "the sweep's resume of a session's message", stranded, 1, false))
+			},
+		},
+		{
+			name: "any other message",
+			judge: func(t *testing.T, rig switchRuleRig) []judgedAttempt {
+				var judged []judgedAttempt
+				for _, sent := range []struct{ what, body string }{
+					{what: "a plain message", body: "hello"},
+					{what: "a message that mentions /model", body: "Run " + line + " when you are back."},
+					{what: "a /model line with more words", body: line + " and then carry on"},
+				} {
+					message := rig.send(t, sent.what, map[string]any{"body": sent.body, "delivery": "steer"})
+					judged = append(judged, rig.attempt(t, sent.what, message.ID, 1, false))
+				}
+				return judged
+			},
+		},
 	} {
-		created := postAgentMessage(t, handler, "s1", map[string]any{"body": ordinary.body, "delivery": "steer"}, "alice")
-		if created.Code != http.StatusCreated {
-			t.Fatalf("%s: status=%d body=%s", ordinary.name, created.Code, created.Body.String())
-		}
-		message := decodeBody[model.Message](t, created)
-		if attempts := messageAttempts(t, database, message.ID); len(attempts) != 1 || attempts[0].State != "queued" {
-			t.Fatalf("%s: attempts = %#v, want one queued attempt", ordinary.name, attempts)
-		}
-		if flags := connectedOnlyFlags(t, database, message.ID); !slices.Equal(flags, []bool{false}) {
-			t.Fatalf("%s: attempt 1 carries connected_only %v, want false", ordinary.name, flags)
-		}
+		t.Run(row.name, func(t *testing.T) {
+			listener := stoppedAndLive(t)
+			handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.url})
+			judged := row.judge(t, switchRuleRig{handler: handler, database: database, served: served})
+			for _, attempt := range judged {
+				switch {
+				case row.refused && (attempt.state != "failed" || deref(attempt.failure) != "the session is stopped"):
+					t.Errorf("%s: the attempt is %s (%q), want it refused, failed reading \"the session is stopped\"",
+						attempt.what, attempt.state, deref(attempt.failure))
+				case !row.refused && (attempt.state != "queued" || attempt.failure != nil):
+					t.Errorf("%s: the attempt is %s (%q), want it queued", attempt.what, attempt.state, deref(attempt.failure))
+				}
+				if attempt.connectedOnly != attempt.asked {
+					t.Errorf("%s: the attempt carries connected_only=%v, want %v, what its request asked",
+						attempt.what, attempt.connectedOnly, attempt.asked)
+				}
+			}
+			// The listener's record says the same: a refused send asked for a running session
+			// and is stored nowhere, and a stored one asked nothing.
+			for _, send := range listener.refusedFor("s1") {
+				if send["connected_only"] != true {
+					t.Errorf("a refused send = %#v, want it carrying connected_only", send)
+				}
+			}
+			stored := listener.sentTo("s1")
+			for _, send := range stored {
+				if _, asked := send["connected_only"]; asked {
+					t.Errorf("a stored send asked for a running session: %#v", send)
+				}
+			}
+			want := len(judged)
+			if row.refused {
+				want = 0
+			}
+			if len(stored) != want {
+				t.Errorf("the listener stored %d sends for s1, want %d", len(stored), want)
+			}
+		})
 	}
-	sends := listener.sentTo("s1")
-	if len(sends) != 3 {
-		t.Fatalf("the listener stored %d sends for s1, want the three ordinary messages'", len(sends))
+}
+
+// switchRuleRig is what a row of TestTheSwitchRuleCaseByCase sends through: the API, its store,
+// and the server whose delivery sweep a row runs.
+type switchRuleRig struct {
+	handler  http.Handler
+	database *store.Store
+	served   *server
+}
+
+// judgedAttempt is one attempt a row of TestTheSwitchRuleCaseByCase judges: what sent it, how it
+// settled, the connected_only its row carries and whether its request asked for one.
+type judgedAttempt struct {
+	what          string
+	state         string
+	failure       *string
+	connectedOnly bool
+	asked         bool
+}
+
+// send is a person's send to s1 on the agents route.
+func (rig switchRuleRig) send(t *testing.T, what string, input map[string]any) model.Message {
+	t.Helper()
+	created := postAgentMessage(t, rig.handler, "s1", input, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("%s: status=%d body=%s", what, created.Code, created.Body.String())
 	}
-	for _, send := range sends {
-		if _, asked := send["connected_only"]; asked {
-			t.Fatalf("an ordinary message asked for a connected session: %#v", send)
-		}
+	return decodeBody[model.Message](t, created)
+}
+
+// press is a person's press on the agent card - a Retry in delivery, or a Use ... instead - which
+// opens attempt n of messageID, judged with asked as its request's connected_only.
+func (rig switchRuleRig) press(t *testing.T, what, messageID, delivery string, n int, asked bool) judgedAttempt {
+	t.Helper()
+	pressed := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/messages/"+messageID+"/deliveries",
+		map[string]any{"delivery": delivery}, "alice")
+	if pressed.Code != http.StatusCreated {
+		t.Fatalf("%s: status=%d body=%s", what, pressed.Code, pressed.Body.String())
 	}
-	if refused := listener.refusedFor("s1"); len(refused) != len(switches) {
-		t.Fatalf("the listener refused %d sends for s1 after the ordinary messages, want still %d", len(refused), len(switches))
+	return rig.attempt(t, what, messageID, n, asked)
+}
+
+// attempt is attempt n of messageID, which must be its latest, judged with asked as its request's
+// connected_only.
+func (rig switchRuleRig) attempt(t *testing.T, what, messageID string, n int, asked bool) judgedAttempt {
+	t.Helper()
+	attempts := messageAttempts(t, rig.database, messageID)
+	flags := connectedOnlyFlags(t, rig.database, messageID)
+	if len(attempts) != n || len(flags) != n {
+		t.Fatalf("%s: the message has %d attempts, want %d", what, len(attempts), n)
+	}
+	latest := attempts[n-1]
+	return judgedAttempt{
+		what: what, state: latest.State, failure: latest.Error, connectedOnly: flags[n-1], asked: asked,
+	}
+}
+
+// store writes a message to s1 by author, with no attempt.
+func (rig switchRuleRig) store(t *testing.T, author, body string) string {
+	t.Helper()
+	var messageID string
+	if err := rig.database.Pool.QueryRow(context.Background(), `
+		insert into messages (author, body, target) values ($1::text::jsonb, $2, 'session:s1')
+		returning id::text
+	`, author, body).Scan(&messageID); err != nil {
+		t.Fatalf("store the message: %v", err)
+	}
+	return messageID
+}
+
+// strand writes a message to s1 by author whose attempt 1 its sender left pending in delivery,
+// claimed ten minutes ago, which is what the delivery sweep takes.
+func (rig switchRuleRig) strand(t *testing.T, author, body, delivery string, connectedOnly bool) string {
+	t.Helper()
+	messageID := rig.store(t, author, body)
+	if _, err := rig.database.Pool.Exec(context.Background(), `
+		insert into message_deliveries (message_id, attempt, delivery, session_id, state,
+		                                claimed_at, created_at, requested_by, connected_only)
+		values ($1::uuid, 1, $2, 's1', 'pending', now() - interval '10 minutes', now() - interval '10 minutes',
+		        $3::text::jsonb, $4)
+	`, messageID, delivery, author, model.ConnectedOnlyColumn(connectedOnly)); err != nil {
+		t.Fatalf("strand the message's attempt: %v", err)
+	}
+	return messageID
+}
+
+// sweep runs one pass of the delivery sweep.
+func (rig switchRuleRig) sweep(t *testing.T) {
+	t.Helper()
+	if err := rig.served.resumeOwedDeliveries(context.Background()); err != nil {
+		t.Fatalf("sweep: %v", err)
 	}
 }
 
 // A switch whose attempt 1 an earlier release wrote carries no connected_only: that release had
 // no column to write it in, and during the rolling update or after it the person's Retry, or a
 // "Use ... instead", of that switch reaches a server of this release. The switch rule
-// (isSessionSwitchCommand) decides a switch whatever its request says, so the attempt such a press
-// opens asks the listener for a session that is running now, the stopped session refuses it, and
-// nothing is stored for it - as it is for the same switch sent afresh.
+// (isSessionSwitch) decides a switch whatever its request says, judged at each send in the mode it
+// is sent in, so the attempt a Retry in Send or a Use Aside instead opens asks the listener for a
+// session that is running now, the stopped session refuses it, and nothing is stored for it - as
+// it is for the same switch sent afresh.
 func TestARetryOfASwitchAnEarlierReleaseWroteIsRefusedForAStoppedSession(t *testing.T) {
 	listener := stoppedAndLive(t)
 	handler, database := newTargetedMessageHandler(t, listener.url)

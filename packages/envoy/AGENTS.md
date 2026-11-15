@@ -1516,14 +1516,17 @@ A delivery reads its session through `SessionIncludingStopped` (`internal/dispat
 a role resolves through `Role` alone, since a stopped session holds no role, and issue claims, the route roster and every other reader keep `Session` and `Sessions`, which never see `stopped`.
 A message whose sends ask for a session that is running now (`connected_only`) is the one exception:
 the listener refuses its stopped target with `409` instead of storing for it, and the attempt records that refusal as its failure, `the session is stopped`.
-Every model or thinking switch asks it, whatever its request says:
-a targeted message whose whole body, trimmed, is one `/model <value>` or `/effort <value>` line, its value holding no whitespace (`isSessionSwitchCommand`, `api/messages.go`).
-Such a line applies to the session that reads it, and one stored for a session that is not running would change that session's model at an unknown later time.
+A model or thinking switch the session would run as its own turn asks it, whatever its request says:
+a person's Send or Aside on no issue, no broadcast's copy, whose whole body, trimmed, is one `/model <value>` or `/effort <value>` line, its value holding no whitespace (`isSessionSwitch`, `api/messages.go`).
+That is the one shape a session runs as its own turn (`isUserTurnCandidate`, `packages/pi-shared/src/accept-user-turn.ts`), and such a line stored for a session that is not running would change that session's model at an unknown later time.
+Every other message reaches the session as a card and changes no model, so it is queued for a stopped session whatever its body says:
+an issue message, a mention, a broadcast copy, a BTW and a session's message included.
 That rule decides a switch, not the request, because a tab loaded before the field existed sends the switch without it;
-a create-message request may still set `connected_only` itself, as Dispatch's live view's switch does, and any other send that sets it is refused the same way.
-The flag is the message's, not one send's:
-attempt 1 records whether the message asks it (`message_deliveries.connected_only`, written by `createStoredMessage`) and every later attempt of that message is opened with the first attempt's (`insertMessageDeliveryAttempt`), so the delivery sweep's resume, a repeat under the request's key, and a person's Retry or mode change from the agent card all ask the listener for a running session and are refused again.
-Every send of a switch asks it whatever its row holds (`deliverMessageResuming`), so a switch an earlier release stored with no flag is held to a running session on its Retry, mode change or resume too.
+a send to a session (`POST /api/v1/agents/{session_id}/messages`) may still set `connected_only` itself, as Dispatch's live view's switch does, and any other send that sets it is refused the same way, while an issue message takes no such field.
+The request's flag is the message's, not one send's:
+attempt 1 records it (`message_deliveries.connected_only`, written by `createStoredMessage`) and every later attempt of that message is opened with the first attempt's (`insertMessageDeliveryAttempt`), so the delivery sweep's resume, a repeat under the request's key, and a person's Retry or mode change from the agent card all ask the listener for a running session and are refused again.
+No row records the switch rule: every send judges it from the message and the mode that attempt is sent in (`deliverMessageResuming`).
+So a switch's Retry, Use Aside instead or resume is refused for a stopped session, a switch an earlier release stored with no flag included, and its Use BTW instead is queued unless its request set `connected_only`.
 
 **A send that meets a listener take-over waits it out under the attempt it holds.**
 While the active listener pod is replaced its successor refuses connections, answers 503 (its starting gate's `{"error":"service starting"}`), or does not hold the session yet for a few seconds (INFRA-557's take-over target is under 10).
@@ -4292,7 +4295,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   Either `stopped` answer stored the message, and the stream keeps it 72 hours, so a session that runs again under the same id gets it from its own consumer.
   A target neither store knows is the `404` above.
   A stopped target whose request set `connected_only` is `409 {"error":"the session is stopped"}` with nothing stored, recorded `outcome=session_stopped`;
-  `connected_only` is a boolean field of the request body, which Dispatch sets on the send of a message that asked for a running session (every model or thinking switch, and any create-message request that set it), and absent it changes nothing.
+  `connected_only` is a boolean field of the request body, which Dispatch sets on the send of a model or thinking switch the session would run as its own turn (a person's Send or Aside on no issue, no broadcast's copy, whose body is one `/model` or `/effort` line) and on every send of a message whose request to `POST /api/v1/agents/{session_id}/messages` set it, and absent it changes nothing.
   A target with no entry within the gone horizon raises the wake report whatever its record says, on the `404` and the `stopped` answer alike, and one whose probe met no-responders raises none.
 
 - The connection probe (`probeSessionConnection`, `cmd/listener/connection_probe.go`) is one core NATS request on the target's relay subject, `notifications.envoy.deliver.<session id>` (`bus.DeliverSubject`), with a reply inbox of its own, no body and the one header `Envoy-Probe: 1`, waiting at most 1 s (`connectionProbeTimeout`).

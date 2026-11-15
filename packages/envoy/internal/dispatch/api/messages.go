@@ -25,20 +25,11 @@ type createMessageInput struct {
 	Body      string  `json:"body" required:"true"`
 	InReplyTo *string `json:"in_reply_to"`
 	// InReplyToBlock is the id of the block of message InReplyTo the reply answers ("b2").
-	InReplyToBlock *string `json:"in_reply_to_block"`
-	Target         *string `json:"target"`
-	Delivery       *string `json:"delivery"`
-	Urgency        *string `json:"urgency"`
-	// ConnectedOnly asks that this message reach a session that is running now or not at all:
-	// the send is made with the listener's connected_only, which refuses a session the listener
-	// knows and that is not running rather than storing the message for it, and the attempt
-	// records that refusal as its failure. Any send may set it. Unset, a stopped session is a
-	// recipient whose attempt is recorded queued, and the listener hands it the message when it
-	// runs again - except a model or thinking switch, which asks for a running session whether
-	// this is set or not (isSessionSwitchCommand): its line applies to the session that reads
-	// it, and queued it would change a model at an unknown later time.
-	ConnectedOnly bool         `json:"connected_only"`
-	Actor         *model.Actor `json:"actor"`
+	InReplyToBlock *string      `json:"in_reply_to_block"`
+	Target         *string      `json:"target"`
+	Delivery       *string      `json:"delivery"`
+	Urgency        *string      `json:"urgency"`
+	Actor          *model.Actor `json:"actor"`
 }
 
 // messageRead is one conversation as a route answers it: its root message and every message
@@ -76,7 +67,7 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issueKey := r.PathValue("key")
-	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, actor)
+	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, false, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -90,11 +81,15 @@ type createAgentMessageInput struct {
 	Delivery       string  `json:"delivery" required:"true"`
 	InReplyTo      *string `json:"in_reply_to"`
 	InReplyToBlock *string `json:"in_reply_to_block"`
-	// ConnectedOnly asks for a session that is running now (createMessageInput.ConnectedOnly).
-	// The live view's model and thinking switch sets it; a switch sent without it, from a tab
-	// loaded before the field existed, is held to a running session all the same
-	// (isSessionSwitchCommand). Every other send that leaves it out is queued for a stopped
-	// session.
+	// ConnectedOnly asks that this message reach a session that is running now or not at all:
+	// the send is made with the listener's connected_only, which refuses a session the listener
+	// knows and that is not running rather than storing the message for it, and the attempt
+	// records that refusal as its failure, as it does on every later attempt of the message. The
+	// live view's model and thinking switch sets it; a switch sent without it, from a tab loaded
+	// before the field existed, is held to a running session all the same (isSessionSwitch), as a
+	// person's Send or Aside whose body is one switch line. Every other send that leaves it out is
+	// queued for a stopped session, and the listener hands it the message when it runs again. An
+	// issue message takes no such field: a stopped session's is queued whatever its body says.
 	ConnectedOnly bool `json:"connected_only"`
 }
 
@@ -114,14 +109,14 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 	target := "session:" + r.PathValue("session_id")
 	messageInput := createMessageInput{
 		Body: input.Body, InReplyTo: input.InReplyTo, InReplyToBlock: input.InReplyToBlock,
-		Target: &target, Delivery: &input.Delivery, ConnectedOnly: input.ConnectedOnly,
+		Target: &target, Delivery: &input.Delivery,
 	}
 	delivery, err := validateCreateMessage(&messageInput)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	message, _, err := s.createStoredMessage(r.Context(), nil, messageInput, delivery, actor)
+	message, _, err := s.createStoredMessage(r.Context(), nil, messageInput, delivery, input.ConnectedOnly, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -254,12 +249,15 @@ func (s *server) owedMessageAttempts(ctx context.Context, messageIDs []string) (
 
 // createStoredMessage writes one message in a single transaction, with it the keyed request's
 // recovery point (bindRequestKeyRecovery), so a repeat under the key is answered with this message
-// however this request ends, then sends a targeted message's first attempt.
+// however this request ends, then sends a targeted message's first attempt. connectedOnly is the
+// request's connected_only, which only the agents route takes
+// (createAgentMessageInput.ConnectedOnly).
 func (s *server) createStoredMessage(
 	ctx context.Context,
 	issueKey *string,
 	input createMessageInput,
 	delivery string,
+	connectedOnly bool,
 	actor model.Actor,
 ) (model.Message, *writeAdvice, error) {
 	tx, err := s.begin(ctx)
@@ -368,15 +366,14 @@ func (s *server) createStoredMessage(
 	// release opened it after the listener lookup, so a message it stored could have no attempt at
 	// all, and the recovery that opens a first attempt for one (owedKeyedSend,
 	// openFirstMessageDeliveryAttempt) serves only the messages such a release stored. It records
-	// who asked for it, the urgency they chose and whether it asks for a session running now -
-	// the request's connected_only, or a model or thinking switch whatever the request said
-	// (isSessionSwitchCommand). Every later attempt records attempt 1's flag, or the switch rule's
-	// (insertMessageDeliveryAttempt), and every send of every attempt - this request's own, a
-	// resumed one, a Retry and a mode change - asks for a running session when its row says so
-	// or the message is a switch (pendingMessageDelivery). The target is read here and not at
+	// who asked for it, the urgency they chose and the request's own connected_only (connectedOnly,
+	// the agents route's alone), which every later attempt of the message inherits
+	// (insertMessageDeliveryAttempt). No attempt row records the switch rule (isSessionSwitch):
+	// each send judges it from the message and the mode it is sent in (deliverMessageResuming), so
+	// this request's own send of a switch asks for a running session while a later Use BTW instead,
+	// which changes no model, inherits nothing of it. The target is read here and not at
 	// validation, since a person's reply that names none takes its thread root's above.
 	if message.Target != nil {
-		connectedOnly := input.ConnectedOnly || isSessionSwitchCommand(input.Body)
 		if _, err := tx.Exec(ctx, `
 			insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by,
 			                                urgency, connected_only)
@@ -459,21 +456,12 @@ func validateCreateMessage(input *createMessageInput) (string, error) {
 	return delivery, nil
 }
 
-// isSessionSwitchCommand reports whether body is a model or thinking switch, the line the live
-// view's switch writes: the whole body, trimmed, is one `/model <value>` or `/effort <value>`
+// isSessionSwitchCommand reports whether body is a model or thinking switch line, the line the
+// live view's switch writes: the whole body, trimmed, is one `/model <value>` or `/effort <value>`
 // line, its value not empty and holding no whitespace (switchMessageInput in
 // packages/dispatch/web/src/features/agent-view/use-session-switch.ts, and switchCommand there
-// in the release before it). A body that only mentions /model in its prose is not one.
-//
-// A targeted message that is one asks the listener for a session that is running now whatever
-// its request says, on every attempt and every send of it (createStoredMessage,
-// insertMessageDeliveryAttempt, deliverMessageResuming), a switch an earlier release stored with
-// no flag on its rows included: this rule decides a switch, not the client's connected_only,
-// which any other send may still set to ask the same. A tab loaded before connected_only existed
-// sends the switch without the field, and a switch stored for a stopped session would change that
-// session's model or thinking level at an unknown later time, long after the person chose it. The
-// spec keeps the switch out of the queued path (its non-goal, dispatch://INFRA-626/spec) and plan
-// D9 refuses it for a stopped session with nothing stored (dispatch://INFRA-626/artifact/plan-md).
+// in the release before it). A body that only mentions /model in its prose is not one. The body
+// alone decides nothing: isSessionSwitch judges whether a send of it would switch the session.
 func isSessionSwitchCommand(body string) bool {
 	command := strings.TrimSpace(body)
 	value, found := strings.CutPrefix(command, "/model ")
@@ -481,6 +469,31 @@ func isSessionSwitchCommand(body string) bool {
 		value, found = strings.CutPrefix(command, "/effort ")
 	}
 	return found && value != "" && !strings.ContainsFunc(value, unicode.IsSpace)
+}
+
+// isSessionSwitch reports whether a send of message in mode delivery is a model or thinking switch
+// the session runs as its own turn: a person's (an author of kind "user") message on no issue, no
+// broadcast's copy, sent as Send (steer) or Aside, whose body is one switch line
+// (isSessionSwitchCommand). It mirrors isUserTurnCandidate in
+// packages/pi-shared/src/accept-user-turn.ts, which admits only that shape to run as the session's
+// own turn. Every other message reaches the session as a card and changes no model - an issue
+// message, a mention, a broadcast copy, a BTW and a session's message among them, whatever its body
+// - so a stopped session's listener stores it like any other message (spec R6).
+//
+// A send that is one asks the listener for a session that is running now whatever its request
+// said, at every attempt and every send, each judged in the mode that attempt is sent in and never
+// stored on a row (deliverMessageResuming): a switch an earlier release stored with no flag on its
+// rows included, and a Retry or a Use Aside instead of a switch included, while a Use BTW instead
+// of it is queued. This rule decides a switch, not the client's connected_only, which a send to a
+// session may still set to ask the same (createAgentMessageInput.ConnectedOnly). A tab loaded
+// before connected_only existed sends the switch without the field, and a switch stored for a
+// stopped session would change that session's model or thinking level at an unknown later time,
+// long after the person chose it. The spec keeps the switch out of the queued path (its non-goal,
+// dispatch://INFRA-626/spec), and plan D9 and its switch rule table refuse it for a stopped session
+// with nothing stored (dispatch://INFRA-626/artifact/plan-md).
+func isSessionSwitch(message model.Message, delivery string) bool {
+	return message.IssueKey == nil && message.BroadcastID == nil && message.Author.Kind == "user" &&
+		(delivery == "aside" || delivery == "steer") && isSessionSwitchCommand(message.Body)
 }
 
 func validMessageUrgency(value string) bool {

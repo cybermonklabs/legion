@@ -283,16 +283,19 @@ type pendingMessageDelivery struct {
 	attemptClaim
 	resolved ResolvedMention
 	urgency  *string
-	// connectedOnly is the attempt row's own connected_only: the request's flag or the switch
-	// rule (isSessionSwitchCommand) for attempt 1, which createStoredMessage writes, and attempt
-	// 1's or the switch rule for every later one (insertMessageDeliveryAttempt). Every send of the
-	// attempt asks the listener for a session that is running now when it is set or the message is
-	// a model or thinking switch (deliverMessageResuming), and the listener refuses a stopped
-	// target rather than storing the message for it: attempt 1's own send, the delivery sweep's
-	// resume, a Retry and a mode change alike. The send applies the switch rule itself, not only
-	// the rows this release writes, because a switch an earlier release stored has rows with no
-	// flag, which a resume claims as they stand, and stored for a stopped session that switch would
-	// change the session's model or thinking level at an unknown later time.
+	// connectedOnly is the attempt row's own connected_only, the request's flag: attempt 1's,
+	// which createStoredMessage writes from the request that stored the message, and attempt 1's
+	// again for every later one (insertMessageDeliveryAttempt). Every send of the attempt asks the
+	// listener for a session that is running now when it is set or the send is a model or thinking
+	// switch the session runs as its own turn (deliverMessageResuming, isSessionSwitch): a person's
+	// issue-less Send or Aside, no broadcast's copy, whose body is one switch line. The listener
+	// then refuses a stopped target rather than storing the message for it: attempt 1's own send,
+	// the delivery sweep's resume, a Retry and a mode change alike. No row records the switch rule,
+	// which each send judges from the message and the mode it is sent in: a switch an earlier
+	// release stored has rows with no flag, which a resume claims as they stand, and the rule's
+	// verdict for a Send must not pass to a Use BTW instead, which changes no model. Every other
+	// message - an issue message, a broadcast copy, a BTW, a session's message - is queued for a
+	// stopped session.
 	connectedOnly bool
 	frame         []byte
 }
@@ -538,8 +541,8 @@ func (s *server) recordPendingMessageDelivery(
 // recoveries for a message an earlier release stored - and the message's
 // lock, which tx holds, makes whichever claims first open the attempt; the other then finds it
 // taken and sends nothing. No request's connected_only was recorded for a message that reaches
-// here, so the attempt it opens asks for a session running now only when the message is a model
-// or thinking switch (insertMessageDeliveryAttempt, isSessionSwitchCommand).
+// here, so the attempt it opens records none, and its send asks for a session running now only
+// when it is a switch the session runs as its own turn (deliverMessageResuming, isSessionSwitch).
 func (s *server) openFirstMessageDeliveryAttempt(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -627,13 +630,15 @@ const supersededByModeChangeText = "superseded by a retry in another mode; it ma
 // for it. The message row is locked by the caller, so the highest attempt cannot move between
 // reading it and inserting beside it.
 //
-// connected_only is attempt 1's, never this send's request's - the request that stored the message
-// is the only one that says whether it asks for a session running now (createStoredMessage) - or
-// set whatever attempt 1 holds when the message is a model or thinking switch
-// (isSessionSwitchCommand). A Retry or a mode change of a refused switch has to ask the same, or
-// the listener would store that switch for the stopped session and apply it whenever it runs
-// again, and a switch an earlier release stored has an attempt 1 with no flag, or no attempt at
-// all. So the row records what its sends ask (pendingMessageDelivery.connectedOnly).
+// connected_only is attempt 1's, never this send's request's: the request that stored the message
+// is the only one that says whether it asks for a session running now (createStoredMessage), so a
+// Retry or a mode change of a message that asked it asks it again, and the listener stores nothing
+// for a stopped session. The switch rule is no row's (pendingMessageDelivery.connectedOnly): each
+// send judges it in its own mode (deliverMessageResuming, isSessionSwitch), so a Retry or a Use
+// Aside instead of a switch whose request asked nothing is refused for a stopped session and a
+// Use BTW instead of it is queued, whether this release wrote its attempt 1, an earlier release
+// wrote it with no column to write, or it has none and this opens it
+// (openFirstMessageDeliveryAttempt).
 func (s *server) insertMessageDeliveryAttempt(
 	ctx context.Context, tx pgx.Tx, message model.Message, requestedBy model.Actor, resolved ResolvedMention,
 	pending *pendingMessageDelivery,
@@ -649,11 +654,10 @@ func (s *server) insertMessageDeliveryAttempt(
 			$1,
 			(select coalesce(max(attempt), 0) + 1 from message_deliveries where message_id = $1),
 			$2, $3, 'pending', now(), $4,
-			coalesce((select connected_only from message_deliveries where message_id = $1 order by attempt limit 1), $5)
+			(select connected_only from message_deliveries where message_id = $1 order by attempt limit 1)
 		)
 		returning attempt, claimed_at, `+model.ConnectedOnlySQL+`
 	`, message.ID, resolved.Delivery, resolved.attemptSessionID, requester,
-		model.ConnectedOnlyColumn(isSessionSwitchCommand(message.Body)),
 	).Scan(&pending.attempt, &pending.claimedAt, &pending.connectedOnly)
 }
 
@@ -779,9 +783,10 @@ func (s *server) deliverMessageResuming(
 	// listener scopes it further by recipient, which is what lets a role's new holder still be
 	// reached.
 	key := message.ID + ":" + pending.resolved.Delivery
-	// A model or thinking switch asks for a session running now on every send of it, whatever its
-	// row holds (pendingMessageDelivery.connectedOnly).
-	connectedOnly := pending.connectedOnly || isSessionSwitchCommand(message.Body)
+	// A model or thinking switch the session runs as its own turn asks for a session running now
+	// on every send of it, whatever its row holds, judged in the mode this attempt is sent in
+	// (isSessionSwitch, pendingMessageDelivery.connectedOnly).
+	connectedOnly := pending.connectedOnly || isSessionSwitch(message, pending.resolved.Delivery)
 	takeover := s.newTakeoverRetry()
 	var outcome sendOutcome
 	err = takeover.retry(ctx,

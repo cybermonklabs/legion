@@ -16,17 +16,22 @@
 -- for every row written from now on without reading a stored one: no stored row can fail a check
 -- wider than the one it was written under, so the read a validation makes would find nothing.
 --
--- message_deliveries gains `connected_only`: null, or 'connected_only' where the message's sends
--- ask for a session that is running now - the live view's model and thinking switch alone asks it
--- (api/messages.go, createMessageInput.ConnectedOnly). The flag is attempt 1's, which every later
--- attempt inherits: a Retry or a mode change opens its attempt with the first attempt's value
--- (api/message_delivery.go, insertMessageDeliveryAttempt), so a refused switch is refused again
--- and nothing is stored for it. It is persisted because a later send of an attempt is made by
--- someone else - the delivery sweep, or a repeat under the request's key - and a switch resumed
--- without the flag would be stored for a stopped session and applied at an unknown later time. A
--- nullable text column with no default is written into the catalogue alone and rewrites no row;
--- null is every stored row's own answer, since no earlier release sent a switch that asked. Its
--- check is added `not valid` for the same reason as the state checks: no stored row holds a value.
+-- message_deliveries gains `connected_only`: null, or 'connected_only' where the request that
+-- stored the message asked for a session that is running now - the live view's model and thinking
+-- switch alone asks it, on the agents route (api/messages.go, createAgentMessageInput.ConnectedOnly).
+-- The flag is attempt 1's, which every later attempt inherits: a Retry or a mode change opens its
+-- attempt with the first attempt's value (api/message_delivery.go, insertMessageDeliveryAttempt),
+-- so a refused switch is refused again and nothing is stored for it. It is persisted because a
+-- later send of an attempt is made by someone else - the delivery sweep, or a repeat under the
+-- request's key - which never saw the request. The switch rule itself is no row's: every send of a
+-- person's Send or Aside on no issue, no broadcast's copy, whose body is one /model or /effort line
+-- asks for a running session, judged from the message and the mode that attempt is sent in
+-- (api/messages.go, isSessionSwitch; api/message_delivery.go, deliverMessageResuming), so a switch
+-- whose rows carry no flag is still never stored for a stopped session to apply at an unknown
+-- later time, and every other message, a BTW or an issue message among them, is queued. A nullable
+-- text column with no default is written into the catalogue alone and rewrites no row; null is
+-- every stored row's own answer, since no earlier release sent a request that asked. Its check is
+-- added `not valid` for the same reason as the state checks: no stored row holds a value.
 -- comment_deliveries gains nothing: a comment's mention is never a switch.
 --
 -- Every statement is one of the census's catalog-only forms (pgmigrate's catalogOnlyAlterTable:

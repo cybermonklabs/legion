@@ -16562,9 +16562,6 @@
           "body": {
             "type": "string"
           },
-          "connected_only": {
-            "type": "boolean"
-          },
           "delivery": {
             "type": [
               "null",
