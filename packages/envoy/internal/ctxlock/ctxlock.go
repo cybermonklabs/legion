@@ -3,11 +3,10 @@
 // sync.Mutex's Lock waits for as long as the holder holds the lock, and no context reaches that
 // wait. A caller that must answer inside a bound and finds the lock held by work running on a
 // context with no deadline would wait that work out and miss its bound: in the agent-secrets
-// helper, a broker-call op (login, enroll-session-key, unenroll-session-key) behind a refresh of
-// the machine login (helper.Broker's credMu) or behind a trade of the sign-in of the person signed
-// in on the box (brokerclient.SignInAuthority).
-// Mutex lets such a caller wait only while its own context lives, and every other caller lock it
-// as it locks a sync.Mutex.
+// helper, an enroll-session-key or unenroll-session-key op behind a refresh of the machine login
+// (helper.Broker's credMu) or behind a trade of the sign-in of the person signed in on the box
+// (brokerclient.SignInAuthority). Mutex lets such a caller wait only while its own context lives,
+// and every other caller lock it as it locks a sync.Mutex.
 //
 // golang.org/x/sync/semaphore's Weighted also waits on a context, but refuses an ended context
 // even when it is free, and its zero value is unusable. Mutex takes a free lock whatever the

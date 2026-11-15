@@ -18,27 +18,29 @@ import (
 // the refresh loop's context, which has no deadline. An enroll-session-key whose enrolment the
 // broker refuses 401 LAUNCHER_INVALID drops the credential it signed with, and that drop waits
 // for a refresh in flight (dropOutsideRefresh). The drop's wait ends with the op's context, at
-// main's bound (Server.brokerCall), so the op answers then with what it knows: the broker
-// refused it, ENROLL_FAILED carrying the broker's LAUNCHER_INVALID, and not an unknown outcome.
-// The refresh it stood behind goes on to its own answer and settles the credential.
+// the bound (Server.brokerCall), so the op answers then with what it knows: the broker refused
+// it, ENROLL_FAILED carrying the broker's LAUNCHER_INVALID, and not an unknown outcome. The
+// refresh it stood behind goes on to its own answer and settles the credential.
 //
-// The row runs under a bound of overBound, so the refresh it holds need only outlast
-// overBound + replyWriteSlack rather than the real 25 s.
+// The row runs under a bound of overBound, so the refresh it holds need only outlast overBound
+// plus 1 s, where brokerCall's timer answers, rather than the real 21 s.
 //
 // The named revert: put a sync.Mutex back as credMu, so the drop waits with no context, and
 // brokerCall's timer answers ENROLL_OUTCOME_UNKNOWN at the bound plus 1 s for an enrolment the
 // broker refused.
 func TestAPassThroughOpAnswersInsideItsBoundWhileARefreshHoldsTheMachineLogin(t *testing.T) {
+	// timerAnswers is when brokerCall's timer answers an op still running: the bound plus 1 s.
+	const timerAnswers = overBound + time.Second
 	r := startRig(t, "")
-	r.srv.SetBrokerCallBound(overBound)
+	r.srv.BrokerCallBound = overBound
 	signed := r.srv.Broker.cred.Load()
 
 	release := heldRefresh(t, r.fake, r.srv.Broker)
-	// The refresh is let go once the reply could no longer be written, as a broker that answers
-	// it that late would; a row that has its answer lets it go at once. The cleanup runs before
-	// the rig's own, whose Close waits on credMu.
+	// The refresh is let go 3 s after the timer would answer, as a broker that answers it that
+	// late would; a row that has its answer lets it go at once. The cleanup runs before the rig's
+	// own, whose Close waits on credMu.
 	refreshed := make(chan error, 1)
-	slowBroker := time.AfterFunc(overBound+replyWriteSlack+3*time.Second, func() { refreshed <- release() })
+	slowBroker := time.AfterFunc(timerAnswers+3*time.Second, func() { refreshed <- release() })
 	finishRefresh := sync.OnceValue(func() error {
 		if slowBroker.Stop() {
 			return release()
@@ -51,17 +53,17 @@ func TestAPassThroughOpAnswersInsideItsBoundWhileARefreshHoldsTheMachineLogin(t 
 	r.fake.enrollUnauthorizedNext = 1
 	r.fake.mu.Unlock()
 	started := time.Now()
-	resp, err := Call(r.sock, Request{Op: "enroll-session-key", RuntimeID: "rt-during-the-refresh", Thumbprint: "tp-during-the-refresh"}, clientCallWait)
+	resp, err := Call(r.sock, Request{Op: "enroll-session-key", RuntimeID: "rt-during-the-refresh", Thumbprint: "tp-during-the-refresh"}, BrokerCallWait)
 	waited := time.Since(started)
 	if err != nil {
-		t.Fatalf("enroll-session-key refused while the machine login is refreshing: %v after %s; the client must read one JSON reply, never an empty one (the bound is %s, its reply written inside %s)",
-			err, waited, overBound, overBound+replyWriteSlack)
+		t.Fatalf("enroll-session-key refused while the machine login is refreshing: %v after %s; the client must read one JSON reply, never an empty one (the bound is %s)",
+			err, waited, overBound)
+	}
+	if waited >= timerAnswers {
+		t.Fatalf("enroll-session-key answered after %s, at or past brokerCall's timer (%s): the drop's wait did not end with the op's context (%+v)", waited, timerAnswers, resp)
 	}
 	if resp.OK || resp.Code != CodeEnrollFailed || !strings.Contains(resp.Error, "LAUNCHER_INVALID") || strings.Contains(resp.Error, "the outcome is unknown") {
 		t.Fatalf("enroll-session-key refused while the machine login is refreshing: %+v after %s; want %s with the broker's LAUNCHER_INVALID, a known refusal", resp, waited, CodeEnrollFailed)
-	}
-	if waited >= overBound+replyWriteSlack {
-		t.Fatalf("enroll-session-key answered after %s, past the %s its reply is written inside", waited, overBound+replyWriteSlack)
 	}
 
 	// The drop that gave up dropped nothing: the refresh settles the credential, and the helper

@@ -10,22 +10,17 @@ import (
 	"time"
 )
 
-// SetBrokerCallBound, replyWriteSlack, overBound and clientCallWait adapt the tester's red test
-// of this issue (passthrough_signin_test.go, which is kept as it was written) to main's bound
-// (#4037, Server.brokerCall), and this file's table and passthrough_refresh_test.go read them
-// too. They are test code only: production has main's bound alone, Server.BrokerCallBound,
-// DefaultBrokerCallBound and BrokerCallWait.
-
-// SetBrokerCallBound sets main's bound, Server.BrokerCallBound, and nothing else.
+// SetBrokerCallBound, clientCallWait and replyWriteSlack are kept only because
+// passthrough_signin_test.go reads them; nothing else does. SetBrokerCallBound sets
+// Server.BrokerCallBound and nothing else.
 func (s *Server) SetBrokerCallBound(d time.Duration) { s.BrokerCallBound = d }
 
-// replyWriteSlack is how long past the bound the connection of a broker-call op stays open:
-// brokerCall sets its deadline to the bound plus 5 s, and answers by the bound plus 1 s.
-const replyWriteSlack = 5 * time.Second
-
-// clientCallWait is the wait every client of a broker-call op gives one call, BrokerCallWait;
-// every row reads its reply with it, as those clients do.
-const clientCallWait = BrokerCallWait
+// clientCallWait is BrokerCallWait, and replyWriteSlack the 5 s past the bound for which
+// brokerCall keeps the connection open (it answers by the bound plus 1 s).
+const (
+	clientCallWait  = BrokerCallWait
+	replyWriteSlack = 5 * time.Second
+)
 
 // overBound is the bound the rows that run out of time give their own Server, and
 // pastOverBound how long their broker then takes: a row that proves the bound answers need not
@@ -45,8 +40,8 @@ const (
 // prove gone is the one those 8 s are measured against.
 const slowAnswer = 8 * time.Second
 
-// TestEachBrokerCallOpAnswersASlowBrokerOrSaysItsOutcomeIsUnknown drives main's bound (#4037,
-// Server.brokerCall) on each broker-call op — enroll-session-key, unenroll-session-key and
+// TestEachBrokerCallOpAnswersASlowBrokerOrSaysItsOutcomeIsUnknown drives the bound
+// (Server.brokerCall) on each broker-call op — enroll-session-key, unenroll-session-key and
 // login — through the REAL helper socket against a broker that answers after a delay the row
 // sets.
 //
@@ -143,7 +138,7 @@ func TestEachBrokerCallOpAnswersASlowBrokerOrSaysItsOutcomeIsUnknown(t *testing.
 				req := row.request(t, r)
 				r.fake.slowAnswers(slowAnswer)
 				started := time.Now()
-				resp, err := Call(r.sock, req, clientCallWait)
+				resp, err := Call(r.sock, req, BrokerCallWait)
 				waited := time.Since(started)
 				if err != nil {
 					t.Fatalf("%s against an %s broker: %v after %s; the client must read one JSON reply, never an empty one", row.op, slowAnswer, err, waited)
@@ -161,7 +156,7 @@ func TestEachBrokerCallOpAnswersASlowBrokerOrSaysItsOutcomeIsUnknown(t *testing.
 				req := row.request(t, r)
 				r.fake.slowAnswers(pastOverBound)
 				started := time.Now()
-				resp, err := Call(r.sock, req, clientCallWait)
+				resp, err := Call(r.sock, req, BrokerCallWait)
 				waited := time.Since(started)
 				if err != nil {
 					t.Fatalf("%s against a broker slower than its bound: %v after %s; the client must read one JSON reply, never an empty one", row.op, err, waited)

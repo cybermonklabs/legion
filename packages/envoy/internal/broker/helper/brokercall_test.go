@@ -105,7 +105,8 @@ func TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt(t *testing.T) {
 }
 
 // heldSignIns is a person's sign-in whose Current waits until release is closed, whatever its
-// context says, as a sign-in's trade does while it holds its lock across an HTTP request; then it
+// context says: a lock that does not watch the op's context, which brokerclient.SignInAuthority's
+// no longer is (ctxlock), so this row proves brokerCall's timer and not the sign-in. Then it
 // answers no sign-in, so the enrolment goes on under the machine's own credential.
 type heldSignIns struct{ release <-chan struct{} }
 

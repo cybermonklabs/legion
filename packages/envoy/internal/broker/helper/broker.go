@@ -226,7 +226,8 @@ type SignIns interface {
 	// runs on its caller's context, which for enrollLoop has no deadline, so a call that finds
 	// one in progress answers an error wrapping ctx's once ctx ends rather than waiting the
 	// trade out: a broker-call op behind it (Server.brokerCall) ends at its bound with that
-	// error, a known failure, since the op has sent the broker nothing.
+	// error, a known failure, since the op has made nothing (enrollAs's retry calls it only
+	// after the broker refused the first request).
 	Current(ctx context.Context) (*brokerclient.Authority, error)
 	// Refused tells it the broker rejected a launcher proof signed with that credential, so
 	// the next Current trades afresh rather than presenting it again. It answers ctx's error,

@@ -267,8 +267,10 @@ func (s *Server) brokerCallBound() time.Duration {
 //     of the machine login that clearOnInvalid's drop waits for (Broker.credMu). Each of these
 //     waits only while the op's context lives (ctxlock.Mutex.LockContext), so it ends at B, the
 //     op returns, and its result is the answer: a known failure (ENROLL_FAILED, UNENROLL_FAILED),
-//     since the op sent the broker nothing (the sign-in's wait says it timed out) or the broker
-//     refused it (the 401 LAUNCHER_INVALID the drop stood behind, returned as it came).
+//     since the op made nothing. Behind the sign-in, whose wait says it timed out, the op had sent
+//     the broker nothing, or, for an enroll, the broker had refused its first request under the
+//     person's credential (401 LAUNCHER_INVALID, Broker.enrollAs); behind a refresh, the broker
+//     refused it, and the drop returns that 401 as it came.
 //   - The op waits past B + 1 s on a lock that is held across an HTTP request and does not watch
 //     the op's context (a login in progress, Broker.loginMu): the timer ends the wait, and the
 //     answer is unknown.
