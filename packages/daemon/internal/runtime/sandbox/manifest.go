@@ -291,8 +291,9 @@ type launch struct {
 	// microVM is where the pod runs when it runs in a microVM (Options.Sandbox's MicroVM), decided
 	// once from the issue (prepare), and nil for a gVisor pod: the controller's always, and every
 	// launch built other than by prepare. Every facet of the pod a microVM pod builds differently
-	// reads it (placement, the label, the disk's class, the launcher's flags and the workload
-	// identity token); a role started in a pod the launch keeps reads none of them.
+	// reads it (placement, the label, the disk's class, the launcher's flags, the workload
+	// identity token, and the shape the template records, launch.shapeKey); a role started in a
+	// pod the launch keeps reads none of them.
 	microVM *MicroVM
 	// roles are the pod's launcher roles, all of them served by the pod's one container: the roles
 	// of the kind its labels name (podKindOf).
@@ -742,10 +743,11 @@ func (r *Runtime) sandboxManifest(l launch) sandbox {
 // nothing with another pod, so the scheduler puts it wherever the pool has room. The controller
 // applies a template only to the next pod it creates, so the template is rebuilt for every
 // relaunch. Its metadata carries, beside the two stop-eviction annotations, the configuration the
-// pod is built from (podShapeAnnotation, podShape): the one write of it, so that a later sweep can
-// read what a pod was built from without rebuilding the launch that built it (drift.go). A
-// microVM pod's labels carry labelSandbox beside its kind's, on the template alone, so the
-// Sandbox and its Secrets carry exactly the labels a gVisor pod's do.
+// pod is built from (podShapeAnnotation, podShape), its kind's in the sandbox the launch runs it in
+// (launch.shapeKey): the one write of it, so that a later sweep can read what a pod was built from
+// without rebuilding the launch that built it (drift.go). A microVM pod's labels carry
+// labelSandbox beside its kind's, on the template alone, so the Sandbox and its Secrets carry
+// exactly the labels a gVisor pod's do.
 func (r *Runtime) podTemplate(l launch) podTemplate {
 	_, providersMounts := r.providers()
 	runtimeClass, selector, tolerations := r.placement(l)
@@ -784,7 +786,7 @@ func (r *Runtime) podTemplate(l launch) podTemplate {
 			Labels: labels,
 			Annotations: map[string]string{
 				doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false",
-				podShapeAnnotation: r.podShapes[l.kind],
+				podShapeAnnotation: r.podShapes[l.shapeKey()],
 			},
 		},
 		Spec: spec,

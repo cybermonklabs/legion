@@ -258,8 +258,12 @@ type manifestCase struct {
 	sandbox      SandboxConfig
 }
 
-// apply sets on r what the case configures beside goldenOptions.
-func (c manifestCase) apply(r *Runtime) { r.agentSecrets, r.sandboxConfig = c.agentSecrets, c.sandbox }
+// apply sets on r what the case configures beside goldenOptions, and the pod shapes that sandbox
+// block gives r, which configure encodes once from the block it is built with (podShapes).
+func (c manifestCase) apply(r *Runtime) {
+	r.agentSecrets, r.sandboxConfig = c.agentSecrets, c.sandbox
+	r.podShapes = podShapes(r)
+}
 
 // manifestOf is the Sandbox a launch of spec leaves running, as the API server holds it: the one
 // the runtime creates, with the relaunch's Running patch applied — the launch's pod template, and
@@ -342,8 +346,8 @@ func checkGolden(t *testing.T, name string, manifest any) {
 // an AWS cluster, and the Cluster Autoscaler's, which GKE Autopilot honours; GKE ignores
 // Karpenter's, so a pod on Autopilot without the second can be evicted mid-turn by consolidation or
 // a node upgrade. Each carries, beside them and as the only other annotation of its template, the
-// configuration it was built from, its own kind's (podShapeAnnotation): the one record an update
-// round reads a pod's drift from (podShapeDrift), written here and nowhere else.
+// configuration it was built from, its own kind's in its own sandbox (podShapeAnnotation): the one
+// record an update round reads a pod's drift from (podShapeDrift), written here and nowhere else.
 func TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
@@ -359,7 +363,7 @@ func TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction(t *testing.
 			want := map[string]string{
 				doNotDisruptAnnotation: "true",
 				safeToEvictAnnotation:  "false",
-				podShapeAnnotation:     podShape(r, l.kind),
+				podShapeAnnotation:     podShape(r, l.kind, l.microVM),
 			}
 			if got := r.podTemplate(l).Metadata.Annotations; !maps.Equal(got, want) {
 				t.Errorf("pod annotations = %v, want exactly %v", got, want)
@@ -2581,15 +2585,16 @@ func TestAMicroVMPodTakesTheMicroVMStorageClassOrTheDaemons(t *testing.T) {
 }
 
 // A microVM pod carries the two stop-eviction annotations a gVisor pod does, and its kind's pod
-// shape as the only other one (TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction):
-// the sandbox it runs in changes nothing of what asks the autoscaler to leave its node alone.
+// shape in a microVM as the only other one
+// (TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction): the sandbox it runs in changes
+// nothing of what asks the autoscaler to leave its node alone.
 func TestAMicroVMPodKeepsTheStopEvictionAnnotations(t *testing.T) {
 	r := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()})
 	template := r.podTemplate(launchOf(t, r, rootSpec(t)))
 	if got := renderedSandbox(t, template); got != SandboxMicroVM {
 		t.Fatalf("the pod runs in %s, want a microVM", got)
 	}
-	want := map[string]string{doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false", podShapeAnnotation: podShape(r, issuePod{})}
+	want := map[string]string{doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false", podShapeAnnotation: podShape(r, issuePod{}, testMicroVM())}
 	if got := template.Metadata.Annotations; !maps.Equal(got, want) {
 		t.Errorf("the microVM pod's annotations are %v, want exactly %v", got, want)
 	}

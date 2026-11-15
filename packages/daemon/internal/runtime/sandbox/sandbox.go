@@ -119,13 +119,14 @@ type Runtime struct {
 	launcherAuth                   launcherCredentials
 	now                            func() time.Time
 	log                            *slog.Logger
-	// podShapes is the configuration each kind of pod is built from now (podShape), by kind,
-	// encoded once here. Every input of a shape — the image, the kind's reservation, the
-	// operator's volumes and mounts and the disk — is set at construction and never written
-	// again, so the pod template that records a shape (podTemplate) and the sweep that compares a
-	// stored one against it (PodDrift, once per claim of the deployment per tick) read a string
-	// rather than marshalling that configuration again.
-	podShapes map[podKind]string
+	// podShapes is the configuration each kind of pod is built from now in each sandbox it can
+	// run in (podShape), by kind and sandbox (podShapeKey), encoded once here (podShapes). Every
+	// input of a shape — the image, the kind's reservation, the operator's volumes and mounts, the
+	// disk and the microvm block — is set at construction and never written again, so the pod
+	// template that records a shape (podTemplate) and the sweep that compares a stored one against
+	// it (PodDrift, once per claim of the deployment per tick) read a string rather than
+	// marshalling that configuration again.
+	podShapes map[podShapeKey]string
 	// cacheConfig is how each repository's cache is made, mapped the repositories the project's
 	// mapping names now (Options.RepositoryCache, Options.Mapped), and cacheDial opens every
 	// connection the health read makes (net.Dialer's own; a test routes the Service's name itself).
@@ -394,8 +395,9 @@ func configureProber(opts Options) (*Runtime, error) {
 	// runtime's log is settled.
 	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
-	// and none is written again, so each kind's shape is encoded here and only read afterwards.
-	r.podShapes = map[podKind]string{issuePod{}: podShape(r, issuePod{}), controllerPod{}: podShape(r, controllerPod{})}
+	// and none is written again, so each kind's shape in each sandbox is encoded here and only
+	// read afterwards.
+	r.podShapes = podShapes(r)
 	return r, nil
 }
 

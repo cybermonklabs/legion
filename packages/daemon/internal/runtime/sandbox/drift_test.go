@@ -56,13 +56,11 @@ func movedReservation(o *Options) {
 	o.Resources = resources
 }
 
-// A pod's recorded shape is the configuration it was built from, in a fixed field order, each
-// value as the operator wrote it: the image, the kind's own reservation, the operator's volumes and
-// mounts, and the disk. It is pinned whole because it is what every later daemon compares a running
-// pod against: a change of spelling here reads as drift on every pod of the fleet at once.
-func TestPodShapeRecordsTheConfigurationAPodIsBuiltFrom(t *testing.T) {
-	opts := testOptions()
-	opts.Resources = PodResources{
+// shapedOptions are the configuration whose shapes
+// TestPodShapeRecordsTheConfigurationAPodIsBuiltFrom pins: an issue reservation, a disk size and an
+// operator volume and mount of the test's own.
+func shapedOptions(o *Options) {
+	o.Resources = PodResources{
 		Issue: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
 				corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("8Gi"),
@@ -75,19 +73,98 @@ func TestPodShapeRecordsTheConfigurationAPodIsBuiltFrom(t *testing.T) {
 		},
 		Controller: reservations().Controller,
 	}
-	opts.IssueVolume = resource.MustParse("200Gi")
-	opts.Pod = Pod{Volumes: []corev1.Volume{operatorVolume}, VolumeMounts: []corev1.VolumeMount{operatorMount}}
-	r, err := configure(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := `{"image":"` + testImage + `",` +
+	o.IssueVolume = resource.MustParse("200Gi")
+	o.Pod = Pod{Volumes: []corev1.Volume{operatorVolume}, VolumeMounts: []corev1.VolumeMount{operatorMount}}
+}
+
+// The shapes an issue pod built under shapedOptions records. shapedGVisorShape is a gVisor pod's,
+// byte for byte what every release before the sandbox setting recorded for that configuration, so a
+// pod those releases left running is read against it
+// (TestAGVisorPodRecordedBeforeThisReleaseReadsNoDrift). The two others are a microVM pod's under
+// testMicroVM's block, and under that block naming no metadata endpoint.
+const (
+	shapedGVisorShape = `{"image":"` + testImage + `",` +
 		`"resources":{"limits":{"cpu":"2","ephemeral-storage":"80Gi","memory":"8Gi"},"requests":{"cpu":"2","ephemeral-storage":"6Gi","memory":"8Gi"}},` +
 		`"volumes":[{"name":"operator-extra","configMap":{"name":"legion-operator-extra"}}],` +
 		`"mounts":[{"name":"operator-extra","readOnly":true,"mountPath":"/etc/legion-operator-extra"}],` +
 		`"disk":"200Gi"}`
-	if got := podShape(r, issuePod{}); got != want {
-		t.Errorf("podShape =\n%s\nwant\n%s", got, want)
+	shapedMicroVMShape = `{"image":"` + testImage + `",` +
+		`"resources":{"limits":{"cpu":"2","ephemeral-storage":"80Gi","memory":"8Gi"},"requests":{"cpu":"2","ephemeral-storage":"6Gi","memory":"8Gi"}},` +
+		`"volumes":[{"name":"operator-extra","configMap":{"name":"legion-operator-extra"}}],` +
+		`"mounts":[{"name":"operator-extra","readOnly":true,"mountPath":"/etc/legion-operator-extra"}],` +
+		`"disk":"200Gi",` +
+		`"sandbox":{"runtime_class":"microvm","compute_class":"example-microvm","storage_class":"example-microvm-rwo",` +
+		`"metadata":{"workload_pool":"example-project.svc.id.goog",` +
+		`"identity_provider":"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"}}}`
+	shapedMicroVMShapeWithoutMetadata = `{"image":"` + testImage + `",` +
+		`"resources":{"limits":{"cpu":"2","ephemeral-storage":"80Gi","memory":"8Gi"},"requests":{"cpu":"2","ephemeral-storage":"6Gi","memory":"8Gi"}},` +
+		`"volumes":[{"name":"operator-extra","configMap":{"name":"legion-operator-extra"}}],` +
+		`"mounts":[{"name":"operator-extra","readOnly":true,"mountPath":"/etc/legion-operator-extra"}],` +
+		`"disk":"200Gi",` +
+		`"sandbox":{"runtime_class":"microvm","compute_class":"example-microvm","storage_class":"example-microvm-rwo"}}`
+)
+
+// testMicroVMSandboxShape is the sandbox member a microVM pod under testMicroVM's block records,
+// as a drift reason names it (shapeValue).
+const testMicroVMSandboxShape = `{"runtime_class":"microvm","compute_class":"example-microvm","storage_class":"example-microvm-rwo",` +
+	`"metadata":{"workload_pool":"example-project.svc.id.goog",` +
+	`"identity_provider":"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"}}`
+
+// The keys of the three shapes a runtime builds its pods from (podShapes): an issue pod's in
+// either sandbox, and the controller's pod's, which runs in gVisor whatever the configuration says.
+var (
+	issueInGVisor      = podShapeKey{kind: issuePod{}, sandbox: SandboxGVisor}
+	issueInMicroVM     = podShapeKey{kind: issuePod{}, sandbox: SandboxMicroVM}
+	controllerInGVisor = podShapeKey{kind: controllerPod{}, sandbox: SandboxGVisor}
+)
+
+// sandboxBlock is a runtime.kubernetes.sandbox of type kind naming testMicroVM's block, its
+// canary list naming canaries.
+func sandboxBlock(kind SandboxType, canaries ...string) func(*Options) {
+	return func(o *Options) {
+		o.Sandbox = SandboxConfig{Type: kind, CanaryIssues: canaries, MicroVM: testMicroVM()}
+	}
+}
+
+// A pod's recorded shape is the configuration it was built from, in a fixed field order, each
+// value as the operator wrote it: the image, the kind's own reservation, the operator's volumes and
+// mounts, the disk, and, for a microVM pod alone, where it runs — the microVM RuntimeClass and the
+// microvm block's ComputeClass, StorageClass and metadata endpoint, which a block naming none
+// leaves out. A gVisor pod records no sandbox at all, beside a microvm block or without one, so its
+// shape is the one every release before the sandbox setting recorded. It is pinned whole because it
+// is what every later daemon compares a running pod against: a change of spelling here reads as
+// drift on every pod of the fleet at once.
+func TestPodShapeRecordsTheConfigurationAPodIsBuiltFrom(t *testing.T) {
+	withoutMetadata := testMicroVM()
+	withoutMetadata.Metadata = nil
+	for name, tc := range map[string]struct {
+		block SandboxConfig
+		key   podShapeKey
+		want  string
+	}{
+		"a gVisor issue pod": {SandboxConfig{}, issueInGVisor, shapedGVisorShape},
+		"a gVisor issue pod beside a microvm block": {
+			SandboxConfig{CanaryIssues: []string{"LEGION-209"}, MicroVM: testMicroVM()}, issueInGVisor, shapedGVisorShape,
+		},
+		"a microVM issue pod": {
+			SandboxConfig{CanaryIssues: []string{"LEGION-209"}, MicroVM: testMicroVM()}, issueInMicroVM, shapedMicroVMShape,
+		},
+		"a microVM issue pod whose block names no metadata endpoint": {
+			SandboxConfig{Type: SandboxMicroVM, MicroVM: withoutMetadata}, issueInMicroVM, shapedMicroVMShapeWithoutMetadata,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := testOptions()
+			shapedOptions(&opts)
+			opts.Sandbox = tc.block
+			r, err := configure(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := r.podShapes[tc.key]; got != tc.want {
+				t.Errorf("podShape =\n%s\nwant\n%s", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -128,23 +205,23 @@ func TestPodShapeEncodesEqualConfigurationsIdentically(t *testing.T) {
 	keys := []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory, corev1.ResourceEphemeralStorage}
 	first := spelled("2", "8Gi", "6Gi", "200Gi", keys...)
 	again := spelled("2", "8Gi", "6Gi", "200Gi", keys[2], keys[1], keys[0])
-	if podShape(first, issuePod{}) != podShape(again, issuePod{}) {
-		t.Fatalf("two spellings of one configuration encode differently:\n%s\n%s", podShape(first, issuePod{}), podShape(again, issuePod{}))
+	if podShape(first, issuePod{}, nil) != podShape(again, issuePod{}, nil) {
+		t.Fatalf("two spellings of one configuration encode differently:\n%s\n%s", podShape(first, issuePod{}, nil), podShape(again, issuePod{}, nil))
 	}
-	if got, repeated := podShape(first, issuePod{}), podShape(first, issuePod{}); got != repeated {
+	if got, repeated := podShape(first, issuePod{}, nil), podShape(first, issuePod{}, nil); got != repeated {
 		t.Fatalf("one configuration encodes differently twice:\n%s\n%s", got, repeated)
 	}
 
 	// The same amounts, spelled otherwise: the quantities are canonical, so the text is the same
 	// and the pod has drifted from nothing.
 	otherwise := spelled("2", "8192Mi", "6144Mi", "204800Mi", keys...)
-	if podShape(first, issuePod{}) != podShape(otherwise, issuePod{}) {
-		t.Fatalf("the same amounts spelled otherwise encode differently:\n%s\n%s", podShape(first, issuePod{}), podShape(otherwise, issuePod{}))
+	if podShape(first, issuePod{}, nil) != podShape(otherwise, issuePod{}, nil) {
+		t.Fatalf("the same amounts spelled otherwise encode differently:\n%s\n%s", podShape(first, issuePod{}, nil), podShape(otherwise, issuePod{}, nil))
 	}
 	built := &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{
-		Metadata: podMetadata{Annotations: map[string]string{podShapeAnnotation: podShape(first, issuePod{})}},
+		Metadata: podMetadata{Annotations: map[string]string{podShapeAnnotation: podShape(first, issuePod{}, nil)}},
 	}}}
-	if drifted := podShapeDrift(built, podShape(otherwise, issuePod{})); len(drifted) > 0 {
+	if drifted := podShapeDrift(built, podShape(otherwise, issuePod{}, nil)); len(drifted) > 0 {
 		t.Errorf("podShapeDrift = %q, want nothing: the same amounts spelled otherwise are the same configuration", drifted)
 	}
 }
@@ -241,6 +318,14 @@ func TestPodDriftComparesASandboxWithoutAPodShapeByImageAlone(t *testing.T) {
 // Sandbox a release before this one wrote, and waits for the store the runtime reads to hold it.
 func forgetPodShape(t *testing.T, g *rig, r *Runtime, name string) {
 	t.Helper()
+	holdPodShape(t, g, r, name, "")
+}
+
+// holdPodShape sets the shape annotation of the stored Sandbox's pod template to shape, as the
+// release that built its pod recorded it, or drops it where shape is empty, and waits for the store
+// the runtime reads to hold it.
+func holdPodShape(t *testing.T, g *rig, r *Runtime, name, shape string) {
+	t.Helper()
 	s := g.sandbox(name)
 	if s == nil {
 		t.Fatalf("sandbox %s is absent", name)
@@ -251,6 +336,9 @@ func forgetPodShape(t *testing.T, g *rig, r *Runtime, name string) {
 			annotations[key] = value
 		}
 	}
+	if shape != "" {
+		annotations[podShapeAnnotation] = shape
+	}
 	s.Spec.PodTemplate.Metadata.Annotations = annotations
 	u, err := encodeSandbox(*s)
 	if err != nil {
@@ -259,10 +347,140 @@ func forgetPodShape(t *testing.T, g *rig, r *Runtime, name string) {
 	if err := g.dyn.Tracker().Update(sandboxGVR, u, testNamespace); err != nil {
 		t.Fatal(err)
 	}
-	g.eventually("the sandbox store to see "+name+" without a recorded shape", func() bool {
+	g.eventually("the sandbox store to see "+name+" recording the shape "+shape, func() bool {
 		stored, err := r.storedSandbox(name)
-		return err == nil && stored != nil && stored.Spec.PodTemplate.Metadata.Annotations[podShapeAnnotation] == ""
+		return err == nil && stored != nil && stored.Spec.PodTemplate.Metadata.Annotations[podShapeAnnotation] == shape
 	})
+}
+
+// A gVisor pod records no sandbox (podShapeRecord.Sandbox), so the shape every release before the
+// sandbox setting recorded — held here as that release wrote it, a literal — is the one a gVisor
+// pod built now records, byte for byte, and the sandbox setting's arrival opens no round over any
+// pod those releases left running: not on a deployment that names no sandbox block, and not on
+// one whose gVisor project names a microvm block no issue's pod runs in (what a canary reverted
+// leaves in place).
+func TestAGVisorPodRecordedBeforeThisReleaseReadsNoDrift(t *testing.T) {
+	for name, block := range map[string]func(*Options){
+		"the gVisor default":                   func(*Options) {},
+		"gvisor beside an inert microvm block": sandboxBlock(SandboxGVisor),
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(shapedOptions))
+			loc := g.spawn(workerSpec(t))
+			r2 := secondRuntime(t, g, func(o *Options) {
+				shapedOptions(o)
+				block(o)
+			})()
+			holdPodShape(t, g, r2, loc.Sandbox.Name, shapedGVisorShape)
+			if got := r2.podShapes[issueInGVisor]; got != shapedGVisorShape {
+				t.Errorf("a gVisor issue pod is built now from\n%s\nwant the shape every release before the sandbox setting recorded\n%s", got, shapedGVisorShape)
+			}
+			if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) > 0 {
+				t.Errorf("PodDrift = %q of a gVisor pod a release before the sandbox setting built, want nothing", drifted)
+			}
+		})
+	}
+}
+
+// An issue put on a gVisor project's canary list runs in a microVM from then on, so its gVisor pod
+// has drifted, and PodDrift names the sandbox alone, from none to the microVM the pod would be
+// built in now: the round that reason opens has its workers push, then replaces the pod with a
+// microVM one. The pod of an issue the list does not name still runs where its issue does, and has
+// drifted from nothing.
+func TestPuttingAnIssueOnTheCanaryListDriftsThatIssuesPodAlone(t *testing.T) {
+	g := newRig(t, nil)
+	canary, other := g.spawn(workerSpec(t)), g.spawn(childSpec(t))
+	r2 := secondRuntime(t, g, sandboxBlock(SandboxGVisor, testTree))()
+	if drifted, want := driftOf(t, g.ctx, r2, canary), "sandbox null, now "+testMicroVMSandboxShape; !slices.Equal(drifted, []string{want}) {
+		t.Errorf("PodDrift of the canary %s's pod = %q, want %q and nothing beside it", testTree, drifted, want)
+	}
+	if drifted := driftOf(t, g.ctx, r2, other); len(drifted) > 0 {
+		t.Errorf("PodDrift of LEGION-209's pod = %q, want nothing: no canary list names its issue", drifted)
+	}
+}
+
+// A project whose sandbox becomes microvm runs every issue's pod in a microVM from then on, so
+// every gVisor issue pod it has running reads the sandbox as drifted, and nothing else.
+func TestSettingTheProjectToMicroVMDriftsEveryGVisorIssuePod(t *testing.T) {
+	g := newRig(t, nil)
+	locs := []runtime.Locator{g.spawn(workerSpec(t)), g.spawn(childSpec(t))}
+	r2 := secondRuntime(t, g, sandboxBlock(SandboxMicroVM))()
+	want := "sandbox null, now " + testMicroVMSandboxShape
+	for _, loc := range locs {
+		if drifted := driftOf(t, g.ctx, r2, loc); !slices.Equal(drifted, []string{want}) {
+			t.Errorf("PodDrift of %s's pod = %q, want %q and nothing beside it", loc.Claim, drifted, want)
+		}
+	}
+}
+
+// The switch from a canary to the whole project — type microvm and the canary list emptied in one
+// change — leaves a canary's microVM pod where it is: its issue runs in a microVM before and after,
+// under the same microvm block, so the pod reads nothing, and no round replaces the pod the canary
+// proved. The gVisor pod of an issue the list never named moves with the project.
+func TestTheSwitchLeavesCanaryMicroVMPodsUndrifted(t *testing.T) {
+	g := newRig(t, nil, withOptions(sandboxBlock(SandboxGVisor, testTree)))
+	canary, other := g.spawn(workerSpec(t)), g.spawn(childSpec(t))
+	if held, built := g.sandbox(canary.Sandbox.Name).Spec.PodTemplate.Metadata.Annotations[podShapeAnnotation], g.r.podShapes[issueInMicroVM]; held != built {
+		t.Fatalf("the canary's pod records the shape %s, want the microVM one %s, or this case proves nothing", held, built)
+	}
+	r2 := secondRuntime(t, g, sandboxBlock(SandboxMicroVM))()
+	if drifted := driftOf(t, g.ctx, r2, canary); len(drifted) > 0 {
+		t.Errorf("PodDrift of the canary %s's microVM pod = %q, want nothing: its issue runs in a microVM still", testTree, drifted)
+	}
+	if drifted, want := driftOf(t, g.ctx, r2, other), "sandbox null, now "+testMicroVMSandboxShape; !slices.Equal(drifted, []string{want}) {
+		t.Errorf("PodDrift of LEGION-209's gVisor pod = %q, want %q and nothing beside it", drifted, want)
+	}
+}
+
+// An issue a microVM project puts on its canary list runs in gVisor from then on, so its microVM
+// pod reads the sandbox as drifted, from the microVM it runs in to none, and the microVM pod of
+// another issue of the project reads nothing.
+func TestACanaryIssueOfAMicroVMProjectDriftsToGVisor(t *testing.T) {
+	g := newRig(t, nil, withOptions(sandboxBlock(SandboxMicroVM)))
+	canary, other := g.spawn(workerSpec(t)), g.spawn(childSpec(t))
+	r2 := secondRuntime(t, g, sandboxBlock(SandboxMicroVM, testTree))()
+	if drifted, want := driftOf(t, g.ctx, r2, canary), "sandbox "+testMicroVMSandboxShape+", now null"; !slices.Equal(drifted, []string{want}) {
+		t.Errorf("PodDrift of the canary %s's pod = %q, want %q and nothing beside it", testTree, drifted, want)
+	}
+	if drifted := driftOf(t, g.ctx, r2, other); len(drifted) > 0 {
+		t.Errorf("PodDrift of LEGION-209's microVM pod = %q, want nothing: its issue runs in a microVM still", drifted)
+	}
+}
+
+// The microvm block's storage class is in a microVM pod's shape, as its disk's class, so a change
+// of it opens a round over every microVM pod and the round's next pod is on the new class; the
+// gVisor pods of the same project are on runtime.kubernetes.storage_class, which the block's does
+// not touch, and read nothing. The block's metadata endpoint is the other setting a microVM pod
+// alone is built from (the launcher's flags and its projected token), and drifts the same pods.
+func TestAMicroVMStorageClassChangeDriftsMicroVMPodsAlone(t *testing.T) {
+	for name, tc := range map[string]struct {
+		move func(*MicroVM)
+		now  string
+	}{
+		"its storage class": {
+			func(m *MicroVM) { m.StorageClass = "example-microvm-ssd" },
+			strings.Replace(testMicroVMSandboxShape, `"storage_class":"example-microvm-rwo"`, `"storage_class":"example-microvm-ssd"`, 1),
+		},
+		"its metadata endpoint": {
+			func(m *MicroVM) { m.Metadata = nil },
+			`{"runtime_class":"microvm","compute_class":"example-microvm","storage_class":"example-microvm-rwo"}`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(sandboxBlock(SandboxGVisor, testTree)))
+			microVM, gVisor := g.spawn(workerSpec(t)), g.spawn(childSpec(t))
+			r2 := secondRuntime(t, g, func(o *Options) {
+				sandboxBlock(SandboxGVisor, testTree)(o)
+				tc.move(o.Sandbox.MicroVM)
+			})()
+			if drifted, want := driftOf(t, g.ctx, r2, microVM), "sandbox "+testMicroVMSandboxShape+", now "+tc.now; !slices.Equal(drifted, []string{want}) {
+				t.Errorf("PodDrift of the microVM pod = %q, want %q and nothing beside it", drifted, want)
+			}
+			if drifted := driftOf(t, g.ctx, r2, gVisor); len(drifted) > 0 {
+				t.Errorf("PodDrift of LEGION-209's gVisor pod = %q, want nothing: it is built from nothing of the microvm block", drifted)
+			}
+		})
+	}
 }
 
 // The three facets a round's workers can be asked about — the operator's volume and mount holding a
