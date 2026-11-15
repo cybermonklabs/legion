@@ -1386,3 +1386,4 @@ func startSink(t *testing.T) (addr string, accepted chan *net.TCPConn) {
 	}()
 	return listener.Addr().String(), accepted
 }
+// selection probe, never merged
