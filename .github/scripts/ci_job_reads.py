@@ -550,7 +550,7 @@ exit $s"""
 
 DAEMON_RACE_SCRIPT = _go_test_json_script(
     "go test -json -count=1 -race -timeout 30m " + " ".join(DAEMON_RACE_PKGS), "daemon-race.json")
-DAEMON_PLAIN_SCRIPT = "set -o pipefail\nmkdir -p \"$RUNNER_TEMP/go-test-json\"\n" + _go_test_json_script(
+DAEMON_PLAIN_SCRIPT = "set -o pipefail\nmkdir -p \"$RUNNER_TEMP/go-test-json\"\ngit rev-parse HEAD > \"$RUNNER_TEMP/go-test-json/tested-commit\"\n" + _go_test_json_script(
     f"go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -json -count=1 -timeout 15m", "daemon.json")
 
 

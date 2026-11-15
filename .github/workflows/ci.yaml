@@ -4080,6 +4080,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/go-test-json"
+          git rev-parse HEAD > "$RUNNER_TEMP/go-test-json/tested-commit"
           s=0
           go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher)$' | xargs go test -json -count=1 -timeout 15m > "$RUNNER_TEMP/go-test-json/daemon.json" || s=$?
           if [ "$s" -eq 0 ]; then
