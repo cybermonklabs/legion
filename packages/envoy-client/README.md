@@ -761,8 +761,10 @@ signed as they would be without it. Its name lies outside `AGENT_SECRETS_*` beca
 Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE` for a token the broker no longer holds as live,
 such as one a revoke ended before it lapsed. `DispatchClient` then tells the credential
 (`stale`), presents the credential again, which trades at the broker, and sends the request one
-more time. A write goes again under the same `Idempotency-Key`. It does this once per call. If
-the broker refuses the new trade, the call fails in the broker's words.
+more time. A write goes again under the same `Idempotency-Key`. It does this once for each send:
+a second such answer is the call's refusal, but a request Dispatch answers with no route is sent
+again (while a release rolls out), and each of those sends may be sent once more after such an
+answer of its own. If the broker refuses the new trade, the call fails in the broker's words.
 
 A sign-in reaches the sessions that start after it. The broker holds a session name for one
 identity for 90 days after the name's last token. So a session that traded as the machine cannot
