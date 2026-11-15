@@ -197,6 +197,8 @@ provider_keys: {ANTHROPIC_API_KEY: anthropic_api_key}
 			ComputeClass: "example-microvm", StorageClass: "gp2",
 			Metadata: &MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider},
 		}},
+		// The file sets no memory_guard block, so the guard settles on at the wire's defaults.
+		MemoryGuard: DefaultMemoryGuard(),
 	}}
 	if cfg.Runtime.Name != want.Name || cfg.Runtime.Kubernetes == nil {
 		t.Fatalf("Runtime = %+v, want %q with its block", cfg.Runtime, want.Name)
