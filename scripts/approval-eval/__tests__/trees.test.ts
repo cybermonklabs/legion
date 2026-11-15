@@ -9,6 +9,7 @@ import {
   changesAfterAskOf,
   idsInFiles,
   jaccardOf,
+  nearDuplicatesOf,
   readTrees,
   shinglesOf,
   TREES_FILE,
@@ -332,6 +333,18 @@ describe('near-duplicate grouping (dispatch://INFRA-3189 v8, "Grouping")', () =>
       evidenceOf(rows, [wordsOf(13), wordsOf(13, 0, "x")])
     );
     expect(below.joins).toEqual([]);
+  });
+
+  test("the size bound drops no pair at its own threshold, and `apart` drops what the caller skips", () => {
+    // 7 inside 25 is 0.28 exactly, where 0.28 * 25 rounds above 7.
+    const sets = new Map([
+      ["small", [1, 2, 3, 4, 5, 6, 7]],
+      ["large", Array.from({ length: 25 }, (_, at) => at + 1)],
+    ]);
+    expect(nearDuplicatesOf(sets, undefined, 0.28).map((pair) => pair.cases)).toEqual([
+      ["large", "small"],
+    ]);
+    expect(nearDuplicatesOf(sets, () => false, 0.28)).toEqual([]);
   });
 
   test("a near-duplicate of a case in a tree with an ask before the cut takes its own tree out of every slice", () => {

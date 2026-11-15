@@ -282,10 +282,12 @@ export const SHINGLE_WORDS = 5;
  * The word 5-grams of a case's evidence, which near-duplicate grouping compares. The text is
  * lower-cased and cut into runs of letters and digits; every five consecutive runs are one
  * shingle. Each shingle is kept as the first six bytes of its sha256, a whole number below 2^48,
- * so the sets of a whole corpus fit in memory and hold none of its text; two different shingles
- * share a number with a chance near 2^-48. A text of fewer than five words is one shingle, its
- * whole run, so two such texts join only when they are the same words; a text with no word has
- * none and joins nothing. Sorted ascending, each number once.
+ * so the sets of a whole corpus fit in memory and hold none of its text. Two different shingles
+ * share a number with a chance near 2^-48 for each pair of them, so the corpus's millions of
+ * shingles may hold a few such pairs; each moves one similarity by one shingle at most. A text of
+ * fewer than five words has no 5-gram, so this keeps its whole run as one shingle, and two such
+ * texts join only when they are the same words; a text with no word has none and joins nothing.
+ * Sorted ascending, each number once.
  */
 export function shinglesOf(text: string): number[] {
   const words = text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
@@ -327,11 +329,14 @@ export interface NearDuplicatePair {
 }
 
 /**
- * Every pair of cases whose shingles have a Jaccard similarity of `threshold` or more, in the
- * order of the cases' sizes then ids. A case with no shingle is in no pair.
+ * Every pair of cases whose shingles have a Jaccard similarity of `threshold` or more and that
+ * `apart` keeps, in the order of the cases' sizes then ids. A case with no shingle is in no pair.
+ * `apart` lets a caller drop the pairs it has no use for before they are held, which keeps a
+ * corpus of many copies of one case from holding every pair of them.
  */
 export function nearDuplicatesOf(
   shingles: ReadonlyMap<string, readonly number[]>,
+  apart: (one: string, other: string) => boolean = () => true,
   threshold: number = NEAR_DUPLICATE_JACCARD
 ): NearDuplicatePair[] {
   const entries = [...shingles.entries()]
@@ -346,8 +351,10 @@ export function nearDuplicatesOf(
     for (let next = at + 1; next < entries.length; next += 1) {
       const [otherId, other] = entries[next] as [string, readonly number[]];
       // Two sets share at most the smaller's size over the larger's, and the sizes only grow
-      // from here on, so no later case can reach the threshold either.
-      if (set.length < threshold * other.length) break;
+      // from here on, so no later case can reach the threshold either. The bound is the same
+      // division `jaccardOf` makes for a set inside another, so rounding cannot drop a pair.
+      if (set.length / other.length < threshold) break;
+      if (!apart(id, otherId)) continue;
       const jaccard = jaccardOf(set, other);
       if (jaccard >= threshold) {
         pairs.push({ cases: id < otherId ? [id, otherId] : [otherId, id], jaccard });
@@ -435,10 +442,10 @@ export function treeGroupingOf(
     }
   };
   const joins: NearDuplicateJoin[] = [];
-  for (const pair of nearDuplicatesOf(evidence)) {
+  // A pair inside one group changes nothing, so only pairs of two groups are kept.
+  for (const pair of nearDuplicatesOf(evidence, (one, other) => own.get(one) !== own.get(other))) {
     const one = own.get(pair.cases[0]) as string;
     const other = own.get(pair.cases[1]) as string;
-    if (one === other) continue;
     joins.push({ ...pair, groups: [one, other] });
     const a = find(one);
     const b = find(other);
