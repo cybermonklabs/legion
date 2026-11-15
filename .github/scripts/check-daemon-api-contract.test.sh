@@ -533,7 +533,7 @@ root=$(fixture doc-comment)
 base=$(built_on "$root" 7)
 declaration 7 > "$root/stub/refs/main"
 text=$(declaration 7)
-printf '%s\n' "${text/in its pods./in its pods. Its bump rule names the five files that hold it.}" \
+printf '%s\n' "${text/in its pods./in its pods. Its bump rule names the files that hold it.}" \
   > "$root/packages/daemon/internal/api/version.go"
 sites "$root" 7
 no_open_pull_requests "$root"
