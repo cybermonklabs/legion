@@ -1270,8 +1270,10 @@ export const dispatchToolSpecs = [
       "note on an issue (dispatch message --issue), which everyone reading that issue sees; this reaches that " +
       "one session. It spends that session a turn, so send once and read the reply with " +
       "dispatch read --message <id> rather than sending again. The call is answered once its first delivery " +
-      "attempt has settled. It needs a credential holding the person scope, and one without it is refused " +
-      `403 OAUTH_SCOPE_REQUIRED, naming the scope. ${BODY_BLOCK_RULE}`,
+      "attempt has settled. When the Envoy listener holds no record of that session, Dispatch keeps the " +
+      "message for it, and the answer says so. The session reads the message when it registers again under " +
+      "its id, as a released Legion session does when a wake brings its pod back. It needs a credential " +
+      `holding the person scope, and one without it is refused 403 OAUTH_SCOPE_REQUIRED, naming the scope. ${BODY_BLOCK_RULE}`,
     arguments: (z) => ({
       session: z
         .string({ min: 1 })

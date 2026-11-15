@@ -4741,7 +4741,12 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
 
 - each live claim of the pod is suspended with a source of its own, `released` (`supervise.SuspendedByReleased`).
   That source keeps the claim's phase, its place in that phase and the task it holds, which every other source but the operator's retires (`SuspendSource.RetiresPhaseTask`), and the boot's resume by rule passes it over (`booted`, `internal/workflow/resume.go`).
-  A wake starts a released claim again, and two other steps do too, both below: admission's pass, for a claim that stands behind the entry its phases row names, and the first boot of this release, for each merger that the `awaiting_merge` cutover left stopped (`cutoverMergerRepair`);
+  A wake starts a released claim again, and two other steps do too, both below: admission's pass, for a claim that stands behind the entry its phases row names, and the first boot of this release, for each merger that the `awaiting_merge` cutover left stopped (`cutoverMergerRepair`).
+  Once the runtime's stop of a claim's process has returned, the daemon deletes that session's Envoy registration with the clean stop ([Liveness rules](#liveness-rules)), so the listener reads the session `gone` at once, and a message to the session or to its role raises the wake instead of being stored for a session that no process reads.
+  An Envoy direct message to the session is answered `404` with `state: gone` and is not stored, so its sender sends it again once the pod is back.
+  Until the listener's reaper frees the role claim, 5 to 10 minutes after the release, a message to the role's topic is answered `404` with `holder_lapsed` and `holder_state: gone` and is not stored.
+  After that, it is answered `202` and kept for the role's next holder.
+  A copy on the session's agent subject (a person's answer, comment or message that a Dispatch claim routes there, or a targeted message that Dispatch kept for the session) stays in the stream: the listener gives up its delivery after its retry window (`ENVOY_UNPLACEABLE_RETRY_WINDOW`, 60 seconds) with the wake, and the woken session reads the copy;
 
 - the issue's Sandbox is set `Suspended`, its pod is waited out, and the Sandbox and the six role Secrets it owns are deleted (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), the teardown an issue's stop already runs ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 
@@ -4759,7 +4764,7 @@ The wakes are these:
 
 - a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon, one sent with `keep: false` included: that message is not kept, and it still wakes the role, so the sender's next try reaches a session that is running;
 
-- a message sent to the agent subject of a released session: an Envoy direct message, or a person's answer, comment or message that a Dispatch claim routes to that session;
+- a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch kept for that session because the listener held no record of it;
 
 - the backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the release (60 minutes by default), for each phase worker of the pod whose phase is open.
   It stands in for a wait that raises no event of its own: a Dispatch topic the role subscribed to, CI of a repository that is not the issue's, a deploy run, a Kubernetes Job.
@@ -5003,7 +5008,11 @@ Either judgement is a probe's, never the closed stream by itself — a daemon re
 `include=unresponsive` rides with it for a listener that predates the selector, which answers the full row instead, and that row carries no `client_instance_id`, so against such a listener the stop rests on the moment alone: deploy the listener before the daemon.
 That clean stop makes the listener read the session `gone` at once, rather than `unresponsive` until the gone horizon ends, so the role claim that session held is released at the role reaper's next pass instead of an hour later, and the issue claims it held become another agent's to take at once instead of 20 minutes after it last registered (dispatch://INFRA-392).
 The reaper frees that claim once nobody has answered for it inside the live window and its holder's session is gone, which holds for a claim naming the process that held it and one that names none alike (dispatch://INFRA-783, which left that rule as it was).
-The delete names the dead process's own registration rather than a moment alone, because the very decision that asks for the stop goes on to relaunch the claim under the same session id:
+A suspension whose own stop ends a live process sends the same read and the same delete: an idle release, any other suspension by the daemon or by an operator, and a tree root's own exit, each once the runtime's stop of that process has returned (`supervise.Deps.SessionGone`).
+Its moment is when that stop returned, and both runtimes answer that stop only once the process has ended, so on clocks that agree the process's last heartbeat is stamped before that moment.
+A stop the runtime refused sends nothing, because that process may still be running, and a delete then would take a live session's registration away until its next heartbeat.
+No wake acts on a claim the daemon or an operator suspended ([Idle release](#idle-release)), so after its stop an Envoy direct message to that session is refused and not stored, and a person's targeted Dispatch message to it is kept, which the session reads if the claim is resumed.
+The delete names the ended process's own registration rather than a moment alone, because the claim is relaunched under the same session id, after a death by the very decision that asks for the stop and after a suspension by a later wake or resume:
 the listener deletes only while the stored entry carries that client instance id, or none, and was last written at or before that moment, under the same compare-and-swap it deletes at a read revision with, so a stop that lands after the relaunch has registered is refused there — `200 {"deleted":false,"reason":…}`, which the daemon logs as the registration it kept, with the listener's own reason — rather than taking a working session's registration away.
 Each condition is there to make the other's weakness bearable, and the listener keeps the entry whenever either refuses it (dispatch://INFRA-2064).
 A registration's `UpdatedAt` is stamped by the listener's own clock at every write, not by the registering process, so on clocks that agree the dead pane's last heartbeat is stamped before the probe; a stop dated earlier than the probe's own moment reads that heartbeat as a registration written since and refuses the stop that is owed, and carrying the probe's moment undated is what deletes it.

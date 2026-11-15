@@ -875,8 +875,10 @@ What the two processes share, and what each keeps to itself:
 
 - A send waits out a listener take-over.
   While the active Envoy listener pod is replaced, its successor refuses connections, answers 502, 503 or 504, or does not hold the session yet;
-  a send that meets one of those (or a receipt timeout) is tried again under the attempt it holds and the same idempotency key, renewing its claim before each try, for up to 12 seconds from its first try, and only then settles `failed` (`api/envoy_resolve.go`, `listenerTakeoverWindow`).
-  A request that sends during a take-over answers up to 12 seconds later, and a send to a session that is really gone reads `failed: no live session` about 12 seconds after it was made.
+  a send that meets one of those (or a receipt timeout) is tried again under the attempt it holds and the same idempotency key, renewing its claim before each try, for up to 12 seconds from its first try, and only then settles `failed`, or `kept` as below (`api/envoy_resolve.go`, `listenerTakeoverWindow`).
+  A request that sends during a take-over answers up to 12 seconds later, and a comment's mention of a session that is really gone reads `failed: no live session` about 12 seconds after it was made.
+  A targeted message to a session the listener holds no record of is kept then instead: Dispatch publishes it on that session's own subject, `notifications.agent.<session>`, and the attempt reads `kept`, so the session reads the message when it registers again under its id (`api/message_kept.go`, `keepForSession`).
+  A targeted message to a role whose holder is gone, one whose publish fails, and one sent by a process with neither NATS nor test hooks still settle `failed`.
   A process killed during the wait leaves the attempt to the delivery sweep.
 
 - Times that one process writes and another compares come from the database's clock, never a host's:
