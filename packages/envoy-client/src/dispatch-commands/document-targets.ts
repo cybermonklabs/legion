@@ -292,13 +292,28 @@ export function anchor(
   const occurrence = optionalNumber(args, "occurrence");
   return { artifact: artifact.id, quote, ...(occurrence === undefined ? {} : { occurrence }) };
 }
+/** Whether a document is its issue's plan, read off the artifact as Dispatch answers it: its role
+ *  is `plan`, or it carries no role and its slug is `plan-md`. It is the server's own rule,
+ *  `documentPlays(artifact, model.ArtifactRolePlan)` in
+ *  packages/envoy/internal/dispatch/api/artifacts.go, slug fallback included: a row whose role
+ *  column is still null, because the build that created it did not know the column, is a plan by
+ *  its slug there and so here. It is what decides whether Dispatch refuses a request for a
+ *  person's approval of the document (409 PLAN_APPROVED_BY_REVIEW): it refuses one on every
+ *  plan, whoever approved it. */
+export function documentPlaysPlan(artifact: Pick<Artifact, "role" | "slug">): boolean {
+  return artifact.role === "plan" || ((artifact.role ?? "") === "" && artifact.slug === "plan-md");
+}
 /** One line describing a document's approval, or undefined for a draft nobody has asked about. An
  *  awaiting approval says whom its request waits on: the agent once a version moved it, the
  *  agent's own revision included, which sends that agent no event. A plan review's approval names
- *  the plan review, never a person, as the approver, and a stale one names a plan review of the
- *  new version as the way to approve it again, since Dispatch refuses an approval request on a
- *  plan (409 PLAN_APPROVED_BY_REVIEW). */
-export function approvalLine(artifact: Pick<Artifact, "approval">): string | undefined {
+ *  the plan review, never a person, as the approver. A stale approval's tail is chosen by the
+ *  document being a plan (`documentPlaysPlan`), not by who approved it: on a plan it names a plan
+ *  review of the new version as the way to approve it again, since Dispatch refuses a request for
+ *  a person's approval on every plan (409 PLAN_APPROVED_BY_REVIEW), a plan a person approved from
+ *  its document header included. */
+export function approvalLine(
+  artifact: Pick<Artifact, "approval" | "role" | "slug">
+): string | undefined {
   const approval = artifact.approval;
   if (approval === undefined || approval.state === "draft") return undefined;
   const content =
@@ -315,8 +330,8 @@ export function approvalLine(artifact: Pick<Artifact, "approval">): string | und
     case "approved":
       return `Approval: approved v${approval.version} by ${approver}${content}`;
     case "stale":
-      if (approval.kind === "plan_review") {
-        return `Approval: approved v${approval.version} by plan review (${by}), changed since (now v${approval.latest_version}) - a plan review of this version records a new approval with dispatch plan-approve${content}`;
+      if (documentPlaysPlan(artifact)) {
+        return `Approval: approved v${approval.version} by ${approver}, changed since (now v${approval.latest_version}) - a plan review of this version records a new approval with dispatch plan-approve${content}`;
       }
       return `Approval: approved v${approval.version} by ${approver}, changed since (now v${approval.latest_version}) - the human's own answer to a decision block carries the approval when that answer is the whole change since v${approval.version}; for any other change, request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v${approval.version}${content}`;
     case "changes_requested":
