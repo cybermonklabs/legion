@@ -221,6 +221,8 @@ export const realStackReasons: Record<string, string> = {
     "the trap is asserted while a send is out; asserts the project document's live editor content",
   "picture-link-click.e2e.ts": "the link is clicked inside the live document editor",
   "pictures.e2e.ts": "pastes and uploads, with the live editor and stored markdown read back",
+  "pinned-review-events.e2e.ts":
+    "the server writes each review's event with the document and version it reviewed, and the Pinned tab reads the pins back from the reader's stored issue state",
   "pipeline.e2e.ts": "`sql`-seeded pipeline state the server aggregates",
   "plain-http-origin.e2e.ts": "types into the live document over the plain-HTTP origin",
   "plain-http-proxy.e2e.ts": "counts the live socket upstream of a real proxy",

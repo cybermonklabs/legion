@@ -64,4 +64,6 @@ test("the root guide, the e2e README and the Kubernetes doc hold no raw HTML blo
     visit(tree, false);
   }
   expect(found).toEqual([]);
-});
+  // Parsing the three guides took 5.6 s on an issue pod on 2026-11-16, past bun's default 5 s,
+  // and grows with them; the deadline is for a parse that hangs, not a measure of its speed.
+}, 60_000);

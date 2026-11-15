@@ -123,13 +123,15 @@ func (g *Guard) visibility(ctx context.Context, slug string, kept bool) (Visibil
 }
 
 // waitFits is how long the guard waits before it makes the REST read again after GitHub refused
-// it for limited, and whether it waits at all. The wait is what GitHub asks for: until the reset
-// of a spent core limit, or a secondary limit's Retry-After, never its X-RateLimit-Reset, which is
-// the core limit's. It is made only where it is no more than rateLimitWaitBound, and where it and
-// then lsRemoteBound, the longest cap of the reads that can follow it (the retried REST read,
-// GraphQL and ls-remote), end before ctx's deadline, where ctx has one: a wait that leaves them
-// no room only makes the call refuse later. A core limit with no reset, or one already past, and
-// a secondary limit with no Retry-After are not waited for.
+// it for limited, and whether it waits at all. For a spent core limit the wait is until its reset.
+// For a secondary limit the guard waits only for a Retry-After: without one it reads the visibility
+// with ls-remote at once, which makes no API request, so it does not wait for the reset GitHub's
+// documentation asks a caller with no requests left to wait for before its next API request. A
+// wait is made only where it is no more than rateLimitWaitBound, and where it and then
+// lsRemoteBound, the longest cap of the reads that can follow it (the retried REST read, GraphQL
+// and ls-remote), end before ctx's deadline, where ctx has one: a wait that leaves them no room
+// only makes the call refuse later. A core limit with no reset, or one already past, and a
+// secondary limit with no Retry-After are not waited for.
 func (g *Guard) waitFits(ctx context.Context, limited *rateLimitError) (time.Duration, bool) {
 	var wait time.Duration
 	switch {
@@ -622,8 +624,9 @@ func lsRemoteInherits(name string) bool {
 // rateLimitError is a read GitHub refused for a rate limit: whether it is GitHub's secondary
 // limit (githubrest.BudgetSecondary); for the core limit, when it resets (X-RateLimit-Reset),
 // zero where GitHub gave no reset; and for the secondary limit, the wait its Retry-After asks
-// for, zero where it gave none. A secondary limit's X-RateLimit-Reset is the core limit's, and
-// says nothing of it.
+// for, zero where it gave none. It keeps no reset for a secondary limit, since the guard waits
+// only for a Retry-After there and otherwise reads with ls-remote, which makes no API request
+// (Guard.waitFits).
 type rateLimitError struct {
 	secondary bool
 	reset     time.Time
@@ -648,7 +651,8 @@ func (e *rateLimitError) Error() string {
 // (githubrest.Limit): its status line, its headers and its body's message, never gh's own line.
 // A 429 is a limit, and so is a 403 with X-RateLimit-Remaining: 0, a Retry-After, or a message
 // naming the secondary limit or GitHub's abuse detection mechanism. The limit is the secondary
-// one where the response has a Retry-After or leaves requests, and the core limit otherwise.
+// one where the message names it, whatever X-RateLimit-Remaining says, or where the response has a
+// Retry-After or leaves requests, and the core limit otherwise.
 func rateLimitFrom(printed string) *rateLimitError {
 	status, headers := responseHeaders(printed)
 	var body struct {

@@ -2064,18 +2064,22 @@ func documentRole(target artifactTarget, kind, slug string) *string {
 }
 
 // documentPlays reports whether an artifact already read plays role: it carries that role, or it
-// carries none and its slug is the role's, for a row a rolling deploy left with no role because
-// the build that created it did not know the column. It is documentRolePredicate's answer about
-// one row, so every reader — the queries that find a document by its role and the routes that
-// judge the document in hand — agrees about the same row.
+// is an issue's document that carries none and its slug is the role's, for a row a rolling deploy
+// left with no role because the build that created it did not know the column. A role belongs to
+// an issue's documents alone - documentRole gives none to any other, and the constraint
+// artifacts_role_is_an_issue_document (migration 20261102110000_artifact_document_roles) holds the
+// column to them - so a project document whose slug is a role's, a project's plan.md, plays no
+// role and is a plain document. It is documentRolePredicate's answer about one row, so every
+// reader — the queries that find a document by its role and the routes that judge the document in
+// hand — agrees about the same row.
 func documentPlays(artifact model.Artifact, role string) bool {
-	return artifact.Role == role || (artifact.Role == "" && artifact.Slug == roleSlugs[role])
+	return artifact.Role == role || (artifact.Role == "" && artifact.IssueKey != nil && artifact.Slug == roleSlugs[role])
 }
 
 // documentRoleOf is the part a document plays: the role of roleSlugs that documentPlays answers
 // true for, asked of the row as every other reader asks it. A row plays at most one of them - a
-// row that carries a role carries one of them, and a row that carries none falls back to its
-// slug, which the map pairs with a single role - so the order this walks the map in cannot
+// row that carries a role carries one of them, and an issue's row that carries none falls back to
+// its slug, which the map pairs with a single role - so the order this walks the map in cannot
 // change the answer. Asking documentPlays rather than reading artifacts.role is what gives a row
 // whose role column is still null the role its slug decides, which is the state a rolling deploy
 // leaves behind. A document that plays none of them answers "", which omits the field of a
@@ -2099,13 +2103,15 @@ func isSpecDocument(artifact model.Artifact) bool {
 }
 
 // documentRolePredicate holds the artifacts row of the table aliased `alias` to the issue's
-// document of one role: the role itself, or the slug a document of that name carries, for a row
-// a rolling deploy left with no role. `alias` is empty where the query names no alias.
+// document of one role: the role itself, or, for an issue's row a rolling deploy left with no
+// role, the slug a document of that name carries. A project document never plays a role
+// (documentPlays), whatever its slug. `alias` is empty where the query names no alias.
 func documentRolePredicate(alias, role string) string {
 	if alias != "" {
 		alias += "."
 	}
-	return `(` + alias + `role = '` + role + `' or (` + alias + `role is null and ` + alias + `slug = '` + roleSlugs[role] + `'))`
+	return `(` + alias + `role = '` + role + `' or (` + alias + `role is null and ` + alias + `issue_key is not null and ` +
+		alias + `slug = '` + roleSlugs[role] + `'))`
 }
 
 // verificationRolePredicate is documentRolePredicate for the Verification document of a query

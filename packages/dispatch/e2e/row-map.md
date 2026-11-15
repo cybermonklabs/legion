@@ -306,6 +306,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/phone.e2e.ts` | the trap is asserted while a send is out; asserts the project document's live editor content |
 | `e2e/picture-link-click.e2e.ts` | the link is clicked inside the live document editor |
 | `e2e/pictures.e2e.ts` | pastes and uploads, with the live editor and stored markdown read back |
+| `e2e/pinned-review-events.e2e.ts` | the server writes each review's event with the document and version it reviewed, and the Pinned tab reads the pins back from the reader's stored issue state |
 | `e2e/pipeline.e2e.ts` | `sql`-seeded pipeline state the server aggregates |
 | `e2e/plain-http-origin.e2e.ts` | types into the live document over the plain-HTTP origin |
 | `e2e/plain-http-proxy.e2e.ts` | counts the live socket upstream of a real proxy |
