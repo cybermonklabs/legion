@@ -110,10 +110,11 @@ func TestTheArchitectWakeMarkTellsOncePerArmAndRun(t *testing.T) {
 	})
 }
 
-// The batched read of the phases rows carries the moment each entry was raised beside its
-// number: the admission pass weighs the one and reads how long the role has been owed its work
-// from the other, in the one statement it makes for the whole pass. A row no entry has been
-// raised on reads as the zero entry at the zero moment.
+// The batched read of the phases rows carries the moment each entry was raised and whether its
+// task is one to send as written beside its number: the admission pass weighs the number, reads
+// how long the role has been owed its work from the moment, and reads the mark to tell which roots
+// past admitted its architect reach keeps, in the one statement it makes for the whole pass. A row
+// no entry has been raised on reads as the zero entry at the zero moment, unmarked.
 func TestTheArchitectWakeReadsTheEntryAndTheMomentItWasRaised(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -122,23 +123,31 @@ func TestTheArchitectWakeReadsTheEntryAndTheMomentItWasRaised(t *testing.T) {
 	raised.Parent = nil
 	unraised := issueFixture("LEGION-831")
 	unraised.Parent = nil
+	resumed := issueFixture("LEGION-832")
+	resumed.Parent = nil
 	at := time.Date(2026, 11, 12, 8, 30, 0, 0, time.UTC)
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, raised))
 		must(t, records.PutIssue(ctx, tx, unraised))
+		must(t, records.PutIssue(ctx, tx, resumed))
 		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: raised.Key, Role: claim.RoleArchitect, Claim: "architect",
 			Entry: 4, EntryTask: "Carry the tree on.", EntryRaisedAt: at}))
 		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: unraised.Key, Role: claim.RoleArchitect, Claim: "architect"}))
+		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: resumed.Key, Role: claim.RoleArchitect, Claim: "architect",
+			Entry: 5, EntryTask: "A person answered your ask ask-q; read it.", EntryVerbatim: true, EntryRaisedAt: at}))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		entries, err := records.PhaseEntries(ctx, tx, []string{raised.Key, unraised.Key})
+		entries, err := records.PhaseEntries(ctx, tx, []string{raised.Key, unraised.Key, resumed.Key})
 		must(t, err)
 		got := entries[PhaseRole{Issue: raised.Key, Role: claim.RoleArchitect}]
-		if got.Entry != 4 || !got.RaisedAt.Equal(at) {
-			t.Fatalf("the architect's entry of %s = %+v, want entry 4 raised at %s", raised.Key, got, at)
+		if got.Entry != 4 || !got.RaisedAt.Equal(at) || got.Verbatim {
+			t.Fatalf("the architect's entry of %s = %+v, want entry 4 raised at %s, not marked to be sent as written", raised.Key, got, at)
 		}
-		if empty := entries[PhaseRole{Issue: unraised.Key, Role: claim.RoleArchitect}]; empty.Entry != 0 || !empty.RaisedAt.IsZero() {
-			t.Fatalf("the architect's entry of the row nothing raised = %+v, want the zero entry at the zero moment", empty)
+		if empty := entries[PhaseRole{Issue: unraised.Key, Role: claim.RoleArchitect}]; empty.Entry != 0 || !empty.RaisedAt.IsZero() || empty.Verbatim {
+			t.Fatalf("the architect's entry of the row nothing raised = %+v, want the zero entry at the zero moment, unmarked", empty)
+		}
+		if mark := entries[PhaseRole{Issue: resumed.Key, Role: claim.RoleArchitect}]; mark.Entry != 5 || !mark.Verbatim {
+			t.Fatalf("the architect's entry of %s = %+v, want entry 5 marked to be sent as written, as a resume raises it", resumed.Key, mark)
 		}
 	})
 }

@@ -181,7 +181,7 @@ A root whose own architect is not taking the work the daemon states it is owed.
   While such a start will relaunch a failed or retired claim, the daemon raises no such wake, because that start resumes the session the claim kept.
   The claim reads failed or retired while the outbox runs that start, until the run relaunches it.
   A start that has run against the claim and left it failed or retired, which the daemon retries on its backoff, does not hold the wake back, and neither does one that has stood owed for longer than ten minutes.
-  A root waiting on a person raises none either: the person's answer resumes its architect with a start of its own.
+  A root waiting on a person raises it as any root does, and its reason then says that the root waits: the daemon queues the next start of its architect only when that wait is answered.
   For a root with no claim, the reason also says whether the daemon wrote the start of its architect again in the same transaction as the wake.
 
 - "the root is slow before its gate": the root stands at `admitted` with no design-gate step registered, 90 minutes after it was admitted or after its architect's entry was last raised, whichever is later.
@@ -218,6 +218,10 @@ For the second arm, read the root's architect claim in `read_state` too.
 A `failed` or `retired` claim this wake names has no start that will relaunch it: no start of its run was queued in the last ten minutes, or the one the queue holds has run against it and left it as it is, which the daemon retries on its backoff.
 It takes nothing the daemon sends.
 `fresh_session` on it, with the root's key as the issue and `architect` as the role, starts it again.
+When the reason says the root waits on a person, take no `fresh_session` while it waits, since the start the answer queues relaunches the session the claim kept, and `fresh_session` would discard it.
+Name that root in the day's report with what it waits on (`issues.<KEY>.waitingOn`: the ask, or the version of its gate), so a person knows the tree has no architect that can run until they answer.
+That wake is the arm's one wake of the root's run: the daemon marks the arm told for the run, and the answer starts no new run, so it does not tell you again when the wait is answered or when the start the answer queues fails against the claim.
+So at each `tick` after `issues.<KEY>.waitingOn` is gone, read `issues.<KEY>.architectStalls`, which lists an arm whether or not you were told of it, and when it lists `claim-unreachable`, take `fresh_session` on that claim as for any other claim of this arm.
 A root with no architect claim has no claim for `compact` or `fresh_session` to reach, and each answers `NO_CLAIM` for it.
 When the reason says the daemon wrote the start of its architect again, take nothing, because that start creates the claim when it runs, and name the root in the day's report.
 When the reason says no start of one queued in the last ten minutes waits to create it, or a later `read_state` still shows no `architect` for the root, name it in the day's report as a root the daemon could not start.

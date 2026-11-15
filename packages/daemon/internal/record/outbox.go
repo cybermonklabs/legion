@@ -679,10 +679,11 @@ const (
 //     than workflow.StrandedReleaseWake ago and no turn of that claim confirmed it. The daemon
 //     writes no second start while that task stands (workflow.ArchitectStartPending), so the
 //     wake is the one thing left.
-//   - ArchitectClaimUnreachable: the architect's claim is failed or retired and the root is not
-//     waiting on a person, or the root has no architect claim at all and the work of its entry
-//     has stood that same bound, and in either case no start of the root's run is the daemon's
-//     next move for it, which workflow.ArchitectRelaunchOf decides.
+//   - ArchitectClaimUnreachable: the architect's claim is failed or retired, or the root has no
+//     architect claim at all and the work of its entry has stood that same bound, and in either
+//     case no start of the root's run is the daemon's next move for it, which
+//     workflow.ArchitectRelaunchOf decides. A root waiting on a person is read as any root is,
+//     since the daemon queues the next start of its architect only when that wait is answered.
 //   - ArchitectSlowBeforeGate: the root stands at phase.Admitted with no design-gate step
 //     registered 90 minutes after it was admitted, or after its architect's entry was last
 //     raised, whichever is later.

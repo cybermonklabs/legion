@@ -158,7 +158,7 @@ func TestTheArchitectSweepReachesEveryRootWhoseArchitectIsOwedItsEntry(t *testin
 		},
 		{
 			name: "a root at admitted whose gate has opened", change: func(f *architectSweepFixture) { f.gateOpened = true },
-			label: workflow.ArchitectGateRowsLabel,
+			label: workflow.ArchitectGateOpenLabel,
 			why:   "the children do the work after that opening, and the root's own architect is still the role at work here",
 		},
 		{
@@ -221,7 +221,7 @@ func TestTheArchitectSweepRefusesEveryRootItsReachLeavesOut(t *testing.T) {
 		},
 		{
 			name: "a root past admitted under its own power", change: func(f *architectSweepFixture) { f.stands = phase.Implementing },
-			why: "the phase it moved itself into has a role that owns its work",
+			why: "the phase it moved itself into has a role that owns its work, and the entry its architect's row names is the derivation's, not a resume's",
 		},
 		{
 			name: "a root in accepting", change: func(f *architectSweepFixture) { f.stands, f.status = phase.Accepting, "needs_review" },
@@ -545,8 +545,10 @@ func TestTheArchitectSweepSendsTheEntryAResumeRaisedWhenItsStartWasLost(t *testi
 // reached by a reading of its own, which is wider at admitted and narrower everywhere else
 // (workflow.ArchitectAtWork):
 //
-//   - the architect is reached on a root standing at admitted, whatever its design gate, and on
-//     a root a hand-over carried in while it stands in the phase that came with it;
+//   - the architect is reached on a root standing at admitted, whatever its design gate, on a
+//     root a hand-over carried in while it stands in the phase that came with it, and on a root
+//     past admitted whose architect was not given the entry a resume raised
+//     (TestTheArchitectSweepResendsALostResumeOfARootTheAnswerPromotedPastAdmitted);
 //   - the one claim that reach leaves out is a child's own sub-architect, which no daemon start
 //     creates and which workflow.ArchitectHears answers false for.
 //

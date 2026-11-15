@@ -71,7 +71,7 @@ func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotRea
 		root, run := held.issue, read.runs[held.token]
 		row := read.entries[record.PhaseRole{Issue: root.Key, Role: claim.RoleArchitect}]
 		now := a.now()
-		took, err := a.architectTookNothing(ctx, tx, root, run, now)
+		took, err := a.architectTookNothing(ctx, tx, root, row, run, now)
 		if err != nil {
 			return nil, err
 		}
@@ -193,10 +193,14 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 // The root must also be one the sweep serves (architectServed): no root outside the reach is
 // sent an architect's task at all, so none can have failed to take one, and a root that cannot
 // hear is one nothing a controller does reaches, so it raises nothing, while one that could not
-// hear earlier and can now raises the arm, because the task it was owed never arrived. Those
-// readings are asked last, so a root whose claim holds no such task costs no read.
-func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root record.Issue, run record.RoleRun,
-	now time.Time,
+// hear earlier and can now raises the arm, because the task it was owed never arrived. The reach
+// is read over the entry the architect's row names (row) and the run, as the sweep's send reads
+// it, so a root past admitted that the reach keeps while a resume's entry stands unsent
+// (workflow.ArchitectAtWork) is read here too: the arm reads the roots the rule of R5 reaches and
+// no others, as R7 says. Those readings are asked last, so a root whose claim holds no such task
+// costs no read.
+func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root record.Issue, row record.PhaseEntry,
+	run record.RoleRun, now time.Time,
 ) (string, error) {
 	held := run.Claim
 	if held == nil || held.Pending == nil {
@@ -209,7 +213,7 @@ func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root re
 	if task.QueuedAt.IsZero() || now.Sub(task.QueuedAt) <= workflow.StrandedReleaseWake {
 		return "", nil
 	}
-	served, err := a.architectServed(ctx, tx, root)
+	served, err := a.architectServed(ctx, tx, root, row, run)
 	if err != nil || !served {
 		return "", err
 	}
@@ -232,10 +236,25 @@ func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root re
 // architect's claim and the promotion queues its start in the same pass that reads this arm. A
 // claim whose start has run against it and failed, or whose start has stood owed past the bound,
 // is the failure no further send cures, which R7's second arm names (the architect's reading of R7
-// at dispatch://INFRA-2614, measured by its tester on the whole daemon). A root waiting on a person
-// is read as workflow.Stranded reads it: the person's answer resumes its architect with a start of
-// its own (ResumeAwaitedRoot), so a failed or a retired claim of such a root is relaunched by the
-// daemon's next move too.
+// at dispatch://INFRA-2614, measured by its tester on the whole daemon).
+//
+// A root waiting on a person is in the workflow, holding its slot through the wait
+// (record.KeepsSlot), so the arm reads it as it reads any root, and its reason says that it waits.
+// The daemon queues no start of its architect while it waits, since the sweep's reach leaves such
+// a root out (workflow.ArchitectAtWork), and the answer to the wait queues the next one
+// (workflow.Engine.ResumeAwaitedRoot), which the outbox runs against a failed claim with a retry
+// and against a retired one with its workspace provisioned again and a retry. Until that answer
+// no send cures the claim, so the controller is told the tree has no architect that can run while
+// it waits. workflow.Stranded leaves such a root out, which is a different question: it asks
+// whether anything will start the claim again, and the answer will.
+//
+// That wake spends the arm's one mark for the root's run (record.Store.TellArchitectsStalled keys
+// it by issue, tree, generation and arm), and the answer starts no new run: the resume raises the
+// architect's entry and not the root's generation. So when the start the answer queues runs
+// against the claim and leaves it failed or retired (workflow.RelaunchFailing), the arm holds
+// again and wakes nobody, as R7's once per root and generation says. The state still lists it
+// (ArchitectStallArms reads no mark), which is what the controller's guidance has it read on its
+// ticks once the wait is gone (skills/legion-controller/references/wakes.md).
 //
 // The reason of a claim says which case holds: the start of its run has run against it and left
 // it failed or retired, or no start of its run queued inside the bound waits to relaunch it. A
@@ -258,16 +277,20 @@ func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run rec
 	if relaunch == workflow.RelaunchNext {
 		return ""
 	}
+	var waits string
+	if root.AwaitingPerson() {
+		waits = " The root waits on a person, and the daemon queues the next start of its architect when that wait is answered."
+	}
 	if held != nil {
-		if sent || root.AwaitingPerson() {
+		if sent {
 			return ""
 		}
 		if relaunch == workflow.RelaunchFailing {
-			return fmt.Sprintf("the architect claim of %s is %s. The start of its run has run against it and left it %s, and the outbox only runs that start again on its backoff. The root stands at %s in the workflow.",
-				root.Key, held.State, held.State, root.Phase)
+			return fmt.Sprintf("the architect claim of %s is %s. The start of its run has run against it and left it %s, and the outbox only runs that start again on its backoff. The root stands at %s in the workflow.%s",
+				root.Key, held.State, held.State, root.Phase, waits)
 		}
-		return fmt.Sprintf("the architect claim of %s is %s, no start of its run queued in the last %s waits to relaunch it, and the root stands at %s in the workflow.",
-			root.Key, held.State, workflow.StrandedReleaseWake, root.Phase)
+		return fmt.Sprintf("the architect claim of %s is %s, no start of its run queued in the last %s waits to relaunch it, and the root stands at %s in the workflow.%s",
+			root.Key, held.State, workflow.StrandedReleaseWake, root.Phase, waits)
 	}
 	if row.Entry == 0 || row.RaisedAt.IsZero() || now.Sub(row.RaisedAt) <= workflow.StrandedReleaseWake {
 		return ""
@@ -276,8 +299,8 @@ func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run rec
 	if sent {
 		queue = "the daemon wrote the start of its architect again in the same transaction as this wake"
 	}
-	return fmt.Sprintf("%s holds no architect claim at all, and %s. The work of phase entry %d has stood since %s.",
-		root.Key, queue, row.Entry, row.RaisedAt.UTC().Format(time.RFC3339))
+	return fmt.Sprintf("%s holds no architect claim at all, and %s. The work of phase entry %d has stood since %s.%s",
+		root.Key, queue, row.Entry, row.RaisedAt.UTC().Format(time.RFC3339), waits)
 }
 
 // architectSlowBeforeGate is the third arm: the root stands at phase.Admitted with no step of

@@ -41,9 +41,9 @@ func TestTheArchitectOfARootReleasedForAWaitIsStillReached(t *testing.T) {
 			t.Fatalf("%s carries no mark of a release for a wait, want the moment its row was taken away", root)
 		}
 		starts := architectSweepStarts(t, pool, root)
-		if len(starts) != 1 || starts[0].entry != seededEntry || !strings.Contains(starts[0].task, workflow.ArchitectGateRowsLabel) {
+		if len(starts) != 1 || starts[0].entry != seededEntry || !strings.Contains(starts[0].task, workflow.ArchitectGateOpenLabel) {
 			t.Fatalf("the architect starts of %s = %+v, want one of entry %d whose task is labelled %q: the architect of a root at admitted is the role at work there, with the row or without it",
-				root, starts, seededEntry, workflow.ArchitectGateRowsLabel)
+				root, starts, seededEntry, workflow.ArchitectGateOpenLabel)
 		}
 
 		applySweep(t, pool, admission, "the-wait-stands")

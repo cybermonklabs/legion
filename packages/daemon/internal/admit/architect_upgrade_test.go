@@ -158,11 +158,12 @@ func TestTheArchitectUpgradeSendsNoTaskAndRaisesNoWakeOnTheFirstPasses(t *testin
 		}
 	}
 	// The quiet is the fill's and not a fixture the pass never looked at: the sweep's architect
-	// reach serves each of these roots, and the two at admitted are exactly what the gate arm
-	// reads.
+	// reach serves each of these roots, with no resume's entry to keep it, and the two at admitted
+	// are exactly what the gate arm reads.
 	for _, root := range []string{working, writing, holding} {
 		inTx(t, pool, func(tx pgx.Tx) {
-			reached, err := workflow.ArchitectAtWork(context.Background(), tx, record.NewStore(), issue(t, pool, root))
+			reached, err := workflow.ArchitectAtWork(context.Background(), tx, record.NewStore(), issue(t, pool, root),
+				record.PhaseEntry{}, record.RoleRun{})
 			if err != nil || !reached {
 				t.Fatalf("the architect reach over %s = %t, %v, want the root inside it", root, reached, err)
 			}

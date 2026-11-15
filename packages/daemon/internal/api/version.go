@@ -1747,19 +1747,19 @@ package api
 // A tree's own root carries `architectStalls` too: every arm of INFRA-2614's architect-stalled
 // reading that holds for its architect at that read, as `record.ArchitectStallArm`'s values —
 // `took-nothing` (the task of its entry was queued to its claim more than ten minutes ago and no
-// turn confirmed it), `claim-unreachable` (the claim is failed or retired, the root is not waiting
-// on a person, and no start of the root's run is the daemon's next move for it: a start the outbox
-// is running is, and so is a start queued in the last ten minutes unless it has already run
-// against the claim and left it failed or retired, after which the outbox only runs it again on
-// its backoff; or no architect claim stands, no start of one was queued in the last ten
-// minutes, and the work of its entry has waited the same ten minutes) and `slow-before-gate` (it
-// stands at `admitted` with no
-// design-gate step registered 90 minutes after the later of its admission and its architect's
-// last raised entry) — in that order. The daemon serves the arms the admission pass reads before
-// it wakes the controller, by the same predicates over the same reads
-// (admit.Admission.ArchitectStallArms, in the state's own snapshot), whether or not the
-// controller was told of an arm, and the key is absent for a root no arm holds for and for every
-// issue that is not a tree's root.
+// turn confirmed it), `claim-unreachable` (the claim is failed or retired and no start of the
+// root's run is the daemon's next move for it: a start the outbox is running is, and so is a start
+// queued in the last ten minutes unless it has already run against the claim and left it failed
+// or retired, after which the outbox only runs it again on its backoff; or no architect claim
+// stands, no start of one was queued in the last ten minutes, and the work of its entry has
+// waited the same ten minutes; a root waiting on a person raises it as any root does, since the
+// daemon queues the next start of its architect only when that wait is answered) and
+// `slow-before-gate` (it stands at `admitted` with no design-gate step registered 90 minutes
+// after the later of its admission and its architect's last raised entry) — in that order. The
+// daemon serves the arms the admission pass reads before it wakes the controller, by the same
+// predicates over the same reads (admit.Admission.ArchitectStallArms, in the state's own
+// snapshot), whether or not the controller was told of an arm, and the key is absent for a root
+// no arm holds for and for every issue that is not a tree's root.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
 // contract below 139 is served the issues without both times and without `architectStalls`
 // (api's stateFor, withoutEntryTimes) — as a caller below 133, the entry right above, is served
@@ -1781,10 +1781,11 @@ package api
 // issue beside it carries.
 // `legion state`'s plain line changes with them: it names a tree's own root where the state
 // names an arm for it (`architectStalls`), with that arm's words, and states no arm of its own,
-// and it no longer names a root for the mere difference of its two numbers, which every root
-// reads as between a transition and its delivery. The rest of the change moves no
-// shape a caller reads: the architect's row of the `phases` record, the derivation that fills its
-// entry and the sweep that sends that entry's task are the daemon's own lanes and no route.
+// and it names a root for nothing else: not for the mere difference of its two numbers, which
+// every root reads as between a transition and its delivery, whatever role works the phase it
+// stands in. The rest of the change moves no shape a caller reads: the architect's row of the
+// `phases` record, the derivation that fills its entry and the sweep that sends that entry's task
+// are the daemon's own lanes and no route.
 // (This entry took 94 on cybermonklabs/legion#3677's head 643be0c4ae84, whose own entry stood
 // at 93 then. #3677 merged at 94. The entry took 111 at the forward merge of 2026-11-13 that
 // brought main in at 7810d00ef1c3, which declared 104, cybermonklabs/legion#3830's entry: a

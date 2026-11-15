@@ -2732,15 +2732,17 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // the measured defect (dispatch://INFRA-2614). The architect of every root of the domain is
 // weighed here, slotted, past its review or released for a wait, and the reach that decides
 // which of them is owed anything is read once its claim is behind (architectReached,
-// workflow.ArchitectAtWork): a root at admitted whatever its gate, and a root a hand-over carried
-// in while it stands in the phase that came with it. The second half of the domain is what
-// reaches a root a hand-over carried in at accepting, retro or merging, which holds no row, and
-// the third is what reaches a root releaseSlotsForWaits gave its row back for, such as a root at
-// admitted whose design gate has opened while it waits on an open child, which holds none either.
-// A root that reached accepting under its own power is weighed and passed over by that reach,
-// since the notice that moved it there told its
-// architect. So the architects this names are exactly those the pass sends a start to, and the
-// sweep's gate opens for no root the pass would send nothing.
+// workflow.ArchitectAtWork): a root at admitted whatever its gate, a root a hand-over carried in
+// while it stands in the phase that came with it, and a root past admitted under its own power,
+// waiting on no person, while its architect's row names an entry a resume raised that its claim
+// was not given. The second half of the domain is what reaches a root a hand-over carried in at
+// accepting, retro or merging, which holds no row, and the third is what reaches a root
+// releaseSlotsForWaits gave its row back for, such as a root at admitted whose design gate has
+// opened while it waits on an open child, which holds none either. A root that reached accepting
+// under its own power is weighed and passed over by that reach, since the notice that moved it
+// there told its architect, unless the resume's entry is still owed to it. So the architects this
+// names are exactly those the pass sends a start to, and the sweep's gate opens for no root the
+// pass would send nothing.
 //
 // The slots are walked here, in the order the store answered, then the issues past their review
 // in the order the pass holds them, and the candidates those two halves make are what the
@@ -2964,7 +2966,7 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 			continue
 		}
 		if held.role == claim.RoleArchitect {
-			reached, err := a.architectReached(ctx, tx, held.issue, run)
+			reached, err := a.architectReached(ctx, tx, held.issue, entry, run)
 			if err != nil {
 				return nil, err
 			}
@@ -2990,21 +2992,23 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 	return owed, nil
 }
 
-// architectReached says whether a root architect behind the entry its phases row names is owed a
-// start, which is the architect's half of owedEntryRoles' rule. Three things stop it. A start
-// already on its way is not owed twice (workflow.ArchitectStartPending): a row still queued, a
-// claim still starting, or a task the claim has not confirmed. While such a row waits, every
+// architectReached says whether a root architect behind the entry its phases row names (entry) is
+// owed a start, which is the architect's half of owedEntryRoles' rule. Three things stop it. A
+// start already on its way is not owed twice (workflow.ArchitectStartPending): a row still queued,
+// a claim still starting, or a task the claim has not confirmed. While such a row waits, every
 // later pass reads it and names nothing, and that reading is pure, so it is asked first. A root
 // outside the reach is owed nothing, and neither is an architect that cannot hear what a start
 // would send (architectServed).
 //
 // The same three hold for an architect whose phases row names no entry at all, which the pass
 // hands an entry rather than resumes (raiseArchitectEntry, workflow.Engine.StartArchitect).
-func (a *Admission) architectReached(ctx context.Context, tx pgx.Tx, root record.Issue, run record.RoleRun) (bool, error) {
+func (a *Admission) architectReached(ctx context.Context, tx pgx.Tx, root record.Issue, entry record.PhaseEntry,
+	run record.RoleRun,
+) (bool, error) {
 	if _, pending := workflow.ArchitectStartPending(run); pending {
 		return false, nil
 	}
-	return a.architectServed(ctx, tx, root)
+	return a.architectServed(ctx, tx, root, entry, run)
 }
 
 // architectServed is whether the own architect of a root the selection holds is one the sweep has
@@ -3017,17 +3021,22 @@ func (a *Admission) architectReached(ctx context.Context, tx pgx.Tx, root record
 // reads nothing, because root is one readSlotHolders holds: it holds one of the slots this pass
 // read, or stands past its review in a tree that runs, or was released for a wait in a tree that
 // runs (record.TreeRuns, which no queued root does), and so waits for none. And the root must be
-// inside the reach (workflow.ArchitectAtWork): a root standing at
-// admitted, whatever its design gate, and a root a hand-over carried in while it stands in the
-// phase that came with it, and no root past admitted under its own power, whose phase role owns
-// its work.
-// The pure reading is asked first, so the reach's read of the hand-over row is made only for a
-// root that hears.
-func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.Issue) (bool, error) {
+// inside the reach (workflow.ArchitectAtWork): a root standing at admitted, whatever its design
+// gate, a root a hand-over carried in while it stands in the phase that came with it, and a root
+// past admitted under its own power, waiting on no person, only while the entry its architect's
+// row names (entry) is one the resume of a person's answer raised and its claim (run) has not
+// been given, since its phase role owns the rest of its work. Both callers hand over the entry
+// and the run the pass read for the whole selection (slotReading), so the first arm reaches the
+// same roots the send does, which is R7's "the root is one the rule of R5 reaches"
+// (dispatch://INFRA-2614). The pure reading is asked first, so the reach's read of the hand-over
+// row is made only for a root that hears.
+func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.Issue, entry record.PhaseEntry,
+	run record.RoleRun,
+) (bool, error) {
 	if !workflow.ArchitectHearsSlotted(root) {
 		return false, nil
 	}
-	reached, err := workflow.ArchitectAtWork(ctx, tx, a.store, root)
+	reached, err := workflow.ArchitectAtWork(ctx, tx, a.store, root, entry, run)
 	if err != nil {
 		return false, fmt.Errorf("read whether the architect of %s is the role at work there: %w", root.Key, err)
 	}
@@ -3064,8 +3073,9 @@ func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.
 // re-arms the migration's fill as well as the phase entry's own
 // (20261113182000_architect_entry_upgrade.up.sql), so the roots standing at a roll-forward are
 // filled again rather than raised here all at once. Every root of that selection is inside the
-// sweep's reach (workflow.ArchitectAtWork), whose roots are the two the derivation writes a first
-// task for, so every such raise raises an entry and sends its work.
+// sweep's reach (workflow.ArchitectAtWork) with a row that names no entry, so no resume's entry
+// keeps it there, and such roots are the two the derivation writes a first task for, so every such
+// raise raises an entry and sends its work.
 //
 // Every other role is left as it was: a phase worker whose row names no entry is owed none
 // (workflow.OwedEntry), because no transition of its issue has ever handed that role work.

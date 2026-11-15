@@ -17,9 +17,9 @@ import (
 // such a role that entry's work on every admission pass and on a sweep of its own each minute, so
 // the line is what an operator reads to see a difference the passes are not closing.
 //
-// A root is held to another rule, because the architect is the role that works `admitted` and
-// every root reads as behind for the moments between a transition and its delivery: the line
-// names a root only where the state names an arm of the daemon's architect-stalled reading for it
+// A root is held to another rule, because every root reads as behind for the moments between a
+// transition and its delivery, whatever role works the phase it stands in: the line names a root
+// only where the state names an arm of the daemon's architect-stalled reading for it
 // (api.Issue.ArchitectStalls), and prints each arm's words (record.ArchitectStallArm.Words), the
 // words the daemon's wake begins with. The daemon reads the arms by the predicates its own wake
 // uses, so the line reads none of its own: a root whose fields would have read as an arm to a
@@ -27,7 +27,8 @@ import (
 //
 // The numbers are the architect's where the root stands in a phase its architect works, and past
 // it they are that phase's worker's, so the architect of such a root is named with its arm and no
-// numbers, and its worker by the numbers where they differ.
+// numbers, and its worker is not named for the numbers at all. An issue that is not its tree's
+// root is named for its numbers where they differ, as every role a phase worker works is.
 //
 // The role is the one the issue's current phase names (phase.RoleFor): an issue whose phase
 // names no role carries neither number, so the line never names one.
@@ -68,7 +69,7 @@ func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor
 	// One root for each arm the state names, a root it names two arms for, and a root in
 	// implementing whose architect's claim cannot be reached while its implementer is behind the
 	// entry its row names: its architect is named with the arm and no numbers, and its
-	// implementer with the numbers, which are the implementer's.
+	// implementer is not named, since a root is named for its arms alone.
 	named := `"LEGION-400":{"key":"LEGION-400","generation":1,"phase":"admitted","status":"in_progress","tree":"LEGION-400",` +
 		`"workers":{},"phaseEntry":1,"givenEntry":1,"architectStalls":["took-nothing"]},` +
 		`"LEGION-401":{"key":"LEGION-401","generation":1,"phase":"admitted","status":"in_progress","tree":"LEGION-401",` +
@@ -79,6 +80,13 @@ func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor
 		`"workers":{},"phaseEntry":1,"givenEntry":1,"architectStalls":["took-nothing","claim-unreachable"]},` +
 		`"LEGION-404":{"key":"LEGION-404","generation":1,"phase":"implementing","status":"in_progress","tree":"LEGION-404",` +
 		`"workers":{},"phaseEntry":3,"givenEntry":2,"architectStalls":["claim-unreachable"]}`
+	// A root in planning whose planner is behind the entry its row names and for which the state
+	// names no arm, beside a child of its tree in implementing whose implementer is behind its
+	// own: the child is named for its numbers, and the root for nothing.
+	rootAndChild := `"LEGION-500":{"key":"LEGION-500","generation":1,"phase":"planning","status":"in_progress","tree":"LEGION-500",` +
+		`"workers":{},"phaseEntry":3,"givenEntry":2},` +
+		`"LEGION-501":{"key":"LEGION-501","generation":1,"phase":"implementing","status":"in_progress","tree":"LEGION-500",` +
+		`"workers":{},"phaseEntry":4,"givenEntry":3}`
 	for _, tc := range []struct {
 		name, issues, want string
 	}{
@@ -96,13 +104,17 @@ func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor
 		{
 			name:   "each root the state names an arm for, with the words of each arm",
 			issues: `{"issues":{` + named + `}}`,
-			want: "roles not given their phase entry, and roots a wake names: 6 — " +
+			want: "roles not given their phase entry, and roots a wake names: 5 — " +
 				"LEGION-400 architect: entry 1, given 1, the architect took nothing; " +
 				"LEGION-401 architect: entry 2, given 1, the architect's claim cannot be reached; " +
 				"LEGION-402 architect: entry 1, given 1, the root is slow before its gate; " +
 				"LEGION-403 architect: entry 1, given 1, the architect took nothing, the architect's claim cannot be reached; " +
-				"LEGION-404 architect: the architect's claim cannot be reached; " +
-				"LEGION-404 implementer: entry 3, given 2\n",
+				"LEGION-404 architect: the architect's claim cannot be reached\n",
+		},
+		{
+			name:   "a root in a phase worker's phase whose numbers differ, beside a child of its tree whose numbers differ",
+			issues: `{"issues":{` + rootAndChild + `}}`,
+			want:   "roles not given their phase entry, and roots a wake names: 1 — LEGION-501 implementer: entry 4, given 3\n",
 		},
 		{
 			name:   "none",

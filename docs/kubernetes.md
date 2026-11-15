@@ -2298,17 +2298,17 @@ The daemon wakes the project's controller with `architect-stalled on <KEY>` (`sk
 
 - the architect took nothing: the task of its entry was queued to its claim more than ten minutes ago, and no turn confirmed it.
 
-- the architect's claim cannot be reached: the claim is failed or retired, the root is not waiting on a person, and no start of the root's run is the daemon's next move for it, or no architect claim stands, no start of one was queued in the last ten minutes, and the work of the entry has waited the same ten minutes.
+- the architect's claim cannot be reached: the claim is failed or retired and no start of the root's run is the daemon's next move for it, or no architect claim stands, no start of one was queued in the last ten minutes, and the work of the entry has waited the same ten minutes.
   A start the outbox is running is that next move, and so is a start queued in the last ten minutes unless it has already run against the claim and left it failed or retired.
   A start that has run and left the claim failed or retired, which the outbox runs again on its backoff while every launch fails, holds no wake back, and neither does one that has stood owed past the ten minutes without running.
-  A root waiting on a person raises none for a failed or retired claim, because the person's answer resumes its architect with a start of its own.
+  A root waiting on a person raises it as any root does, and its reason says the root waits, because the daemon queues the next start of its architect only when that wait is answered.
 
 - the root is slow before its gate: it still stands at `admitted` with no design-gate step registered 90 minutes after its admission or its architect's last raised entry, whichever is later.
 
 The daemon reads the three arms on every admission pass, and its sweep of each minute runs while an arm holds that no wake has told yet, so in a project where no other fact arrives the controller is woken within a minute of the arm holding.
 While no controller is registered for the project, the daemon marks no arm told and queues no wake, and its sweep does not run for an arm alone, so the first pass after a controller registers tells it.
 Each tree root of `GET /legion/v1/state` carries `architectStalls`, the arms that hold for its architect at that read (`took-nothing`, `claim-unreachable`, `slow-before-gate`), whether or not the controller was told of them.
-The daemon reads them by the same rules as the wake, and the plain `legion state` prints them, with each arm's words, on its line of the roots a wake names.
+The daemon reads them by the same rules as the wake, and the plain `legion state` prints them, with each arm's words, on its line of the roots a wake names, which names a root for nothing else, whatever its two numbers say.
 
 Store migration 20261113181500_architect_stalled_notices adds `architect_stalled_notices`, which marks each wake told.
 Store migration 20261113182000_architect_entry_upgrade settles every root architect of the release before it at entry 1, on its row and on its claim, so the upgrade sends no running architect a first task.
@@ -2319,6 +2319,7 @@ Store migration 20261114020537_claim_entry_handshake adds the four `claims.hands
 The state of such a root carries its two numbers and neither time, since the upgrade queues no task and records no handshake.
 Store migration 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim`, the mark that the sweep sends a root architect's entry again as written, which the resume of a root a person answered sets and every other raise of an entry clears;
 every row it finds takes the default, false, which the sweep derives again.
+The same mark keeps a root that the answer's own admission pass promoted past `admitted` in the sweep's reach until its architect's claim is given that entry, so a start of the resume that reaches no claim is written again.
 
 To roll a release at contract 139 back to contract 87, stop the daemon and run two blocks in this order: the block below, then the phase entry's block after it.
 A rollback below contract 133 also takes the steps of the releases it crosses, which "Rolling back the release that frees the slot past review", "Rolling back the release whose update round ends at its bound" and "Rolling back the release that tells the merger of a merge-queue removal" above give.

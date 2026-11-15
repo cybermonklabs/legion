@@ -602,12 +602,19 @@ type PhaseRole struct {
 }
 
 // PhaseEntry is what a batched read of many issues' phases rows answers for one of them
-// (Store.PhaseEntries): the entry the row names and the moment the transition raised it, which
-// are the two fields of PhaseRow a pass over every slot holder reads. RaisedAt is zero on a row
-// no entry has been raised on, where Entry is zero too.
+// (Store.PhaseEntries): the entry the row names, the moment the transition raised it and whether
+// its task is one to send as written, which are the three fields of PhaseRow a pass over every
+// slot holder reads. RaisedAt is zero on a row no entry has been raised on, where Entry is zero
+// too.
 type PhaseEntry struct {
 	Entry    int64
 	RaisedAt time.Time
+	// Verbatim is the row's PhaseRow.EntryVerbatim: the entry was raised by the resume of a root a
+	// person answered, whose task names the answer. The sweep's reach over a root's architect
+	// reads it (workflow.ArchitectAtWork): such an entry, while its claim has not been given it,
+	// keeps a root the answer's own pass promoted past admitted in the reach, in every phase that
+	// carries a run but awaiting_person, where the answer to the new wait raises an entry of its own.
+	Verbatim bool
 }
 
 // ReviewDecision is what one review decided: its state (changes_requested or approved), its body,
@@ -1494,14 +1501,16 @@ type Store interface {
 	// the newest claim Dispatch showed.
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
-	// PhaseEntries is the entry each phases row of issues names and the moment that entry was
-	// raised (PhaseRow.Entry, PhaseRow.EntryRaisedAt), by issue and role, read in one statement.
-	// Admission's sweep weighs every role it holds against that number (admit's
-	// owedEntryRoles), and reads the moment beside it to tell how long a role has been owed the
-	// work the number names (admit's architectStalls), and a read an issue would cost one
-	// round trip a slot on every fact of the project, which a project running hundreds of trees
-	// pays hundreds of times over. A row the record does not hold is absent from the answer,
-	// which reads as the zero entry: a role no transition has ever handed work on.
+	// PhaseEntries is the entry each phases row of issues names, the moment that entry was raised
+	// and whether its task is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt,
+	// PhaseRow.EntryVerbatim), by issue and role, read in one statement. Admission's sweep weighs
+	// every role it holds against that number (admit's owedEntryRoles), reads the mark to tell
+	// which roots past admitted its architect reach keeps (workflow.ArchitectAtWork), and reads the
+	// moment beside them to tell how long a role has been owed the work the number names (admit's
+	// architectStalls), and a read an issue would cost one round trip a slot on every fact of the
+	// project, which a project running hundreds of trees pays hundreds of times over. A row the
+	// record does not hold is absent from the answer, which reads as the zero entry: a role no
+	// transition has ever handed work on.
 	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
 	PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)

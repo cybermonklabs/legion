@@ -323,6 +323,57 @@ func TestARootTwoArchitectWakeArmsReadRaisesBothOfThem(t *testing.T) {
 	}
 }
 
+// The first arm reads the roots the sweep's rule reaches (dispatch://INFRA-2614 R7, "the root is
+// one the rule of R5 reaches"), and that reach keeps a root past admitted under its own power while
+// its architect's row names an entry a resume raised that its claim was not given
+// (workflow.ArchitectAtWork). So a root in planning whose architect's row stands at such an entry,
+// above the entry its claim was given, while the claim still holds that given entry's task queued
+// past the bound with no turn confirming it, raises the arm: the sweep writes no start of the
+// resume's entry while that task stands (workflow.ArchitectStartPending), so the wake is the one
+// thing left. The control is the same row whose entry the derivation raised, which the reach
+// leaves out past admitted, so nothing is named.
+func TestTheTookNothingArchitectWakeReadsARootPastAdmittedOwedAResumesEntry(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		verbatim bool
+		want     []record.ArchitectStallArm
+		why      string
+	}{
+		{name: "the row names an entry a resume raised", verbatim: true, want: []record.ArchitectStallArm{record.ArchitectTookNothing},
+			why: "the resume's entry keeps the root in the reach past admitted until its claim is given it, and the claim took nothing it was sent"},
+		{name: "the row names an entry the derivation raised",
+			why: "a root past admitted under its own power is outside the reach when no resume's entry is owed, so no task of it was the sweep's to send"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			registerController(t, pool)
+			admission := quiet(t, 1)
+			const root = "LEGION-826"
+			fixture := architectWakeRoot(root)
+			fixture.stands = phase.Planning
+			fixture.queuedAt, fixture.confirmed = fixedNow.Add(-pastTheHandshake), false
+			seedArchitectWakeRoot(t, pool, fixture)
+			inTx(t, pool, func(tx pgx.Tx) {
+				if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: root, Role: claim.RoleArchitect,
+					Claim: architectToken(t, root), Entry: seededEntry + 1, EntryTask: "A person answered your ask ask-q; read it.",
+					EntryVerbatim: tc.verbatim, EntryRaisedAt: fixedNow.Add(-pastTheHandshake)}); err != nil {
+					t.Fatalf("raise the architect's entry of %s above the entry its claim was given: %v", root, err)
+				}
+			})
+
+			if arms := architectStallArmsOf(t, pool, admission, root); !slices.Equal(arms, tc.want) {
+				t.Fatalf("the state's reading of %s names the arms %v, want %v: %s", root, arms, tc.want, tc.why)
+			}
+			applySweep(t, pool, admission, "past-admitted-1")
+			applySweep(t, pool, admission, "past-admitted-2")
+			assertArchitectWakes(t, pool, root, tc.want, tc.why)
+			if starts := architectStartsOf(t, pool, root); len(starts) != 0 {
+				t.Fatalf("the architect starts of %s = %+v, want none: the claim still holds a task it has not confirmed", root, starts)
+			}
+		})
+	}
+}
+
 // A root whose architect cannot hear raises the first arm not at all: nothing a controller does
 // reaches a root a person has moved out of the workflow, so the wake would ask for an act with
 // nowhere to land (workflow.ArchitectHears). Its claim holds exactly the shape the arm reads —
@@ -419,6 +470,12 @@ func TestNoArchitectWakeIsRaisedForARootThatIsMovingAlong(t *testing.T) {
 // own start has run against them and left them failed, under no lease or a lapsed one, which the
 // arm wakes the controller for and Stranded leaves out. A start of an earlier run reaches no claim
 // of this one, so it quiets neither.
+//
+// A root waiting on a person is in the workflow, so a failed or a retired claim of it with no
+// start queued is a claim the arm names, and the reason says the root waits: the daemon queues
+// the next start of its architect only when that wait is answered
+// (workflow.Engine.ResumeAwaitedRoot). Stranded leaves such a root out, which is a different
+// question again: the answer will start the claim, so something will.
 func TestTheUnreachableClaimArchitectWakeIsRaisedOnlyWhereNoQueuedStartRelaunchesTheClaim(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -458,8 +515,15 @@ func TestTheUnreachableClaimArchitectWakeIsRaisedOnlyWhereNoQueuedStartRelaunche
 			says: "no start of its run queued in the last 10m0s waits to relaunch it",
 			why:  "nothing the daemon has queued will relaunch the failed claim"},
 		{name: "a retired claim of a root waiting on a person", state: supervise.StateRetired,
-			awaiting: &record.Awaiting{Ask: "ask-q", Since: seqMark(10)},
-			why:      "the person's answer resumes the architect with a start that relaunches the claim, as workflow.Stranded reads it"},
+			awaiting: &record.Awaiting{Ask: "ask-q", Since: seqMark(10)}, woken: true,
+			says: "The root waits on a person, and the daemon queues the next start of its architect when that wait is answered.",
+			why: "the root is in the workflow and no start the daemon has queued relaunches the retired claim, while workflow.Stranded " +
+				"leaves the claim out because the answer to the wait will start it"},
+		{name: "a failed claim of a root waiting on a person", state: supervise.StateFailed,
+			awaiting: &record.Awaiting{Ask: "ask-q", Since: seqMark(10)}, woken: true,
+			says: "The root waits on a person, and the daemon queues the next start of its architect when that wait is answered.",
+			why: "the root is in the workflow and no start the daemon has queued relaunches the failed claim, while workflow.Stranded " +
+				"leaves the claim out because the answer to the wait will start it"},
 		{name: "a retired claim whose start is in its first run against it", state: supervise.StateRetired,
 			queued: architectWakeGeneration, ran: true, lease: time.Minute,
 			why: "the outbox records the start on the claim before it relaunches the claim, so that start is still the daemon's next move"},
@@ -698,7 +762,8 @@ func TestTheGateArchitectWakeIsNotRaisedForARootAHandoverCarriedIn(t *testing.T)
 		t.Fatalf("the architect wakes of the carried root = %q, want none: the gate arm reads a root standing at admitted", reasons)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
-		reached, err := workflow.ArchitectAtWork(context.Background(), tx, record.NewStore(), issue(t, pool, root))
+		reached, err := workflow.ArchitectAtWork(context.Background(), tx, record.NewStore(), issue(t, pool, root),
+			record.PhaseEntry{}, record.RoleRun{})
 		if err != nil || !reached {
 			t.Fatalf("the architect reach over the carried root = %t, %v, want the root inside it: the quiet above must be the arm's own reading", reached, err)
 		}

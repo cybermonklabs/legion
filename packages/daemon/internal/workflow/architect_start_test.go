@@ -18,10 +18,30 @@ const freshLead = "LEGION-208 is yours and its tree is open at generation 2, hol
 
 // The lead of a tree that ran at an earlier generation, shared the same way.
 const readmittedLead = "LEGION-208 is yours and its tree ran at an earlier generation and is open again at generation 2, " +
-	"holding an admission slot while nothing in it runs. Re-admission cleared the old generation and its design gate with it. " +
+	"holding an admission slot. Re-admission cleared the old generation and its design gate with it. " +
 	"Take it up in this turn, as your role says: claim it in Dispatch, then"
 
-const startTail = " Nothing else starts this tree, and no message is coming."
+// The closing sentence of each shape: what starts the tree's next work, and whether more is coming
+// to the architect, as each holds of the root its shape is written for. A carried root's depends on
+// the phase it stands in, so it has one for a phase a worker works, one for accepting, which is the
+// architect's own, one for held, which no worker works, and one for merging once its pull request
+// has merged, which the merge itself ended.
+const (
+	freshClosing         = " Nothing else starts this tree, and no message is coming."
+	carriedClosing       = " The daemon starts that phase's own worker itself."
+	carriedOwnClosing    = " That phase is your own, so the daemon starts no worker for it."
+	carriedHeldClosing   = " No worker works that phase, so the daemon starts none for it."
+	carriedMergedClosing = " Its pull request has merged, so the daemon starts no worker for that phase, and the root stands " +
+		"there until the rest of its tree has left the workflow, when the daemon closes it."
+	gateStandingClosing  = " Its own first phase starts only once its design gate opens."
+	gateOpenClosing      = " The daemon starts its first phase itself once it holds an admission slot and neither an open child under it nor an issue it is blocked by holds that phase back."
+	readmittedClosing    = " Its own first phase starts only once its design gate opens again."
+	gateOpenInstructions = "Take it up in this turn, as your role says: claim it in Dispatch and take the tree up from where it stands."
+)
+
+// closings is every closing sentence above, which no task of the second rule carries.
+var closings = []string{freshClosing, carriedClosing, carriedOwnClosing, carriedHeldClosing, carriedMergedClosing,
+	gateStandingClosing, gateOpenClosing, readmittedClosing}
 
 // specGated is a deployment that gates the spec step alone.
 var specGated = []record.DesignStep{record.DesignStepSpec}
@@ -41,6 +61,13 @@ func registeredSpec() map[record.DesignStep]record.DesignGate {
 		record.DesignStepSpec: {Issue: "LEGION-208", Step: record.DesignStepSpec, LatestVersion: 1}}
 }
 
+// approvedSpec is the gate rows of a root whose spec a person approved at version 1, the one step
+// the deployment gates (specGated), so its design gate is open.
+func approvedSpec() map[record.DesignStep]record.DesignGate {
+	return map[record.DesignStep]record.DesignGate{
+		record.DesignStepSpec: {Issue: "LEGION-208", Step: record.DesignStepSpec, LatestVersion: 1, ApprovedVersion: new(1)}}
+}
+
 // decidedOnTheTree is what a person decided on the tree while nobody in it could hear them.
 const decidedOnTheTree = "While nobody in LEGION-208's tree could hear it, a person decided on the tree: " +
 	"dispatch://LEGION-208/spec (design-approved by user:alice). Read each before you continue."
@@ -51,10 +78,14 @@ func childDecision() record.KeptDecisions {
 		At: time.Unix(0, 0).UTC(), Issue: "LEGION-209", Decision: record.DecisionAskAnswered, Actor: "user:alice"}}}
 }
 
-// The whole text of each of the four shapes, pinned: this task is the one thing a fresh
-// architect's first turn has to go on, so what it says is the whole of what that turn knows. Each
-// shape names the gate the deployment arms, where its text speaks of the gate at all, so one
-// gated step, two and none are all pinned.
+// The whole text of each shape, pinned: this task is the one thing a fresh architect's first turn
+// has to go on, so what it says is the whole of what that turn knows. Each shape names the gate
+// the deployment arms, where its text speaks of the gate at all, so one gated step, two and none
+// are all pinned. Each ends in a closing sentence of its own, and every clause of it holds of the
+// root it is sent to: no root but a fresh tree's is told that nothing else starts it and no
+// message is coming, since a carried root's phase worker, an open gate's first phase, a person's
+// review of a registered step and the re-admitted members of a tree that ran each start something
+// or bring a message.
 func TestTheArchitectTaskOfEachShape(t *testing.T) {
 	two := []record.DesignStep{record.DesignStepDecisions, record.DesignStepCriteria}
 	for _, tc := range []struct {
@@ -65,18 +96,18 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 		{
 			name:  "a tree nobody has architected, under a deployment that gates the spec",
 			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}},
-			want:  freshLead + " request approval of its primary document and register that step of its design gate." + startTail,
+			want:  freshLead + " request approval of its primary document and register that step of its design gate." + freshClosing,
 		},
 		{
 			name:  "a tree nobody has architected, under a deployment that gates two steps",
 			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: two}},
 			want: freshLead + " request approval of each document this deployment gates and register each of their steps of its design gate: " +
-				"its decisions document and its Verification document." + startTail,
+				"its decisions document and its Verification document." + freshClosing,
 		},
 		{
 			name:  "a tree nobody has architected, under a deployment that gates no step",
 			start: ArchitectStart{Root: admittedRoot()},
-			want:  freshLead + " register that spec at its current version, which opens the design gate with no approval." + startTail,
+			want:  freshLead + " register that spec at its current version, which opens the design gate with no approval." + freshClosing,
 		},
 		{
 			name: "a root a hand-over carried in",
@@ -84,16 +115,47 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 				Carried: true, Gate: record.TreeGate{Steps: specGated}},
 			want: "LEGION-208 is yours and stands in implementing, the phase a hand-over carried it in at, with the design gate it brought. " +
 				"Take it up in this turn, as your role says: claim it in Dispatch and resume the tree from that phase. " +
-				"Decompose nothing and release no child." + startTail,
+				"Decompose nothing and release no child." + carriedClosing,
 		},
 		{
-			name: "a root whose one gated step a person has approved",
+			name: "a root a hand-over carried into accepting, the architect's own phase",
+			start: ArchitectStart{Root: rootAt(phase.Accepting),
+				Carried: true, Gate: record.TreeGate{Steps: specGated}},
+			want: "LEGION-208 is yours and stands in accepting, the phase a hand-over carried it in at, with the design gate it brought. " +
+				"Take it up in this turn, as your role says: claim it in Dispatch and resume the tree from that phase. " +
+				"Decompose nothing and release no child." + carriedOwnClosing,
+		},
+		{
+			name: "a root a hand-over carried in held",
+			start: ArchitectStart{Root: rootAt(phase.Held),
+				Carried: true, Gate: record.TreeGate{Steps: specGated}},
+			want: "LEGION-208 is yours and stands in held, the phase a hand-over carried it in at, with the design gate it brought. " +
+				"Take it up in this turn, as your role says: claim it in Dispatch and resume the tree from that phase. " +
+				"Decompose nothing and release no child." + carriedHeldClosing,
+		},
+		{
+			name: "a root a hand-over carried into merging whose pull request has merged",
+			start: ArchitectStart{Root: rootAt(phase.Merging),
+				Carried: true, PhaseFinished: true, Gate: record.TreeGate{Steps: specGated}},
+			want: "LEGION-208 is yours and stands in merging, the phase a hand-over carried it in at, with the design gate it brought. " +
+				"Take it up in this turn, as your role says: claim it in Dispatch and resume the tree from that phase. " +
+				"Decompose nothing and release no child." + carriedMergedClosing,
+		},
+		{
+			name: "a root a hand-over carried into merging whose pull request has not merged",
+			start: ArchitectStart{Root: rootAt(phase.Merging),
+				Carried: true, Gate: record.TreeGate{Steps: specGated}},
+			want: "LEGION-208 is yours and stands in merging, the phase a hand-over carried it in at, with the design gate it brought. " +
+				"Take it up in this turn, as your role says: claim it in Dispatch and resume the tree from that phase. " +
+				"Decompose nothing and release no child." + carriedClosing,
+		},
+		{
+			name: "a root whose one gated step a person has approved, so its gate is open",
 			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: map[record.DesignStep]record.DesignGate{
 				record.DesignStepSpec: {Issue: "LEGION-208", Step: record.DesignStepSpec, LatestVersion: 2, ApprovedVersion: new(2)}}}},
-			want: "LEGION-208 is yours and its design gate already stands part way: " +
+			want: "LEGION-208 is yours and its design gate is open: " +
 				"its primary document is registered at version 2 and a person has approved that version. " +
-				"Take it up in this turn, as your role says: claim it in Dispatch, carry that gate on from where it stands " +
-				"and take the tree up from there." + startTail,
+				gateOpenInstructions + gateOpenClosing,
 		},
 		{
 			name: "a root whose two gated steps stand at a changes request and at nothing",
@@ -104,7 +166,7 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 				"its decisions document is registered at version 3 and a person has asked for changes to it; " +
 				"its Verification document is not registered. " +
 				"Take it up in this turn, as your role says: claim it in Dispatch, carry that gate on from where it stands " +
-				"and take the tree up from there." + startTail,
+				"and take the tree up from there." + gateStandingClosing,
 		},
 		{
 			name: "a root whose registered step no person has answered",
@@ -113,32 +175,31 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 			want: "LEGION-208 is yours and its design gate already stands part way: " +
 				"its primary document is registered at version 4 and no person has answered it. " +
 				"Take it up in this turn, as your role says: claim it in Dispatch, carry that gate on from where it stands " +
-				"and take the tree up from there." + startTail,
+				"and take the tree up from there." + gateStandingClosing,
 		},
 		{
-			name: "a root holding a row under a deployment that gates no step",
+			name: "a root holding a row under a deployment that gates no step, so its gate is open",
 			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Rows: map[record.DesignStep]record.DesignGate{
 				record.DesignStepSpec: {Issue: "LEGION-208", Step: record.DesignStepSpec, LatestVersion: 1, ApprovedVersion: new(1)}}}},
-			want: "LEGION-208 is yours and its design gate already stands part way: " +
+			want: "LEGION-208 is yours and its design gate is open: " +
 				"its primary document is registered at version 1, which opened the gate with no approval. " +
-				"Take it up in this turn, as your role says: claim it in Dispatch, carry that gate on from where it stands " +
-				"and take the tree up from there." + startTail,
+				gateOpenInstructions + gateOpenClosing,
 		},
 		{
 			name:  "a tree that ran at an earlier generation, under a deployment that gates the spec",
 			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Served: 1},
-			want:  readmittedLead + " request approval of its primary document and register that step of its design gate again. Decompose nothing anew." + startTail,
+			want:  readmittedLead + " request approval of its primary document and register that step of its design gate again. Decompose nothing anew." + readmittedClosing,
 		},
 		{
 			name:  "a tree that ran at an earlier generation, under a deployment that gates two steps",
 			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: two}, Served: 1},
 			want: readmittedLead + " request approval of each document this deployment gates and register each of their steps of its design gate again: " +
-				"its decisions document and its Verification document. Decompose nothing anew." + startTail,
+				"its decisions document and its Verification document. Decompose nothing anew." + readmittedClosing,
 		},
 		{
 			name:  "a tree that ran at an earlier generation, under a deployment that gates no step",
 			start: ArchitectStart{Root: admittedRoot(), Served: 1},
-			want:  readmittedLead + " register that spec again at its current version, which opens the design gate with no approval. Decompose nothing anew." + startTail,
+			want:  readmittedLead + " register that spec again at its current version, which opens the design gate with no approval. Decompose nothing anew." + readmittedClosing,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -150,10 +211,11 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 }
 
 // Every label is a label of one shape: a task carries its own shape's label, carries no other
-// shape's, and ends with the tail that tells the architect nothing else starts its tree. The
-// decomposition is asked for by the one shape that opens a tree.
+// shape's, and ends with its own shape's closing sentence. The decomposition is asked for by the
+// one shape that opens a tree.
 func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
-	labels := []string{ArchitectFreshTreeLabel, ArchitectCarriedPhaseLabel, ArchitectGateRowsLabel, ArchitectReadmittedLabel}
+	labels := []string{ArchitectFreshTreeLabel, ArchitectCarriedPhaseLabel, ArchitectGateRowsLabel, ArchitectGateOpenLabel,
+		ArchitectReadmittedLabel}
 	for i, label := range labels {
 		for j, other := range labels {
 			if i != j && strings.Contains(label, other) {
@@ -168,29 +230,40 @@ func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 		name       string
 		start      ArchitectStart
 		label      string
+		closing    string
 		decomposes bool
 	}{
 		{
 			name:       "a tree nobody has architected",
 			start:      ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}},
 			label:      ArchitectFreshTreeLabel,
+			closing:    freshClosing,
 			decomposes: true,
 		},
 		{
 			name: "a root a hand-over carried in",
 			start: ArchitectStart{Root: rootAt(phase.Accepting),
 				Carried: true, Gate: record.TreeGate{Steps: specGated}},
-			label: ArchitectCarriedPhaseLabel,
+			label:   ArchitectCarriedPhaseLabel,
+			closing: carriedOwnClosing,
 		},
 		{
-			name:  "a root that holds design gate rows",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: registeredSpec()}},
-			label: ArchitectGateRowsLabel,
+			name:    "a root that holds design gate rows",
+			start:   ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: registeredSpec()}},
+			label:   ArchitectGateRowsLabel,
+			closing: gateStandingClosing,
 		},
 		{
-			name:  "a tree that ran at an earlier generation",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Served: 1},
-			label: ArchitectReadmittedLabel,
+			name:    "a root whose design gate is open",
+			start:   ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: approvedSpec()}},
+			label:   ArchitectGateOpenLabel,
+			closing: gateOpenClosing,
+		},
+		{
+			name:    "a tree that ran at an earlier generation",
+			start:   ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Served: 1},
+			label:   ArchitectReadmittedLabel,
+			closing: readmittedClosing,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -206,19 +279,21 @@ func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 			if asks := strings.Contains(task, ArchitectDecompositionLabel); asks != tc.decomposes {
 				t.Fatalf("the task %q asks for a decomposition = %v, want %v", task, asks, tc.decomposes)
 			}
-			if !strings.HasSuffix(task, startTail) {
-				t.Fatalf("the task %q does not end with the first-task tail", task)
+			if !strings.HasSuffix(task, tc.closing) {
+				t.Fatalf("the task %q does not end with its shape's closing sentence %q", task, tc.closing)
 			}
 		})
 	}
 }
 
-// The rule that chooses the shape, case by case. Three readings of it are easy to get wrong: a
+// The rule that chooses the shape, case by case. Four readings of it are easy to get wrong: a
 // root at admitted whose architect claim served the root's own generation, and whose run never
 // stood in a phase of its own, is a tree nobody has architected, since its claim took a task of
 // this run and of no earlier one; a root a hand-over carried in stands in the phase that came
-// with it whatever its gate rows say; and a carried root that never left admitted has no phase of
-// its own to take up, so it reads as any other root standing there.
+// with it whatever its gate rows say; a carried root that never left admitted has no phase of
+// its own to take up, so it reads as any other root standing there; and a root whose gate rows
+// open its gate reads apart from one whose rows stand part way, since the daemon starts its first
+// phase itself.
 func TestTheArchitectTaskShapeRule(t *testing.T) {
 	registered := registeredSpec()
 	carried := func(gate record.TreeGate, taken bool) ArchitectStart {
@@ -267,6 +342,16 @@ func TestTheArchitectTaskShapeRule(t *testing.T) {
 			label: ArchitectGateRowsLabel,
 		},
 		{
+			name:  "an open gate beats a tree that ran at an earlier generation",
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: approvedSpec()}, Served: 1},
+			label: ArchitectGateOpenLabel,
+		},
+		{
+			name:  "a carried root whose open gate the carry brought",
+			start: carried(record.TreeGate{Steps: specGated, Rows: approvedSpec()}, false),
+			label: ArchitectCarriedPhaseLabel,
+		},
+		{
 			name:  "a carried root with no gate row",
 			start: carried(record.TreeGate{Steps: specGated}, false),
 			label: ArchitectCarriedPhaseLabel,
@@ -290,6 +375,11 @@ func TestTheArchitectTaskShapeRule(t *testing.T) {
 			name:  "a carried root standing at admitted, holding the gate rows the carry brought",
 			start: ArchitectStart{Root: admittedRoot(), Carried: true, Gate: record.TreeGate{Steps: specGated, Rows: registered}},
 			label: ArchitectGateRowsLabel,
+		},
+		{
+			name:  "a carried root standing at admitted, whose gate the carry brought open",
+			start: ArchitectStart{Root: admittedRoot(), Carried: true, Gate: record.TreeGate{Steps: specGated, Rows: approvedSpec()}},
+			label: ArchitectGateOpenLabel,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -356,6 +446,52 @@ func TestTheArchitectTaskReadsTheRunItsArchitectServedAndNotItsLaunches(t *testi
 	}
 }
 
+// A root a hand-over carried into merging whose pull request has already merged stands in a phase
+// the merge itself ended (PhaseFinished), so the promotion that opens its tree starts no merger
+// (admit's startMidPhaseMembers), and its architect's task says so rather than that the daemon
+// starts that phase's worker. The reader reads it from the record (ArchitectStartOf), over the
+// same pull request the promotion reads. The control is the same root whose pull request is still
+// open, whose merger the promotion does start.
+func TestTheArchitectTaskOfACarriedRootInMergingReadsWhetherItsPullRequestMerged(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		state    record.PullRequestState
+		finished bool
+		closing  string
+	}{
+		{"a pull request that has merged", record.PullRequestMerged, true, carriedMergedClosing},
+		{"a pull request still open", record.PullRequestOpen, false, carriedClosing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			pool := migratedPool(t)
+			root := architectEntryRoot()
+			root.Phase, root.Generation, root.Status = phase.Merging, 2, "retro"
+			seedIssue(t, pool, root)
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				return record.NewStore().PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: root.Key, Generation: root.Generation})
+			})
+			seedPR(t, pool, record.PullRequest{State: tc.state, Issue: root.Key, Repo: "sjawhar/legion", Number: 42,
+				Branch: "legion/" + root.Key, HeadSHA: "head", Failing: []string{}})
+			var start ArchitectStart
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				var err error
+				start, err = ArchitectStartOf(ctx, tx, record.NewStore(), specGated, root)
+				return err
+			}); err != nil {
+				t.Fatalf("read what the architect's first task is derived from: %v", err)
+			}
+			if !start.Carried || start.PhaseFinished != tc.finished {
+				t.Fatalf("the carried root's start = carried %t, phase finished %t; want carried, phase finished %t",
+					start.Carried, start.PhaseFinished, tc.finished)
+			}
+			if task := ArchitectStartTask(start); !strings.HasSuffix(task, tc.closing) {
+				t.Fatalf("the architect's start task = %q, want it to end %q", task, tc.closing)
+			}
+		})
+	}
+}
+
 // The derivation gives no task for a root past admitted under its own power: one in a working
 // phase, one waiting on a person and one in accepting. Each of those is told its work by its
 // phase's own role, by the resume a person's answer composes, or by the notice that moved it, so
@@ -382,8 +518,10 @@ func TestTheArchitectTaskIsNoneForARootPastAdmitted(t *testing.T) {
 			if got != decidedOnTheTree {
 				t.Fatalf("the architect's start task = %q, want the decided text alone %q", got, decidedOnTheTree)
 			}
-			if strings.HasSuffix(got, startTail) {
-				t.Fatalf("the task %q carries the first-task tail, want none", got)
+			for _, closing := range closings {
+				if strings.HasSuffix(got, closing) {
+					t.Fatalf("the task %q carries the closing sentence %q of a shape, want none", got, closing)
+				}
 			}
 		})
 	}
@@ -399,6 +537,7 @@ func TestTheArchitectTaskNamesAKeptDecisionFirstInEveryShape(t *testing.T) {
 		{"a tree nobody has architected", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}}},
 		{"a root a hand-over carried in", ArchitectStart{Root: rootAt(phase.Planning), Carried: true, Gate: record.TreeGate{Steps: specGated}}},
 		{"a root that holds design gate rows", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: registeredSpec()}}},
+		{"a root whose design gate is open", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: approvedSpec()}}},
 		{"a tree that ran at an earlier generation", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Served: 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -447,6 +586,11 @@ func TestNarrowingARootsArchitectTaskKeepsItsShape(t *testing.T) {
 			name:  "a root that holds design gate rows",
 			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: registeredSpec()}},
 			label: ArchitectGateRowsLabel,
+		},
+		{
+			name:  "a root whose design gate is open",
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: approvedSpec()}},
+			label: ArchitectGateOpenLabel,
 		},
 		{
 			name:  "a tree that ran at an earlier generation",

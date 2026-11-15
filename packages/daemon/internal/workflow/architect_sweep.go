@@ -12,9 +12,10 @@ import (
 
 // ArchitectAtWork says whether a root's own architect is the role at work where that root stands.
 // It is the entry sweep's reach over the architect, where record.AtWork is every other role's
-// (admit's owedEntryRoles), and it is wider than record.AtWork deliberately. The two roots
-// it answers true for are the two the first-task derivation serves (ArchitectStartTask), so the
-// rule reaches exactly the roots it has work to send:
+// (admit's owedEntryRoles), and it is wider than record.AtWork deliberately. It answers true for
+// three roots: the two the first-task derivation serves (ArchitectStartTask), and one past them
+// that the architect is still owed a resume's work on, so the rule reaches exactly the roots it
+// has work to send:
 //
 //   - a root standing at phase.Admitted, whatever its design gate. record.AtWork answers false
 //     for such a root once its gate has opened, because no phase worker of it works there; its
@@ -25,19 +26,33 @@ import (
 //     reading the catch-up makes) and a phase that carries a run (record.Issue.CarriesRun). The
 //     mark on the issue is no use here: the promotion that opens the root's own tree clears it
 //     (record.Issue.HandedOverFrom), and this is read after that promotion.
+//   - a root past phase.Admitted under its own power while the entry its architect's phases row
+//     names (entry) was raised by the resume of a person's answer (record.PhaseEntry.Verbatim,
+//     ResumeAwaitedRoot) and its claim has not been given it (run's record.RoleClaim.GivenEntry
+//     below that entry, 0 where no claim stands). The resume puts the root back at admitted, and
+//     where the answer opened the design gate the same admission pass promotes it to its first
+//     phase, so a start row of that resume that reaches no claim would otherwise leave the answer
+//     with nothing to send it: a lost row must lose none of it (dispatch://INFRA-2614 R4). It
+//     widens nothing by phase, since it holds only until the claim is given that entry. A root
+//     waiting on a person is left out: it stands there because its architect handed the work back
+//     after that resume, and the answer to the new wait raises an entry of its own and queues the
+//     next start of its architect, which admit's architectClaimUnreachable tells the controller.
 //
-// It reaches no wider. A root past phase.Admitted under its own power holds no hand-over row and
-// has a phase role that owns its work; a root in accepting is told by the notice that moved it
-// there, and a root waiting on a person by the resume the daemon composes when the answer lands,
-// and neither is at phase.Admitted. A child at phase.Admitted is not its tree's root, so a
-// child's own sub-architect claim is outside the rule, which ArchitectHears answers for again
-// before anything is sent.
+// It reaches no wider. Any other root past phase.Admitted under its own power holds no hand-over
+// row and has a phase role that owns its work; a root in accepting is told by the notice that
+// moved it there, and a root waiting on a person by the resume the daemon composes when the answer
+// lands. A child at phase.Admitted is not its tree's root, so a child's own sub-architect claim is
+// outside the rule, which ArchitectHears answers for again before anything is sent.
 //
 // Whether that architect can hear what the rule would send is a question of its own
 // (ArchitectHears), and whether a start is already on its way is a third (ArchitectStartPending).
-// The store read is made for a slotted tree root past phase.Admitted alone: a child and a root at
-// phase.Admitted are answered from the record in hand.
-func ArchitectAtWork(ctx context.Context, tx pgx.Tx, store record.Store, root record.Issue) (bool, error) {
+// entry and run are what the caller read for the whole pass (record.Store.PhaseEntries,
+// record.Store.RoleRuns). The store read is made for a slotted tree root past phase.Admitted that
+// no resume's entry keeps alone: a child, a root at phase.Admitted and a root owed a resume are
+// answered from the record in hand.
+func ArchitectAtWork(ctx context.Context, tx pgx.Tx, store record.Store, root record.Issue, entry record.PhaseEntry,
+	run record.RoleRun,
+) (bool, error) {
 	if !claim.IsTreeRoot(root.Key, root.Tree) {
 		return false, nil
 	}
@@ -47,7 +62,25 @@ func ArchitectAtWork(ctx context.Context, tx pgx.Tx, store record.Store, root re
 	if !root.CarriesRun() {
 		return false, nil
 	}
+	if resumeOwed(root, entry, run) {
+		return true, nil
+	}
 	return ArchitectCarried(ctx, tx, store, root)
+}
+
+// resumeOwed is the third root of ArchitectAtWork, asked of a root that stands in a phase that
+// carries a run (record.Issue.CarriesRun), which its caller has already answered: the root is not
+// waiting on a person, and the entry of its architect's row was raised by a resume that the claim
+// of run has not been given.
+func resumeOwed(root record.Issue, entry record.PhaseEntry, run record.RoleRun) bool {
+	if !entry.Verbatim || root.Phase == phase.AwaitingPerson {
+		return false
+	}
+	var given int64
+	if run.Claim != nil {
+		given = run.Claim.GivenEntry
+	}
+	return given < entry.Entry
 }
 
 // ArchitectCarried is whether a hand-over created root at the generation it stands at
@@ -189,9 +222,11 @@ func lastStartRow(run record.RoleRun) int64 {
 // (ResumeAwaitedRoot), and its task names the answer — which ask or which review, and where to
 // read it — and no kept decision, so that text is sent as written. The answer is the work that
 // entry owes, and the derivation cannot give it: its shapes are a tree's first act, which is false
-// of a root whose architect has run in this generation, and they end in "no message is coming",
-// which is false of a root whose person's answer stands
-// (dispatch://INFRA-2614/comment/03dd9487-b44d-4508-bc0e-268fe951b17e).
+// of a root whose architect has run in this generation, none of them names the answer, and the
+// fresh tree's closes on "no message is coming", which is false of a root whose person's answer
+// stands (dispatch://INFRA-2614/comment/03dd9487-b44d-4508-bc0e-268fe951b17e). The sweep sends it
+// while the claim has not been given it, whether the root stands at admitted or in a phase past
+// admitted that the pass of the answer promoted it to (ArchitectAtWork).
 func (e *Engine) SendArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, row record.PhaseRow) error {
 	if row.EntryVerbatim {
 		return e.enqueueArchitectStart(ctx, tx, root, row.EntryTask, nil, row.Entry)
@@ -221,8 +256,9 @@ func (e *Engine) SendArchitectStart(ctx context.Context, tx pgx.Tx, root record.
 // promotion of a root past phase.Admitted under its own power on which nobody decided anything
 // (ArchitectStartTask's second rule): an entry raised with no work on it would stand above every
 // entry its claim was ever given, with nothing to send it. The sweep's raise never meets that
-// case, because the roots it raises an entry for are inside its reach (ArchitectAtWork), and those
-// are the two roots the derivation writes a first task for.
+// case, because the roots it raises an entry for are inside its reach (ArchitectAtWork) with a
+// row that names no entry, which no resume raised, and those are the two roots the derivation
+// writes a first task for.
 //
 // The start waits for no admission slot, so it is enqueued directly rather than through
 // StartOrOwe, and it marks no movement of its own: the promotion marks the movement of the tree it

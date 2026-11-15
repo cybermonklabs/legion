@@ -1,6 +1,7 @@
 package admit
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -89,5 +90,74 @@ func TestTheArchitectSweepResendsWhatALostResumeCarried(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A person's approval that opens the design gate a root waits on resumes the root and, in the
+// same pass, promotes it past admitted to its first phase (admit's record.LineAnswered branch, then
+// the line's LineFirstPhase once the records are read again). The resume raised the architect's
+// entry with its own text as the work, marked to be sent as written, and queued the architect's
+// start carrying that entry (workflow.Engine.ResumeAwaitedRoot). When that start row is lost, the
+// root stands in planning, where a phase role owns the tree's work, and the entry its architect's
+// row names is still the resume's, one its claim was never given. The sweep's reach keeps such a
+// root while that entry stands unsent (workflow.ArchitectAtWork), so the next pass writes the
+// architect's start at that entry, carrying the resume's own text: a lost row loses none of what
+// the person's answer owes the architect (dispatch://INFRA-2614, R4).
+//
+// The control is the same pass a second time, while the start it wrote is still queued: a start
+// on its way is not written twice (workflow.ArchitectStartPending).
+func TestTheArchitectSweepResendsALostResumeOfARootTheAnswerPromotedPastAdmitted(t *testing.T) {
+	const root = "LEGION-100"
+	pool := migratedPool(t)
+	admission := quiet(t, 1)
+	awaitingRoot(t, pool, record.Awaiting{GateVersion: 4, Since: seqMark(10)})
+	putArchitectRow(t, pool, root, seededEntry, handedBackAt)
+	token := putWorkerClaim(t, pool, root, root, claim.RoleArchitect, 1, supervise.StateIdle, "")
+	markGivenEntry(t, pool, token, seededEntry)
+
+	applyFact(t, pool, admission, "approved", intake.DispatchArtifact{Key: root, ArtifactID: "artifact-root",
+		Kind: intake.DispatchArtifactApproved, Version: 4, Mark: seqMark(11)})
+
+	if got := issue(t, pool, root); got.Phase != phase.Planning || got.Awaiting != nil {
+		t.Fatalf("%s after the approval stands in %s waiting on %+v, want it resumed and promoted to planning in the same pass: the case's premise",
+			root, got.Phase, got.Awaiting)
+	}
+	resumed := architectRow(t, pool, root)
+	if resumed.Entry != seededEntry+1 || !resumed.EntryVerbatim || !strings.Contains(resumed.EntryTask, "was approved") {
+		t.Fatalf("the architect row of %s after the resume = entry %d carrying %q, sent as written %t; want entry %d carrying the resume's "+
+			"own task, which says the spec was approved, marked to be sent as written", root, resumed.Entry, resumed.EntryTask,
+			resumed.EntryVerbatim, seededEntry+1)
+	}
+	if starts := architectSweepStarts(t, pool, root); len(starts) != 1 || starts[0].entry != resumed.Entry {
+		t.Fatalf("the architect starts of %s after the resume = %+v, want the one of entry %d the resume queued", root, starts, resumed.Entry)
+	}
+
+	// The resume's start row is lost: nothing of it reaches the claim, which stands at the entry
+	// the wait began on.
+	if _, err := pool.Exec(context.Background(), `delete from outbox where issue = $1 and kind = 'supervise'
+		and payload->>'op' = 'start' and payload->>'role' = $2`, root, string(claim.RoleArchitect)); err != nil {
+		t.Fatalf("delete the architect start of %s: %v", root, err)
+	}
+	if starts := architectSweepStarts(t, pool, root); len(starts) != 0 {
+		t.Fatalf("the architect starts of %s after the delete = %+v, want none", root, starts)
+	}
+
+	applySweep(t, pool, admission, "resume-lost-past-admitted")
+
+	starts := architectSweepStarts(t, pool, root)
+	if len(starts) != 1 || starts[0].entry != resumed.Entry {
+		t.Fatalf("the architect starts of %s after the sweep = %+v, want one at the entry %d the resume raised: the resume's work "+
+			"is owed to the architect of a root in planning as much as at admitted", root, starts, resumed.Entry)
+	}
+	if starts[0].task != resumed.EntryTask {
+		t.Errorf("the task sent again for entry %d is %q, want the resume's own %q: the answer is the work this entry owes",
+			resumed.Entry, starts[0].task, resumed.EntryTask)
+	}
+
+	applySweep(t, pool, admission, "resume-lost-past-admitted-again")
+
+	if again := architectSweepStarts(t, pool, root); len(again) != 1 || again[0] != starts[0] {
+		t.Fatalf("the architect starts of %s after a second sweep = %+v, want only the %+v the first wrote: that row is still on its way",
+			root, again, starts[0])
 	}
 }

@@ -16,9 +16,11 @@ import (
 // The reach of the entry sweep over a root's own architect, read from the record alone
 // (ArchitectAtWork). It is wider than record.AtWork at admitted — a root whose design gate has
 // opened is still a root whose own architect is the only role of its tree at work — and it is no
-// wider than the first-task derivation serves: a root past admitted under its own power has a
-// phase role that owns its work, and the hand-over row of this generation is what says the phase
-// a root stands in came with it (record.Store.HandedOverRoot).
+// wider than the work the rule has to send: a root past admitted under its own power has a phase
+// role that owns its work, the hand-over row of this generation is what says the phase a root
+// stands in came with it (record.Store.HandedOverRoot), and the one entry such a root's architect
+// is owed past admitted is a resume's its claim was not given, which the admission pass that
+// resumed the root can have promoted past admitted.
 //
 // The design gate is read by none of it, which the two admitted cases below hold: one with no
 // gate row at all and one whose gate stands open are both inside the rule.
@@ -30,6 +32,13 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 			Project: "LEGION", Title: key, Phase: at, Generation: generation, Status: "in_progress", Rank: key,
 			HandedOver: true, LastDispatchSeq: 1}
 	}
+	waiting := func(key string) record.Issue {
+		issue := root(key, phase.AwaitingPerson, 1)
+		issue.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 10}}
+		return issue
+	}
+	resume := record.PhaseEntry{Entry: 3, Verbatim: true}
+	derived := record.PhaseEntry{Entry: 3}
 	for _, tc := range []struct {
 		name string
 		// issue is the record the reach is asked about.
@@ -39,8 +48,13 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 		// handedOver records the issue as a root a hand-over created at that generation, zero
 		// for none.
 		handedOver uint64
-		reaches    bool
-		why        string
+		// entry is what the architect's phases row names, and claimed gives the architect a claim
+		// given the entry given; without it the tree's architect claim does not exist.
+		entry   record.PhaseEntry
+		claimed bool
+		given   int64
+		reaches bool
+		why     string
 	}{
 		{
 			name: "a root at admitted whose gate has never opened", issue: root("LEGION-801", phase.Admitted, 1), reaches: true,
@@ -79,6 +93,31 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 			name: "a root a hand-over carried in that is done", issue: root("LEGION-808", phase.Done, 2), handedOver: 2,
 			why: "a phase that carries no run is no phase to take up (record.Issue.CarriesRun)",
 		},
+		{
+			name:  "a root past admitted whose architect's claim was not given the entry a resume raised",
+			issue: root("LEGION-809", phase.Planning, 1), entry: resume, claimed: true, given: 2, reaches: true,
+			why: "the answer that resumed it promoted it past admitted, and the resume's work has still to reach the architect",
+		},
+		{
+			name:  "a root past admitted owed the entry a resume raised, with no architect claim at all",
+			issue: root("LEGION-810", phase.Planning, 1), entry: resume, reaches: true,
+			why: "no claim was given that entry, and the start the rule writes is what creates the claim",
+		},
+		{
+			name:  "a root past admitted whose architect's claim was given the entry a resume raised",
+			issue: root("LEGION-811", phase.Planning, 1), entry: resume, claimed: true, given: 3,
+			why: "the resume's work reached the claim, so the planner owns the work where the root stands",
+		},
+		{
+			name:  "a root past admitted whose architect's row names an entry the derivation raised",
+			issue: root("LEGION-812", phase.Planning, 1), entry: derived, claimed: true, given: 2,
+			why: "the derivation serves no root past admitted under its own power, so nothing of that entry is owed here",
+		},
+		{
+			name:  "a root waiting on a person whose architect's claim was not given the entry a resume raised",
+			issue: waiting("LEGION-813"), entry: resume, claimed: true, given: 2,
+			why: "its architect handed the work back since that resume, and the answer to the new wait queues the next start",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			seedIssue(t, pool, tc.issue)
@@ -92,10 +131,14 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 					return store.PutHandedOverRoot(t.Context(), tx, record.HandedOverRoot{Issue: tc.issue.Key, Generation: tc.handedOver})
 				})
 			}
+			var run record.RoleRun
+			if tc.claimed {
+				run.Claim = &record.RoleClaim{GivenEntry: tc.given}
+			}
 			var reaches bool
 			seedRecord(t, pool, func(tx pgx.Tx) error {
 				var err error
-				reaches, err = ArchitectAtWork(t.Context(), tx, store, tc.issue)
+				reaches, err = ArchitectAtWork(t.Context(), tx, store, tc.issue, tc.entry, run)
 				return err
 			})
 			if reaches != tc.reaches {
@@ -163,8 +206,8 @@ func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.
 // and on nothing in the task's text. A task the derivation wrote is derived again from the record
 // as it stands (ArchitectStartTask) rather than read off the row, since a text composed once and
 // sent again can name a kept decision another telling has already claimed. That is so of the
-// derivation's every task: the one that ends in its closing sentence, the one it writes for a
-// root past admitted under its own power, which is what a person decided and no closing sentence
+// derivation's every task: the one that ends in a shape's closing sentence, the one it writes for
+// a root past admitted under its own power, which is what a person decided and no closing sentence
 // (its second rule), and no task at all, which the upgrade leaves on the rows it fills. A task the
 // resume of a person's answer wrote names the answer and no kept decision, and the answer is the
 // work that entry owes, so it is sent as written and claims nothing, whatever its text ends in.
@@ -174,20 +217,21 @@ func TestArchitectSweepSendRederivesTheTaskAtTheEntryTheRowNames(t *testing.T) {
 		name     string
 		stored   string
 		verbatim bool
-		// tail is whether the stored text ends in the derivation's closing sentence, which the
-		// cases cover both ways for each mark, so the send is shown to read the mark alone.
+		// tail is whether the stored text ends in the closing sentence of the shape the derivation
+		// writes for this root (freshClosing), which the cases cover both ways for each mark, so
+		// the send is shown to read the mark alone.
 		tail bool
 	}{
-		{name: "an entry the derivation raised", stored: seededArchitectTask + architectStartTail, tail: true},
+		{name: "an entry the derivation raised", stored: seededArchitectTask + freshClosing, tail: true},
 		{name: "an entry the derivation raised for a root past admitted, what was decided alone",
 			stored: ArchitectStartTask(ArchitectStart{Root: rootAt(phase.Planning), Decided: decidedOnTheTree})},
 		{name: "an entry the upgrade gave no task", stored: ""},
 		{name: "an entry a resume raised", stored: resumed, verbatim: true},
-		{name: "an entry a resume raised whose text ends as the derivation's does", stored: resumed + architectStartTail,
+		{name: "an entry a resume raised whose text ends as the derivation's does", stored: resumed + freshClosing,
 			verbatim: true, tail: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if strings.HasSuffix(tc.stored, architectStartTail) != tc.tail {
+			if strings.HasSuffix(tc.stored, freshClosing) != tc.tail {
 				t.Fatalf("the stored task %q ends in the closing sentence = %t, want %t: the case's premise", tc.stored, !tc.tail, tc.tail)
 			}
 			pool := migratedPool(t)
