@@ -1132,17 +1132,7 @@ func listenerGrantBeforeSessionConsumers() []string {
 		"$JS.API.INFO",
 	}
 	for _, bucket := range []string{bus.InterestBucket, bus.RoleClaimBucket, bus.SessionBucket, bus.CIStateBucket} {
-		stream := "KV_" + bucket
-		allow = append(allow,
-			"$JS.API.STREAM.INFO."+stream,
-			"$JS.API.STREAM.CREATE."+stream,
-			"$JS.API.DIRECT.GET."+stream+".>",
-			"$JS.API.STREAM.MSG.GET."+stream,
-			"$KV."+bucket+".>",
-			"$JS.API.CONSUMER.CREATE."+stream+".>",
-			"$JS.API.CONSUMER.DELETE."+stream+".>",
-			"$JS.FC."+stream+".>",
-		)
+		allow = append(allow, bucketGrant(bucket)...)
 	}
 	return append(allow, "$JS.API.STREAM.PURGE.KV_"+bus.InterestBucket)
 }

@@ -553,14 +553,27 @@ func getListener(t *testing.T, port int, path string) (int, string) {
 	return resp.StatusCode, string(answer)
 }
 
-// nextEnvelope returns the next message sub receives within 10 s, with the envelope it carries.
+// nextEnvelope returns the next message sub receives within 10 s that is not the listener's
+// connection probe, with the envelope it carries. A send to a session whose entry records
+// consumer delivery probes the session's relay subject (bus.ConnectionProbeHeader) before it
+// stores the message, so the probe can arrive ahead of the frame: it is answered done, as a plugin
+// answers it, and the wait goes on for the frame within the same 10 s.
 func nextEnvelope(t *testing.T, process *cmdtest.Process, sub *natsgo.Subscription) (contracts.Envelope, *natsgo.Msg) {
 	t.Helper()
-	msg, err := sub.NextMsg(10 * time.Second)
-	require.NoError(t, err, "no message reached %s:\n%s", sub.Subject, process.Output.String())
-	var envelope contracts.Envelope
-	require.NoError(t, json.Unmarshal(msg.Data, &envelope))
-	return envelope, msg
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		msg, err := sub.NextMsg(time.Until(deadline))
+		require.NoError(t, err, "no message reached %s:\n%s", sub.Subject, process.Output.String())
+		if msg.Header.Get(bus.ConnectionProbeHeader) == "1" {
+			if msg.Reply != "" {
+				require.NoError(t, msg.Respond([]byte("done")))
+			}
+			continue
+		}
+		var envelope contracts.Envelope
+		require.NoError(t, json.Unmarshal(msg.Data, &envelope))
+		return envelope, msg
+	}
 }
 
 // serverLog returns everything the server has logged so far.

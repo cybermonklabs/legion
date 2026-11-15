@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"slices"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/machine"
@@ -187,9 +188,13 @@ func accountAuth(needs power, h func(*server, http.ResponseWriter, *http.Request
 // The row declares the power that caller must hold all the same, and the handler is given it:
 // authenticate cannot check it here, since it is the handler that reads the caller, so the check
 // is decideRecord's, against the same accountPowers and with the same 403 ACCOUNT_LACKS_POWER as
-// every other row of that authority.
+// every other row of that authority. Until the handler notes the listed caller it found, the
+// answer's record names the caller unauthenticated, as tokenLogin's does before its token
+// verifies, and never public: authenticate reads no credential for the route, but its handler
+// does.
 func accountAuthAfterRecordKind(needs power, h func(*server, http.ResponseWriter, *http.Request, power)) routeHandler {
 	return routeHandler{auth: authNone, power: needs, serve: func(s *server, w http.ResponseWriter, r *http.Request, _ caller) {
+		answer.FromContext(r.Context()).NoteCaller(answer.CallerUnauthenticated, "")
 		h(s, w, r, needs)
 	}}
 }

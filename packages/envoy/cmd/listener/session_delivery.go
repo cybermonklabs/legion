@@ -904,12 +904,51 @@ func (m *sessionDelivery) granted() {
 // the row it was built from; that fence, the session's lock, the call budget and the listener
 // that holds no session consumers at all are storedFilterWrite's, since each of its callers
 // needs the same four.
+//
+// The session's known-session record is not this function's: it names the topics the session
+// follows, which an unsubscribe changes whatever the session's entry records, while this filter
+// names the ones its consumer carries. Each call site writes the record itself
+// (recordFollowedTopics).
 func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, sessionID string) {
 	entry, err := d.sessions.Get(sessionID)
 	if err != nil || entry.Delivery != session.DeliveryConsumer {
 		return
 	}
 	m.storedFilterWrite(ctx, d.registry, sessionID, filterAfterUnsubscribe)
+}
+
+// recordFollowedTopics brings sessionID's known-session record up to date with the topics its
+// interest row now holds in the bucket (storedTopics), which is what a publish counts its
+// recipients against (session.KnownSessions): every route that changes a session's interests
+// calls it, so a topic a session has left stops being counted. The record is about the topics the
+// session follows, not about the consumer's filter, so nothing here reads the entry's delivery
+// mode, and a listener with no session-consumer connection writes it too; the filter is
+// refollow's, beside this.
+//
+// The rest of the record is the session's entry, as the registration wrote it. A session the
+// registry holds no entry for writes nothing: it is stopped or gone, and a stop keeps the record
+// it had (deleteSessionHandler). A listener whose known-session bucket is not open writes nothing
+// either. A failed write is this WARN and nothing else: the route answers whatever the write did.
+func recordFollowedTopics(ctx context.Context, d *listenerDeps, sessionID string, logger *logging.Logger) {
+	entry, err := d.sessions.Get(sessionID)
+	if err != nil {
+		return
+	}
+	topics, _, err := storedTopics(ctx, d.registry, sessionID)
+	if err != nil {
+		logger.Warn("known-session record left unchanged: the session's interests could not be read",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+		return
+	}
+	if err := d.known.RecordWithin(ctx, session.KnownSession{
+		SessionID:    sessionID,
+		Title:        entry.Title,
+		Capabilities: entry.Capabilities,
+		Topics:       topics,
+	}); err != nil {
+		logger.Warn("known-session record not written after an interest change",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	}
 }
 
 // sessionLocks holds one lock per session id, kept only while somebody holds or waits for it.

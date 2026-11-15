@@ -572,6 +572,7 @@ jobs:
               # the mutant patches, which the airlock package's own tests read - the daemon
               # compiles that package without running them.
               - 'packages/envoy/internal/broker/airlock/*'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
@@ -596,6 +597,7 @@ jobs:
               - 'packages/envoy/internal/brokerclient/**'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/contracts/*'
+              - 'packages/envoy/internal/ctxlock/*'
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
               # so every build of the parser compiles it.
               - 'packages/envoy/internal/dispatch/bytelru/*'
@@ -609,9 +611,12 @@ jobs:
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/logtest/*'
+              # internal/broker/policy, answer and secrets count on counters of this package.
+              - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
@@ -707,6 +712,7 @@ jobs:
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/routing/*'
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/listenfd/*'
@@ -791,6 +797,7 @@ jobs:
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokerclient/*'
               - 'packages/envoy/internal/contracts/*'
+              - 'packages/envoy/internal/ctxlock/*'
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
               # so every build of the parser compiles it.
               - 'packages/envoy/internal/dispatch/bytelru/*'
@@ -1772,8 +1779,8 @@ jobs:
               # envoy's ./cmd/{dispatch,broker,agent-secrets,agent-secrets-helper,broker-refgen};
               # the screenshots' harness starts the Dispatch server (packages/dispatch/e2e/harness-start.ts,
               # which docs/site/media/harness.ts:21,97 imports).
-              # broker-refgen also parses broker/api, broker/approval, broker/config, broker/helper,
-              # cmd/broker and cmd/agent-secrets at run time (generators/broker-reference.sh:13-14).
+              # broker-refgen also parses broker/api, broker/approval, broker/airlockproxy, broker/config,
+              # broker/helper, cmd/broker and cmd/agent-secrets at run time (generators/broker-reference.sh:14-15).
               - *legion_command
               - *dispatch_server
               # agentloop: the model loop cmd/broker's judge runs a model and its tools through.
@@ -1784,6 +1791,7 @@ jobs:
               - 'packages/envoy/cmd/broker-refgen/*'
               - 'packages/envoy/internal/broker/airlock/*'
               - 'packages/envoy/internal/broker/airlockproxy/*'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
@@ -1965,7 +1973,7 @@ jobs:
               - '!packages/envoy/dispatchbody/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/broker/airlock/**/*_test.go'
-              - '!packages/envoy/internal/broker/airlockproxy/**/*_test.go'
+              - '!packages/envoy/internal/broker/answer/**/*_test.go'
               - '!packages/envoy/internal/broker/enroll/**/*_test.go'
               - '!packages/envoy/internal/broker/exchange/**/*_test.go'
               - '!packages/envoy/internal/broker/judge/**/*_test.go'
@@ -1986,6 +1994,7 @@ jobs:
               - '!packages/envoy/internal/bus/**/*_test.go'
               - '!packages/envoy/internal/cistore/**/*_test.go'
               - '!packages/envoy/internal/contracts/**/*_test.go'
+              - '!packages/envoy/internal/ctxlock/**/*_test.go'
               - '!packages/envoy/internal/dispatch/**/*_test.go'
               - '!packages/envoy/internal/envconf/**/*_test.go'
               - '!packages/envoy/internal/googleidentity/**/*_test.go'
@@ -1999,6 +2008,7 @@ jobs:
               - '!packages/envoy/internal/redact/**/*_test.go'
               - '!packages/envoy/internal/roles/**/*_test.go'
               - '!packages/envoy/internal/routing/**/*_test.go'
+              - '!packages/envoy/internal/serverwait/**/*_test.go'
               - '!packages/envoy/internal/session/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
@@ -2332,6 +2342,7 @@ jobs:
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/routing/*'
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/listenfd/*'
@@ -2412,6 +2423,7 @@ jobs:
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/routing/*'
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/internal/testsocks5/*'
@@ -2879,6 +2891,7 @@ jobs:
               - 'packages/envoy/cmd/dev-oidc-issuer/*'
               - 'packages/envoy/internal/broker/airlock/*'
               - 'packages/envoy/internal/broker/airlockproxy/*'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
@@ -3399,6 +3412,7 @@ jobs:
               - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/internal/bus/bustest/*'
               - 'packages/envoy/internal/cmdtest/*'
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -3448,6 +3462,7 @@ jobs:
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testwait/*'
@@ -3473,10 +3488,13 @@ jobs:
               - 'packages/envoy/agentloop/*'
               - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/agent-secrets/*'
-              # cmd/broker/main_test.go:220 (sslrootcert).
+              # cmd/broker/main_test.go:348 (sslrootcert).
               - 'packages/envoy/docker/rds-global-bundle.pem'
               - 'packages/envoy/internal/broker/airlock/*'
+              # cmd/broker/minters_test.go mints through the GitHub stand-in.
+              - 'packages/envoy/internal/broker/airlock/airlocktest/*'
               - 'packages/envoy/internal/broker/airlockproxy/*'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
@@ -3507,15 +3525,19 @@ jobs:
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/cmdtest/*'
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
+              - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/logtest/*'
+              - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/internal/serverwait/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testwait/*'
@@ -3650,6 +3672,7 @@ jobs:
               - '!packages/envoy/internal/cmdtest/**/*_test.go'
               - '!packages/envoy/internal/config/**/*_test.go'
               - '!packages/envoy/internal/contracts/**/*_test.go'
+              - '!packages/envoy/internal/ctxlock/**/*_test.go'
               - '!packages/envoy/internal/dedupe/**/*_test.go'
               - '!packages/envoy/internal/dispatch/**/*_test.go'
               - '!packages/envoy/internal/envconf/**/*_test.go'
@@ -3669,6 +3692,7 @@ jobs:
               - '!packages/envoy/internal/redact/**/*_test.go'
               - '!packages/envoy/internal/roles/**/*_test.go'
               - '!packages/envoy/internal/routing/**/*_test.go'
+              - '!packages/envoy/internal/serverwait/**/*_test.go'
               - '!packages/envoy/internal/session/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
@@ -4162,6 +4186,7 @@ jobs:
               - '!packages/envoy/internal/cmdtest/**/*_test.go'
               - '!packages/envoy/internal/config/**/*_test.go'
               - '!packages/envoy/internal/contracts/**/*_test.go'
+              - '!packages/envoy/internal/ctxlock/**/*_test.go'
               - '!packages/envoy/internal/dedupe/**/*_test.go'
               - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
               - '!packages/envoy/internal/dispatch/agentsecrets/**/*_test.go'
@@ -4217,6 +4242,7 @@ jobs:
               - '!packages/envoy/internal/redact/**/*_test.go'
               - '!packages/envoy/internal/roles/**/*_test.go'
               - '!packages/envoy/internal/routing/**/*_test.go'
+              - '!packages/envoy/internal/serverwait/**/*_test.go'
               - '!packages/envoy/internal/smoke/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
               - '!packages/envoy/internal/testnats/**/*_test.go'
@@ -4248,6 +4274,7 @@ jobs:
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
               - 'packages/envoy/internal/broker/airlock/*'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               - 'packages/envoy/internal/broker/approval/*'
               # The approval page's embedded stylesheet and templates.
@@ -4276,6 +4303,7 @@ jobs:
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/cputest/*'
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -4354,6 +4382,7 @@ jobs:
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/routing/*'
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/internal/testpg/*'
@@ -4379,6 +4408,7 @@ jobs:
               - '!packages/envoy/internal/brokertoken/**/*_test.go'
               - '!packages/envoy/internal/bus/**/*_test.go'
               - '!packages/envoy/internal/contracts/**/*_test.go'
+              - '!packages/envoy/internal/ctxlock/**/*_test.go'
               - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
               - '!packages/envoy/internal/dispatch/agentsecrets/**/*_test.go'
               - '!packages/envoy/internal/dispatch/api/copy_lock_order_test.go'
@@ -4427,6 +4457,7 @@ jobs:
               - '!packages/envoy/internal/ratelimit/**/*_test.go'
               - '!packages/envoy/internal/roles/**/*_test.go'
               - '!packages/envoy/internal/routing/**/*_test.go'
+              - '!packages/envoy/internal/serverwait/**/*_test.go'
               - '!packages/envoy/internal/session/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
@@ -4604,6 +4635,7 @@ jobs:
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokerclient/*'
               - 'packages/envoy/internal/contracts/*'
+              - 'packages/envoy/internal/ctxlock/*'
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
               # so every build of the parser compiles it.
               - 'packages/envoy/internal/dispatch/bytelru/*'

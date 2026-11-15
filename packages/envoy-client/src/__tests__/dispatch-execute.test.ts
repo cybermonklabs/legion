@@ -1259,6 +1259,75 @@ describe("executeDispatchTool", () => {
     expect(byRef.details).toMatchObject({ issue: "LEGION-3", message: "message-9" });
   });
 
+  /** One `dispatch send-to-agent` call under `env`, against a Dispatch whose first delivery
+   *  attempt settles as `attempt`, with the requests the call sent. */
+  async function sendToAgent(env: Record<string, string>, attempt: Record<string, unknown>) {
+    const session = "01234567-0000-4000-8000-000000000001";
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const target = new URL(String(url));
+      calls.push({ path: target.pathname, body: JSON.parse(init?.body as string) });
+      if (target.pathname !== `/api/v1/agents/${session}/messages`) {
+        throw new Error(`unexpected request: ${target.pathname}`);
+      }
+      return response(
+        { id: "message-1", issue_key: null, deliveries: [{ delivery: "aside", ...attempt }] },
+        201
+      );
+    };
+    const result = await executeDispatchTool({
+      tool: "dispatch_send_to_agent",
+      args: { session, body: "DSP-1: please take this.", delivery: "aside" },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "ses_reader",
+      config,
+      env,
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    return { calls, result };
+  }
+
+  // A session's own conversation belongs to no issue, so the call needs none and sends none,
+  // whether LEGION_ISSUE names one or not.
+  test("send-to-agent runs with no issue, and sends none when LEGION_ISSUE names one", async () => {
+    for (const env of [{}, { LEGION_ISSUE: "LEGION-3" }] as Record<string, string>[]) {
+      const { calls, result } = await sendToAgent(env, { state: "sent" });
+
+      expect(calls).toEqual([
+        {
+          path: "/api/v1/agents/01234567-0000-4000-8000-000000000001/messages",
+          body: { body: "DSP-1: please take this.", delivery: "aside" },
+        },
+      ]);
+      expect(result.details).toEqual({
+        session: "01234567-0000-4000-8000-000000000001",
+        message: "message-1",
+        delivery: "sent",
+      });
+    }
+  });
+
+  // A queued attempt is with a session that is not running, so the line says it waits for that
+  // session and never that it reached it.
+  test("send-to-agent says what each state of the first attempt means for the session", async () => {
+    const said = async (attempt: Record<string, unknown>) =>
+      (await sendToAgent({}, attempt)).result.text.replace(
+        /^Sent message message-1 to session \S+; (.*)\. dispatch .*$/,
+        "$1"
+      );
+
+    expect(await said({ state: "queued" })).toBe(
+      "that session is stopped, so its delivery is queued: it gets the message if it runs again within 72 hours"
+    );
+    expect(await said({ state: "sent" })).toBe("it reached that session as aside");
+    expect(await said({ state: "pending" })).toBe("its delivery is still on its way");
+    expect(await said({ state: "failed", error: "no live session" })).toBe(
+      "its delivery failed: no live session"
+    );
+  });
+
   // Once the session has answered, other text is its follow-up: Dispatch threads it under the
   // session's first reply and answers 201 with a message whose parent is that reply, not the
   // human's message.
