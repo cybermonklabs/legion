@@ -44,21 +44,24 @@
  *
  * WHAT A LIMIT IS. Five places, which is what this rule reads. In each of them the limit is the
  * argument itself, or the `timeout` of an options object written there under a plain key,
- * `{ timeout: 90_000 }` or `{ timeout }`:
+ * `{ timeout: 90_000 }` or `{ timeout }` (no row holds this second spelling):
  *
- * - the third argument of a row call - `test(...)`, `it(...)`, `xtest(...)`, `xit(...)`, and
- *   every callee reached from one of those through dotted members and calls: `test.only(...)`,
- *   `test.skip(...)`, `test.skipIf(<x>)(...)`, `test.each(<x>)(...)` and any modifier Bun adds
- *   later, each of which takes a limit there;
+ * - the third argument of a row call - `test(...)`, `it(...)`, `xtest(...)` and `xit(...)` (no
+ *   row holds either of these two spellings), and every callee reached from one of those
+ *   through dotted members and calls: `test.only(...)`, `test.skip(...)`,
+ *   `test.skipIf(<x>)(...)`, `test.each(<x>)(...)` and any modifier Bun adds later, each of
+ *   which takes a limit there;
  * - the second argument of a row call. Bun reads `test(title, options, body)` as well as
  *   `test(title, body, options)`, although `@types/bun` 1.4.2 declares only the second. So in
- *   either place an arrow, a function expression or the name of a function the file declares is
- *   read as the row's body, and anything else is read as a limit: a number, an options object,
- *   a name bound to either, and also a body passed any other way, such as `helpers.body` or an
- *   imported function, which is a false refusal (WHAT THE SCAN LEAVES OUT);
- * - the second argument of `beforeAll`, `afterAll`, `beforeEach`, `afterEach` and
- *   `onTestFinished`, which are every export of `bun:test` that `test.d.ts` declares with a
- *   `HookOptions` limit, in the bun-types 1.4.2 this package installs and in 1.4.4 alike;
+ *   either place an arrow, a function expression (no row holds this spelling) or the name of a
+ *   function the file declares is read as the row's body, and anything else is read as a limit:
+ *   a number, an options object, a name bound to either, and also a body passed any other way,
+ *   such as `helpers.body` or an imported function, which is a false refusal (THE SHAPES THE
+ *   SCAN READS);
+ * - the second argument of `beforeAll`, `afterAll`, `beforeEach` (no row holds this spelling),
+ *   `afterEach` and `onTestFinished`, which are every export of `bun:test` that `test.d.ts`
+ *   declares with a `HookOptions` limit, in the bun-types 1.4.2 this package installs and in
+ *   1.4.4 alike;
  * - the argument of `setDefaultTimeout`, which no test file of this directory writes. It is
  *   read because Bun accepts it, and a limit this rule did not read is a limit outside it;
  * - the argument of `jest.setTimeout`, which is that same file-wide limit under Jest's
@@ -71,22 +74,24 @@
  *
  * - its import declarations: `import { test as row }` makes `row(...)` a row,
  *   `setDefaultTimeout as cap` makes `cap(...)` the file's own limit, and `import * as bun from
- *   "bun:test"` and a default import of the module reach each export through its own name;
+ *   "bun:test"` and a default import of the module reach each export through its own name (no
+ *   row holds either of these two spellings);
  * - its variables, `const`, `let` and `var` at any scope, whose initializer names a read export:
- *   `const row = test`, `const only = test.only`, `const cap = bun.setDefaultTimeout`, or a name
- *   bound the same way;
+ *   `const row = test`, or a name bound the same way, and `const only = test.only` and
+ *   `const cap = bun.setDefaultTimeout` (no row holds either of these two spellings);
  * - its variables bound to the module itself - `const bun = await import("bun:test")`,
  *   `require("bun:test")` - which reach each export as an import namespace does, and the names it
- *   destructures off the module or off a name bound to it: `const { test: t2 } = await
- *   import("bun:test")`.
+ *   destructures off the module, `const { test: t2 } = await import("bun:test")`, or off a name
+ *   bound to it (no row holds this spelling).
  *
  * The variables are read to a fixpoint, so a name bound to a name bound to `test` is a row. The
  * scan follows no scope: a name bound anywhere in the file is read everywhere in it, and the first
  * binding read wins, which reads a call as a row more often rather than less. The bare spellings
  * are read whatever a file binds, because `bun test` declares them as globals and a file that
- * imports nothing still writes them. This is the shape `waitNames` of `e2e/fixed-waits.ts` reads
- * `node:timers/promises` by. `importedNames` below reads `rowLimit`, `runBounded`, `whether`,
- * `eventually` and `listing` the same two ways: from import declarations, and from a variable at
+ * imports nothing still writes them (no row holds such a file). This is the shape `waitNames` of
+ * `e2e/fixed-waits.ts` reads `node:timers/promises` by. `importedNames` below reads `rowLimit`,
+ * `runBounded`, `whether`, `eventually` and `listing` the same two ways: from import
+ * declarations (no row holds an `import * as` of their module), and from a variable at
  * any scope bound to an `import()` or a `require` of their module, as a namespace or
  * destructured - `const { listing } = await import("./playwright-listing")`. Those modules are
  * this directory's own, so a bare spelling of their exports stands for nothing.
@@ -94,17 +99,19 @@
  * WHAT A ROW WAITS FOR. A row or hook waits for a bounded child when its body calls `runBounded`
  * of `e2e/__tests__/bounded-subprocess.ts` or `listing` of `e2e/__tests__/playwright-listing.ts`,
  * each read from the file's imports as `rowLimit` is, or calls a function of the file's own that
- * waits: a function declaration, or a variable bound to an arrow or a function expression, at any
- * scope, whose body calls one of those two or another such function. A call of `whether` or
+ * waits: a function declaration, or a variable bound to an arrow or a function expression (no row
+ * holds this spelling), at any scope, whose body calls one of those two or another such function
+ * (no row holds a function that waits through another). A call of `whether` or
  * `eventually` of `e2e/__tests__/bounded-subprocess.ts` is read the same way, as a wait under the
  * `short` bound: each reads a state another process reaches until that bound has passed, so a
  * row that makes one states `rowLimit("short")` or more, as for a `short` child. It waits as well
  * when its body refers to a name the file binds or assigns, at any scope, to such a call: the
  * `const lane = retained(listing(...))` a listing file starts at module load and awaits in a row,
  * or the `lane = retained(listing(...))` a hook assigns to a `let lane` of the file's, referred to
- * in an `await lane`, a `lane.then(...)`, an argument or a destructuring alike; and a function
- * whose body refers to such a name waits too. A name the body declares itself is its own and not
- * that one. The name an assignment writes to is written there rather than read, so the hook that
+ * in an `await lane`, or alike in a `lane.then(...)`, an argument or a destructuring (no row holds
+ * these three spellings); and a function whose body refers to such a name waits too (no row holds
+ * this spelling). A name the body declares itself is its own and not that one (no row holds
+ * this). The name an assignment writes to is written there rather than read, so the hook that
  * assigns `lane` waits for the `listing` it calls and not for `lane`. Such a row states a limit:
  * its own, or the file's through `setDefaultTimeout` or `jest.setTimeout`, which Bun applies to
  * every row and hook registered after the call. A row that states none runs under the lane's
@@ -114,69 +121,84 @@
  * reason is the way out for a row that drives a process and this row waits for one; a file's own
  * limit counts for its rows only where it is such a call.
  *
- * WHAT THE SCAN LEAVES OUT. Each shape the scan is known to leave out or misread is said here,
- * because a row it leaves out is a row no refusal names. The reading of waits above reads a name
- * BOUND OR ASSIGNED TO a call that waits, and references to that name, and nothing broader. A
- * row that waits through any of these shapes is read as waiting for nothing, and no refusal
- * names it:
+ * THE SHAPES THE SCAN READS. The scan is held to reading the shapes below: where a limit stands
+ * and how it is spelled, what is a wait for a bounded child, and which files are read. Beside
+ * each shape stands what holds it, a plant or a row that fails if the scan stops reading that
+ * shape: `fixture:N` is the plant on line N of `e2e/__tests__/fixtures/row-limits.fixture.ts`,
+ * `spellings:N` the one on line N of `e2e/__tests__/fixtures/row-limits-spellings.fixture.ts`,
+ * and a quoted title is a row of `e2e/__tests__/row-limits.test.ts`.
  *
- * - a name bound to a waiting name - `const rows = lane.then(rowsOf)` - though a row that refers
- *   to `lane` itself is read;
- * - a name a destructuring declaration binds - `const [lane] = [listing(...)]`,
- *   `const { lane } = { lane: listing(...) }` - because only a declaration whose name is one
- *   identifier binds a name the scan reads;
- * - a property assigned - `state.lane = listing(...)` - or a destructuring assignment -
- *   `[lane] = [listing(...)]`, `({ lane } = ...)` - because only an identifier is read as
- *   assigned, by `=`, `??=`, `||=` or `&&=`, so a row that awaits `state.lane`, or that `lane`,
- *   waits for nothing here;
- * - a method of a class declaration, static or not, that calls `runBounded`, `listing`, `whether`
- *   or `eventually`: the file's own functions are its function declarations and its variables
- *   bound to an arrow or a function expression, and a call through a member - `Helpers.run()` -
- *   reaches none of them. A class expression or an object literal bound to a name is read, since
- *   that name's initializer holds the call;
- * - a bounded function passed as a value - `.map(runBounded)`, `.map(listing)`, a waiting
- *   function of the file's own handed to another call - which is no call the scan sees;
- * - a name bound to one of those exports itself - `const run = runBounded`,
- *   `const list = listing` - because a name is read as an export only from an import or a
- *   destructuring of the module, so a call of `run(...)` reaches no export;
- * - a name destructured off a namespace import - `const { runBounded: rb } = b`, where `b` is
- *   the `import * as b` of the module - because a destructuring is read only off an `import()`
- *   or a `require` of the module;
- * - a call through a namespace in brackets - `b["runBounded"](...)` - because a namespace is
- *   read only through a dotted member;
- * - a waiting helper imported from another module, other than `listing`: the scan reads the
- *   functions of the file itself and the four exports above, and no other module;
- * - a row body that is neither inline nor a function the file declares - `test("t",
- *   helpers.body)`, `test("t", importedFn)`, or `test("t", made)` where `made` is bound to what
- *   a call answered - because only an arrow, a function expression or the name of a function
- *   the file declares is read as a body. Such a body is read as the row's limit instead, the
- *   third false refusal below.
+ * - A row's third argument, for a row declared by `test` (fixture:45) or `it` (fixture:53), or
+ *   by a callee reached from one of those through dotted members and calls: `test.skipIf(<x>)`
+ *   (fixture:55), `test.each(<x>)` (fixture:57) and `test.skip` (fixture:81).
+ * - A row's second argument, where the third is its body (spellings:38). A body is an arrow
+ *   (fixture:45) or the name of a function declaration of the file's (fixture:97), and is no
+ *   limit.
+ * - A hook's second argument: `beforeAll` (fixture:59), `afterAll` (fixture:61), `afterEach`
+ *   (fixture:93, a hook that states none) and `onTestFinished` (spellings:33).
+ * - The argument of `setDefaultTimeout` (fixture:43) and of `jest.setTimeout` (spellings:26),
+ *   read as the limit of each waiting row of the file that states none ("a file's own rowLimit
+ *   states the limit of each waiting row that states none").
+ * - In each of those places, the argument itself - a number (fixture:45), a name the file binds
+ *   (fixture:47) or imports (fixture:49), a call (fixture:73), or an expression such as
+ *   `60 * 1_000` (the row just named) - and, for a row or a hook, the `timeout` of an options
+ *   object written there under a plain key, `{ timeout: n }` (fixture:51, fixture:61).
+ * - A call of the shared `rowLimit` under the name the file imports it by, as a limit read from
+ *   the bounds (fixture:79), and no `rowLimit` of the file's own (fixture:73).
+ * - Those exports of `bun:test` under their own names from an import declaration (fixture:45);
+ *   under a name an import declaration renames one to, `test as row` (spellings:28) and
+ *   `setDefaultTimeout as cap` (spellings:30); under a `const` bound to such a name, read to a
+ *   fixpoint (spellings:42); destructured off `await import("bun:test")` (spellings:45) or off
+ *   `require("bun:test")` ("the scan reads every spelling of a test file the lane collects");
+ *   and as a member of a name bound to `await import("bun:test")` (spellings:48) or to
+ *   `require("bun:test")` (spellings:51).
+ * - A wait: a call, in a row's or a hook's body, of `runBounded` (fixture:93, fixture:129),
+ *   `eventually` (fixture:171) or `whether` (fixture:175), which the fixture imports by an
+ *   import declaration, or of `listing` (fixture:122, fixture:149), which it destructures off
+ *   an `import()`; and a call of a member of a name bound to an `import()` of their module, or of
+ *   a name destructured off a `require` of it under another name ("a bounded export reached
+ *   through import() or require is read as an imported one"). Only a call waits: a row that
+ *   names `runBounded` as a value and calls nothing is recorded nowhere (fixture:140).
+ * - A wait through a function declaration of the file's own whose body makes such a call: a
+ *   call of it in a row's body (fixture:89), or its name as the row's body (fixture:97,
+ *   fixture:99).
+ * - A wait through a name: a reference, in a row's body, to a name the file binds at module load
+ *   to an expression that holds such a call (fixture:109, fixture:115, fixture:135, and "the
+ *   rows of the listing files are read as waiting for their listings"), or that a hook assigns
+ *   with `=` (fixture:151, fixture:160, fixture:168). The hook that assigns the name waits for
+ *   the call it makes and not for the name (fixture:149).
+ * - Every file under `e2e/__tests__` that the lane's `bun test` collects, at any depth,
+ *   `fixtures/` included, and no other ("the scan reads every test file of the directory,
+ *   wherever it stands", "the scan reads a test file of a subdirectory, which the lane runs
+ *   too"): a name with a `.test`, `_test`, `.spec` or `_spec` ending, in any case, under `.ts`,
+ *   `.tsx`, `.js`, `.jsx`, `.cjs` or `.mts`, outside `node_modules/` and a directory whose name
+ *   begins with a dot, each parsed as its extension says, JSX in a `.tsx` or a `.jsx` ("the scan
+ *   reads every spelling of a test file the lane collects"). No control of `fixtures/` is read
+ *   ("the scan leaves out every control of fixtures/"), and a `test(` inside a template literal
+ *   is a string and no row ("a number that is no row's or hook's own limit is read nowhere").
  *
- * A row that waits through one of them still states `rowLimit`, because its writer knows it
- * waits. A bare reference to `runBounded`, `listing`, `whether` or `eventually` that calls none
- * of them - the `void runBounded` that `e2e/__tests__/fixtures/row-limits.fixture.ts` plants - is
- * no wait at all, because only a call starts a child or a poll.
+ * A shape not in this list is not promised: the scan either does not read it, or reads it in
+ * code no row holds, so a limit or a wait written another way may go unchecked. A row that waits
+ * another way still states `rowLimit`, because its writer knows it waits.
  *
- * A name bound or assigned to an awaited call - `const options = await helpOptions()` - holds
- * what the call answered, so a reference to it waits for nothing and is not read; the binding's
- * own `await` is the wait. That holds only where the `await` is outermost in what the name is
- * bound to, under parentheses and `as` alone.
- *
- * The scan refuses four shapes for a fault they do not have, which are false refusals:
+ * The scan refuses these shapes for a fault they do not have, which are false refusals:
  *
  * - an `await` that stands deeper in what a name is bound to -
- *   `const code = (await runBounded(...)).code`. The name is read as bound to the call, so it is
- *   a waiting name although it holds a number, and a row that refers to `code` and states no
+ *   `const code = (await runBounded(...)).code`. A name bound or assigned to an awaited call -
+ *   `const options = await helpOptions()` - holds what the call answered, so the scan reads no
+ *   wait in a reference to it, but only where the `await` is outermost in what the name is
+ *   bound to, under parentheses and `as` alone. So `code` is read as bound to the call, a
+ *   waiting name although it holds a number, and a row that refers to `code` and states no
  *   `rowLimit` is refused as a row that waits for a bounded child;
  * - a name a row declares that a waiting function of the file also bears. `reachOf` matches a
  *   call to a waiting function of the file's own by its bare name, so a row that declares
  *   `const helper = ...`, where `helper` also names a waiting function of the file, and calls
  *   it, is read as waiting for what the file's `helper` reaches, and is refused where it states
  *   no `rowLimit`;
- * - a row body that is neither inline nor a function the file declares - `helpers.body`,
- *   `importedFn`, `made`. `isBody` reads it as no body, so `limitOf` reads it as the row's
- *   limit, and the row is refused as one whose limit is no call of `rowLimit` and has no reason
- *   on the line above it;
+ * - a row body that is neither inline nor a function the file declares - `helpers.body`, an
+ *   imported function, or `made` where `made` is bound to what a call answered. `isBody` reads
+ *   it as no body, so `limitOf` reads it as the row's limit, and the row is refused as one whose
+ *   limit is no call of `rowLimit` and has no reason on the line above it;
  * - a limit Bun honours in a spelling the scan does not read: the `timeout` of an options object
  *   under a quoted or a computed key or in a spread - `{ "timeout": n }`, `{ ["timeout"]: n }`,
  *   `{ ...{ timeout: n } }` - and a file limit called through a member in brackets -
@@ -185,29 +207,26 @@
  *   states no limit and that the lane's `--timeout` stops. Bun stops it at the limit written
  *   there. No refusal names such a limit itself, even one with no reason on the line above it.
  *
- * No test file of this directory writes any of the four. The reading of limits misreads these
- * shapes, and no refusal says that it misread them:
+ * No test file of this directory writes any of them. The scan does these things with a limit it
+ * reads, where Bun does otherwise:
  *
- * - a `setDefaultTimeout` or `jest.setTimeout` written after a top-level row or hook. It does
- *   not cover that row, since Bun applies it only to what is registered after the call, yet the
- *   scan reads no order and reads the row as covered by it;
- * - a `setDefaultTimeout` called inside a hook or a row body. The scan reads it as the file's
- *   limit, yet it runs after Bun has registered the file's rows, and Bun 1.4.4 applies it to
- *   none of them;
- * - several file limits. Bun applies to each row the last one called before that row is
- *   registered, while the scan checks a row that states no limit against the largest of the
- *   file's `rowLimit` ones, and, where the file writes none of those, names every limit the file
- *   writes;
- * - a 0 written as `0.0`, `0x0` or `0e0`. Bun 1.4.4 reads each as it reads `0`, as no clock, yet
- *   the scan reads as a 0 only a limit written in the digit 0 and underscores, `0` or `0_000`,
- *   and reads these as a limit that stops a row, so a refusal of such a limit says that it stops
- *   the row;
- * - a limit Bun honours in a call reached through a member in brackets -
- *   `test["each"](t)(..., n)`, `bun["test"](..., n)`. The scan reads no member written in
- *   brackets, so it reads neither call as a row. No refusal names either call.
+ * - it reads no order between a file limit and a row. It reads a `setDefaultTimeout` or
+ *   `jest.setTimeout` for every row and hook of the file that waits and states no limit,
+ *   wherever the call is written, so a top-level row or hook written above the call is read as
+ *   under it, although Bun applies it only to what is registered after the call;
+ * - it reads a `setDefaultTimeout` called inside a hook or a row body as the file's limit, as it
+ *   reads one at the top level, although that call runs after Bun has registered the file's
+ *   rows, and Bun 1.4.4 applies it to none of them;
+ * - where a file writes several file limits, it checks a row that states no limit against the
+ *   largest of the file's `rowLimit` ones, and, where the file writes none of those, names every
+ *   limit the file writes, although Bun applies to each row the last one called before that row
+ *   is registered;
+ * - it reads as a 0 only a limit written in the digit 0 and underscores, `0` or `0_000`. It reads
+ *   a 0 written `0.0`, `0x0` or `0e0` as a limit that stops a row, so a refusal of such a limit
+ *   says that it stops the row, although Bun 1.4.4 reads each as it reads `0`, as no clock.
  *
- * No test file of this directory writes `setDefaultTimeout` or `jest.setTimeout`, or any of
- * those spellings.
+ * No test file of this directory writes `setDefaultTimeout` or `jest.setTimeout`, or a 0 written
+ * any of those three ways.
  *
  * WHAT A ROWLIMIT COVERS. A `rowLimit` call is checked against the bounds of what its row waits
  * for wherever the scan reads them: a `listing` call is the `listing` bound, a `runBounded` call
@@ -254,7 +273,7 @@
  * reader of the source sees. Reading the name also fails the safe way for what it reads:
  * anything reached through dotted members and calls from a name the file bound `test` or `it`
  * to, and anything that names a hook, is asked for its limit rather than skipped. A member
- * written in brackets is not read at all (WHAT THE SCAN LEAVES OUT). No type checker is needed
+ * written in brackets is not read at all (THE SHAPES THE SCAN READS). No type checker is needed
  * for that, so the scan parses files and builds no program.
  *
  * `testFiles` and `limitsOfFiles` read the file system and everything else here is pure over its
@@ -308,8 +327,8 @@ export type WallClockLimit = {
    *  is recorded at all. Bun then stops it at the file's last `setDefaultTimeout` or
    *  `jest.setTimeout` called before the row or hook is registered, where that is no 0, which
    *  sets no clock, and at the lane's `--timeout` where the file called none before it;
-   *  `refusedLimits` reads which of those calls the file writes, and not their order (WHAT THE
-   *  SCAN LEAVES OUT). */
+   *  `refusedLimits` reads which of those calls the file writes, and not their order (THE SHAPES
+   *  THE SCAN READS). */
   stated: StatedLimit | undefined;
   /** Whether a row, a hook or the file states it. */
   kind: LimitKind;
@@ -749,7 +768,7 @@ type WaitingNames = {
    *  what that call reaches. A name bound or assigned to an expression whose outermost operator,
    *  under parentheses and `as`, is `await` is left out: it holds what the call answered, the
    *  binding itself waited, and a reference to it waits for nothing. An `await` deeper in the
-   *  expression leaves the name in: WHAT A ROW WAITS FOR. */
+   *  expression leaves the name in: THE SHAPES THE SCAN READS. */
   readonly values: ReadonlyMap<string, Reach>;
 };
 
@@ -965,7 +984,7 @@ function waitsOf(
 
 /** The `timeout` of an options object under a plain key: `{ timeout: 90_000 }`, and the
  *  shorthand `{ timeout }`, whose limit is the name itself. A quoted or a computed key and a
- *  spread are not read (WHAT THE SCAN LEAVES OUT). */
+ *  spread are not read (THE SHAPES THE SCAN READS). */
 function timeoutOf(options: ts.ObjectLiteralExpression): ts.Expression | undefined {
   for (const property of options.properties) {
     const name = property.name;
@@ -1204,7 +1223,7 @@ function shortOfBound(limit: WallClockLimit, total: number | undefined): string 
 /** Whether a limit as written is a 0 in the digit 0 and underscores alone - `0`, `0_000` -
  *  which Bun 1.4.4 reads as no clock at all, the lane's `--timeout` included, for the row it
  *  stands for or the rows registered after the call. A 0 written otherwise - `0.0`, `0x0`,
- *  `0e0` - is read as a limit that stops a row (WHAT THE SCAN LEAVES OUT). */
+ *  `0e0` - is read as a limit that stops a row (THE SHAPES THE SCAN READS). */
 function setsNoClock(text: string): boolean {
   return /^0+$/.test(text.replaceAll("_", ""));
 }

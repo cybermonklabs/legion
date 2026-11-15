@@ -1,7 +1,7 @@
-/** The planted controls of e2e/__tests__/row-limits.test.ts: one wall-clock limit of every shape
- *  the rule has an answer for, so proving the check looks needs no edit of a real test file.
- *  Without them a check that finds nothing in the directory would read the same whether it
- *  looked or not.
+/** The planted controls of e2e/__tests__/row-limits.test.ts: each shape the guard reads that the
+ *  header of e2e/row-limits.ts names by a `fixture:N` line, and the reasons above limits it reads,
+ *  so proving the check looks needs no edit of a real test file. Without them a check that finds
+ *  nothing in the directory would read the same whether it looked or not.
  *
  * Its name ends `.fixture.ts` because `bun test` collects `*.test.ts`, `*.spec.ts` and their kin:
  * this file runs nowhere, and the rows and hooks below are source for the scan to parse rather

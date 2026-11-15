@@ -2136,49 +2136,50 @@ as a name ending `.test`, `_test`, `.spec` or `_spec` and then `ts`, `tsx`,
 `node_modules` and one whose name begins with a dot -
 refuses every other limit: a limit is a call of that shared
 `rowLimit`, or it carries a reason of at least eight words on the line directly
-above it. It reads a limit as the argument itself or as the `timeout` of an
-options object under a plain key (`{ timeout: n }`, `{ timeout }`), in a row's
-second or third argument, a hook's second (`onTestFinished` included),
-`setDefaultTimeout` and `jest.setTimeout`, under any name a file imports, binds
-or destructures them to, and on a callee reached from one of those through
-dotted members and calls (`test.only`, `bun.test`, `test.each(t)`). It also
+above it.
+It reads a limit as the argument itself or as the `timeout` of an
+options object under a plain key (`{ timeout: n }`), in a row's
+second or third argument, the second argument of `beforeAll`, `afterAll`,
+`afterEach` or `onTestFinished`, and the argument of `setDefaultTimeout` and
+`jest.setTimeout`, under the name a file imports them by, a `const` bound to
+that name, a name destructured off `await import("bun:test")` or
+`require("bun:test")`, or a member of a name bound to either, and on a callee
+reached from one of those through dotted members and calls (`test.skip`,
+`test.each(t)`).
+It also
 refuses a row or hook that waits for `runBounded`, `listing`,
 `whether` or `eventually`,
-itself, through a function of its own file, or by referring to a name the file
+itself, through a function declaration of its own file, or by referring to a
+name the file
 binds or assigns to such a call (`const lane = retained(listing(...))` at module
 load, or `lane = retained(listing(...))` in a hook, then `await lane` in the
 row), unless it states its limit as a `rowLimit`
 call, its own or the file's `setDefaultTimeout`, which Bun applies to the rows and
 hooks registered after the call: without one the lane's
-`--timeout 60000` stops it, which ties with the `short` bound. It reads those
-exports from an import declaration or from a name bound to an `import()`
-or `require` of their module. Where it reads the bound of what a row waits for
+`--timeout 60000` stops it, which ties with the `short` bound.
+It reads those
+exports from a named import, or from a name bound to or destructured off an
+`import()` or `require` of their module.
+Where it reads the bound of what a row waits for
 (a `listing` call, a `runBounded` whose `bound:` is a string literal, a
 `whether` or `eventually` call, which is the `short` bound, a name
 bound to any of those), it refuses a `rowLimit` whose total, computed from its
 arguments as written, falls below `rowLimit` of the largest such bound; a bound
 or a total it cannot read (a computed `bound:`, a spread argument) is not
-checked. What it does not read is read as waiting for nothing, and no refusal
-names a row that waits that way: a bounded function passed as a value
-(`.map(runBounded)`); a name bound to a waiting name
-(`const rows = lane.then(rowsOf)`); a name a destructuring declaration binds
-(`const [lane] = [listing(...)]`); a name a property or a destructuring
-assignment writes (`state.lane = listing(...)`, `[lane] = [listing(...)]`); a
-method of a class declaration, static or not, that calls `runBounded`,
-`listing`, `whether` or `eventually` (a class expression or an object literal
-bound to a name is read, since that name's initializer holds the call); a name
-bound to one of those exports itself (`const run = runBounded`, or `listing`);
-a name destructured off a namespace import (`const { runBounded: rb } = b`); a
-call through a namespace in brackets (`b["runBounded"](...)`); a waiting helper
-imported from another module, other than `listing`; and a row body that is
-neither inline nor a function the file declares (`test("t", helpers.body)`,
-`test("t", importedFn)`, `test("t", made)`). A name bound to an
-awaited call (`const options = await helpOptions()`) is no wait either, since it
-holds what the call answered, but only where the `await` is outermost.
-The guard refuses four shapes for a fault they do not have, and no test file
+checked.
+The header of `e2e/row-limits.ts` lists the shapes the guard reads, each beside
+the plant or the row of `e2e/__tests__/row-limits.test.ts` that fails if the
+guard stops reading it.
+A shape not in that list is not promised: the guard either does not read it, or
+reads it in code no row holds, so a limit or a wait written another way may go
+unchecked.
+A row that waits another way still states `rowLimit`.
+The guard refuses these shapes for a fault they do not have, and no test file
 under `e2e/__tests__/` writes any of them:
-`const code = (await runBounded(...)).code` is read as a waiting name, so a row
-that refers to `code` and states no `rowLimit` is refused although `code` is a
+`const code = (await runBounded(...)).code` is read as a waiting name, since
+only an outermost `await` (`const options = await helpOptions()`) makes a name
+no wait, so a row that refers to `code` and states no `rowLimit` is refused
+although `code` is a
 number; a call is matched to a waiting function of the file by its bare name, so
 a row that declares a name of its own that a waiting function of the file also
 bears (`const helper = ...`) and calls it is refused the same way; a row
@@ -2192,24 +2193,22 @@ So a row that waits and states its limit so, its own or the file's, is refused
 as a row that states no limit and that the lane's `--timeout` stops.
 Bun stops it at the limit it wrote.
 No refusal names such a limit itself, even one with no reason.
-The guard misreads these limits, and no refusal says that it misread them:
-a `setDefaultTimeout` or `jest.setTimeout`
-written after a top-level row or hook does not cover that row, yet the guard
-reads no order and reads the row as covered; a `setDefaultTimeout` called inside
-a hook or a row body is read as the file's limit, though Bun 1.4.4 applies it
-to none of the file's rows; where a file writes several limits, Bun applies to
-each row the last one called before it, while the guard reads the largest
-`rowLimit` among them, or names every one where none is a `rowLimit`; a 0
-written `0.0`, `0x0` or `0e0` sets no clock in Bun 1.4.4, as `0` does, yet the
-guard reads it as a limit that stops a row, and a refusal of such a limit says
-that it stops the row; and Bun honours a limit in a call through a member in
-brackets (`test["each"](t)(..., n)`, `bun["test"](..., n)`), but the guard
-reads neither call as a row, so no refusal names either.
+The guard does these things with a limit it reads, where Bun does otherwise:
+it reads no order between a file limit and a row, so a `setDefaultTimeout` or
+`jest.setTimeout` written after a top-level row or hook is read as that row's
+limit, though Bun applies it only to what is registered after the call; it
+reads a `setDefaultTimeout` called inside a hook or a row body as the file's
+limit, though Bun 1.4.4 applies it to none of the file's rows; where a file
+writes several file limits, it reads the largest `rowLimit` among them, or names
+every one where none is a `rowLimit`, though Bun applies to each row the last
+one called before it; and it reads a 0 written `0.0`, `0x0` or `0e0` as a limit
+that stops a row, and a refusal of such a limit says that it stops the row,
+though Bun 1.4.4 reads each as `0`, which sets no clock.
 No test file under `e2e/__tests__/` writes
-`setDefaultTimeout` or `jest.setTimeout`, or any of those spellings.
+`setDefaultTimeout` or `jest.setTimeout`, or a 0 written any of those ways.
 `e2e/__tests__/fixtures/row-limits.fixture.ts` and
 `e2e/__tests__/fixtures/row-limits-spellings.fixture.ts` are its planted
-controls, one limit of every shape the rule answers.
+controls.
 
 The markdown shapes the parity rows read live in
 `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/`, and all three suites

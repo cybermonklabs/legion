@@ -1,6 +1,6 @@
 /** The planted controls of e2e/__tests__/row-limits.test.ts for the spellings of a wall-clock
- *  limit `bun test` honours beyond a bare `test`, `it`, hook and `setDefaultTimeout`. The rule
- *  reads each limit below, and the test asserts that each is refused on its own line.
+ *  limit Bun honours, beyond a bare `test`, `it`, hook and `setDefaultTimeout`, that the header
+ *  of e2e/row-limits.ts names by a `spellings:N` line. The test asserts each is refused there.
  *
  * Measured in this issue's pod on 2026-11-12 with bun 1.4.4, each against a row or hook that
  * sleeps 400 ms under `bun test --timeout 60000`:
