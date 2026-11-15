@@ -1,6 +1,6 @@
 // The placement rules of `withSessionAnswers` on reads through the real `readSessionAnswers`, as
-// the extension reads: each from a Dispatch stand-in of its own, handed on by `carriedAnswers`, the
-// mapping the extension's `sessionAnswersText` calls.
+// the extension reads: each from a Dispatch stand-in of its own and on a clock of its own (`now`),
+// handed on by `carriedAnswers`, the mapping the extension's `sessionAnswersText` calls.
 import { expect, test } from "bun:test";
 import type { SessionAnswer } from "@legion/contracts";
 import { bearerCredential } from "@legion/envoy-client/bearer";
@@ -22,50 +22,6 @@ import { carriedAnswers, withSessionAnswers } from "./session-answers-context";
 /** A state directory of the case's own, for the read's `answers.json`. */
 const stateDir = temporaryDirectories("session-answers-read");
 
-// The empty-list case with the shared read: two copies, a Dispatch that answers in 600 ms, one
-// HTTP read and a request that waits under one second. The delay is real on purpose: the read's
-// 800 ms deadline is a platform timer inside `readSessionAnswers`, and the case times the request
-// that two copies of the handler make together against it.
-test("two copies of the extension and an empty list: one HTTP read, under one second", async () => {
-  const env = { DISPATCH_STATE_DIR: stateDir() };
-  let fetches = 0;
-  const fetchImpl = (async (input: string | URL | Request) => {
-    fetches += 1;
-    await Bun.sleep(600);
-    const session = new URL(input.toString()).pathname.split("/")[4] ?? "";
-    return Response.json({
-      session_id: session,
-      since: new Date(Date.now() - 72 * 3_600_000).toISOString(),
-      total: 0,
-      items: [],
-    });
-  }) as typeof fetch;
-  const read = async () =>
-    carriedAnswers(
-      await readSessionAnswers({
-        session: "ses_two_copies_empty",
-        dispatch: {
-          enabled: true,
-          url: "http://dispatch.test",
-          credential: bearerCredential("token"),
-        },
-        env,
-        fetchImpl,
-      })
-    );
-  const messages = [skill, ask];
-
-  const started = performance.now();
-  // Copy A's handler, then copy B's on the array A passed on.
-  expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toBeUndefined();
-  expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toBeUndefined();
-  const elapsed = performance.now() - started;
-
-  expect(fetches).toBe(1);
-  expect(elapsed).toBeLessThan(1_000);
-});
-
-// The cases below run on a clock of their own (`now`).
 const NOW = Date.parse("2026-10-27T12:00:00.000Z");
 
 /** A person's answer to the session's ask. */

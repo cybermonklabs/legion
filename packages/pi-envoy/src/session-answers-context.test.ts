@@ -1,6 +1,11 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { SessionAnswer } from "@legion/contracts";
+import { bearerCredential } from "@legion/envoy-client/bearer";
 import {
+  readSessionAnswers,
   SESSION_ANSWERS_MARKER,
   sessionAnswersFailureLine,
   sessionAnswersWords,
@@ -614,6 +619,57 @@ test("a request another copy of the extension read no text for is not read again
   // Another request is read again.
   expect(await withSessionAnswers([skill, ask], requestOf(read, noBranch))).toBeUndefined();
   expect(calls()).toBe(2);
+});
+
+// The empty-list case with the shared read: two copies, a Dispatch that answers in 600 ms, one
+// HTTP read and a request that waits under one second. The delay is real on purpose: the read's
+// 800 ms deadline is a platform timer inside `readSessionAnswers`, and the case times the request
+// that two copies of the handler make together against it.
+const stateRoots: string[] = [];
+afterEach(() => {
+  for (const root of stateRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+test("two copies of the extension and an empty list: one HTTP read, under one second", async () => {
+  const stateRoot = mkdtempSync(join(tmpdir(), "session-answers-context-"));
+  stateRoots.push(stateRoot);
+  let fetches = 0;
+  const fetchImpl = (async (input: string | URL | Request) => {
+    fetches += 1;
+    await Bun.sleep(600);
+    const session = new URL(input.toString()).pathname.split("/")[4] ?? "";
+    return Response.json({
+      session_id: session,
+      since: new Date(Date.now() - 72 * 3_600_000).toISOString(),
+      total: 0,
+      items: [],
+    });
+  }) as typeof fetch;
+  const read = async () =>
+    carry(
+      (
+        await readSessionAnswers({
+          session: "ses_two_copies_empty",
+          dispatch: {
+            enabled: true,
+            url: "http://dispatch.test",
+            credential: bearerCredential("token"),
+          },
+          env: { DISPATCH_STATE_DIR: stateRoot },
+          fetchImpl,
+        })
+      ).text
+    );
+  const messages = [skill, ask];
+
+  const started = performance.now();
+  // Copy A's handler, then copy B's on the array A passed on.
+  expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toBeUndefined();
+  expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toBeUndefined();
+  const elapsed = performance.now() - started;
+
+  expect(fetches).toBe(1);
+  expect(elapsed).toBeLessThan(1_000);
 });
 
 test("a list quoted earlier in the conversation does not switch the list off", async () => {

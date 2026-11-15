@@ -1168,9 +1168,10 @@ everything it returns, the skill included, so a read that throws rather than ans
 failure line naming the error, which goes where any failure line goes, and `sessionAnswersText`
 logs the error with `logger.warn`. `src/session-answers-context.test.ts` holds the insertion
 and placement rules on scripted reads, the requests that carry no list and the two-copy cases,
+two copies with an empty list making one HTTP read among them,
 `src/session-answers-read.test.ts` the placement rules on reads through the real
-`readSessionAnswers` and `carriedAnswers` (the cap, a retraction, the window) and two copies with
-an empty list making one HTTP read, `extensions/envoy.test.ts` the
+`readSessionAnswers` and `carriedAnswers` (the cap, a retraction, the window),
+`extensions/envoy.test.ts` the
 handler, a subagent reading its parent's id, a Dispatch that answers no list (the failure line)
 and one with no answers route (no line, one warning for two requests), and
 `extensions/session-answers-omp.test.ts` the real binary: a new answer in the next turn, after a
