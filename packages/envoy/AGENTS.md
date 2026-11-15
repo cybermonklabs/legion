@@ -5946,6 +5946,70 @@ it prints its `sessions`, then `not restarted: the running
 agent-secrets-helper predates drain, …`, and exits 0.
 `agent-secrets` reads that unit file as "the helper is installed" (`helperInstalled`).
 
+`login`, `enroll-session-key` and `unenroll-session-key` are the helper's broker-call ops (`brokerCallOps`, `server.go`): each answers with the outcome of a broker call that the helper makes while the client waits.
+`unregister` also calls the broker, but its answer is local, and no other op calls the broker before it answers.
+The helper gives a connection 5 s to read its request and to write its answer (`Server.handle`), and a `register` with `wait_seconds` its wait plus 5 s.
+A broker-call op runs under a bound instead (`Server.brokerCall`).
+Its context ends at the bound, `Server.BrokerCallBound`, which is `helper.DefaultBrokerCallBound` (20 s) when it is zero, as `cmd/agent-secrets-helper` leaves it.
+The helper answers by the bound plus 1 s (21 s), whatever the op is doing.
+It sets the connection's deadline to the bound plus 5 s (25 s), so the connection stays open after the latest answer.
+A client waits `helper.BrokerCallWait` (30 s, the dial included) for the answer of a broker-call op:
+`agent-secrets enroll --helper` on each of its `DRAINING` tries, `agent-secrets unenroll --helper`, and the `login` call of `agent-secrets machine login`.
+`login-status` reads the helper's own state and calls no broker, so each `login-status` call still waits 10 s.
+`DefaultBrokerCallBound` is `BrokerCallWait` less 10 s, so the answer reaches every client inside its 30 s: a dial of up to 2 s (`helper.Call`), the 20 s bound and the 5 s to write the answer come to 27 s.
+Every released `agent-secrets` that has `enroll --helper` and `unenroll --helper` (`legion-envoy-v3.12.0` to `legion-envoy-v30.20.0`, read on 2026-11-15) also waits 30 s for them.
+Those from `legion-envoy-v10.0.0` on ask the helper's `enroll-session-key` and `unenroll-session-key`, so they get the answer too; an older one asks `enroll-box` and `unenroll-box`, which this helper answers `unknown op`.
+
+Each broker-call answer says whether the broker's outcome is known, by one rule (`requestReach.settle`, `broker.go`), which reads a trace on the op's request (`traceReach`).
+A 4xx is known, because the broker decides each refusal before it writes anything.
+A request that the transport never sent in full is known: a refused dial, a context that ended before the transport held a connection, a failed write.
+A failure before any request is known too: signing a proof, reading the operator file, a sign-in's trade.
+After the transport wrote the whole request, or the broker began to answer, these are unknown:
+a transport error, a 5xx (a front door's 502 or 504 can come after the broker wrote), and a 2xx that the helper cannot read (a body that does not decode, an enrollment with no `enrollment_id`, a device authorization with no `device_code` or `user_code`).
+A request whose context ended while the transport held a connection for it is unknown, even when the trace did not see the write end:
+HTTP/2 returns at once on an ended context, and its write of the request can still be running.
+The retries inside an op (`400 INVALID_KIND` and `401 LAUNCHER_INVALID` on an enroll, `403` on a revoke) follow only a 4xx, so an unknown outcome always ends the op.
+A known failure answers `ENROLL_FAILED`, `UNENROLL_FAILED` or `LOGIN_FAILED`, with the failure as it came: the broker refused, or the helper never asked it, so this request made or revoked nothing.
+An unknown outcome answers `ENROLL_OUTCOME_UNKNOWN` (`helper.CodeEnrollUnknown`) or `UNENROLL_OUTCOME_UNKNOWN` (`helper.CodeUnenrollUnknown`).
+A login whose outcome is unknown answers `LOGIN_FAILED`, with an error that starts `the outcome is unknown:` (`loginUnknown`).
+It has no code of its own, because no caller can act on one: nobody saw a confirmation code, so nobody can approve a device authorization that the broker may hold, and that authorization expires by itself.
+Each unknown answer's error says that the outcome is unknown and what to do next, so an `agent-secrets` from before these codes, which prints `<CODE>: <error>` as it comes, says it too.
+The error of an outcome that `settle` marked unknown gives its cause as `the request may have reached the broker, but the helper did not get its result (<error>)` (`mayHaveReachedCause`).
+It says only "may have", because `settle` also marks unknown a request whose context ended while the transport held a connection for it, and that request may not have been written in full.
+The timer's answer gives `the operation did not end in <bound>, so the helper does not know if the broker got the request` instead.
+The same enroll again answers the enrollment that the broker made, if it made one, because the broker gives the same key under the same launcher credential and runtime id its live enrollment back (`enroll.Service.Create`).
+An unenroll is safe to run again, because the helper counts the broker's 204 and 404 as done, and a login is safe to run again too.
+An op can wait past the bound plus 1 s only on a lock that the helper holds across an HTTP request and that does not watch the op's context (a sign-in's trade, a login in progress, a refresh that `clearOnInvalid` waits for).
+The timer answers such an op unknown, and the helper logs the WARN `a broker call did not end within its bound; its outcome is answered as unknown` with the op and the bound.
+When the op ends after that, the helper logs its result (`a broker call answered as unknown has ended`, with its code and any `enrollment_id`), so an operator can see what the broker did.
+
+`helper.Call` marks each error that comes after it wrote the whole request with `helper.ErrNoReply`: no reply line within its timeout, or a reply that is not one JSON object.
+The error keeps its own text, and a failed dial, marshal or write does not match `ErrNoReply`, because the helper did not get the whole request.
+On `ErrNoReply`, `agent-secrets enroll --helper` exits 1 with `the helper gave no answer (<error>). So it is not known if the broker made the enrollment.`, and tells the caller to run the same command again.
+`agent-secrets unenroll --helper` says the same of the revoke, and that the same command is safe to run again.
+`enroll --helper` makes `AGENT_SECRETS_KEY_DIR` before it asks the helper, so only the write of `enrollment` can fail after the broker made the enrollment.
+That failure exits 1, and its error names the enrollment and the failed write: `the broker made enrollment <id>, but this command could not write its id to <path>: <error>`.
+
+`Server.Serve` returns only after every broker-call op that it accepted has written its answer.
+So a helper that stops on a signal never closes a client's connection with no answer while a broker call runs.
+That includes `install`'s restart, which `drain` does not hold back when an `enroll-session-key` is already in flight.
+The stop ends each op's context, so the wait is at most the bound plus 1 s.
+When `Serve` has connections to wait for, it logs the WARN `the helper is stopping; it waits for the connections that may still owe a broker call's answer` with their count (`connections`) and the bound.
+Every other op gives back its place in that wait once its request is read, so a connection whose request is still being read holds the stop for at most its 5 s.
+`unregister` answers at once with the session retired: `retire` fires the bounded revoke of an unnamed session's enrollments on goroutines of their own, as every sibling path fires it, and the revoke logs its own failure.
+
+This leaves three limits.
+A helper from before these answers gives itself 5 s to write a broker-call op's answer but waits up to 30 s for each request it sends the broker (its HTTP client's timeout, `leasetime.RenewClientTimeout`), until it restarts on a release that has them (the operator's dotfiles pinned `legion-envoy-v30.18.1` on 2026-11-15, which does not).
+When the broker answers after those 5 s, that helper cannot write the answer and closes the connection without one, and when the broker takes longer than the client's own wait, the client times out first.
+Against such a helper, a new `enroll --helper` or `unenroll --helper` prints its `ErrNoReply` message, so it says that the outcome is unknown.
+But that helper can still answer `ENROLL_FAILED` for a failure after the broker wrote, for example a 502 from a front door.
+A `machine login` from before `BrokerCallWait` waits 10 s for the `login` answer, the dial included, so against a broker slower than about 8 s it can close before the helper answers.
+If the broker answers within the bound, the helper records the login as pending, and the next `machine login` shows its code.
+Against a helper with these answers, an `enroll --helper` attempt ends by about 23 s (a dial of up to 2 s and the answer at 21 s); against a helper from before them it lasts as long as the broker takes, up to the client's 30 s.
+A broker slower than the 20 s bound still leaves a launcher with no enrollment id, and a launcher's close revokes only an id that it recorded.
+So such an enrollment ends with its lease, unless the launcher runs the same enroll again.
+The same enroll answers the first enrollment only under the same launcher credential: under another (a person's sign-in revoked between two attempts) it makes a second enrollment, and the first one ends with its lease.
+
 `agent-secrets renew --pod-token-file FILE` is the pod renewer:
 it re-reads and trims the projected token before every broker request, and sends it as `pod_token`.
 A blank or unreadable file makes no request: the renewer prints `ERROR: enrollment <id> cannot read its pod token

@@ -29,7 +29,8 @@ const leakCheckTag = "leak-check-v15"
 // its tarball route requires.
 const leakCheckLease = "ghs_leak_check_lease"
 
-// leakCheckReadSet is what a read token asks for (appauth's readPermissions): contents, pull
+// leakCheckReadSet is what a read token asks for of an installation granted leakCheckGrant:
+// appauth's readPermissions less the issues read that grant does not hold, so contents, pull
 // requests, Actions and metadata, each at read.
 var leakCheckReadSet = map[string]string{"contents": "read", "pull_requests": "read", "actions": "read", "metadata": "read"}
 

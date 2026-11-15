@@ -566,6 +566,9 @@ The daemon reads the mapping at boot and on Dispatch's `settings.repo_project.up
 `legion state --json` reports each repository with each App's installation, and lists under `repositories.refused` one a role App is not installed on.
 A repository whose installation read GitHub does not answer (any failure but a 404) is refused for now the same way and read again, 30 s doubling to 10 min, until GitHub answers;
 one already read as installed stays as it was read.
+A repository whose default-branch read GitHub refuses for its rate limit (a 429, or a 403 whose headers or body name the limit) never stops the boot:
+one the daemon holds a default branch for, from its last read or a record of an issue on it, is served on that branch and read again once the limit resets;
+one it holds none for is waited out for as long as GitHub asks (the `Retry-After` it names, else until the reset when no call is left, at most an hour, else a minute), with one log line that names the repository, the limit's headers and the time it waits until, and is then read once more, and left out for now and read again as above if GitHub still does not answer.
 A repository that moved is named in `repository_renames`, a top-level key of `legion.yaml` (`- from: <old owner>/<name>` with `to: <new owner>/<name>`), and the daemon then treats the pair's two names as one repository wherever it compares a name, so the trees it recorded under the old name take the events GitHub sends under the new one, a pull request open at the transfer included.
 The equivalence is read-side only and rewrites no record, so keep the pair configured for as long as any record names the old repository;
 it serves no repository of its own, which is why a pair may be configured before the transfer, and `legion start --check-config` prints one line per pair.

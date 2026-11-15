@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A role's GitHub App token asks for issues access. A read lease asks for `issues: read`, and the
+  implement and review Apps' write leases each ask for `issues: write`, so a role can read an
+  issue of a private repository and post or edit a comment on it, where GitHub answered 403
+  before. No other permission changes. A daemon whose Apps use a `token_command` takes what its
+  command releases, and the secrets broker's read-only release still holds no issues.
+
+  A permission the App's installation is not granted is now logged once per App, owner and
+  permission as a warn record of the daemon's log, with the fields `app`, `owner`,
+  `permission`, `asked` and `granted`, in place of a plain line on stderr.

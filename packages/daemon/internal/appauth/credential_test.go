@@ -1223,7 +1223,11 @@ func TestAFailedMintForAnotherOwnerLeavesThatDirectoryOut(t *testing.T) {
 	github.forbids = func(owner string) bool { return owner == "forbiddenlabs" }
 	github.granted = func(installation string, _ int) (int, string) {
 		if github.ownerOf(installation) == "grantlesslabs" {
-			return http.StatusOK, installationGranting(installation, map[string]string{"issues": "write"})
+			// `pages` is in no role's set and in readPermissions neither, so this installation is
+			// granted none of what any lease asks for. The grant named here must stay outside
+			// those sets: it read `issues` until main's #4043 put issues:read in readPermissions,
+			// which made this installation grant something and the row stop proving its point.
+			return http.StatusOK, installationGranting(installation, map[string]string{"pages": "write"})
 		}
 		return http.StatusOK, installationGranting(installation, grantedEverythingAsked)
 	}
