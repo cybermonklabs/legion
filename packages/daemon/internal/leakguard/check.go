@@ -128,8 +128,9 @@ func noAnswer(env []string) string {
 	return "/bin/false"
 }
 
-// child is one process this package runs: the shared check in one of its shapes, the gh read of a
-// repository's visibility, or a git command a push's records are read with.
+// child is one process this package runs: the shared check in one of its shapes, a read of a
+// repository's visibility (gh's, or git's ls-remote where gh's is refused for a rate limit), or a
+// git command a push's records are read with.
 type child struct {
 	// argv is the command and its arguments, argv[0] naming the program.
 	argv []string
@@ -137,6 +138,10 @@ type child struct {
 	dir string
 	// env is what the child's environment carries beyond the guard's own (Guard.env).
 	env []string
+	// inherit, where it is not nil, is which names of the base environment the child keeps;
+	// the guard's own names and env go on top either way. Nil keeps the whole base, which is
+	// what every child keeps but the visibility read made with no credential (Guard.lsRemote).
+	inherit func(name string) bool
 	// stdin is the child's standard input, nil for none.
 	stdin io.Reader
 	// files are the child's descriptors from 3 up, as exec.Cmd.ExtraFiles takes them.
@@ -167,7 +172,7 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	base := g.base()
 	cmd := exec.CommandContext(ctx, program(base, c.argv[0]), c.argv[1:]...)
 	cmd.Dir = c.dir
-	cmd.Env = g.env(base, c.env...)
+	cmd.Env = g.env(base, c.inherit, c.env...)
 	cmd.Stdin = c.stdin
 	cmd.ExtraFiles = c.files
 	// procgroup before any other SysProcAttr field, as its doc requires: it replaces the whole

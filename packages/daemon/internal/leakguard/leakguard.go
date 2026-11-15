@@ -100,11 +100,20 @@ func (g *Guard) base() []string {
 
 // env is the environment a child of this guard starts from: base, the names that make a
 // credential prompt fail closed, and extra on top, which wins over both because exec takes the
-// last value of a name. The base is the caller's rather than read here, so that a child costs
+// last value of a name. inherit, where it is not nil, keeps only the names of base it answers
+// true for (child.inherit). The base is the caller's rather than read here, so that a child costs
 // one copy of the process environment and not two (Guard.run).
-func (g *Guard) env(base []string, extra ...string) []string {
+func (g *Guard) env(base []string, inherit func(name string) bool, extra ...string) []string {
 	out := make([]string, 0, len(base)+4+len(extra))
-	out = append(out, base...)
+	if inherit == nil {
+		out = append(out, base...)
+	} else {
+		for _, entry := range base {
+			if name, _, _ := strings.Cut(entry, "="); inherit(name) {
+				out = append(out, entry)
+			}
+		}
+	}
 	out = append(out, promptsNothing(g.noAnswer)...)
 	return append(out, extra...)
 }

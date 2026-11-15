@@ -126,15 +126,19 @@ func TestVisibilityRetriesRateLimitAtNearReset(t *testing.T) {
 	}
 }
 
-// A reset beyond the two-minute limit refuses at once and tells the role when the installation's
-// limit resets, instead of waiting through a call it cannot clear.
+// A reset beyond the two-minute limit is not waited for. The guard reads the visibility through
+// git's ls-remote instead (TestLsRemoteReadsTheVisibilityWhenTheRateLimitIsSpent), and where that
+// read cannot answer either, the call is refused at once and tells the role when the
+// installation's limit resets, instead of waiting through a call it cannot clear.
 func TestVisibilityRefusesRateLimitBeyondTheWaitBound(t *testing.T) {
 	clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
 	reset := clock.Now().Add(10 * time.Minute)
+	bin, record := t.TempDir(), filepath.Join(t.TempDir(), "record")
+	writeProgram(t, bin, "git", recordsItsCall(record)+cannotConnect)
 	var reads int
 	_, err := New(Options{
 		Clock: clock,
-		Env:   append(fixtureenv.Isolated(t.TempDir()), "XDG_STATE_HOME="+t.TempDir()),
+		Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
 		Visibility: func(context.Context, string) (Visibility, error) {
 			reads++
 			return "", &rateLimitError{reset: reset}
@@ -153,5 +157,8 @@ func TestVisibilityRefusesRateLimitBeyondTheWaitBound(t *testing.T) {
 	}
 	if len(clock.waits) != 0 {
 		t.Errorf("the waits are %v, want none", clock.waits)
+	}
+	if calls := readCalls(t, record); len(calls) != 1 {
+		t.Errorf("git ran %d times, want the one ls-remote", len(calls))
 	}
 }

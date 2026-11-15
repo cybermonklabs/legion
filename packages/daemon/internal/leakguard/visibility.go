@@ -42,17 +42,26 @@ func (wallClock) Sleep(ctx context.Context, wait time.Duration) error {
 	}
 }
 
-// VisibilitySource says whether a guard's answer read GitHub or used the role's kept answer.
+// VisibilitySource says where a guard's answer came from: GitHub's REST API, the role's kept
+// answer, or git's ls-remote, the read the guard makes when the REST read is refused for a spent
+// rate limit it does not wait for (Guard.lsRemoteVisibility).
 type VisibilitySource string
 
 const (
-	VisibilityFromGitHub VisibilitySource = "github"
-	VisibilityFromCache  VisibilitySource = "kept"
+	VisibilityFromGitHub   VisibilitySource = "github"
+	VisibilityFromCache    VisibilitySource = "kept"
+	VisibilityFromLsRemote VisibilitySource = "ls-remote"
 )
 
 // Visibility is what GitHub reports the repository slug ("owner/name") as. Public answers stay
 // for the role's pod life. Private and internal answers are read each time, so a repository made
 // public cannot skip a rule pass.
+//
+// A read GitHub refuses for a spent rate limit is read once more after the reset, where that is
+// at most rateLimitWaitBound away. A limit still spent after that, and one that resets later, is
+// read a second way, which costs no REST request: git's ls-remote (Guard.lsRemoteVisibility),
+// whose answer is kept as gh's is. Where that read cannot answer either, the call is refused,
+// naming the spent limit and its reset.
 //
 // The header-bearing read is:
 //
@@ -69,28 +78,25 @@ func (g *Guard) Visibility(ctx context.Context, slug string) (Visibility, error)
 		return visibility, nil
 	}
 	visibility, err := g.readVisibility(ctx, slug)
-	if err != nil {
-		var limited *rateLimitError
-		if !errors.As(err, &limited) {
-			return "", err
-		}
-		wait := limited.reset.Sub(g.clock().Now())
-		if limited.reset.IsZero() || wait < 0 || wait > rateLimitWaitBound {
-			return "", limited.refusal()
-		}
-		if err := g.clock().Sleep(ctx, wait); err != nil {
-			return "", err
-		}
-		visibility, err = g.readVisibility(ctx, slug)
-		if err != nil {
-			if errors.As(err, &limited) {
-				return "", limited.refusal()
+	var limited *rateLimitError
+	if errors.As(err, &limited) {
+		if wait := limited.reset.Sub(g.clock().Now()); !limited.reset.IsZero() && wait >= 0 && wait <= rateLimitWaitBound {
+			if err := g.clock().Sleep(ctx, wait); err != nil {
+				return "", err
 			}
-			return "", err
+			visibility, err = g.readVisibility(ctx, slug)
 		}
 	}
+	source := VisibilityFromGitHub
+	if errors.As(err, &limited) {
+		visibility, err = g.lsRemoteVisibility(ctx, slug, limited)
+		source = VisibilityFromLsRemote
+	}
+	if err != nil {
+		return "", err
+	}
 	g.keepVisibility(slug, visibility)
-	g.reportVisibility(VisibilityFromGitHub)
+	g.reportVisibility(source)
 	return visibility, nil
 }
 
@@ -251,6 +257,141 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 	default:
 		return "", fmt.Errorf("gh api repos/%s answered no visibility GitHub reports", maskPath(slug))
 	}
+}
+
+// githubOrigin is the scheme and host of the read without REST: the repository's URL begins with
+// it, and git names it in the line that says GitHub asked for a credential (lsRemoteRefused).
+const githubOrigin = "https://github.com"
+
+// lsRemoteVisibility is the visibility read Guard.Visibility makes when GitHub refused gh's read
+// for a spent rate limit that the guard does not wait for: `git ls-remote` of the repository's
+// HTTPS URL, made with no credential (Guard.lsRemote). That read goes through git's smart HTTP
+// protocol, which GitHub does not count against the REST rate limit, so it answers while the
+// installation's REST budget is spent: pushes refused for that limit have met `git ls-remote
+// origin` answering at the same moments. GitHub's GraphQL API would be no second way, since its
+// budget is the installation's as well, and the same load spends it.
+//
+// A read that answers neither public nor private leaves the visibility unknown, and the call is
+// refused as it was before this read was made, naming the spent limit and its reset, with what
+// git said after them.
+func (g *Guard) lsRemoteVisibility(ctx context.Context, slug string, limited *rateLimitError) (Visibility, error) {
+	visibility, err := g.lsRemote(ctx, githubOrigin, slug)
+	if err != nil {
+		return "", fmt.Errorf("%w, and the read without REST could not answer: %w", limited, err)
+	}
+	return visibility, nil
+}
+
+// lsRemote is what `git ls-remote <origin>/<slug>.git HEAD` says of the repository's
+// visibility, read with no credential: public where git exits 0, listing the repository's HEAD
+// (an empty repository lists nothing and exits 0 all the same), private where the server asks for
+// a credential (lsRemoteRefused), and an error for anything else. origin is a parameter so that a
+// test can point the read at a server of its own; the guard's one caller passes githubOrigin.
+//
+// Private is the one answer that cannot be told from a repository that is not there: GitHub asks
+// an anonymous reader for a credential in both cases, and git prints the same line for both
+// (measured with git 2.47.3). Both are answered private. The write's own request, which carries
+// the role's credential, then decides: a write to a repository that is not there fails on its own.
+//
+// Private skips the rule pass, which is the direction that can leak, so no credential may reach
+// this read. GitHub refuses a bad credential for a public repository too, and git reports that
+// refusal with the same line as an anonymous read of a private one: measured with git 2.47.3, an
+// http.extraHeader carrying an invented token made ls-remote of a public repository print
+// lsRemoteRefused's line. A pod hands its git a credential helper in GIT_CONFIG_KEY_<n>
+// variables, and a repository's own configuration can hold an extra header or a URL rewrite that
+// carries a token. So this git reads no configuration but the command line's:
+//
+//   - of the caller's environment it keeps no GIT_ variable but three that carry no credential
+//     (lsRemoteInherits), so no GIT_CONFIG_COUNT block, GIT_CONFIG_PARAMETERS or GIT_DIR reaches
+//     it;
+//   - GIT_CONFIG_NOSYSTEM and GIT_CONFIG_GLOBAL=/dev/null take away the system file and the
+//     user's;
+//   - it runs in /, a directory only root can write, so it finds no repository and no
+//     repository's configuration;
+//   - `-c credential.helper=` empties the helper list again on the command line, after anything
+//     a wrapper of the pod's git puts in front of it;
+//   - the guard's prompt settings (promptsNothing) leave git's askpass and its terminal prompt
+//     nothing to answer with, and the URL holds no user and no token.
+//
+// A ~/.netrc is left alone. git's libcurl sends a netrc credential only to a server that has
+// asked for one, and GitHub asks only for a repository that is not public: such a repository
+// reads private, or public where the netrc credential can read it, which only scans more
+// (measured with git 2.47.3: a ~/.netrc holding an invented token left ls-remote of a public
+// repository answering).
+//
+// LC_ALL=C keeps git's messages in the English lsRemoteRefused reads. The read has at most
+// rateLimitWaitBound of the caller's bound, which is as long as the guard would have waited for a
+// near reset, so a server that never answers costs the call no more than that wait.
+func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, error) {
+	ctx, cancel := context.WithTimeout(ctx, rateLimitWaitBound)
+	defer cancel()
+	status, printed, err := g.run(ctx, child{
+		argv:    gitArgv("-c", "credential.helper=", "ls-remote", origin+"/"+slug+".git", "HEAD"),
+		dir:     "/",
+		inherit: lsRemoteInherits,
+		env:     []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "LC_ALL=C"},
+	})
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case status == 0:
+		return Public, nil
+	case lsRemoteRefused(origin, status, printed):
+		return Private, nil
+	default:
+		masked := maskPath(slug)
+		return "", fmt.Errorf("git ls-remote of %s exited %d: %s", masked, status, strings.ReplaceAll(strings.TrimSpace(printed), slug, masked))
+	}
+}
+
+// lsRemoteInherits is which names of the caller's environment the read with no credential keeps
+// (Guard.lsRemote): every name that is not git's own, and of git's own the three that say which
+// transports git may use and which certificates it trusts, none of which can carry a credential.
+// The proxy variables libcurl reads (HTTPS_PROXY and the rest) are not git's and stay, so a pod
+// that reaches GitHub through a proxy reaches it the same way here.
+func lsRemoteInherits(name string) bool {
+	switch name {
+	case "GIT_ALLOW_PROTOCOL", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH":
+		return true
+	}
+	return !strings.HasPrefix(name, "GIT_")
+}
+
+// lsRemoteRefused is whether git's exit status and output are its account of a server that asked
+// for a credential the read had none to give. Asked on a 401, git runs its askpass, which answers
+// nothing (promptsNothing), finds its terminal prompt off, and exits 128 with
+//
+//	fatal: could not read Username for 'https://github.com': terminal prompts disabled
+//
+// That line, whole and naming origin, is the one read as private: it is what git prints when
+// GitHub answers an anonymous read of a private repository (measured with git 2.47.3, and with
+// the git CI runs in TestLsRemoteReadsWhatARealGitPrints). Three near misses are read as no
+// answer, because each can come from a public repository:
+//
+//   - "Authentication failed for …": git sent a credential and the server refused it, which
+//     GitHub does for a public repository too. lsRemote sends none, so this means a credential
+//     reached the request some way it did not close, and the answer says nothing of the
+//     repository.
+//   - "The requested URL returned error: 403": a 403 asks for no credential. It is a refusal a
+//     credential would not change, and a proxy that refuses the request answers one whatever the
+//     repository's visibility.
+//   - The line naming another origin, or the line inside a "remote: " line: the first is git
+//     asking for some other server's credential, such as a proxy's, and the second is text the
+//     server wrote.
+//
+// Anything else leaves the visibility unknown, and the call is refused as it was before.
+func lsRemoteRefused(origin string, status int, printed string) bool {
+	if status != 128 {
+		return false
+	}
+	want := "fatal: could not read Username for '" + origin + "': terminal prompts disabled"
+	for line := range strings.Lines(printed) {
+		if strings.TrimRight(line, "\r\n") == want {
+			return true
+		}
+	}
+	return false
 }
 
 type rateLimitError struct{ reset time.Time }
