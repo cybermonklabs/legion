@@ -2686,12 +2686,17 @@ type AbandonedSession struct {
 func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 
 // sessionGone tells the daemon to stop the Envoy session this claim recorded, now that no process
-// stands behind it. Each decision that ends a process tells it once, and only once the process has
-// ended: a death a probe judged (died), before the take-back; a suspension over a process a report
-// found gone (suspendOverADeadProcess), once its take-back has landed; and a suspension whose stop
-// ended a live process (suspendNow, letProcessGoFor, exit), once the runtime's stop has returned,
-// since both runtimes answer only when the process has ended. A decision that has already sent it
-// tells letProcessGoFor so (stopSent), so its one process end is one stop.
+// stands behind it. Three decisions tell it, each only once the process has ended: a death a probe
+// judged (died), before the take-back; a suspension over a process a report found gone
+// (suspendOverADeadProcess), once its take-back has landed; and a suspension whose stop ended a
+// live process (stopForSuspension, for suspendNow, letProcessGoFor and exit), once the runtime's
+// stop has returned, since both runtimes answer only when the process has ended. A decision that
+// has already sent it tells letProcessGoFor so (stopSent), so the death or the found-gone process
+// it ends is one stop. Nothing else tells it: a failure (fail), a worker's exit (release, retire)
+// and the registration deadline's retirement end a process and send no stop. A death whose
+// relaunch the wake pacing parked keeps the dead process's locator until the wake's turn
+// (parkWake), so a suspension that arrives meanwhile stops that process again and sends a second
+// stop, which finds no registration and is harmless.
 //
 // The daemon dates the stop when it is told, and the listener keeps a registration written after
 // that moment. Told after the process has ended, the stop comes after the process's last

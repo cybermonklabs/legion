@@ -278,16 +278,32 @@ func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 }
 
 // suspendNow stops the claim's process for request and keeps its session, recording what the
-// stop ended as a suspension by request's source (endSuspended, letGo). This is the stop of
-// every suspension of a live process — the suspend row's, and every held one's (suspendHeld) —
-// and it sends the clean stop of the process's Envoy session once the runtime's stop has
-// returned, and none for a stop the runtime refused (sessionGone).
+// stop ended as a suspension by request's source (endSuspended, letGo). It is the stop of the
+// suspend row and of suspendHeld, not of every suspension of a live process: a held suspension
+// that a replacement or a wake's turn ends stops through endHeld and letProcessGoFor, and a
+// root's exit stops through exit. It sends the clean stop of the process's Envoy session once the
+// runtime's stop has returned, and none for a stop the runtime refused (stopForSuspension).
 func (m *Machine) suspendNow(ctx context.Context, request RequestSuspend) error {
-	if err := m.endProcess(ctx, endSuspended(request.By)); err != nil {
+	if err := m.stopForSuspension(ctx, request.By, stopOwed); err != nil {
 		return fmt.Errorf("suspend %s: %w", m.claim.Token, err)
 	}
-	m.sessionGone()
 	return m.suspendedFor(ctx, request)
+}
+
+// stopForSuspension asks the runtime to stop the claim's process for a suspension by by, and
+// once that stop has returned sends the clean stop of the process's Envoy session (sessionGone),
+// unless cleanStopSent says this decision sent it already. A stop the runtime refused sends
+// nothing, since the process may still run, and its error is returned for the caller to decide
+// on: suspendNow refuses the suspension, while letProcessGoFor and exit suspend the claim all the
+// same. It is the one place a suspension's stop and its clean stop are written together.
+func (m *Machine) stopForSuspension(ctx context.Context, by SuspendSource, cleanStopSent bool) error {
+	if err := m.endProcess(ctx, endSuspended(by)); err != nil {
+		return err
+	}
+	if !cleanStopSent {
+		m.sessionGone()
+	}
+	return nil
 }
 
 // suspendedFor moves the claim to suspended once request's stop has ended its process, and says
@@ -360,8 +376,11 @@ func (m *Machine) dropHeld() {
 // anything. The stop and the suspension are the two steps every claim with nothing left to run
 // takes, written once (letProcessGoFor). cleanStopSent is whether the decision that reached here
 // has already sent the clean stop of the process's Envoy session (sessionGone): a death a probe
-// judged has (died, stopSent), and a replacement of a live process (replaceNow) and a paced
-// launch's turn (wakeNow) have not (stopOwed).
+// judged has (died, stopSent), and a replacement (replaceNow) and a paced launch's turn (wakeNow)
+// have not (stopOwed). replaceNow is reached by displaced too — a process found gone, or another
+// runtime's process — and stopOwed is right there as well: a displaced process may still run
+// under another runtime, so its clean stop waits for the runtime's stop, and a stop the runtime
+// refused sends nothing.
 //
 // What the stop ends is recorded as a suspension by the held request's source (endSuspended):
 // the suspension is what ends the process, rather than the relaunch it replaces. A death or a
@@ -373,9 +392,9 @@ func (m *Machine) endHeld(ctx context.Context, cleanStopSent bool) error {
 	return m.letProcessGoFor(ctx, request, cleanStopSent)
 }
 
-// stopSent and stopOwed are endHeld's and letProcessGoFor's cleanStopSent: the decision letting
-// the process go has already sent the clean stop of its Envoy session, or it still owes that stop
-// once the runtime's stop has returned (sessionGone).
+// stopSent and stopOwed are the cleanStopSent of endHeld, letProcessGoFor and stopForSuspension:
+// the decision letting the process go has already sent the clean stop of its Envoy session, or it
+// still owes that stop once the runtime's stop has returned (sessionGone).
 const (
 	stopSent = true
 	stopOwed = false
@@ -447,17 +466,13 @@ func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSu
 // stallBackstopRecord).
 //
 // Between the two it sends the clean stop of the process's Envoy session once the runtime's stop
-// has returned, unless cleanStopSent says this decision sent it already (sessionGone).
+// has returned, unless cleanStopSent says this decision sent it already (stopForSuspension).
 func (m *Machine) letProcessGoFor(ctx context.Context, request RequestSuspend, cleanStopSent bool) error {
 	incarnation := m.claim.Locator.Incarnation
-	err := m.endProcess(ctx, endSuspended(request.By))
-	if err != nil {
+	if err := m.stopForSuspension(ctx, request.By, cleanStopSent); err != nil {
 		m.stopUnconfirmed = true
 		m.log.Error("supervise: could not stop the process with the runtime; suspending its claim anyway",
 			"incarnation", incarnation, "error", err)
-	}
-	if err == nil && !cleanStopSent {
-		m.sessionGone()
 	}
 	return m.suspendedFor(ctx, request)
 }
