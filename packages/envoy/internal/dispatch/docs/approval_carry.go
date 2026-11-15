@@ -122,14 +122,20 @@ func (s *Service) carryApproval(ctx context.Context, tx pgx.Tx, artifactID strin
 	if err != nil || newest == nil || newest.State != "approved" {
 		return nil, err
 	}
-	review, err := s.answerCarriedReview(ctx, tx, artifactID, version.Number, rendered)
+	return s.carryStandingApproval(ctx, tx, artifactID, version.Number, rendered, *newest)
+}
+
+// carryStandingApproval is carryApproval once newest, the document's newest review, is known to be
+// an approval: the answer carry first, and the restore when the answer carries nothing.
+func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifactID string, number int, rendered renderedTree, newest model.ArtifactReview) ([]model.Event, error) {
+	review, err := s.answerCarriedReview(ctx, tx, artifactID, number, rendered)
 	if err != nil {
 		return nil, err
 	}
 	if review == nil {
-		return restoreApproval(ctx, tx, s.events, artifactID, version.Number, rendered.markdown, rendered.tree, *newest, s.serverURL)
+		return restoreApproval(ctx, tx, s.events, artifactID, number, rendered.markdown, rendered.tree, newest, s.serverURL)
 	}
-	return writeCarriedReview(ctx, tx, s.events, artifactID, version.Number, *review, fmt.Sprintf(carryReason, review.Version), s.serverURL)
+	return writeCarriedReview(ctx, tx, s.events, artifactID, number, *review, fmt.Sprintf(carryReason, review.Version), s.serverURL)
 }
 
 // CarryRestoredApproval is the restore alone, for the route that writes a document version itself
@@ -148,8 +154,114 @@ func CarryRestoredApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 	return restoreApproval(ctx, tx, broker, artifactID, number, markdown, tree, *newest, serverURL)
 }
 
+// FollowClosedIssueVersions does, at the reopen of issueKey, what writeVersionTx skips for a
+// version that a settlement of a closed issue's document writes (versionWrite.closedIssue): for
+// each document of the issue, in id order, it moves the open approval request that names the
+// document to the document's latest version (MoveApprovalAsk), and then carries an approval to
+// that version (carryStandingApproval), as the version's own write does on an open issue. Before
+// a closed issue's document settled, the first settlement after the reopen wrote that text and
+// did both. Without them a restored request names the version from before the close, so a
+// person's approval from it reviews that version and reads stale, and an approved text that a
+// settlement wrote back while the issue was closed stays without its approval. The issue's reopen
+// calls it once it has restored the asks the close withdrew, so each restored request is open
+// again, and once their events are in, so a request's move and the carry's answer follow its
+// ask.opened.
+//
+// A document whose stored updates are ahead of its latest version (contentChangedSinceVersion) is
+// left to the settlement it owes. The reopen's own ask-state write is such an update, and that
+// settlement's version holds the text the reopen leaves, which its own write compares with the
+// version the request names and with the approved text. A reopen that writes back the text the
+// person was asked about then keeps the request with the person, which a move to the closed
+// issue's version, whose blocks show the close's resolved states, would not.
+//
+// The one case this leaves stale is a document whose stored updates past its latest version render
+// that version again. Its settlement writes no version, since a settlement versions only a
+// rendering that differs from the latest version, so nothing moves the request or runs the carry,
+// and the request keeps naming the version from before the close. Such updates come only after
+// the closed issue's settlement that wrote the latest version, which stored every update it read.
+// So they are a browser's edit and its exact undo, both stored after that settlement and inside
+// the close margin, the one window in which the append gate stores a closed issue's browser
+// update, so that settlement must also have run inside the margin; or the seed of a rebuild, from
+// that version, of a document whose history cannot load. The close's sweep and the ask repair
+// write nothing into a document whose blocks already show the states they write.
+//
+// Nothing is moved or carried twice. MoveApprovalAsk moves nothing when the request already names
+// the latest version, as it does after every version written while the request was open, whose
+// own write moved it. The carry runs only while the newest review approves a version before the
+// latest one: a version whose own write carried an approval, or that this carried at an earlier
+// reopen, is already approved. A version whose own write ran the carry and carried nothing is
+// refused again, since the rule reads its stored text and the rows as they stand. So the ask
+// repair's restore after a reopen, and a later reopen, change nothing more.
+//
+// The move names SettlementActor, the actor of a settlement that cannot name the editor. The edit
+// that moves the request is that settlement's version, not the reopener's act, and the reopen does
+// not know the version's editor: a version's authors do not choose the mover. Such an ask.edited
+// wakes nobody itself (events.Broker.Notify), the reopen's own ask.opened in the reopener's name
+// does, and it reaches the request's followers as every ask.edited does that is not quiet. The
+// carry's events are in the approver's name, as every carry's are.
+//
+// It runs in the transaction ctx joined (errUnjoined otherwise), and its caller holds the issue's
+// row, as a settlement of each of the issue's documents holds it, so no settlement writes a
+// version between the read of the latest one and the move. It takes no copy lock and writes no
+// pending row: the move and the carry write asks rows, reviews and events alone. It returns the
+// events it appended, in that order, for the caller to publish once it commits, after its own.
+func (s *Service) FollowClosedIssueVersions(ctx context.Context, issueKey string) ([]model.Event, error) {
+	tx, joined := txFromContext(ctx)
+	if !joined {
+		return nil, errUnjoined
+	}
+	rows, err := tx.Query(ctx, issueDocumentIDs, issueKey)
+	if err != nil {
+		return nil, fmt.Errorf("list the issue's documents: %w", err)
+	}
+	documents, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("list the issue's documents: %w", err)
+	}
+	var appended []model.Event
+	for _, artifactID := range documents {
+		followed, err := s.followLatestVersion(ctx, tx, artifactID)
+		if err != nil {
+			return nil, fmt.Errorf("follow the latest version of document %s: %w", artifactID, err)
+		}
+		appended = append(appended, followed...)
+	}
+	return appended, nil
+}
+
+// followLatestVersion is FollowClosedIssueVersions for one document, artifactID.
+func (s *Service) followLatestVersion(ctx context.Context, tx pgx.Tx, artifactID string) ([]model.Event, error) {
+	latest, err := latestVersion(ctx, tx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	owed, err := contentChangedSinceVersion(ctx, tx, artifactID, latest.docUpdateVersion)
+	if err != nil || owed {
+		return nil, err
+	}
+	moved, err := MoveApprovalAsk(ctx, tx, s.events, artifactID, latest.Version, latest.markdown, SettlementActor, s.serverURL)
+	if err != nil {
+		return nil, err
+	}
+	newest, err := NewestReview(ctx, tx, artifactID)
+	if err != nil || newest == nil || newest.State != "approved" || newest.Version >= latest.Number {
+		return moved, err
+	}
+	// The answer carry reads the version's blocks from its tree, as the version's own write reads
+	// the live tree it rendered: the stored text's read-back is that tree.
+	tree, err := pmdoc.ParseRendering(latest.markdown)
+	if err != nil {
+		return moved, skipUnreadableVersion(artifactID, latest.Number, err)
+	}
+	carried, err := s.carryStandingApproval(ctx, tx, artifactID, latest.Number, renderedTree{tree: tree, markdown: latest.markdown}, *newest)
+	if err != nil {
+		return nil, err
+	}
+	return append(moved, carried...), nil
+}
+
 // restoreApproval carries newest, the document's newest review and an approval, to version number
-// of artifactID when that version's markdown is the text newest approved (restoresApprovedText)
+// of artifactID when that version's markdown is the text newest approved (restoresVersionText)
 // and every decision block it holds is as its row has it, and appends nothing otherwise. The text
 // alone is not the approved document: a block the approved version showed open, answered by
 // someone since, comes back in the same bytes while its row holds a decision nobody approved,
@@ -157,7 +269,7 @@ func CarryRestoredApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 // reads N's (askNodes, rowBackedBlocks), from tree, the version's own, or from markdown parsed
 // when tree is nil; that read is made only once the bytes match.
 func restoreApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, newest model.ArtifactReview, serverURL string) ([]model.Event, error) {
-	restored, err := restoresApprovedText(ctx, tx, artifactID, newest.Version, markdown)
+	restored, err := restoresVersionText(ctx, tx, artifactID, newest.Version, markdown)
 	if err != nil || !restored {
 		return nil, err
 	}
@@ -247,13 +359,12 @@ func (s *Service) answerCarriedReview(ctx context.Context, tx pgx.Tx, artifactID
 	return s.carriedReview(ctx, tx, artifactID, number, rendered.markdown, blocks)
 }
 
-// restoresApprovedText reports whether markdown, the text a new version of artifactID is written
-// with, is byte for byte the stored text of its version earlier: the version the document's newest
-// review approved (restoreApproval), or the version an open approval request names, the text the
-// person was asked about (MoveApprovalAsk). A version that stores no markdown, a file's, holds no
-// text and compares false. Only a stored text of the same size is read, so the write of any other
-// text reads no document; octet_length reads a stored text's size without decompressing it.
-func restoresApprovedText(ctx context.Context, tx pgx.Tx, artifactID string, earlier int, markdown string) (bool, error) {
+// restoresVersionText reports whether markdown, the text a new version of artifactID is written
+// with, is byte for byte the stored text of its version earlier. A version that stores no
+// markdown, a file's, holds no text and compares false. Only a stored text of the same size is
+// read, so the write of any other text reads no document; octet_length reads a stored text's size
+// without decompressing it.
+func restoresVersionText(ctx context.Context, tx pgx.Tx, artifactID string, earlier int, markdown string) (bool, error) {
 	var stored string
 	err := tx.QueryRow(ctx, `
 		select markdown from artifact_versions

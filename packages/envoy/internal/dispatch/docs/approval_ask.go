@@ -63,7 +63,7 @@ func OpenApprovalAskForDocuments(ctx context.Context, tx pgx.Tx, artifactIDs []s
 // requested_version is already below the version it named, is quiet
 // (model.AskEditEventPayload.Quiet, the rule RewriteApprovalAsk also applies). When the document
 // waits on the human (its requested_version is the version the request names) and markdown is
-// byte for byte the stored text of that version (restoresApprovedText), its requested_version
+// byte for byte the stored text of that version (restoresVersionText), its requested_version
 // moves with its version and the move is quiet: the text the person was asked about did not
 // change, so the request keeps its turn as if it had not moved and wakes nobody.
 func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, serverURL string) ([]model.Event, error) {
@@ -84,7 +84,7 @@ func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 	}
 	keepsTurn := false
 	if moved.RequestedVersion == moved.Version {
-		if keepsTurn, err = restoresApprovedText(ctx, tx, artifactID, moved.Version, markdown); err != nil {
+		if keepsTurn, err = restoresVersionText(ctx, tx, artifactID, moved.Version, markdown); err != nil {
 			return nil, err
 		}
 	}

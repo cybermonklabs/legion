@@ -146,9 +146,18 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, issueKey 
 // after the ask-state write and before the first event, and no copy lock comes after them
 // (docs.lockProjectCopies).
 //
+// Once those events are in, it does for each document of the issue what a settlement while the
+// issue was closed skipped (docs.Service.FollowClosedIssueVersions): it moves the open approval
+// request that names the document to the document's latest version, and carries an approval to
+// that version, as the version's own write does on an open issue. A document with stored updates
+// its latest version does not hold, this reopen's ask-state write among them, is left to the
+// settlement that saves them, whose version's own write does both. The move and the carry come
+// after the ask.opened events, so a restored request reopens before it moves or a carry answers
+// it, and they take no copy lock and write no pending row.
+//
 // ctx is joined to tx (Docs.Join); the caller holds the issue's row and has locked every event
 // owner it appends to before calling, and commits through the ledger and publishes the returned
-// events. It answers the restored asks, oldest id first.
+// events. It answers the restored asks, oldest id first, as the reopen restored them.
 func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey string, actor model.Actor) ([]model.Ask, []model.Event, error) {
 	withdrawn, err := s.readIssueAsks(ctx, tx, `
 		select `+askRowColumns+`
@@ -207,7 +216,11 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 		}
 		appended = append(appended, event)
 	}
-	return restored, appended, nil
+	followed, err := s.deps.Docs.FollowClosedIssueVersions(ctx, issueKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	return restored, append(appended, followed...), nil
 }
 
 // sweepClosedIssueAsks is the close's last pass over its issue's documents, run once the close
