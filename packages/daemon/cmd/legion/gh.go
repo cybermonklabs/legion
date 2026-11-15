@@ -41,8 +41,9 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
 // refuses, and one whose checks could not be made to run, are refused here, exit 2, with the
 // guard's own message, and gh never runs. Two calls pass unchecked: `legion gh auth
-// git-credential`, which answers above before any of this, and the visibility reads of the
-// shared check and of the guard itself (ghVisibilityRead).
+// git-credential`, which answers above before any of this, and the guard's own visibility reads
+// (ghVisibilityRead). The shared check's visibility read this command answers itself
+// (sharedCheckVisibilityRead), before it reads anything else of the call.
 //
 // The git gh runs itself (a clone, a fetch of a fork's parent, `pr checkout`) authenticates
 // through the credential helper gh names after its own executable, GH_PATH: runGh sets it to the
@@ -76,6 +77,12 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		commandPath = "auth git-credential"
 		return runGitCredential(ctx, args[2:], stdout, stderr)
 	}
+	if read, ok := sharedCheckVisibilityRead(args, env); ok {
+		// The shared check's own read, which this command answers by the guard's rule. Like the
+		// guard's own reads, it is not logged as a wrapped call.
+		logCall = false
+		return answerVisibilityRead(ctx, read, stdout, stderr)
+	}
 	gh := env["LEGION_GH_PATH"]
 	wrapper, err := ghWrapperPath()
 	if err != nil {
@@ -106,11 +113,11 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// Three calls reach gh unchecked, each for a reason of its own. `legion gh auth
 	// git-credential` is one: it returned above, before any of this, because it is git's
 	// credential protocol on standard input and standard output and reading that input would
-	// break it. The visibility reads of the shared check and of the guard (ghVisibilityRead) are
-	// another; the shared check's own read this command answers itself, by the guard's rule
-	// (answerVisibilityRead). The exact `gh api rate_limit` GET reads no repository content and
-	// GitHub excludes it from the limit, so it is the third; a method or endpoint other than that
-	// exact argv stays guarded.
+	// break it. The guard's own visibility reads (ghVisibilityRead) are another; the shared
+	// check's read returned above too, answered by this command itself (answerVisibilityRead).
+	// The exact `gh api rate_limit` GET reads no repository content and GitHub excludes it from
+	// the limit, so it is the third; a method or endpoint other than that exact argv stays
+	// guarded.
 	//
 	// A *leakguard.Refusal and a *leakguard.SetupFailure each refuse the call: a check that did
 	// not run has cleared nothing. Both exit 2, this command's status for a refusal made before
@@ -128,9 +135,6 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// This process is the guard's own request. Its enclosing user call records the source of
 		// that request, so logging it again would count one wrapped call twice.
 		logCall = false
-		if slices.Equal(args, leakguard.VisibilityReadArgs(env[leakguard.VisibilityReadVar])) {
-			return answerVisibilityRead(ctx, read, stdout, stderr)
-		}
 		// Its token is the repository's, which ghVisibilityRead matched to the read's exact argv.
 		// The GraphQL read names that repository only in variables, read above as an owner alone.
 		target.owner, target.repo = strings.ToLower(read.Owner()), read.Name()
@@ -279,32 +283,24 @@ func ghRateLimitRead(argv []string) bool {
 	return slices.Equal(argv, []string{"api", "rate_limit"})
 }
 
-// ghVisibilityRead is the repository argv reads, and whether argv is one of the three visibility
-// reads internal to the shared public leak check and the guard. A pod's gh is `legion gh`, so
-// checking any of them would recurse: the callback makes another call through this command, and
-// the other two are the guard's own visibility lookup.
+// ghVisibilityRead is the repository argv reads, and whether argv is one of the guard's own two
+// visibility reads. A pod's gh is `legion gh`, so checking either would recurse: they are the
+// guard's own visibility lookup. The REST read is:
 //
-// The callback is exactly:
+//	gh api --hostname github.com repos/<slug> --include --jq .visibility
 //
-//	gh api --hostname github.com repos/<slug> --jq .visibility
-//
-// and this command answers it itself (answerVisibilityRead). The guard's REST read adds
-// `--include` to receive rate-limit headers, and its GraphQL read, made when the REST read is
-// refused for a spent rate limit, is leakguard.VisibilityGraphQLArgs. Each must name exactly the
-// repository the variable names, and that name must parse as a repository GitHub could serve, so
-// a variable someone else set lets through one read of one repository and nothing else.
+// and the GraphQL read, made when the REST read is refused for a rate limit, is
+// leakguard.VisibilityGraphQLArgs. Each must name exactly the repository the variable names, and
+// that name must parse as a repository GitHub could serve, so a variable someone else set lets
+// through one read of one repository and nothing else. The shared check's own read, the same
+// argv without `--include`, is not one of them (sharedCheckVisibilityRead).
 func ghVisibilityRead(argv []string, env map[string]string) (ghrepo.Repository, bool) {
+	repo, ok := visibilityReadRepository(env)
+	if !ok {
+		return ghrepo.Repository{}, false
+	}
 	slug := env[leakguard.VisibilityReadVar]
-	if slug == "" {
-		return ghrepo.Repository{}, false
-	}
-	repo, err := ghrepo.Parse(leakguard.VisibilityReadVar, slug)
-	if err != nil {
-		return ghrepo.Repository{}, false
-	}
-	if slices.Equal(argv, leakguard.VisibilityReadArgs(slug)) ||
-		slices.Equal(argv, leakguard.VisibilityReadWithHeadersArgs(slug)) ||
-		slices.Equal(argv, leakguard.VisibilityGraphQLArgs(slug)) {
+	if slices.Equal(argv, leakguard.VisibilityReadWithHeadersArgs(slug)) || slices.Equal(argv, leakguard.VisibilityGraphQLArgs(slug)) {
 		return repo, true
 	}
 	return ghrepo.Repository{}, false

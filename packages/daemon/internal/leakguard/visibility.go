@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"golang.org/x/sys/unix"
 )
 
@@ -59,20 +61,10 @@ const (
 // for the role's pod life. Private and internal answers are read each time, so a repository made
 // public cannot skip a rule pass.
 //
-// A read GitHub refuses for a spent rate limit is read once more after the reset, where that is
-// at most rateLimitWaitBound away and the caller's bound leaves room for the wait and the reads
-// after it (waitFits). The limit is the installation's core REST limit or GitHub's secondary
-// rate limit (limitRefusal). A secondary limit with no reset, as GitHub usually reports it, is
-// read next with git's ls-remote and no credential (Guard.lsRemote), which answers public and
-// nothing else: GraphQL requests count against the same secondary limit. Any other limit still
-// spent after the wait, and one whose reset is further away, already past, not given, or not one
-// the caller's bound has room to wait for, is read a second way that costs no REST request:
-// GitHub's GraphQL API (Guard.graphQLVisibility), with the repository's own token, whose budget
-// is separate from the core one. Its answer of public, private or internal is taken as gh's is.
-// Only where GraphQL refuses the read for a rate limit of its own is the visibility read with
-// ls-remote. Every other failure of either read, an unauthenticated refusal of ls-remote
-// included, refuses the call, naming the spent limit and its reset and what the read said. The
-// answer is kept as gh's is.
+// The REST read comes first (readVisibility). A read GitHub refuses for a rate limit, read with
+// internal/githubrest's model (rateLimitFrom), is read once more after the wait GitHub asks for,
+// where waitFits allows that wait. A limit still spent after it, and one not waited for, is read
+// another way (readWithoutREST). The answer is kept as gh's is.
 //
 // The header-bearing read is:
 //
@@ -82,18 +74,34 @@ const (
 // gh`, which calls this guard, so this read must not be mistaken for the shared check's callback
 // or it would recurse. The callback's exact argv is separate (VisibilityReadArgs): it has no
 // `--include`, while this reader needs the headers to detect a near rate limit. `legion gh`
-// answers the callback with this method too, so the shared check's own read follows the same
-// rule. The caller reaches this through Guard.scanThrough, which lets no slug the exemption would
-// refuse get this far.
+// answers the callback by the same rule (FreshVisibility). The caller reaches this through
+// Guard.scanThrough, which lets no slug the exemption would refuse get this far.
 func (g *Guard) Visibility(ctx context.Context, slug string) (Visibility, error) {
-	if visibility, ok := g.keptVisibility(slug); ok {
-		g.reportVisibility(VisibilityFromCache)
-		return visibility, nil
+	return g.visibility(ctx, slug, true)
+}
+
+// FreshVisibility is Visibility without the kept answers: it neither trusts a kept public nor
+// keeps one. `legion gh` answers the shared public leak check's own read with it. The check keeps
+// answers of its own, for a time it sets, and asks some of them fresh: it reads every other remote
+// of a push fresh, and counts the commits of one it reads public as held, which it does not scan.
+// A kept public, which never expires, would answer that read for a repository made private since,
+// and its commits would reach a public target unscanned. For that read a false public is a leak.
+func (g *Guard) FreshVisibility(ctx context.Context, slug string) (Visibility, error) {
+	return g.visibility(ctx, slug, false)
+}
+
+// visibility is Visibility, trusting and keeping public answers where kept says so.
+func (g *Guard) visibility(ctx context.Context, slug string, kept bool) (Visibility, error) {
+	if kept {
+		if visibility, ok := g.keptVisibility(slug); ok {
+			g.reportVisibility(VisibilityFromCache)
+			return visibility, nil
+		}
 	}
 	visibility, err := g.readVisibility(ctx, slug)
 	var limited *rateLimitError
 	if errors.As(err, &limited) {
-		if wait := limited.reset.Sub(g.clock().Now()); !limited.reset.IsZero() && wait >= 0 && wait <= rateLimitWaitBound && waitFits(ctx, wait) {
+		if wait, ok := g.waitFits(ctx, limited); ok {
 			if err := g.clock().Sleep(ctx, wait); err != nil {
 				return "", err
 			}
@@ -101,43 +109,73 @@ func (g *Guard) Visibility(ctx context.Context, slug string) (Visibility, error)
 		}
 	}
 	source := VisibilityFromGitHub
-	switch {
-	case errors.As(err, &limited) && limited.secondary && limited.reset.IsZero():
-		source = VisibilityFromLsRemote
-		if visibility, err = g.lsRemote(ctx, githubOrigin, slug); err != nil {
-			err = fmt.Errorf("%w, and git ls-remote could not answer: %w", limited, err)
-		}
-	case errors.As(err, &limited):
-		source = VisibilityFromGraphQL
-		visibility, err = g.graphQLVisibility(ctx, slug)
-		var graphQLLimited *rateLimitError
-		switch {
-		case errors.As(err, &graphQLLimited):
-			source = VisibilityFromLsRemote
-			if visibility, err = g.lsRemote(ctx, githubOrigin, slug); err != nil {
-				err = fmt.Errorf("%w; GraphQL's rate limit is spent too, and git ls-remote could not answer: %w", limited, err)
-			}
-		case err != nil:
-			err = fmt.Errorf("%w, and GraphQL could not answer: %w", limited, err)
-		}
+	if errors.As(err, &limited) {
+		visibility, source, err = g.readWithoutREST(ctx, slug, limited)
 	}
 	if err != nil {
 		return "", err
 	}
-	g.keepVisibility(slug, visibility)
+	if kept {
+		g.keepVisibility(slug, visibility)
+	}
 	g.reportVisibility(source)
 	return visibility, nil
 }
 
-// waitFits is whether a wait of wait, and after it lsRemoteBound for the reads that can follow it,
-// end before ctx's deadline, where ctx has one. lsRemoteBound is the longest of those reads' caps:
-// the retried REST read, and where that is refused again, GraphQL and ls-remote. A wait that
-// leaves them no room only makes the call refuse later, so the guard reads the visibility another
-// way at once instead. `legion gh` answers the shared check's own read inside 15 s, which no wait
-// fits.
-func waitFits(ctx context.Context, wait time.Duration) bool {
-	deadline, ok := ctx.Deadline()
-	return !ok || wait+lsRemoteBound < time.Until(deadline)
+// waitFits is how long the guard waits before it makes the REST read again after GitHub refused
+// it for limited, and whether it waits at all. The wait is what GitHub asks for: until the reset
+// of a spent core limit, or a secondary limit's Retry-After, never its X-RateLimit-Reset, which is
+// the core limit's. It is made only where it is no more than rateLimitWaitBound, and where it and
+// then lsRemoteBound, the longest cap of the reads that can follow it (the retried REST read,
+// GraphQL and ls-remote), end before ctx's deadline, where ctx has one: a wait that leaves them
+// no room only makes the call refuse later. A core limit with no reset, or one already past, and
+// a secondary limit with no Retry-After are not waited for.
+func (g *Guard) waitFits(ctx context.Context, limited *rateLimitError) (time.Duration, bool) {
+	var wait time.Duration
+	switch {
+	case limited.secondary && limited.retry > 0:
+		wait = limited.retry
+	case !limited.secondary && !limited.reset.IsZero():
+		wait = limited.reset.Sub(g.clock().Now())
+	default:
+		return 0, false
+	}
+	if wait < 0 || wait > rateLimitWaitBound {
+		return 0, false
+	}
+	if deadline, ok := ctx.Deadline(); ok && wait+lsRemoteBound >= time.Until(deadline) {
+		return 0, false
+	}
+	return wait, true
+}
+
+// readWithoutREST reads slug's visibility after GitHub refused the REST read for limited, where
+// the guard did not wait or was refused again after its wait. A core limit is read from GitHub's
+// GraphQL API (Guard.graphQLVisibility) with the repository's own token, whose budget is separate
+// from the core one, and its public, private or internal is taken as gh's is. A secondary limit is
+// not, because GraphQL requests count against the same secondary limit. For a secondary limit, and
+// where GraphQL refuses the read for a rate limit of its own, the visibility is read with git's
+// ls-remote and no credential (Guard.lsRemote), which answers public and nothing else. Every other
+// failure, an unauthenticated refusal of ls-remote included, refuses the call, naming the spent
+// limit and what the read said.
+func (g *Guard) readWithoutREST(ctx context.Context, slug string, limited *rateLimitError) (Visibility, VisibilitySource, error) {
+	also := ""
+	if !limited.secondary {
+		visibility, err := g.graphQLVisibility(ctx, slug)
+		var graphQLLimited *rateLimitError
+		switch {
+		case err == nil:
+			return visibility, VisibilityFromGraphQL, nil
+		case !errors.As(err, &graphQLLimited):
+			return "", "", fmt.Errorf("%w, and GraphQL could not answer: %w", limited, err)
+		}
+		also = "; GraphQL's rate limit is spent too"
+	}
+	visibility, err := g.lsRemote(ctx, githubOrigin, slug)
+	if err != nil {
+		return "", "", fmt.Errorf("%w%s, and git ls-remote could not answer: %w", limited, also, err)
+	}
+	return visibility, VisibilityFromLsRemote, nil
 }
 
 func (g *Guard) clock() Clock {
@@ -352,16 +390,17 @@ func (g *Guard) graphQLVisibility(ctx context.Context, slug string) (Visibility,
 // printed its standard output (the status line, the headers and the body, as --include prints
 // them) and stderr its standard error, which only a refusal quotes.
 //
-// A wrong private or internal answer is the one that can leak, since it skips the rule pass for a
-// public repository, so every way this read can be wrong refuses the call instead:
+// A wrong answer can leak either way: a wrong private or internal skips the rule pass for a public
+// repository, and a wrong public widens what the shared check's fresh read of another remote
+// counts as held (FreshVisibility). So every way this read can be wrong refuses the call instead:
 //
 //   - the body must be one whole JSON document, with nothing after it but space;
 //   - errors refuse, unless every one of them is a rate limit (type RATE_LIMITED, which GitHub can
-//     send with the status 200, or a message naming the secondary rate limit), which is a
-//     *rateLimitError that sends the read on to ls-remote; any other error refuses, beside
-//     rate-limit errors or beside data, NOT_FOUND among them (which is also what an installation
-//     that cannot see a private repository is told);
-//   - an error response that limitRefusal reads as a rate limit is a *rateLimitError too;
+//     send with the status 200, or a message naming the secondary limit,
+//     githubrest.NamesSecondaryLimit), which is a *rateLimitError that sends the read on to
+//     ls-remote; any other error refuses, beside rate-limit errors or beside data, NOT_FOUND among
+//     them (which is also what an installation that cannot see a private repository is told);
+//   - an error response that githubrest.Limit reads as a rate limit is a *rateLimitError too;
 //   - gh must have printed a status line, as --include always does, and it must say 200; and gh
 //     must have exited 0;
 //   - the repository must be there, and its nameWithOwner must be slug, case aside: GitHub can
@@ -397,23 +436,22 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 	}
 	httpStatus, headers := responseHeaders(printed)
 	if len(answer.Errors) > 0 {
-		limitedOnly, secondary := true, true
+		limitedOnly := true
 		errs := make([]string, len(answer.Errors))
 		for i, e := range answer.Errors {
-			limitedOnly = limitedOnly && (e.Type == "RATE_LIMITED" || namesSecondaryLimit(e.Message))
-			secondary = secondary && e.Type != "RATE_LIMITED"
+			limitedOnly = limitedOnly && (e.Type == "RATE_LIMITED" || githubrest.NamesSecondaryLimit(e.Message))
 			errs[i] = strings.ReplaceAll(e.Message, slug, maskPath(slug))
 			if e.Type != "" {
 				errs[i] = e.Type + ": " + errs[i]
 			}
 		}
 		if limitedOnly {
-			return "", limitResettingAt(headers, secondary)
+			return "", &rateLimitError{}
 		}
 		return "", fmt.Errorf("GraphQL answered %s with %s", maskPath(slug), strings.Join(errs, "; "))
 	}
-	if limited, secondary := limitRefusal(httpStatus, headers, answer.Message); limited {
-		return "", limitResettingAt(headers, secondary)
+	if limited, _ := githubrest.Limit(gitHubResponse(httpStatus, headers), []byte(answer.Message)); limited {
+		return "", &rateLimitError{}
 	}
 	switch {
 	case httpStatus == 0:
@@ -442,31 +480,15 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 	}
 }
 
-// limitRefusal is whether GitHub's error response refused the request for a rate limit, read
-// from that response alone, and whether the limit is GitHub's secondary one. The status 403 or
-// 429 with a Retry-After, or with a message naming the secondary rate limit
-// (namesSecondaryLimit), is the secondary limit, which usually gives no reset; that evidence
-// wins where the response also says no requests are left. The same statuses with no requests
-// left and neither of those are the primary limit, whose X-RateLimit-Reset says when it resets.
-// Text elsewhere in gh's output says nothing. The REST read (rateLimitFrom) and the GraphQL read
-// (graphQLAnswer) both read their responses with it.
-func limitRefusal(status int, headers map[string]string, message string) (limited, secondary bool) {
-	if status != 403 && status != 429 {
-		return false, false
+// gitHubResponse is the status line and the headers gh's --include output printed, as an answer
+// internal/githubrest reads (githubrest.Limit): the model the daemon's own REST client reads
+// GitHub's rate limits with, which the guard's two reads through gh share.
+func gitHubResponse(status int, headers map[string]string) *http.Response {
+	response := &http.Response{StatusCode: status, Header: make(http.Header, len(headers))}
+	for name, value := range headers {
+		response.Header.Set(name, value)
 	}
-	if headers["retry-after"] != "" || namesSecondaryLimit(message) {
-		return true, true
-	}
-	if headers["x-ratelimit-remaining"] == "0" {
-		return true, false
-	}
-	return false, false
-}
-
-// namesSecondaryLimit is whether message is GitHub's for its secondary rate limit.
-func namesSecondaryLimit(message string) bool {
-	lower := strings.ToLower(message)
-	return strings.Contains(lower, "secondary rate limit") || strings.Contains(lower, "secondary rate-limit")
+	return response
 }
 
 // githubOrigin is the scheme and host of the read without a credential: the repository's URL
@@ -486,14 +508,15 @@ const githubOrigin = "https://github.com"
 // answers one of a public repository with a 401 while it limits unusual traffic (GitHub's
 // changelog of 2026-10-19, "Some Git over HTTPS may temporarily require authentication"); and git
 // prints the same `could not read Username` line for each, as it does for a server's ERR packet
-// that carries that line. Public is also the safe answer: it runs the rule pass. So this read can
-// never skip one, and every exit but 0 refuses the call.
+// that carries that line. So every exit but 0 refuses the call, and this read never answers
+// private or internal, which would skip the rule pass for a public repository.
 //
-// For the same reason no credential reaching this read can skip a rule pass: a credential that
-// reads a private repository answers 0, and the push is scanned; a bad one is refused with a 401,
-// even for a public repository. What follows spares a refusal the read did not need, or a scan of
-// a private repository's push. This git reads no configuration but the command line's, and no
-// credential file:
+// Its public must be true too. For the guard's own read a wrong public only scans a private
+// repository's push, but for the shared check's fresh read of another remote (FreshVisibility) a
+// wrong public is the leak: the check counts that remote's commits as held and does not scan them.
+// An anonymous read exits 0 only for a repository anyone can read, so no credential may reach this
+// read: a credential that reads a private repository would exit 0 for it. This git reads no
+// configuration but the command line's, and no credential file:
 //
 //   - of the caller's environment it keeps no GIT_ variable but three that carry no credential,
 //     and none of the names libcurl finds a netrc file by (lsRemoteInherits), so no
@@ -534,10 +557,11 @@ const githubOrigin = "https://github.com"
 //   - the guard's prompt settings (promptsNothing) leave git's askpass and its terminal prompt
 //     nothing to answer with, and the URL holds no user and no token.
 //
-// The resets name the settings measured to make an anonymous read of a public repository fail,
-// one key at a time. A setting they do not name, or a wrapper that rewrites the URL with its own
-// url.<base>.insteadOf and sets a header for the rewritten URL, can still make this read refuse
-// the call; none can make it answer anything but public.
+// The resets name the settings measured to put a credential or a header on this read, one key at
+// a time. A setting they do not name can still make it refuse the call. A wrapper that rewrites
+// the URL with its own url.<base>.insteadOf points the read at another repository, whose public
+// would answer for this one; the image's git adds no such setting, and the rewrite needs a git
+// wrapper of a host's own, the case `legion git --after` runs.
 //
 // LC_ALL=C keeps git's messages in the refusal in English.
 //
@@ -595,48 +619,54 @@ func lsRemoteInherits(name string) bool {
 	return !strings.HasPrefix(name, "GIT_")
 }
 
-// rateLimitError is a read GitHub refused for a spent rate limit: when the limit resets, zero
-// where GitHub gave no reset, and whether it is GitHub's secondary limit (limitRefusal).
+// rateLimitError is a read GitHub refused for a rate limit: whether it is GitHub's secondary
+// limit (githubrest.BudgetSecondary); for the core limit, when it resets (X-RateLimit-Reset),
+// zero where GitHub gave no reset; and for the secondary limit, the wait its Retry-After asks
+// for, zero where it gave none. A secondary limit's X-RateLimit-Reset is the core limit's, and
+// says nothing of it.
 type rateLimitError struct {
-	reset     time.Time
 	secondary bool
+	reset     time.Time
+	retry     time.Duration
 }
 
 func (e *rateLimitError) Error() string {
-	limit := "the installation's rate limit is spent"
-	if e.secondary {
-		limit = "GitHub's secondary rate limit refused the read"
+	switch {
+	case e.secondary && e.retry > 0:
+		return fmt.Sprintf("GitHub's secondary rate limit refused the read and asks for a wait of %d s", wholeSeconds(e.retry))
+	case e.secondary:
+		return "GitHub's secondary rate limit refused the read"
+	case e.reset.IsZero():
+		return "the installation's rate limit is spent and GitHub gave no reset time"
+	default:
+		return fmt.Sprintf("the installation's rate limit is spent until %s UTC", e.reset.UTC().Format(time.RFC3339))
 	}
-	if e.reset.IsZero() {
-		return limit + " and GitHub gave no reset time"
-	}
-	return fmt.Sprintf("%s until %s UTC", limit, e.reset.UTC().Format(time.RFC3339))
 }
 
-// rateLimitFrom is the spent limit the REST read's --include output reports, and nil where it
-// reports none, read from the error response alone (limitRefusal): its status line, its headers
-// and its body's message. gh prints an error response's body as it came, before its own line.
+// rateLimitFrom is the rate limit the REST read's --include output, printed, reports, and nil
+// where it reports none, read from the error response alone with internal/githubrest's model
+// (githubrest.Limit): its status line, its headers and its body's message, never gh's own line.
+// A 429 is a limit, and so is a 403 with X-RateLimit-Remaining: 0, a Retry-After, or a message
+// naming the secondary limit or GitHub's abuse detection mechanism. The limit is the secondary
+// one where the response has a Retry-After or leaves requests, and the core limit otherwise.
 func rateLimitFrom(printed string) *rateLimitError {
 	status, headers := responseHeaders(printed)
 	var body struct {
 		Message string `json:"message"`
 	}
 	_ = json.NewDecoder(strings.NewReader(visibilityBody(printed))).Decode(&body)
-	limited, secondary := limitRefusal(status, headers, body.Message)
-	if !limited {
+	limited, budget := githubrest.Limit(gitHubResponse(status, headers), []byte(body.Message))
+	switch {
+	case !limited:
 		return nil
+	case budget == githubrest.BudgetSecondary:
+		seconds, _ := strconv.Atoi(headers["retry-after"])
+		return &rateLimitError{secondary: true, retry: time.Duration(max(seconds, 0)) * time.Second}
 	}
-	return limitResettingAt(headers, secondary)
-}
-
-// limitResettingAt is a spent limit, secondary or not, that resets when headers'
-// X-RateLimit-Reset says, and one with no reset where they give none.
-func limitResettingAt(headers map[string]string, secondary bool) *rateLimitError {
-	reset, _ := strconv.ParseInt(headers["x-ratelimit-reset"], 10, 64)
-	if reset == 0 {
-		return &rateLimitError{secondary: secondary}
+	if reset, _ := strconv.ParseInt(headers["x-ratelimit-reset"], 10, 64); reset != 0 {
+		return &rateLimitError{reset: time.Unix(reset, 0).UTC()}
 	}
-	return &rateLimitError{reset: time.Unix(reset, 0).UTC(), secondary: secondary}
+	return &rateLimitError{}
 }
 
 func responseHeaders(printed string) (int, map[string]string) {

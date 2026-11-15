@@ -27,10 +27,12 @@ func included(status string, remaining int, body string, extra ...string) string
 // Of what GraphQL says, PUBLIC, PRIVATE and INTERNAL for the repository asked about alone are an
 // answer (graphQLAnswer). A rate limit of GraphQL's own, read from the error response alone, is a
 // *rateLimitError, which sends the read on to ls-remote: errors every one of which is RATE_LIMITED
-// or names the secondary rate limit, and the status 403 or 429 with no points left, a Retry-After
-// or a message naming the secondary limit. Everything else refuses, saying what GraphQL said. A
-// wrong private or internal would skip the rule pass for a public repository, so none of these is
-// read as an answer.
+// or names the secondary rate limit, and what internal/githubrest reads as a limit (a 429; a 403
+// with no points left, a Retry-After, or a message naming the secondary limit or GitHub's abuse
+// detection mechanism). Everything else refuses, saying what GraphQL said. A wrong private or
+// internal would skip the rule pass for a public repository, and a wrong public would widen what
+// the shared check's fresh read of another remote counts as held, so none of these is read as an
+// answer.
 func TestVisibilityTakesOnlyAnAnswerGraphQLGives(t *testing.T) {
 	const (
 		ok         = "HTTP/2.0 200 OK"
@@ -38,6 +40,7 @@ func TestVisibilityTakesOnlyAnAnswerGraphQLGives(t *testing.T) {
 		rateLimit  = `{"type":"RATE_LIMITED","message":"API rate limit already exceeded for installation ID 1."}`
 		forbidden  = `{"type":"FORBIDDEN","message":"Resource not accessible by integration"}`
 		secondary  = "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."
+		abuse      = "You have triggered an abuse detection mechanism. Please wait a few minutes before you try again."
 		ghRefusal  = "gh: Resource not accessible by integration"
 		ghNotFound = "gh: Could not resolve to a Repository with the name '" + theRepo + "'."
 	)
@@ -49,12 +52,11 @@ func TestVisibilityTakesOnlyAnAnswerGraphQLGives(t *testing.T) {
 		exit    int
 		printed string
 		stderr  string
-		// want is the answer; limit, where want is empty, is a refusal for a rate limit, and
-		// secondary whether for the secondary one; fails is what any other refusal says.
-		want      Visibility
-		limit     bool
-		secondary bool
-		fails     string
+		// want is the answer; limit, where want is empty, is a refusal for a rate limit; fails is
+		// what any other refusal says.
+		want  Visibility
+		limit bool
+		fails string
 	}{
 		{name: "PUBLIC", printed: included(ok, 12221, answerBody(theRepo, "PUBLIC")), want: Public},
 		{name: "PRIVATE", printed: included(ok, 12221, answerBody(theRepo, "PRIVATE")), want: Private},
@@ -64,29 +66,17 @@ func TestVisibilityTakesOnlyAnAnswerGraphQLGives(t *testing.T) {
 
 		{name: "errors all RATE_LIMITED", exit: 1, printed: included(ok, 0, `{"errors":[`+rateLimit+`]}`), limit: true},
 		{name: "the status 403 with no points left", exit: 1, printed: included("HTTP/2.0 403 Forbidden", 0, `{"message":"API rate limit exceeded"}`), limit: true},
-		{
-			name:    "the status 403 with no points left and a Retry-After",
-			exit:    1,
-			printed: included("HTTP/2.0 403 Forbidden", 0, `{"message":"invented"}`, "Retry-After: 60"),
-			limit:   true, secondary: true,
-		},
-		{
-			name:    "the status 429 with no points left, naming the secondary limit",
-			exit:    1,
-			printed: included("HTTP/2.0 429 Too Many Requests", 0, `{"message":"`+secondary+`"}`),
-			limit:   true, secondary: true,
-		},
+		{name: "the status 403 with no points left and a Retry-After", exit: 1, printed: included("HTTP/2.0 403 Forbidden", 0, `{"message":"invented"}`, "Retry-After: 60"), limit: true},
+		{name: "the status 429 with no points left, naming the secondary limit", exit: 1, printed: included("HTTP/2.0 429 Too Many Requests", 0, `{"message":"`+secondary+`"}`), limit: true},
 		{name: "the status 429 with no points left", exit: 1, printed: included("HTTP/2.0 429 Too Many Requests", 0, `{"message":"API rate limit exceeded"}`), limit: true},
-		{name: "the status 403 with a Retry-After", exit: 1, printed: included("HTTP/2.0 403 Forbidden", 12221, `{"message":"invented"}`, "Retry-After: 60"), limit: true, secondary: true},
-		{name: "the status 429 with a Retry-After", exit: 1, printed: included("HTTP/2.0 429 Too Many Requests", 12221, `{"message":"invented"}`, "Retry-After: 60"), limit: true, secondary: true},
-		{name: "the status 403 naming the secondary limit", exit: 1, printed: included("HTTP/2.0 403 Forbidden", 12221, `{"message":"`+secondary+`"}`), limit: true, secondary: true},
-		{
-			name:    "the secondary limit inside errors, in a 403 with a Retry-After",
-			exit:    1,
-			printed: included("HTTP/2.0 403 Forbidden", 12221, `{"errors":[{"message":"`+secondary+`"}]}`, "Retry-After: 60"),
-			limit:   true, secondary: true,
-		},
-		{name: "the secondary limit inside errors, in a 200", exit: 1, printed: included(ok, 12221, `{"errors":[{"message":"`+secondary+`"}]}`), limit: true, secondary: true},
+		{name: "the status 429 with points left and nothing else", exit: 1, printed: included("HTTP/2.0 429 Too Many Requests", 12221, `{"message":"invented"}`), limit: true},
+		{name: "the status 403 with a Retry-After", exit: 1, printed: included("HTTP/2.0 403 Forbidden", 12221, `{"message":"invented"}`, "Retry-After: 60"), limit: true},
+		{name: "the status 429 with a Retry-After", exit: 1, printed: included("HTTP/2.0 429 Too Many Requests", 12221, `{"message":"invented"}`, "Retry-After: 60"), limit: true},
+		{name: "the status 403 naming the secondary limit", exit: 1, printed: included("HTTP/2.0 403 Forbidden", 12221, `{"message":"`+secondary+`"}`), limit: true},
+		{name: "the status 403 naming the abuse detection mechanism", exit: 1, printed: included("HTTP/2.0 403 Forbidden", 12221, `{"message":"`+abuse+`"}`), limit: true},
+		{name: "the secondary limit inside errors, in a 403 with a Retry-After", exit: 1, printed: included("HTTP/2.0 403 Forbidden", 12221, `{"errors":[{"message":"`+secondary+`"}]}`, "Retry-After: 60"), limit: true},
+		{name: "the secondary limit inside errors, in a 200", exit: 1, printed: included(ok, 12221, `{"errors":[{"message":"`+secondary+`"}]}`), limit: true},
+		{name: "the abuse detection mechanism inside errors, in a 200", exit: 1, printed: included(ok, 12221, `{"errors":[{"message":"`+abuse+`"}]}`), limit: true},
 		{name: "RATE_LIMITED and the secondary limit", exit: 1, printed: included(ok, 0, `{"errors":[`+rateLimit+`,{"message":"`+secondary+`"}]}`), limit: true},
 
 		{name: "public in lower case", printed: included(ok, 12221, answerBody(theRepo, "public")), fails: `"public" as the visibility`},
@@ -135,9 +125,6 @@ func TestVisibilityTakesOnlyAnAnswerGraphQLGives(t *testing.T) {
 			case tc.limit:
 				if !errors.As(err, &limited) || visibility != "" {
 					t.Fatalf("graphQLAnswer = %q, %v; want a refusal for a rate limit", visibility, err)
-				}
-				if limited.secondary != tc.secondary {
-					t.Errorf("the limit is secondary: %v, want %v", limited.secondary, tc.secondary)
 				}
 			default:
 				if err == nil || visibility != "" || errors.As(err, &limited) {
@@ -279,42 +266,63 @@ func TestVisibilityKeepsGhsOutputPlain(t *testing.T) {
 	}
 }
 
-// GitHub's secondary rate limit with no reset, as GitHub usually reports it, sends the read
-// straight to ls-remote, which can answer only public: GraphQL requests count against the same
-// secondary limit, so none is made. A secondary limit with a reset past the wait bound goes to
-// GraphQL as any other spent limit does.
+// GitHub's secondary rate limit is read with ls-remote, which can answer only public, and never
+// with GraphQL, whose requests count against the same secondary limit. Its wait is its
+// Retry-After alone: GitHub sends X-RateLimit-Remaining and X-RateLimit-Reset for the core limit
+// on every response, a secondary limit's among them, and that reset says nothing of it. A
+// Retry-After the wait bound and the caller's bound have room for is waited, and the REST read made
+// again; any other secondary limit goes to ls-remote at once.
 func TestVisibilityReadsASecondaryRateLimitWithLsRemote(t *testing.T) {
 	now := time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)
-	secondary := func(reset string) func(reads string) string {
+	far := fmt.Sprintf("'X-Ratelimit-Remaining: 21' 'X-Ratelimit-Reset: %d' ", now.Add(30*time.Minute).Unix())
+	secondary := func(headers string) func(reads string) string {
 		return func(reads string) string {
 			return "echo read >> " + shQuote(reads) + "\n" +
-				"printf '%s\\r\\n' 'HTTP/2.0 403 Forbidden' 'Content-Type: application/json; charset=utf-8' 'Retry-After: 60' " + reset + "''\n" +
+				"printf '%s\\r\\n' 'HTTP/2.0 403 Forbidden' 'Content-Type: application/json; charset=utf-8' " + headers + "''\n" +
 				`printf '%s\n' '{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}'` + "\n" +
 				printsToStderr("gh: You have exceeded a secondary rate limit. (HTTP 403)") + "exit 1\n"
 		}
 	}
-	far := fmt.Sprintf("'X-Ratelimit-Reset: %d' ", now.Add(30*time.Minute).Unix())
 	for _, tc := range []struct {
 		name string
 		rest func(reads string) string
 		git  string
-		// want is the answer, empty where the call is refused; queries how many GraphQL reads ran,
-		// gitRuns how many times git did, and fails what a refusal says.
+		// room is whether the caller's bound has room for a wait (boundPastAWait) or not (bound).
+		room bool
+		// want is the answer, empty where the call is refused; reads how many REST reads ran, waits
+		// the waits made, gitRuns how many times git ran, and fails what a refusal says.
 		want    Visibility
-		queries int
+		reads   int
+		waits   []time.Duration
 		gitRuns int
 		fails   string
 	}{
-		{name: "no reset, and ls-remote answers", rest: secondary(""), git: answersTheRefs, want: Public, gitRuns: 1},
 		{
-			name: "no requests left beside a Retry-After and the secondary message, no reset, and ls-remote answers",
-			rest: secondary("'X-Ratelimit-Remaining: 0' "), git: answersTheRefs, want: Public, gitRuns: 1,
+			name: "requests left and a reset, as GitHub sends its secondary limit, and no Retry-After",
+			rest: secondary(far), git: answersTheRefs, room: true, want: Public, reads: 1, gitRuns: 1,
 		},
 		{
-			name: "no reset, and ls-remote fails", rest: secondary(""), git: cannotConnect, gitRuns: 1,
-			fails: "GitHub's secondary rate limit refused the read and GitHub gave no reset time, and git ls-remote could not answer",
+			name: "a Retry-After beside a reset 30 minutes away is waited alone",
+			rest: secondary("'Retry-After: 60' " + far), git: answersTheRefs, room: true,
+			want: Public, reads: 2, waits: []time.Duration{time.Minute}, gitRuns: 1,
 		},
-		{name: "a reset past the wait bound", rest: secondary(far), git: answersTheRefs, want: Private, queries: 1},
+		{
+			name: "no requests left beside a Retry-After is the secondary limit",
+			rest: secondary("'X-Ratelimit-Remaining: 0' 'Retry-After: 60' "), git: answersTheRefs, room: true,
+			want: Public, reads: 2, waits: []time.Duration{time.Minute}, gitRuns: 1,
+		},
+		{
+			name: "a Retry-After the caller's bound has no room for",
+			rest: secondary("'Retry-After: 60' "), git: answersTheRefs, want: Public, reads: 1, gitRuns: 1,
+		},
+		{
+			name: "a Retry-After past the wait bound",
+			rest: secondary("'Retry-After: 600' "), git: answersTheRefs, room: true, want: Public, reads: 1, gitRuns: 1,
+		},
+		{
+			name: "no Retry-After, and ls-remote fails", rest: secondary(""), git: cannotConnect, room: true, reads: 1, gitRuns: 1,
+			fails: "GitHub's secondary rate limit refused the read, and git ls-remote could not answer",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bin, records := t.TempDir(), t.TempDir()
@@ -322,24 +330,28 @@ func TestVisibilityReadsASecondaryRateLimitWithLsRemote(t *testing.T) {
 			writeProgram(t, bin, "gh", ghStandIn(tc.rest(reads), graphQLAnswers(graphql, "PRIVATE")))
 			writeProgram(t, bin, "git", recordsItsCall(record)+tc.git)
 			clock := &visibilityTestClock{now: now}
+			ctx := bound(t)
+			if tc.room {
+				ctx = boundPastAWait(t)
+			}
 			visibility, err := New(Options{
 				Clock: clock,
 				Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
-			}).Visibility(bound(t), theRepo)
+			}).Visibility(ctx, theRepo)
 			if tc.want != "" && (err != nil || visibility != tc.want) {
 				t.Errorf("read %q, %v; want %s", visibility, err, tc.want)
 			}
 			if tc.want == "" && (err == nil || !strings.Contains(err.Error(), tc.fails)) {
 				t.Errorf("read %q, %v; want the call refused saying %q", visibility, err, tc.fails)
 			}
-			if got := countLines(t, reads); got != 1 {
-				t.Errorf("gh's REST read ran %d times, want once", got)
+			if got := countLines(t, reads); got != tc.reads {
+				t.Errorf("gh's REST read ran %d times, want %d", got, tc.reads)
 			}
-			if len(clock.waits) != 0 {
-				t.Errorf("the waits are %v, want none", clock.waits)
+			if !slices.Equal(clock.waits, tc.waits) {
+				t.Errorf("the waits are %v, want %v", clock.waits, tc.waits)
 			}
-			if got := len(readCalls(t, graphql)); got != tc.queries {
-				t.Errorf("gh's GraphQL read ran %d times, want %d", got, tc.queries)
+			if got := len(readCalls(t, graphql)); got != 0 {
+				t.Errorf("gh's GraphQL read ran %d times, want none", got)
 			}
 			if got := len(readCalls(t, record)); got != tc.gitRuns {
 				t.Errorf("git ran %d times, want %d", got, tc.gitRuns)
@@ -349,8 +361,8 @@ func TestVisibilityReadsASecondaryRateLimitWithLsRemote(t *testing.T) {
 }
 
 // A wait for a near reset that the caller's bound would cut short is not made: the guard reads the
-// visibility through GraphQL at once. This is the case of the shared check's own read, which
-// `legion gh` answers inside the 20 s the check gives it.
+// visibility through GraphQL at once, as it does for a caller whose bound is shorter than the wait
+// and the reads after it.
 func TestVisibilityWaitsForNoResetPastTheCallersBound(t *testing.T) {
 	clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
 	reset := clock.Now().Add(time.Minute)
@@ -378,11 +390,13 @@ func TestVisibilityWaitsForNoResetPastTheCallersBound(t *testing.T) {
 	}
 }
 
-// rateLimitFrom reads the REST read's error response alone, by the rule GraphQL's is read by
-// (limitRefusal): the status 403 or 429 with no requests left is the installation's limit, with
-// its reset; the same statuses with a Retry-After, or a body naming the secondary rate limit, are
-// the secondary limit. The secondary limit's words anywhere else, a 404 naming it, and a 403 that
-// says neither are no limit.
+// rateLimitFrom reads the REST read's error response alone, with internal/githubrest's model: a
+// 429, and a 403 with no requests left, a Retry-After, or a message naming the secondary limit or
+// GitHub's abuse detection mechanism, are a limit. It is the secondary limit where the response
+// has a Retry-After or leaves requests, and its wait is the Retry-After alone, whatever
+// X-RateLimit-Reset says; otherwise it is the installation's core limit, with its reset. The
+// secondary limit's words in gh's own line, a 404 naming it, and a 403 that says none of these are
+// no limit.
 func TestRateLimitFromReadsTheErrorResponseAlone(t *testing.T) {
 	reset := time.Date(2026, 11, 14, 6, 0, 0, 0, time.UTC)
 	response := func(status string, headers []string, body, ghLine string) string {
@@ -390,32 +404,45 @@ func TestRateLimitFromReadsTheErrorResponseAlone(t *testing.T) {
 			"\r\n\r\n" + body + "\n" + ghLine + "\n"
 	}
 	spent := []string{"X-Ratelimit-Remaining: 0", fmt.Sprintf("X-Ratelimit-Reset: %d", reset.Unix())}
-	const secondary = `{"message":"You have exceeded a secondary rate limit."}`
+	left := []string{"X-Ratelimit-Remaining: 21", fmt.Sprintf("X-Ratelimit-Reset: %d", reset.Unix())}
+	const (
+		secondary = `{"message":"You have exceeded a secondary rate limit."}`
+		abuse     = `{"message":"You have triggered an abuse detection mechanism."}`
+	)
 	for _, tc := range []struct {
 		name      string
 		printed   string
 		limit     bool
 		secondary bool
 		reset     time.Time
+		retry     time.Duration
 	}{
 		{name: "403 with no requests left", printed: response("HTTP/2.0 403 Forbidden", spent, `{"message":"API rate limit exceeded"}`, "gh: API rate limit exceeded (HTTP 403)"), limit: true, reset: reset},
 		{name: "429 with no requests left", printed: response("HTTP/2.0 429 Too Many Requests", spent, `{"message":"API rate limit exceeded"}`, ""), limit: true, reset: reset},
-		{name: "403 with a Retry-After", printed: response("HTTP/2.0 403 Forbidden", []string{"Retry-After: 60"}, `{"message":"invented"}`, ""), limit: true, secondary: true},
-		{name: "429 with a Retry-After", printed: response("HTTP/2.0 429 Too Many Requests", []string{"Retry-After: 60"}, `{"message":"invented"}`, ""), limit: true, secondary: true},
+		{name: "403 with no requests left and the secondary message is the core limit", printed: response("HTTP/2.0 403 Forbidden", spent, secondary, ""), limit: true, reset: reset},
+		{name: "403 with a Retry-After", printed: response("HTTP/2.0 403 Forbidden", []string{"Retry-After: 60"}, `{"message":"invented"}`, ""), limit: true, secondary: true, retry: time.Minute},
+		{name: "429 with a Retry-After", printed: response("HTTP/2.0 429 Too Many Requests", []string{"Retry-After: 60"}, `{"message":"invented"}`, ""), limit: true, secondary: true, retry: time.Minute},
 		{name: "403 naming the secondary limit", printed: response("HTTP/2.0 403 Forbidden", nil, secondary, ""), limit: true, secondary: true},
+		{name: "403 naming the abuse detection mechanism", printed: response("HTTP/2.0 403 Forbidden", nil, abuse, ""), limit: true, secondary: true},
+		{name: "a 429 with nothing else", printed: response("HTTP/2.0 429 Too Many Requests", nil, `{"message":"invented"}`, ""), limit: true, secondary: true},
 		{
-			name:    "403 with no requests left, a Retry-After and the secondary message, and no reset",
-			printed: response("HTTP/2.0 403 Forbidden", []string{"X-Ratelimit-Remaining: 0", "Retry-After: 60"}, secondary, ""),
+			name:    "403 with requests left and a reset, naming the secondary limit, as GitHub sends it",
+			printed: response("HTTP/2.0 403 Forbidden", left, secondary, ""),
 			limit:   true, secondary: true,
 		},
-		{name: "403 with no requests left and the secondary message, with a reset", printed: response("HTTP/2.0 403 Forbidden", spent, secondary, ""), limit: true, secondary: true, reset: reset},
 		{
-			name:    "429 with no requests left and a Retry-After, with a reset",
+			name:    "403 with no requests left, a Retry-After and the secondary message",
+			printed: response("HTTP/2.0 403 Forbidden", []string{"X-Ratelimit-Remaining: 0", "Retry-After: 60"}, secondary, ""),
+			limit:   true, secondary: true, retry: time.Minute,
+		},
+		{
+			name:    "429 with no requests left, a reset and a Retry-After",
 			printed: response("HTTP/2.0 429 Too Many Requests", append([]string{"Retry-After: 60"}, spent...), `{"message":"invented"}`, ""),
-			limit:   true, secondary: true, reset: reset,
+			limit:   true, secondary: true, retry: time.Minute,
 		},
 		{name: "404 naming the secondary limit", printed: response("HTTP/2.0 404 Not Found", nil, secondary, "")},
 		{name: "the secondary limit's words in gh's line only", printed: response("HTTP/2.0 403 Forbidden", nil, `{"message":"invented"}`, "gh: You have exceeded a secondary rate limit. (HTTP 403)")},
+		{name: "a 403 with requests left and nothing else", printed: response("HTTP/2.0 403 Forbidden", left, `{"message":"Resource not accessible by integration"}`, "")},
 		{name: "an answer", printed: response("HTTP/2.0 200 OK", []string{"X-Ratelimit-Remaining: 4999"}, "public", "")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -423,8 +450,9 @@ func TestRateLimitFromReadsTheErrorResponseAlone(t *testing.T) {
 			if (limited != nil) != tc.limit {
 				t.Fatalf("rateLimitFrom = %v, want a limit: %v", limited, tc.limit)
 			}
-			if limited != nil && (limited.secondary != tc.secondary || !limited.reset.Equal(tc.reset)) {
-				t.Errorf("rateLimitFrom = secondary %v reset %s, want %v and %s", limited.secondary, limited.reset, tc.secondary, tc.reset)
+			if limited != nil && (limited.secondary != tc.secondary || !limited.reset.Equal(tc.reset) || limited.retry != tc.retry) {
+				t.Errorf("rateLimitFrom = secondary %v reset %s retry %s, want %v, %s and %s",
+					limited.secondary, limited.reset, limited.retry, tc.secondary, tc.reset, tc.retry)
 			}
 		})
 	}

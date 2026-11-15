@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -15,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
@@ -1322,11 +1326,11 @@ func graphQLOf(query string) []string {
 
 const inventedMutation = "mutation($owner: String!, $name: String!) { createIssue(input: {repositoryId: $owner, title: $name}) { issue { id } } }"
 
-// ghVisibilityRead lets through the shared check's visibility callback and the guard's own REST
-// and GraphQL visibility reads, each for exactly the repository PUBLIC_LEAK_CHECK_VISIBILITY_READ
-// names, and nothing else: not the GraphQL read of another repository, not another query, not a
-// mutation, not the read with a field added, not the read with no variable, and not a variable
-// naming no repository.
+// ghVisibilityRead lets through the guard's own REST and GraphQL visibility reads, and
+// sharedCheckVisibilityRead the shared check's visibility callback, each for exactly the
+// repository PUBLIC_LEAK_CHECK_VISIBILITY_READ names, and nothing else: neither takes the other's
+// read, and neither takes the GraphQL read of another repository, another query, a mutation, the
+// read with a field added, the read with no variable, or a variable naming no repository.
 func TestGhVisibilityReadLetsThroughOnlyTheExactReads(t *testing.T) {
 	const slug = "sjawhar/legion"
 	env := map[string]string{leakguard.VisibilityReadVar: slug}
@@ -1335,30 +1339,45 @@ func TestGhVisibilityReadLetsThroughOnlyTheExactReads(t *testing.T) {
 		name string
 		argv []string
 		env  map[string]string
-		want bool
+		// guards is whether ghVisibilityRead takes argv, checks whether sharedCheckVisibilityRead does.
+		guards, checks bool
 	}{
-		{"the shared check's callback", leakguard.VisibilityReadArgs(slug), env, true},
-		{"the guard's REST read", leakguard.VisibilityReadWithHeadersArgs(slug), env, true},
-		{"the guard's GraphQL read", graphql, env, true},
-		{"the GraphQL read of another repository", leakguard.VisibilityGraphQLArgs("sjawhar/other"), env, false},
-		{"another GraphQL query", graphQLOf("{viewer{login}}"), env, false},
-		{"a GraphQL mutation", graphQLOf(inventedMutation), env, false},
-		{"the GraphQL read with a field added", append(slices.Clone(graphql), "-f", "extra=1"), env, false},
-		{"the GraphQL read with no variable", graphql, map[string]string{}, false},
+		{"the shared check's callback", leakguard.VisibilityReadArgs(slug), env, false, true},
+		{"the guard's REST read", leakguard.VisibilityReadWithHeadersArgs(slug), env, true, false},
+		{"the guard's GraphQL read", graphql, env, true, false},
+		{"the callback with no variable", leakguard.VisibilityReadArgs(slug), map[string]string{}, false, false},
+		{"the callback of another repository", leakguard.VisibilityReadArgs("sjawhar/other"), env, false, false},
+		{
+			"the callback under a variable naming no repository",
+			leakguard.VisibilityReadArgs("sjawhar/legion/pulls"),
+			map[string]string{leakguard.VisibilityReadVar: "sjawhar/legion/pulls"},
+			false, false,
+		},
+		{"the GraphQL read of another repository", leakguard.VisibilityGraphQLArgs("sjawhar/other"), env, false, false},
+		{"another GraphQL query", graphQLOf("{viewer{login}}"), env, false, false},
+		{"a GraphQL mutation", graphQLOf(inventedMutation), env, false, false},
+		{"the GraphQL read with a field added", append(slices.Clone(graphql), "-f", "extra=1"), env, false, false},
+		{"the GraphQL read with no variable", graphql, map[string]string{}, false, false},
 		{
 			"the GraphQL read under a variable naming no repository",
 			leakguard.VisibilityGraphQLArgs("sjawhar/legion/pulls"),
 			map[string]string{leakguard.VisibilityReadVar: "sjawhar/legion/pulls"},
-			false,
+			false, false,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			repo, got := ghVisibilityRead(tc.argv, tc.env)
-			if got != tc.want {
-				t.Errorf("ghVisibilityRead(%q) = %v, want %v", tc.argv, got, tc.want)
-			}
-			if got && repo.String() != slug {
-				t.Errorf("ghVisibilityRead(%q) read the repository %q, want %s", tc.argv, repo, slug)
+			for _, read := range []struct {
+				name string
+				of   func([]string, map[string]string) (ghrepo.Repository, bool)
+				want bool
+			}{{"ghVisibilityRead", ghVisibilityRead, tc.guards}, {"sharedCheckVisibilityRead", sharedCheckVisibilityRead, tc.checks}} {
+				repo, got := read.of(tc.argv, tc.env)
+				if got != read.want {
+					t.Errorf("%s(%q) = %v, want %v", read.name, tc.argv, got, read.want)
+				}
+				if got && repo.String() != slug {
+					t.Errorf("%s(%q) read the repository %q, want %s", read.name, tc.argv, repo, slug)
+				}
 			}
 		})
 	}
@@ -1424,6 +1443,11 @@ func TestLegionGhRunsTheGuardsVisibilityReadsWithTheRepositorysToken(t *testing.
 // REST read, then, with the installation's REST limit spent, the GraphQL read, then a stand-in
 // git's ls-remote, which can answer only public. Neither stream carries the shared check's own
 // refusal, which only the check prints.
+//
+// The read is fresh: the check reads another remote of a push with it, and counts the commits of
+// one it reads public as held, which it does not scan, so a public the guard kept for a
+// repository made private since must not answer it. A kept public, which the guard's own
+// Visibility does answer with, is passed over for the read, and no answer is kept.
 func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -1451,10 +1475,57 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 	graphQLNotFound := graphQL(`{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a Repository"}]}`, 1)
 	lists := "printf '%s\\tHEAD\\n' " + strings.Repeat("1", 40) + "\nexit 0\n"
 	refused := "echo 'fatal: could not read Username for '\\''https://github.com'\\'': terminal prompts disabled' >&2\nexit 128\n"
+	// keptFiles is each file of the guard's kept visibility answers under state, with its content.
+	keptFiles := func(t *testing.T, state string) map[string]string {
+		t.Helper()
+		dir := filepath.Join(state, "legion-gh", "visibility")
+		entries, err := os.ReadDir(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			return map[string]string{}
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := make(map[string]string, len(entries))
+		for _, entry := range entries {
+			content, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			files[entry.Name()] = string(content)
+		}
+		return files
+	}
+	// keepPublic plants the guard's kept public answer for slug under state, as Guard.Visibility
+	// keeps one, and fails the test unless the guard's own Visibility then answers public from it
+	// without a read.
+	keepPublic := func(t *testing.T, state string) {
+		t.Helper()
+		dir := filepath.Join(state, "legion-gh", "visibility")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		entry := filepath.Join(dir, fmt.Sprintf("%x.json", sha256.Sum256([]byte(slug))))
+		if err := os.WriteFile(entry, []byte(`{"visibility":"public"}`+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		visibility, err := leakguard.New(leakguard.Options{
+			Env: []string{"XDG_STATE_HOME=" + state},
+			Visibility: func(context.Context, string) (leakguard.Visibility, error) {
+				return "", errors.New("the kept answer was not read")
+			},
+		}).Visibility(context.Background(), slug)
+		if err != nil || visibility != leakguard.Public {
+			t.Fatalf("the guard's own Visibility answered %q, %v from the kept entry; want the kept public", visibility, err)
+		}
+	}
 	for _, tc := range []struct {
 		name          string
 		rest, graphql string
 		git           string
+		// kept is whether the guard holds a kept public answer for the repository when the read
+		// is made.
+		kept bool
 		// want is what legion gh prints, empty where it answers nothing and exits 1; reads is
 		// the reads the stand-ins recorded, in order.
 		want  string
@@ -1462,6 +1533,11 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 	}{
 		{name: "REST answers public", rest: rest("public"), want: "public\n", reads: "rest\n"},
 		{name: "REST answers private", rest: rest("private"), want: "private\n", reads: "rest\n"},
+		{name: "a kept public, and REST answers private", kept: true, rest: rest("private"), want: "private\n", reads: "rest\n"},
+		{
+			name: "a kept public, and REST is limited and GraphQL answers private", kept: true,
+			rest: restSpent, graphql: answers("PRIVATE"), want: "private\n", reads: "rest\ngraphql\n",
+		},
 		{name: "REST is limited and GraphQL answers public", rest: restSpent, graphql: answers("PUBLIC"), want: "public\n", reads: "rest\ngraphql\n"},
 		{name: "REST is limited and GraphQL answers private", rest: restSpent, graphql: answers("PRIVATE"), want: "private\n", reads: "rest\ngraphql\n"},
 		{name: "REST is limited and GraphQL answers internal", rest: restSpent, graphql: answers("INTERNAL"), want: "internal\n", reads: "rest\ngraphql\n"},
@@ -1471,7 +1547,11 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 		{name: "REST fails another way", rest: restFails, graphql: answers("PRIVATE"), git: lists, reads: "rest\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			bin, record := t.TempDir(), filepath.Join(t.TempDir(), "reads")
+			bin, record, state := t.TempDir(), filepath.Join(t.TempDir(), "reads"), t.TempDir()
+			if tc.kept {
+				keepPublic(t, state)
+			}
+			kept := keptFiles(t, state)
 			stub := filepath.Join(bin, "real-gh")
 			script := "#!/bin/sh\nfor last; do :; done\n" +
 				"if [ \"$last\" = --help ]; then\n" +
@@ -1488,7 +1568,7 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 			code, stdout, stderr := legionGh(t, map[string]string{
 				"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 				"PATH": wrappers + ":" + bin + ":" + os.Getenv("PATH"), "GH_STANDIN_RECORD": record,
-				"XDG_STATE_HOME": t.TempDir(), leakguard.VisibilityReadVar: slug,
+				"XDG_STATE_HOME": state, leakguard.VisibilityReadVar: slug,
 			}, leakguard.VisibilityReadArgs(slug)...)
 			switch {
 			case tc.want != "" && (code != 0 || stdout != tc.want):
@@ -1498,6 +1578,9 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 			}
 			if got := readRecord(t, record); got != tc.reads {
 				t.Errorf("the stand-ins recorded the reads %q, want %q", got, tc.reads)
+			}
+			if got := keptFiles(t, state); !maps.Equal(got, kept) {
+				t.Errorf("the guard's kept answers are %q after the read, want %q: the read keeps none", got, kept)
 			}
 			for _, refusal := range []string{"cannot read the visibility", "nothing is pushed"} {
 				if strings.Contains(stdout+stderr, refusal) {

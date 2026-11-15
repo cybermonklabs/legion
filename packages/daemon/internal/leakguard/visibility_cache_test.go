@@ -213,12 +213,13 @@ func TestVisibilityReadsWithoutRESTWhenTheRetryIsStillLimited(t *testing.T) {
 	}
 }
 
-// A reset beyond the two-minute limit is not waited for, nor is one already past, nor a limit
-// GitHub gave no reset for, which is what its secondary rate limit usually gives. The guard reads
-// the visibility through GraphQL instead, once, and here GraphQL's own limit is spent too, so
-// through git's ls-remote, once (TestVisibilityWithoutRESTDecidesThePush). Where that read cannot
-// answer either, the call is refused at once and tells the role when the installation's limit
-// resets, or that GitHub gave no reset, instead of waiting through a call it cannot clear.
+// A core-limit reset beyond the two-minute limit is not waited for, nor is one already past, nor a
+// core limit GitHub gave no reset for. The guard reads the visibility through GraphQL instead,
+// once, and here GraphQL's own limit is spent too, so through git's ls-remote, once
+// (TestVisibilityWithoutRESTDecidesThePush). Where that read cannot answer either, the call is
+// refused at once and tells the role when the installation's limit resets, or that GitHub gave no
+// reset, instead of waiting through a call it cannot clear. A secondary limit never goes to
+// GraphQL (TestVisibilityReadsASecondaryRateLimitWithLsRemote).
 func TestVisibilityRefusesRateLimitBeyondTheWaitBound(t *testing.T) {
 	now := time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
