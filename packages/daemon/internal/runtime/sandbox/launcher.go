@@ -615,9 +615,9 @@ func (d *launchers) restoreReported(s *launcherSession, report shimwire.Launcher
 // notice bounds count a restarted roles container apart by, and one whose episode is below the 1
 // the trimmer counts from (LauncherVolumeReport.Validate) — is logged with the reason and
 // dropped, as the launcher drops a bundle slice it cannot validate (internal/launcher's
-// bundleRestore.receive). The connection is not closed on it: closing costs a redial a second
-// for every role of the pod (ServeLauncher's `default: return`) over a frame the daemon could
-// not have counted anyway.
+// bundleRestore.receive). The connection is not closed on it: closing costs a redial a second of
+// the one role's connection that carries the pod's reports (ServeLauncher's `default: return`)
+// over a frame the daemon could not have counted anyway.
 //
 // It runs on the launcher's own frame loop rather than in a goroutine of its own, as
 // restoreReported does and under the same bounded context: two reports of one launcher then

@@ -15,10 +15,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// volumeOpenFlags is every open the trimmer makes of the volume. O_NONBLOCK so that no open of
-// the trimmer's can wait on what it meets — a FIFO where a cache root belongs answers at once
-// here and blocks for ever without it. O_NOFOLLOW, and deliberately no O_DIRECTORY, so that a
-// name that is a symbolic link is refused: on this kernel the two flags together are what makes
+// volumeOpenFlags is every open the trimmer makes of a name on the volume, the os.Root each
+// handle's lstats and listing are read through aside (rootOverDescriptor). O_NONBLOCK so that no
+// open of the trimmer's can wait on what it meets — a FIFO where a cache root belongs answers at
+// once here and blocks for ever without it. O_NOFOLLOW, and deliberately no O_DIRECTORY, so that
+// a name that is a symbolic link is refused: on this kernel the two flags together are what makes
 // a link followed rather than refused, and the fstat below is what makes the open a directory's
 // (volumedir.go, where both are measured).
 const volumeOpenFlags = syscall.O_RDONLY | syscall.O_NOFOLLOW | syscall.O_NONBLOCK | syscall.O_CLOEXEC

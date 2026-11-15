@@ -6,12 +6,13 @@ import "github.com/sjawhar/legion/daemon/internal/leakguard"
 // of every path below it: the pod's own generic ephemeral volume, mounted whole at this path in
 // the roles container (internal/runtime/sandbox's TreeRoot). The trimmer carries it as a constant
 // of its own, as it carries every path below, because the launcher's process is told none of
-// them: a roles container's own environment is the pod's uid and nothing else, and TMPDIR,
-// GOCACHE, XDG_CACHE_HOME and BUN_INSTALL_CACHE_DIR reach a role only in the start environment
-// the daemon renders for each generation (roleEnvironment, internal/runtime/sandbox/manifest.go),
-// which this process never holds. Reading them out of a generation's environment instead would
-// make what the trimmer may delete depend on which role started last, and a pod whose roles have
-// not started yet is exactly the pod whose caches are already full from the generation before.
+// them: a roles container's own environment is the image's own and the variables the kubelet
+// resolves, the pod's uid among them, and TMPDIR, GOCACHE, XDG_CACHE_HOME and
+// BUN_INSTALL_CACHE_DIR reach a role only in the start environment the daemon renders for each
+// generation (roleEnvironment, internal/runtime/sandbox/manifest.go), which this process never
+// holds. Reading them out of a generation's environment instead would make what the trimmer may
+// delete depend on which role started last, and a pod whose roles have not started yet is
+// exactly the pod whose caches are already full from the generation before.
 const VolumeRoot = "/legion"
 
 // EntryRule says what one entry of a reclaimable root is.
@@ -53,7 +54,7 @@ const (
 )
 
 // ReclaimableRoots are the four roots of the pod's volume whose entries the cache trimmer may
-// delete, in the order it sweeps them. Each root itself is never unlinked — a role's tool makes
+// delete, in the order it lists them. Each root itself is never unlinked — a role's tool makes
 // its cache directory once and locks it, and the trimmer removing the inode under a waiting
 // `flock` would hand two roles the same lock — and nothing outside these four is touched at all:
 // the workspaces, the shared clone, the feed, the state and data homes, the module cache and

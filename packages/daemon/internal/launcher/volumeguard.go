@@ -52,9 +52,9 @@ type usedPaths struct {
 // under is the reclaimable roots, which the trimmer passes, and a path anywhere else is dropped
 // as it is read: the guard is asked only whether a root is held (Holds) and whether an entry
 // under a root is used (Covers), and no path outside every root answers either. The set is read
-// again every second for the whole of a sweep, and what a process maps and holds open is the
-// role's to choose, so the pass keeps no more of it than those two questions can match: the
-// libraries every process maps and the files of a workspace are none of them.
+// again as often as once a second while a sweep deletes, and what a process maps and holds open
+// is the role's to choose, so the pass keeps no more of it than those two questions can match:
+// the libraries every process maps and the files of a workspace are none of them.
 //
 // The sweep's own processes are left out, and that is why own is an argument rather than read
 // here: listing a root and removing an entry both hold a handle under a root, and a rule that
@@ -199,13 +199,13 @@ func (p *procProcess) descriptors() {
 //
 // The file is read a line at a time through the pass's one buffer, and a line becomes a string
 // only when its path, as the kernel wrote it, is one of the roots or lies under one: the set is
-// read again every second for the whole of a sweep, and a browser or a node process maps
-// thousands of regions, nearly all of them libraries and anonymous memory that no root holds. A
-// line longer than the buffer (procMapsReadBytes) is taken as far as the buffer holds it, cut
-// back to its last whole name, and the rest of it is read past: that much of a path already lies
-// under every entry the whole path lies under, since an entry's path is far shorter, so the guard
-// answers for it as it would for the whole path, and a role that maps a file deep in a tree
-// costs the pass no more than the buffer.
+// read again as often as once a second while a sweep deletes, and a browser or a node process
+// maps thousands of regions, nearly all of them libraries and anonymous memory that no root
+// holds. A line longer than the buffer (procMapsReadBytes) is taken as far as the buffer holds
+// it, cut back to its last whole name, and the rest of it is read past: that much of a path
+// already lies under every entry the whole path lies under, since an entry's path is far shorter,
+// so the guard answers for it as it would for the whole path, and a role that maps a file deep in
+// a tree costs the pass no more than the buffer.
 func (p *procProcess) mapped() {
 	file, err := os.Open(filepath.Join(p.dir, "maps"))
 	if err != nil {

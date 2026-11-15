@@ -187,8 +187,8 @@ type KubernetesSettings struct {
 	IdleRelease IdleReleaseSettings `json:"idle_release"`
 	// VolumeTrim is the settled `runtime.kubernetes.volume_trim`: whether each issue pod's
 	// launcher runs a cache trimmer, and the marks, age and period it runs by. None of it is a
-	// credential, and a role reads it to know whether a cache under its own workspace may be
-	// swept out from under a build it left running, so every pod may read it.
+	// credential, and a role reads it to know whether a cache on its pod's volume may be swept
+	// out from under a build it left running, so every pod may read it.
 	VolumeTrim VolumeTrimSettings `json:"volume_trim"`
 }
 

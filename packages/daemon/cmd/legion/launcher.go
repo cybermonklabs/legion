@@ -143,10 +143,11 @@ const volumeTrimDeleteUsage = "usage: legion launcher volume-trim-delete --roles
 // subcommand: the process one sweep of the pod's cache trimmer makes every one of its removals
 // through, in a user, mount, PID and IPC namespace of its own, built over the same cover a role's
 // namespace is built over: every path a role is given something of its own at is an empty
-// filesystem of the deleter's, and /legion, where the deletions are made, is left as the
-// container mounted it. The trimmer starts it and hands it the descriptor of every directory the
-// sweep listed; it reads one request per line on its standard input and answers one line on its
-// standard output, and `legion launcher --help` does not offer it.
+// filesystem of the deleter's but /proc, a procfs of the deleter's own PID namespace, and
+// /legion, where the deletions are made, is left as the container mounted it. The trimmer starts
+// it and hands it the descriptor of every directory the sweep listed; it reads one request per
+// line on its standard input and answers one line on its standard output, and
+// `legion launcher --help` does not offer it.
 //
 // Nothing a person runs reaches it: run by hand it holds no descriptor of the volume and is not
 // the init of a PID namespace of its own, and it refuses rather than sitting there reading

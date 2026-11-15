@@ -246,8 +246,8 @@ func startContainedRemover(guard *pidGuard, cover RoleCover, dirs []*sweepDir) (
 }
 
 // removeAll asks the deleter for one entry and waits for its answer. One request is in flight at
-// a time: the sweep deletes one entry before it reads the volume again and decides whether to
-// delete another, so there is nothing for a second to overlap with.
+// a time: the sweep deletes one entry before it decides whether to delete another, so there is
+// nothing for a second to overlap with.
 func (r *containedRemover) removeAll(dir *sweepDir, name string) error {
 	if r.gone != nil {
 		return r.gone

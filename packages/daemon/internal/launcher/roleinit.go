@@ -166,7 +166,7 @@ const (
 	// and nothing of the container's.
 	roleProc
 	// roleHidden is a directory the role is given nothing of: an empty filesystem over the
-	// container's own, which is what the deleter puts at every path of this list.
+	// container's own, which is what the deleter puts at every path of this list but /proc.
 	roleHidden
 )
 

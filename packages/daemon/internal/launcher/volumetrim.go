@@ -19,18 +19,22 @@ import (
 // The pod's cache trimmer: the interval loop that reads the volume, the sweep that deletes the
 // oldest entries of the four reclaimable roots, the episode number a report is counted under,
 // and the report itself. It runs in the launcher process, which is PID 1 of an issue pod's
-// roles container, beside the six roles whose caches fill the one 50 GiB volume they share
-// (INFRA-2009: a pod filled 45 GiB of 49, and a role's work was deleted by hand mid-round).
+// roles container, beside the six roles whose caches fill the one volume they share, 50 GiB
+// by default (INFRA-2009: a pod filled 45 GiB of 49, and a role's work was deleted by hand
+// mid-round).
 //
 // Everything the trimmer reads of the machine is a field or a package-level var, so a test
 // drives a tree, a /proc and a clock of its own: the volume reading is readVolumeUsage
 // (volumeusage_linux.go), and the rest are the fields of the trimmer below.
 
 // volumeTrimLog begins every line the trimmer writes, but the stack lines below a recovered
-// panic's own line (fault), which carry no prefix. The lines are what a person reads in the pod
-// after a deploy — the launcher's log is the only place most of this work is visible, since the
-// daemon hears nothing but a report of a sweep that ended above the low mark and the report that
-// the trimmer switched itself off — so they begin with one prefix a `grep` can take.
+// panic's own line (fault), which do not carry it. In an issue pod every line the trimmer
+// writes, the stack lines too, reaches the pod's log behind the prefix the launcher gives the
+// lines of the role the trimmer is bound to, the architect (serveVolumeTrim, prefixWriter). The
+// lines are what a person reads in the pod after a deploy — the launcher's log is the only place
+// most of this work is visible, since the daemon hears nothing but a report of a sweep that
+// ended above the low mark and the report that the trimmer switched itself off — so they carry
+// one prefix a `grep` can take.
 const volumeTrimLog = "volume trim: "
 
 const (
@@ -120,9 +124,9 @@ const (
 // version skew both ways, and the cost of believing a bad one here is paid by the whole pod:
 // time.NewTicker panics on a non-positive period, in the process that is PID 1 of the roles
 // container with six live roles under it, a high mark of 0 would sweep the caches of a volume
-// that is empty, and an age above the maximum wraps the sweep's cutoff past the sweep's own
-// start, which makes every entry of every root eligible however recently it was written
-// (sweep, shimwire.VolumeMinAgeMax). The ranges themselves are the wire's own
+// that is empty, and an age of 153,722,868 minutes or more can wrap the sweep's cutoff past the
+// sweep's own start, which makes every entry of every root eligible however recently it was
+// written (sweep, shimwire.VolumeMinAgeMax). The ranges themselves are the wire's own
 // (shimwire.VolumeMarkMin and the five beside it). The daemon's loader reads the three maxima
 // among them, and its minimum of 1 is its own positive-integer rule (readPositiveInteger,
 // internal/config), which equals the three minima here: the second check is deliberate, and
@@ -508,7 +512,7 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 	if err != nil {
 		// Said when it changes and not once per interval, for the reason a refusal is (says): a
 		// volume this process cannot read is a standing state, and the statfs behind it answers
-		// the same way every minute for as long as it lasts.
+		// the same way every interval for as long as it lasts.
 		if why := err.Error(); why != t.saidRead {
 			t.saidRead = why
 			t.logf(volumeTrimLog+"the volume at %s could not be read: %v", t.volumeRoot, err)
@@ -1352,8 +1356,9 @@ func (t *trimmer) remove(remover entryRemover, entry sweepEntry, passed *passedO
 		}
 		// A removal that failed part way leaves what it could not remove. It is reported
 		// and passed over, and the part-removed entry a later sweep meets is an ordinary
-		// entry of that root: the removal moved its modification time, so it is eligible
-		// again one minimum age from now.
+		// entry of that root, judged by its age as any other is: each unlink the removal made
+		// inside it moved its newest modification time, and a removal that unlinked nothing
+		// moved none.
 		passed.say(entry.dir.root, volumeTrimLog+"removing %q failed part way and the sweep passed it over: %v", entry.path, err)
 		return false, nil
 	}

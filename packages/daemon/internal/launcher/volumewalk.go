@@ -20,9 +20,9 @@ import (
 
 const (
 	// volumeWalkBudget bounds one walk. The walk stats every file on a volume that holds a
-	// module cache, a bun cache and six workspaces, which is millions of inodes, and it runs in
-	// the process that is PID 1 of the roles container: a minute is what the pod can give a
-	// measurement that only tells a reader where the bytes went.
+	// module cache, a bun cache and the issue's workspace, which is millions of inodes, and it
+	// runs in the process that is PID 1 of the roles container: a minute is what the pod can give
+	// a measurement that only tells a reader where the bytes went.
 	volumeWalkBudget = time.Minute
 	// volumeWalkInterval is the least time between two walks. A pod that is full sweeps every
 	// interval, and a walk per sweep would spend a minute of every interval on the same

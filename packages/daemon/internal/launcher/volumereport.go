@@ -115,11 +115,11 @@ func (t *trimmer) deliverLast(ctx context.Context) {
 
 // carryRefused keeps the refused /proc reads of a sweep that sent no report for the next report
 // the trimmer sends (report, switchOff): R3 has a refused read carried into the next report,
-// because a process the trimmer cannot read may be using anything. A process already carried is
-// not carried twice, and past the most a report names (volumeReportRefusedReads) a refusal is
-// counted rather than kept, so a pod whose sweeps keep meeting one unreadable process holds one
-// line for it, and a pod that never reports holds no more than the bound for the life of the
-// launcher process.
+// because a process the trimmer cannot read may be using anything. A refusal already carried,
+// word for word, is not carried twice, and past the most a report names
+// (volumeReportRefusedReads) a refusal is counted rather than kept, so a pod whose sweeps keep
+// meeting one unreadable process the same way holds one line for it, and a pod that never
+// reports holds no more than the bound for the life of the launcher process.
 func (t *trimmer) carryRefused(refused []string) {
 	for _, one := range refused {
 		switch {

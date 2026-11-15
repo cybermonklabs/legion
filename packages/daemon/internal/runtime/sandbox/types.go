@@ -289,8 +289,8 @@ type Options struct {
 	// (runtime.VolumeReported): the daemon turns it into the fact that tells the issue's
 	// architect its volume is filling. A runtime given none reads the frame, logs a warning naming
 	// where the daemon sets this field, and drops it; what it must never do is close the
-	// connection on it, since the launcher would redial once a second for every role of the pod
-	// (ServeLauncher's switch).
+	// connection on it, since the launcher would redial the one connection that carries its
+	// reports once a second (ServeLauncher's switch).
 	VolumeReported runtime.VolumeReported
 	// LeakCheck reads the shared public leak check at the tag a pod's launcher names in its hello
 	// (shimwire.LauncherHello.LeakCheckTag), which the runtime pushes to that launcher before it

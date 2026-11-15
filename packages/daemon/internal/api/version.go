@@ -1730,10 +1730,11 @@ package api
 // runs by, as one optional member of `shimwire.LauncherHelloAck` (`volumeTrim`: the two marks,
 // the minimum age and the interval, from `runtime.kubernetes.volume_trim`), written by
 // `internal/stream`'s Listener.hello from what the runtime's launcher resolver hands it. The
-// launcher sends the daemon one `launcher_volume_report` frame per sweep that ends with the
-// volume still above its low mark, and `ServeLauncher` reads it into at most one
-// `volume-near-full` notice to the issue's architect, since the daemon's own bounds decide which
-// reports are told. That frame carries, beside the sweep's own numbers, how many
+// launcher sends the daemon at most one `launcher_volume_report` frame per sweep that ends with
+// the volume still above its low mark, none for a sweep the settings stopped, and
+// `ServeLauncher` reads it into at most one `volume-near-full` notice to the issue's architect,
+// since the daemon's own bounds decide which reports are told. That frame carries, beside the
+// sweep's own numbers, how many
 // entries the launcher's own bound left out of each of its lists (`sizesOmitted` and its three
 // siblings), so a reader never takes a cut list for the whole of what the trimmer measured, and
 // two optional members of each size, `refused` and `refusals`: the first read the kernel refused

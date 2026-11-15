@@ -217,9 +217,10 @@ type Claim struct {
 	// failure the workflow is told name the cause a role never chose, where Failure alone says
 	// only that the relaunch budget ran out.
 	//
-	// It is written where the death is recorded (died) and cleared with Failure at each launch
-	// (launchNow), so a claim that comes back and later fails for something else carries nothing
-	// of the earlier end. The retry that admits a failed claim again clears Failure and not this
+	// It is written where died records a death — a suspension over a dead process records one
+	// without it (suspendOverADeadProcess) — and cleared with Failure at each launch (launchNow),
+	// so a claim that comes back and later fails for something else carries nothing of the
+	// earlier end. The retry that admits a failed claim again clears Failure and not this
 	// (retry), so a retried claim whose launch has not run yet still carries the pod end of its
 	// last death. It is durable for the one reason Failure is: the deaths a claim is charged can
 	// run out hours after the end that started them, with a daemon restart in between, and the

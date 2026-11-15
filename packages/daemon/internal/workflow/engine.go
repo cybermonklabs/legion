@@ -1027,10 +1027,10 @@ func deathFirstLine(death string) string {
 // The bounds on what an issue's architect is told about its pod's volume filling, and the two
 // log lines that say which way a report went.
 //
-// A filling pod reports every sweep, which is once a reading interval, and the notice is a wake
-// of the architect's session. VolumeNoticeCap is the most an architect hears for one trimmer and
-// one episode: three is enough to show a trend — it is filling, the trimmer is not keeping up,
-// here is what is in it — and a fourth says nothing the third did not. VolumeNoticePodInterval
+// A filling pod can report every sweep, and the notice is a wake of the architect's session.
+// VolumeNoticeCap is the most an architect hears for one trimmer and one episode: three is
+// enough to show a trend — it is filling, the trimmer is not keeping up, here is what is in it —
+// and a fourth says nothing the third did not. VolumeNoticePodInterval
 // is the most often it hears about one pod at all, whatever trimmer or episode reported, so an
 // episode that ends and another that opens a minute later is still one notice an hour. Two
 // kinds of report pass a bound (volumeNoticeHeldBy): one whose episode a rise raised skips the
@@ -1063,7 +1063,7 @@ const (
 //
 // The bounds are read and written through the store, never kept here, because a daemon that
 // restarts in the middle of a filling pod's episode would otherwise start the count over and
-// tell that architect three more times — on exactly the pod that is reporting every minute.
+// tell that architect three more times — on exactly the pod that keeps reporting.
 func (e *Engine) volumeNearFull(ctx context.Context, tx pgx.Tx, fact intake.VolumeNearFull) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -1163,10 +1163,11 @@ func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeC
 // where that bound left entries out the sentence says so: a reader must not take a cut list for
 // the whole of what the trimmer measured.
 //
-// The opening clause of a switched-off trimmer counts nothing, and the faults it carries do the
-// counting: what stops the trimmer is three recovered panics in a row (volumeFaultLimit,
-// launcher's volumetrim.go), while Faults holds the newest faults since the trimmer's last
-// report, so an earlier one it left out makes four — two numbers for one event in one sentence.
+// The opening clause of a switched-off trimmer counts nothing, and what the report carries does
+// the counting: what stops the trimmer is three recovered panics in a row (volumeFaultLimit,
+// launcher's volumetrim.go), which the stop reason the launcher sends says and the sentence
+// quotes, while Faults holds the newest faults since the trimmer's last report, so an earlier
+// one it left out makes four.
 func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
 	var out strings.Builder
 	if report.SwitchedOff {

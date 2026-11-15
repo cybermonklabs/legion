@@ -264,12 +264,12 @@ type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCre
 type WorkspaceBundleRestored func(ctx context.Context, issue string, release int64) error
 
 // VolumeReported is the daemon's reading of one sweep of an issue pod's volume, as the cache
-// trimmer in that pod's launcher process reported it: the launcher sends one such frame per
-// sweep that ended with the volume still above its low mark, and one when the trimmer has
-// switched itself off after three faults (shimwire.LauncherVolumeReport). The session gives it
-// the issue key, the uid of the pod the launcher runs in and the report; the trimmer's own
-// identifier, which is what makes a restarted roles container a new counting line for the
-// daemon's notice bounds, is inside the report.
+// trimmer in that pod's launcher process reported it: the launcher sends at most one such frame
+// per sweep that ended with the volume still above its low mark, none for a sweep the settings
+// stopped, and one when the trimmer has switched itself off after three faults
+// (shimwire.LauncherVolumeReport). The session gives it the issue key, the uid of the pod the
+// launcher runs in and the report; the trimmer's own identifier, which is what makes a restarted
+// roles container a new counting line for the daemon's notice bounds, is inside the report.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
 // of the daemon's own packages, so this import is acyclic, and a third near-copy of the report —
