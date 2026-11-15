@@ -174,7 +174,7 @@ func newIdleWakeRig(t *testing.T, issues ...string) *idleWakeRig {
 		kube: newIssueSandboxAPI(), agents: newIdleRigAgents(t, pool), listener: listener,
 		records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}}
 	rig.pods = newIdleRigPods(t, rig.address, cfg.Runtime.Kubernetes.SessionStore.Database,
-		func(context.Context) (sessionproxy.Dialer, error) {
+		func(context.Context, string) (sessionproxy.Dialer, error) {
 			return idleRigDialer{address: idleRigHostPort(t, pool)}, nil
 		})
 	rig.kube.serve(t)

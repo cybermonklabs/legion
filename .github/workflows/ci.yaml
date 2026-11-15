@@ -5742,6 +5742,22 @@ jobs:
             DISPATCH_E2E_WEB_DIST_B="$DISPATCH_PREVIOUS_BUILD/web" \
             bun run e2e:multiprocess -- cross-build.multiprocess
         working-directory: packages/dispatch
+      # The same rows with B the first-rollout build, a release before the fleet columns, which
+      # registers no schema numbers: a page of either build is read-only on A's server while it is
+      # live, which the previous release, registering its numbers, no longer shows. The spec reads
+      # which of the two B is from the live registry (pageWritable). The database is made again,
+      # so this run starts from what the step above started from.
+      - name: Browser-test each build's page against the first-rollout build's server
+        env:
+          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
+        run: |
+          psql "postgres://postgres:ci@localhost:5432/postgres" \
+            -c 'drop database dispatch_cross_build with (force)' \
+            -c 'create database dispatch_cross_build'
+          DISPATCH_E2E_BINARY_B="$DISPATCH_FIRST_ROLLOUT_BUILD/envoy-dispatch" \
+            DISPATCH_E2E_WEB_DIST_B="$DISPATCH_FIRST_ROLLOUT_BUILD/web" \
+            bun run e2e:multiprocess -- cross-build.multiprocess
+        working-directory: packages/dispatch
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:

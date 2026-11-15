@@ -122,7 +122,7 @@ func readManifest(t *testing.T, path string) blockManifest {
 
 // creatable is R for the manifest: the highest since among the elements an editor of its version
 // may create, by the rule the page states (schemaCreatable in
-// packages/dispatch/web/src/features/doc/schema.ts) and pmdoc.SchemaCreatable computes.
+// packages/dispatch/web/src/features/doc/schema-creatable.ts) and pmdoc.SchemaCreatable computes.
 func (m blockManifest) creatable() int {
 	creatable := 0
 	count := func(element elementVersions) {
