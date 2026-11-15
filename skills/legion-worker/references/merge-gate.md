@@ -140,13 +140,18 @@ as the fingerprint decides (*The reviewer*, below, and
   `skill://legion-worker/references/conflicts-and-rewrites.md`) at the head your last submitted
   review read and at the new head.
   That head is the `head` of that review's Legion footer, never the review's `commit_id`, because GitHub can move a review's `commit_id` onto a later head: on cybermonklabs/legion#3516, review 5908357397 was submitted at 01:10:46Z at `e9a820cf`, and on 2026-11-15 its `commit_id` read `6019bdc9`, the forward merge committed at 05:20:10Z whose first parent is `e9a820cf`, so a fingerprint taken at `commit_id` compares the new head with itself.
-  This read lists the reviews the reviewer submitted, each with the session and the head its last Legion footer names, and its pages concatenate oldest first, so its last line is your last submitted review:
+  This read lists the reviews your session submitted, each with the head its last Legion footer names, and its pages concatenate oldest first, so its last line is your last submitted review.
+  Put in it the session id your own footers carry: another reviewer session, a side review among them, writes `"phase":"review"` footers on the same pull request too.
+  Where it prints no line, your session submitted no review on this pull request, which leaves no head to take the fingerprint at: a new round.
 
   ```bash
-  gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submitted_at, footer: ([.body // "" | scan("<!-- legion: (\\{.*?\\}) -->")] | last | .[0]? // "" | try fromjson catch {})} | select(.footer.phase == "review") | [.id, .state, .submitted_at, .footer.session, (.footer.head // "no head")] | @tsv'
+  gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submitted_at, footer: ([.body // "" | scan("<!-- legion: (\\{.*?\\}) -->")] | last | .[0]? // "" | try fromjson catch {})} | select(.footer.phase == "review" and .footer.session == "<your session id>") | [.id, .state, .submitted_at, (.footer.head // "no head")] | @tsv'
   ```
 
-  A footer that names no head (all seven of the reviewer's reviews on #3516 name only the session and the phase) leaves the full SHA that review's body names as the head it read; a body that names none either leaves no head to take the fingerprint at, which is a new round.
+  A footer that names no head, as none of the reviewer's seven footers on #3516 does, leaves the head the issue's newest `review` handoff names (`dispatch handoff-read --issue <issue> --phase review`), which the reviewer records before it submits each review, a confirmation's included.
+  The handoff names it `head`, or `headReviewed` in a record an earlier reviewer prompt wrote.
+  Where no `review` handoff stands for that review, as for a review made outside Legion's workflow, the head is the one full SHA its body names as the head it reviewed or approved, and a confirmation's is the new head it approves.
+  A body that names more than one such SHA and does not say which it read, or names none, leaves no head to take the fingerprint at, which is a new round.
   Equal and that review was
   `APPROVE`: submit one more `APPROVE` naming the new head by SHA, its body naming both SHAs
   and the fingerprint — a confirmation, not a round; no thermo pass, no thread pass. Equal and
