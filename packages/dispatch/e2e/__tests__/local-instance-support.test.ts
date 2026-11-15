@@ -33,29 +33,19 @@ async function eventually(ready: () => boolean | Promise<boolean>, ms = 3_000): 
   return ready();
 }
 
-/** The pid a real child process writes to `path`. */
-async function pidFrom(path: string): Promise<number> {
+/** The pid a real child process writes to `path` as one whole line, as `echo` writes it: a file not
+ *  yet ending in its newline is not read as a pid. Waited for up to `ms`; at `Infinity` the wait has
+ *  no deadline of its own, so the caller's per-test limit fails the row, though this loop goes on
+ *  polling every 25 ms until the test process exits. */
+async function pidFrom(path: string, ms = 3_000): Promise<number> {
   const read = () =>
     Bun.file(path)
       .text()
       .catch(() => "");
-  if (!(await eventually(async () => /^\d+\s*$/.test(await read())))) {
+  if (!(await eventually(async () => /^\d+\n$/u.test(await read()), ms))) {
     throw new Error(`no pid in ${path}`);
   }
   return Number(await read());
-}
-
-/** The pid a real child process writes to `path`, waited for without a deadline of its own: this
- *  reads no clock, so a child that is slow to write cannot fail a row that would have passed. A
- *  wait that never finishes is ended by the caller's own per-test limit, and by nothing here. */
-async function pidWritten(path: string): Promise<number> {
-  for (;;) {
-    const text = await Bun.file(path)
-      .text()
-      .catch(() => "");
-    if (/^\d+\s*$/u.test(text)) return Number(text);
-    await Bun.sleep(25);
-  }
 }
 
 function processAlive(pid: number): boolean {
@@ -154,10 +144,8 @@ describe("Supervisor.stop", () => {
       // `exec` makes the shell become the sleep, so the pid in the file is the one process of
       // this group and the test says so itself rather than resting on a bash that happens to
       // drop its own frame for the last command of a `-c` list (5.1 and later do; 3.2 does not).
-      // The pid wait below holds no deadline either, so this row's verdict rests on no clock of
-      // its own: `STOP_ROW_MS` is its one hang guard, for a child that never writes a pid.
       const step = made.run(["bash", "-c", `echo $$ > ${pidFile}; exec sleep 60`], "/");
-      const leader = await pidWritten(pidFile);
+      const leader = await pidFrom(pidFile, Number.POSITIVE_INFINITY);
       made.interrupt();
       await expect(step).rejects.toBeInstanceOf(Interrupted);
       // The force-kill delay is far above this row's own limit, `STOP_ROW_MS`, as in the row
