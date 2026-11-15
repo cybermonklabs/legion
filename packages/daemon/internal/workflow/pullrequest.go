@@ -274,9 +274,14 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 
 // push records a push to the pull request's branch (classify.ApplyPushDropping) and re-asks the
 // review round (reaskRound). It records nothing for a push whose After is record.NoCommit, which is
-// GitHub's deletion of the branch, and nothing for a push to a pull request recorded merged, as the
-// synchronize handler drops one; classify.CodeOnItsWay says why. intake's decodePush makes no fact
-// of a deletion; this test holds for a Push from any other source too.
+// GitHub's deletion of the branch; intake's decodePush makes no fact of a deletion, and this test
+// holds for a Push from any other source too. It records nothing for a push to a pull request
+// recorded merged either, since the merge has landed: a push after it is not code that merged,
+// and once the merge named its head that head is final (merged). The limit is a merge that names
+// no head, which no source sends in this release (intake's decodePullRequest and daemon's
+// mergeQueueRead both name it): a push made before such a merge but delivered after it is not
+// recorded, so it does not take back an approval of the head the record holds, although it may be
+// the code that merged.
 func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.Result, error) {
 	if fact.After == record.NoCommit {
 		return intake.Result{}, nil
