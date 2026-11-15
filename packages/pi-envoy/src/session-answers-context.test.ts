@@ -584,6 +584,24 @@ test("an older copy's list that differs only in the line naming its read keeps i
   expect(calls()).toBe(0);
 });
 
+// A list an older copy placed has no words, so a read whose window holds no item cannot tell its
+// aged-out items from a retracted one. Kept, a retracted only answer would stay in every request
+// while an older copy runs beside this one, so such a read takes that list out (`keptWithoutText`).
+test("a read with no text that gives words takes out a list an older copy placed", async () => {
+  const session = {};
+  const read = readingEach({ text: undefined, words: [], since: SINCE });
+  // No read of this copy's own: the older copy's list is what gets placed.
+  expect(await withSessionAnswers([skill, ask, list], requestOf(read, noBranch, session))).toEqual([
+    skill,
+    ask,
+    list,
+  ]);
+  const turn = [skill, ask, readCall, readResult];
+  expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toBeUndefined();
+  const tools = [...turn, grepCall, grepResult];
+  expect(await withSessionAnswers([...tools], requestOf(read, noBranch, session))).toBeUndefined();
+});
+
 // A person's own paragraph can read like the line the renderer writes when the cap dropped older
 // items. It must not be taken for that line: an item whose only unseen words sit in such a
 // paragraph would be swallowed, and the model would never read what that person wrote.

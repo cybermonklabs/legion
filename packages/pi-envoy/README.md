@@ -165,7 +165,8 @@ the same items, keeps the kept list's place and bytes, so that request does not 
 failed. A read that finds nothing for the session takes a kept list out of the request when an
 item it shows was taken back inside the 72 hours, as when a person retracts the only answer, and
 leaves it where it is when its items only aged out; it takes a kept failure line out. A Dispatch
-with no answers route and no list read before, or no Dispatch at all, leaves a kept list where it
+with no answers route, when no list read before from it has an item from the last 72 hours (none
+was read, or every item of it has aged out), or no Dispatch at all, leaves a kept list where it
 is. Moving the list empties its old place.
 After a compaction summarizes the message it followed, or in a new process, the list goes after
 the last message once more. It is never at the head, so a change in it costs only the bytes from

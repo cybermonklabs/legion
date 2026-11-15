@@ -219,9 +219,9 @@ type ShownAnswers = CarriedAnswers & { readonly text: string };
  * whenever it gave them (a read that answered, or that gave the cached list), with its text or
  * without, since a read whose window holds no item still tells which items of a placed list left
  * it (`keptWithoutText`). Undefined when it gave neither: Dispatch is off, or has no answers route
- * and no list was read from it before. The extension's `sessionAnswersText` and the placement
- * cases of `session-answers-read.test.ts` both call it, so those cases check the extension's own
- * mapping.
+ * and no list read from it before has an item inside the 72 hours (none was read, or every item
+ * of the one read has aged out). The extension's `sessionAnswersText` and the placement cases of
+ * `session-answers-read.test.ts` both call it, so those cases check the extension's own mapping.
  */
 export function carriedAnswers(read: SessionAnswersRead): CarriedAnswers | undefined {
   if (read.text === undefined && read.words === undefined) return undefined;
@@ -293,7 +293,9 @@ function isList(carried: ShownAnswers): boolean {
  * the cap line's shape, was taken for something already shown, and what they wrote reached no
  * request at all. A list re-rendered because only this read's note changed costs a prompt-cache
  * miss, on a path that lasts only until every copy of this extension carries this change; a
- * swallowed answer costs a person's words. So this path pays the miss.
+ * swallowed answer costs a person's words. So this path pays the miss. `keptWithoutText` holds
+ * the same path's rule for a read with no text, which takes such a list out whenever it gives
+ * words; the older-copy path is in both places, and goes from both.
  */
 function showsNew(shown: ShownAnswers, next: ShownAnswers): boolean {
   if (isList(shown) !== isList(next)) return true;
@@ -326,13 +328,15 @@ function keepPlaced(messages: readonly unknown[], placed: Placement): unknown[] 
  * the window held: kept, the list would go on showing withdrawn words as current. A list whose
  * items only aged out of the window stays. A list an older copy of this extension placed has no
  * words that tell its aged-out items from retracted ones, so a read with no text that gives words
- * takes it out, as `showsNew` re-renders such a list on any difference but its read line. A read
- * with no words (no answers route, Dispatch off) compares nothing and keeps the list. A placed
- * failure line is not kept: a read that gave no text did not fail, so the line no longer says what
- * is true, and it leaves with its place, so the next failure line goes after the last message.
- * Undefined, so the request carries no list, when nothing is placed, when a failure line was, when
- * the list leaves, when its place left the conversation, and while a compaction may be converting
- * the conversation (`compacting`), where a list before the cut would push a message out.
+ * takes it out, as `showsNew`, which holds the same path's rule for a read with text, re-renders
+ * such a list on any difference but its read line; the older-copy path is in both places, and
+ * goes from both. A read with no words (no answers route, Dispatch off) compares nothing and
+ * keeps the list. A placed failure line is not kept: a read that gave no text did not fail, so the
+ * line no longer says what is true, and it leaves with its place, so the next failure line goes
+ * after the last message. Undefined, so the request carries no list, when nothing is placed, when a
+ * failure line was, when the list leaves, when its place left the conversation, and while a
+ * compaction may be converting the conversation (`compacting`), where a list before the cut would
+ * push a message out.
  */
 function keptWithoutText(
   messages: readonly unknown[],
