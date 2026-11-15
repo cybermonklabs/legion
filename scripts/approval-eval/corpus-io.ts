@@ -1,7 +1,14 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import type { AskOption, CaseRow, CaseVerdict } from "./build-corpus";
-import { RESERVE_VARIABLE, readReferenceOf, reserveOf } from "./reserve";
+import {
+  REGISTRATION,
+  REPOSITORY_ROOT,
+  RESERVE_VARIABLE,
+  type Registration,
+  reserveAccessOf,
+  reserveOf,
+} from "./reserve";
 import { type Interval, MINIMUM_DECIDED } from "./stats";
 
 /**
@@ -13,7 +20,8 @@ import { type Interval, MINIMUM_DECIDED } from "./stats";
  *
  * The types come from `build-corpus.ts`, which writes them, and from `stats.ts`, which measures
  * what is printed, and both imports are type-only: they are erased, so importing this module
- * runs none of the build and makes no measurement. `reserve.ts` holds only the reserve's rule.
+ * runs none of the build and makes no measurement. `reserve.ts` holds the reserve's rule and who
+ * may read it, and `claim.ts` the reads a reviewed change registered.
  */
 
 /**
@@ -58,7 +66,7 @@ export interface Corpus {
   snapshot: CorpusSnapshot;
   /**
    * The cases in the order `corpus.jsonl` holds them, which is answer time. A case the reserve
-   * holds (`reserve.ts`) is in neither this nor `byCaseId`, unless the read named a reference.
+   * holds (`reserve.ts`) is in neither this nor `byCaseId`, unless `claim.ts` registers this read.
    */
   rows: CaseRow[];
   byCaseId: Map<string, CaseRow>;
@@ -226,20 +234,27 @@ export async function outDirectory(out: string): Promise<string> {
  *
  * Every command reads its corpus here, so this is where the reserve of INFRA-2897's next final
  * test is held (`reserve.ts`): a case on a reserved issue is left out of the corpus, and the
- * count left out is printed, unless `APPROVAL_EVAL_RESERVE` is `read:<reference>`, naming the
- * claim run or the written release that reads it. A corpus built before the build recorded when
- * each issue was created, holding a case the reserve could hold, is refused: only a new build can
- * say whether that case is reserved.
+ * count left out is printed, unless `APPROVAL_EVAL_RESERVE` is `read:<reference>` and
+ * `registration` (`claim.ts` by default) lists that reference with this run's digest. Any other
+ * read of the reserve is refused, with the run's digest. Once the registration records that the
+ * reserve ended, nothing is held. A corpus built before the build recorded when each issue was
+ * created, holding a case the reserve could hold, is refused: only a new build can say whether
+ * that case is reserved.
  */
-export async function readCorpus(corpus: string): Promise<Corpus> {
+export async function readCorpus(
+  corpus: string,
+  registration: Registration = REGISTRATION
+): Promise<Corpus> {
   const directory = resolve(corpus);
-  const readUnder = readReferenceOf(process.env[RESERVE_VARIABLE]);
-  if (readUnder === undefined) {
-    throw new CorpusError(
-      `${RESERVE_VARIABLE} takes read:<reference>, naming the claim run or the written release ` +
-        "that reads the reserved cases, or no value at all"
-    );
-  }
+  const access = await reserveAccessOf(
+    process.env[RESERVE_VARIABLE],
+    registration,
+    process.argv,
+    REPOSITORY_ROOT
+  );
+  if (access.kind === "refused") throw new CorpusError(access.reason);
+  const readUnder = access.kind === "read" ? access.reference : null;
+  const ended = access.kind === "ended" ? access.record : null;
   const snapshot = snapshotOf(directory, await textOf(directory, "snapshot.json"));
   const lines = (await textOf(directory, "corpus.jsonl")).split("\n");
   const rows: CaseRow[] = [];
@@ -249,7 +264,7 @@ export async function readCorpus(corpus: string): Promise<Corpus> {
   for (const [index, line] of lines.entries()) {
     if (line.trim() === "") continue;
     const row = caseRowOf(directory, index + 1, line);
-    const reserve = reserveOf(row);
+    const reserve = reserveOf(row, ended);
     if (reserve === "unknown") {
       throw new CorpusError(
         `${join(directory, "corpus.jsonl")} line ${index + 1}: case ${row.caseId} on ` +
