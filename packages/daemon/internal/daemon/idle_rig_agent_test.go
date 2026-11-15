@@ -75,10 +75,13 @@ type idleRigAdoption struct {
 // idleRigPlan is what a role process does with the next prompt it is given: take a turn on it, or
 // acknowledge it and take none, which is the shape of a resume that never reaches its first turn.
 // Topics are the topics the process registers with the Envoy listener beside its agent subject,
-// as `envoy_subscribe` adds one.
+// as `envoy_subscribe` adds one. ExitsAsReleasedInProduction is a process that ends as a released
+// Oh My Pi does in production: it registers again every idleRigRegistrationRefresh while it runs
+// and deletes nothing when it stops (idleRigRoleProcess.run).
 type idleRigPlan struct {
-	TakeTurn bool     `json:"takeTurn"`
-	Topics   []string `json:"topics"`
+	TakeTurn                    bool     `json:"takeTurn"`
+	Topics                      []string `json:"topics"`
+	ExitsAsReleasedInProduction bool     `json:"exitsAsReleasedInProduction"`
 }
 
 // idleRigAgents is the rig's own service: it hands each role process the boot token its pod's
@@ -324,6 +327,9 @@ const (
 	// idleRigDeliverSubjectPrefix and the session id are the session's relay subject, where the
 	// listener that owns the session publishes each message of its durable consumer.
 	idleRigDeliverSubjectPrefix = "notifications.envoy.deliver."
+	// idleRigAgentSubjectPrefix and the session id are the session's agent subject, the subject
+	// the stream stores every message to the session on.
+	idleRigAgentSubjectPrefix = "notifications.agent."
 	// idleRigStreamSeqHeader is a relay frame's stream sequence, in decimal.
 	idleRigStreamSeqHeader = "Envoy-Stream-Seq"
 	// idleRigRelayReceived is the answer that the frame decoded, before any work of the
@@ -335,6 +341,13 @@ const (
 	// own consumer the listener holds and relays.
 	idleRigDeliveryConsumer = "consumer"
 )
+
+// idleRigRegistrationRefresh is how often a process whose plan sets ExitsAsReleasedInProduction
+// registers again. The plugin does so every 90 s (SESSION_HEARTBEAT_MS); five seconds put the
+// last registration moments before the release's stop, so the stop's delete is weighed against a
+// registration about as close to its moment as a release can leave one
+// (notify.DeleteConditions.NotRegisteredAfter).
+const idleRigRegistrationRefresh = 5 * time.Second
 
 // idleRigEnvelope is what the rig reads of an Envoy envelope, the frame's data unchanged: the
 // event it carries and the message itself.
@@ -389,6 +402,12 @@ type idleRigRoleProcess struct {
 	// counts.
 	recordedMu sync.Mutex
 	recorded   map[uint64]bool
+
+	// refreshMu is held across each registration refresh (refreshRegistration), and stopped
+	// says the process is ending, after which no refresh starts: the process ends with no
+	// refresh in flight, so its last registration lands before the daemon dates the stop.
+	refreshMu sync.Mutex
+	stopped   bool
 }
 
 func newIdleRigRoleProcess(rig string) (*idleRigRoleProcess, error) {
@@ -470,19 +489,52 @@ func (p *idleRigRoleProcess) run() error {
 	if err := p.reportActivity(); err != nil {
 		return err
 	}
-	// The registration goes when the process does, as a session's Envoy plugin drops it when its
-	// process ends: a released pod's session must be gone from the listener's registry, or a
-	// message published to its role topic would be forwarded to a session nothing is left of
-	// instead of being answered 404 and reported as the wake it is.
-	defer p.unregister()
+	// Oh My Pi's plugin sends its DELETE of the registration in its session_shutdown handler,
+	// but at a production release that DELETE does not take effect. The default stand-in deletes
+	// its registration and its interests as it stops, which models a released role whose claim
+	// the reaper has freed: its session is gone and its role unclaimed at once. A process whose
+	// plan sets ExitsAsReleasedInProduction deletes nothing, so the daemon's clean stop is what
+	// makes its session gone.
+	end := p.unregister
+	if plan.ExitsAsReleasedInProduction {
+		go p.refreshRegistration(plan.Topics)
+		end = p.stopRefreshing
+	}
+	defer end()
 	stopping := make(chan os.Signal, 1)
 	signal.Notify(stopping, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-stopping
-		p.unregister()
+		end()
 		os.Exit(0)
 	}()
 	return p.serve()
+}
+
+// refreshRegistration registers the session again, under the same epoch, every
+// idleRigRegistrationRefresh until the process stops, as the plugin's heartbeat does. A refresh
+// the listener refuses is reported and the next one tried: one failed heartbeat stops nothing.
+func (p *idleRigRoleProcess) refreshRegistration(topics []string) {
+	ticker := time.NewTicker(idleRigRegistrationRefresh)
+	defer ticker.Stop()
+	for range ticker.C {
+		p.refreshMu.Lock()
+		if p.stopped {
+			p.refreshMu.Unlock()
+			return
+		}
+		if err := p.subscribe(topics); err != nil {
+			fmt.Fprintf(os.Stderr, "idle rig role process: refresh the registration of %s: %v\n", p.session, err)
+		}
+		p.refreshMu.Unlock()
+	}
+}
+
+// stopRefreshing waits for a refresh in flight to be answered and lets no other start.
+func (p *idleRigRoleProcess) stopRefreshing() {
+	p.refreshMu.Lock()
+	defer p.refreshMu.Unlock()
+	p.stopped = true
 }
 
 // unregister drops the session's role claim and its registration with the listener.
