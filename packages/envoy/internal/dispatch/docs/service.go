@@ -407,7 +407,8 @@ type Service struct {
 	serviceOrigins   sync.Map
 	conditionalGates sync.Map
 	// rebuilding names the documents a rebuild holds (RebuildDocument): their rooms refuse
-	// loads and injections until the rebuild's transaction ends (Ledger.endRebuilds).
+	// loads and injections until the rebuild's transaction ends (Ledger.endRebuilds), and a load
+	// under way as the hold is lifted is refused at its load hook (markRoomLoadRebuilt).
 	rebuilding sync.Map
 	// preloads holds, per room, the durable state a document socket's admission check read and
 	// what it rendered of it (*preloadedDocument), for the room load that socket makes next

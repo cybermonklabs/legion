@@ -534,8 +534,12 @@ func (l *Ledger) holdRebuild(artifactID string) {
 	l.rebuilds = append(l.rebuilds, artifactID)
 }
 
+// endRebuilds lifts the holds of the rebuilds this transaction made, once it has ended. Each
+// marks the load of its room under way first (markRoomLoadRebuilt): a load that read the history
+// before the commit and has not yet reached its load hook would otherwise find no hold there.
 func (l *Ledger) endRebuilds() {
 	for _, artifactID := range l.rebuilds {
+		l.service.markRoomLoadRebuilt(artifactID)
 		l.service.rebuilding.Delete(artifactID)
 	}
 	l.rebuilds = nil

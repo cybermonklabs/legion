@@ -121,6 +121,10 @@ type roomLoad struct {
 	// the store itself.
 	size     int
 	rendered admissionRendering
+	// rebuilt says a rebuild of the room's document ended while this load was under way
+	// (markRoomLoadRebuilt): what the load read can be the history that rebuild replaced, so the
+	// room's load hook refuses the load (onLoadDocument).
+	rebuilt atomic.Bool
 }
 
 // beginRoomLoad records that room is loading, before the load reads the store: every version
@@ -137,6 +141,26 @@ func (s *Service) beginRoomLoad(room string) *roomLoad {
 		previous.(*roomLoad).take().slot.release()
 	}
 	return load
+}
+
+// markRoomLoadRebuilt marks the load of room under way, if one is, as one a rebuild of the
+// document ended during (roomLoad.rebuilt), so its load hook refuses it. The hold a load already
+// past its injection check meets is the one its load hook reads (refuseIfRebuilding), and that
+// hook runs after the load's read of the store: a load that read the history before the rebuild
+// committed and reached its hook once the hold was lifted found none, and published a room of the
+// replaced history - the old head, and no list of the clients the rebuild retired. Every browser
+// that joined that room before the catch-up closed it (roomCatchUps.closeReplaced) took the
+// replaced history, with whatever it typed there, and handed both back to the rebuilt room on its
+// reconnect, to be refused as a holder of it (DOCUMENT_REBUILT_CLOSE_REASON) - the person who
+// rebuilt the document included. The rebuild marks the record before it lifts its hold
+// (Ledger.endRebuilds), so a hook that finds the hold gone finds the mark. The record marked is
+// the latest load's: one room loads at a time (beginRoomLoad), and a load that began after the
+// mark began after the transaction ended, and reads what it left. A record whose load has ended
+// is marked to no effect.
+func (s *Service) markRoomLoadRebuilt(room string) {
+	if loading, ok := s.roomLoads.Load(room); ok {
+		loading.(*roomLoad).rebuilt.Store(true)
+	}
 }
 
 // read records what the load's read of the store saw: the head, the version the room it loads

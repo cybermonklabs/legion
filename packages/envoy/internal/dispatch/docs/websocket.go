@@ -572,6 +572,13 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		taken.slot.release()
 		return err
 	}
+	// The hold is read here, after the load read the store, so a rebuild can have committed and
+	// lifted it in between: such a load read the history the rebuild replaced, and is refused as
+	// the hold would have refused it (markRoomLoadRebuilt). Its next access reads the rebuilt one.
+	if record != nil && record.rebuilt.Load() {
+		taken.slot.release()
+		return fmt.Errorf("%w: the document was rebuilt while its room loaded; retry", ErrServiceUnavailable)
+	}
 	if err := s.roomFailure(room); err != nil {
 		taken.slot.release()
 		return err
@@ -929,20 +936,37 @@ func answerWeight(live *crdt.Doc, stateBytes, structs int64) int64 {
 	if parks(live) {
 		return parkedAnswerWeight(stateBytes, structs)
 	}
-	return cutAnswerWeight(stateBytes, int64(live.ClientCount()))
+	return cutAnswerWeight(stateBytes, int64(live.ClientCount()), structs)
 }
 
-// cutAnswerWeight is what an answer cut from a room's own structs takes of the pod's copy heap:
-// the larger of the room's tracked state at answerHeapAStateByte and its clients at
-// answerHeapAClient, at least a byte and at most one slot, as every taker is (copyWeight).
+// cutAnswerWeight is what an answer cut from a room's own structs takes of the pod's copy heap, at
+// most one slot, as every taker is (copyWeight): the larger of the room's tracked state at
+// answerHeapAStateByte, and its clients at answerHeapAClient with the update the cut is packing
+// beside them (answerFrameWeight). The state term prices the updates the cut has written, which
+// it holds until the answer is sent; the other prices the record the cut builds of each struct of
+// the update it is still packing, and the queue it keeps for each client. The grant is the larger
+// of the two and not their sum because the larger covered every room measured
+// (answerHeapAStruct), and a sum would charge the frame again to every room whose state term
+// already covers it: a room of a mebibyte of prose is granted 24,281,920 bytes on its state, as
+// it was before the frame was priced, where the update at its fullest asks 1,412,096 beside the
+// clients.
 //
 // The room's clients are what this answer's heap follows, and the library counts them in constant
 // time under the document's read lock (crdt.Doc.ClientCount, theorem.3). A room of many structs
 // and few clients is therefore priced for the clients it has: a run of a million keystrokes is
 // granted 63,869,984 bytes where it measures 25,428,848 at most, against the 340,003,400 the
 // room's struct count would have charged it.
-func cutAnswerWeight(stateBytes, clients int64) int64 {
-	return min(max(stateBytes*answerHeapAStateByte, clients*answerHeapAClient, 1), loadSlotBytes)
+func cutAnswerWeight(stateBytes, clients, structs int64) int64 {
+	return min(max(stateBytes*answerHeapAStateByte, clients*answerHeapAClient+answerFrameWeight(structs)), loadSlotBytes)
+}
+
+// answerFrameWeight is what the update an answer's cut is packing holds, for a room of structs
+// structs, with what any answer holds whatever its room: answerHeapAnAnswer, and
+// answerHeapAStruct for each of the room's structs up to answerFrameStructs, the most structs one
+// update can hold. The structs are the ones ygo counts for the answer and hands weighStateAnswer
+// (websocket.StateAnswerInfo.Structs), so the term reads nothing of the document.
+func answerFrameWeight(structs int64) int64 {
+	return answerHeapAnAnswer + min(structs, answerFrameStructs)*answerHeapAStruct
 }
 
 // answerHeapAStateByte is the heap an answer cut from a room's own structs holds for each byte of
@@ -968,9 +992,49 @@ const answerHeapAStateByte = 8
 // on a room of a million clients that wrote one struct each, which any browser can make, since
 // the library takes a client id from whoever sends it: 296,397,272 to 331,374,744 bytes above
 // the document, the most 331.37 bytes a client, which is 22.09 bytes a byte of its state. It is
-// set past the most, as bytesOfHeapAStruct is, and is charged on the room's structs while they
-// stand in for its clients (cutAnswerWeight).
+// set past the most, as bytesOfHeapAStruct is, and is charged on the clients the room holds
+// structs of, as the library counts them (crdt.Doc.ClientCount, cutAnswerWeight).
 const answerHeapAClient = 340
+
+// answerHeapAStruct is the heap an answer cut from a room's own structs holds for each struct of
+// the update it is packing: a 24-byte record of where the struct's bytes lie in the update, a
+// 16-byte range of the update's delete set for a struct that is deleted, and the struct's own
+// bytes, each kept in an array that is held twice over while it grows (crdt.SplitStateAsUpdateV1:
+// the splitter's spans, pieceDS and arena, the first and last of which it keeps from one update
+// to the next). The state term prices a struct by its bytes, and the smallest struct is two
+// bytes, a GC struct any browser can send: a run of 11,947 of them held 914,840 bytes where the
+// state term granted 193,224, and the keystroke and split-dense runs an editor makes fell short
+// of it too.
+//
+// Measured 2026-11-15 on theorem-labs/ygo v1.55.1-theorem.6, on a copy of the fork that collects
+// at every growth of those arrays, of each encoder and of each update's copy and reads the live
+// heap above the document there, counting the array a growth copies from: 680 readings of rooms
+// of 4 to 137,127 structs - runs of GC structs of one client, rooms of 1, 64, 127, 128 and 200 GC
+// structs a client, keystroke runs, split-dense runs, prose, a thousand clients beside a GC run
+// and the rooms the tests answer - of which 585 held more than the state and client terms alone
+// granted. answerHeapAStruct and answerHeapAnAnswer are the pair that covers all of them: with
+// 4,096 set aside, the most a room needed was 85.95 bytes a struct (a run of 2,048 characters
+// with every other one deleted, 181,656 bytes beside its two clients' 680), then 83.90 (a run of
+// 257 GC structs, 27,176) and 79.54 (542 structs of 200 GC structs a client, 48,568). It is set
+// past the most, as bytesOfHeapAStruct is.
+const answerHeapAStruct = 88
+
+// answerHeapAnAnswer is the heap an answer cut from a room's own structs holds whatever the room:
+// the splitter, its maps, the encoders and each update's three copies at their smallest. The ten
+// structs of the seeded paragraph held 2,800 to 3,296 bytes in all, 2,076 beyond their 880 a
+// struct and their client's 340, and the document a test room is seeded with 2,112 to 2,480. It
+// is set at 4,096, past those, which is what leaves answerHeapAStruct at the 85.95 the
+// small-struct rooms needed rather than the 95.90 a 2,048 would.
+const answerHeapAnAnswer = 4_096
+
+// answerFrameStructs is the most structs one update of an answer can hold, past which the update
+// the cut is packing grows no further. An update is at most stateAnswerMessageBytes, and the
+// smallest a struct is in one is four bytes: a GC struct at a clock under 128 and its range of
+// the delete set, two bytes each, with each client's group header shared by the 128 such structs
+// a client can hold. Measured as answerHeapAStruct is, the most one update held was 15,791 in
+// rooms of 127 and of 128 GC structs a client whose client ids take four bytes, and 15,962 where
+// the ids count from 1, so that the first 127 take one. It is set past the most.
+const answerFrameStructs = 16_000
 
 // parkedAnswerWeight is what an answer cut from a room's encoded state takes of the pod's copy
 // heap, the path a room holding parked structs or parked deletions takes: parkedAnswerCopyPercent

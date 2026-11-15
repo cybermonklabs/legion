@@ -463,6 +463,230 @@ func answerFrames(t *testing.T, doc *crdt.Doc, step1 []byte) [][]byte {
 	return frames
 }
 
+// A state answer to a room of small structs holds no more live heap than its grant at the mid
+// sizes, where the update its cut is packing is most of what it holds (answerFrameWeight): a run
+// of 12,288 GC structs of one client, the smallest struct a browser can send, whose update's
+// record of its structs grows from 11,946 to 15,360 as the cut packs it; 1,024 clients of one GC
+// struct each beside that run, whose queues the cut holds beside that record; 135 clients of 127
+// GC structs each, whose update holds the most structs one can (answerFrameStructs), so that its
+// record grows past 15,360; and a run of 4,096 keystrokes, a room an editor makes. Before the
+// update was priced the four were granted 198,840, 348,840, 290,488 and 230,520 bytes, and read
+// 925,232 to 930,680, 999,160, 1,164,112 and 315,720 to 318,496 of live heap here; they are
+// granted 1,087,000, 1,525,272, 1,458,336 and 366,104 now.
+//
+// It reads the live heap (liveHeapPeak), in a process of its own (measuredAlone) whose collections
+// stop the world (GODEBUG gcstoptheworld=1), rather than the peak measureLoad samples, which
+// counts garbage a collection at copyMeasurementGCPercent has not reached yet: that peak put the
+// keystrokes' answer at 561,560 bytes, where 312,968 to 323,104 of them were live.
+func TestAStateAnswerAtMidSizesHoldsNoMoreLiveHeapThanItsGrant(t *testing.T) {
+	skipUnderRace(t)
+	godebug := "gcstoptheworld=1"
+	if inherited := os.Getenv("GODEBUG"); inherited != "" {
+		godebug = inherited + "," + godebug
+	}
+	t.Setenv("GODEBUG", godebug)
+	if !measuredAlone(t) {
+		return
+	}
+	step1 := ygsync.EncodeSyncStep1(crdt.New())
+	for _, shape := range []struct {
+		name string
+		doc  func(t *testing.T) *crdt.Doc
+	}{
+		{"a run of 12,288 GC structs of one client", func(t *testing.T) *crdt.Doc { return smallStructsDocument(t, 0, 0, 12_288) }},
+		{"1,024 clients of one GC struct each beside that run", func(t *testing.T) *crdt.Doc { return smallStructsDocument(t, 1_024, 1, 12_288) }},
+		{"135 clients of 127 GC structs each", func(t *testing.T) *crdt.Doc { return smallStructsDocument(t, 135, 127, 0) }},
+		{"a run of 4,096 keystrokes", func(t *testing.T) *crdt.Doc {
+			doc := seededDocumentCopy(t)
+			chainedRun(t, doc, lastCharacter(t, doc), 1_000, 4_096)
+			return doc
+		}},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			doc := shape.doc(t)
+			if parks(doc) {
+				t.Fatal("the document parks something, so its answer is not cut from its own structs")
+			}
+			state, structs := int64(len(crdt.EncodeStateAsUpdateV1(doc, nil))), int64(doc.StructCount())
+			grant := answerWeight(doc, state, structs)
+			reading := liveHeapPeak(t, func() any { return answerFrames(t, doc, step1) })
+			t.Logf("%d structs of %d clients, %d-byte state: at most %d bytes of live heap above the document over %d collections in %d answers, against a %d-byte grant",
+				structs, doc.ClientCount(), state, reading.peak, reading.collections, reading.runs, grant)
+			if reading.peak > grant {
+				t.Errorf("the answer held %d bytes of live heap above the document, %d past its %d-byte grant",
+					reading.peak, reading.peak-grant, grant)
+			}
+		})
+	}
+}
+
+// An answer to a small room is granted near what it holds, and not the update a cut can pack at
+// its fullest: what that update holds is bounded by the room's own structs (answerFrameWeight),
+// so a room of ten structs is charged for ten. The guard is what the answer allocates in all,
+// which bounds from above whatever it holds at once: the grant is held to twice that, which
+// leaves the price its rounding past the most measured and fails any price that charges a small
+// room the fullest update's 1,412,096 bytes, or a flat 950,000 for the update whatever the room,
+// where the seeded paragraph's answer allocates 3,840 in all. The rooms are the seeded
+// paragraph, ten structs; a run of 64 keystrokes; a run of 256 GC structs, the heaviest struct
+// for its bytes; and a run of 1,000 keystrokes. It runs in a process of its own (measuredAlone),
+// where nothing else allocates while the answer is counted.
+func TestAnAnswerFromASmallRoomIsGrantedNoMoreThanTwiceWhatItAllocates(t *testing.T) {
+	skipUnderRace(t)
+	if !measuredAlone(t) {
+		return
+	}
+	step1 := ygsync.EncodeSyncStep1(crdt.New())
+	keystrokes := func(count int) func(t *testing.T) *crdt.Doc {
+		return func(t *testing.T) *crdt.Doc {
+			doc := seededDocumentCopy(t)
+			chainedRun(t, doc, lastCharacter(t, doc), 1_000, count)
+			return doc
+		}
+	}
+	for _, shape := range []struct {
+		name string
+		doc  func(t *testing.T) *crdt.Doc
+	}{
+		{"the seeded paragraph", seededDocumentCopy},
+		{"a run of 64 keystrokes", keystrokes(64)},
+		{"a run of 256 GC structs of one client", func(t *testing.T) *crdt.Doc { return smallStructsDocument(t, 0, 0, 256) }},
+		{"a run of 1,000 keystrokes", keystrokes(1_000)},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			doc := shape.doc(t)
+			if parks(doc) {
+				t.Fatal("the document parks something, so its answer is not cut from its own structs")
+			}
+			state, structs := int64(len(crdt.EncodeStateAsUpdateV1(doc, nil))), int64(doc.StructCount())
+			grant := answerWeight(doc, state, structs)
+			allocated := answerAllocation(t, doc, step1)
+			t.Logf("%d structs of %d clients, %d-byte state: the answer allocates %d bytes in all, against a %d-byte grant (%.2f of it)",
+				structs, doc.ClientCount(), state, allocated, grant, float64(grant)/float64(allocated))
+			if grant > 2*allocated {
+				t.Errorf("the answer to a room of %d structs is granted %d bytes, more than twice the %d it allocates in all",
+					structs, grant, allocated)
+			}
+		})
+	}
+}
+
+// answerAllocation is the fewest bytes an answer to step1 from doc allocated in all over five
+// answers (runtime.MemStats.TotalAlloc), after one that warms what it reuses: what else the
+// process allocates meanwhile can only add to a reading, so the fewest is the nearest.
+func answerAllocation(t *testing.T, doc *crdt.Doc, step1 []byte) int64 {
+	t.Helper()
+	runtime.KeepAlive(answerFrames(t, doc, step1))
+	fewest := int64(math.MaxInt64)
+	for range 5 {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		frames := answerFrames(t, doc, step1)
+		runtime.ReadMemStats(&after)
+		runtime.KeepAlive(frames)
+		fewest = min(fewest, int64(after.TotalAlloc-before.TotalAlloc))
+	}
+	return fewest
+}
+
+// smallStructsDocument is the seeded document holding clients clients of each GC structs each
+// and, beside them, a run of run GC structs of one client: the smallest structs a browser can
+// send, two bytes each of the room's state, and client ids a browser names of its own, as any
+// browser can.
+func smallStructsDocument(t *testing.T, clients, each, run int) *crdt.Doc {
+	t.Helper()
+	doc := seededDocumentCopy(t)
+	groups := clients
+	if run > 0 {
+		groups++
+	}
+	frame := newV1Frame(groups)
+	if run > 0 {
+		frame = frame.group(run, gcFillClient, 0)
+		for range run {
+			frame = frame.gc(1)
+		}
+	}
+	for client := range clients {
+		frame = frame.group(each, uint64(gcFillClient+1+client), 0)
+		for range each {
+			frame = frame.gc(1)
+		}
+	}
+	if err := crdt.ApplyUpdateV1(doc, frame.noDeletes(), nil); err != nil {
+		t.Fatalf("apply the small structs: %v", err)
+	}
+	return doc
+}
+
+// liveHeapReading is what liveHeapPeak read: the most live heap a collection marked above what
+// was live before the cut first ran, how many collections ended while it ran, and how many times
+// it ran.
+type liveHeapReading struct {
+	peak        int64
+	collections uint64
+	runs        int
+}
+
+// liveHeapPeak runs cut again and again, for a second and at least five times, with the collector
+// at a GOGC of 1, and reads the live heap each collection marks as it ends (/gc/heap/live:bytes).
+// At that rate a few collections end within each run of the cut, at points that move from run to
+// run, so over a second they fall across the whole cut and the most any of them marks is its peak
+// to within what it allocates between two of them: runs of 12,288 to 49,152 GC structs of one
+// client read 915,128 to 949,160 bytes this way, where a collection at every growth of the cut's
+// arrays and encoders, on a copy of the fork instrumented for it, read 914,840 for each. It is
+// live heap only where each collection stops the world, as in a process started with GODEBUG
+// gcstoptheworld=1: a concurrent collection marks as live whatever is allocated while it marks,
+// which at this rate is most of what the cut allocates. The goroutine reading each mark as it
+// ends needs a processor of its own beside the cut's.
+func liveHeapPeak(t *testing.T, cut func() any) liveHeapReading {
+	t.Helper()
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(max(2, runtime.GOMAXPROCS(0))))
+	defer debug.SetGCPercent(debug.SetGCPercent(1))
+	marks := func() []metrics.Sample {
+		return []metrics.Sample{{Name: "/gc/heap/live:bytes"}, {Name: "/gc/cycles/total:gc-cycles"}}
+	}
+	before := marks()
+	runtime.GC()
+	runtime.GC()
+	metrics.Read(before)
+	base, last := int64(before[0].Value.Uint64()), before[1].Value.Uint64()
+	stop, read := make(chan struct{}), make(chan liveHeapReading, 1)
+	stopReading := sync.OnceFunc(func() { close(stop) })
+	defer stopReading()
+	go func() {
+		var reading liveHeapReading
+		marked := marks()
+		for {
+			select {
+			case <-stop:
+				read <- reading
+				return
+			default:
+			}
+			metrics.Read(marked)
+			if cycles := marked[1].Value.Uint64(); cycles != last {
+				reading.collections += cycles - last
+				last = cycles
+				reading.peak = max(reading.peak, int64(marked[0].Value.Uint64())-base)
+			}
+		}
+	}()
+	var kept any
+	runs := 0
+	for deadline := time.Now().Add(time.Second); runs < 5 || time.Now().Before(deadline); runs++ {
+		kept = nil
+		kept = cut()
+	}
+	stopReading()
+	reading := <-read
+	runtime.KeepAlive(kept)
+	reading.runs = runs
+	if reading.collections == 0 {
+		t.Fatal("no collection ended while the cut ran, so nothing read its live heap")
+	}
+	return reading
+}
+
 // useLoadSlots makes slots the process's load concurrency for the rest of t (podLoadSlots).
 func useLoadSlots(t *testing.T, slots *loadSlots) *loadSlots {
 	t.Helper()

@@ -1063,9 +1063,12 @@ func (s *Service) heldTree(ctx context.Context, artifactID string) (tree *pmdoc.
 // roomWeight). The state is nil when this server holds the document, and the structs are then
 // nothing: a room the budget already charges is joined rather than weighed.
 //
-// The structs are this decode's own count, free where a count of its own would cost a second
-// decode (crdt.Doc.StructCount): the copy decoded here holds what the room's own load will hold,
-// since both decode the same bytes under the same pending cap.
+// The structs are this decode's own reading, taken as an apply reports them (heldStructs): the
+// structs its store holds and those parked in its pending queue, each once. The copy decoded
+// here holds what the room's own load will hold - both decode the same bytes under the same
+// pending cap, and the encoded state carries what the room parks - so a reading of the store
+// alone (crdt.Doc.StructCount) would under-charge a room whose pending queue is heavy by
+// everything in it (the class of review 5856254176's second High, found again here).
 //
 // A durable history that does not decode is ErrDocumentUnloadable and fails the room, as ygo's
 // own load of it would, and so is one whose runs do not apply in order (unappliedHistory), which
@@ -1104,7 +1107,7 @@ func (s *Service) loadTree(ctx context.Context, artifactID string) (*pmdoc.Node,
 		return nil, &history.loaded, 0, nil
 	}
 	tree, err = treeOf(history.decoded.doc)
-	return tree, &history.loaded, int64(history.decoded.doc.StructCount()), err
+	return tree, &history.loaded, int64(heldStructs(history.decoded.doc)), err
 }
 
 func renderTokenTree(tree *pmdoc.Node) (string, string, error) {

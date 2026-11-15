@@ -364,13 +364,18 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: document %s is already being rebuilt", ErrDocumentLive, artifactID)
 	}
 	ledgerFrom(ctx).holdRebuild(artifactID)
-	// A room still loading is not resident yet. It reads the same history the check below reads,
-	// so it can only fail on a history that cannot load, and its successor load is refused above.
-	// A room stays resident for roomIdleTimeout after its last editor leaves, and ygo's idle
-	// sweep that then evicts it runs every 30 seconds, so the refusal names two minutes. A load
-	// that starts after this check reads the history this transaction has not yet replaced and
-	// fails on it, since it cannot load, or, once the rebuild commits, reads the rebuilt head:
-	// versions only increase, so its room holds the rebuilt update and none it would mistake for it.
+	// A room still loading is not resident yet, so the check below does not see it, and it reads
+	// the history this transaction is about to replace. One that cannot load fails it. One that
+	// loads - a history near a cap - is refused at the room's load hook, which runs after that
+	// read: by the hold while it stands, and once the commit lifts it, by the mark the hold
+	// leaves on the load under way as it goes (Ledger.endRebuilds, markRoomLoadRebuilt). Without
+	// the mark a load that read before the commit and reached its hook after it published a room
+	// of the replaced history, with no list of the clients this rebuild retires, which a browser
+	// joining it took and handed back to the rebuilt room on its reconnect. A load that starts
+	// once the rebuild commits reads the rebuilt head: versions only increase, so its room holds
+	// the rebuilt update and none it would mistake for it. A room stays resident for
+	// roomIdleTimeout after its last editor leaves, and ygo's idle sweep that then evicts it runs
+	// every 30 seconds, so the refusal names two minutes.
 	//
 	// The other envoy-dispatch processes' rooms are asked the same through a holds query below: a
 	// member that answers it holds a room of the document refuses the rebuild as this server's

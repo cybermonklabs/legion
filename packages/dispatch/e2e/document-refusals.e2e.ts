@@ -137,34 +137,45 @@ async function pendingEditCount(page: Page, artifactId: string): Promise<number>
   }, artifactId);
 }
 
-/** One document socket a page opened: every SyncStep2 and Update frame the page sent on it, and
- *  every one the server sent it, each the whole frame, in order. */
-interface DocumentSocket {
-  received: number[][];
-  sent: number[][];
+/** What a page's document sockets were told, as a row reads it: the close code of every document
+ *  socket the page saw close, in order; how many document sockets it opened; and the flag of every
+ *  SyncStatus frame one received, 1 applied and 0 not. It carries no frame: the frames are read
+ *  once, by `replacedHistoryHandoffs`, and only by the rows that count handovers. */
+interface DocumentSockets {
+  closes: number[];
+  opened: number;
+  statuses: number[];
 }
 
-interface DocumentSockets {
-  /** The close code of every document socket the page saw close, in order. */
+/** In the page: every SyncStep2 and Update frame one document socket sent, and every one the
+ *  server sent it, each the whole frame as it crossed, in order. They stay bytes in the page. A
+ *  record that copied each frame into an array of numbers and handed every frame back on every
+ *  read cost the rows that read only closes and SyncStatus answers most of their time: a document
+ *  at the bound is forty-odd frames of 64 KiB, and the read-only row polls the record. */
+interface RecordedSocket {
+  received: Uint8Array[];
+  sent: Uint8Array[];
+}
+
+interface RecordedSockets {
   closes: number[];
-  /** Every document socket the page opened, in order. */
-  sockets: DocumentSocket[];
-  /** The flag of every SyncStatus frame a document socket received: 1 applied, 0 not. */
+  sockets: RecordedSocket[];
   statuses: number[];
 }
 
 declare global {
   interface Window {
-    documentSockets?: DocumentSockets;
+    documentSockets?: RecordedSockets;
   }
 }
 
 /** Records, inside every page `page` loads, what its document sockets were told and handed: the
  * close codes the server closed them with, the SyncStatus answers it gave, and the update frames
- * each socket carried either way. Install before navigating. */
+ * each socket carried either way. Install before navigating. Answers a read of all but the frames
+ * (`DocumentSockets`); `replacedHistoryHandoffs` reads those. */
 async function recordDocumentSockets(page: Page): Promise<() => Promise<DocumentSockets>> {
   await page.addInitScript(() => {
-    const record: DocumentSockets = { closes: [], sockets: [], statuses: [] };
+    const record: RecordedSockets = { closes: [], sockets: [], statuses: [] };
     window.documentSockets = record;
     const readVarUint = (bytes: Uint8Array, at: { pos: number }): number => {
       let value = 0;
@@ -197,14 +208,14 @@ async function recordDocumentSockets(page: Page): Promise<() => Promise<Document
     };
     const Native = window.WebSocket;
     window.WebSocket = class extends Native {
-      recorded: DocumentSocket | undefined;
+      recorded: RecordedSocket | undefined;
 
       constructor(url: string | URL, protocols?: string | string[]) {
         super(url, protocols);
         if (!new URL(String(url), window.location.href).pathname.startsWith("/ws/doc/")) {
           return;
         }
-        const recorded: DocumentSocket = { received: [], sent: [] };
+        const recorded: RecordedSocket = { received: [], sent: [] };
         this.recorded = recorded;
         record.sockets.push(recorded);
         this.addEventListener("close", (event) => record.closes.push(event.code));
@@ -217,21 +228,27 @@ async function recordDocumentSockets(page: Page): Promise<() => Promise<Document
           if (status !== undefined) {
             record.statuses.push(status);
           } else if (update) {
-            recorded.received.push(Array.from(bytes));
+            // The event's buffer is this frame's own, so the frame is kept as it came, uncopied.
+            recorded.received.push(bytes);
           }
         });
       }
 
       override send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
         if (this.recorded !== undefined && data instanceof Uint8Array && read(data).update) {
-          this.recorded.sent.push(Array.from(data));
+          this.recorded.sent.push(data.slice());
         }
         super.send(data);
       }
     };
   });
   return async () => {
-    const record = await page.evaluate(() => window.documentSockets);
+    const record = await page.evaluate(() => {
+      const recorded = window.documentSockets;
+      return recorded === undefined
+        ? undefined
+        : { closes: recorded.closes, opened: recorded.sockets.length, statuses: recorded.statuses };
+    });
     if (record === undefined) {
       throw new Error("the page loaded before recordDocumentSockets installed its script");
     }
@@ -240,8 +257,8 @@ async function recordDocumentSockets(page: Page): Promise<() => Promise<Document
 }
 
 /** The Yjs update a SyncStep2 or Update frame carries. */
-function updateOf(frame: number[]): Uint8Array {
-  const decoder = createDecoder(Uint8Array.from(frame));
+function updateOf(frame: Uint8Array): Uint8Array {
+  const decoder = createDecoder(frame);
   readField(decoder); // the document name
   readVarUint(decoder); // the Sync tag
   readVarUint(decoder); // the step
@@ -249,27 +266,47 @@ function updateOf(frame: number[]): Uint8Array {
 }
 
 /**
- * The sockets a page opened after its first `from`, on which it handed the document server the
+ * The sockets `page` opened after its first `from`, on which it handed the document server the
  * history a rebuild replaced, each as the size of the update that carried it: a struct of a client
  * the rebuilt document retired, below the clock it lists, which the server refuses as DOC_REBUILT
  * (envoy's `weighPeerUpdate`, whose log line names the same `update_bytes`). The list of retired
  * clients is the one the server sent the page on any of its sockets. This reads what the page sent
  * rather than the closes it saw: the server closes the socket at once after its refusal, and a
  * close frame the connection's reset overtakes reaches the page as an abnormal closure (1006),
- * with no reason. The server closes a socket at its first refusal, so each counts once.
+ * with no reason. The server closes a socket at its first refusal, so each counts once. The
+ * frames cross from the page once, here, as base64, and are decoded on this side, where Yjs is.
  */
-function replacedHistoryHandoffs(record: DocumentSockets, from: number): number[] {
-  const told = new Y.Doc();
-  for (const socket of record.sockets) {
-    for (const frame of socket.received) {
-      Y.applyUpdate(told, updateOf(frame));
+async function replacedHistoryHandoffs(page: Page, from: number): Promise<number[]> {
+  const frames = await page.evaluate((first) => {
+    const record = window.documentSockets;
+    if (record === undefined) {
+      return undefined;
     }
+    const base64 = (bytes: Uint8Array): string => {
+      let binary = "";
+      for (let at = 0; at < bytes.length; at += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+      }
+      return btoa(binary);
+    };
+    return {
+      received: record.sockets.flatMap((socket) => socket.received.map(base64)),
+      sent: record.sockets.slice(first).map((socket) => socket.sent.map(base64)),
+    };
+  }, from);
+  if (frames === undefined) {
+    throw new Error("the page loaded before recordDocumentSockets installed its script");
+  }
+  const updateIn = (frame: string) => updateOf(new Uint8Array(Buffer.from(frame, "base64")));
+  const told = new Y.Doc();
+  for (const frame of frames.received) {
+    Y.applyUpdate(told, updateIn(frame));
   }
   const retired = retiredClients(told);
   const handoffs: number[] = [];
-  for (const socket of record.sockets.slice(from)) {
-    const replaced = socket.sent
-      .map(updateOf)
+  for (const sent of frames.sent) {
+    const replaced = sent
+      .map(updateIn)
       .find((update) =>
         Y.decodeUpdate(update).structs.some(({ id }) => id.clock < (retired.get(id.client) ?? 0))
       );
@@ -717,8 +754,8 @@ test("a used-up document refuses a larger merge as needing a rebuild, and saves 
     });
     // Each browser's document sockets from here on are the ones that can meet the rebuilt room.
     const beforeRebuild = {
-      alice: (await sockets()).sockets.length,
-      bob: (await bobSockets()).sockets.length,
+      alice: (await sockets()).opened,
+      bob: (await bobSockets()).opened,
     };
     await offer.click();
     await expect(page.getByText(NEEDS_REBUILD)).toHaveCount(0);
@@ -746,9 +783,9 @@ test("a used-up document refuses a larger merge as needing a rebuild, and saves 
     // At most one DOC_REBUILT refusal for each browser of the row, counted from what each page
     // sent: Alice's none, and Bob's the one his reconnect met.
     const bobRecord = await bobSockets();
-    expect(replacedHistoryHandoffs(await sockets(), beforeRebuild.alice)).toEqual([]);
+    expect(await replacedHistoryHandoffs(page, beforeRebuild.alice)).toEqual([]);
     expect(
-      replacedHistoryHandoffs(bobRecord, beforeRebuild.bob),
+      await replacedHistoryHandoffs(typing, beforeRebuild.bob),
       `the sizes of the replaced histories Bob's page handed the rebuilt room; its document sockets closed with ${bobRecord.closes.join(", ")}`
     ).toHaveLength(1);
   } finally {
@@ -785,7 +822,7 @@ test("a browser holding the history someone else's rebuild replaced is told the 
     transport.hold();
     // Every document socket her page opens from here on is held until after the rebuild, so these
     // are the ones that can meet the rebuilt room.
-    const beforeRebuild = (await sockets()).sockets.length;
+    const beforeRebuild = (await sockets()).opened;
     await transport.sever();
     await typeAtEnd(page, "typed before the rebuild");
     await expect.poll(() => pendingEditCount(page, artifactId)).toBeGreaterThan(0);
@@ -819,7 +856,7 @@ test("a browser holding the history someone else's rebuild replaced is told the 
     // Bob's page opens no document, so it has none to count.
     const record = await sockets();
     expect(
-      replacedHistoryHandoffs(record, beforeRebuild),
+      await replacedHistoryHandoffs(page, beforeRebuild),
       `the sizes of the replaced histories Alice's page handed the rebuilt room; its document sockets closed with ${record.closes.join(", ")}`
     ).toHaveLength(1);
   } finally {

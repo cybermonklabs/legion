@@ -525,6 +525,113 @@ func TestRebuildingADocumentNearTheScanTotalLeavesItWithASmallScanTotalAndReadin
 	}
 }
 
+// A load of a document's room that read the stored history before a rebuild of it committed, and
+// reaches its load hook once the commit has lifted the rebuild's hold, is refused, and the next
+// load reads the rebuilt history. The hook read only the hold, which was gone by then, and
+// published a room of the replaced history: the old head, and no list of the clients the rebuild
+// retired. A browser that joined that room before the catch-up closed it took the replaced
+// history and handed it back to the rebuilt room on its reconnect, to be refused as a holder of
+// it. In the used-up row of e2e/document-refusals.e2e.ts (1 run of 37) that was the person who
+// clicked the rebuild: Bob's reconnect during the rebuild loaded the room, and Alice's editor,
+// admitted again once the rebuild answered, joined it, and was told someone else had rebuilt the
+// document; where she had typed into that room first, her typing was dropped with it.
+//
+// The load here is the one a cold socket makes: its admission read the history and offered it
+// (offerPreload), and the room's load takes it while the stored head is still the one it was read
+// at (takePreload). That head is read, and then held until the rebuild has committed, as a decode
+// of a large history holds a load between its read and its hook.
+func TestARoomLoadThatReadTheHistoryARebuildReplacedIsRefusedOnceTheRebuildCommits(t *testing.T) {
+	state := tangledHistory(t, 2_000, roomScanTotal-honestHandoffScans)
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	storeHistory(t, service, artifactID, state)
+	closeResidentRoom(t, service, artifactID)
+	var mu sync.Mutex
+	var decoded [][]byte
+	service.bootstrapping = func(room string, state []byte) {
+		mu.Lock()
+		defer mu.Unlock()
+		if room == artifactID {
+			decoded = append(decoded, state)
+		}
+	}
+	decodedSince := func(from int) [][]byte {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([][]byte(nil), decoded[from:]...)
+	}
+	ctx := context.Background()
+	tree, loaded, _, err := service.loadTree(ctx, artifactID)
+	if err != nil || loaded == nil || !bytes.Equal(loaded.Update, state) {
+		t.Fatalf("the admission's read of the stored history: %v, want the tangled history", err)
+	}
+	service.offerPreload(artifactID, loaded, admissionRendering{tree: tree})
+	heads := &heldHead{VersionedStore: service.persistence, room: artifactID, armed: make(chan struct{}, 1), read: make(chan struct{}), release: make(chan struct{})}
+	service.persistence = heads
+	heads.armed <- struct{}{}
+	loading := make(chan error, 1)
+	go func() { loading <- service.warmLiveDocument(ctx, artifactID) }()
+	select {
+	case <-heads.read:
+	case err := <-loading:
+		t.Fatalf("the room loaded without reading its head (%v)", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the room's load never read its head")
+	}
+	if _, _, err := rebuildDocument(t, service, artifactID, nil); err != nil {
+		close(heads.release)
+		t.Fatalf("rebuild the document while its room loads: %v", err)
+	}
+	close(heads.release)
+	err = <-loading
+	if published := decodedSince(0); err == nil || len(published) != 0 {
+		t.Fatalf("the load that read the history before the rebuild committed answered %v and decoded %d states (the replaced history: %v), want it refused with nothing decoded",
+			err, len(published), len(published) == 1 && bytes.Equal(published[0], state))
+	}
+	if !errors.Is(err, ErrServiceUnavailable) {
+		t.Fatalf("the load that read the replaced history was refused with %v, want %v, which a browser retries", err, ErrServiceUnavailable)
+	}
+
+	if err := service.warmLiveDocument(ctx, artifactID); err != nil {
+		t.Fatalf("load the rebuilt room: %v", err)
+	}
+	rebuilt, err := service.persistence.Load(ctx, artifactID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := decodedSince(0)
+	if len(published) != 1 || !bytes.Equal(published[0], rebuilt.Update) {
+		t.Fatalf("the next load decoded %d states, want the rebuilt history alone", len(published))
+	}
+	if retired := retiredClientsOf(decodedHistory(t, published[0])); len(retired) == 0 {
+		t.Fatal("the room the next load published lists no retired client, so a browser holding the replaced history would not be refused")
+	}
+}
+
+// heldHead is the service's store with its first read of room's head once armed held, after the
+// read, until release closes: read closes once that read is made.
+type heldHead struct {
+	VersionedStore
+	room    string
+	armed   chan struct{}
+	read    chan struct{}
+	release chan struct{}
+}
+
+func (h *heldHead) Head(ctx context.Context, room string) (persistence.Version, error) {
+	head, err := h.VersionedStore.Head(ctx, room)
+	if room != h.room {
+		return head, err
+	}
+	select {
+	case <-h.armed:
+		close(h.read)
+		<-h.release
+	default:
+	}
+	return head, err
+}
+
 // A browser that held a document before its rebuild still holds the history the rebuild replaced,
 // and the edits it made while disconnected. When it reconnects, the rebuilt room holds none of
 // that history, so the browser's answer to the room's sync hands all of it back with its unsent

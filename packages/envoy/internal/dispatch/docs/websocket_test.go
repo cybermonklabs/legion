@@ -854,27 +854,57 @@ func TestUnauthenticatedDocumentRequestsDoNotAllocateRooms(t *testing.T) {
 //
 // A room that parks nothing is cut from its own structs (crdt.SplitStateAsUpdateV1), which
 // decodes nothing, so a browser joining it is answered under what that cut costs
-// (cutAnswerWeight) rather than under a whole copy of the document.
+// (cutAnswerWeight) rather than under a whole copy of the document: the larger of the room's
+// state at answerHeapAStateByte, and its clients at answerHeapAClient with the update the cut is
+// packing beside them (answerFrameWeight). The clients are the ones the library holds structs of
+// (crdt.Doc.ClientCount): the cut keeps a queue and a map entry for each of them, and of its
+// structs the updates they are written into, which the state term prices, and a record of each
+// struct of the one update it is packing, which the frame term prices (theorem-labs/ygo
+// crdt/split.go: what it allocates grows with the updates it returns and the document's clients,
+// not with its structs). The room here is one paragraph its seeding writer wrote and
+// forgedClients client ids a browser named of its own, one GC struct each, as any browser can, so
+// its clients and its update outweigh its state and set the grant: 17 clients at 340 bytes is
+// 5,780 and the update of its 20 structs 5,856 more, 11,636, where its 379 bytes of tracked state
+// cost 3,032, the same price with no client 5,856, a price on its 20 structs read as clients
+// 12,656 and its parked path's grant 18,774. The paragraph alone is one client and 139 bytes of
+// state, which leaves the client term too small to see.
 func TestAnAnswerFromARoomThatParksNothingIsGrantedWhatItsCutCosts(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour // no settlement takes a grant while the browser joins
 	seedServiceText(t, service, artifactID, "One paragraph of ordinary prose.")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
-	awaitAnswer(t, connectPeer(t, httpServer.URL, artifactID, "alice"), "the document")
+	writer := connectPeer(t, httpServer.URL, artifactID, "alice")
+	awaitAnswer(t, writer, "the document")
+	const forgedClients = 16
+	forged := newV1Frame(forgedClients)
+	for client := range uint64(forgedClients) {
+		forged = forged.group(1, gcFillClient+client, 0).gc(1)
+	}
+	if err := writer.Write(ygsync.EncodeUpdate(forged.noDeletes())); err != nil {
+		t.Fatalf("send the forged clients: %v", err)
+	}
+	waitFor(t, 10*time.Second, "the room to hold the forged clients", func() bool {
+		live := service.srv.GetDoc(artifactID)
+		return live != nil && live.ClientCount() == 1+forgedClients
+	})
 	live, replica := answeringRoom(t, service, artifactID)
 	if parks(live) {
 		t.Fatal("the room parks something, so its answer is cut from its encoded state")
 	}
 
 	granted := grantOfAJoin(t, httpServer.URL, artifactID)
-	state, structs := replica.roomStateBytes(), int64(live.StructCount())
-	if want := cutAnswerWeight(state, structs); granted != want {
-		t.Fatalf("the answer to a room that parks nothing held %d bytes of the pod's copy heap, want the %d its cut costs; a room that parks is granted %d",
-			granted, want, parkedAnswerWeight(state, structs))
+	state, clients, structs := replica.roomStateBytes(), int64(live.ClientCount()), int64(live.StructCount())
+	want := cutAnswerWeight(state, clients, structs)
+	if cutAnswerWeight(state, 0, structs) == want {
+		t.Fatalf("the room's %d clients change nothing of its %d-byte grant, so its grant shows nothing of what its clients cost", clients, want)
 	}
-	t.Logf("an answer carrying %d structs of %d bytes of tracked state, cut from the room's structs, held %d bytes of the pod's copy heap",
-		structs, state, granted)
+	if granted != want {
+		t.Fatalf("the answer to a room that parks nothing held %d bytes of the pod's copy heap, want the %d its cut costs for its %d clients; a price on its %d structs read as clients is %d, and a room that parks is granted %d",
+			granted, want, clients, structs, cutAnswerWeight(state, structs, structs), parkedAnswerWeight(state, structs))
+	}
+	t.Logf("an answer carrying %d structs of %d clients and %d bytes of tracked state, cut from the room's structs, held %d bytes of the pod's copy heap",
+		structs, clients, state, granted)
 }
 
 // A room holding a parked struct is cut from its encoded state instead: the encode merges what
@@ -909,7 +939,7 @@ func TestAnAnswerFromARoomHoldingAParkedStructIsGrantedWhatItsDecodesCost(t *tes
 	state, structs := replica.roomStateBytes(), int64(live.StructCount()+live.PendingStats().Items)
 	if want := parkedAnswerWeight(state, structs); granted != want {
 		t.Fatalf("the answer to a room holding a parked struct held %d bytes of the pod's copy heap, want the %d its decodes cost; a room that parks nothing is granted %d",
-			granted, want, cutAnswerWeight(state, structs))
+			granted, want, cutAnswerWeight(state, int64(live.ClientCount()), structs))
 	}
 	t.Logf("an answer carrying %d structs of %d bytes of tracked state, cut from the room's encoded state, held %d bytes of the pod's copy heap",
 		structs, state, granted)

@@ -53,11 +53,12 @@ body: |-
     pool of bytes, the pod's load concurrency: a whole-document decode, a live write's fork and one
     apply of a browser's update over 2 MiB each take out of it what their own copy costs, at the
     same two prices, and the answer to one browser's first sync takes what the path ygo answers
-    that room by measured - for a room that parks nothing, 8 bytes a byte of its state or 340 bytes
-    a struct it holds, whichever is more, and for a room holding an update it cannot place yet,
-    whose answer decodes the whole document twice, 149 per cent of a whole copy. A taker heavier
-    than the whole pool waits for all of it and runs alone rather than being refused, so a stored
-    document always loads and no honest handoff is turned away.
+    that room by measured - for a room that parks nothing, 8 bytes a byte of its state, or 340 bytes
+    a client it holds with 4,096 bytes and 88 a struct for the frame of the answer being packed,
+    counted up to the 16,000 structs a frame can hold, whichever is more; and for a room holding an
+    update it cannot place yet, whose answer decodes the whole document twice, 149 per cent of a
+    whole copy. A taker heavier than the whole pool waits for all of it and runs alone rather than
+    being refused, so a stored document always loads and no honest handoff is turned away.
 
     What the server holds for one browser's socket is bounded as well, at 70 MiB of frames queued
     for it and not yet written. ygo bounded that queue in frames alone - 512 of them, whatever

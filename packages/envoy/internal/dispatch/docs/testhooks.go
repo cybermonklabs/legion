@@ -691,9 +691,16 @@ func DocumentReadWeightForTest(markdown string) (int64, error) {
 
 // StateStructsForTest is the structs state, a document's encoded Yjs state, decodes into
 // (crdt.Doc.StructCount): the count a room's own state holds once a load has read it, parked
-// structs left out, since a state a room stored holds none. A real-process drive counts a
-// document's stored state with it to know how many structs the writes it made added, without
-// loading the document itself.
+// structs left out. A real-process drive counts a document's stored state with it to know how
+// many structs the writes it made added, without loading the document itself, and leaving the
+// parked ones out is what that measurement wants: a write adds to the store.
+//
+// A state an ordinary room stored parks nothing, since every struct it holds was integrated. A
+// crafted one can: an update whose structs wait on clocks nothing supplies is stored as it
+// arrived, and this decode parks them under maxUpdateItems, where this count leaves them out.
+// So this reading is of the store alone and is no measure of what such a state costs a room;
+// nothing is charged from it (heldStructs is what a charge reads, growth.go), and a drive that
+// means the whole of a crafted state must say so and read it another way.
 func StateStructsForTest(state []byte) (int64, error) {
 	doc := newCappedDocumentCopy(maxUpdateItems)
 	if err := decodeStoredState(doc, state); err != nil {
