@@ -43,7 +43,8 @@ import {
 export function artifactVersionUrl(
   artifactID: string,
   version: number,
-  // Links only: the server names the file and answers no-cache; pictures keep the year-long cache.
+  // Links only: the server answers no-cache there, and a document as its Markdown file;
+  // pictures keep the year-long cache.
   options: { download?: boolean } = {}
 ): string {
   const url = `/api/v1/artifacts/${encodeURIComponent(artifactID)}/versions/${version}`;

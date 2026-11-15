@@ -17,12 +17,13 @@ import { expect, type Locator, type Page, test } from "./test";
 
 // Every "Download version N" link goes to the download address,
 // `/api/v1/artifacts/<id>/versions/<n>?download=true`, where the server names the file in
-// `Content-Disposition` (its own name, `-v<n>` before the extension of an older version, `.md` on
-// a document) and answers `Cache-Control: private, no-cache`. These rows read the name the
-// browser saves each download under (`suggestedFilename`), which is the engine's reading of
-// `filename*` and `filename`, and a name that changes at an address the browser already followed
-// once, which only an engine that asks the server again can save. A picture keeps the version
-// address, which a browser may cache for a year.
+// `Content-Disposition` (its own name, `-v<n>` before the extension of an older version, and
+// `.md` added to a document's name that ends in neither `.md` nor `.markdown`, whatever their
+// case) and answers `Cache-Control: private, no-cache`. These rows read the name the browser
+// saves each download under (`suggestedFilename`), which is the engine's reading of `filename*`
+// and `filename`, and a name that changes at an address the browser already followed once, which
+// only an engine that asks the server again can save. A picture keeps the version address, which
+// a browser may cache for a year.
 
 /** A file to upload, in the shape Playwright's multipart writes and file inputs take. */
 interface UploadFile {
@@ -211,8 +212,8 @@ test("an older version of a document saves with its number and its own Markdown 
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Notes download" });
-  // A document that is not the issue's spec: the issue page draws the Versions list only off the
-  // primary document's own route (`ArtifactRoutePanel`).
+  // A document that is not the issue's spec: the issue page draws no Versions list on its spec's
+  // route, only on another document's (`ArtifactRoutePanel`).
   const notes = await createIssueArtifact(issue.key, {
     content: "# Review notes\n\nThe ledger keeps three leases.\n",
     name: "notes.md",

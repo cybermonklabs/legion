@@ -1025,7 +1025,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	for _, version := range artifact.Versions {
 		latest = max(latest, version.Number)
 	}
-	// The file name is the artifact's name as this read finds it, so a renamed artifact downloads
+	// The file name is the artifact's name as this read finds it, so a renamed document downloads
 	// under its new name, and an older version's carries its number (versionFilename).
 	filename := versionFilename(artifact.Name, artifact.Kind, number, latest)
 	if artifact.Kind == "doc" {

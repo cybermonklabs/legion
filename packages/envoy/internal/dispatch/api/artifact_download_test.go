@@ -17,7 +17,10 @@ import (
 
 // The rows of this file read each version through the four version routes and nothing else. They
 // call none of the functions that name a download, so applied onto a tree without them they still
-// build, and each fails on the header it reads.
+// build. There each row that reads a name or download=true fails on the header it reads, and the
+// OpenAPI row on the parameter the committed document does not declare; the row that reads a
+// document without download=true (TestADocumentVersionAnswersItsJSONUnlessDownloadIsExactlyTrue)
+// passes there, as it must.
 
 // The two cache answers of a file's or an image's version. The version address keeps the bytes a
 // year, since they never change. The download address asks again before each use, since the name

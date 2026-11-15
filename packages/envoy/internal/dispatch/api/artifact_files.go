@@ -253,9 +253,10 @@ func plainFilename(name string) string {
 
 // percentEncodeFilename is name as a `filename*` parameter's value, the text after its charset
 // and language: every byte outside RFC 8187's attr-char set percent-encoded. Hand-rolled because
-// the standard library's escapes are for URLs, not for this: url.PathEscape leaves a semicolon, a
-// comma and a quote through, each of which would end the parameter where the name has not, and
-// url.QueryEscape writes a space as a plus sign, which a client reads as a plus sign.
+// the standard library's escapes are for URLs, not for this: url.PathEscape leaves a colon, an
+// equals sign and an at sign through, which that set does not hold and RFC 8187 allows only
+// percent-encoded, and url.QueryEscape writes a space as a plus sign, which a client reads as a
+// plus sign.
 func percentEncodeFilename(name string) string {
 	const hexDigits = "0123456789ABCDEF"
 	var encoded strings.Builder

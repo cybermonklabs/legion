@@ -2941,7 +2941,7 @@ before, for the reasons given under `webkit` and `firefox` above.
 No project above them runs those three files, so each row runs once.
 Each of the three sets `default: false`, which leaves it out of a run that names no project and
 takes nothing from a run that names one, so the commands at the top of this section name them
-and a bare `bun run e2e` holds none of their 54 rows (a listing of the three at this head: 54
+and a bare `bun run e2e` holds none of their 51 rows (a listing of the three at this head: 51
 tests in 3 files).
 Until dispatch://INFRA-1280 each named every project before it in `dependencies` instead, which
 ordered the run and also pulled the whole suite in behind any command naming one of the three
