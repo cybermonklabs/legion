@@ -359,9 +359,10 @@ test("a child's name prints an environment value only for a variable that tells 
   // The cost line and a failure print on the run's stderr, which CI keeps in a public log, so
   // `named` prints an environment entry's value only where its variable tells one run of a command
   // from another (`runTellingVariables`), and every other entry by its name alone: a token no mask
-  // knows, a connection string that holds a password, and PGPASSWORD alike. A name the caller
-  // takes away prints as `NAME=`, and HOME, PATH and TMPDIR, which every caller gives, not at all.
-  // Every value here is made up.
+  // knows, a connection string that holds a password, and PGPASSWORD alike. A caller whose runs
+  // differ only in such a name tells them apart by DISPATCH_E2E_CASE, whose value prints. A name
+  // the caller takes away prints as `NAME=`, and HOME, PATH and TMPDIR, which every caller gives,
+  // not at all. Every value here is made up.
   const from = import.meta.url;
   expect(
     {
@@ -374,6 +375,11 @@ test("a child's name prints an environment value only for a variable that tells 
           DISPATCH_E2E_SIGNIN: "oidc",
           TEST_PARALLEL_INDEX: "1",
         },
+        from,
+      }),
+      labelled: named({
+        argv: ["psql"],
+        env: { DATABASE_URL: "host=127.0.0.1 password=sekrit", DISPATCH_E2E_CASE: "x" },
         from,
       }),
       libpq: named({
@@ -400,6 +406,7 @@ test("a child's name prints an environment value only for a variable that tells 
     runTelling:
       "e2e/__tests__/bounded-subprocess.test.ts | psql | DISPATCH_E2E_PROCESSES=2 " +
       "DISPATCH_E2E_SERVER_BIN=/given/envoy-dispatch DISPATCH_E2E_SIGNIN=oidc TEST_PARALLEL_INDEX=1",
+    labelled: "e2e/__tests__/bounded-subprocess.test.ts | psql | DATABASE_URL DISPATCH_E2E_CASE=x",
     libpq:
       "e2e/__tests__/bounded-subprocess.test.ts | psql | DATABASE_URL PASSWORD PGHOST PGPASSWORD",
     takenAway: "e2e/__tests__/bounded-subprocess.test.ts | psql | DISPATCH_E2E_SIGNIN= PGPASSWORD=",

@@ -124,11 +124,15 @@ const fakeBunDirectories = temporaryDirectories("replace-blocks-fake-bun");
 const logDirectories = temporaryDirectories("replace-blocks-log");
 
 /** The driver run from the package root with `databaseUrl`, LEGION_TEST_PG_DSN as this run has it
- *  where it has one, and no other Dispatch, Envoy or libpq variable, so what it does is the guard's
- *  own. A `bun` of the row's own stands first on PATH: it leaves a marker file, prints `log` as the
- *  instance's output, and exits 1, so a string the guard lets through starts nothing. `started` is
- *  whether that `bun` ran. */
+ *  where it has one, `label` as DISPATCH_E2E_CASE, and no other Dispatch, Envoy or libpq variable,
+ *  so what it does is the guard's own. The driver never reads DISPATCH_E2E_CASE, and its scrub
+ *  unsets it with every other DISPATCH_ variable: the runs differ only in DATABASE_URL, which the
+ *  cost line names without its value, so `label`, one per case, is what tells their cost lines
+ *  apart. A `bun` of the row's own stands first on PATH: it leaves a marker file, prints `log` as
+ *  the instance's output, and exits 1, so a string the guard lets through starts nothing.
+ *  `started` is whether that `bun` ran. */
 async function drive(
+  label: string,
   databaseUrl: string,
   log = ""
 ): Promise<{ code: number; stdout: string; stderr: string; started: boolean }> {
@@ -149,6 +153,7 @@ async function drive(
     cwd: dispatchPackage,
     env: {
       DATABASE_URL: databaseUrl,
+      DISPATCH_E2E_CASE: label,
       HOME: process.env.HOME ?? "",
       PATH: `${bin}:${process.env.PATH ?? ""}`,
       ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
@@ -186,18 +191,19 @@ async function sharedDatabaseRefusal(url: string): Promise<string> {
     : unreadReason;
 }
 
-/** A refusal row: the driver exits 2, the fake `bun` never ran, stderr gives `reason`, one of the
- *  guard's own two (unreadReason, sharedReason), and stderr holds none of `secrets`. The reason is
- *  what makes the refusal the guard's: the driver's require_commands also exits 2 and starts
- *  nothing when a command the driver needs is not on PATH, and a row that asserted the rest alone
- *  would pass without the guard running. Where stderr gives another reason, the row's failure
- *  shows the first line of stderr in its place. */
+/** A refusal row: the driver, run under `label` (`drive`), exits 2, the fake `bun` never ran,
+ *  stderr gives `reason`, one of the guard's own two (unreadReason, sharedReason), and stderr holds
+ *  none of `secrets`. The reason is what makes the refusal the guard's: the driver's
+ *  require_commands also exits 2 and starts nothing when a command the driver needs is not on
+ *  PATH, and a row that asserted the rest alone would pass without the guard running. Where stderr
+ *  gives another reason, the row's failure shows the first line of stderr in its place. */
 async function expectRefusal(
+  label: string,
   databaseUrl: string,
   reason: string,
   secrets: readonly string[]
 ): Promise<void> {
-  const { code, stderr, started } = await drive(databaseUrl);
+  const { code, stderr, started } = await drive(label, databaseUrl);
   expect(
     {
       code,
@@ -211,43 +217,51 @@ async function expectRefusal(
   ).toEqual({ code: 2, reason, printed: [], started: false });
 }
 
-for (const { shape, databaseUrl, secret } of [
+for (const { label, shape, databaseUrl, secret } of [
   {
+    label: "keyword",
     shape: "the keyword form",
     databaseUrl: "host=127.0.0.1 port=5433 password=sekrit dbname=mine",
     secret: "sekrit",
   },
   {
+    label: "keyword-quoted",
     shape: "the keyword form with a single-quoted password",
     databaseUrl: "host=127.0.0.1 password='se kr it' dbname=mine",
     secret: "se kr it",
   },
   {
+    label: "url-slash",
     shape: "a password holding a slash, as a base64 one does",
     databaseUrl: withPassword("abc/def+ghi", "mine"),
     secret: "abc/def+ghi",
   },
   {
+    label: "url-question-mark",
     shape: "a password holding a question mark",
     databaseUrl: withPassword("abc?def", "mine"),
     secret: "abc?def",
   },
   {
+    label: "url-at-sign",
     shape: "a password holding a raw at sign",
     databaseUrl: withPassword("ab@cd", "?db%6Eame=mine"),
     secret: "ab@cd",
   },
   {
+    label: "parameter-capital",
     shape: "a password parameter spelled with a capital letter",
     databaseUrl: "postgres://127.0.0.1:5433/?Password=sekrit&db%6Eame=mine",
     secret: "sekrit",
   },
   {
+    label: "parameter-escaped-capital",
     shape: "a password parameter whose name escapes a capital letter",
     databaseUrl: "postgres://127.0.0.1:5433/?pass%57ord=sekrit&db%6Eame=mine",
     secret: "sekrit",
   },
   {
+    label: "keyword-capitals",
     shape: "the keyword form with the keyword in capitals",
     databaseUrl: "host=127.0.0.1 PASSWORD=sekrit dbname=mine",
     secret: "sekrit",
@@ -256,7 +270,7 @@ for (const { shape, databaseUrl, secret } of [
   test.skipIf(withoutPsql)(
     `a refusal writes no password to stderr: ${shape}`,
     async () => {
-      await expectRefusal(databaseUrl, unreadReason, [secret]);
+      await expectRefusal(label, databaseUrl, unreadReason, [secret]);
     },
     // The driver, a bounded child under the short bound.
     rowLimit("short")
@@ -269,7 +283,7 @@ test.skipIf(withoutPsql)(
     // A person who meant user:password and left the host out: libpq reads `qq` as the port,
     // refuses it as no integer, and connects nowhere, so the guard refuses what it could not read.
     const afterScheme = "zz-unparseable:qq";
-    await expectRefusal(`postgres://${afterScheme}`, unreadReason, [afterScheme]);
+    await expectRefusal("unparseable", `postgres://${afterScheme}`, unreadReason, [afterScheme]);
   },
   // The driver, a bounded child under the short bound.
   rowLimit("short")
@@ -280,7 +294,7 @@ test.skipIf(!live)(
   async () => {
     const shared = sharedServer();
     const url = withPassword("sekrit", `?db%6Eame=${shared.database}`, shared.authority);
-    await expectRefusal(url, await sharedDatabaseRefusal(url), ["sekrit"]);
+    await expectRefusal("shared-percent-escape", url, await sharedDatabaseRefusal(url), ["sekrit"]);
   },
   // The psql that asks whether the server takes the password, then the driver, each a bounded
   // child under the short bound.
@@ -298,7 +312,11 @@ test.skipIf(!live)(
     const hidden = "x?a=b&dbname=mine&";
     const shared = sharedServer();
     const url = withPassword(hidden, shared.database, shared.authority);
-    await expectRefusal(url, await sharedDatabaseRefusal(url), [hidden, "a=b", "dbname=mine"]);
+    await expectRefusal("shared-hidden-dbname", url, await sharedDatabaseRefusal(url), [
+      hidden,
+      "a=b",
+      "dbname=mine",
+    ]);
   },
   // The psql that asks whether the server takes the password, then the driver, each a bounded
   // child under the short bound.
@@ -309,7 +327,7 @@ test.skipIf(!live)(
   "a scratch database on the shared server is let through to the start",
   async () => {
     await withScratchDatabase(async (scratch) => {
-      const { code, stdout, started } = await drive(scratch.url);
+      const { code, stdout, started } = await drive("scratch-let-through", scratch.url);
       expect(
         {
           code,
@@ -388,7 +406,7 @@ test.skipIf(!live)(
         "The fixture log's last ten lines do not hold DATABASE_URL, so this row cannot see a leak."
       ).toBe(true);
 
-      const { code, stderr, started } = await drive(scratch.url, log);
+      const { code, stderr, started } = await drive("failed-start", scratch.url, log);
       expect(
         {
           code,

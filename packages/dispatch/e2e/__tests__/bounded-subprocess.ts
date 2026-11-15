@@ -417,11 +417,16 @@ const environmentFloor = new Set(["HOME", "PATH", "TMPDIR"]);
  *  `listing` in this directory passes. `DISPATCH_E2E_PROCESSES` and `DISPATCH_E2E_SIGNIN` choose
  *  the harness's mode, and are what tells apart the listings of `no-browser-rows.test.ts` and the
  *  imports and `run-server.sh` runs of `harness-signin.test.ts` and `round-robin-proxy.test.ts`;
- *  `TEST_PARALLEL_INDEX` chooses the stack a worker reads in `harness-stacks.test.ts`; and
+ *  `TEST_PARALLEL_INDEX` chooses the stack a worker reads in `harness-stacks.test.ts`;
  *  `DISPATCH_E2E_SERVER_BIN`, the path of the server binary `run-server.sh` runs, is all that
- *  tells two of its runs in `round-robin-proxy.test.ts` apart. A variable joins this list only
- *  when its value tells two runs apart and is no URL, no credential and no path to a secret. */
+ *  tells two of its runs in `round-robin-proxy.test.ts` apart; and `DISPATCH_E2E_CASE` is set by
+ *  a caller whose runs of one command differ only in a variable whose value is not printed. It
+ *  exists to label the run: the child never reads it. Such a caller gives each of its cases a
+ *  value of its own, and a later caller with the same need sets this variable too, so this list
+ *  does not grow for each caller. A variable joins this list only when its value tells two runs
+ *  apart and is no URL, no credential and no path to a secret. */
 const runTellingVariables: ReadonlySet<string> = new Set([
+  "DISPATCH_E2E_CASE",
   "DISPATCH_E2E_PROCESSES",
   "DISPATCH_E2E_SERVER_BIN",
   "DISPATCH_E2E_SIGNIN",
