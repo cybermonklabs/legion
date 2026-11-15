@@ -1525,3 +1525,4 @@ func (h *hindsightStandin) recallCarrying(marker string) (hindsightRecall, bool)
 	}
 	return hindsightRecall{}, false
 }
+// selection probe, never merged
