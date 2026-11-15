@@ -575,6 +575,21 @@ describe("the one claim run", () => {
     expect(refused.kind).toBe("refused");
   });
 
+  test("refuses every run once two starts share the earliest time, the one it admitted included", async () => {
+    const at = "2026-11-22T10:00:00.000101Z";
+    const alone = reply("z-first", CLAIM_RUN_START, at);
+    expect(await claimRunOf(claim, "z-first", repliesOf(alone))).toEqual({
+      kind: "claim",
+      id: "z-first",
+    });
+    const tied = repliesOf(alone, reply("a-second", CLAIM_RUN_START, at));
+    for (const named of ["z-first", "a-second"]) {
+      const refused = await claimRunOf(claim, named, tied);
+      expect(refused.kind).toBe("refused");
+      if (refused.kind === "refused") expect(refused.reason).toContain(`have the same time, ${at}`);
+    }
+  });
+
   test("refuses a second claim run and any run that names no start, naming the first", async () => {
     const replies = repliesOf(first, question, second);
     for (const [named, why] of [

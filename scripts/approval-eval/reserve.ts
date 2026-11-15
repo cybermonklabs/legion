@@ -345,7 +345,8 @@ export function microsecondsOf(time: string): number | null {
  * reply edited after it was written is refused whole, since an edit can change which start came
  * first. A run that resumes the claim run names the same reply, so the code cannot tell a resume
  * from a second run made under that id: the start reply is the record of which run read the
- * final test. A thread Dispatch does not serve is refused too.
+ * final test. A thread Dispatch does not serve is refused too, and so are two starts at the
+ * earliest time Dispatch recorded: no order of theirs is on record.
  *
  * The claim run's build asks it (`build-corpus.ts`) and records the reply in `snapshot.json`;
  * every later command of the run reads only that build's corpus, and only while
@@ -396,14 +397,23 @@ export async function claimRunOf(
       reason: `start reply ${untimed.reply.id} to ${reference} has no time Dispatch recorded, so no start can be shown first`,
     };
   }
-  starts.sort((a, b) => (a.at ?? 0) - (b.at ?? 0) || a.reply.id.localeCompare(b.reply.id));
-  const first = starts[0];
+  starts.sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+  const [first, next] = starts;
   if (first === undefined) {
     return {
       kind: "refused",
       reason:
         `no claim run has started under ${reference}: reply to it with a body that starts ` +
         `"${CLAIM_RUN_START}", then set ${CLAIM_RUN_VARIABLE} to that reply's id`,
+    };
+  }
+  if (next !== undefined && next.at === first.at) {
+    return {
+      kind: "refused",
+      reason:
+        `start replies ${first.reply.id} and ${next.reply.id} to ${reference} have the same ` +
+        `time, ${first.reply.created_at}, so no start can be shown first: claim.ts registers the ` +
+        "read anew",
     };
   }
   const id = named?.trim() ?? "";
