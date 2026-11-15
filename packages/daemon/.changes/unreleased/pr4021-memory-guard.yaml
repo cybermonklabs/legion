@@ -9,4 +9,4 @@ body: |-
   size, the reading and the limit. The pod's other roles keep their turns, where before the kernel
   killed the whole gVisor sandbox. Set it under `runtime.kubernetes.memory_guard.issue_pods`
   (`enabled`, `act_percent`, `floor_percent`, `wait_seconds`, `interval_milliseconds`); it is
-  on by default. Daemon API contract 134.
+  on by default. Daemon API contract 144.

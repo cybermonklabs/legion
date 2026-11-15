@@ -361,6 +361,43 @@ export const DOCUMENT_SCHEMA_CLOSE_CODE = 4409;
  *  `contracts.DocumentSchemaCloseReason`. */
 export const DOCUMENT_SCHEMA_CLOSE_REASON = "DOC_SCHEMA";
 
+/**
+ * The close code the document websocket (`/ws/doc/{room}`) refuses a room with when the tree it
+ * holds has an element that this Dispatch process's build cannot read: a newer build wrote it while
+ * two builds serve one database during a release. It completes the upgrade and closes with this
+ * code, and `DOCUMENT_NEWER_CONTENT_CLOSE_REASON`, before any sync, so a browser editor never
+ * receives a tree it would write back without that element. The pinned `@hocuspocus/provider`
+ * (2.15) stops reconnecting only on 4401 and 1009 (`HocuspocusProviderWebsocket.ts` `onClose`), so
+ * it reconnects on this code with its backoff, and a later attempt can reach a build that reads the
+ * document. 425 is HTTP's "Too Early". Generated into Go as
+ * `contracts.DocumentNewerContentCloseCode`.
+ */
+export const DOCUMENT_NEWER_CONTENT_CLOSE_CODE = 4425;
+
+/** The reason the document websocket closes with `DOCUMENT_NEWER_CONTENT_CLOSE_CODE`: the code reads
+ *  of that document answer (`409 DOC_NEWER_CONTENT`). Generated into Go as
+ *  `contracts.DocumentNewerContentCloseReason`. */
+export const DOCUMENT_NEWER_CONTENT_CLOSE_REASON = "DOC_NEWER_CONTENT";
+
+/**
+ * The close code the document websocket (`/ws/doc/{room}`) ends an open writable socket with once
+ * the live server processes no longer admit the page that opened it: a build whose numbers the
+ * admission held against has joined or rolled away, so that page may no longer write
+ * (`RunSchemaAdmission`). The close carries this code and
+ * `DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON`; what that close waits for, and what a peer too slow
+ * to take it reads instead, are in `packages/envoy/cmd/dispatch/README.md`, "Two builds at once",
+ * which is the one statement of that rule. The pinned `@hocuspocus/provider` (2.15) stops
+ * reconnecting only on 4401, 4403 and 1009 (`HocuspocusProviderWebsocket.ts` `onClose`), so the
+ * page reconnects on this code, presents its numbers again and is admitted again: read-only,
+ * unless a live process admits it. 412 is HTTP's "Precondition Failed", which the admission the
+ * fleet withdrew is. Generated into Go as `contracts.DocumentAdmissionRevokedCloseCode`.
+ */
+export const DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE = 4412;
+
+/** The reason the document websocket closes with `DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE`.
+ *  Generated into Go as `contracts.DocumentAdmissionRevokedCloseReason`. */
+export const DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON = "DOC_ADMISSION_REVOKED";
+
 /** The close code Dispatch ends a live socket with once the socket reaches its age, a random point
  *  in [LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS). It is in the private 4000-4999 range, apart
  *  from the 4000 a page closes a silent socket with: the page reopens at once and resumes every

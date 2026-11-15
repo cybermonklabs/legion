@@ -94,12 +94,15 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 134's memory guard
+number is the one `DaemonAPIVersion` declares, last bumped by contract 144's memory guard
 (dispatch://INFRA-3557: the daemon's answer to an issue pod launcher's hello, `launcher_hello_ack`,
 carries the guard's settings in `memoryGuard`, and the launcher reports each process its guard
 ended in a new `launcher_memory_kill` frame, which names the process by its executable and no
 argument; a launcher that reads an acknowledgement with no settings runs no guard, and no shape the
-plugin parses moves), after contract 133's merge wait
+plugin parses moves), after contract 137's session account (dispatch://INFRA-3621: a pod's
+`legion launcher` may be told `--session-impersonate-service-account <email>`, a fourth session
+flag, and its session proxy then signs in to the Cloud SQL session database as that account; no
+shape the plugin parses moves), after contract 133's merge wait
 (dispatch://INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on GitHub's
 answer about merging the pull request's head carries `mergeWait`, the head the round waits on, the
 merge state the record holds for that head, when that state was last read, when GitHub last moved

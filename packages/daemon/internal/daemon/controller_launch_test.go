@@ -36,10 +36,11 @@ func controllerLaunched(t *testing.T, rt *fake.Runtime, token claim.Token) runti
 }
 
 // registeredLaunch connects launch's shim to the daemon and registers its agent as session, as the
-// controller's pod does, and returns the registration the agent is answered with.
-func registeredLaunch(t *testing.T, d *daemon, record *built, launch runtime.SpawnSpec, session string) api.ControllerRegisterResponse {
+// controller's pod does, and returns the shim the daemon prompts it on and the registration the
+// agent is answered with.
+func registeredLaunch(t *testing.T, d *daemon, record *built, launch runtime.SpawnSpec, session string) (*shim, api.ControllerRegisterResponse) {
 	t.Helper()
-	dialShim(t, record.address, launch.BootToken)
+	sh := dialShim(t, record.address, launch.BootToken)
 	testwait.Eventually(t, "the hello to reach the controller's machine", func() bool {
 		return d.claim(launch.Claim).State == string(supervise.StateShimConnected)
 	})
@@ -54,7 +55,7 @@ func registeredLaunch(t *testing.T, d *daemon, record *built, launch runtime.Spa
 	if err := json.Unmarshal(body, &registration); err != nil {
 		t.Fatalf("decode %s as the controller's registration: %v", body, err)
 	}
-	return registration
+	return sh, registration
 }
 
 // Under `controller: daemon` the daemon launches the project's controller itself, with nobody
@@ -451,7 +452,7 @@ func TestASwitchedBackDaemonWhoseStopFailsLeavesItsControllerRegistered(t *testi
 		t.Fatal(err)
 	}
 	token := claim.ControllerToken(project)
-	registration := registeredLaunch(t, d, &record, controllerLaunched(t, rt, token), "ses_pod")
+	_, registration := registeredLaunch(t, d, &record, controllerLaunched(t, rt, token), "ses_pod")
 	d.stop()
 
 	rebindHeldPorts(t, &cfg)
@@ -512,7 +513,7 @@ func TestASwitchedBackDaemonEndsOnlyItsStoppedControllersRegistration(t *testing
 		t.Fatal(err)
 	}
 	token := claim.ControllerToken(project)
-	registration := registeredLaunch(t, d, &record, controllerLaunched(t, rt, token), "ses_pod")
+	_, registration := registeredLaunch(t, d, &record, controllerLaunched(t, rt, token), "ses_pod")
 	if status, body := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/stop", nil, true); status != http.StatusOK {
 		t.Fatalf("stop the controller's claim = %d; body %s", status, body)
 	}

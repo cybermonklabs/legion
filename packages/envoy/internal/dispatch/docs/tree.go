@@ -16,18 +16,35 @@ import (
 const fragmentName = "prosemirror"
 const marksMapName = "marks"
 
+// outsideSchemaRepair ends every refusal of a tree a document holds outside the Proof schema: what
+// its one repair, a replacement from markdown, discards, and that a person decides it.
+const outsideSchemaRepair = "A replacement from markdown discards every part of the document's current content that the markdown leaves out. A person decides whether to replace the document"
+
 var (
 	ErrInvalidMarkdown = errors.New("markdown is not a Proof document")
 	ErrDocSchema       = errors.New("document is outside the Proof schema")
 	// ErrDocOutsideSchema is the tree a document holds - not one an operation just produced -
 	// refused by the Proof schema's reader or renderer. A replacement from markdown repairs it, so
-	// every route answers it alike (OutsideSchemaError).
-	ErrDocOutsideSchema = errors.New("document is outside the Proof schema; replace the document from markdown to repair it")
+	// every route answers it alike (OutsideSchemaError), and its message names what that
+	// replacement discards.
+	ErrDocOutsideSchema = errors.New(ErrDocSchema.Error() + ". " + outsideSchemaRepair)
 	// ErrDocumentUnloadable is a document whose stored history does not decode, so nothing can read
-	// or open it. A rebuild from its latest saved version restores it (RebuildDocument).
-	ErrDocumentUnloadable = errors.New("the document's stored history cannot load; rebuild it from its latest saved version")
-	ErrDocumentLive       = errors.New("document is live")
-	ErrDocumentLoads      = errors.New("this document loads; nothing to rebuild — if it is outside the schema, replace it from markdown to repair it")
+	// or open it. A rebuild from its latest saved version (RebuildDocument) restores it and discards
+	// every edit made after that version, so a person decides it.
+	ErrDocumentUnloadable = errors.New("the document's stored history cannot load. A rebuild from the latest saved version discards every edit made after that version. A person decides whether to rebuild the document")
+	// ErrDocumentLive is a rebuild refused because the document is resident in this server or in
+	// another Dispatch process.
+	ErrDocumentLive = errors.New("document is live")
+	// ErrDocumentLoads is a rebuild refused because the document's stored history loads. A
+	// rebuild is only for a history that cannot load, so its message offers no repair and tells
+	// the caller to stop and ask a person.
+	ErrDocumentLoads = errors.New("this document's stored history loads, so Dispatch refused the rebuild. Dispatch rebuilds only a document whose stored history cannot load. Stop. Ask a person what to do with this document")
+	// ErrDocNewerContent is the tree a document holds refused because it holds an element this
+	// build does not know (pmdoc.ErrUnknownElement): two builds serve one database during a
+	// release, and a newer build wrote it. It is not ErrDocSchema: no repair applies, and a
+	// replacement from markdown or a rebuild would delete the element (NewerContentError), so the
+	// message tells the caller to use neither.
+	ErrDocNewerContent = errors.New("this Dispatch process's build cannot read an element of this document. During a release, another build may serve the document. Try again in one minute. Do not replace or rebuild the document")
 )
 
 // OutsideSchemaError is ErrDocOutsideSchema with the refusal that names what is wrong. treeOf and
@@ -37,7 +54,7 @@ var (
 type OutsideSchemaError struct{ Cause error }
 
 func (e *OutsideSchemaError) Error() string {
-	return ErrDocOutsideSchema.Error() + ": " + e.Cause.Error()
+	return ErrDocSchema.Error() + ": " + e.Cause.Error() + ". " + outsideSchemaRepair
 }
 
 // Is makes it ErrDocOutsideSchema and ErrDocSchema both: a check that a tree is outside the
@@ -48,13 +65,46 @@ func (e *OutsideSchemaError) Is(target error) bool {
 
 func (e *OutsideSchemaError) Unwrap() error { return e.Cause }
 
+// NewerContentError is ErrDocNewerContent with the refusal that names the element. treeOf and
+// documentMarkdown classify a document's tree by it where they read or render it, as they do an
+// OutsideSchemaError, so every route answers it alike. An operation that would repair a tree
+// outside the schema refuses it as it refuses any other error.
+type NewerContentError struct {
+	Cause error
+	// Elements names the elements this build does not know (pmdoc.UnknownElements), as data: a
+	// caller records what the document holds without recording Cause, whose message carries
+	// whatever the chain that answered the request wrapped it in, the caller's own identity
+	// among it. newerContent fills it wherever this error is made.
+	Elements []string
+}
+
+// newerContent is cause, a refusal of an element this build does not know, as the error every
+// route answers DOC_NEWER_CONTENT, naming those elements as data.
+func newerContent(cause error) *NewerContentError {
+	return &NewerContentError{Cause: cause, Elements: pmdoc.UnknownElements(cause)}
+}
+
+func (e *NewerContentError) Error() string {
+	return ErrDocNewerContent.Error() + " (" + e.Cause.Error() + ")"
+}
+
+// Is makes it ErrDocNewerContent alone: not ErrDocSchema or ErrDocOutsideSchema, which a repair
+// answers.
+func (e *NewerContentError) Is(target error) bool { return target == ErrDocNewerContent }
+
+func (e *NewerContentError) Unwrap() error { return e.Cause }
+
 // documentSchemaError classifies err from reading, rendering or walking the tree a document holds -
 // a walk inside a write's transaction included, since a peer can have deepened that tree past the
-// schema's depth bound after the write read it: a schema refusal is an OutsideSchemaError, and any
-// other error is returned as it is.
+// schema's depth bound after the write read it: a refusal of an element this build does not know
+// is a NewerContentError, any other schema refusal is an OutsideSchemaError, and any other error is
+// returned as it is.
 func documentSchemaError(err error) error {
-	if err == nil || errors.Is(err, ErrDocOutsideSchema) {
+	if err == nil || errors.Is(err, ErrDocOutsideSchema) || errors.Is(err, ErrDocNewerContent) {
 		return err
+	}
+	if errors.Is(err, pmdoc.ErrUnknownElement) {
+		return newerContent(err)
 	}
 	if errors.Is(err, ErrDocSchema) || errors.Is(err, pmdoc.ErrSchema) {
 		return &OutsideSchemaError{Cause: err}
@@ -195,11 +245,19 @@ func asUploaded(tree *pmdoc.Node) *pmdoc.Node {
 // encodeDocumentTree writes tree into a fresh document and returns the first durable update for
 // callers that create or rebuild a document outside a live room.
 func encodeDocumentTree(tree *pmdoc.Node) ([]byte, error) {
+	return encodeDocumentTreeHolding(tree, nil)
+}
+
+// encodeDocumentTreeHolding is encodeDocumentTree for a tree whose content the document holds
+// already as held (pmdoc.UpdateHolding): a rebuild from the latest saved version puts back what
+// that version holds, an element this build may not create yet among it. held nil is
+// encodeDocumentTree.
+func encodeDocumentTreeHolding(tree, held *pmdoc.Node) ([]byte, error) {
 	doc := crdt.New()
 	fragment := doc.GetXmlFragment(fragmentName)
 	doc.GetMap(marksMapName)
 	if err := doc.TransactE(func(transaction *crdt.Transaction) error {
-		return pmdoc.Update(transaction, fragment, tree)
+		return pmdoc.UpdateHolding(transaction, fragment, tree, held)
 	}); err != nil {
 		return nil, err
 	}

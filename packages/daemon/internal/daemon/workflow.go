@@ -158,8 +158,9 @@ type workflowRuntime struct {
 	// the reads asked for (requestMappingRead) and mappingApplied is the last request a finished
 	// read covers; awaiting is each held admission event's request (awaitMappingRead), by issue key
 	// and then the sequence it was delivered at, under awaitingMu. recovering is each repository,
-	// lowercased, a read of the mapping stopped leaving out for a failed installation read whose
-	// issues are still to recover from Dispatch's listing (markRecovered, recoverRepositories),
+	// lowercased, a read of the mapping stopped leaving out for a read GitHub did not answer (its
+	// installation read, or its default-branch read past GitHub's rate limit), whose issues are still
+	// to recover from Dispatch's listing (markRecovered, recoverRepositories),
 	// under recoveringMu. silenced is, by the same repository, each issue whose apply said nothing
 	// because the repository was unread (noteUnread), which the repository's recovery takes into its
 	// scope whatever the issue resolves to by then; releaseWaits is, by repository, each child a
@@ -359,7 +360,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if tokens == nil {
 		// The workflow owns a manager it makes: a boot that fails before the workflow is returned
 		// closes it, so a token_command still waiting on a grant does not outlive the boot.
-		owned := appauth.New(cfg.GitHubApps, appauth.Options{})
+		owned := appauth.New(cfg.GitHubApps, appauth.Options{Log: log})
 		tokens = owned
 		defer func() {
 			if opened == nil {
@@ -389,6 +390,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos,
 		defaultBranches:         newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
 	}
+	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is
+	// logged and read again once the limit has passed, wherever it is made.
+	w.defaultBranches.onHold = w.heldThroughLimit
 	log.Info("legion workflow boot stage", "stage", "dispatch")
 	if err := w.loadMapping(ctx); err != nil {
 		return nil, err
@@ -412,14 +416,18 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 			return nil, err
 		}
 	}
+	// The database is shared by every project's daemon: the workflow reads this project's issues.
+	// The rows the workflow writes through these records wake the outbox's lanes (projectRecords),
+	// through the runtime, since the outbox itself is built later (attach). The records and the
+	// pool are the workflow's before it reads GitHub's spelling of each repository, since a
+	// repository whose read GitHub's rate limit refuses is served on the default branch a record
+	// of the project holds for it (holdLimited).
+	w.records = projectRecords{Store: record.NewStore(), project: cfg.Project, wake: w.wakeOutbox, log: log}
+	w.pool = st.Pool()
 	log.Info("legion workflow boot stage", "stage", "appauth")
 	if err := w.nameMapping(ctx); err != nil {
 		return nil, err
 	}
-	// The database is shared by every project's daemon: the workflow reads this project's issues.
-	// The rows the workflow writes through these records wake the outbox's lanes (projectRecords),
-	// through the runtime, since the outbox itself is built later (attach).
-	w.records = projectRecords{Store: record.NewStore(), project: cfg.Project, wake: w.wakeOutbox, log: log}
 	engineCfg := engineConfig(cfg, reviewAppLogin, hookPrompts)
 	// The engine reads and writes the pod tables of the idle release through the store's own
 	// view of this project (store.Store.PodRecordsOf), which derives the claim token's spelling
@@ -454,7 +462,6 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// blocked-by-only edit this mirror exists for, and admission runs second in any case.
 	w.handlers, w.reviewAppLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission}, reviewAppLogin
 	w.gatedSteps = cfg.Gates.Steps()
-	w.pool = st.Pool()
 	if err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, log); err != nil {
 		return nil, err
 	}
@@ -1263,6 +1270,14 @@ func (w *workflowRuntime) claimDurableState(c supervise.Claim, state supervise.C
 // (`controller: daemon`) holds a claim on no issue, so neither is a workflow fact for it: its
 // relaunch is the controller keeper's (controllerKeeper).
 //
+// The ready carries the sentence the claim's untold record of what its last let-go ended is told
+// in (supervise.RelaunchSentence, intake.ClaimReady.Relaunch), read from the claim the ready
+// wrote, so a root architect's catch-up opens with it (workflow's QueueCatchUp). A record that
+// still tells here beside an abandoned session still to tell is one of the fresh session's own
+// processes (supervise's forgetSession), and the catch-up opens with its sentence as it would for
+// any claim. The boot's replay of a ready reads the stored claim, whose record is persisted, and
+// carries what is still untold.
+//
 // The failure carries what a notice of it says beside the sentence: the cause the site that
 // failed the claim chose, the claim's budgets as that failure left them, and the limits those
 // budgets ran out against, which this runtime took from the supervisor at attach. The boot's
@@ -1275,7 +1290,11 @@ func (w *workflowRuntime) applyTerminal(ctx context.Context, c supervise.Claim, 
 	var fact intake.Fact
 	switch state {
 	case supervise.StateReady:
-		fact = intake.ClaimReady{Issue: c.Issue, Role: c.Role, Launch: c.Generation}
+		ready := intake.ClaimReady{Issue: c.Issue, Role: c.Role, Launch: c.Generation}
+		if c.EndedWork.Tells() {
+			ready.Relaunch = supervise.RelaunchSentence(c.EndedWork)
+		}
+		fact = ready
 	case supervise.StateFailed:
 		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure,
 			Death: c.LastDeathCause, StartFailure: c.LastStartFailure,

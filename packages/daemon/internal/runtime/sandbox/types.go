@@ -175,9 +175,11 @@ type Options struct {
 	// key the pod and the image probe mount at ProvidersDir/OMP_SESSION_SQL_DSN, which the shim,
 	// seeing the pointer, never exports; under cloudsql-iam no pod mounts a session key at all —
 	// each pod's launcher container (an issue pod's `roles`, the controller pod's `controller`)
-	// is told the instance, database and login once (sessionProxyFlags), proxies a socket of each
-	// generation's own to Cloud SQL as the pod itself, and writes the URL file in that
-	// generation's private directory.
+	// is told the instance, database and login once, and the Google service account to
+	// impersonate where the store names one (sessionProxyFlags), proxies a socket of each
+	// generation's own to Cloud SQL as the pod itself or, impersonating it with the pod's own
+	// credentials, as that account, and writes the URL file in that generation's private
+	// directory.
 	SessionStore ompsessions.Store
 	// Agent is the command the shim wraps, before the Oh My Pi arguments the runtime appends
 	// (`--extension <envoy plugin> --extension <legion plugin> --model @default`, `--resume`,
