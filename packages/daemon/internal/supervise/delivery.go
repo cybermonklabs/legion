@@ -238,9 +238,9 @@ type sentences struct{ abandoned, ended bool }
 //     this task being interrupted where the record says the claim's task was in it
 //     (EndedWork.TaskTurn) and this is the task that let-go took back (Interrupted) — so a task
 //     carries the one sentence and not both. In front of any other task, such as the new task of
-//     its phase that the operator's retry, or the workflow's start of a retired worker's phase,
-//     gives a worker a stop cut off in its task's turn, it says instead that the turn the agent
-//     was in was interrupted (EndedWork.inFrontOf).
+//     its phase that a retry of the stopped claim (endStopped's comment names each) gives a worker
+//     a stop cut off in its task's turn, it says instead that the turn the agent was in was
+//     interrupted (EndedWork.inFrontOf).
 //   - A task taken back from a turn (Interrupted) whose record has been told, or that no record
 //     names, still says its turn was interrupted, under the cause the claim's record names
 //     (interruptedTask): the let-go that took it back, whichever path that was, rather than the

@@ -2470,9 +2470,8 @@ func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // stop ends one claim: the runtime releases it, and it retires, recording what the released
-// process ended under the stop's own cause (endStopped, retire), so a retry that keeps the
-// session — the operator's, the controller keeper's of a retired controller, or the workflow's
-// start of a retired worker's phase (retry) — tells its next process the turn the stop cut off and
+// process ended under the stop's own cause (endStopped, retire), so a retry that keeps the session,
+// each of which endStopped's comment names, tells its next process the turn the stop cut off and
 // the background work it ended. A release that fails changes nothing, so the stop can be asked
 // again. The tree's root claim ends only with its tree: a retired root would leave the orphan
 // sweep's known set, which would then take whatever the runtime holds for the root issue — under a

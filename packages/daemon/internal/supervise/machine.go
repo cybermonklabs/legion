@@ -2826,14 +2826,12 @@ func (m *Machine) endProcess(ctx context.Context, cause string) error {
 //
 // A retirement records what the process it lets go ended under cause (letGo), and its one write
 // above carries the record (persist, or retirePending's transaction), as every let-go's own write
-// does (recordEnd). A stop passes its own cause (endStopped): every retry that keeps the session
-// relaunches a stopped claim on the session it records — `legion claims retry`, which is an
-// operator's retry in the words of dispatch://INFRA-3276 R3, the controller keeper's retry of a
-// retired controller (daemon's controllerKeeper.keep) and the workflow's start of a retired
-// worker's phase (daemon's outbox.supervise) — so the turn the stop cut off and the background
-// work it ended are told to that session's next turn (relaunchSentence). The tree's or the issue's
-// close and the agent's own exit pass noEnd: each ends the claim's work on purpose, so a record
-// left on it would tell a later start of the claim that work it ended on purpose was lost.
+// does (recordEnd). A stop passes its own cause (endStopped), whose comment names every retry
+// that relaunches a stopped claim on the session it records, so the turn the stop cut off and the
+// background work it ended are told to that session's next turn (relaunchSentence). The tree's
+// or the issue's close and the agent's own exit pass noEnd: each ends the claim's work on
+// purpose, so a record left on it would tell a later start of the claim that work it ended on
+// purpose was lost.
 func (m *Machine) retire(ctx context.Context, cause string) error {
 	m.letGo(ctx, cause)
 	m.claim.State = StateRetired

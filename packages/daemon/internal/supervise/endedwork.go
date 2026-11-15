@@ -121,10 +121,12 @@ type ActivityReport struct {
 // `legion claims stop`, the operator's close of a tree stopping its other claims, and the daemon
 // stopping a controller it launched once the deployment leaves the controller to its operator),
 // since every retry that keeps the session relaunches a stopped claim on the session it records —
-// the operator's (`legion claims retry`, RequestOperatorRetry), the controller keeper's retry of a
-// retired controller (daemon's controllerKeeper.keep, RequestRetry) and the workflow's start of a
-// retired worker's phase (daemon's outbox.supervise, RequestRetry) — and that session's next turn
-// reads what the stop ended (dispatch://INFRA-3276 R3).
+// the operator's (`legion claims retry`: RequestOperatorRetry for an architect or a worker whose
+// issue works no phase of its role, and the workflow's start of that phase, below, for a worker
+// in its phase), the controller keeper's retry of a retired controller (daemon's
+// controllerKeeper.keep, RequestRetry) and the workflow's start of a retired worker's phase
+// (daemon's outbox.supervise, RequestRetry) — and that session's next turn reads what the stop
+// ended (dispatch://INFRA-3276 R3).
 //
 // The cause is read into an agent's prompt as it stands (RelaunchSentence), so every word of it
 // that is not the daemon's own — the runtime's account of a death, the failure sentence that can
