@@ -141,15 +141,16 @@ same step before and after its change, and compares the two rows.
 | `LOADTEST_ROOT` | `${TMPDIR:-/tmp}/dispatch-loadtest` | The directory that holds all the stack's state, binaries and step output. On a Legion pod, `$TMPDIR` is `/legion/scratch/tmp`, the issue's volume. |
 | `LOADTEST_SRC` | The checkout that holds the script | The checkout that `stack.sh setup` builds `envoy-listener` and `loadgen` from, and `envoy-dispatch` unless `LOADTEST_DISPATCH_SRC` or `LOADTEST_DISPATCH_COMMIT` names another. |
 | `LOADTEST_DISPATCH_SRC` | `LOADTEST_SRC` | The checkout that `stack.sh setup` builds `envoy-dispatch` from. It need not hold this package (Before and after across commits, below). `build-info`, `meta.json` and `seed.meta.json` record its commit. |
-| `LOADTEST_PG_PORT` | `15000 + 10k` | The Postgres port. |
-| `LOADTEST_PROXY_PORT` | `15001 + 10k` | The latency proxy port. |
-| `LOADTEST_PROXY_STATS_PORT` | `15007 + 10k` | The latency proxy's wire-count port (`GET /stats`, Document rooms, below). |
-| `LOADTEST_NATS_PORT` | `15002 + 10k` | The NATS client port. |
-| `LOADTEST_NATS_MONITOR_PORT` | `15003 + 10k` | The NATS monitoring port (`/varz`). |
-| `LOADTEST_LISTENER_PORT` | `15004 + 10k` | The Envoy listener port. |
-| `LOADTEST_DISPATCH_PORT` | `15005 + 10k` | The Dispatch HTTP port. |
-| `LOADTEST_PPROF_PORT` | `15006 + 10k` | The Dispatch pprof port (`DISPATCH_PPROF_PORT`). |
-| `LOADTEST_ENVOY_PROXY_PORT` | `15008 + 10k` | The port of `envoy_proxy`, the latency proxy in front of the listener (`--envoy-rtt`). |
+| `LOADTEST_PG_PORT` | `B + 10k` | The Postgres port. |
+| `LOADTEST_PROXY_PORT` | `B + 1 + 10k` | The latency proxy port. |
+| `LOADTEST_PROXY_STATS_PORT` | `B + 7 + 10k` | The latency proxy's wire-count port (`GET /stats`, Document rooms, below). |
+| `LOADTEST_NATS_PORT` | `B + 2 + 10k` | The NATS client port. |
+| `LOADTEST_NATS_MONITOR_PORT` | `B + 3 + 10k` | The NATS monitoring port (`/varz`). |
+| `LOADTEST_LISTENER_PORT` | `B + 4 + 10k` | The Envoy listener port. |
+| `LOADTEST_DISPATCH_PORT` | `B + 5 + 10k` | The Dispatch HTTP port. |
+| `LOADTEST_PPROF_PORT` | `B + 6 + 10k` | The Dispatch pprof port (`DISPATCH_PPROF_PORT`). |
+| `LOADTEST_ENVOY_PROXY_PORT` | `B + 8 + 10k` | The port of `envoy_proxy`, the latency proxy in front of the listener (`--envoy-rtt`). |
+| `LOADTEST_PORT_RANGE_FILE` | `/proc/sys/net/ipv4/ip_local_port_range` | The file the ephemeral range is read from, which decides `B` (below). Another file is for a test of a range this machine does not have. |
 | `LOADTEST_PROXY_RTT` | `1ms` | The round trip that the proxy adds, as a Go duration. Read when the proxy starts. |
 | `LOADTEST_PG_DIRECT` | unset (`1` for a `--replay` step) | `1` connects Dispatch to Postgres directly, without the proxy. Read when Dispatch starts, so set it on `run-step.sh`. `stack.json` and `meta.json` record it as `pg_direct`. |
 | `LOADTEST_ENVOY_RTT` | unset | A Go duration: Dispatch's `ENVOY_URL` goes through `envoy_proxy` with that round trip. Read when `stack.sh reset` starts Dispatch. `run-step.sh` sets it from `--envoy-rtt` and clears it otherwise. `stack.json` and `meta.json` record it as `envoy_rtt`. |
@@ -162,8 +163,16 @@ same step before and after its change, and compares the two rows.
 
 Every process listens on `127.0.0.1`. The default ports follow `LOADTEST_ROOT`: the root's block
 `k` is the first 8 hex digits of the sha256 of its physical path, modulo 200, and each port is
-`15000 + 10k` plus the offset above, so every port lies between 15000 and 16998 and no two ports of
-a root meet. The block is a hash, not a reservation: two roots land in one block about 1 pair in
+`B + 10k` plus the offset above, so every port lies between `B` and `B + 1998` and no two ports of
+a root meet. `B` keeps every port below the machine's ephemeral range, from which the kernel takes
+the source port of every outgoing connection, so no connection of the stack can take a stack port
+before its process binds it. `B` is 15000 when the range starts at 17000 or above, as Linux's
+default (32768-60999) does. Otherwise it is the 2000 ports just below the range: a gVisor pod's
+range is 16000-65535, so there the ports are 14000-15998. When the range starts too low to leave
+2000 ports above 1023, `stack.sh setup` refuses and names both ranges, unless every
+`LOADTEST_*_PORT` is set. `stack.sh start` refuses a port inside the range, and `stack.sh setup`
+moves a port `stack.json` recorded inside it to the root's default below it. The block is a hash,
+not a reservation: two roots land in one block about 1 pair in
 200, and then they hold the same 9 ports. Two Legion roles of one pod, each with its own
 `LOADTEST_ROOT`, therefore almost always run a stack each with no port variable set; on a collision
 `stack.sh start` refuses the second stack (`check_port`, so no stack is ever shared) and the
