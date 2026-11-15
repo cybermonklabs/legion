@@ -118,8 +118,10 @@ function pageNumbers(
 }
 
 /** The numbers the live server processes register (`docs.readSchemaFleet`): the lowest V and the
- *  highest R among the rows whose heartbeat is inside the registry's 15 s live window. A row of a
- *  build before the fleet columns holds no numbers, and its zeros are what it counts as. */
+ *  highest R among the rows whose heartbeat is inside the registry's 15 s live window, a copy of
+ *  `processes.LiveWindow` (`packages/envoy/internal/dispatch/processes/processes.go`), which the
+ *  servers read. A row of a build before the fleet columns holds no numbers, and its zeros are
+ *  what it counts as. */
 async function liveFleet(): Promise<{ minVersion: number; maxCreatable: number }> {
   const read = await sql(
     `select count(*), coalesce(min(schema_version), 0), coalesce(max(schema_creatable), 0)
@@ -139,12 +141,12 @@ async function liveFleet(): Promise<{ minVersion: number; maxCreatable: number }
  * A server of a build with the fleet columns admits a page by the whole fleet's numbers
  * (`packages/envoy/cmd/dispatch/README.md`, "Two builds at once"; `schemaFleet.admits`): the
  * page's R is at most every live process's V and at most the highest live R, and its V is at
- * least the highest live R (the document holds only paragraphs, whose `since` is 1). This tree's
- * server is one, and it registers its own numbers, so a live row of V 0 is the previous build's:
- * a build before the fleet columns, which registers none. That V of 0 is under every page's R,
- * so every page of either build is read-only on this tree's server while that build is live. A
- * previous build that registers numbers equal to this tree's leaves every page of either build
- * writable on either server.
+ * least the highest live R (the document holds a heading and a paragraph, whose `since` is 1).
+ * This tree's server is one, and it registers its own numbers, so a live row of V 0 is the
+ * previous build's: a build before the fleet columns, which registers none. That V of 0 is under
+ * every page's R, so every page of either build is read-only on this tree's server while that
+ * build is live. A previous build that registers numbers equal to this tree's leaves every page of
+ * either build writable on either server.
  *
  * A server of a build before the fleet columns knows no fleet: it compares the page's V with its
  * own manifest version exactly (`schemaReadOnly` in that build), so it admits a page of its own
