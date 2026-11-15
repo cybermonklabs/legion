@@ -29,6 +29,7 @@ DELETE /api/v1/artifacts/{id}/subscribers/{session_id} any
 GET /api/v1/artifacts/{id}/text any
 POST /api/v1/artifacts/{id}/versions any
 GET /api/v1/artifacts/{id}/versions/{number} any
+POST /api/v1/artifacts/{id}/versions/{number}/reviews any
 GET /api/v1/asks/open any
 GET /api/v1/asks/{id} any
 PATCH /api/v1/asks/{id} any
