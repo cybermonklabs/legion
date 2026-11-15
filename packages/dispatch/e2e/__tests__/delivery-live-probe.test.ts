@@ -748,17 +748,21 @@ test(
 // a probe that misreads the value fails here, as does an exit 1 for any other reason, a crash at
 // load included. The server notes when it accepted the connection and when that connection
 // closed, and the row holds the time between to at least half the flag's 1 s and under
-// `heldUnderMs`. The lower bound stands at half the timer rather than at the timer itself
-// because the time between is the timer give or take the scheduling of the probe's dial and of
-// this process's accept and close handlers, so load can shorten it as well as lengthen it: in 30
-// runs of the 1 s timer under nine busy loops, three per CPU, on a pod of 3 CPUs on 2026-11-15,
-// the lowest measured 952.0 ms. The upper bound follows the module's rule, three times the
-// largest reading of its kind under load, rounded up to the next 100 ms: the largest
-// accept-to-close of a correct 1 s timer in those 30 runs was 1 123.0 ms, three times which is
-// 3 369.0 ms, so the bound is 3 400 ms. So the row catches a timer set well short, one set
-// several times too long and one left at the 45 s default; it does not catch one set between
-// about 0.5 s and about 3.4 s, such as 2 s for 1 s, which held 1 987-2 029 ms.
-const heldUnderMs = 3_400;
+// `heldUnderMs`. That time is read on the row's own silent server, from its accept of the
+// probe's connection to that connection's close. The lower bound stands at half the timer rather
+// than at the timer itself because the time between is the timer give or take the scheduling of
+// the probe's dial and of this process's accept and close handlers, so load can shorten it as
+// well as lengthen it: in 30 runs of this row alone under nine busy loops, three per CPU, on a
+// pod of 3 CPUs on 2026-11-15, the lowest measured 952.0 ms. The upper bound follows the
+// module's rule, three times the largest reading of its kind under load, rounded up to the next
+// 100 ms, read from 5 runs of the whole lane,
+// `bun test --parallel --timeout 60000 e2e/__tests__`, under nine busy loops, three per CPU, on
+// a pod of 3 CPUs on 2026-11-15: there a correct 1 s timer's accept-to-close measured
+// 1 001.6-1 048.7 ms, three times the largest of which is 3 146.1 ms, so the bound is 3 200 ms.
+// So the row catches a timer set well short, one set several times too long and one left at the
+// 45 s default; it does not catch one set between about 0.5 s and about 3.2 s, such as 2 s for
+// 1 s, which held 1 987-2 029 ms.
+const heldUnderMs = 3_200;
 
 test(
   "a watch whose socket never opens ends on its own, and not as a clean watch",
@@ -815,8 +819,8 @@ test(
       expect(
         held,
         `the probe held its connection for ${heldUnderMs} ms or longer, more than three times the ` +
-          `largest hold, 1 123.0 ms, that a correct ${openWithinMs} ms timer showed under load, ` +
-          `against the ${openWithinMs} ms that --open-within gave it`
+          `largest hold, 1 048.7 ms, that a correct ${openWithinMs} ms timer showed in the whole ` +
+          `lane under load, against the ${openWithinMs} ms that --open-within gave it`
       ).toBeLessThan(heldUnderMs);
     } finally {
       silent.stop(true);
