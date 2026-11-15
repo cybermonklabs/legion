@@ -563,7 +563,7 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
   const threadsResult = await threadsResultPromise;
   if (threadsResult.status === "rejected") throw threadsResult.reason;
   const threads = threadsResult.value;
-  const approval = approvalLine(resolved.artifact);
+  const approval = approvalLine(resolved.artifact, typeof resolved.issue?.closed_at === "string");
   const trailer = [
     ...("token" in document && document.token !== undefined
       ? [`Document token: ${document.token}`]

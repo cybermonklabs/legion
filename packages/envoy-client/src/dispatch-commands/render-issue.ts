@@ -302,7 +302,8 @@ export function issueSummary(
   const links = issue.external_links ?? [];
   const members = typeof references === "string" ? [] : (references.members ?? []);
   const spec = issue.artifacts?.find((artifact) => artifact.primary);
-  const specApproval = spec === undefined ? undefined : approvalLine(spec);
+  const specApproval =
+    spec === undefined ? undefined : approvalLine(spec, typeof issue.closed_at === "string");
   if (issue.priority === undefined) throw new Error("Dispatch issue is missing priority");
   if (issue.assignee === undefined) throw new Error("Dispatch issue is missing assignee");
   if (issue.components === undefined) throw new Error("Dispatch issue is missing components");

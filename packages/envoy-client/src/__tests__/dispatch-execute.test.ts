@@ -9243,6 +9243,125 @@ describe("executeDispatchTool", () => {
     }
   });
 
+  // A closed issue takes no approval of any kind: Dispatch refuses an approval request, a plan
+  // review and a review alike on it (409 ISSUE_CLOSED). So a stale approval on a closed issue's
+  // document, which went stale before the close, names no command to restore it, on its plan as
+  // on its spec: `dispatch read`, the trailer of `dispatch doc-read` and the issue read's spec line
+  // each say the issue is closed instead
+  // (dispatch://INFRA-3327/comment/6a7a54ba-a1c3-4de8-a7b7-504a422f48cf).
+  test("a stale approval on a closed issue names no command, since Dispatch takes no approval there", async () => {
+    const hash = "cd".repeat(32);
+    const session = "01a1b464-9df7-7298-a78f-4ff4f8284ce7";
+    const versions = [{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }];
+    const stale = {
+      state: "stale",
+      latest_version: 4,
+      version: 3,
+      content_sha256: hash,
+      content_sha256_source: "insert",
+    };
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          title: "Native workspace",
+          status: "done",
+          closed_at: "2026-11-01T00:00:00Z",
+          priority: null,
+          assignee: null,
+          claim: null,
+          components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+          route: null,
+          repo: null,
+          resolved_repo: null,
+          last_seq: 0,
+          external_links: [],
+          labels: [],
+          advances: [],
+          advances_revision: 0,
+          primary_artifact_id: "artifact-42",
+          open_asks: [],
+          artifacts: [
+            {
+              id: "artifact-42",
+              issue_key: "DSP-42",
+              project: "DSP",
+              slug: "spec",
+              name: "spec.md",
+              primary: true,
+              kind: "doc",
+              versions,
+              approval: { ...stale, kind: "person", by: { kind: "user", id: "alice" } },
+            },
+            {
+              id: "artifact-43",
+              issue_key: "DSP-42",
+              project: "DSP",
+              slug: "plan-md",
+              name: "plan.md",
+              role: "plan",
+              primary: false,
+              kind: "doc",
+              versions,
+              approval: { ...stale, kind: "plan_review", by: { kind: "session", id: session } },
+            },
+          ],
+        });
+      }
+      if (target.pathname === "/api/v1/artifacts/artifact-43/versions/4") {
+        return response({ markdown: "# Plan\n\nFour.", number: 4, sha256: hash });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/events") return response([]);
+      if (target.pathname === "/api/v1/issues/DSP-42/comments") return response([]);
+      if (target.pathname === "/api/v1/issues/DSP-42/references") {
+        return response({ members: [], truncated: false });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/coverage") {
+        return response({
+          issue: "DSP-42",
+          spec_artifact_id: "artifact-42",
+          has_plan: true,
+          requirements: [],
+          gaps: [],
+        });
+      }
+      if (target.pathname === "/api/v1/references") return response(emptyGraph("artifact"));
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+    const run = (tool: string, args: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool,
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+    const closed = ` - its issue is closed, and Dispatch records no approval of a closed issue's document, content sha256:${hash}`;
+
+    for (const [result, head] of [
+      [
+        await run("dispatch_read", { issue: "DSP-42", artifact: "plan.md" }),
+        `Approval: approved v3 by plan review (${session}), changed since (now v4)`,
+      ],
+      [
+        await run("dispatch_doc_read", { issue: "DSP-42", artifact: "plan.md", version: 4 }),
+        `Approval: approved v3 by plan review (${session}), changed since (now v4)`,
+      ],
+      [
+        await run("dispatch_read", { issue: "DSP-42" }),
+        "Spec approval: approved v3 by alice, changed since (now v4)",
+      ],
+    ] as const) {
+      expect(result.text.split("\n")).toContain(`${head}${closed}`);
+      expect(result.text).not.toContain("plan-approve");
+      expect(result.text).not.toMatch(/request[ -]approval/);
+    }
+  });
+
   test("dispatch_doc_read tells the agent when the document's approval went stale", async () => {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const target = new URL(String(url));
