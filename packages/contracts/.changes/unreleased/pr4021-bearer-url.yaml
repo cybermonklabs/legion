@@ -2,7 +2,8 @@ kind: Changed
 custom:
   Issue: pr4021
 body: |-
-  The shared redaction fixture (`capability-redaction.json`) expects the whole word after a
-  `Bearer` or an API-key label masked, a URL included, and its `note` says that the fixture is the
-  fixed list of shapes the rules cover: a secret that no named pattern marks, such as a positional
-  argument, is not masked.
+  The shared redaction fixture (`capability-redaction.json`) expects the word after a `Bearer` or
+  an API-key label masked up to the next whitespace or quote, a URL included, except a trailing
+  run of `,;:.!?` and a closing bracket followed by those or by whitespace, and its `note` says
+  that the fixture is the fixed list of shapes the rules cover: a secret that no named pattern
+  marks, such as a positional argument, is not masked.

@@ -3084,7 +3084,8 @@ A check that fails, throws or runs past its budget is a failing row carrying the
 reported by this session`, a name the table has no live row for is dropped, a detail is one line with every credential it quotes redacted, cut at 1024 bytes) and never refuses a ready for what it reports.
 The state route answers without authentication, so the extension cleans each detail the same way before it sends it, and the daemon cleans a report it reads back from the store at boot too.
 The cleaning covers the fixed list of shapes in `packages/contracts/fixtures/capability-redaction.json` and nothing else:
-after a `Bearer` or an API-key label the whole word is masked, whatever its shape;
+after a `Bearer` or an API-key label the word up to the next whitespace or quote is masked, whatever its shape, except a trailing run of `,;:.!?` and a closing bracket followed by those or by whitespace, which stay;
+a closing bracket glued to anything else is masked with the word;
 a secret that no named pattern marks, such as a positional argument (`mysql -p hunter2`, `curl -u user:pw`), is not masked.
 A boot's ready and the ready after a regained Envoy role carry no report at all, and the controller measures nothing and sends none.
 Each row's check, and the fact a passing one reports:

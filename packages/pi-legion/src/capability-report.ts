@@ -467,19 +467,21 @@ function truncateUtf8(text: string, max: number): string {
   return text.slice(0, end);
 }
 
-/** The value of the API-key and bare bearer rules: the whole word after the label, whatever its
- * shape, held markers included, as the daemon's `labeledWord`, whose comment explains it. It runs
- * to the next space or quote, and a backslash, a closing bracket or the punctuation `,;:.!?`
- * starts a run of those characters that it takes only where a character that is none of these,
- * and no space or quote, follows the run. So a quoted value keeps its closing quote, escaped or
- * not, a word keeps the punctuation of the sentence after it (`Bearer ***, retrying`), and a header
- * the Authorization rule masked keeps its closing bracket and the text after it, such as `): 401`
- * or `), retrying`, while a run that another of the word's characters follows (a URL's `://`,
- * `ab).x`, `ab).)x`) is masked with the rest of the word. Only the run's alternative takes a
- * character of the run, and the run shares no character with the one that must follow it, so the
- * word reads each run once, from the character that starts it: JavaScriptCore backtracks, where
- * the daemon's RE2 does not, and an alternative that could start inside a run would read that run
- * once per start. */
+/** The value of the API-key and bare bearer rules, as the daemon's `labeledWord`, whose comment
+ * explains it: the word after the label up to the next space or quote, held markers included,
+ * whatever its shape, except a trailing run of backslashes, closing brackets and the punctuation
+ * `,;:.!?`, which stays outside the word where only a space, a quote or the line's end follows it.
+ * So a quoted value keeps its closing quote, a word keeps the punctuation of the sentence after it
+ * (`Bearer ***, retrying`), a header the Authorization rule masked keeps its closing bracket and
+ * the text after it where only that punctuation or a space follows the bracket (`): 401`), and a
+ * word made only of such characters is not masked. A run that any other character follows is
+ * masked with the word (a URL's `://`, `ab).x`, `ab).)x`), a masked header's bracket glued to
+ * anything else among them (`)\n401`), whose tail is then lost: where the word's end is in doubt
+ * the rule masks too much and never too little. Only the run's alternative takes a character of
+ * the run, and the run shares no character with the one that must follow it, so the word reads
+ * each run once, from the character that starts it: JavaScriptCore backtracks, where the daemon's
+ * RE2 does not, and an alternative that could start inside a run would read that run once per
+ * start. */
 const LABELED_WORD = String.raw`(?:[^ "'\\)\]}>,;:.!?]|[\\)\]}>,;:.!?]+[^ "'\\)\]}>,;:.!?])+`;
 
 /**
@@ -489,8 +491,9 @@ const LABELED_WORD = String.raw`(?:[^ "'\\)\]}>,;:.!?]|[\\)\]}>,;:.!?]+[^ "'\\)\
  * pattern marks, such as a positional argument (`mysql -p hunter2`, `curl -u user:pw`), is not
  * masked. A value class runs across a `HELD_SEQUENCE`, and a separator takes a space or `HELD`. The
  * userinfo rule starts only where a run of scheme characters starts. After an API-key label or a
- * bare `Bearer`, the whole word is masked (`LABELED_WORD`), whatever its shape, so a URL there reads
- * `Bearer ***` with or without a userinfo. The JWT rule starts nowhere its first segment's class
+ * bare `Bearer`, the word up to the next space or quote is masked (`LABELED_WORD`, which says what
+ * it leaves outside), whatever its shape, so a URL there reads `Bearer ***` with or without a
+ * userinfo. The JWT rule starts nowhere its first segment's class
  * could have run on from: not after held, a C1 introducer or a value character, and not after a
  * held `[` and its parameters, followed by any final byte or by a `\uXXXX` escape whose backslash
  * is that final byte. Its one lookbehind for the held prefix reads like the daemon's rule, which

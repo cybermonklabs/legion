@@ -356,22 +356,24 @@ const heldSequence = `\x{FFFE}|\x{FDD0}|\x{FFFF}(?:\[[0-?]*[@-~])?`
 // also ran across one would let one run hold a start after each opener in it.
 const jwtFirstHeldSequence = `\x{FFFE}|\x{FFFF}(?:\[[0-?]*[@-~])?`
 
-// labeledWord is the value of the API-key and bare bearer rules: the whole word after the label,
-// whatever its shape, held markers included. It runs to the next space or quote, and a backslash,
-// a closing bracket (`)`, `]`, `}`, `>`, where the Authorization rule's unquoted value ends) or
-// the punctuation `,;:.!?` starts a run of those characters that it takes only where a character
-// that is none of these, and no space or quote, follows the run. So the word ends before such a
-// run that only a space, a quote or the line's end follows: a quoted value keeps its closing
-// quote, escaped or not (`\"x-api-key\":\"***\"`), a word keeps the punctuation of the sentence
-// after it (`Bearer ***, retrying`, `api-key: ***: why`), and a header the Authorization rule
-// masked keeps its closing bracket and the text after it, such as `): 401` or `), retrying`,
-// where a word that took the bracket would leave that header's value no bracket to end at on the
-// next pass, so it would be masked to the line's end. A run that another of the word's characters
-// follows (a URL's `://` and `:8080/`, an IPv6 host's `]:8080`, `ab).x`, `ab).)x`) is masked with
-// the rest of the word. Only the run's alternative takes a character of the run, and the run
-// shares no character with the one that must follow it, so the word reads each run once, from
-// the character that starts it: in the plugin's JavaScriptCore, which backtracks, an alternative
-// that could start inside a run would read that run once per start.
+// labeledWord is the value of the API-key and bare bearer rules: the word after the label up to
+// the next space or quote, held markers included, whatever its shape, except a trailing run of
+// backslashes, closing brackets (`)`, `]`, `}`, `>`, where the Authorization rule's unquoted value
+// ends) and the punctuation `,;:.!?`: such a run stays outside the word where only a space, a
+// quote or the line's end follows it. So a quoted value keeps its closing quote, escaped or not
+// (`\"x-api-key\":\"***\"`), a word keeps the punctuation of the sentence after it
+// (`Bearer ***, retrying`, `api-key: ***: why`), a header the Authorization rule masked keeps its
+// closing bracket and the text after it where only that punctuation or a space follows the bracket
+// (`): 401`, `), retrying`), and a word made only of such characters is not masked. A run that any
+// other character follows is masked with the word, as a URL's `://` and `:8080/`, an IPv6 host's
+// `]:8080`, `ab).x` and `ab).)x` are. That includes a masked header's bracket glued to anything
+// else (`)\n401`, `)/retry`, an escape sequence): the word takes `***)` and what follows, the next
+// pass masks that header's value to the line's end, and the tail is lost. Where the word's end is
+// in doubt the rule masks too much and never too little (dispatch://INFRA-3557, the architect's
+// decision of round 5). Only the run's alternative takes a character of the run, and the run
+// shares no character with the one that must follow it, so the word reads each run once, from the
+// character that starts it: in the plugin's JavaScriptCore, which backtracks, an alternative that
+// could start inside a run would read that run once per start.
 const labeledWord = `(?:[^ "'\\)\]}>,;:.!?]|[\\)\]}>,;:.!?]+[^ "'\\)\]}>,;:.!?])+`
 
 // credentialRules are the credential shapes redactCredentials replaces, each keeping what names
@@ -384,8 +386,9 @@ const labeledWord = `(?:[^ "'\\)\]}>,;:.!?]|[\\)\]}>,;:.!?]+[^ "'\\)\]}>,;:.!?])
 // the Authorization header runs before the bare bearer rule, so a header under any scheme loses its
 // whole value and keeps a listed scheme's label, and the GitHub rule before the JWT rule, so a
 // stateless installation token (`ghs_<app id>_<JWT>`) reads `ghs_***`. After an API-key label or a
-// bare `Bearer`, the whole word is masked (labeledWord): what stands there is the credential,
-// whatever its shape, so a URL there reads `Bearer ***` with or without a userinfo. A userinfo the
+// bare `Bearer`, the word up to the next space or quote is masked (labeledWord, which says what it
+// leaves outside): what stands there is the credential, whatever its shape, so a URL there reads
+// `Bearer ***` with or without a userinfo. A userinfo the
 // Authorization rule opens takes a second pass: where a control rune parts a userinfo from its `@`
 // (`http://u:pw`, a control rune, an Authorization value that runs across spaces to a `)` before
 // the `@`), the Authorization rule masks what stood between them on the first pass and the

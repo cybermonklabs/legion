@@ -2,8 +2,9 @@ kind: Fixed
 custom:
   Issue: pr4021
 body: |-
-  A capability detail now masks the whole word after a `Bearer` or an API-key label, whatever its
-  shape: a URL there reads `Bearer ***`, where before the text after its scheme could show
-  (`Bearer http://u:SECRET` read `Bearer ***://u:SECRET`). The masking covers the fixed list of
-  shapes in the shared fixture and nothing else: a secret that no named pattern marks, such as a
-  positional argument (`mysql -p hunter2`), is not masked.
+  A capability detail now masks the word after a `Bearer` or an API-key label up to the next
+  whitespace or quote, whatever its shape, except a trailing run of `,;:.!?` and a closing bracket
+  followed by those or by whitespace: a URL there reads `Bearer ***`, where before the text after
+  its scheme could show (`Bearer http://u:SECRET` read `Bearer ***://u:SECRET`). The masking
+  covers the fixed list of shapes in the shared fixture and nothing else: a secret that no named
+  pattern marks, such as a positional argument (`mysql -p hunter2`), is not masked.

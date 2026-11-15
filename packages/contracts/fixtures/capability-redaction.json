@@ -1,5 +1,5 @@
 {
-  "note": "The patterns are the fixed list of shapes the rules cover, and nothing outside it is masked: a secret that no named pattern marks, such as a positional argument (`mysql -p hunter2`, `curl -u user:pw`), stays as it is. After a `Bearer` or an API-key label the whole word is masked, whatever its shape, a URL included. Go's (?i) folds U+212A (Kelvin sign) and U+017F (long s) to k and s, where JavaScript's /i does not, so on a detail holding either the daemon masks more than the plugin, by design: the daemon's cleaning is the one the store and the state keep. No case here holds either.",
+  "note": "The patterns are the fixed list of shapes the rules cover, and nothing outside it is masked: a secret that no named pattern marks, such as a positional argument (`mysql -p hunter2`, `curl -u user:pw`), stays as it is. After a `Bearer` or an API-key label the word up to the next whitespace or quote is masked, whatever its shape, a URL included, except a trailing run of `,;:.!?` and a closing bracket followed by those or by whitespace, which stay, so a word made only of those characters is not masked; a closing bracket glued to anything else is masked with the word. Go's (?i) folds U+212A (Kelvin sign) and U+017F (long s) to k and s, where JavaScript's /i does not, so on a detail holding either the daemon masks more than the plugin, by design: the daemon's cleaning is the one the store and the state keep. No case here holds either.",
   "patterns": [
     {
       "pattern": "url-userinfo",
@@ -390,6 +390,12 @@
       "name": "a closing bracket, a dot and another closing bracket inside the word, masked with the rest of it",
       "detail": "Bearer ab).)SECRET",
       "want": "Bearer ***"
+    },
+    {
+      "pattern": "bearer",
+      "name": "a closing bracket glued to a JSON-escaped newline and more text, masked with the word to the next whitespace",
+      "detail": "Bearer x)\\n401 invalid token",
+      "want": "Bearer *** invalid token"
     },
     {
       "pattern": "bearer",
