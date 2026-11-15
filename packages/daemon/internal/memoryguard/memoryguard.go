@@ -38,6 +38,16 @@
 // What it may end is its caller's to say (Classifier): the launcher protects Legion's own
 // processes and the agents', and INFRA-3531's controller pod protects its own. The package
 // protects only its own process.
+//
+// In a pod that runs in a GKE Sandbox microVM (INFRA-3729) the launcher runs Guest in place of the
+// guard (guest.go). The microVM's kernel is the pod's own, and its out-of-memory killer stops one
+// process rather than the whole sandbox, so Guest ends nothing. At each scan it raises to
+// oom_score_adj 1000 every process of a role that the same Classifier does not protect, and sets
+// each protected process that reads above the starting score back to it, so that the kernel stops
+// a command before an agent. It names each process that the kernel stopped from a rise of the
+// cgroup's oom_kill counter, writes the guard's own ended line for it and gives the sink a Kill
+// with the kernel's cause, and it logs the cgroup's memory each hour. Like the guard, it runs only
+// where its launcher is the container's first process.
 package memoryguard
 
 import (

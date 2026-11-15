@@ -2611,7 +2611,7 @@ runtime:
     skills_repository: <owner>/<name>   # optional: the Oh My Pi plugin marketplace every issue pod's roles install their skills from, cloned in an init container of the pod's own (below)
     setup: [/bin/sh, -c, '<command>']   # optional: run in every role's namespace before each start of its Oh My Pi (below)
     test_postgres: true         # optional, default false: every issue pod's roles container serves its own PostgreSQL for tests (A test database in the pod, above)
-    memory_guard:               # optional: the memory guard in each issue pod's launcher (The memory guard in an issue pod, below)
+    memory_guard:               # optional: the memory guard in each gVisor issue pod's launcher; a microVM issue pod runs the guest watch instead (The memory guard in an issue pod, Memory in a microVM pod, below)
       issue_pods: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 5, interval_milliseconds: 100 }   # the defaults
 bind: <the daemon host's own address, or 0.0.0.0 once advertise_host names one>
 advertise_host: <optional: a stable Service name, e.g. legion-daemon-<project>.<namespace>.svc, every pod dials instead of bind, at worker_stream_port>
@@ -3253,10 +3253,13 @@ the launcher's `--microvm` and metadata flags and the projected token are fixed 
 So a role of a gVisor pod whose issue joins `canary_issues` starts in gVisor until the round replaces that pod.
 
 **Rolling back.**
-A daemon of an earlier release refuses the key at boot (`unknown key runtime.kubernetes.sandbox`), so a rollback removes the `sandbox` block from `legion.yaml` before it pins the earlier release.
+The release that adds the block is daemon API contract 151, whose entry in `packages/daemon/internal/api/version.go` is for `dispatch://INFRA-3729`.
+A daemon below contract 151 refuses the key at boot (`unknown key runtime.kubernetes.sandbox`), so a rollback below that contract removes the `sandbox` block from `legion.yaml` before it pins the earlier release.
 `legion start --check-config` of that release shows the refusal first.
 An earlier daemon reads no `sandbox` member in a pod's recorded shape, so it replaces a microVM pod only for another drift.
 The earlier image is such a drift, so each microVM pod's update round brings its issue back to a gVisor pod.
+Where a microVM pod's launcher connects to such a daemon before that round replaces the pod, the daemon's answer carries no `kernelKills`.
+The launcher then drops each report of a process the pod's kernel stopped, with a line, and tells no role; the `ended` line stays in the container's log ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
 
 #### The pod-local metadata endpoint
 
@@ -3341,7 +3344,160 @@ Each library read the project `example-project` and the fake service's token, th
 
 #### Memory in a microVM pod
 
-A later commit of this change writes this subsection.
+A microVM's kernel is the pod's own, and its out-of-memory killer stops one process of the container rather than the whole pod.
+So a microVM issue pod's launcher runs no memory guard ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), and writes one line that says so:
+
+```text
+launcher: memory guard: off reason=the pod runs in a microVM, whose own kernel stops one process
+```
+
+It runs the guest watch in the guard's place (`memoryguard.Guest`, `packages/daemon/internal/memoryguard/guest.go`, started by `serveMemoryGuard`, `packages/daemon/internal/launcher/memoryguard.go`).
+The guest watch ends no process itself.
+It steers the pod's kernel to stop a command before an agent, names each process the kernel stopped, tells that process's role, and logs the pod's memory each hour.
+As the guard does, it runs only where the launcher is the container's first process: a launcher started any other way writes the guard's `off reason=the launcher is pid <n>, …` line and runs neither.
+The launcher knows that its pod runs in a microVM from its own `--microvm` flag, which is fixed when the pod is built, and never from the daemon's answer.
+`runtime.kubernetes.memory_guard` configures the gVisor guard alone:
+the guest watch runs whatever that block says, `enabled: false` included, and a microVM pod's launcher applies no `memoryGuard` settings from any answer.
+
+**The score.**
+The watch lists the container's processes every 100 ms, the guard's default interval, which `interval_milliseconds` does not change.
+It asks the guard's classifier which processes are protected and whose role each one is (`podClassifier`, "What it protects, and why" in [The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
+At each scan it raises to `oom_score_adj` 1000 every process of a role that the classifier does not protect, where that process reads lower:
+an external program a command runs, a language server, the eval kernel, and a process that an Oh My Pi restart left under the role's `role-init`.
+It reads the process's start time again before each write, so a pid that another process took is not raised.
+
+The processes the classifier protects keep the starting score, which is the launcher's own `oom_score_adj` at its start:
+the launcher and the steps it runs itself, each `role-init` and shim, each agent, Oh My Pi's `__omp_worker_*` helpers, the Claude bridge's processes and the test database.
+The watch sets one of them that reads above the starting score back to it, so an agent that raises its own score in its in-process shell does not stay raised.
+A process of no role that the classifier does not protect, such as a shell that `kubectl exec` started, keeps the score it reads.
+The kernel's out-of-memory killer stops the process with the highest `oom_score`, which `oom_score_adj` raises, so it stops a raised process before any protected one.
+
+The watch can only raise a score.
+The `roles` container drops every capability, and without `CAP_SYS_RESOURCE` no process can set a score below a process's starting value, so no agent can be set below the starting score.
+An agent set lower would also shield its commands, since a process starts at its parent's score.
+A process can raise the score of another process of the same user with no capability, and it can set a raised process back to the starting score with none either.
+A write that fails, as a write to a process that is not dumpable does, is logged once (`score failed`, below), counted in the hour's `unraised`, and not tried again while that process lives.
+
+**What the score does not do.**
+
+- It does not cover an external program's first moments.
+  A program starts at its parent's score, which is the starting score when the agent's shell ran it, and keeps that score until the next scan raises it, 100 ms at most.
+  In that time the kernel ranks it with the agents by its size alone.
+
+- It does not separate the memory of Oh My Pi's shell from Oh My Pi's own.
+  Oh My Pi's bash tool runs its shell inside the Oh My Pi process, so a builtin of that shell, such as `cat`, `grep`, `sed`, `head` or `tail`, uses the agent's own memory at the agent's score.
+  Only an external program that the shell starts is a process of its own, which the watch can raise.
+
+**The kills.**
+The kernel counts each process it stops in the cgroup's `oom_kill`: the `oom_kill` line of `memory.events` on cgroup v2, and of `memory.oom_control` on cgroup v1.
+Nothing else tells the launcher which process it stopped, since a stopped command's exit goes to its parent, the shell that ran it, and not to the launcher.
+So at each scan the watch keeps every process it read, by its pid and its start time, with its resident size (`statm`) and its `oom_score`, and it reads the counter after the scan.
+When the counter rises by n, the stopped processes are the ones the watch held before the rise that a scan no longer holds: a process that exited, a zombie, or a pid back with another start time, which is another process.
+The watch ranks them by their last `oom_score` before the rise, then by their resident size, highest first, and names the first n.
+A process the kernel stopped can still run while it frees its memory.
+So while a process ranked above the n-th gone one still runs, the watch waits for the next scan, for at most 2 s after the counter's last rise, the time the kernel's `oom_reaper` gives a stopped process to exit.
+When the wait ends, it names the n highest gone ones, and writes one `killed unnamed` line for the kills it found no process for.
+
+Each process it names has the guard's own `ended` line, so a reader finds a process stopped for memory by the same line in either sandbox:
+
+```text
+launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> executable="<name>"
+```
+
+The guest watch fills it from what it read:
+
+- `pid`, `role` and `executable` are the stopped process's, as the guard's lines give them, and `role=none` names a process of no role.
+
+- `size` is the process's resident size at the last scan before the rise.
+
+- `reading` is the cgroup's anonymous memory, `anon` in `memory.stat` (`total_rss` on v1).
+
+- `counter` is the cgroup's usage, `memory.current` (`memory.usage_in_bytes` on v1).
+
+- `shmem` is `shmem` in `memory.stat` (`total_shmem` on v1).
+
+- `limit` is the cgroup's limit, `memory.max` (`memory.limit_in_bytes` on v1).
+  Where the cgroup sets no limit, it is the `MemTotal` of the guest's `/proc/meminfo`, the microVM's own memory, which then bounds the pod.
+
+The pod's four figures are the ones the watch read at the scan that saw the counter rise, and a figure it could not read is 0.
+
+**The report and the note.**
+For a process of a role, the watch also gives a report to that role's part of the launcher, which sends it as the guard's report is sent ("The report and the note" in [The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), with these differences:
+
+- The `launcher_memory_kill` frame carries `cause: kernel`.
+
+- Its `guard` is the watch's own id, random at each start, and its `sequence` is the watch's count of the kills it named, from 1.
+  Every named kill counts, a process of no role's included.
+  The daemon applies the report once, under the event id `memory-guard-kill:<guard>:<sequence>`.
+
+- The launcher sends the report only on a connection whose answer carries `kernelKills: true`.
+  A daemon of daemon API contract 151 or later sets it on its answer to every issue pod's launcher, whatever `memory_guard` says, and never on its answer to the controller pod's.
+  On any other connection the launcher drops each report with this line, since an earlier daemon may close the connection on a frame it does not know, or tell the role of the kernel's stop in the guard's words:
+
+  ```text
+  <role>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report
+  ```
+
+A process of no role has its `ended` line and no report.
+The daemon chooses the note by the report's cause (`kernelKillNote`, `packages/daemon/internal/workflow/engine.go`), queues it to the role's topic with the sizes in binary units, and logs `workflow: the role whose process the pod's kernel stopped is told why` with the report's `cause`:
+
+```text
+The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. The pod's other processes and your session go on. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
+```
+
+A note can be lost in each case in which the guard's note can, and in each of them the `ended` line stays in the container's log.
+
+**The lines.**
+The watch's own lines start `launcher: guest memory: ` in the `roles` container's log, carry no role prefix, and write `-` for a figure the watch cannot read (`packages/daemon/internal/memoryguard/lines.go`):
+
+```text
+launcher: guest memory: start cgroup=<v1|v2|-> dir=<directory|-> oom_group=<n|-> score=<n|->
+launcher: guest memory: off reason=<why>
+launcher: guest memory: kills unnamed reason=<why>
+launcher: guest memory: killed unnamed count=<k> oom_kill=<total>
+launcher: guest memory: score failed pid=<pid> start_time=<ticks> score=<n> reason=<why>
+launcher: guest memory: hour start=<time> end=<time> current=<bytes> current_high=<bytes> current_high_at=<time> working_set=<bytes> working_set_high=<bytes> working_set_high_at=<time> anon=<bytes> file=<bytes> inactive_file=<bytes> shmem=<bytes> limit=<bytes> oom_kills=<n> unnamed=<n> raised=<n> unraised=<n>
+```
+
+`start` comes once, when the watch starts.
+`cgroup` is the version of the container's memory cgroup, which the watch finds from `/proc/self/cgroup` and `/proc/self/mountinfo`, v1's memory controller first where both versions are mounted.
+`dir` is the cgroup's directory, and `score` is the starting score.
+`oom_group` is v2's `memory.oom.group`: 1 means the kernel stops every process of the cgroup together, which no kill line can then name one by one.
+
+`off` comes once, where the watch cannot read its starting score (`reason=no readable starting score in /proc/self/oom_score_adj: <error>`) or cannot list the processes (`reason=cannot list the processes in /proc: <error>`).
+From then on the watch raises nothing and names nothing, writes each rise of the counter as `killed unnamed` at once, and still writes its hourly line from the cgroup.
+
+`kills unnamed` comes once, at the start, where the watch reads no kill counter, such as where it finds no memory cgroup or a kill file with no `oom_kill` line.
+The watch then names no kill, and it still raises scores and writes its hourly line, which do not need the counter.
+
+`killed unnamed` comes when a wait ends with kills that the watch found no process for, and at each rise of the counter once the watch is off.
+It gives the count of those kills and the counter's total, and it tells no role.
+
+`score failed` comes once for each process a score write failed on, with that process's start time in clock ticks since boot and the score the write would have set.
+
+`hour` comes once an hour from the watch's start.
+The watch reads the usage at every scan, and `memory.stat` and the limit every 5 seconds:
+
+- `start` and `end` are the hour's bounds, in RFC 3339 UTC.
+
+- `current` is the cgroup's usage at the hour's last scan, `memory.current` (`memory.usage_in_bytes` on v1).
+  `current_high` is the hour's highest usage, and `current_high_at` is when the watch read it.
+
+- `working_set` is that usage less `inactive_file` in `memory.stat` (`total_inactive_file` on v1), the figure cAdvisor gives as `container_memory_working_set_bytes`.
+  `working_set_high` is the hour's highest working set, and `working_set_high_at` is when the watch read it.
+
+- `anon`, `file`, `inactive_file` and `shmem` are the figures of the last `memory.stat` the watch read, and on v1 they are `total_rss`, `total_cache`, `total_inactive_file` and `total_shmem`.
+
+- `limit` is the cgroup's limit, `memory.max` (`memory.limit_in_bytes` on v1), and `-` where the cgroup sets none.
+
+- `oom_kills` is how far the kill counter rose in the hour, and `unnamed` is how many kills the watch named no process for.
+  Both are `-` where the watch reads no kill counter.
+
+- `raised` counts the hour's score writes that took, a raise or a setting back, and `unraised` counts the writes that failed.
+  Both are `-` once the watch is off.
+
+A day's highest working set, the figure dispatch://INFRA-3735's canary compares with the node's, is the highest `working_set_high` of that day's lines.
+Read a pod's hourly lines with `kubectl logs <pod> -c roles | grep '^launcher: guest memory: hour '`.
 
 ### The deployment's capability report
 
@@ -3545,7 +3701,8 @@ architect, planner, implementer, tester, reviewer, merger):
    A line the launcher writes for no role (a panic, a failed reap) has no prefix, and when the container ends the daemon's detail for a role quotes that role's last 20 lines, its prefix dropped, then the container's last 20 unprefixed lines under `the container's own last
    lines, no role's:` (`roleLog` in `internal/runtime/sandbox/observe.go`), all read from the log's last 2,000 lines and at most 1 MiB.
    As the container's PID 1 the launcher reaps every orphan its PID namespace adopts (what a `kubectl exec` leaves behind), never a role's own generation, whose exit its role reads.
-   As that PID 1 it also runs the pod's memory guard: when the pod's anonymous memory nears the container's limit, the guard ends the largest process that is neither Legion's own nor an agent's own, before the kernel stops the whole container and every role's turn with it ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
+   As that PID 1 it also runs a gVisor pod's memory guard: when the pod's anonymous memory nears the container's limit, the guard ends the largest process that is neither Legion's own nor an agent's own, before the kernel stops the whole container and every role's turn with it ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
+   In a microVM issue pod it runs the guest watch instead, which steers the pod's own kernel to stop a command ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
    Only as that PID 1 does it sweep the clone's stale git locks (item 5): a pass keeps a lock that a process of the container holds open and may remove one that none holds, and only PID 1 sees every role's processes.
    A launcher started any other way, by hand inside a role among them, sees that role's processes alone and would remove a lock another role's git or jj holds, so it writes one `launcher: git lock sweep: off reason=the launcher is pid <n>, …` line and sweeps nothing (`serveGitLockSweep`).
    A generation whose role-init fails before it starts the shim, setting up the role's namespaces, exits 71 (`launcher.RoleInitSetupFailedExit`, a status role-init uses for nothing else) and is reported with the exit code `-2` (`shimwire.LauncherExitSetupFailed`), which no shim exits with, and the daemon's detail for it quotes the role's last lines, role-init's reason among them;
@@ -4909,6 +5066,7 @@ Only a launcher that is its container's first process, PID 1, runs the guard: th
 Only that process sees every process of the container, and every process that no `role-init` holds is its own; the rules below rest on both.
 A launcher started any other way writes one `off` line and runs no guard.
 The launcher of the controller's pod runs none either.
+A microVM issue pod's launcher runs no guard: the pod's own kernel stops one process rather than the whole pod, and the launcher runs the guest watch in the guard's place ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
 
 **What it reads.**
 Each interval, `interval_milliseconds` (100 ms by default), the guard reads two files: `AnonPages` of `/proc/meminfo`, the pod's anonymous memory, which is its reading, and the cgroup's `memory.limit_in_bytes`, the container's limit.
@@ -4992,6 +5150,7 @@ runtime:
 ```
 
 Those are the defaults, and the guard is on under `runtime: kubernetes` wherever the file says nothing.
+The block configures the guard of gVisor issue pods alone, and does not turn off the guest watch of a microVM issue pod ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
 The ranges are 50 to 95 for `act_percent`, 1 to 50 for `floor_percent`, 1 to 60 for `wait_seconds` and 50 to 5000 for `interval_milliseconds`, and the loader refuses a value outside its range by its whole key (`runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95`).
 `issue_pods` is the one member this release reads: the mapping is keyed by the kind of pod so that dispatch://INFRA-3531 can add the controller's pod beside it, and until then the loader refuses `controller_pod` as it refuses any other unknown key.
 The launcher checks the settings against the same ranges on its own side, and settings outside them change nothing and write one `settings refused` line.
