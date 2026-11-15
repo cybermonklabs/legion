@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // fleetDepartureSlack is what the wait below allows a loaded runner on top of the registry's own
@@ -29,11 +30,11 @@ const (
 )
 
 // fleetDepartureBound is how long a stopped process's row may still count as live: a live window
-// after its last heartbeat (processes.LiveWindow), which may itself have been one heartbeat
+// after its last heartbeat (store.ProcessLiveWindow), which may itself have been one heartbeat
 // before it stopped (processes.HeartbeatInterval), and the slack above. A process that
 // deregisters leaves at once and is well inside it; one killed without deregistering spends it.
 func fleetDepartureBound() time.Duration {
-	return processes.LiveWindow + processes.HeartbeatInterval + fleetDepartureSlack
+	return store.ProcessLiveWindow + processes.HeartbeatInterval + fleetDepartureSlack
 }
 
 // readOnlyEditSettle is how long an edit sent through a read-only socket is given to appear
@@ -85,7 +86,7 @@ func waitForThePreviousBuildToLeaveTheFleet(t *testing.T, builds *twoBuilds) tim
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the %s still counts as live %s after it stopped: the fleet's lowest schema version is still 0, past a live window (%s), a heartbeat (%s) and %s of slack",
-				builds.previousName(), time.Since(started), processes.LiveWindow, processes.HeartbeatInterval, fleetDepartureSlack)
+				builds.previousName(), time.Since(started), store.ProcessLiveWindow, processes.HeartbeatInterval, fleetDepartureSlack)
 		}
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -31,7 +30,7 @@ func liveProcess(t *testing.T, database *store.Store, identity string, startedAg
 func expireProcess(t *testing.T, database *store.Store, id string) {
 	t.Helper()
 	mustExec(t, database.Pool, `update server_processes set heartbeat_at = now() - make_interval(secs => $2) where instance = $1::uuid`,
-		id, (processes.LiveWindow + 5*time.Second).Seconds())
+		id, (store.ProcessLiveWindow + 5*time.Second).Seconds())
 }
 
 // activeIdentityRow is the identity embedder_active records.

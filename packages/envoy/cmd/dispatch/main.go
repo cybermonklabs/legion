@@ -156,7 +156,7 @@ type bootConfig struct {
 	MaintenanceSweepInterval time.Duration
 	// ProcessHeartbeat is how often this process stamps its row in the registry of live server
 	// processes, zero for processes.HeartbeatInterval's five seconds; only
-	// DISPATCH_TEST_PROCESS_HEARTBEAT, under the test hooks, sets it, and processes.LiveWindow
+	// DISPATCH_TEST_PROCESS_HEARTBEAT, under the test hooks, sets it, and store.ProcessLiveWindow
 	// keeps its ratio of three beats to it, since no process-level test can wait a live window
 	// and a heartbeat for a refusal to stand.
 	ProcessHeartbeat time.Duration
@@ -244,12 +244,12 @@ func main() {
 		os.Exit(1)
 	}
 	// The registry's pace, before anything registers or reads what is live. The live window stays
-	// three beats, as processes.LiveWindow is of processes.HeartbeatInterval, so a run cannot give
+	// three beats, as store.ProcessLiveWindow is of processes.HeartbeatInterval, so a run cannot give
 	// itself a window shorter than its own heartbeat, and the wait a refused process makes
 	// (Register: one live window and one heartbeat) shortens with it.
 	if boot.ProcessHeartbeat > 0 {
 		processes.HeartbeatInterval = boot.ProcessHeartbeat
-		processes.LiveWindow = 3 * boot.ProcessHeartbeat
+		store.ProcessLiveWindow = 3 * boot.ProcessHeartbeat
 	}
 
 	envoyConfig, err := loadEnvoyConfig(env, config.LoadOptions{})
@@ -1016,13 +1016,14 @@ func main() {
 		embedderIdentity = embedder.Identity()
 	}
 	registration, err := joinRegistry(ctx, database, processes.Instance{
-		Commit:           buildCommit,
-		DashboardBuild:   dashboardBuild.Build,
-		SigningKeys:      signingKey.Fingerprints(),
-		SchemaVersion:    pmdoc.SchemaVersion(),
-		SchemaCreatable:  pmdoc.SchemaCreatable(),
-		EmbedderIdentity: embedderIdentity,
-		FileStore:        fileStore != nil,
+		Commit:            buildCommit,
+		DashboardBuild:    dashboardBuild.Build,
+		SigningKeys:       signingKey.Fingerprints(),
+		SchemaVersion:     pmdoc.SchemaVersion(),
+		SchemaCreatable:   pmdoc.SchemaCreatable(),
+		EmbedderIdentity:  embedderIdentity,
+		FileStore:         fileStore != nil,
+		OwnerLockProtocol: store.OwnerLockProtocol,
 	}, registryPruneLeases, announcer)
 	if err != nil {
 		// A deploy that stops this process while the registration waits for a refusing peer's

@@ -438,7 +438,7 @@ func writesAnItemRow(statement string) bool {
 // censusEntry is the entry of itemRowWriters that covers function, declared in the file at path,
 // as the file and function keys that found it; the file is empty when no entry does. The census
 // is keyed by the path within the module, so a file is matched by its suffix, as the lock-level
-// guard's allowlist matches one (writePhaseOwnerRowLock).
+// guard's allowlist matches one (ownerRowLockSite).
 func censusEntry(path, function string) (string, string) {
 	for file, functions := range itemRowWriters {
 		if !strings.HasSuffix(path, "/"+file) {

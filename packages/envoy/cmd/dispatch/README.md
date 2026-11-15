@@ -1231,10 +1231,17 @@ So for each surface the two builds share, this is what build N+1 may change whil
 - **SQL.**
   Expand-then-contract across two releases (Database migrations, below), unchanged.
 
+- **Owner locks.**
+  Both builds' writers of one issue, document or project exclude each other, so a write of either build decides on what the other committed.
+  Each process registers the owner lock protocol it serialises those writers by (`server_processes.owner_lock_protocol`, migration `20261115100924_server_processes_owner_lock_protocol`): a build that takes the owner's row first and holds it to its commit, as every build before that migration does, reads the column's default 0, and a build that takes the owner's advisory lock first (`store.LockOwner`) registers 1.
+  While a live process registers 0, a build at 1 takes the owner's row too, right after the advisory lock and before the read the write decides on, and otherwise it takes the advisory lock alone.
+  A build that changes how it serialises an owner's writers registers a new protocol and keeps taking what the protocols still live take, the same way.
+  A process of a build at 0 that starts while a write of a build at 1 is between its lock and its first write, as a rollback starts one, is not seen by that write.
+
 The two-build test checks this rule (`cmd/dispatch/twobuild_*_test.go`, `go test -tags twobuild
 ./cmd/dispatch`, CI job `dispatch-two-builds`).
 `packages/envoy/scripts/build-dispatch-build.sh` builds the previous release from its commit, and the test runs it beside this tree on one Postgres, cloned at this tree's schema, and one NATS.
-It drives each build's `dispatch` command against the other build's server, reads and edits each build's stored documents and opens their document socket on the other build, and passes messages both ways while it checks that the stream and consumer settings stay as they are.
+It drives each build's `dispatch` command against the other build's server, reads and edits each build's stored documents and opens their document socket on the other build, passes messages both ways while it checks that the stream and consumer settings stay as they are, and races a write of each build on one issue, the previous build's committing first.
 
 Generations and holds protect from the release after the first one that carries them.
 The build before them compares stream and consumer settings with no generation, binds its delivery durable by lookup with no hold, and refuses a request member it does not declare.

@@ -930,9 +930,9 @@ func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx, wit
 	}
 }
 
-// ownerLockStatement is the statement with which a writer takes one owner's lock (store.LockOwner),
-// as pg_stat_activity shows it.
-const ownerLockStatement = `select pg_advisory_xact_lock($1, hashtext($2::text)) as owner_lock`
+// ownerLockStatement is the statement with which a writer takes one owner's lock in its read phase
+// (store.LockOwner), as pg_stat_activity shows it.
+const ownerLockStatement = store.OwnerLockStatement
 
 // renameIssue changes the issue's title as the test's login and returns the status Dispatch
 // answered. It reports failures rather than ending the test, so a goroutine can call it.

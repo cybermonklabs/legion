@@ -10,13 +10,16 @@
 // signs that person out. A process with no DISPATCH_SIGNING_KEY signs with a key it minted in its
 // own data dir, which no other process holds, so it is refused beside any live peer, and so is a
 // pod rolled with a changed secret beside pods that hold only the old one. A refusal stands only
-// beside a process that stays live: Register waits up to LiveWindow and one HeartbeatInterval for
-// the refusing process to stop heartbeating, so a process restarted after a kill, whose dead row
-// still counts as live for up to LiveWindow, starts once that row lapses.
+// beside a process that stays live: Register waits up to the live window (store.ProcessLiveWindow)
+// and one HeartbeatInterval for the refusing process to stop heartbeating, so a process restarted
+// after a kill, whose dead row still counts as live for up to the live window, starts once that row
+// lapses.
 //
 // Each row also records what the decisions over the fleet read (migration 20261101030537): the
 // document schema numbers the process reads and creates, which the document socket's admission
-// takes (docs.Service.authorize), its embedder's identity, and whether it stores files in a bucket.
+// takes (docs.Service.authorize), its embedder's identity, and whether it stores files in a bucket;
+// and the owner lock protocol it serialises an owner's writers by (migration 20261115100924),
+// which every owner lock's fleet read takes (store.LockOwner).
 package processes
 
 import (
@@ -37,17 +40,15 @@ import (
 )
 
 // The registry's intervals. Variables rather than constants only so this package's tests can
-// shorten them; nothing else sets them.
+// shorten them, and cmd/dispatch's test hooks with them. The live window, how recent a heartbeat
+// must be for its process to count as live, is store.ProcessLiveWindow: the owner lock's fleet
+// read measures by it too, and the store cannot import this package.
 var (
 	// HeartbeatInterval is how often a registered process stamps its row's heartbeat_at.
 	HeartbeatInterval = 5 * time.Second
-	// LiveWindow is how recent a heartbeat must be, by the database's now(), for its process to
-	// count as live: three heartbeats, so one slow or lost update does not drop a process that
-	// still serves.
-	LiveWindow = 15 * time.Second
 	// PruneAge is how old a heartbeat must be before the prune loop deletes its row: a process
 	// that died without deregistering (killed, out of memory, its node lost) leaves its row
-	// behind, and long past LiveWindow nothing reads it.
+	// behind, and long past store.ProcessLiveWindow nothing reads it.
 	PruneAge = 10 * time.Minute
 	// PruneInterval is the prune loop's period, and the period of its lease (duty.Exclusive).
 	PruneInterval = time.Minute
@@ -99,6 +100,9 @@ type Instance struct {
 	EmbedderIdentity string
 	// FileStore is whether the process stores uploaded files in a bucket.
 	FileStore bool
+	// OwnerLockProtocol is the owner lock protocol the process serialises an owner's writers by
+	// (store.OwnerLockProtocol): a server process registers its build's.
+	OwnerLockProtocol int
 }
 
 // Process is one row of the registry.
@@ -119,6 +123,10 @@ type Process struct {
 	SchemaCreatable  int
 	EmbedderIdentity string
 	FileStore        bool
+	// OwnerLockProtocol is as the process registered it (Instance); a process of a build before
+	// the column (migration 20261115100924) writes none, and its row reads 0, a build that
+	// serialises on the owner row (store.OwnerLockProtocol).
+	OwnerLockProtocol int
 }
 
 // PredatesFleetColumns reports whether p is a process of a build that predates the columns migration
@@ -142,15 +150,15 @@ type Querier interface {
 // the oldest process first.
 const selectLive = `
 	select instance::text, commit, dashboard_build, signing_keys, started_at, heartbeat_at,
-		schema_version, schema_creatable, embedder_identity, coalesce(file_store, false)
+		schema_version, schema_creatable, embedder_identity, coalesce(file_store, false), owner_lock_protocol
 	from server_processes
 	where heartbeat_at > now() - make_interval(secs => $1)
 	order by started_at, instance`
 
-// Live returns the live processes: those whose last heartbeat is within LiveWindow of the
-// database's now(), the oldest first.
+// Live returns the live processes: those whose last heartbeat is within store.ProcessLiveWindow
+// of the database's now(), the oldest first.
 func Live(ctx context.Context, db Querier) ([]Process, error) {
-	rows, err := db.Query(ctx, selectLive, LiveWindow.Seconds())
+	rows, err := db.Query(ctx, selectLive, store.ProcessLiveWindow.Seconds())
 	if err != nil {
 		return nil, fmt.Errorf("read the live server processes: %w", err)
 	}
@@ -159,7 +167,7 @@ func Live(ctx context.Context, db Querier) ([]Process, error) {
 	for rows.Next() {
 		var p Process
 		if err := rows.Scan(&p.ID, &p.Commit, &p.DashboardBuild, &p.SigningKeys, &p.StartedAt, &p.HeartbeatAt,
-			&p.SchemaVersion, &p.SchemaCreatable, &p.EmbedderIdentity, &p.FileStore); err != nil {
+			&p.SchemaVersion, &p.SchemaCreatable, &p.EmbedderIdentity, &p.FileStore, &p.OwnerLockProtocol); err != nil {
 			return nil, fmt.Errorf("read the live server processes: %w", err)
 		}
 		live = append(live, p)
@@ -211,20 +219,20 @@ type Registration struct {
 // a process that minted a key of its own beside any other does not.
 //
 // A refusal stands only beside a process that stays live. A process killed without deregistering
-// (SIGKILL, out of memory, its node lost) leaves a row that counts as live for up to LiveWindow
+// (SIGKILL, out of memory, its node lost) leaves a row that counts as live for up to the live window
 // after its last heartbeat, and a process started in that window with another key set - a dev
 // sign-in server restarted after a kill, since its key is minted per process, or a pod replaced
 // with a changed secret - would be refused by a process that no longer runs. So Register waits
 // (waitForAdmission): a refusal is logged at WARN, naming the refusing process, and the admission
 // is tried again every HeartbeatInterval until it is admitted, once the refusing rows have
-// lapsed, or until LiveWindow and one HeartbeatInterval have passed since the first refusal, which
+// lapsed, or until the live window and one HeartbeatInterval have passed since the first refusal, which
 // a live process outlasts by heartbeating every HeartbeatInterval: then Register returns that last
 // refusal. The caller serves nothing meanwhile, since it serves only once Register returns, and
 // ctx ending ends the wait with ctx's error.
 //
 // Each admission is one transaction under registryLock (admit), so two processes booting at once
 // are serialised: the second reads the first's row and is refused if the two do not share. A row
-// whose heartbeat is older than LiveWindow is a process gone, and refuses nothing; should that
+// whose heartbeat is older than the live window is a process gone, and refuses nothing; should that
 // process resume, its heartbeat checks its keys against this one before it counts as live again
 // (Registration.renew).
 //
@@ -259,7 +267,7 @@ func Register(ctx context.Context, pool *store.Pool, instance Instance) (*Regist
 }
 
 // waitForAdmission is Register's wait: tryRegister every HeartbeatInterval until it admits the
-// process, or until LiveWindow and one HeartbeatInterval have passed since its first refusal, when
+// process, or until the live window and one HeartbeatInterval have passed since its first refusal, when
 // that last refusal is returned. A refusal naming another process than the one before is logged
 // again, so the log names every process the wait was on.
 func waitForAdmission(ctx context.Context, pool *pgxpool.Pool, id string, instance Instance) error {
@@ -274,7 +282,7 @@ func waitForAdmission(ctx context.Context, pool *pgxpool.Pool, id string, instan
 			return nil
 		}
 		if giveUp.IsZero() {
-			giveUp = time.Now().Add(LiveWindow + HeartbeatInterval)
+			giveUp = time.Now().Add(store.ProcessLiveWindow + HeartbeatInterval)
 		}
 		if !time.Now().Before(giveUp) {
 			return refusal
@@ -331,11 +339,12 @@ func admit(ctx context.Context, tx pgx.Tx, id string, instance Instance) (refusa
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into server_processes (instance, commit, dashboard_build, signing_keys,
-			schema_version, schema_creatable, embedder_identity, file_store)
-		values ($1, $2, $3, $4, $5, $6, $7, $8)
+			schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		on conflict (instance) do update set heartbeat_at = now()`,
 		id, instance.Commit, instance.DashboardBuild, instance.SigningKeys,
-		instance.SchemaVersion, instance.SchemaCreatable, instance.EmbedderIdentity, instance.FileStore); err != nil {
+		instance.SchemaVersion, instance.SchemaCreatable, instance.EmbedderIdentity, instance.FileStore,
+		instance.OwnerLockProtocol); err != nil {
 		return nil, err
 	}
 	return nil, nil
@@ -394,7 +403,7 @@ func (r *Registration) Lost() <-chan error { return r.lost }
 
 // beat is one heartbeat, bounded by heartbeatTimeout. It returns the refusal renew reports, and
 // nil otherwise. A failure is logged and the next tick tries again; a process whose heartbeats
-// keep failing for LiveWindow drops out of Live while it still serves, which is the cost of a
+// keep failing for the live window drops out of Live while it still serves, which is the cost of a
 // registry measured on the database's clock, and renew checks its keys again before it counts as
 // live once more.
 func (r *Registration) beat(ctx context.Context) error {
@@ -413,7 +422,7 @@ func (r *Registration) beat(ctx context.Context) error {
 // renew is beat's transaction, under registryLock. A row still live is stamped and nothing else is
 // read: the key check was made when it was registered or last rejoined, and every process that
 // registered since has checked its keys against this one. A row that had dropped out of Live -
-// the process frozen, or cut from the database, for longer than LiveWindow - or that is gone,
+// the process frozen, or cut from the database, for longer than the live window - or that is gone,
 // pruned after PruneAge, is a process that any registrant meanwhile counted as gone, so renew
 // makes Register's check again (admit) before it writes the row: against every live process, it
 // rejoins (logged at WARN) when each shares this process's key set, and otherwise records nothing
@@ -437,7 +446,7 @@ func (r *Registration) renew(ctx context.Context) (refusal error, err error) {
 	var live bool
 	err = tx.QueryRow(ctx, `
 		select heartbeat_at > clock_timestamp() - make_interval(secs => $2)
-		from server_processes where instance = $1`, r.ID, LiveWindow.Seconds()).Scan(&live)
+		from server_processes where instance = $1`, r.ID, store.ProcessLiveWindow.Seconds()).Scan(&live)
 	gone := errors.Is(err, pgx.ErrNoRows)
 	if err != nil && !gone {
 		return nil, err

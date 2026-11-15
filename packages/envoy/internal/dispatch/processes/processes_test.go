@@ -39,12 +39,12 @@ func setInterval(t *testing.T, interval *time.Duration, value time.Duration) {
 }
 
 // quickRegistry shortens the heartbeat to 100ms and the live window to a second for the test, so
-// Register's wait beside a refusing peer (LiveWindow and one HeartbeatInterval) takes about a
+// Register's wait beside a refusing peer (the live window and one HeartbeatInterval) takes about a
 // second, and a peer registered in the test heartbeats ten times a window.
 func quickRegistry(t *testing.T) {
 	t.Helper()
 	setInterval(t, &HeartbeatInterval, 100*time.Millisecond)
-	setInterval(t, &LiveWindow, time.Second)
+	setInterval(t, &store.ProcessLiveWindow, time.Second)
 }
 
 // register registers a process holding setting and deregisters it when the test ends, unless the
@@ -311,7 +311,7 @@ func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
 			database := storetest.Open(t)
 			peer := mustRegister(t, database, "c1", c.peer)
 			if c.stale {
-				ageHeartbeat(t, database, peer.ID, LiveWindow+time.Second)
+				ageHeartbeat(t, database, peer.ID, store.ProcessLiveWindow+time.Second)
 			}
 			registration, err := register(t, database, "c2", c.mine)
 			if !c.refused {
@@ -394,7 +394,7 @@ func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
 	}
 }
 
-// A process killed without deregistering leaves a row that counts as live until LiveWindow after
+// A process killed without deregistering leaves a row that counts as live until the live window after
 // its last heartbeat, and a newcomer whose key set it does not share - a dev sign-in server
 // restarted after a kill, whose key is minted per process - is refused beside it at first.
 // Register waits for the row to lapse instead of refusing at once, and admits the newcomer then.
@@ -414,7 +414,7 @@ func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *te
 }
 
 // Beside a peer that keeps heartbeating, Register's wait ends in the refusal: the peer's row stays
-// live past LiveWindow and one HeartbeatInterval after the first refusal, and nothing is recorded.
+// live past the live window and one HeartbeatInterval after the first refusal, and nothing is recorded.
 func TestARefusalBesideAPeerThatKeepsHeartbeatingStandsAfterTheWait(t *testing.T) {
 	quickRegistry(t)
 	database := storetest.Open(t)
@@ -426,7 +426,7 @@ func TestARefusalBesideAPeerThatKeepsHeartbeatingStandsAfterTheWait(t *testing.T
 	if !errors.Is(err, ErrKeySetMismatch) || !strings.Contains(err.Error(), peer.ID) {
 		t.Fatalf("a process beside a heartbeating peer with another key registered with %v, want ErrKeySetMismatch naming %s", err, peer.ID)
 	}
-	if bound := LiveWindow + HeartbeatInterval; waited < bound {
+	if bound := store.ProcessLiveWindow + HeartbeatInterval; waited < bound {
 		t.Errorf("refused %v after Register began, want once it waited %v for the peer to lapse", waited, bound)
 	}
 	if got := liveIDs(t, database); !slices.Equal(got, []string{peer.ID}) {
@@ -448,7 +448,7 @@ func TestRegistersWaitEndsWithItsContext(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Register beside a refusing peer, its context ended, returned %v; want the context's error", err)
 	}
-	if waited := time.Since(started); waited > LiveWindow/2 {
+	if waited := time.Since(started); waited > store.ProcessLiveWindow/2 {
 		t.Errorf("Register returned %v after it began, want soon after its context ended at 300ms", waited)
 	}
 	if got := liveIDs(t, database); !slices.Equal(got, []string{peer.ID}) {
@@ -481,7 +481,7 @@ func lapse(t *testing.T, tx pgx.Tx, id string) {
 	t.Helper()
 	tag, err := tx.Exec(context.Background(),
 		`update server_processes set heartbeat_at = now() - make_interval(secs => $2) where instance = $1`,
-		id, (LiveWindow + time.Second).Seconds())
+		id, (store.ProcessLiveWindow + time.Second).Seconds())
 	if err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("lapse process %s's heartbeat: %v (%d rows)", id, err, tag.RowsAffected())
 	}

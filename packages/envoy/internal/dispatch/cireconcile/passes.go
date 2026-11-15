@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
-	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -268,7 +267,7 @@ const recentPasses = `
 // PassStateAbandoned otherwise:
 //
 //   - the process that wrote it is live, which is its server_processes heartbeat within
-//     processes.LiveWindow of the database's now(). A process killed mid-pass leaves both its
+//     store.ProcessLiveWindow of the database's now(). A process killed mid-pass leaves both its
 //     registry row and this one behind, and only the heartbeat says which of the two kinds of
 //     silence this is;
 //   - the `ci-reconcile` lease is held by some session. A pass runs under that lease for the
@@ -278,7 +277,7 @@ const recentPasses = `
 //     already over when the row above it began, whatever the lease and the heartbeat say.
 //
 // No one of the three is enough on its own, which is why all three are read. A killed process's
-// registry row stays live for up to processes.LiveWindow after its last heartbeat. A lease is a
+// registry row stays live for up to store.ProcessLiveWindow after its last heartbeat. A lease is a
 // session-level advisory lock, and a session the database has not yet reaped still holds it, so
 // a held lease is not proof that a pass is running either. And neither would notice a row the
 // pass after it has already overtaken. The newest row of a live process under a held lease is the
@@ -291,7 +290,7 @@ func RecentPasses(ctx context.Context, pool *store.Pool) ([]PassRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := pool.Query(ctx, recentPasses, processes.LiveWindow.Seconds(), PassWindow.Seconds())
+	rows, err := pool.Query(ctx, recentPasses, store.ProcessLiveWindow.Seconds(), PassWindow.Seconds())
 	if err != nil {
 		return nil, fmt.Errorf("read the CI reconcile passes: %w", err)
 	}

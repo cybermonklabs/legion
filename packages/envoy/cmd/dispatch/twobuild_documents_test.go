@@ -28,7 +28,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // ───── stored documents ─────────────────────────────────────────────────────
@@ -268,7 +268,7 @@ func (b *twoBuilds) fleet(t *testing.T) fleetNumbers {
 		select count(*), coalesce(min(schema_version), 0), coalesce(max(schema_creatable), 0)
 		from server_processes
 		where heartbeat_at > now() - make_interval(secs => $1)`,
-		processes.LiveWindow.Seconds()).Scan(&live, &numbers.minVersion, &numbers.maxCreatable); err != nil {
+		store.ProcessLiveWindow.Seconds()).Scan(&live, &numbers.minVersion, &numbers.maxCreatable); err != nil {
 		t.Fatalf("read the live fleet's schema numbers: %v", err)
 	}
 	if live == 0 {

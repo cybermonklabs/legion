@@ -21,15 +21,20 @@ import (
 var ownerLockTables = []string{"issues", "artifacts", "projects", "asks"}
 
 // ownerRowTables are the tables whose rows are owners (store.LockOwner): an issue, a document no
-// issue owns, a project. A writer serialises on the owner's advisory lock, and the only row lock
-// on these tables is the write phase's own.
+// issue owns, a project. A writer serialises on the owner's advisory lock, and the only row locks
+// on these tables are the write phase's own and the one the owner lock takes beside its advisory
+// lock while a process of an earlier build, which serialises on the row, is live.
 var ownerRowTables = []string{"issues", "artifacts", "projects"}
 
-// writePhaseOwnerRowLocks are the functions allowed to lock an owner row, keyed by the file that
+// ownerRowLockSites are the functions allowed to lock an owner row, keyed by the file that
 // declares them: the events' lockEventOwner, which takes the row `for no key update` when the
-// transaction appends, under the owner's advisory lock it takes first.
-var writePhaseOwnerRowLocks = map[string][]string{
-	"internal/dispatch/events/broker.go": {"lockEventOwner"},
+// transaction appends, under the owner's advisory lock it takes first; and the store's
+// ownerRowLockStatement, the statements the owner lock runs right after its advisory lock, before
+// the read it guards, while its fleet read answers that a process of an earlier build is live
+// (store.lockOwnerRows).
+var ownerRowLockSites = map[string][]string{
+	"internal/dispatch/events/broker.go":   {"lockEventOwner"},
+	"internal/dispatch/store/ownerlock.go": {"ownerRowLockStatement"},
 }
 
 var (
@@ -47,15 +52,16 @@ var (
 // writer holding the room lock then deadlocks against whoever holds the owner row.
 //
 // The second is the owner lock's: no statement takes any row lock - `for update`, `for no key
-// update`, `for share` or `for key share` - on issues, artifacts or projects, outside the write
-// phase's own owner-row lock (writePhaseOwnerRowLocks). A writer serialises on its owner's
-// advisory lock (store.LockOwner), which assigns no transaction id; a row lock does, so one taken
-// in a transaction's read phase would hold that id across everything the read phase does, and an
-// owner row locked by a writer that skips the advisory lock no longer excludes the read phase of
-// one that takes it. A missed owner-row lock, or a new one, reds here. Asks are outside the
-// second rule, which names issues, artifacts and projects alone, so a weaker level on an ask
-// row would pass this check; none is taken now, since the ask rows a settlement reconciles are
-// read plainly under the document owner's lock (docs/ask_blocks.go's loadAskBlocks).
+// update`, `for share` or `for key share` - on issues, artifacts or projects, outside the owner-row
+// locks the owner lock's own code takes (ownerRowLockSites): the write phase's, and the one the
+// read phase takes beside the advisory lock while a process of an earlier build is live. A writer
+// serialises on its owner's advisory lock (store.LockOwner), which assigns no transaction id; a
+// row lock does, so one taken in a transaction's read phase would hold that id across everything
+// the read phase does, and an owner row locked by a writer that skips the advisory lock no longer
+// excludes the read phase of one that takes it. A missed owner-row lock, or a new one, reds here.
+// Asks are outside the second rule, which names issues, artifacts and projects alone, so a weaker
+// level on an ask row would pass this check; none is taken now, since the ask rows a settlement
+// reconciles are read plainly under the document owner's lock (docs/ask_blocks.go's loadAskBlocks).
 //
 // Its reach is the statement as this scan can assemble it: a lock clause spelled in a string
 // literal, or in a chain of literals and package-level constants, `var`s included, resolved to
@@ -114,7 +120,7 @@ func TestNoForUpdateOnOwnerTables(t *testing.T) {
 				forUpdates = append(forUpdates, offence)
 				continue
 			}
-			if locksOwnerRow(located.statement) && !writePhaseOwnerRowLock(path, located.function) {
+			if locksOwnerRow(located.statement) && !ownerRowLockSite(path, located.function) {
 				seen[offence] = struct{}{}
 				rowLocks = append(rowLocks, offence)
 			}
@@ -127,7 +133,7 @@ func TestNoForUpdateOnOwnerTables(t *testing.T) {
 			strings.Join(ownerLockTables, ", "), strings.Join(forUpdates, "\n\t"))
 	}
 	if len(rowLocks) > 0 {
-		t.Errorf("a row lock on %s is refused outside the write phase's owner-row lock (events.lockEventOwner):\n\t%s\n"+
+		t.Errorf("a row lock on %s is refused outside the owner lock's own owner-row locks (events.lockEventOwner, store.ownerRowLockStatement):\n\t%s\n"+
 			"Take the owner's advisory lock (store.LockOwner, LockOwners, LockOwnersShared or TryLockOwners) "+
 			"and read the row plainly in the statement after it.",
 			strings.Join(ownerRowTables, ", "), strings.Join(rowLocks, "\n\t"))
@@ -148,10 +154,10 @@ func locksOwnerRow(statement string) bool {
 	return rowLockClause.MatchString(statement) && ownerRowTable.MatchString(statement)
 }
 
-// writePhaseOwnerRowLock reports whether function, declared in the file at path, is one the
-// owner-row rule allows (writePhaseOwnerRowLocks).
-func writePhaseOwnerRowLock(path, function string) bool {
-	for file, functions := range writePhaseOwnerRowLocks {
+// ownerRowLockSite reports whether function, declared in the file at path, is one the owner-row
+// rule allows (ownerRowLockSites).
+func ownerRowLockSite(path, function string) bool {
+	for file, functions := range ownerRowLockSites {
 		if strings.HasSuffix(path, "/"+file) && slices.Contains(functions, function) {
 			return true
 		}

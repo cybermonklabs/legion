@@ -1,0 +1,21 @@
+-- 20261115100924_server_processes_owner_lock_protocol.up.sql
+-- INFRA-636: which owner lock protocol each registered server process (migration 0135,
+-- internal/dispatch/processes) serialises an owner's writers by, so a process of the build that
+-- serialises on the owner's advisory lock knows while a process of an earlier build, which
+-- serialises on the owner's row, serves the same database.
+--
+-- owner_lock_protocol 1 is a build that takes the owner's advisory lock (store.LockOwner) before
+-- it reads what a write decides on, and the owner's row only in its write phase
+-- (store.OwnerLockProtocol). 0, the default, is a row of a build before this one, which writes no
+-- such column: that build takes the owner's row `for no key update` (its Inbox `for share`) first
+-- and holds it for its whole transaction, and takes no advisory lock. While any live row reads 0,
+-- every read-phase owner lock of a build at 1 also takes the owner's row, right after the advisory
+-- lock and before the read it guards, so the two builds' writers of one owner exclude each other.
+--
+-- One column with a constant default: Postgres records the default in the catalog and rewrites no
+-- row, so the ALTER takes ACCESS EXCLUSIVE on server_processes only for the catalog write. The
+-- release before this one names its columns in every insert and select it makes on the table, so
+-- it neither reads nor writes this one and its rows read 0, which is what a rolling update requires
+-- of a migration (cmd/dispatch/README.md, "Database migrations").
+alter table server_processes
+  add column owner_lock_protocol integer not null default 0;
