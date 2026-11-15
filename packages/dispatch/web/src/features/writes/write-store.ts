@@ -377,6 +377,13 @@ export class Writes {
   /** Every write held, in press order: one array until a write changes. */
   readonly rows = (): readonly Write[] => this.#rows;
 
+  /** The request the write `id` makes - the one its press named, or the one it last went out as
+   *  - or undefined where the store holds no such write or it names none yet (one made by an
+   *  attempt of its own that has not gone out). What a reader of a line asks of the writes on it:
+   *  which change each one makes (`issue-field-writes.ts`). */
+  readonly requestOf = (id: number): WriteRequest | undefined =>
+    this.#entries.get(id)?.request ?? undefined;
+
   readonly subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);

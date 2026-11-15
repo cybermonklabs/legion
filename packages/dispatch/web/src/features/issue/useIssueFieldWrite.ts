@@ -1,139 +1,140 @@
-import { type QueryKey, useQueryClient } from "@tanstack/react-query";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 
-import { issuePatchRequest } from "../../api/client";
-import { mergeIssue } from "../../api/issue-cache";
-import { inboxQuery } from "../../api/queries";
-import type { InboxRow, IssueDetails, IssueSummary, UpdateIssueInput } from "../../api/types";
-import { useSubmitGuard } from "../../hooks/useSubmitGuard";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { newSendKey } from "../../lib/send-key";
+import { retriesUnderItsKey, WriteDiscardedError } from "../writes/keyed-write";
+import { ofKind, useWrites, type Writes } from "../writes/write-store";
+import {
+  type IssueField,
+  type IssueFieldPick,
+  type IssueFieldValues,
+  issueFieldWrite,
+  newerWriteOf,
+  pickLabel,
+  pickRequest,
+  sameField,
+} from "./issue-field-writes";
 
 export interface IssueFieldWrite<Value> {
   /** The server's reason after a refused save, until the next attempt. */
   error: string | undefined;
   /** True after a save failed until the next attempt starts. */
   failed: boolean;
+  /** True while a pick made here is in the store, not yet landed, refused or taken out. */
   pending: boolean;
-  /** Repeats the failed save; a no-op while one is in flight. */
+  /** Makes the refused pick again, under its own key where Dispatch never decided it
+   *  (`retriesUnderItsKey`); a no-op while nothing is refused. */
   retry: () => void;
-  /** Saves `value`. A pick made while a save is in flight shows at once and is saved when that
-   *  save settles; the newest such pick is the one saved. */
+  /** Picks `value`: one write of the page's store on the issue's line, which takes out every
+   *  other pick of the field still waiting there unsent, so the newest is the one saved. */
   submit: (value: Value) => void;
 }
 
-interface Snapshot {
-  details: IssueDetails | undefined;
-  inbox: [QueryKey, InboxRow[] | undefined][];
-  lists: [QueryKey, IssueSummary[] | undefined][];
+/** A refused pick as the picker reports it: the server's reason, and the value to pick again. */
+interface Refused<Value> {
+  readonly message: string;
+  readonly value: Value;
 }
 
-export const projectListsKey = ["issues", "project"] as const;
-export const inboxKey = inboxQuery().queryKey;
+/** Every pick in `writes` of `field` of `issueKey`. */
+function picksOf(writes: Writes, of: Pick<IssueFieldPick, "field" | "issueKey">) {
+  return writes.rows().flatMap((row) => {
+    const pick = ofKind(row, issueFieldWrite);
+    return pick !== undefined && sameField(pick.detail, of) ? [pick] : [];
+  });
+}
 
 /**
- * The optimistic write engine behind every single-field issue write (priority, assignee). The
- * caller supplies `patch`, the request body for a value, and `show`, which lands the value in
- * the issue detail, every project issue list and every inbox row that shows the issue. The engine
- * snapshots those caches before showing a pick, rolls them back on failure, merges the server's
- * answer on success, and refetches once the save settles. Requests go one at a time, so the
- * server sees picks in the order they were made: a pick during a save is queued behind it, and
- * the in-flight answer is not merged over a newer pick the reader can already see.
+ * The write engine behind each picker of one field of an issue: its priority, its assignee or
+ * its repository (`useIssuePriority`, `useIssueAssignee`, `useIssueRepo`). Each `submit` is one
+ * write of the page's store of the kind `issueFieldWrite`, joined to the issue's line
+ * (`issue:<KEY>`) within the press, behind every other write of that issue, so the picks go out
+ * in the order they were made, are kept across a reload, and are sent although the picker is
+ * gone. A pick joins and then takes out every other pick of the same field still waiting in the
+ * line unsent, from this picker or another of the same field (an Inbox row and its reading
+ * pane): two picks nobody has sent are one request, the newest, and the pick taken out shows no
+ * error and puts nothing back. The write, not this hook, shows the pick on the issue, each list
+ * of issues (a project's board and table, the Priorities view's tables) and each Inbox row, keeps
+ * the field shown as its newest live write - whichever control made it - over every answer while
+ * the pick is live, and when it ends without landing puts back the newest live write of the
+ * field, or else the value Dispatch last answered for it and reads the issue again
+ * (`issue-field-writes.ts`).
+ *
+ * The picker shows its own refusal (`inline`), so the shell's indicator shows the write only
+ * while it is out. A refused pick with no newer live write of its field - a pick, a board move to
+ * another lane - shows the server's reason with Retry; one with a newer live write shows nothing,
+ * since the screen shows that newer write and a Retry would join behind it and be stored last. A
+ * pick of the value the reader stopped is that press made again under its key, so Dispatch
+ * answers it with what it did.
  */
-export function useIssueFieldWrite<Value>(
+export function useIssueFieldWrite<F extends IssueField>(
   issueKey: string,
-  field: {
-    patch: (value: Value) => UpdateIssueInput;
-    show: (value: Value) => void;
-    /** What the shell's indicator names one save of this field. */
-    label: (value: Value) => string;
-  }
-): IssueFieldWrite<Value> {
-  const queryClient = useQueryClient();
-  const guard = useSubmitGuard();
-  // A pick made during a save, with the cache as it stood before the pick was shown: the base
-  // the chained request rolls back to, so its failure never lands on the pick that failed.
-  const queued = useRef<{ value: Value; snapshot: Snapshot } | null>(null);
-  const chainedSnapshot = useRef<Snapshot | null>(null);
-  const detailKey = ["issue", issueKey] as const;
-  const takeSnapshot = (): Snapshot => ({
-    details: queryClient.getQueryData<IssueDetails>(detailKey),
-    inbox: queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey }),
-    lists: queryClient.getQueriesData<IssueSummary[]>({ queryKey: projectListsKey }),
-  });
-  // The control says why its save was refused and offers Retry where the reader just picked, so
-  // the shell's indicator shows the save only while it is out. Every write to the issue's fields
-  // goes in the issue's line (`issue:<key>`), so one still being tried after its surface is gone
-  // never lands after a newer one.
-  const mutation = useKeyedWrite({
-    inline: true,
-    label: (value: Value) => field.label(value),
-    target: () => `issue:${issueKey}`,
-    request: (value: Value) => issuePatchRequest(issueKey, field.patch(value)),
-    onMutate: async (value): Promise<Snapshot> => {
-      await Promise.all(
-        [detailKey, projectListsKey, inboxKey].map((queryKey) =>
-          queryClient.cancelQueries({ queryKey })
-        )
-      );
-      const snapshot = chainedSnapshot.current ?? takeSnapshot();
-      chainedSnapshot.current = null;
-      field.show(value);
-      return snapshot;
-    },
-    onError: (_error, _value, snapshot) => {
-      if (snapshot === undefined) {
-        return;
+  field: F
+): IssueFieldWrite<IssueFieldValues[F]> {
+  type Value = IssueFieldValues[F];
+  const writes = useWrites();
+  const [out, setOut] = useState(0);
+  const [refused, setRefused] = useState<Refused<Value> | undefined>(undefined);
+  /** The last pick here the reader stopped, which a pick of the same value makes again. */
+  const stopped = useRef<{ readonly key: string; readonly value: Value } | undefined>(undefined);
+  /** Joins `pick` to its line under `key`, takes out the picks of its field it replaces, and
+   *  reports what becomes of it. */
+  const join = (pick: IssueFieldPick, key: string, value: Value): void => {
+    const press = writes.run({
+      detail: pick,
+      inline: true,
+      key,
+      kind: issueFieldWrite,
+      label: pickLabel(pick),
+      presentation: "indicator",
+      request: pickRequest(pick),
+      target: `issue:${issueKey}`,
+    });
+    // `run` joins the write to its line before it answers, so the store holds it now.
+    const joined = picksOf(writes, pick).find((row) => row.key === key);
+    if (joined === undefined) {
+      throw new Error(`${pickLabel(pick)}: the store holds no write under the key it just ran`);
+    }
+    for (const other of picksOf(writes, pick)) {
+      if (other.id !== joined.id && other.status === "queued" && !other.sent) {
+        writes.discard(other.id);
       }
-      if (snapshot.details !== undefined) {
-        queryClient.setQueryData<IssueDetails>(detailKey, snapshot.details);
+    }
+    press.then(
+      () => setOut((count) => count - 1),
+      (error: unknown) => {
+        setOut((count) => count - 1);
+        // This engine took it out for a newer pick: no refusal of Dispatch's.
+        if (error instanceof WriteDiscardedError) return;
+        const refusal = error instanceof Error ? error : new Error(String(error));
+        if (retriesUnderItsKey(refusal)) stopped.current = { key, value };
+        // A newer live write of the field is left in the line, and the screen shows it.
+        if (newerWriteOf(writes, joined)) return;
+        setRefused({ message: refusal.message, value });
       }
-      for (const [key, data] of snapshot.lists) {
-        queryClient.setQueryData(key, data);
-      }
-      for (const [key, data] of snapshot.inbox) {
-        queryClient.setQueryData(key, data);
-      }
-      if (queued.current !== null) {
-        // The cache is back at this save's base, which is now the queued pick's base too.
-        queued.current.snapshot = snapshot;
-      }
-    },
-    onSuccess: (next) => {
-      // Saved with no answer to give: `onSettled` reads the issue again.
-      if (queued.current === null && next !== null) {
-        mergeIssue(queryClient, next);
-      }
-    },
-    onSettled: () => {
-      guard.release();
-      const next = queued.current;
-      if (next !== null) {
-        queued.current = null;
-        chainedSnapshot.current = next.snapshot;
-        guard.guard(() => mutation.mutate(next.value));
-        return;
-      }
-      // Another write to the same issue (a status change from the header) may have settled in
-      // between; refetching the detail makes it server-authoritative rather than trusting the
-      // arrival order of the two responses or a pre-write snapshot.
-      void queryClient.invalidateQueries({ queryKey: detailKey });
-      void queryClient.invalidateQueries({ queryKey: ["issues"] });
-      void queryClient.invalidateQueries({ queryKey: inboxKey });
-    },
-  });
+    );
+  };
+  const submit = (value: Value): void => {
+    const again = stopped.current;
+    stopped.current = undefined;
+    const key = again !== undefined && Object.is(again.value, value) ? again.key : newSendKey();
+    // `value` is the value of `field`, which the type checker cannot pair across the union of
+    // fields: the one pick the two make together.
+    const pick = { field, issueKey, value } as IssueFieldPick;
+    setRefused(undefined);
+    setOut((count) => count + 1);
+    // The pick joins its line in a microtask of the press - before anything else can happen, a
+    // reload included - so the picker renders the press as pending before the pick shows: a
+    // surface that keeps its control while its write is live (the Inbox's Assign to me, whose row
+    // the pick moves out of the Unassigned filter) has said so by then.
+    queueMicrotask(() => join(pick, key, value));
+  };
   return {
-    error: mutation.error?.message,
-    failed: mutation.isError,
-    pending: mutation.isPending,
+    error: refused?.message,
+    failed: refused !== undefined,
+    pending: out > 0,
     retry: () => {
-      guard.retryLast(mutation);
+      if (refused !== undefined) submit(refused.value);
     },
-    submit: (value) => {
-      if (guard.guard(() => mutation.mutate(value))) {
-        return;
-      }
-      queued.current = { value, snapshot: queued.current?.snapshot ?? takeSnapshot() };
-      field.show(value);
-    },
+    submit,
   };
 }
