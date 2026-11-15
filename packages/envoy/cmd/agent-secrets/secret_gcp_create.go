@@ -165,27 +165,31 @@ func (b *gcpBackend) gcloud(args ...string) string {
 }
 
 // gcloudPin is the shell assignments that make gcloud sign in as this command did, each
-// shell-quoted: CLOUDSDK_CORE_ACCOUNT for the gcloud login it used, and
+// shell-quoted, by the source the credential came from: CLOUDSDK_ACTIVE_CONFIG_NAME for the
+// configuration --profile named, the variables that chose a gcloud configuration or login as they
+// were set, CLOUDSDK_CORE_ACCOUNT for the active gcloud account's login, and
 // CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE for the key file GOOGLE_APPLICATION_CREDENTIALS named;
-// "" for a token CLOUDSDK_AUTH_ACCESS_TOKEN lent, which gcloud reads from the same environment, and
-// for credentials gcloud cannot be pointed at (the metadata server's, or the default file's), which
-// the name after the command (gcloud) says to use.
+// "" for a token CLOUDSDK_AUTH_ACCESS_TOKEN lent, which gcloud reads from the same environment,
+// and for credentials gcloud cannot be pointed at (the metadata server's, or the well-known
+// file's), which the name after the command (gcloud) says to use.
 func (b *gcpBackend) gcloudPin() string {
-	switch {
-	case os.Getenv("CLOUDSDK_AUTH_ACCESS_TOKEN") != "":
-		return ""
-	case b.login.account != "":
-		return "CLOUDSDK_CORE_ACCOUNT=" + shellWord(b.login.account) + " "
-	case os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "":
+	switch b.source {
+	case sourceProfileFlag:
+		return "CLOUDSDK_ACTIVE_CONFIG_NAME=" + shellWord(b.profile) + " "
+	case sourceChosenGcloud:
+		return b.signInPrefix()
+	case sourceActiveGcloud:
+		return "CLOUDSDK_CORE_ACCOUNT=" + shellWord(b.gcloudAccount) + " "
+	case sourceCredentialsFile:
 		return "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=" + shellWord(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")) + " "
 	}
 	return ""
 }
 
-// agentSecrets is an agent-secrets command line for printing, with the sign-in prefix that makes
-// it sign in as this command did (signInPrefix).
+// agentSecrets is an agent-secrets command line for printing, with the sign-in prefix and the
+// --profile that make it sign in as this command did (signInPrefix, pipeCommand).
 func (b *gcpBackend) agentSecrets(words ...string) string {
-	return pipeCommand(b.signInPrefix(), "", words...)
+	return pipeCommand(b.signInPrefix(), b.profile, words...)
 }
 
 // gcpNewSecret is the empty secret create made: name its whole resource name, secretID the id

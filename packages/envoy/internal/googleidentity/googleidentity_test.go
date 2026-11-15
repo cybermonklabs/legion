@@ -6,11 +6,14 @@ package googleidentity
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // stubMetadata stands up a metadata server at a host GCE_METADATA_HOST names, answering handler.
@@ -129,5 +132,103 @@ func TestTokenNamesTheHostItCouldNotReach(t *testing.T) {
 	_, err := Token(context.Background(), "example-audience")
 	if err == nil || !strings.Contains(err.Error(), MetadataHostVar) {
 		t.Fatalf("Token's error = %v, want one naming %s", err, MetadataHostVar)
+	}
+}
+
+// TestProbeAnswersTheEmailOfAGoogleMetadataServer: the probe asks the default service account's
+// email path with the header Google requires, and answers the email a server that says it is
+// Google's metadata server names.
+func TestProbeAnswersTheEmailOfAGoogleMetadataServer(t *testing.T) {
+	asked := stubMetadata(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Metadata-Flavor", "Google")
+		w.Write([]byte("machine@example.iam.gserviceaccount.com\n"))
+	})
+
+	email, err := Probe(context.Background())
+	if err != nil || email != "machine@example.iam.gserviceaccount.com" {
+		t.Fatalf("Probe = %q, %v; want the metadata server's email", email, err)
+	}
+	if len(*asked) != 1 || (*asked)[0].URL.Path != emailPath || (*asked)[0].Header.Get("Metadata-Flavor") != "Google" {
+		t.Fatalf("the metadata server was asked %d times; want once, at %s, with Metadata-Flavor: Google", len(*asked), emailPath)
+	}
+}
+
+// TestProbeSaysNoMetadataServerWithinItsTimeout: where nothing answers - a port no one listens
+// on, or a listener that takes the connection and never answers, as a laptop's network may - the
+// probe answers ErrNoMetadataServer, the absence a caller skips, within 2 s.
+func TestProbeSaysNoMetadataServerWithinItsTimeout(t *testing.T) {
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedAddr := closed.Addr().String()
+	closed.Close()
+
+	silent, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { silent.Close() })
+	var held []net.Conn
+	go func() {
+		for {
+			conn, err := silent.Accept()
+			if err != nil {
+				return
+			}
+			held = append(held, conn) // never answered, closed with the listener's test
+		}
+	}()
+
+	for name, host := range map[string]string{"a closed port": closedAddr, "a listener that never answers": silent.Addr().String()} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(MetadataHostVar, host)
+			started := time.Now()
+			email, err := Probe(context.Background())
+			took := time.Since(started)
+			if !errors.Is(err, ErrNoMetadataServer) || took > 2*time.Second {
+				t.Fatalf("Probe = %q, %v after %s; want ErrNoMetadataServer within 2s", email, err, took)
+			}
+		})
+	}
+}
+
+// TestProbeRefusesAServerWithoutTheGoogleFlavor: an answer that does not carry the
+// Metadata-Flavor: Google header is not Google's metadata server, so the probe answers
+// ErrNoMetadataServer, saying so, rather than an email it cannot vouch for.
+func TestProbeRefusesAServerWithoutTheGoogleFlavor(t *testing.T) {
+	stubMetadata(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("someone@example.com"))
+	})
+
+	email, err := Probe(context.Background())
+	if !errors.Is(err, ErrNoMetadataServer) || !strings.Contains(err.Error(), "not a Google metadata server") {
+		t.Fatalf("Probe = %q, %v; want ErrNoMetadataServer saying the server is not Google's", email, err)
+	}
+}
+
+// TestAccessTokenSourceReadsTheMetadataToken: the token source asks the default service
+// account's token path with the header Google requires, and answers the token the metadata
+// server handed out, expiring when that answer's expires_in says.
+func TestAccessTokenSourceReadsTheMetadataToken(t *testing.T) {
+	asked := stubMetadata(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Metadata-Flavor", "Google")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"metadata-not-a-secret","expires_in":600,"token_type":"Bearer"}`))
+	})
+
+	started := time.Now()
+	token, err := AccessTokenSource().Token()
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	if token.AccessToken != "metadata-not-a-secret" || token.TokenType != "Bearer" {
+		t.Fatalf("token %q of type %q, want the metadata server's metadata-not-a-secret, Bearer", token.AccessToken, token.TokenType)
+	}
+	if expiry := token.Expiry.Sub(started); expiry < 590*time.Second || expiry > 610*time.Second {
+		t.Fatalf("the token expires %s from the request, want the 600s its answer gave", expiry)
+	}
+	if len(*asked) != 1 || (*asked)[0].URL.Path != tokenPath || (*asked)[0].Header.Get("Metadata-Flavor") != "Google" {
+		t.Fatalf("the metadata server was asked %d times; want once, at %s, with Metadata-Flavor: Google", len(*asked), tokenPath)
 	}
 }

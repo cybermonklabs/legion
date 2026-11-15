@@ -156,7 +156,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form, *profile)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}

@@ -1201,7 +1201,7 @@ func TestSecretRetagReadsTheValueOnlyWhenItChangesTheKindOrShape(t *testing.T) {
 		if tags := store.tags(t, "PLAIN_KEY"); tags[policy.TagKind] != policy.KindGitHubApp || tags[policy.TagGitHubOwners] != "acme-org" {
 			t.Fatalf("tags after a retag whose value read is denied = %v; want github-app for acme-org", tags)
 		}
-		if strings.Count(stderr, "\n") != 1 || !strings.Contains(stderr, "the tags are written, but PLAIN_KEY's value was not checked as a github-app secret's") ||
+		if strings.Count(afterUsing(t, stderr, "secret retag"), "\n") != 1 || !strings.Contains(stderr, "the tags are written, but PLAIN_KEY's value was not checked as a github-app secret's") ||
 			!strings.Contains(stderr, "reports PLAIN_KEY unservable with the decoder's reason") {
 			t.Fatalf("stderr %q; want one line saying the value was not checked and the broker reports it unservable", stderr)
 		}

@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -121,6 +122,8 @@ type awsBackend struct {
 	settings Settings
 	sm       secretsAPI
 	st       stsAPI
+	// source names where the SDK took the sign-in from (awsProfileSource).
+	source string
 	// arn is the sign-in requireAccount read, which every form reads first.
 	arn string
 	// profile is the --profile the form was given, "" for none: a command the form prints for
@@ -132,6 +135,22 @@ type awsBackend struct {
 // under, so it reads the store as the identity that wrote to it.
 func (b *awsBackend) agentSecrets(words ...string) string {
 	return pipeCommand(b.signInPrefix(), b.profile, words...)
+}
+
+// awsProfileSource names where the AWS SDK takes the sign-in awsClients loads from, in the SDK's
+// own order: --profile, else the profile AWS_PROFILE or AWS_DEFAULT_PROFILE names, else its
+// default credential chain (the environment's keys, web identity, the default profile, the
+// instance's role).
+func awsProfileSource(profile string) string {
+	if profile != "" {
+		return "the AWS profile " + profile + " (--profile)"
+	}
+	for _, variable := range []string{"AWS_PROFILE", "AWS_DEFAULT_PROFILE"} {
+		if named := os.Getenv(variable); named != "" {
+			return "the AWS profile " + named + " (" + variable + ")"
+		}
+	}
+	return "the AWS SDK's default credential chain"
 }
 
 func (b *awsBackend) id(slug string) string { return b.settings.SecretsPrefix + slug }
@@ -156,8 +175,11 @@ func (b *awsBackend) personEmail(context.Context) (string, error) {
 	return strings.ToLower(m[1]), nil
 }
 
-// identity is the sign-in's ARN, as requireAccount read it.
-func (b *awsBackend) identity() string { return "the AWS sign-in " + b.arn }
+// identity is where the sign-in came from and its ARN, as requireAccount read it.
+func (b *awsBackend) identity() string { return b.source + ": " + b.arn }
+
+// chooseAnother is how a refusal of the store's says to sign in with another AWS credential.
+func (*awsBackend) chooseAnother() string { return "--profile <AWS profile> or AWS_PROFILE" }
 
 // signInPrefix is empty: an AWS sign-in a printed command needs is its --profile, which
 // pipeCommand writes itself.

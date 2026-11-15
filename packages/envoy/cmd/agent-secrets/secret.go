@@ -163,12 +163,12 @@ func secretFail(stderr io.Writer, form string, err error) int {
 // secretFlagValues are the secret forms' flags that take a value.
 var secretFlagValues = map[string]bool{"owner": true, "tier": true, "kind": true, "github-owners": true, "requesters": true, "scopes": true, "admin": true, "shape": true, "max-grant": true, "default-grant": true, "profile": true}
 
-// secretFlags is form's flag set with --profile, which every secret form takes but only the AWS
-// backend uses (GCP uses your Google sign-in instead, gcpBackend; a non-empty --profile there is a
-// usage error, openSecretBackend).
+// secretFlags is form's flag set with --profile, which every secret form takes: the credential to
+// sign in to the store with, a gcloud configuration on Google Cloud (gcpBackend) and an AWS profile
+// on AWS (awsBackend), which outranks every other source of that backend.
 func secretFlags(form string, stderr io.Writer) (*flag.FlagSet, *string) {
 	flags := newFlagSet(form, stderr)
-	return flags, flags.String("profile", "", "the AWS profile to sign in with (AWS only; default: AWS_PROFILE, else the AWS SDK's default credential chain)")
+	return flags, flags.String("profile", "", "the store credential to sign in with, before any other: a gcloud configuration on Google Cloud (default: CLOUDSDK_AUTH_ACCESS_TOKEN, GOOGLE_APPLICATION_CREDENTIALS, CLOUDSDK_ACTIVE_CONFIG_NAME or CLOUDSDK_CORE_ACCOUNT, the well-known credentials file, the active gcloud account, the metadata server, the first present), an AWS profile on AWS (default: AWS_PROFILE, else the AWS SDK's default credential chain)")
 }
 
 // secretName is the one NAME a form takes, and its slug: the secret's name under the prefix.
@@ -612,14 +612,21 @@ type secretBackend interface {
 	// token without an email scope - which reads and writes all the same: the store's IAM, not
 	// this CLI, decides what any sign-in may do.
 	personEmail(ctx context.Context) (string, error)
-	// identity names the sign-in for a refusal of the store's (secretSession.refusedAs): AWS's
-	// ARN, or which Google credential the backend took and what it is.
+	// identity names the sign-in, as `<source>: <principal>`, for the line every form prints
+	// before its first store call (openSession) and a refusal of the store's
+	// (secretSession.refusedAs): the source the backend took the credential from (--profile, a
+	// variable, a file, gcloud, the machine) and who it acts as - AWS's ARN, a Google account's
+	// email - or that the principal is unknown.
 	identity() string
+	// chooseAnother is how a refusal of the store's tells the caller to sign in with another
+	// credential: the flag or the variable that chooses one, and on Google Cloud the gcloud
+	// configurations --profile can name.
+	chooseAnother() string
 	// signInPrefix is the shell assignments a command line the form prints for running again
 	// (pipeCommand) needs to sign in as this one did when the sign-in came from a variable that
-	// may have been set for this command alone: GCP's GOOGLE_APPLICATION_CREDENTIALS when set, and
-	// CLOUDSDK_CORE_ACCOUNT when it chose the gcloud login; else "". It ends in a space when it is
-	// not empty.
+	// may have been set for this command alone: GCP's GOOGLE_APPLICATION_CREDENTIALS when that
+	// chose the source, and CLOUDSDK_ACTIVE_CONFIG_NAME and CLOUDSDK_CORE_ACCOUNT when they chose
+	// the gcloud login; else "". It ends in a space when it is not empty.
 	signInPrefix() string
 
 	list(ctx context.Context) ([]secretView, error)
@@ -702,12 +709,13 @@ func (s *secretSession) Close() error { return s.backend.close() }
 func (s *secretSession) storeName() string { return s.src.storeName() }
 
 // refusedAs is err, and where err is the store's own access-denied refusal, the sign-in the form
-// called the store as (backend.identity) beside it, so a refusal of IAM's names whom IAM refused.
+// called the store as (backend.identity) beside it, so a refusal of IAM's names whom IAM refused,
+// and how to choose another (backend.chooseAnother).
 func (s *secretSession) refusedAs(err error) error {
 	if !s.backend.isAccessDenied(err) {
 		return err
 	}
-	return fmt.Errorf("%w; the store refused %s", err, s.backend.identity())
+	return fmt.Errorf("%w; the store refused %s; choose another with %s", err, s.backend.identity(), s.backend.chooseAnother())
 }
 
 // ownerTag is the owner tag --owner names, as checkOwnerTier answered it: shared, a person's
@@ -741,8 +749,9 @@ func secretFailIn(stderr io.Writer, form string, s *secretSession, err error) in
 // field names (openSecretBackend) and, on AWS, refuses a sign-in in another account
 // (backend.requireAccount), whose secrets are not the agent secrets; GCP needs no equivalent. It
 // refuses no sign-in for the kind of identity it is, a read's or a write's: the store's IAM
-// decides what it may do.
-func openSession(ctx context.Context, profile string) (*secretSession, error) {
+// decides what it may do. Once the backend is open, and before any store call, it prints on
+// stderr the one line that names the sign-in form's calls run under (backend.identity).
+func openSession(ctx context.Context, stderr io.Writer, form, profile string) (*secretSession, error) {
 	base := brokerBaseURL()
 	if base == "" {
 		return nil, usageErr{fmt.Errorf("%s is required: it names the secrets broker whose store these forms read and write", brokerURLVar)}
@@ -764,6 +773,7 @@ func openSession(ctx context.Context, profile string) (*secretSession, error) {
 		s.Close()
 		return nil, err
 	}
+	fmt.Fprintf(stderr, "agent-secrets %s: using %s\n", form, backend.identity())
 	return s, nil
 }
 
@@ -771,7 +781,9 @@ func openSession(ctx context.Context, profile string) (*secretSession, error) {
 // key ARN's own account and region (checkSettingsKeyARN), for "" or secrets.StoreAWS - a
 // broker that predates `store` names neither - or GCP Secret Manager, pinned to the project
 // secrets_prefix and kms_key_name's own shape agree on (checkSettingsKMSKeyName), for
-// secrets.StoreGCP. Any other value is refused before any cloud call.
+// secrets.StoreGCP. profile is --profile, the store credential the caller chose: an AWS profile
+// on AWS, a gcloud configuration on Google Cloud. Any other store is refused before any cloud
+// call.
 func openSecretBackend(ctx context.Context, profile string, settings Settings) (secretBackend, error) {
 	switch settings.Store {
 	case "", secrets.StoreAWS:
@@ -782,15 +794,12 @@ func openSecretBackend(ctx context.Context, profile string, settings Settings) (
 		if err != nil {
 			return nil, err
 		}
-		return &awsBackend{settings: settings, sm: sm, st: st, profile: profile}, nil
+		return &awsBackend{settings: settings, sm: sm, st: st, source: awsProfileSource(profile), profile: profile}, nil
 	case secrets.StoreGCP:
-		if profile != "" {
-			return nil, usageErr{fmt.Errorf("--profile names an AWS profile; this broker's store is %s, which signs in with CLOUDSDK_AUTH_ACCESS_TOKEN, your Application Default Credentials or your gcloud login, not --profile", settings.Store)}
-		}
 		if err := checkSettingsKMSKeyName(settings); err != nil {
 			return nil, err
 		}
-		return newGCPBackend(ctx, settings)
+		return newGCPBackend(ctx, settings, profile)
 	default:
 		return nil, fmt.Errorf("the broker's settings name an unknown secret store %q", settings.Store)
 	}
@@ -935,7 +944,7 @@ func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 	if len(positional) > 0 {
 		return secretFail(stderr, form, usageErr{fmt.Errorf("unexpected argument %q", positional[0])})
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form, *profile)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -997,7 +1006,7 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form, *profile)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -1095,7 +1104,7 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form, *profile)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -1174,7 +1183,7 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form, *profile)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -1226,7 +1235,7 @@ func cmdSecretDelete(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form, *profile)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -1250,7 +1259,7 @@ func cmdSecretRestore(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form, *profile)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}

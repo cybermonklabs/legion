@@ -257,6 +257,18 @@ func runSecret(args ...string) (stdout, stderr string, code int) {
 	return out.String(), errOut.String(), code
 }
 
+// afterUsing is stderr less its first line, which must be the one line form prints, before its
+// first store call, naming the credential it signs in with (openSession); it fails t when that
+// line is not there.
+func afterUsing(t *testing.T, stderr, form string) string {
+	t.Helper()
+	first, rest, _ := strings.Cut(stderr, "\n")
+	if !strings.HasPrefix(first, "agent-secrets "+form+": using ") {
+		t.Fatalf("stderr %q does not start with the line naming the credential %s uses", stderr, form)
+	}
+	return rest
+}
+
 // describe is what local holds for the secret a session asks for as name.
 func describe(t *testing.T, local *secrets.Local, name string) *secretsmanager.DescribeSecretOutput {
 	t.Helper()
@@ -282,6 +294,87 @@ type fakeSTS struct{ account, arn string }
 
 func (f fakeSTS) GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error) {
 	return &sts.GetCallerIdentityOutput{Account: aws.String(f.account), Arn: aws.String(f.arn)}, nil
+}
+
+// refusingCreates is a secrets.Local whose CreateSecret IAM refuses, as it refuses a sign-in no
+// policy grants secretsmanager:CreateSecret.
+type refusingCreates struct{ *secrets.Local }
+
+func (refusingCreates) CreateSecret(context.Context, *secretsmanager.CreateSecretInput, ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error) {
+	return nil, &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "User: " + adaSignIn + " is not authorized to perform: secretsmanager:CreateSecret"}
+}
+
+// TestAWSRefusalNamesTheSourceAndTheChoice: a store refusal on AWS names where the sign-in came
+// from - --profile, AWS_PROFILE, or the SDK's default credential chain - its ARN, and how to
+// choose another.
+func TestAWSRefusalNamesTheSourceAndTheChoice(t *testing.T) {
+	for _, row := range []struct {
+		name, profile, envProfile, refused string
+	}{
+		{"--profile", "work", "", "the AWS profile work (--profile): " + adaSignIn},
+		{"AWS_PROFILE", "", "work", "the AWS profile work (AWS_PROFILE): " + adaSignIn},
+		{"neither", "", "", "the AWS SDK's default credential chain: " + adaSignIn},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Setenv("AWS_PROFILE", row.envProfile)
+			t.Setenv("AWS_DEFAULT_PROFILE", "")
+			local := secrets.NewLocal()
+			startSecretBroker(t, servedBy(local))
+			useAWS(t, refusingCreates{local}, testAccount, adaSignIn)
+			useStdin(t, "value")
+			args := []string{"create", "NEW_TEST", "--owner", "shared", "--tier", "agent"}
+			if row.profile != "" {
+				args = append(args, "--profile", row.profile)
+			}
+			_, stderr, code := runSecret(args...)
+			if code != 1 || !strings.Contains(stderr, "AccessDeniedException") {
+				t.Fatalf("exit %d, stderr %q; want 1 with the store's AccessDeniedException", code, stderr)
+			}
+			for _, said := range []string{"the store refused " + row.refused, "choose another with --profile <AWS profile> or AWS_PROFILE"} {
+				if !strings.Contains(stderr, said) {
+					t.Fatalf("stderr %q does not say %q", stderr, said)
+				}
+			}
+		})
+	}
+}
+
+// TestEverySecretFormNamesTheSourceItUses: every secret form, on each store, prints exactly one
+// line naming the credential it signs in to the store with before it calls the store.
+func TestEverySecretFormNamesTheSourceItUses(t *testing.T) {
+	onEachStore(t, func(t *testing.T, store kindStore, _ *secretBroker) {
+		store.put(t, "HELD_TEST", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent}, "v1")
+		for _, form := range []struct {
+			stdin string
+			args  []string
+		}{
+			{"", []string{"list"}},
+			{"", []string{"show", "HELD_TEST"}},
+			{"first", []string{"create", "NEW_TEST", "--owner", "shared", "--tier", "agent"}},
+			{"second", []string{"set", "HELD_TEST"}},
+			{"", []string{"retag", "HELD_TEST", "--tier", "human"}},
+			{"", []string{"delete", "HELD_TEST"}},
+			{"", []string{"restore", "HELD_TEST"}},
+		} {
+			t.Run(form.args[0], func(t *testing.T) {
+				useStdin(t, form.stdin)
+				_, stderr, code := runSecret(form.args...)
+				if code != 0 {
+					t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
+				}
+				prefix := "agent-secrets secret " + form.args[0] + ": using "
+				var using int
+				for _, line := range strings.Split(stderr, "\n") {
+					if strings.HasPrefix(line, prefix) {
+						using++
+					}
+				}
+				if using != 1 {
+					t.Fatalf("stderr %q holds %d lines starting %q, want exactly one", stderr, using, prefix)
+				}
+			})
+		}
+	})
 }
 
 // The secret forms refuse settings whose aws_account_id or aws_region disagrees with the account and
@@ -585,6 +678,8 @@ func TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
 		policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "v1"),
 		policytest.Secret("OWNED_KEY", "ada@example.com", policy.TierHuman, "v1"),
 	)
+	t.Setenv("AWS_PROFILE", "")
+	t.Setenv("AWS_DEFAULT_PROFILE", "")
 	broker := startSecretBroker(t, servedBy(local))
 	useAWS(t, refusingTags{local}, testAccount, adaSignIn)
 	for _, args := range [][]string{{"retag", "SHARED_KEY", "--tier", "agent"}, {"retag", "OWNED_KEY", "--owner", "shared"}} {
@@ -592,7 +687,7 @@ func TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("%v: exit %d, stderr %q; want 1", args, code, stderr)
 		}
-		for _, want := range []string{accessDenied, "the store refused the AWS sign-in " + adaSignIn, "a shared secret's owner and tier are an administrator's to change"} {
+		for _, want := range []string{accessDenied, "the store refused the AWS SDK's default credential chain: " + adaSignIn, "a shared secret's owner and tier are an administrator's to change"} {
 			if !strings.Contains(stderr, want) {
 				t.Fatalf("%v: stderr %q must contain %q", args, stderr, want)
 			}
@@ -605,7 +700,7 @@ func TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
 		t.Fatalf("tags = %v, want OWNED_KEY's owner unchanged", tags)
 	}
 	_, stderr, code := runSecret("retag", "OWNED_KEY", "--tier", "agent")
-	if code != 1 || !strings.Contains(stderr, accessDenied) || !strings.Contains(stderr, "the store refused the AWS sign-in "+adaSignIn) || strings.Contains(stderr, "administrator") {
+	if code != 1 || !strings.Contains(stderr, accessDenied) || !strings.Contains(stderr, "the store refused the AWS SDK's default credential chain: "+adaSignIn) || strings.Contains(stderr, "administrator") {
 		t.Fatalf("an owned secret's refused retag: exit %d, stderr %q; want 1 with AWS's refusal alone", code, stderr)
 	}
 	if rereads, _ := broker.recorded(); len(rereads) != 0 {
@@ -729,7 +824,7 @@ func TestSecretCreateAndSetPromptForTheValueAtATerminal(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("%v: exit %d, stderr %q; want 0", tc.args, code, stderr)
 		}
-		if want := "Value for " + tc.name + ": \n"; stderr != want {
+		if want := "Value for " + tc.name + ": \n"; afterUsing(t, stderr, "secret "+tc.args[0]) != want {
 			t.Fatalf("%v: stderr %q, want exactly the prompt %q", tc.args, stderr, want)
 		}
 		if strings.Contains(stdout+stderr, tc.value) {
