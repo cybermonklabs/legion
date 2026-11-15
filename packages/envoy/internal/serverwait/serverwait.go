@@ -65,3 +65,4 @@ func Read(header http.Header, now time.Time) (wait time.Duration, named bool) {
 func bounded(wait time.Duration) time.Duration {
 	return min(max(wait, 0), MaxWait)
 }
+// selection probe, never merged
