@@ -749,7 +749,7 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 		}
 	}
 	if driven != 16 || len(missing) != 0 {
-		t.Fatalf("the table drove %d fields, want 16; it never drove %v", driven, missing)
+		t.Fatalf("the table drove %d rows, want 16; it never drove %v", driven, missing)
 	}
 }
 

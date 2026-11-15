@@ -322,9 +322,9 @@ func New(o Options) *Server {
 		MaxIdleConnsPerHost: upstreamIdleConns,
 		IdleConnTimeout:     upstreamIdleTimeout,
 	}
-	// net/http writes a line of its own for a connection that fails before a handler sees it,
-	// and for a handler's panic it recovers; routing it through the broker's logger keeps it out
-	// of a bare stderr write.
+	// net/http writes a line of its own through ErrorLog: for example for a connection that fails
+	// before a handler sees it, for a handler's panic it recovers, or for an accept that failed;
+	// routing it through the broker's logger keeps it out of a bare stderr write.
 	errorLog := log.New(slogWriter{log: s.log}, "", 0)
 	s.outer = &http.Server{
 		// Every answer a handler of this server writes is recorded (record): a CONNECT the
@@ -795,9 +795,9 @@ func hijack(hijacker http.Hijacker) (net.Conn, error) {
 }
 
 // netHTTPMessage is the message of the line net/http writes through the ErrorLog of either
-// server (slogWriter): a connection that failed before a handler saw it, such as a TLS handshake
-// on a bound connection that failed, and a handler's panic, which net/http recovers and logs with
-// the stack of the goroutine that panicked.
+// server (slogWriter): for example a connection that failed before a handler saw it, such as a
+// TLS handshake on a bound connection that failed, an accept that failed, and a handler's panic,
+// which net/http recovers and logs with the stack of the goroutine that panicked.
 const netHTTPMessage = "airlock proxy: net/http"
 
 // slogWriter is net/http's ErrorLog as one slog line each, under netHTTPMessage: the first line
@@ -809,13 +809,15 @@ const netHTTPMessage = "airlock proxy: net/http"
 // the JSON handler then escapes again. So the error passes answer.ClipFields as a call's line
 // does.
 //
-// The rest is the stack net/http writes under a handler's panic it recovered, and it is kept
-// whole, with no cut of its own: neither server recovers a panic before net/http does (record),
-// so this line is the one record of where the panic happened, and the handler's own frames come
-// after the runtime's, past the first 256 bytes of the text. The stack is the server's own text,
-// not the client's - frames, file paths, tabs and newlines, which the JSON handler writes in one
-// or two bytes each - and net/http bounds it at 64 KiB, so it writes at most 128 KiB, and the line
-// stays one Cloud Logging entry whatever the client sent.
+// The rest is the stack net/http writes under a handler's panic it recovered, after any further
+// lines of the panic value's own text, and it is kept whole, with no cut of its own: neither
+// server recovers a panic before net/http does (record), so this line is the one record of where
+// the panic happened, and the handler's own frames come after the runtime's, past the first 256
+// bytes of the text. The stack is the server's own text, not the client's - frames, file paths,
+// tabs and newlines, which the JSON handler writes in one or two bytes each - and net/http bounds
+// it at 64 KiB, so it writes at most 128 KiB, and the line stays one Cloud Logging entry whatever
+// the client sent. No handler of the airlock panics with a value that holds a newline: a panic
+// value that did, and quoted the client, would put that text in this field uncut.
 type slogWriter struct{ log *slog.Logger }
 
 func (w slogWriter) Write(p []byte) (int, error) {

@@ -12,13 +12,14 @@ import (
 // server's wait in this module keeps (internal/serverwait), on a clock the test sets. A Retry-After
 // of 9999999999 seconds, a Retry-After of a count of more seconds than an int64 holds and an
 // X-RateLimit-Reset of math.MaxInt64 with no requests left are past what a Duration holds, and a
-// Retry-After of two hours is past GitHub's own longest wait; each reads as one hour. Before this
-// reading, the first and the third overflowed to zero or a negative wait, which mintRetry.again
-// took for no wait and made the call again at once; the second failed Atoi and named no wait, so
-// the retry used its own jittered backoff. A negative Retry-After and a reset already past read
-// as no wait, and an ordinary value of each header reads as itself. Each row is an answer that is
-// no rate limit, so the wait it reads is the header's and never rateLimitedWait. The test counts
-// the rows it drove and fails under the number the table must hold.
+// Retry-After of two hours is past GitHub's own longest wait; each reads as one hour. Converted as
+// they came, the first and the third would overflow to zero or a negative wait, which
+// mintRetry.again would take for no wait and make the call again at once; the second would fail
+// Atoi and name no wait, so the retry would use its own jittered backoff. A negative Retry-After
+// and a reset already past read as no wait, and an ordinary value of each header reads as itself.
+// Each row is an answer that is no rate limit, so the wait it reads is the header's and never
+// rateLimitedWait. The test counts the rows it drove and fails under the number the table must
+// hold.
 func TestServerWaitBoundsTheWaitAnAnswerNames(t *testing.T) {
 	const rowsToDrive = 8
 	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
