@@ -2433,12 +2433,15 @@ runs it as a process against a Bun websocket server that replays `packages/contr
 and holds the body it applies to `after.json`.
 It also checks that the probe reopens after a 4001 and after a 1012 and resumes each time with the
 change and revisions it holds.
-Neither row reads a clock, and the two catch different things through the `wait_ms` each close line
-carries.
-The 4001 row answers a rotation at once, so its close line's `wait_ms` is null; a probe that
-answered the rotation on the reconnect timer instead writes the wait it computed, so the row's line
-assertion fails whatever wait it drew.
-It pins no spread, because the probe it passes arms no reconnect timer.
+Neither row reads a clock; each reads the `wait_ms` its close line carries, and the two catch
+different things.
+The 4001 row sends a rotation, which the probe answers at once, so the close line's `wait_ms` is
+null; a probe that answered it on the reconnect timer and reports that wait fails the row's line
+assertion whenever it reopens inside the row.
+The row also pins `--reconnect-spread-ms` a day, far above its own per-test limit, so a probe that
+reports null but still reopens on a timer drawn from that spread is cut off by the runner's limit on
+all but about one draw in 2,880; that rate is that probe's alone, and one that reports its wait
+fails on every draw.
 The 1012 row pins `--reconnect-spread-ms` 50 ms, so the probe's own wait is a draw from [0, 50 ms),
 and the row holds that the close line's `wait_ms` is a number in that window: a reopen at once,
 which writes null, or on a later attempt's backoff, at least a second, fails it on every run.

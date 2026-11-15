@@ -409,17 +409,24 @@ test(
   PROCESS_TEST_MS
 );
 
+/** A day: far above `PROCESS_TEST_MS`, so a reopen on a timer drawn from it reaches the rotation
+ *  row's second subscribe inside that row's limit on about one draw in 2,880 (30 s over 24 h). */
+const NO_TIMER_SPREAD_MS = 24 * 3_600_000;
+
 // Once the first connection has opened, Dispatch's rotation (4001) is the one close the probe
 // answers by opening again at once: its restart (1012) waits within the first attempt's spread,
 // and any other close waits on the backoff. Two closes fall outside that: the close of a first
 // connection that never opened, which ends the watch with no wait, and the probe's own
 // replacement of a silent socket, which opens again at once.
 //
-// What tells a rotation answered at once from one answered on the reconnect timer is the close
+// Two checks tell a rotation answered at once from one answered on the reconnect timer. The close
 // line's `wait_ms`: the probe's timer path (`lost` in `delivery-live-probe.ts`) writes the wait it
-// computed, and the rotation branch writes null, so a probe that took the timer for a rotation
-// fails this row's line assertion whatever wait it drew. The row pins no spread, because the
-// probe it passes arms no reconnect timer.
+// computed and the rotation branch writes null, so a probe that took the timer and reports it fails
+// the line assertion whenever it reopens inside the row. And the spread, `NO_TIMER_SPREAD_MS`: a
+// probe that writes null but still reopens on a timer drawn from it is cut off by the row's limit
+// on all but about one draw in 2,880. That rate is that probe's alone: one that reports the wait
+// it drew fails on every draw, at the limit or on its line. A probe that is right arms no
+// reconnect timer, so the spread costs it nothing.
 for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
   test(
     `after a ${what} close the probe reconnects at once and resumes with the change and revisions it holds`,
@@ -432,7 +439,11 @@ for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
           socket.close(code, reason);
         },
       });
-      const run = runProbe(args(dispatch));
+      const run = runProbe([
+        ...args(dispatch),
+        "--reconnect-spread-ms",
+        String(NO_TIMER_SPREAD_MS),
+      ]);
       await run.until(() => dispatch.received.length === 2);
       run.kill("SIGINT");
       expect(await run.exited()).toBe(0);
