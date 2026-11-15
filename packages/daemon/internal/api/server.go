@@ -204,8 +204,9 @@ type Options struct {
 	// before release_children applies its view of a child (the daemon's prepareObserved, handed the
 	// child as Dispatch's detail shows it, intake.ObservedIssue). Nil prepares nothing.
 	PrepareRepository func(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error)
-	// RepositoryUnread says whether a repository is left out for now because its GitHub App
-	// installation read failed (the daemon's repositoryUnread): the daemon recovers the issues on
+	// RepositoryUnread says whether a repository is left out for now because GitHub did not answer
+	// its read of it, its GitHub App installation read or its default-branch read past GitHub's
+	// rate limit (the daemon's repositoryUnread): the daemon recovers the issues on
 	// it from Dispatch's listing once GitHub answers. release_children never ends a wave on a todo
 	// child it leaves unrecorded for one: it answers the child released and goes on, telling the
 	// architect at once when the recovery will not record it (enterTodoChild). Nil leaves none out.
