@@ -193,8 +193,10 @@ once, in the order the messages were kept, and that can be the same holder when 
 again. If no session takes a message by then, the listener drops it and sends the sender's
 session a dead letter, when the publish named that session. The dead letter is an Envoy message
 on the session's agent subject that names the role, the message's event id, its first line, why
-Envoy dropped it, and when Envoy kept it and dropped it. A publish that repeats a dedupe key
-while its first copy is still kept stores nothing new, and is answered with that first copy.
+Envoy dropped it, and when Envoy kept it and dropped it. The listener also sends one when it drops
+a kept message inside its hour because the live holder does not take the message's delivery mode,
+and `envoy_role_dead_letters_total` counts both. A publish that repeats a dedupe key while its
+first copy is still kept stores nothing new, and is answered with that first copy.
 While a kept message has at least 20 minutes of its hour left and no live session holds the
 role, the listener raises the role's wake report again every five minutes, so a released Legion
 role comes back to take it. A sender that keeps a queue of its own sends `keep: false`, and the
@@ -222,8 +224,9 @@ itself.
 
 A released Legion role gets the messages kept for it when it comes back. The release ends the
 role's process and leaves its claim standing. The session's record is gone at most about five
-minutes after its last heartbeat, or at the stop once the daemon's clean stop runs, and from
-then on a message to the role is kept as `holder_lapsed` and wakes the role. When the role comes
+minutes after its last heartbeat, or at the stop once the daemon's clean stop runs. A message to
+the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases
+the claim at its next pass. Either way it is kept and wakes the role. When the role comes
 back, its session claims the role, and each message kept for the role whose hour has not ended
 arrives as an Envoy card that carries `kept_at`, the time Envoy kept it. The card can arrive
 before the task the daemon gives the woken role. `envoy_inbox` lists it, but the inbox is the

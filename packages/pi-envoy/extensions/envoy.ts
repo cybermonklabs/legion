@@ -116,6 +116,7 @@ import {
   type MessageMetadataArguments,
   parseEnvoyToolArguments,
   publishConfirmationText,
+  publishResultDetails,
   sendConfirmationText,
   sessionsOnMachine,
   toMessageMetadata,
@@ -4831,12 +4832,7 @@ export default function envoyExtension(pi: PiApi): void {
             {
               event_id: result.envelope.event_id,
               topic,
-              ...(result.holder === undefined ? {} : { holder: result.holder }),
-              ...(result.holderState === undefined ? {} : { holder_state: result.holderState }),
-              ...(result.lastSeen === undefined ? {} : { last_seen: result.lastSeen }),
-              ...(result.kept === undefined ? {} : { kept: result.kept }),
-              ...(result.keptReason === undefined ? {} : { kept_reason: result.keptReason }),
-              ...(result.keptUntil === undefined ? {} : { kept_until: result.keptUntil }),
+              ...publishResultDetails(result),
               ...(undelivered ? { undelivered_echo: true } : {}),
             }
           );

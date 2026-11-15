@@ -57,17 +57,21 @@ func startKeptRoleSweep(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 // handover's own resolution to make, and a role with no live holder is walked all the same, with no
 // holder, so its copies end at the end of their hour.
 //
-// A role whose handover is already running on this listener is left to it: the sweep takes that
-// role's guard or passes the role over, and it never waits for one (roleKeepGuards.tryHold), so
-// one slow handover holds up no other role's sweep; such a lane raises no wake report in this
-// pass. A lane whose head read did not answer is passed over under a debug line, and the next pass
-// reads it again. A lane its cursor has finished costs its two reads and no goroutine.
+// The pass waits for a slot of slots, the pool of roleKeepSweepHandovers its loop shares across
+// passes (startKeptRoleSweep), before it takes a role's guard: a pass whose pool is full waits for
+// a handover to end, or for ctx, and holds no guard while it waits, so a claim's or a keep's
+// handover of a role waits only for the sweep's read of that role's lane head and for the
+// handover the sweep starts on it, never for the whole pool. A role whose handover is already
+// running on this listener is left to it: the sweep takes that role's guard or passes the role
+// over, and it never waits for one (roleKeepGuards.tryHold), so one slow handover holds up no
+// other role's sweep; such a lane raises no wake report in this pass. A lane whose head read did
+// not answer is passed over under a debug line, and the next pass reads it again. A lane its
+// cursor has finished costs its two reads and no goroutine. Each of those gives its guard and its
+// slot back at once.
 //
-// A lane with copies left is handed over in a goroutine of its own, under the guard the sweep
-// took, drawn from slots, the pool of roleKeepSweepHandovers its loop shares across passes
-// (startKeptRoleSweep): a pass whose pool is full waits for a handover to end, or for ctx, before
-// it starts the next. The handover reads the lane head again rather than taking this one, since
-// the lane can move while the pass waits for the pool. Each handover runs under
+// A lane with copies left is handed over in a goroutine of its own, under the guard and the slot
+// the sweep took. The handover reads the lane head again rather than taking this one, as each of
+// its passes opens by reading it (handOverKeptRole). Each handover runs under
 // roleKeepHandoverWindow on the listener's clock and raises the role's wake report again when it
 // found no live holder (handOverSweptLane).
 func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, slots chan struct{}) {
@@ -83,8 +87,14 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 		if ctx.Err() != nil {
 			return
 		}
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
 		release, taken := cfg.roleKeepDrains.tryHold(role)
 		if !taken {
+			<-slots
 			continue
 		}
 		headCtx, cancelHead := context.WithTimeout(ctx, roleKeepDrainWindow)
@@ -92,6 +102,7 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 		cancelHead()
 		if err != nil {
 			release()
+			<-slots
 			cfg.logger.LogEvent(slog.LevelDebug, "listener kept role sweep could not read a role's kept lane",
 				slog.String("role", role),
 				slog.String("error", err.Error()))
@@ -99,13 +110,8 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 		}
 		if !head.left {
 			release()
+			<-slots
 			continue
-		}
-		select {
-		case slots <- struct{}{}:
-		case <-ctx.Done():
-			release()
-			return
 		}
 		cfg.logger.LogEvent(slog.LevelDebug, "listener kept role sweep is handing over a role's kept lane",
 			slog.String("role", role),
@@ -132,7 +138,7 @@ func handOverSweptLane(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 	defer cancel()
 	handover, err := handOverKeptRole(handoverCtx, cfg, role, cfg.now)
 	reportKeptRoleDrain(cfg, role, err)
-	if handover.waiting == 0 || (handover.resolved != roles.Unclaimed && handover.resolved != roles.Lapsed) {
+	if handover.waiting == 0 || !roleKeepable(roles.Resolution{State: handover.resolved}) {
 		return
 	}
 	raiseKeptRoleWake(ctx, cfg, role, handover.waiting)
@@ -182,7 +188,7 @@ func keptLaneWakesItsRole(ctx context.Context, client *bus.Client, role string, 
 		}
 		next = stored.Sequence + 1
 		var item contracts.Envelope
-		if json.Unmarshal(stored.Data, &item) == nil && !isOutboxCopy(item) && now.Sub(stored.Time) <= roleKeepWakeAge {
+		if now.Sub(stored.Time) <= roleKeepWakeAge && json.Unmarshal(stored.Data, &item) == nil && !isOutboxCopy(item) {
 			return true, nil
 		}
 	}

@@ -15,9 +15,8 @@ import (
 // not either caller's. A tag that drifted would decode as zero, which reads as a lane drained to
 // its start and leads every handover astray, so the encoding is pinned here: what a walk writes
 // decodes back to itself, and a body written exactly as a walk writes it decodes to the numbers
-// in it. A forward's claim and a cursor with nothing claimed carry no dead_letter key at all, so
-// their bodies are the ones written before the mark existed, and such a body decodes with the
-// mark false.
+// in it. A forward's claim and a cursor with nothing claimed carry no dead_letter key at all, and
+// a body with no dead_letter key decodes with the mark false.
 func TestAKeptRoleCursorEncodesUnderTheTagsBothItsReadersExpect(t *testing.T) {
 	for _, tc := range []struct {
 		written bus.KeptRoleCursor
@@ -58,7 +57,7 @@ func TestAKeptRoleCursorEncodesUnderTheTagsBothItsReadersExpect(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"kept":7,"claiming":8}`), &forward); err != nil {
 		t.Fatalf("decode a forward's claim: %v", err)
 	}
-	if want := (bus.KeptRoleCursor{Kept: 7, Claiming: 8}); forward != want || forward.DeadLetter {
+	if want := (bus.KeptRoleCursor{Kept: 7, Claiming: 8}); forward != want {
 		t.Fatalf("a claim written with no dead_letter decoded as %+v, want %+v with DeadLetter false", forward, want)
 	}
 }

@@ -329,18 +329,16 @@ export function publishConfirmationText(
     const why = lapsed
       ? `its holder${holder} is ${result.holderState ?? "not live"}, so no live session holds the role now`
       : "no live session holds the role now";
-    if (result.keptUntil === undefined) {
-      sentences.push(
-        `Envoy kept it for the role: ${why}. Envoy did not say until when it keeps it.`
-      );
-    } else {
-      sentences.push(
-        `Envoy kept it for the role until ${new Date(result.keptUntil).toISOString()}: ${why}.`,
-        "The next session to hold the role before then gets it."
-      );
-      if (options.senderNamed) {
-        sentences.push("If none does, Envoy drops it and sends you a message that names it.");
-      }
+    const until =
+      result.keptUntil === undefined ? "" : ` until ${new Date(result.keptUntil).toISOString()}`;
+    sentences.push(`Envoy kept it for the role${until}: ${why}.`);
+    sentences.push(
+      result.keptUntil === undefined
+        ? "Envoy did not say until when it keeps it."
+        : "The next session to hold the role before then gets it."
+    );
+    if (result.keptUntil !== undefined && options.senderNamed) {
+      sentences.push("If none does, Envoy drops it and sends you a message that names it.");
     }
     // Last, so that "before then" above can only mean kept_until, never a time the rule names.
     if (lapsed && result.holderState === "unresponsive") sentences.push(UNRESPONSIVE_RULE);
@@ -349,6 +347,25 @@ export function publishConfirmationText(
     sentences.push(`Its role holder is ${result.holder}${state}.`);
   }
   return sentences.join(" ");
+}
+
+/** The fields of a publish answer both hosts hand the model beside its confirmation line
+ *  (`publishConfirmationText`), under the listener's own snake_case names, each one only when the
+ *  answer carries it. Each host adds its own fields around them. */
+export function publishResultDetails(
+  result: Pick<
+    PublishResult,
+    "holder" | "holderState" | "lastSeen" | "kept" | "keptReason" | "keptUntil"
+  >
+) {
+  return {
+    ...(result.holder === undefined ? {} : { holder: result.holder }),
+    ...(result.holderState === undefined ? {} : { holder_state: result.holderState }),
+    ...(result.lastSeen === undefined ? {} : { last_seen: result.lastSeen }),
+    ...(result.kept === undefined ? {} : { kept: result.kept }),
+    ...(result.keptReason === undefined ? {} : { kept_reason: result.keptReason }),
+    ...(result.keptUntil === undefined ? {} : { kept_until: result.keptUntil }),
+  };
 }
 
 /**

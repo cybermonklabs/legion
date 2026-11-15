@@ -10,12 +10,14 @@ import (
 
 // A clustered stream answers a publish whose message id an earlier publish still has in process
 // with nats-server's code 10158 and no sequence (JSStreamDuplicateMessageConflict): the earlier
-// copy is not stored yet, so nothing names the copy this publish duplicates. The stored path names
-// that answer ErrDuplicateInProcess, which the listener's keep retries, and the server's own error
-// still matches beside it. It is no ErrRefused, since the same publish sent again is answered once
-// the earlier one is stored. Every other answer passes through as it was: a full stream's refusal
-// stays ErrStreamFull alone, in the order the stored path names the two (sendStored). No real
-// cluster gives the code on demand, so the answer is the server's own APIError value.
+// copy is not stored yet, so nothing names the copy this publish duplicates. storedRefusal, the
+// mapping sendStored makes of a failed publish on the stored path, names that answer
+// ErrDuplicateInProcess, which the listener's keep retries, and the server's own error still
+// matches beside it. It is no ErrRefused, since the same publish sent again is answered once the
+// earlier one is stored. A full stream's refusal is named ErrStreamFull alone, and every other
+// answer passes through as it was. The test calls storedRefusal itself, so a change to the
+// mapping sendStored makes fails it. No real cluster gives the code on demand, so the answer is
+// the server's own APIError value.
 func TestAPublishWhoseMessageIDIsStillInProcessIsNamedErrDuplicateInProcess(t *testing.T) {
 	inProcess := &nats.APIError{Code: 409, ErrorCode: 10158, Description: "duplicate message id is in process"}
 	full := &nats.APIError{Code: 503, ErrorCode: jsStreamStoreFailed, Description: maxBytesExceeded}
@@ -34,7 +36,7 @@ func TestAPublishWhoseMessageIDIsStillInProcessIsNamedErrDuplicateInProcess(t *t
 		{name: "an acknowledgement that did not come", err: nats.ErrTimeout},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			named := duplicateInProcess(streamFull(row.err))
+			named := storedRefusal(row.err)
 			if got := errors.Is(named, ErrDuplicateInProcess); got != row.inProcess {
 				t.Fatalf("%v names ErrDuplicateInProcess: %t, want %t", named, got, row.inProcess)
 			}

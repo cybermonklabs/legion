@@ -134,8 +134,10 @@ describe("envoyToolSpecs", () => {
       expect(description).not.toContain("live only");
     }
     // The ways a role publish ends in an error: the holder's refusal (403), and the window the
-    // listener spends waiting for the stream (504). No live holder is not one of them: the
-    // listener keeps the message for the role's next live holder.
+    // listener spends waiting for the stream (504). On a listener of this release whose keep
+    // succeeded, no live holder is not one of them: the listener keeps the message for the role's
+    // next live holder. A keep that failed answers 404, and so does a listener of an earlier
+    // release for a holder that is not live (holder_lapsed).
     expect(publish?.description).toContain(
       "the holder refuses the message, or the forward is not stored within four seconds"
     );
@@ -162,8 +164,10 @@ describe("envoyToolSpecs", () => {
     expect(publish?.description).toContain(
       "The next session to hold the role live before kept_until gets the message. That can be the same holder when it answers again."
     );
-    // 404: nothing was kept. The tool sends no `keep: false`, so a holder that is not live never
-    // reaches it, and nothing tells the model that no copy waits for such a holder.
+    // 404: nothing was kept. The tool sends no `keep: false`, so on a listener of this release
+    // whose keep succeeded a holder that is not live never reaches it, and nothing tells the model
+    // that no copy waits for such a holder. A keep that failed, and a listener of an earlier
+    // release, answer such a holder 404 holder_lapsed.
     expect(publish?.description).toContain("the listener keeps nothing and errs");
     expect(publish?.description).not.toContain("nothing waits for it");
     expect(publish?.description).not.toContain("in the hour that follows");
@@ -240,7 +244,6 @@ describe("publishConfirmationText", () => {
     expect(unnamed).toBe(
       `published event-kept. Envoy kept it for the role until ${until}: no live session holds the role now. The next session to hold the role before then gets it.`
     );
-    expect(unnamed).not.toContain("sends you a message");
 
     // A holder that is unresponsive: the line names it and its state, and keeps the warning that
     // such a holder is not dead and that the sender starts no replacement for it.
@@ -259,8 +262,6 @@ describe("publishConfirmationText", () => {
     );
     expect(warned).toContain("An unresponsive session is not dead");
     expect(warned).toContain("Start no replacement for it");
-    // The holder is named as one that is not live, never as the session that took the message.
-    expect(warned).not.toContain("Its role holder is");
 
     // A holder that is gone: named with its state, and with no warning, which is for an
     // unresponsive session alone.
@@ -280,7 +281,6 @@ describe("publishConfirmationText", () => {
     expect(timeless).toBe(
       "published event-kept. Envoy kept it for the role: no live session holds the role now. Envoy did not say until when it keeps it."
     );
-    expect(timeless).not.toContain("waits for the session that claims it next");
 
     // The tool's description names the hour, kept_until, and the message that follows it.
     const description =

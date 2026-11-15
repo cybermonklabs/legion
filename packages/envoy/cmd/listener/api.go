@@ -253,13 +253,13 @@ func frameDeliveryMode(payload *string) (mode string, err error) {
 	return mode, nil
 }
 
-// envelopeDeliveryMode is frameDeliveryMode of item's payload, none when it has none.
-func envelopeDeliveryMode(item contracts.Envelope) (mode string, err error) {
-	var payload *string
-	if item.Payload != "" {
-		payload = &item.Payload
+// payloadDeliveryMode is frameDeliveryMode of payload, none when it is empty.
+func payloadDeliveryMode(payload string) (mode string, err error) {
+	var framed *string
+	if payload != "" {
+		framed = &payload
 	}
-	return frameDeliveryMode(payload)
+	return frameDeliveryMode(framed)
 }
 
 // isDeliveryMode reports whether value is one of the three targeted-delivery modes. The list is
@@ -681,11 +681,7 @@ func beforeForward(item contracts.Envelope, holder string, entry session.Session
 // message may be forwarded. sendHandler answers a refusal 403 with its text, recorded as
 // outcomeCapabilityRefused, as the publish route does through beforeForward.
 func deliveryModeVerdict(sessionID string, entry session.SessionEntry, payload string) forwardVerdict {
-	var framed *string
-	if payload != "" {
-		framed = &payload
-	}
-	mode, err := frameDeliveryMode(framed)
+	mode, err := payloadDeliveryMode(payload)
 	switch {
 	case err != nil:
 		return forwardVerdict{

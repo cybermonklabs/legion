@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/roleholder"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -470,12 +472,12 @@ func idleRigWakeAll(t *testing.T, rig *idleWakeRig) {
 // removes its session's record as it stops and leaves its claim standing
 // (idleRigRoleProcess.unregister), so the claim names a holder that is not live. It is the word
 // both answers of a role publish carry for it — the 202's kept_reason and the 404's reason
-// (packages/envoy's roles.State).
-const idleRigRoleLapsed = "holder_lapsed"
+// (roleholder.HolderLapsed).
+const idleRigRoleLapsed = roleholder.HolderLapsed
 
 // idleRigRoleUnclaimed is the holder state of a role no claim names, in the same two answers: a
 // released pod's role once its claim is freed (idleRigListener.freeClaims).
-const idleRigRoleUnclaimed = "unclaimed"
+const idleRigRoleUnclaimed = roleholder.Unclaimed
 
 // idleRigRoleAnswer is what a role publish's answer says about the keep: the 202's own kept,
 // kept_reason and kept_until (cmd/listener's publishResponse) and the 404's reason (its

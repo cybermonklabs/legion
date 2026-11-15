@@ -593,9 +593,8 @@ func TestWakeTaskNamesItsWake(t *testing.T) {
 // R7): a message kept for the role reaches the woken session as an Envoy card that shows kept_at,
 // possibly before the wake's task, unless its hour ended first; Envoy keeps a role message for one
 // hour and tells its sender when it drops one; and a message sent with keep: false is not kept, so
-// its sender sends it again. The sentence this replaces said nothing was kept. Each clause is
-// read on its own words, so a rewording that keeps every rule passes and one that drops a rule
-// fails naming it.
+// its sender sends it again. Each clause is matched on its own, so a sentence that drops one fails
+// and names it.
 func TestTheRoleMessageWakeTaskSaysWhatWasKept(t *testing.T) {
 	task := WakeTask(pods.WakeRoleMessage, "legion-LEGION-208-implementer")
 	for _, clause := range []struct{ rule, want string }{

@@ -3343,6 +3343,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The first walk that reads such a copy drops it, whether or not any session holds the role (`judgeKeptRoleCopy`).
   The walk counts the drop once on `envoy_role_kept_expired_total`, with the labels `kept_by` (`listener` or `dispatch_outbox`) and `stale`, and logs it once as `listener dropped a kept role message older than the keep window`.
   When the listener kept the copy and its publish named a sender session, the walk sends that session a dead letter before it writes the cursor past the copy (`keptRoleDeadLetter`, `envoy_role_dead_letters_total`).
+  The walk also sends that session a dead letter for such a copy inside its hour whose live holder does not take the copy's delivery mode, and `envoy_role_dead_letters_total` counts both.
   The dead letter is a stored envelope from source `envoy` on the sender's agent subject.
   It names the role, the copy's event id, its first line, why Envoy dropped it, and when Envoy kept it and dropped it.
   Its message id is `envoy.dead-letter.<role>.<copy's stream sequence>`, so the stream holds one dead letter for each copy, however many walks and listeners send it.
@@ -3357,7 +3358,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - A released Legion role gets the copies kept for it when it comes back.
   The release ends the role's process and leaves its claim standing.
   The session's record is gone at most about five minutes after its last heartbeat, or at the stop once the daemon's clean stop runs.
-  From then on, a message to the role is kept as `holder_lapsed` and raises the role's wake report.
+  A message to the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases the claim at its next pass (`internal/store/reaper.go`).
+  Either way it is kept and raises the role's wake report.
   When the role comes back, its session claims the role, and each copy kept for the role whose hour has not ended arrives as an Envoy card that carries `kept_at`.
   The card can arrive before the task the daemon gives the woken role (`WakeTask`, `packages/daemon/internal/workflow/wake.go`).
   `envoy_inbox` lists it, but the inbox is the memory of the running process, so in a new pod it starts empty and holds only what that process received.

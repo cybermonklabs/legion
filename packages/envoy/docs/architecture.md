@@ -386,7 +386,9 @@ age.
 Each copy is kept for one hour from the time the stream stored it. No walk forwards a copy whose
 hour ended: the first walk that reads it drops it, whether or not any session holds the role, and
 counts it on `envoy_role_kept_expired_total`. When the listener kept that copy and its publish
-named a sender session, the walk sends that session a dead letter. The dead letter is a stored
+named a sender session, the walk sends that session a dead letter. The walk also sends that
+session a dead letter for such a copy inside its hour whose live holder does not take the copy's
+delivery mode, and `envoy_role_dead_letters_total` counts both. The dead letter is a stored
 envelope from source `envoy` on the sender's agent subject, and it names the role, the copy's
 event id, its first line, why Envoy dropped it, and when Envoy kept it and dropped it. The stream
 holds one dead letter for each copy, however many walks send it. A copy whose hour ended more
@@ -402,17 +404,18 @@ role-routed events among them, which the outbox sends once and reads no exceptio
 
 A released Legion role gets the copies kept for it when it comes back. The release ends the
 role's process and leaves its claim standing. The session's record is gone at most about five
-minutes after its last heartbeat, or at the stop once the daemon's clean stop runs, and from then
-on a message to the role is kept as `holder_lapsed` and raises the role's wake report. When the
-role comes back, its session claims the role, and each copy kept for the role whose hour has not
-ended arrives as an Envoy card that carries `kept_at`. The card can arrive before the task the
-daemon gives the woken role (`WakeTask`, `packages/daemon/internal/workflow/wake.go`).
-`envoy_inbox` lists it, but the inbox is the memory of the running process, so in a new pod it
-starts empty and holds only what that process received. To check one message, read the
-session's transcript for the card with that event id and `kept_at`. The listener's log holds the
-forward of that event id, `listener role forwarded` with `kept_at`, or the drop line
-`listener dropped a kept role message older than the keep window`. The sender's session holds
-the dead letter that names that event id, when the publish named that session.
+minutes after its last heartbeat, or at the stop once the daemon's clean stop runs. A message to
+the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases
+the claim at its next pass (`internal/store/reaper.go`). Either way it is kept and raises the
+role's wake report. When the role comes back, its session claims the role, and each copy kept for
+the role whose hour has not ended arrives as an Envoy card that carries `kept_at`. The card can
+arrive before the task the daemon gives the woken role (`WakeTask`,
+`packages/daemon/internal/workflow/wake.go`). `envoy_inbox` lists it, but the inbox is the memory
+of the running process, so in a new pod it starts empty and holds only what that process received.
+To check one message, read the session's transcript for the card with that event id and `kept_at`.
+The listener's log holds the forward of that event id, `listener role forwarded` with `kept_at`, or
+the drop line `listener dropped a kept role message older than the keep window`. The sender's
+session holds the dead letter that names that event id, when the publish named that session.
 
 Every other `notifications.` topic the route takes is published to the stream and answered `200`
 once the stream stored it. The route forwards it to nobody: each session that registered the

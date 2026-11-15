@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { LegionState } from "@legion/contracts/legion-api";
-import type { PublishInput } from "@legion/envoy-client/transport";
+import type { PublishInput, PublishResult } from "@legion/envoy-client/transport";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { EnvoyPublish } from "@legion/pi-shared/phase-reminder";
 import { DEFAULT_STALL_LIMITS, defaultCallBoundMs } from "@legion/pi-shared/stall-limits";
@@ -267,7 +267,7 @@ interface TellerRig {
   readonly published: PublishInput[];
   readonly warnings: { readonly message: string; readonly context?: Record<string, unknown> }[];
   /** What the listener answers; a string makes the publish throw that message. */
-  publishAnswer: { kept?: boolean; keptUntil?: number } | string;
+  publishAnswer: Pick<PublishResult, "kept" | "keptUntil"> | string;
   /** Whether Envoy is on for this session. */
   envoy: boolean;
   /** Whether `pi.appendEntry` takes the record. */

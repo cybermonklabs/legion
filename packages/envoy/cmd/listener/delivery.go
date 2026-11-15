@@ -534,11 +534,7 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 		if resolved.State == roles.Live {
 			return sessionID, resolved.Entry, true
 		}
-		reason := roleKeptUnclaimed
-		if resolved.State == roles.Lapsed {
-			reason = roleKeptLapsed
-		}
-		if roleKeepable(resolved) && keepRoleLaneMessage(cfg, role, item, reason, sessionID) {
+		if roleKeepable(resolved) && keepRoleLaneMessage(cfg, role, item, roleKeepReason(resolved.State), sessionID) {
 			return "", session.SessionEntry{}, false
 		}
 		if resolved.State == roles.Unclaimed {
@@ -901,7 +897,7 @@ const (
 // advertise, since a mode nobody can name cannot be matched against any entry.
 //
 // mode is the delivery mode the envelope targets, "" when it targets none, and modeErr the failure
-// of reading it (envelopeDeliveryMode): both are read once per message rather than once per
+// of reading it (payloadDeliveryMode): both are read once per message rather than once per
 // recipient.
 //
 // It returns the session's live entry whenever one was read, for every verdict and not only the
@@ -1011,7 +1007,7 @@ func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, 
 		message.finalize(false)
 		return
 	}
-	mode, modeErr := envelopeDeliveryMode(item)
+	mode, modeErr := payloadDeliveryMode(item.Payload)
 
 	var failed bool
 	var deadDeliveries int

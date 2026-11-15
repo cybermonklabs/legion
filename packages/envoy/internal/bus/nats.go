@@ -1548,6 +1548,14 @@ func duplicateInProcess(err error) error {
 	return err
 }
 
+// storedRefusal names the server's answer to a publish of the stored path as the ErrStreamFull or
+// the ErrDuplicateInProcess it is, and returns any other error as it is. It is the mapping
+// sendStored makes after c.refused, in a function of its own so that its test
+// (duplicate_in_process_test.go) reads the mapping sendStored makes and not a copy of it.
+func storedRefusal(err error) error {
+	return duplicateInProcess(streamFull(err))
+}
+
 // maxSubjectBytes bounds a subject the bus publishes on, or a KV call builds from a key. The server
 // closes a connection whose protocol line runs past its max control line (4 KiB by default) and
 // nats.go does not check it, so a longer subject would close the connection every subscription and
@@ -1772,7 +1780,7 @@ func (c *Client) sendStored(ctx context.Context, subject string, data []byte, op
 		if denied := c.deniedPublish(subject, sentAt); denied != nil {
 			return nil, denied
 		}
-		return nil, duplicateInProcess(streamFull(c.refused(err, len(data))))
+		return nil, storedRefusal(c.refused(err, len(data)))
 	}
 	return ack, nil
 }

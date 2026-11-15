@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -75,12 +76,14 @@ const (
 	keptByDispatchOutbox = "dispatch_outbox"
 )
 
-// The reasons a walk drops a copy with a dead letter, as the dead letter's lines name them
-// (keptRoleDrop.reason): the copy's hour ended, or the role's live holder does not take the copy's
-// delivery mode.
+// deadLetterReason is why a walk drops a copy with a dead letter, as the dead letter's lines name
+// it (keptRoleDrop.reason): the copy's hour ended, or the role's live holder does not take the
+// copy's delivery mode.
+type deadLetterReason string
+
 const (
-	deadLetterExpired      = "expired"
-	deadLetterDeliveryMode = "delivery_mode"
+	deadLetterExpired      deadLetterReason = "expired"
+	deadLetterDeliveryMode deadLetterReason = "delivery_mode"
 )
 
 // roleKeepDeadLetterLineMax is how many characters of a dropped copy's first line its dead letter
@@ -465,11 +468,11 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 	if stored.Sequence != seq {
 		return keptRoleCopy{}, false, nil
 	}
-	var item contracts.Envelope
-	if err := json.Unmarshal(stored.Data, &item); err != nil {
+	if cfg.now().Sub(stored.Time) > roleKeepWindow {
 		return keptRoleCopy{}, false, nil
 	}
-	if cfg.now().Sub(stored.Time) > roleKeepWindow {
+	var item contracts.Envelope
+	if err := json.Unmarshal(stored.Data, &item); err != nil {
 		return keptRoleCopy{}, false, nil
 	}
 	cursor, err := cfg.client.ReadKeptRoleCursor(ctx, role)
@@ -1057,7 +1060,7 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 			judged.report()
 			continue
 		case keptCopyDeadLetter:
-			unconfirmed, err := endKeptCopyWithDeadLetter(ctx, cfg, lane, role, kept, stored, judged)
+			unconfirmed, err := endKeptCopyWithDeadLetter(ctx, lane, kept, stored, judged)
 			if err != nil {
 				result.unconfirmed = unconfirmed
 				result.end, err = roleKeepWriteFailed(err)
@@ -1199,7 +1202,7 @@ const (
 // seq.
 func keptCopyClaimOf(cursor bus.KeptRoleCursor, seq uint64) keptCopyClaim {
 	switch {
-	case cursor.Claiming == 0 || cursor.Claiming != seq:
+	case cursor.Claiming != seq:
 		return keptCopyUnclaimed
 	case cursor.DeadLetter:
 		return keptCopyDeadLetterClaimed
@@ -1290,9 +1293,9 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 	if claim == keptCopyDeadLetterClaimed && owed {
 		// The walk that made the claim knew the holder that did not take the copy, and the
 		// cursor does not keep it; the mode is the copy's own, read as that walk read it.
-		mode := deliveryModeVerdict("", session.SessionEntry{}, item.Payload)
+		mode, err := payloadDeliveryMode(item.Payload)
 		return keptCopyVerdict{step: keptCopyDeadLetter, item: item, at: at,
-			drop: keptRoleDrop{reason: deadLetterDeliveryMode, mode: mode.mode, unreadable: mode.kind == forwardModeUnreadable}}
+			drop: keptRoleDrop{reason: deadLetterDeliveryMode, mode: mode, unreadable: err != nil}}
 	}
 	if holder == "" {
 		return keptCopyVerdict{step: keptCopyWait, item: item}
@@ -1339,7 +1342,7 @@ func keptRoleDroppedReport(cfg listenerDeliveryHandlerConfig, role, holder strin
 // says (keptRoleDeadLetter) and its line names.
 type keptRoleDrop struct {
 	// reason is deadLetterExpired or deadLetterDeliveryMode.
-	reason string
+	reason deadLetterReason
 	// forwarded is an expired copy a walk claimed to forward inside its hour and whose forward no
 	// walk confirmed: the stream may have stored that forward, so the copy may have reached the
 	// holder.
@@ -1375,29 +1378,17 @@ func (d keptRoleDrop) explanation() string {
 		}
 		return "No session held the role in the hour that Envoy kept the message. " + readRole
 	}
-	session := "the session that held the role"
+	subject, object, held := "The session that held the role", "the session that held the role", ""
 	if d.holder != "" {
-		session = "session " + d.holder
-	}
-	held := ""
-	if d.holder != "" {
-		held = "Session " + d.holder + " held the role. "
+		subject, object, held = "Session "+d.holder, "session "+d.holder, "Session "+d.holder+" held the role. "
 	}
 	switch {
 	case d.unreadable:
-		return held + "Envoy could not read the delivery mode of the message, so Envoy did not send it to " + session + "."
+		return held + "Envoy could not read the delivery mode of the message, so Envoy did not send it to " + object + "."
 	case d.mode != "":
-		return held + capitalized(session) + " does not take the delivery mode " + d.mode + "."
+		return held + subject + " does not take the delivery mode " + d.mode + "."
 	}
-	return held + capitalized(session) + " does not take the delivery mode of the message."
-}
-
-// capitalized is s with its first letter in upper case, for a phrase that starts a sentence.
-func capitalized(s string) string {
-	if s == "" {
-		return s
-	}
-	return strings.ToUpper(s[:1]) + s[1:]
+	return held + subject + " does not take the delivery mode of the message."
 }
 
 // keptCopyFirstLine is the first line of item, its summary's first line cut at
@@ -1406,8 +1397,14 @@ func capitalized(s string) string {
 func keptCopyFirstLine(item contracts.Envelope) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(item.PayloadSummary), "\n")
 	line = strings.TrimSpace(line)
-	if runes := []rune(line); len(runes) > roleKeepDeadLetterLineMax {
-		return string(runes[:roleKeepDeadLetterLineMax-1]) + "…"
+	if utf8.RuneCountInString(line) > roleKeepDeadLetterLineMax {
+		kept := 0
+		for i := range line {
+			if kept == roleKeepDeadLetterLineMax-1 {
+				return line[:i] + "…"
+			}
+			kept++
+		}
 	}
 	return line
 }
@@ -1462,7 +1459,7 @@ func keptRoleDeadLetter(role string, stored bus.StoredMessage, item contracts.En
 // session reads. An envelope contracts.Envelope.Validate refuses is refused the same way every
 // time it is sent.
 func deadLetterRefusal(sender string, letter contracts.Envelope) error {
-	if sender == "" || strings.ContainsAny(sender, ".*>") || strings.IndexFunc(sender, unicode.IsSpace) >= 0 {
+	if sender == "" || strings.ContainsAny(sender, ".*>") || strings.ContainsFunc(sender, unicode.IsSpace) {
 		return fmt.Errorf("source_session %q is not one subject token", sender)
 	}
 	return letter.Validate()
@@ -1486,8 +1483,8 @@ func deadLetterRefusal(sender string, letter contracts.Envelope) error {
 // known before the publish (deadLetterRefusal) in the one write {kept: the copy's sequence}, since
 // there is nothing to claim the copy for, and one the publish met (forwardRefused) after the
 // claim it made.
-func endKeptCopyWithDeadLetter(ctx context.Context, cfg listenerDeliveryHandlerConfig, lane *roleKeepLaneCursor, role string, kept uint64, stored bus.StoredMessage, judged keptCopyVerdict) (bool, error) {
-	item := judged.item
+func endKeptCopyWithDeadLetter(ctx context.Context, lane *roleKeepLaneCursor, kept uint64, stored bus.StoredMessage, judged keptCopyVerdict) (bool, error) {
+	cfg, role, item := lane.cfg, lane.role, judged.item
 	letter, msgID := keptRoleDeadLetter(role, stored, item, judged.at, judged.drop)
 	if refusal := deadLetterRefusal(item.SourceSession, letter); refusal != nil {
 		if err := lane.write(ctx, bus.KeptRoleCursor{Kept: stored.Sequence}); err != nil {
@@ -1522,7 +1519,7 @@ func reportKeptRoleDeadLetter(cfg listenerDeliveryHandlerConfig, role string, st
 		slog.String("role", role),
 		slog.String("event_id", judged.item.EventID),
 		slog.String("source_session", judged.item.SourceSession),
-		slog.String("reason", judged.drop.reason),
+		slog.String("reason", string(judged.drop.reason)),
 		slog.String("dead_letter_event_id", letter.EventID),
 		slog.Uint64("sequence", stored.Sequence),
 	}

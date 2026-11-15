@@ -450,16 +450,12 @@ func sweptRoleWakes(t *testing.T, client *bus.Client, role string) []contracts.E
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	reports, err := readStored(ctx, client, bus.LegionWakeTopic)
+	if err != nil {
+		t.Fatalf("read the wake reports: %v", err)
+	}
 	var found []contracts.Envelope
-	for next := uint64(1); ; {
-		stored, err := client.NextStoredMessage(ctx, bus.LegionWakeTopic, next)
-		if errors.Is(err, natsgo.ErrMsgNotFound) {
-			return found
-		}
-		if err != nil {
-			t.Fatalf("read the wake reports on %s from %d: %v", bus.LegionWakeTopic, next, err)
-		}
-		next = stored.Sequence + 1
+	for _, stored := range reports {
 		var item contracts.Envelope
 		if err := json.Unmarshal(stored.Data, &item); err != nil {
 			t.Fatalf("decode the wake report stored at %d: %v", stored.Sequence, err)
@@ -468,6 +464,7 @@ func sweptRoleWakes(t *testing.T, client *bus.Client, role string) []contracts.E
 			found = append(found, item)
 		}
 	}
+	return found
 }
 
 // The sweep is the backstop under which no kept copy waits past its hour, and it walks every lane
@@ -476,9 +473,8 @@ func sweptRoleWakes(t *testing.T, client *bus.Client, role string) []contracts.E
 // it with copies behind its cursor, and nothing starts another: a keep happens only while a role
 // has no live holder, and a live holder claims no second time. One pass of the sweep hands such a
 // lane to the role's live holder with no claim and no keep behind it. The same pass walks a lane
-// whose role no session claims, which the sweep used to pass over: its copy, inside its hour,
-// reaches nobody, and it wakes its role again (raiseKeptRoleWake), where the claimed lane, whose
-// holder is live, wakes nothing.
+// whose role no session claims: its copy, inside its hour, reaches nobody, and it wakes its role
+// again (raiseKeptRoleWake), where the claimed lane, whose holder is live, wakes nothing.
 func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const (

@@ -1054,11 +1054,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         recipient: response.recipient ?? input.targetSessionID,
         confirmed: response.recipient !== undefined,
         recipientState: response.recipient_state ?? "live",
-        // Omitted rather than zero when the listener names none, so a reader never reads 1970
-        // as a last registration.
-        ...(response.last_seen === undefined || response.last_seen <= 0
-          ? {}
-          : { lastSeen: response.last_seen }),
+        ...lastSeenOf(response.last_seen),
         duplicate: response.duplicate === true,
       };
     },
@@ -1089,10 +1085,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         envelope: response,
         ...(response.holder === undefined ? {} : { holder: response.holder }),
         ...(response.holder_state === undefined ? {} : { holderState: response.holder_state }),
-        // Omitted rather than zero when the listener names none, as a send's is.
-        ...(response.last_seen === undefined || response.last_seen <= 0
-          ? {}
-          : { lastSeen: response.last_seen }),
+        ...lastSeenOf(response.last_seen),
         ...(response.kept === undefined ? {} : { kept: response.kept }),
         ...(response.kept_reason === undefined ? {} : { keptReason: response.kept_reason }),
         ...(response.kept_until === undefined ? {} : { keptUntil: response.kept_until }),
@@ -1195,4 +1188,12 @@ function messageMetadata(input: MessageMetadataInput) {
  */
 function sourceSession(sessionID: string | undefined) {
   return sessionID === undefined || sessionID === "" ? {} : { source_session: sessionID };
+}
+
+/**
+ * A listener's `last_seen` as a result's `lastSeen`: omitted rather than zero when the listener
+ * names none, so a reader never reads 1970 as a last registration.
+ */
+function lastSeenOf(lastSeen: number | undefined) {
+  return lastSeen === undefined || lastSeen <= 0 ? {} : { lastSeen };
 }

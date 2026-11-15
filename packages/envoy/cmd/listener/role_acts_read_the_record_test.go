@@ -9,7 +9,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -163,14 +162,7 @@ func unreadableLaneHead(t *testing.T, client *bus.Client, role string) {
 
 // logRecordsNamed is every JSON record in logs whose msg is name and whose role is role.
 func logRecordsNamed(logs, name, role string) []map[string]any {
-	var found []map[string]any
-	for line := range strings.SplitSeq(strings.TrimSpace(logs), "\n") {
-		var record map[string]any
-		if json.Unmarshal([]byte(line), &record) == nil && record["msg"] == name && record["role"] == role {
-			found = append(found, record)
-		}
-	}
-	return found
+	return linesIn(logs, name, map[string]any{"role": role})
 }
 
 // liveRoleActEntry is the record every session here registers with: live and self-subscribed, so a

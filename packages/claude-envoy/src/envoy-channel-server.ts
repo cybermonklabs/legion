@@ -63,6 +63,7 @@ import {
   EnvoyToolOperation,
   envoyToolSpecs,
   publishConfirmationText,
+  publishResultDetails,
   sendConfirmationText,
   sessionsOnMachine,
   type ToolArgumentsByOperation,
@@ -1864,12 +1865,7 @@ export async function executeEnvoyTool(
         message: publishConfirmationText(result, { senderNamed: true }),
         event_id: result.envelope.event_id,
         topic: result.envelope.topic,
-        ...(result.holder === undefined ? {} : { holder: result.holder }),
-        ...(result.holderState === undefined ? {} : { holder_state: result.holderState }),
-        ...(result.lastSeen === undefined ? {} : { last_seen: result.lastSeen }),
-        ...(result.kept === undefined ? {} : { kept: result.kept }),
-        ...(result.keptReason === undefined ? {} : { kept_reason: result.keptReason }),
-        ...(result.keptUntil === undefined ? {} : { kept_until: result.keptUntil }),
+        ...publishResultDetails(result),
       }
     }
     case EnvoyToolOperation.subscribe: {

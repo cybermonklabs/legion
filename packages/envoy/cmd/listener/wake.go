@@ -184,8 +184,7 @@ func publishWithinBudget(budget context.Context, client *bus.Client, item contra
 // legion.wake.role.<role>.<the start of the roleWakeInterval now falls in, in Unix seconds>. Every
 // listener names one role's report in one interval the same way, whichever of them sweeps.
 func sweptRoleWakeID(role string, now time.Time) string {
-	interval := int64(roleWakeInterval / time.Second)
-	return "legion.wake.role." + role + "." + strconv.FormatInt(now.Unix()/interval*interval, 10)
+	return "legion.wake.role." + role + "." + strconv.FormatInt(now.Truncate(roleWakeInterval).Unix(), 10)
 }
 
 // publishSweptRoleWake publishes role's wake report from the sweep (raiseKeptRoleWake), dated now,

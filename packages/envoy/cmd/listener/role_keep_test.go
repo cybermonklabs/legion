@@ -248,9 +248,8 @@ func TestAPublishToALapsedClaimIsKeptAndTheClaimStands(t *testing.T) {
 }
 
 // A sender that holds a queue of its own asks for keep: false, and to a claim whose holder is not
-// live it gets the answer it got before such a claim was kept for: the 404 holder_lapsed naming
-// the holder, with the claim retained, the refusal's exception on the role topic's exception lane,
-// and nothing stored for a later holder.
+// live it gets the 404 holder_lapsed naming the holder, with the claim retained, the refusal's
+// exception on the role topic's exception lane, and nothing stored for a later holder.
 func TestAPublishWithKeepFalseToALapsedClaimIsRefusedAndKeepsNothing(t *testing.T) {
 	d, client := keptRoleDeps(t)
 	const (
@@ -348,9 +347,9 @@ func TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
 		if err != nil {
 			t.Fatalf("a keep whose first two publishes were refused as in process: %v; want it kept by the third", err)
 		}
-		id := bus.KeptMsgID(item.DedupeKey, role)
-		if !slices.Equal(ids, []string{id, id, id}) {
-			t.Fatalf("the keep published under %v, want %s three times: the in-process refusal is retried under the id it refused", ids, id)
+		msgID := bus.KeptMsgID(item.DedupeKey, role)
+		if !slices.Equal(ids, []string{msgID, msgID, msgID}) {
+			t.Fatalf("the keep published under %v, want %s three times: the in-process refusal is retried under the id it refused", ids, msgID)
 		}
 		if elapsed < 2*roleKeepInProcessPause {
 			t.Fatalf("the keep took %s over two refusals, want at least two pauses of %s between its publishes", elapsed, roleKeepInProcessPause)
