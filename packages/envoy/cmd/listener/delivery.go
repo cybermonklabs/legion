@@ -107,6 +107,13 @@ type listenerDeliveryHandlerConfig struct {
 	// main.go makes one and sets it once, so every handler and every route built from that config
 	// guards one set of roles. A test that builds a config sets its own.
 	roleKeepDrains *roleKeepGuards
+	// now is the listener's clock, which a kept copy's age and the end of its hour are measured
+	// by, against the time the stream stored the copy: the keep's answer (storeKeptRoleCopy), the
+	// handovers the claim and the keep start (runKeptRoleDrain) and the sweep's
+	// (sweepKeptRoleLanes). It is required: main.go sets it to time.Now, and so does every test
+	// that builds a config, while a test that must cross a copy's hour moves this clock rather
+	// than waiting the hour out, since the store time is the stream's own and no caller chooses it.
+	now func() time.Time
 }
 
 // wireRoleForwarder builds the role forwarder every delivery path hands its forwards to and
@@ -467,31 +474,32 @@ func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleC
 // resolveCoreRoleHolder resolves the current live holder for a role-lane delivery
 // (roles.ResolveHolder, which reads the role's claim record from the role bucket), applying the
 // terminal outcome itself and reporting ok=false when there is nobody to deliver to. A resolution
-// that found no live holder keeps the message for the role's next holder first
+// that found no live holder keeps the message for the role's next live holder first
 // (keepRoleLaneMessage), in one decision for both give-up branches: roleKeepable says which states
-// a copy is kept for - an unclaimed role, since no resolution of this build releases a claim - and
-// a copy that was kept publishes no delivery exception, since the message is not lost.
+// a copy is kept for - a role nobody claims, under roleKeptUnclaimed, and a claim whose holder is
+// not live, under roleKeptLapsed with that holder named on the kept line - and a copy that was
+// kept publishes no delivery exception, since the message is not lost.
 //
 // A claim read that did not answer forwards nothing and keeps the message too, under
 // roleClaimUnread: a read that failed is no evidence that the role has no holder, nor that it has
 // whichever holder a copy of the bucket names, and the lane is a core subscription with no
-// redelivery, so a kept copy is how the message waits for a read that answers. The copy goes only
-// to a live holder: the handover the keep starts resolves the holder again once a read answers
-// and forwards the copy where that holder is live, and the kept-role sweep starts a handover when
-// that one could not (sweepKeptRoleLanes). A holder the resolution finds lapsed ends a handover
-// with no outcome (handOverKeptRole), the sweep's as well, so the copy then waits on the lane,
-// with no delivery exception published for it, until a handover - a claim's, a keep's or the
-// sweep's - finds a live holder: the holder answering again, or a successor that claimed the
-// role. The walk that handover makes forwards the copy while it is inside the one-hour keep window
-// (roleKeepWindow) and drops it with a WARN once it is older.
+// redelivery, so a kept copy is how the message waits for a read that answers. Every kept copy
+// goes only to a live holder: the handover the keep starts resolves the holder again and forwards
+// the copy where that holder is live, and the kept-role sweep starts a handover when that one
+// could not (sweepKeptRoleLanes). A holder the resolution finds lapsed ends a handover with no
+// outcome (handOverKeptRole), the sweep's as well, so the copy then waits on the lane, with no
+// delivery exception published for it, until a handover - a claim's, a keep's or the sweep's -
+// finds a live holder: the holder answering again, or a successor that claimed the role. The walk
+// that handover makes forwards the copy while it is inside its hour (roleKeepWindow) and drops it
+// with a WARN once it is older.
 //
 // Every other case leaves its branch as it was before the kept lane: an unclaimed role whose keep
-// failed is no_holder; a holder that is not answering, a holder whose session read failed and a
+// failed is no_holder; a lapsed holder whose keep failed, a holder whose session read failed and a
 // failed claim read whose keep failed are delivery_failed, each under a log line that names which
-// it was. A holder that is not answering keeps its claim through all of them: the lane takes
-// nothing from it. Role delivery answers no caller, so it resolves under context.Background(),
-// and each of its two reads is bounded on its own by roleHolderReadTimeout: the claim read by
-// roleLaneClaims and the holder's session read by roleHolderSessions.Holder.
+// it was. A holder that is not answering keeps its claim through all of them, kept copy or not:
+// the lane takes nothing from it. Role delivery answers no caller, so it resolves under
+// context.Background(), and each of its two reads is bounded on its own by roleHolderReadTimeout:
+// the claim read by roleLaneClaims and the holder's session read by roleHolderSessions.Holder.
 func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Envelope, role string) (string, session.SessionEntry, bool) {
 	resolved, err := roles.ResolveHolder(context.Background(), roleLaneClaims{cfg.registry}, roleHolderSessions{cfg.sessions}, role)
 	sessionID := resolved.Holder
@@ -506,7 +514,11 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 		if resolved.State == roles.Live {
 			return sessionID, resolved.Entry, true
 		}
-		if roleKeepable(resolved) && keepRoleLaneMessage(cfg, role, item, roleKeptUnclaimed) {
+		reason := roleKeptUnclaimed
+		if resolved.State == roles.Lapsed {
+			reason = roleKeptLapsed
+		}
+		if roleKeepable(resolved) && keepRoleLaneMessage(cfg, role, item, reason, sessionID) {
 			return "", session.SessionEntry{}, false
 		}
 		if resolved.State == roles.Unclaimed {
@@ -531,7 +543,7 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 	}
 	switch failure.Step {
 	case roles.ClaimRead:
-		if keepRoleLaneMessage(cfg, role, item, roleClaimUnread) {
+		if keepRoleLaneMessage(cfg, role, item, roleClaimUnread, "") {
 			cfg.logger.Warn("listener role holder lookup failed, so the message was kept until a claim read answers",
 				slog.String("role", role),
 				slog.String("event_id", item.EventID),

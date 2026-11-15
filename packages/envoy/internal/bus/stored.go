@@ -87,24 +87,33 @@ func (c *Client) LastStoredMessage(ctx context.Context, subject string) (StoredM
 const KeptRoleClaimWindow = 60 * time.Second
 
 // KeptRoleCursor is the body of a role's drain cursor (KeptRoleCursorSubject): the two numbers
-// that say how far that role's kept lane has been drained. Kept is the stream sequence on the
-// role's kept subject the lane is finished with - every copy up to it was forwarded, dropped as
-// expired or passed over - and a walk starts at the copy after it. Claiming is a copy one walk
-// has claimed and not yet confirmed delivered, 0 when none is outstanding: a walk writes it
-// before it forwards that copy and clears it with the same write that moves Kept past the copy,
-// so a walk that ends between the two leaves Kept short of the copy and the next walk reads that
-// copy again. A claim is also the lane's lock while it is outstanding (ClaimOutstanding).
+// that say how far that role's kept lane has been drained, and what the claim one of them names
+// is for. Kept is the stream sequence on the role's kept subject the lane is finished with -
+// every copy up to it was forwarded, dropped as expired or passed over - and a walk starts at the
+// copy after it. Claiming is a copy one walk has claimed and not yet confirmed delivered, 0 when
+// none is outstanding: a walk writes it before it forwards that copy and clears it with the same
+// write that moves Kept past the copy, so a walk that ends between the two leaves Kept short of
+// the copy and the next walk reads that copy again. A claim is also the lane's lock while it is
+// outstanding (ClaimOutstanding).
 //
 // The listener's drain is its only writer, which writes it with Client.PublishCursorAt as this
 // small body rather than an envelope (cmd/listener/role_keep.go). It lives here because
 // Dispatch's outbox reads it as well, to tell whether the copy it has just kept is the one that
 // lane's drain would hand over next (internal/dispatch/outbox): a body each package spelled out
 // for itself would decode a drifted tag as zero, which reads as a lane drained to its start and
-// leads every handover astray. A writer of this body writes both numbers at once, since a reader
-// of either takes the pair as one answer.
+// leads every handover astray. A writer of this body writes every field at once, since a reader
+// of any takes the whole body as one answer.
 type KeptRoleCursor struct {
 	Kept     uint64 `json:"kept"`
 	Claiming uint64 `json:"claiming"`
+	// DeadLetter is set while the claim is a walk's claim of a copy it is ending with a dead
+	// letter to that copy's sender, rather than a forward's: a walk that takes such a claim over
+	// once it is no longer outstanding sends that dead letter again under the same message id,
+	// whatever the copy's age and whoever holds the role, where it judges a forward's claimed copy
+	// as any copy. It is false on a forward's claim and with no claim at all, and left out of the
+	// body then, so those bodies are written exactly as before the field existed. Dispatch's outbox
+	// reads only Kept and Claiming, and a reader that does not know the field ignores it.
+	DeadLetter bool `json:"dead_letter,omitempty"`
 }
 
 // ClaimOutstanding reports whether the copy this cursor claims is still one walk's to forward: a

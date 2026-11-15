@@ -138,6 +138,8 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) {
 		// of for the process. This rig needs one for the same reason as the set above: the handler
 		// refuses a config without it, and nothing here keeps a role message.
 		roleKeepDrains: newRoleKeepGuards(),
+		// The listener's clock, as main.go sets it.
+		now: time.Now,
 	}
 	// The role lane's forwards run off the handler, as main.go wires them (wireRoleForwarder).
 	config = wireTestRoleForwarder(t, config)

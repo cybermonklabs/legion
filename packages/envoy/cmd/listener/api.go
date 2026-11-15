@@ -123,14 +123,16 @@ func lastSeenOf(sessions *session.SessionRegistry, sessionID string, entry sessi
 
 // publishResponse is the publish route's accepted answer. Holder and HolderState name the role
 // message's holder and the state its own record puts it in, as GET /v1/roles/<role> names them
-// and under the same two field names, so a client reads one shape from every role answer; a role
-// message is answered 200 only for a holder a resolution read live, so that is the state it
-// carries. Kept and KeptReason name a role send the listener could not deliver and kept on the
-// role's kept lane instead (roleSend.kept), and are absent from every other answer, a delivered
-// role send's included. A role send has three answers and a sender tells them apart by status:
-// 200, a live holder took the message; 202, nobody holds the role and the message waits for
-// whoever claims it; 404, nothing was kept. Each field is left out when it is empty, so a
-// publish to a topic the stream captures is answered with the envelope alone.
+// and under the same two field names, so a client reads one shape from every role answer: on a
+// 200, the live holder the message was stored for; on a 202 kept for a claim whose holder is not
+// live, that holder and its state, unresponsive or gone, with LastSeen beside them as the 404
+// holder_lapsed names it. Kept, KeptReason and KeptUntil name a role send the listener could not
+// deliver and kept on the role's kept lane instead (roleSend.kept), and are absent from every
+// other answer, a delivered role send's included. A role send has three answers and a sender
+// tells them apart by status: 200, a live holder took the message; 202, no live session holds the
+// role and the message waits on the role's kept lane until KeptUntil for the next session that
+// holds it live; 404, nothing was kept. Each field is left out when it is empty, so a publish to a
+// topic the stream captures is answered with the envelope alone.
 type publishResponse struct {
 	contracts.Envelope
 	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke
@@ -141,9 +143,17 @@ type publishResponse struct {
 	HolderState  session.State   `json:"holder_state,omitempty"`
 	Kept         bool            `json:"kept,omitempty"`
 	// KeptReason is the state the resolution found, in the same wire words the 404's own reason
-	// carries (roleHolderError.Reason). This build keeps only for a role no claim holds
-	// (roleKeepable), so unclaimed is the one reason it sends; a lapsed claim is refused 404.
+	// carries (roleHolderError.Reason): unclaimed for a role no claim holds, and holder_lapsed for
+	// a claim whose holder is not live, which the listener keeps for too (roleKeepable).
 	KeptReason roles.State `json:"kept_reason,omitempty"`
+	// KeptUntil is when the kept copy's hour ends, in milliseconds since the epoch: the time the
+	// stream stored the copy plus roleKeepWindow, against which the walk measures its age. A
+	// repeat of a dedupe key whose copy is still on the lane inside its hour stores nothing new
+	// and names that copy's, beside that copy's envelope and event id (storeKeptRoleCopy).
+	KeptUntil int64 `json:"kept_until,omitempty"`
+	// LastSeen is when a lapsed holder last registered (roles.Resolution.LastSeen), as the 404
+	// holder_lapsed names it, and absent when nothing can date that holder.
+	LastSeen *int64 `json:"last_seen,omitempty"`
 }
 
 type subscribeResponse struct {
@@ -995,13 +1005,14 @@ type deleteSessionResponse struct {
 // it too.
 //
 // keep is this route's own request field, meaningful only for a role topic, and unset means true:
-// a role message the listener cannot deliver is kept on the role's kept lane and handed to the
-// role's next holder, and the send is answered 202 kept rather than 404 (roleSend.kept). A sender
-// that holds a queue of its own and must get today's answer passes keep: false, which keeps
-// nothing and answers the 404. It is read by this route's give-up alone (roleSend.noHolder) and
-// rides no envelope, which travels on to the holder and back in the answer. A role token no claim
-// can name keeps nothing either, which the keep itself refuses, for this route and the role lane
-// alike (keepForNextHolder).
+// a role message the listener cannot deliver because no live session holds the role - no claim,
+// or a claim whose holder is not live - is kept on the role's kept lane for an hour and handed to
+// the role's next live holder, and the send is answered 202 kept, with the copy's kept_until,
+// rather than 404 (roleSend.kept). A sender that holds a queue of its own and must get the 404
+// passes keep: false, which keeps nothing and answers 404 unclaimed or holder_lapsed. It is read by
+// this route's give-up alone (roleSend.noHolder) and rides no envelope, which travels on to the
+// holder and back in the answer. A role token no claim can name keeps nothing either, which the
+// keep itself refuses, for this route and the role lane alike (keepForNextHolder).
 func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		arrived := time.Now()

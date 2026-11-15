@@ -82,7 +82,7 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig) 
 			defer release()
 			handoverCtx, cancel := context.WithTimeout(ctx, roleKeepHandoverWindow)
 			defer cancel()
-			reportKeptRoleDrain(cfg, role, handOverKeptRole(handoverCtx, cfg, role, time.Now))
+			reportKeptRoleDrain(cfg, role, handOverKeptRole(handoverCtx, cfg, role, cfg.now))
 		}()
 	}
 }

@@ -1341,6 +1341,9 @@ func main() {
 		// (roleKeepGuards, role_keep.go). Every handler and route built from this one value
 		// shares it, as they share the deferral set above.
 		roleKeepDrains: newRoleKeepGuards(),
+		// The listener's one clock for a kept copy's hour: the keep's answer, and the
+		// handovers the claim, the keep and the sweep start (role_keep.go).
+		now: time.Now,
 	}
 	// The role lane's forwards run off its handler (roleForwarder): the handler resolves each
 	// role message's holder and hands the forward over, and the forwards to one holder are
