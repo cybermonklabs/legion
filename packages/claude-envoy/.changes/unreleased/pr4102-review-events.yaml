@@ -6,4 +6,6 @@ body: |-
   `<document> v<version> changes requested`. Then comes ` by plan review` or ` by a person` where
   Dispatch recorded who gave the review, then the reason. Before, that line ended after its time,
   so a plan review read like an approval of a spec. A plan's `Approval:` line names the plan review
-  as `by plan review (<session id>)`.
+  as `by plan review (<session id>)`. When a later version made that approval stale, the line says
+  that a plan review of the new version records a new approval with `dispatch plan-approve`.
+  Before, it told the agent to request approval again, which Dispatch refuses for a plan.
