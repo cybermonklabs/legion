@@ -25,3 +25,4 @@ const code = await runDispatchCli(Bun.argv.slice(2), process.env, {
 });
 await Promise.all(pending);
 process.exit(code);
+// selection probe, never merged
