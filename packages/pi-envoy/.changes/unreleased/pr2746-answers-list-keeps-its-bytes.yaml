@@ -10,8 +10,10 @@ body: |-
     message or a comment an edit made too long still moves the list. A read with no list to give
     takes a kept list out of its place and puts its failure line after the last message; a read that
     fails but gives the last list read, with the same items, keeps the kept list and does not say
-    that it failed. A read that finds nothing for the session leaves a kept list where it is, and
-    takes an earlier failure line out instead of repeating it on every request.
+    that it failed. A read that finds nothing for the session takes a kept list out of the request
+    when one of its items was retracted inside the 72 hours, as when a person retracts the only
+    answer there, and leaves it where it is when its items only aged out; it takes an earlier
+    failure line out instead of repeating it on every request.
 time: 2026-11-15T19:18:13.000000000Z
 custom:
     Issue: pr2746

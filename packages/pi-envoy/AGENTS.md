@@ -1046,19 +1046,22 @@ process cannot place carries no list. Dispatch is resolved per request with `com
 so no `!` token command runs on the request path, and `readSessionAnswers` works out the cache's
 directory from `process.env`. Position: the list goes after the request's last message only when
 it shows something the session's list before it did not (`sessionAnswersChanged` over the two
-reads' `SessionAnswersRead.words`, from `sessionAnswersWords` over every item of the read's
-72-hour window, the ones the character cap left out included: each item's kind, id, author,
-times, options chosen and words, so an issue title, an ask's question or a cached list's header
-does not count): an item, or an answer or comment a person changed, even one the cap leaves out
-(a newest item longer than the cap, a comment an edit made too long to fit), so the model reads
-the new list with its left-out line rather than the person's old words as current; or an item
-gone from the read while its time is still inside the read's window (`SessionAnswersRead.since`),
-which a person retracted (an answer set back to none) or Dispatch removed. An item gone because
-the window left it behind is no change. On the requests after that the list stays right after
-that message, found by role, timestamp and a tool result's call id, with the bytes it was placed
-with, so the request ends with its own last message and the model does not read a list with
-nothing new in it as a new turn and answer it on every turn. A list that only lost items to the
-window, or whose text names a different read of the same items
+reads' `SessionAnswersRead.words`, from `sessionAnswersWords` over every item Dispatch sent inside
+the read's 72-hour window, the ones the character cap left out of the list included: each item's
+kind, id, author, times, options chosen and words, so an issue title, an ask's question or a
+cached list's header does not count): an item, or an answer or comment a person changed, even one
+the cap leaves out (a newest item longer than the cap, a comment an edit made too long to fit), so
+the model reads the new list with its left-out line rather than the person's old words as
+current; or an item gone from the read while its time is still inside the read's window
+(`SessionAnswersRead.since`), which a person retracted (an answer set back to none) or Dispatch
+removed. An item gone because the window left it behind is no change. `readSessionAnswers` asks
+Dispatch for the window by this host's clock (`since`), the clock the render filters by, so an
+item Dispatch would drop by a clock ahead of the host's is still sent while the host's window
+holds it, and is not taken for a retracted one. On the requests after that the list stays right
+after that message, found by role, timestamp and a tool result's call id, with the bytes it was
+placed with, so the request ends with its own last message and the model does not read a list
+with nothing new in it as a new turn and answer it on every turn. A list that only lost items to
+the window, or whose text names a different read of the same items
 (`As read at …; this read failed: …`), keeps its place and those same bytes, since a changed byte
 inside the conversation costs a prompt-cache miss for every byte behind it. The exception is
 a list an older copy of the extension placed, which carries no `words`: it keeps its place only
@@ -1070,12 +1073,17 @@ message, so the model reads that the read failed rather than a list's kept bytes
 read that answered, and a list after a placed failure line goes after the last message the same
 way; a failure line after a placed one keeps that one's place and bytes, its reason included. A
 read that fails but gives the cached list is a list: with the same items it keeps the placed
-bytes, so the request does not say that this read failed. A read that gives no text at all (an
-empty list, a Dispatch with no answers route and nothing cached) leaves a placed list where it is
-rather than taking it out, and takes a placed failure line out together with its place, since
-that read did not fail. So a placed list can name a read older than the request carrying it, and
-can hold an item that has since aged out of the window, until a read shows something new or gives
-the failure line, and the list or the failure line goes after the last message. A move empties
+bytes, so the request does not say that this read failed. A read that gives no text leaves a
+placed list where it is rather than taking it out, and takes a placed failure line out together
+with its place, since that read did not fail. A read whose window holds no item still gives its
+`words` (`carriedAnswers`, which `sessionAnswersText` and the tests share): when they show an item
+of the placed list gone inside the window, as when a person retracts the only answer the window
+held, the list leaves the request together with its place, and a list whose items only aged out
+stays. A read with no words (a Dispatch with no answers route and nothing cached, Dispatch off)
+compares nothing and keeps the list. So a placed list can name a read older than the request
+carrying it, and can hold an item that has since aged out of the window, until a read shows
+something new or gives the failure line, and the list or the failure line goes after the last
+message, or a read with no text shows an item of it retracted, and the list leaves. A move empties
 the old place, so the request first differs there. A session with no list
 placed yet in this process, or whose list's message is no longer in the request (a compaction
 summarized it, the branch moved), gets it after the last message again. Each session's place and
@@ -1159,7 +1167,10 @@ handler's result. A handler that throws loses
 everything it returns, the skill included, so a read that throws rather than answering gives the
 failure line naming the error, which goes where any failure line goes, and `sessionAnswersText`
 logs the error with `logger.warn`. `src/session-answers-context.test.ts` holds the insertion
-and placement rules, the requests that carry no list and the two-copy cases, `extensions/envoy.test.ts` the
+and placement rules on scripted reads, the requests that carry no list and the two-copy cases,
+`src/session-answers-read.test.ts` the placement rules on reads through the real
+`readSessionAnswers` and `carriedAnswers` (the cap, a retraction, the window) and two copies with
+an empty list making one HTTP read, `extensions/envoy.test.ts` the
 handler, a subagent reading its parent's id, a Dispatch that answers no list (the failure line)
 and one with no answers route (no line, one warning for two requests), and
 `extensions/session-answers-omp.test.ts` the real binary: a new answer in the next turn, after a

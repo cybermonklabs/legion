@@ -1,44 +1,27 @@
-import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { expect, test } from "bun:test";
 import type { SessionAnswer } from "@legion/contracts";
-import { bearerCredential } from "@legion/envoy-client/bearer";
 import {
-  readSessionAnswers,
-  renderSessionAnswers,
   SESSION_ANSWERS_MARKER,
   sessionAnswersFailureLine,
   sessionAnswersWords,
 } from "@legion/envoy-client/session-answers";
 import {
-  type CarriedAnswers,
-  type SessionAnswersRequest,
-  withSessionAnswers,
-} from "./session-answers-context";
+  ask,
+  branchOf,
+  grepCall,
+  grepResult,
+  ITEM,
+  LIST,
+  noBranch,
+  readCall,
+  readResult,
+  requestOf,
+  skill,
+} from "../test/session-answers-requests";
+import { type CarriedAnswers, withSessionAnswers } from "./session-answers-context";
 
 // Message shapes as Oh My Pi hands them to a `context` handler.
-const LIST = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T10:00:00.000Z · alice answered your ask\nShip it.`;
 const list = { role: "user", content: [{ type: "text", text: LIST }], timestamp: 0 };
-const skill = {
-  role: "user",
-  content: [{ type: "text", text: "<dispatch-first-skill>\nSearch Dispatch first." }],
-  timestamp: 0,
-};
-const ask = { role: "user", content: [{ type: "text", text: "Fix the bug." }], timestamp: 1 };
-const readCall = {
-  role: "assistant",
-  content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "x.ts" } }],
-  timestamp: 2,
-};
-const readResult = {
-  role: "toolResult",
-  toolCallId: "call-1",
-  toolName: "read",
-  content: [{ type: "text", text: LIST }],
-  isError: false,
-  timestamp: 3,
-};
 const reply = {
   role: "assistant",
   content: [{ type: "text", text: "Fixed." }],
@@ -117,32 +100,6 @@ const branchSummary = {
   timestamp: new Date(SUMMARIZED_AT).getTime(),
 };
 
-/** The session's branch entries for `items`, as `sessionManager.getBranch` lists them: a message
- *  in a message entry of its own, an entry (it has a `type`) as it is. */
-function branchOf(...items: readonly unknown[]): () => readonly unknown[] {
-  return () =>
-    items.map((item, index) =>
-      typeof item === "object" && item !== null && "type" in item
-        ? item
-        : { type: "message", id: `e${index}`, message: item }
-    );
-}
-
-const noBranch = branchOf();
-
-/** A person's message to the session, the fields every fixture item shares. */
-const ITEM: SessionAnswer = {
-  kind: "message",
-  relation: "sent_you_a_message",
-  id: "",
-  at: "",
-  author: { kind: "user", id: "person" },
-  text: "",
-  owner: null,
-  ref: null,
-  href: "/agents/ses/live",
-};
-
 /** Where the fixtures' reads start their 72-hour window: every fixture item is inside it. */
 const SINCE = "2026-10-24T12:00:00.000Z";
 
@@ -178,17 +135,6 @@ function reading(text: string | undefined): {
   };
 }
 
-/** A request of `session` (a session of its own unless given), not compacting unless told. */
-function requestOf(
-  read: () => Promise<CarriedAnswers | undefined>,
-  branch: () => readonly unknown[],
-  session: object = {},
-  compacting = false,
-  id = "ses_a"
-): SessionAnswersRequest {
-  return { read, branch, session, id, compacting: () => compacting };
-}
-
 test("the list goes after the request's last message, as a message of its own", async () => {
   const { read } = reading(LIST);
   expect(await withSessionAnswers([skill, ask], requestOf(read, noBranch))).toEqual([
@@ -212,22 +158,9 @@ test("after a tool round the list follows the tool result, which keeps its own c
 // requests after it, so the model never reads a list with nothing new in it as the newest turn.
 const LATER = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T11:00:00.000Z · bob sent you a message\nAlso check the docs.\n\n2026-10-27T10:00:00.000Z · alice answered your ask\nShip it.`;
 const later = { role: "user", content: [{ type: "text", text: LATER }], timestamp: 0 };
-const grepCall = {
-  role: "assistant",
-  content: [{ type: "toolCall", id: "call-2", name: "grep", arguments: { pattern: "bug" } }],
-  timestamp: 5,
-};
-const grepResult = {
-  role: "toolResult",
-  toolCallId: "call-2",
-  toolName: "grep",
-  content: [{ type: "text", text: "x.ts:3: the bug" }],
-  isError: false,
-  timestamp: 6,
-};
 
-/** A read that answers each of `reads` in turn (a text as `carry` gives it; undefined: no text),
- *  then the last one again. */
+/** A read that answers each of `reads` in turn (a text as `carry` gives it; undefined: no text
+ *  and no words), then the last one again. */
 function readingEach(
   ...reads: (string | CarriedAnswers | undefined)[]
 ): () => Promise<CarriedAnswers | undefined> {
@@ -329,11 +262,11 @@ test("an item written after a kept place moves the list, with the text of that r
   ).toEqual([...turn, grepCall, grepResult, later]);
 });
 
-// A read gives no text when the answer list is empty, or when a server with no answers route has
-// nothing cached. Taking the placed list out of the conversation changes the request from its
-// place on, as changing its bytes would, and the next read that answers from the cache puts it
+// A read gives no text and no words when a server with no answers route has nothing cached, or
+// when Dispatch is off. Taking the placed list out of the conversation changes the request from
+// its place on, as changing its bytes would, and the next read that answers from the cache puts it
 // back: the pair alternates, and every request pays for it.
-test("a read with no text leaves a placed list where it is", async () => {
+test("a read with no text and no words leaves a placed list where it is", async () => {
   const session = {};
   const read = readingEach(LIST, undefined, LIST);
   await withSessionAnswers([skill, ask], requestOf(read, noBranch, session));
@@ -683,225 +616,12 @@ test("a request another copy of the extension read no text for is not read again
   expect(calls()).toBe(2);
 });
 
-// The empty-list case with the shared read: two copies, a Dispatch that answers in 600 ms, one
-// HTTP read and a request that waits under one second. The delay is real on purpose: the read's
-// 800 ms deadline is a platform timer inside `readSessionAnswers`, and the case times the request
-// that two copies of the handler make together against it.
-const stateRoots: string[] = [];
-afterEach(() => {
-  for (const root of stateRoots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
-
-test("two copies of the extension and an empty list: one HTTP read, under one second", async () => {
-  const stateRoot = mkdtempSync(join(tmpdir(), "session-answers-context-"));
-  stateRoots.push(stateRoot);
-  let fetches = 0;
-  const fetchImpl = (async (input: string | URL | Request) => {
-    fetches += 1;
-    await Bun.sleep(600);
-    const session = new URL(input.toString()).pathname.split("/")[4] ?? "";
-    return Response.json({
-      session_id: session,
-      since: new Date(Date.now() - 72 * 3_600_000).toISOString(),
-      total: 0,
-      items: [],
-    });
-  }) as typeof fetch;
-  const read = async () =>
-    carry(
-      (
-        await readSessionAnswers({
-          session: "ses_two_copies_empty",
-          dispatch: {
-            enabled: true,
-            url: "http://dispatch.test",
-            credential: bearerCredential("token"),
-          },
-          env: { DISPATCH_STATE_DIR: stateRoot },
-          fetchImpl,
-        })
-      ).text
-    );
-  const messages = [skill, ask];
-
-  const started = performance.now();
-  // Copy A's handler, then copy B's on the array A passed on.
-  expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toBeUndefined();
-  expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toBeUndefined();
-  const elapsed = performance.now() - started;
-
-  expect(fetches).toBe(1);
-  expect(elapsed).toBeLessThan(1_000);
-});
-
 test("a list quoted earlier in the conversation does not switch the list off", async () => {
   const { read } = reading(LIST);
   const messages = [list, ask, readCall, readResult];
   expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toEqual([
     ...messages,
     list,
-  ]);
-});
-
-// The cases below read through the real `readSessionAnswers`, as the extension does, from a
-// Dispatch stand-in of their own and on a clock of their own (`now`).
-const NOW = Date.parse("2026-10-27T12:00:00.000Z");
-
-/** `item` with `id`, written `hours` hours before `NOW`, saying `text`. */
-function writtenBefore(hours: number, id: string, text: string, item = ITEM): SessionAnswer {
-  return { ...item, id, at: new Date(NOW - hours * 3_600_000).toISOString(), text };
-}
-
-/** The message a request carries `text` in, as `userTextMessage` adds it. */
-function listMessage(text: string | undefined): unknown {
-  return { role: "user", content: [{ type: "text", text }], timestamp: 0 };
-}
-
-let dispatchCount = 0;
-/** A read through `readSessionAnswers` at `now()`, from a Dispatch of its own that answers
- *  `items()` whole, handed on as the extension's `sessionAnswersText` hands it on. */
-function readingDispatch(
-  items: () => readonly SessionAnswer[],
-  now: () => number
-): () => Promise<CarriedAnswers | undefined> {
-  dispatchCount += 1;
-  const session = `ses_answers_dispatch_${dispatchCount}`;
-  const url = `http://answers-dispatch-${dispatchCount}.test`;
-  const stateRoot = mkdtempSync(join(tmpdir(), "session-answers-context-"));
-  stateRoots.push(stateRoot);
-  const fetchImpl = (async (_input: string | URL | Request) => {
-    const answered = items();
-    return Response.json({
-      session_id: session,
-      since: new Date(now() - 72 * 3_600_000).toISOString(),
-      total: answered.length,
-      items: answered,
-    });
-  }) as typeof fetch;
-  return async () => {
-    const read = await readSessionAnswers({
-      session,
-      dispatch: { enabled: true, url, credential: bearerCredential("token") },
-      env: { DISPATCH_STATE_DIR: stateRoot },
-      fetchImpl,
-      now,
-    });
-    return read.text === undefined
-      ? undefined
-      : { text: read.text, words: read.words, since: read.since };
-  };
-}
-
-// The character cap leaves out the first item that does not fit, and every item older than it.
-// What a person wrote there still counts: the list moves, and the model reads the new list with
-// its line counting what was left out, rather than kept bytes that look current.
-test("a new item longer than the character cap moves the list", async () => {
-  const older = writtenBefore(2, "m-older", "Ship it.");
-  let items = [older];
-  const read = readingDispatch(
-    () => items,
-    () => NOW
-  );
-  const session = {};
-  expect(await withSessionAnswers([skill, ask], requestOf(read, noBranch, session))).toEqual([
-    skill,
-    ask,
-    listMessage(renderSessionAnswers(items, { now: NOW })),
-  ]);
-  items = [writtenBefore(1, "m-longest", "w".repeat(9_000)), older];
-  const turn = [skill, ask, readCall, readResult];
-  expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual([
-    ...turn,
-    listMessage(renderSessionAnswers(items, { now: NOW })),
-  ]);
-});
-
-test("an edit that makes a shown comment too long for the character cap moves the list", async () => {
-  const comment: SessionAnswer = {
-    ...ITEM,
-    kind: "comment",
-    relation: "replied_in_a_comment_thread",
-  };
-  const newer = writtenBefore(1, "m-newer", "x".repeat(3_000));
-  const shipIt = writtenBefore(2, "c-1", "Ship it.", comment);
-  let items = [newer, shipIt];
-  const read = readingDispatch(
-    () => items,
-    () => NOW
-  );
-  const session = {};
-  const placed = listMessage(renderSessionAnswers(items, { now: NOW }));
-  expect(await withSessionAnswers([skill, ask], requestOf(read, noBranch, session))).toEqual([
-    skill,
-    ask,
-    placed,
-  ]);
-  expect(JSON.stringify(placed)).toContain("Ship it.");
-  const edited = {
-    ...shipIt,
-    edited_at: new Date(NOW - 1_800_000).toISOString(),
-    text: `Do not ship. ${"y".repeat(5_500)}`,
-  };
-  items = [newer, edited];
-  const moved = listMessage(renderSessionAnswers(items, { now: NOW }));
-  expect(JSON.stringify(moved)).not.toContain("Do not ship.");
-  const turn = [skill, ask, readCall, readResult];
-  expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual([
-    ...turn,
-    moved,
-  ]);
-});
-
-// An answer a person retracts (sets back to none) leaves the read while its time is still inside
-// the 72 hours, so a kept list would go on showing it as current: the list moves. An item the
-// window leaves behind is no change, and the list keeps its place and its bytes.
-test("a retracted answer moves the list", async () => {
-  const answer: SessionAnswer = {
-    ...ITEM,
-    kind: "answer",
-    relation: "answered_your_ask",
-    selected: ["The second way"],
-    ask: { id: "ask-1", question: "Which way should the fix go?" },
-  };
-  const message = writtenBefore(2, "m-1", "Also check the docs.");
-  let items = [writtenBefore(1, "ask-1", "The second way, please.", answer), message];
-  let clock = NOW;
-  const read = readingDispatch(
-    () => items,
-    () => clock
-  );
-  const session = {};
-  await withSessionAnswers([skill, ask], requestOf(read, noBranch, session));
-  clock = NOW + 60_000;
-  items = [message];
-  const turn = [skill, ask, readCall, readResult];
-  expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual([
-    ...turn,
-    listMessage(renderSessionAnswers(items, { now: clock })),
-  ]);
-});
-
-test("an item the 72-hour window left behind keeps the list's place and bytes", async () => {
-  const newest = writtenBefore(1, "m-new", "Use the second way.");
-  let items = [newest, writtenBefore(71, "m-old", "Ship it.")];
-  let clock = NOW;
-  const read = readingDispatch(
-    () => items,
-    () => clock
-  );
-  const session = {};
-  const placed = listMessage(renderSessionAnswers(items, { now: NOW }));
-  await withSessionAnswers([skill, ask], requestOf(read, noBranch, session));
-  // Two hours on, the window starts after the older item, and Dispatch no longer sends it.
-  clock = NOW + 2 * 3_600_000;
-  items = [newest];
-  const turn = [skill, ask, readCall, readResult];
-  expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual([
-    skill,
-    ask,
-    placed,
-    readCall,
-    readResult,
   ]);
 });
 

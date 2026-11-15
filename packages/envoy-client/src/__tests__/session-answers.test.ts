@@ -343,9 +343,10 @@ describe("sessionAnswersWords and sessionAnswersChanged", () => {
     expect(changed([answer], [throughToken])).toBe(true);
   });
 
-  // The words are those of every item of the read's window: an item the cap leaves out is shown
-  // to nobody, and a host that compared only the items shown would never learn it was written.
-  test("a read's words name every item of its window, the ones its list leaves out included", async () => {
+  // The words are those of every item Dispatch sent inside the read's window: an item the cap
+  // leaves out is shown to nobody, and a host that compared only the items shown would never learn
+  // it was written.
+  test("a read's words name every item Dispatch sent inside its window, the ones its list leaves out included", async () => {
     const items = Array.from({ length: 12 }, (_, index) =>
       message(`item-${index}`, hoursAgo(index + 1), `${index}:${"w".repeat(1_000)}`)
     );
@@ -409,7 +410,7 @@ describe("sessionAnswersWords and sessionAnswersChanged", () => {
     expect(sessionAnswersChanged(first.words ?? [], second.words ?? [], second.since)).toBe(true);
   });
 
-  test("a cached list's words name every item of its window, and an edit to an item it leaves out changes them", async () => {
+  test("a cached list's words name every item Dispatch sent inside its window, and an edit to an item it leaves out changes them", async () => {
     const items = Array.from({ length: 12 }, (_, index) =>
       message(`item-${index}`, hoursAgo(index + 1), `${index}:${"w".repeat(1_000)}`)
     );
@@ -548,7 +549,7 @@ const failedReads: readonly {
   {
     kind: "a proxy's 404 page",
     reason:
-      /^HTTP_404: GET \S+\/answers\?max_chars=8000 answered 404 Not Found with a body that is not Dispatch's error JSON \(.*\), which looks like a proxy or gateway page rather than Dispatch's own answer, so /,
+      /^HTTP_404: GET \S+\/answers\?since=[^&\s]+&max_chars=8000 answered 404 Not Found with a body that is not Dispatch's error JSON \(.*\), which looks like a proxy or gateway page rather than Dispatch's own answer, so /,
     deadlineMs: 2_000,
     respond: () =>
       page(404, "<html><body><h1>404 Not Found</h1><hr>nginx</body></html>", "Not Found"),
@@ -556,7 +557,7 @@ const failedReads: readonly {
   {
     kind: "a 404 with an empty body",
     reason:
-      /^HTTP_404: GET \S+\/answers\?max_chars=8000 answered 404 with an empty body, which looks like a proxy or gateway page rather than Dispatch's own answer, so /,
+      /^HTTP_404: GET \S+\/answers\?since=[^&\s]+&max_chars=8000 answered 404 with an empty body, which looks like a proxy or gateway page rather than Dispatch's own answer, so /,
     deadlineMs: 2_000,
     respond: () => new Response("", { status: 404 }),
   },
@@ -620,7 +621,7 @@ function expectFailureLine(read: SessionAnswersRead, reason: string | RegExp): v
 }
 
 describe("readSessionAnswers", () => {
-  test("reads the list with max_chars, renders it, and keeps it in answers.json with its Dispatch URL", async () => {
+  test("reads the list from this host's 72 hours with max_chars, renders it, and keeps it in answers.json with its Dispatch URL", async () => {
     const root = stateDir();
     const session = newSession();
     const dispatch = dispatchAt();
@@ -639,7 +640,10 @@ describe("readSessionAnswers", () => {
       words: sessionAnswersWords(recent),
       since: SINCE,
     });
-    expect(paths).toEqual([`/api/v1/agents/${session}/answers?max_chars=8000`]);
+    // The window starts by this host's clock, which every render filters by too.
+    expect(paths).toEqual([
+      `/api/v1/agents/${session}/answers?since=${encodeURIComponent(SINCE)}&max_chars=8000`,
+    ]);
     expect(JSON.parse(readFileSync(cacheFile(root, session), "utf-8"))).toEqual({
       dispatch_url: dispatch.url,
       read_at: new Date(NOW).toISOString(),

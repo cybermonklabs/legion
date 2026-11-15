@@ -1,6 +1,7 @@
 import {
   isSessionAnswersText,
   SESSION_ANSWERS_MARKER,
+  type SessionAnswersRead,
   sessionAnswersChanged,
 } from "@legion/envoy-client/session-answers";
 import { leadingText, userTextMessage } from "./context-message";
@@ -200,13 +201,30 @@ const conversionsGlobal = globalThis as typeof globalThis & {
 const conversions = conversionsGlobal[CONVERSIONS_KEY] ?? new WeakMap<object, Conversion>();
 conversionsGlobal[CONVERSIONS_KEY] = conversions;
 
-/** What a session's list carries: its text, and, when the read gave them, what the people wrote
- *  in every item of the read's window (`SessionAnswersRead.words`) and where that window starts
- *  (`SessionAnswersRead.since`). */
+/** What one request's read hands on (`carriedAnswers`): its text, the list or the failure line,
+ *  undefined when the read gave none; and, when the read gave them, what the people wrote in every
+ *  item Dispatch sent inside the read's window (`SessionAnswersRead.words`) and where that window
+ *  starts (`SessionAnswersRead.since`). */
 export interface CarriedAnswers {
-  readonly text: string;
+  readonly text: string | undefined;
   readonly words?: readonly string[] | undefined;
   readonly since?: string | undefined;
+}
+
+/** A read that gave text: what a session's list is placed with. */
+type ShownAnswers = CarriedAnswers & { readonly text: string };
+
+/**
+ * What `SessionAnswersRequest.read` hands on for `read`: its text, and its `words` and `since`
+ * whenever it gave them (a read that answered, or that gave the cached list), with its text or
+ * without, since a read whose window holds no item still tells which items of a placed list left
+ * it (`keptWithoutText`). Undefined when it gave neither: Dispatch is off, or has no answers route
+ * and no list was read from it before. The extension's `sessionAnswersText` and the tests that
+ * read through `readSessionAnswers` both call it, so the tests check the extension's own mapping.
+ */
+export function carriedAnswers(read: SessionAnswersRead): CarriedAnswers | undefined {
+  if (read.text === undefined && read.words === undefined) return undefined;
+  return { text: read.text, words: read.words, since: read.since };
 }
 
 /** Where a session's list sits: right after the message (`messageKey`) that was the last of the
@@ -214,7 +232,7 @@ export interface CarriedAnswers {
  *  failure line), which every later request that keeps the place sends again. */
 interface Placement {
   readonly after: string;
-  readonly carried: CarriedAnswers;
+  readonly carried: ShownAnswers;
 }
 
 /** Each session's placement, by the session's `sessionManager` and then its session id (Oh My Pi
@@ -240,7 +258,7 @@ function withoutReadLine(text: string): string {
 
 /** Whether `carried` is a list of what people wrote, rather than the failure line, which says the
  *  list could not be read and shows nothing a person wrote. */
-function isList(carried: CarriedAnswers): boolean {
+function isList(carried: ShownAnswers): boolean {
   return carried.text.startsWith(SESSION_ANSWERS_MARKER);
 }
 
@@ -256,8 +274,8 @@ function isList(carried: CarriedAnswers): boolean {
  * and differ only in their reason, so a failure line after a placed one keeps that one's place
  * and bytes, as a list does with its read note.
  *
- * Between two lists, the two reads' words (`sessionAnswersWords`, one string per item of the
- * read's 72-hour window, the ones the character cap left out included) answer it
+ * Between two lists, the two reads' words (`sessionAnswersWords`, one string per item Dispatch
+ * sent inside the read's window, shown or left out by the list's character cap) answer it
  * (`sessionAnswersChanged`): an item new to `next`, or one whose words changed, is a change, so a
  * new item or an edit the cap leaves out still moves the list, and the model reads the new text
  * with its left-out line rather than the person's old words as current. An item `next` no longer
@@ -276,7 +294,7 @@ function isList(carried: CarriedAnswers): boolean {
  * miss, on a path that lasts only until every copy of this extension carries this change; a
  * swallowed answer costs a person's words. So this path pays the miss.
  */
-function showsNew(shown: CarriedAnswers, next: CarriedAnswers): boolean {
+function showsNew(shown: ShownAnswers, next: ShownAnswers): boolean {
   if (isList(shown) !== isList(next)) return true;
   if (!isList(next)) return false;
   if (shown.words === undefined || next.words === undefined) {
@@ -298,25 +316,38 @@ function keepPlaced(messages: readonly unknown[], placed: Placement): unknown[] 
 }
 
 /**
- * `messages` for a request whose read gave no text (an empty answer list, a Dispatch with no
- * answers route and nothing cached, Dispatch off): with the session's placed list where it sits.
- * Taking it out would change the request from that place on exactly as changing its bytes would,
- * and the next read that carries the cached list would put it back. A placed failure line is not
- * kept: a read that gave no text did not fail, so the line no longer says what is true, and it
- * leaves with its place, so the next failure line goes after the last message. Undefined, so the
- * request carries no list, when nothing is placed, when a failure line was, when the list's place
+ * `messages` for a request whose read gave no text (`carried`): its window holds no item, or
+ * Dispatch has no answers route and nothing is cached, or Dispatch is off. The session's placed
+ * list stays where it sits: taking it out would change the request from that place on exactly as
+ * changing its bytes would, and the next read that carries the cached list would put it back. It
+ * leaves, with its place, when the read's words show an item of it gone while its time is still
+ * inside the read's window (`sessionAnswersChanged`), as when a person retracts the only answer
+ * the window held: kept, the list would go on showing withdrawn words as current. A list whose
+ * items only aged out of the window stays. A list an older copy of this extension placed has no
+ * words that tell its aged-out items from retracted ones, so a read with words takes it out, as
+ * `showsNew` re-renders such a list on any difference. A read with no words (no answers route,
+ * Dispatch off) compares nothing and keeps the list. A placed failure line is not kept: a read
+ * that gave no text did not fail, so the line no longer says what is true, and it leaves with its
+ * place, so the next failure line goes after the last message. Undefined, so the request carries
+ * no list, when nothing is placed, when a failure line was, when the list leaves, when its place
  * left the conversation, and while a compaction may be converting the conversation
  * (`compacting`), where a list before the cut would push a message out.
  */
 function keptWithoutText(
   messages: readonly unknown[],
+  carried: CarriedAnswers | undefined,
   request: SessionAnswersRequest,
   compacting: boolean
 ): unknown[] | undefined {
   const sessions = placements.get(request.session);
   const placed = sessions?.get(request.id);
   if (sessions === undefined || placed === undefined) return undefined;
-  if (!isList(placed.carried)) {
+  const shown = placed.carried.words;
+  const next = carried?.words;
+  const withdrawn =
+    next !== undefined &&
+    (shown === undefined || sessionAnswersChanged(shown, next, carried?.since));
+  if (!isList(placed.carried) || withdrawn) {
     sessions.delete(request.id);
     return undefined;
   }
@@ -336,16 +367,17 @@ function keptWithoutText(
  * read older than this request's, and a failed read that gives the cached list says nothing of
  * its failure there; a kept list can also hold an item that has since aged out of the window. The
  * next item a person writes, edits or retracts, or a read that gives the failure line, takes it
- * out of that place and puts the new text after the last message. A session with no list placed
- * yet, or whose list's message left the conversation (a compaction summarized it), gets it after
- * the last message again. While
- * a compaction may be converting the conversation (`compacting`) the list goes after the last
- * message and places nothing: a remote compaction keeps only as many messages of its whole
- * conversion as its cut's conversion holds, so a list before the cut would push one out.
+ * out of that place and puts the new text after the last message; a retracted item that was the
+ * last one inside the window takes it out of the request (`keptWithoutText`). A session with no
+ * list placed yet, or whose list's message left the conversation (a compaction summarized it),
+ * gets it after the last message again. While a compaction may be converting the conversation
+ * (`compacting`) the list goes after the last message and places nothing: a remote compaction
+ * keeps only as many messages of its whole conversion as its cut's conversion holds, so a list
+ * before the cut would push one out.
  */
 function placeList(
   messages: readonly unknown[],
-  carried: CarriedAnswers,
+  carried: ShownAnswers,
   request: SessionAnswersRequest,
   compacting: boolean
 ): unknown[] {
@@ -372,8 +404,10 @@ export interface SessionAnswersRequest {
   /** Whether Oh My Pi is compacting the session now: the live `AgentSession`'s `isCompacting`, or
    *  its `compactionSpeculation` reading `"running"`. */
   readonly compacting: () => boolean;
-  /** This request's read: the list or the failure line, or undefined when it gave no text, which
-   *  keeps a list already placed and takes a placed failure line out (`keptWithoutText`). */
+  /** This request's read (`carriedAnswers`): the list or the failure line, a read with no text
+   *  that still gives its words, or undefined when it gave neither. A read with no text keeps a
+   *  list already placed unless its words show an item of that list gone inside the window, and
+   *  takes a placed failure line out (`keptWithoutText`). */
   readonly read: () => Promise<CarriedAnswers | undefined>;
 }
 
@@ -381,9 +415,10 @@ export interface SessionAnswersRequest {
  * The messages one main-loop provider request carries, with what people wrote to the session as a
  * separate user message where `placeList` puts it: `request.read`'s text after the last message
  * when it shows something new, else the bytes the session's list was placed with, where it already
- * sat; a read that gives no text keeps a placed list there too (`keptWithoutText`). Undefined when
- * the request carries no list: the read gave no text and no list is kept, or one of these, for
- * which `read` is not called:
+ * sat; a read that gives no text keeps a placed list there too, unless its words show an item of
+ * that list gone inside the window (`keptWithoutText`). Undefined when the request carries no
+ * list: the read gave no text and no list is kept, or one of these, for which `read` is not
+ * called:
  *
  * - another copy of this extension already decided this request: it placed the list (and passed
  *   on the array it returned), or it read and found no text, or the request is one of those below;
@@ -443,10 +478,11 @@ export async function withSessionAnswers(
   }
   const carried = await request.read();
   const compacting = previous === "cut" || request.compacting();
+  const text = carried?.text;
   const placed =
-    carried === undefined
-      ? keptWithoutText(messages, request, compacting)
-      : placeList(messages, carried, request, compacting);
+    carried === undefined || text === undefined
+      ? keptWithoutText(messages, carried, request, compacting)
+      : placeList(messages, { ...carried, text }, request, compacting);
   if (placed !== undefined) decided.add(placed);
   return placed;
 }

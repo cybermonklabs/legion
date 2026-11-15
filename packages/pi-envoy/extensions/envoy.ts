@@ -205,7 +205,11 @@ import {
   taskWasAbandoned,
 } from "../src/registration-state";
 import { ServerClock } from "../src/server-clock";
-import { type CarriedAnswers, withSessionAnswers } from "../src/session-answers-context";
+import {
+  type CarriedAnswers,
+  carriedAnswers,
+  withSessionAnswers,
+} from "../src/session-answers-context";
 import { sideTurn } from "../src/side-turn";
 import { TypedPictures } from "../src/typed-pictures";
 import {
@@ -4145,9 +4149,7 @@ export default function envoyExtension(pi: PiApi): void {
         env: process.env,
       });
       if (read.notice !== undefined) logger.warn(`envoy: ${read.notice}`);
-      return read.text === undefined
-        ? undefined
-        : { text: read.text, words: read.words, since: read.since };
+      return carriedAnswers(read);
     } catch (error) {
       // Oh My Pi drops all a `context` handler returns when it throws, the dispatch-first skill
       // with it, so a read that throws instead of answering with its failure line still costs

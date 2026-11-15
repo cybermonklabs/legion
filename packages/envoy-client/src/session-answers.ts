@@ -131,8 +131,8 @@ function withinWindow(items: readonly SessionAnswer[], now: number): SessionAnsw
   return items.filter((item) => Date.parse(item.at) >= start);
 }
 
-/** A read's `words` and `since` for a list rendered from `items` at `now`: every item of the
- *  window, shown or left out by the cap, and where the window starts. */
+/** A read's `words` and `since` for a list rendered from `items` at `now`: every item Dispatch
+ *  sent inside the window, shown or left out by the cap, and where the window starts. */
 function windowOf(
   items: readonly SessionAnswer[],
   now: number
@@ -145,14 +145,16 @@ function windowOf(
 
 /**
  * What the people wrote in each of `items`, one string per item: its kind, id, author and times,
- * the options chosen and the words. `readSessionAnswers` gives it for every item of the read's
- * 72-hour window, the ones its list shows and the ones the character cap left out, so a host
- * comparing two reads (`sessionAnswersChanged`) tells a new item, or an answer or comment a person
- * changed, from a list that only lost items to the window or changed what the session or Dispatch
- * says around them (an issue's title, an ask's question, a cached list's header). An item the cap
- * leaves out counts too: a newest item longer than the cap, or a comment an edit made too long to
- * fit, is shown to nobody, and a host that compared only the items shown would go on showing the
- * person's old words as current.
+ * the options chosen and the words. `readSessionAnswers` gives it for every item Dispatch sent
+ * inside the read's 72-hour window, the ones its list shows and the ones the character cap left
+ * out, so a host comparing two reads (`sessionAnswersChanged`) tells a new item, or an answer or
+ * comment a person changed, from a list that only lost items to the window or changed what the
+ * session or Dispatch says around them (an issue's title, an ask's question, a cached list's
+ * header). An item the cap leaves out counts too: a newest item longer than the cap, or a comment
+ * an edit made too long to fit, is shown to nobody, and a host that compared only the items shown
+ * would go on showing the person's old words as current. Dispatch cuts the list itself
+ * (`max_chars`) after the first item that takes its count past the cap, so it sends such an item;
+ * the items after its cut, which no list shows, reach the host only as `total`.
  *
  * The author is the rendered act (`actorActText`), not the person's id alone, so the same words
  * from the person themselves and from an agent acting for them are two different items: a host
@@ -442,8 +444,10 @@ export interface SessionAnswersRead {
   readonly source: "fresh" | "cache" | "failure" | "unavailable" | "off";
   /** When the list shown was read (`fresh` and `cache`). */
   readonly readAt?: string;
-  /** `sessionAnswersWords` of every item of the 72-hour window the list was rendered for (`fresh`
-   *  and `cache`), the ones the character cap left out included: what the people wrote. */
+  /** `sessionAnswersWords` of every item Dispatch sent inside the 72-hour window the list was
+   *  rendered for (`fresh` and `cache`), the ones the character cap left out included: what the
+   *  people wrote. A `fresh` read whose window holds no item gives `[]` and no `text`, so a host
+   *  still learns that the items of a list it shows left the read (`sessionAnswersChanged`). */
   readonly words?: readonly string[];
   /** The start of that window (ISO 8601 UTC), 72 hours before the render (`fresh` and `cache`):
    *  an item `words` no longer holds whose time is at or after it left the read inside the window
@@ -491,9 +495,12 @@ async function settleWithin<T>(
  * session's state directory (`sessionDirectory(env, session)`) with the URL it was read from,
  * loaded when memory has none for that URL; a list read from another Dispatch is never carried.
  * A cached list is rendered with its read time and the reason this read failed, and filtered by
- * the 72 hours again. When no cached list renders (none was read, it was empty, or every item is
- * now past 72 hours), a failed read carries the failure line naming why. Dispatch off with an
- * error names no URL: only a list read from `dispatchUrl` stands in, and with none given the
+ * the 72 hours again. Each read asks Dispatch for the 72 hours by this host's clock (`since`), the
+ * clock every render filters by, so an item Dispatch would drop by its own clock is still sent
+ * while the render's window holds it, and is not taken for one a person retracted
+ * (`sessionAnswersChanged`). When no cached list renders (none was read, it was empty, or every
+ * item is now past 72 hours), a failed read carries the failure line naming why. Dispatch off with
+ * an error names no URL: only a list read from `dispatchUrl` stands in, and with none given the
  * failure line does. A Dispatch that answers it has no answers route (`isNoAnswersRoute`) is not
  * asked again for 5 minutes, process-wide; that answer, and a request inside those 5 minutes,
  * carry the list read before from that URL, its left-out line naming no command, or else nothing:
@@ -583,6 +590,7 @@ export async function readSessionAnswers(
     });
     const started = client
       .sessionAnswers(session, {
+        since: new Date(now() - SESSION_ANSWERS_WINDOW_MS).toISOString(),
         maxChars: SESSION_ANSWERS_MAX_CHARS,
         signal: AbortSignal.timeout(READ_TIMEOUT_MS),
       })
