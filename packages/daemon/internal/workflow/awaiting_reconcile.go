@@ -463,18 +463,6 @@ func owed(run record.RoleRun) (string, bool) {
 	return "", false
 }
 
-// queuedStart says whether a start of the role still waits in the outbox, which is one arm of
-// owed and the only one the sweep's own reading keeps for a role with no claim at all
-// (ArchitectStartPending).
-func queuedStart(run record.RoleRun) bool {
-	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" {
-			return true
-		}
-	}
-	return false
-}
-
 // answeredSince names a person's act the record already holds that Dispatch recorded after waiting
 // began: their act on the subject question, or on any other ask of the root the mirror recorded one
 // on (record.RootAsk.PersonActSeq against the documents the root's gates are registered on, read

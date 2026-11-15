@@ -1097,8 +1097,8 @@ const mergeWaitContract = 133
 // with a strict schema and would refuse the whole body for a key it does not name, and one built
 // after strips the keys instead, so the strip is what keeps them from a caller that did not ask
 // for them rather than what keeps such a caller reading at all. mergeWaitContract stands below
-// it, so a caller in a pod at 133 through 145 is served `mergeWait` and not these three keys (137,
-// INFRA-3621's contract, moves no shape of the state).
+// it with no row of stateNarrowings between the two, so a caller in a pod at or above
+// mergeWaitContract and below this contract is served `mergeWait` and not these three keys.
 const entryTimesContract = 146
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.

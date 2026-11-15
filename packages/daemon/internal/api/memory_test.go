@@ -290,13 +290,13 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			// below): LEGION-208, whose implementer holds the work its row names, LEGION-211,
 			// whose implementer is behind it, and the reviewing roots LEGION-218 and LEGION-219,
 			// whose reviewers hold theirs. The held, awaiting_person and done issues carry neither
-			// whoever asks. LEGION-208 and LEGION-211 carry the times of the task they hold of
-			// that entry, LEGION-208 both and LEGION-211 the queued time alone, and the fixture
-			// gives the two reviewing roots none. LEGION-210, a root no architect claim stands
-			// for, is the one the daemon names an architect-stalled arm for, which leaves with the
-			// two times.
+			// whoever asks. LEGION-208 alone carries the two times: every other issue would carry
+			// an architect's handshake too, a root its own architect's in every phase and
+			// LEGION-209 its architect's at admitted, and no other issue of the fixture holds an
+			// architect claim. LEGION-210, a root no architect claim stands for, is the one the
+			// daemon names an architect-stalled arm for, which leaves with the two times.
 			entried := map[string]bool{"LEGION-208": true, "LEGION-211": true, "LEGION-218": true, "LEGION-219": true}
-			timed := map[string]bool{"LEGION-208": true, "LEGION-211": true}
+			timed := map[string]bool{"LEGION-208": true}
 			stalled := map[string]bool{"LEGION-210": true}
 			waits := map[string]bool{"LEGION-218": true, "LEGION-219": true}
 			for key, view := range issueViews(t, body) {
