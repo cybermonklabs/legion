@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -515,7 +516,7 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 // A write mint asks for what the installation is granted of the role's set and leaves the rest
 // out: an account that has approved three of the implement App's nine permissions gets a token
 // holding those three, in one exchange, where asking for all nine would make GitHub refuse the
-// mint whole and cost the role its gh bundle. Each permission left out is said once on stderr,
+// mint whole and cost the role its gh bundle. Each permission left out is logged once at warn,
 // issues among them, so an installation whose account has not approved a grant is named.
 func TestGrantedWriteSetAsksForTheThreeTheInstallationGrants(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
@@ -553,13 +554,14 @@ func TestGrantedWriteSetAsksForTheThreeTheInstallationGrants(t *testing.T) {
 	if !slices.Equal(github.permissionReads(), []string{"101"}) {
 		t.Errorf("the installation was read %v, want the one read before the exchange", github.permissionReads())
 	}
+	records := loggedRecords(t, &stderr)
 	for _, left := range []string{"actions", "issues", "pull_requests", "statuses", "workflows"} {
 		if _, named := asked[0].Permissions[left]; named {
 			t.Errorf("the request named %s, which the installation is granted none of", left)
 		}
 		line := fmt.Sprintf("appauth: the implement App's installation on cybermonklabs is granted no %s, where its token asks for %s: write, so the token is minted without it; grant the App %s: write and approve it on that account", left, left, left)
-		if count := strings.Count(stderr.String(), line); count != 1 {
-			t.Errorf("stderr holds %d of %q, want exactly one:\n%s", count, line, stderr.String())
+		if count := shortfallLogged(records, line, Implement, "cybermonklabs", left, "write", ""); count != 1 {
+			t.Errorf("the log holds %d warn records of %q with its fields, want exactly one:\n%s", count, line, stderr.String())
 		}
 	}
 }
@@ -595,21 +597,24 @@ func TestGrantedAccessBelowTheSetIsAskedForAtWhatIsGranted(t *testing.T) {
 	if !maps.Equal(asked[0].Permissions, want) {
 		t.Errorf("the write request named permissions %v, want exactly %v", asked[0].Permissions, want)
 	}
+	records := loggedRecords(t, &stderr)
 	for _, permission := range []string{"actions", "contents"} {
 		line := fmt.Sprintf("appauth: the review App's installation on acme is granted %s: read, where its token asks for %s: write, so the token is minted with %s: read; grant the App %s: write and approve it on that account", permission, permission, permission, permission)
-		if count := strings.Count(stderr.String(), line); count != 1 {
-			t.Errorf("stderr holds %d of %q, want exactly one:\n%s", count, line, stderr.String())
+		if count := shortfallLogged(records, line, Review, "acme", permission, "write", "read"); count != 1 {
+			t.Errorf("the log holds %d warn records of %q with its fields, want exactly one:\n%s", count, line, stderr.String())
 		}
 	}
-	if strings.Contains(stderr.String(), "metadata") {
-		t.Errorf("stderr says something of metadata, which is granted more than the set asks for:\n%s", stderr.String())
+	for _, record := range records {
+		if record.Permission == "metadata" || strings.Contains(record.Msg, "metadata") {
+			t.Errorf("the log says something of metadata, which is granted more than the set asks for: %+v", record)
+		}
 	}
 }
 
 // GitHub's answer may name an access this daemon does not know, today or after GitHub adds one,
 // and an access above the set's is no reason to ask for more than the set names. A word outside
-// read, write and admin is granted none: the permission is left out of the request and said on
-// stderr, rather than passed back to GitHub, which would refuse the mint whole and leave the
+// read, write and admin is granted none: the permission is left out of the request and logged at
+// warn, rather than passed back to GitHub, which would refuse the mint whole and leave the
 // role no gh files. An admin grant is asked for at the write the set names, never at admin.
 func TestGrantedAnAccessThisDoesNotKnowIsGrantedNone(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
@@ -637,16 +642,16 @@ func TestGrantedAnAccessThisDoesNotKnowIsGrantedNone(t *testing.T) {
 		t.Errorf("the write request named permissions %v, want exactly %v", asked[0].Permissions, want)
 	}
 	line := "appauth: the implement App's installation on acme is granted contents: maintain, where its token asks for contents: write, so the token is minted without it; grant the App contents: write and approve it on that account"
-	if count := strings.Count(stderr.String(), line); count != 1 {
-		t.Errorf("stderr holds %d of %q, want exactly one:\n%s", count, line, stderr.String())
+	if count := shortfallLogged(loggedRecords(t, &stderr), line, Implement, "acme", "contents", "write", "maintain"); count != 1 {
+		t.Errorf("the log holds %d warn records of %q with its fields, want exactly one:\n%s", count, line, stderr.String())
 	}
 }
 
 // An account approves each of an App's grants, so an installation may be granted no actions at
 // all. The read mint leaves actions out of the request and asks for the other four in one
 // exchange, so every owner's read token is served rather than the first such owner's mint
-// failing. What the token cannot read is said once per App role and owner: a second mint of the
-// same scope says nothing again, since the grant is the installation's.
+// failing. What the token cannot read is logged once at warn per App role and owner: a second
+// mint of the same scope logs nothing again, since the grant is the installation's.
 func TestGrantedReadSetLeavesOutActionsAndSaysSoOncePerOwner(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	var stderr bytes.Buffer
@@ -687,14 +692,15 @@ func TestGrantedReadSetLeavesOutActionsAndSaysSoOncePerOwner(t *testing.T) {
 			t.Errorf("exchange %d named permissions %v, want exactly %v", i+1, body.Permissions, want)
 		}
 	}
+	records := loggedRecords(t, &stderr)
 	for _, owner := range []string{"acme", "sjawhar"} {
 		line := fmt.Sprintf("appauth: the review App's installation on %s is granted no actions, where its token asks for actions: read, so the token is minted without it; grant the App actions: read and approve it on that account", owner)
-		if count := strings.Count(stderr.String(), line); count != 1 {
-			t.Errorf("stderr holds %d of %q, want exactly one:\n%s", count, line, stderr.String())
+		if count := shortfallLogged(records, line, Review, owner, "actions", "read", ""); count != 1 {
+			t.Errorf("the log holds %d warn records of %q with its fields, want exactly one:\n%s", count, line, stderr.String())
 		}
 	}
-	if lines := strings.Count(stderr.String(), "\n"); lines != 2 {
-		t.Errorf("stderr holds %d lines, want one for each of the two owners:\n%s", lines, stderr.String())
+	if len(records) != 2 {
+		t.Errorf("the log holds %d records, want one for each of the two owners:\n%s", len(records), stderr.String())
 	}
 }
 
@@ -779,7 +785,7 @@ func TestGrantedPermissionsReadIsTransientOn5xxAndGoneOn404(t *testing.T) {
 // A 422 carrying GitHub's rate limit says nothing about what the installation is granted: it is
 // GitHub's trouble (TransientError), no lease is served, and nothing is said of a grant. GitHub
 // documents its limits on a 429 and a 403, so the three ways a 422 can still carry one are each
-// checked. The mint asked for the four reads whole, which this installation is granted, so the
+// checked. The mint asked for the five reads whole, which this installation is granted, so the
 // answer is about the limit alone.
 func TestARateLimited422IsGitHubsTroubleAndNotAGrant(t *testing.T) {
 	for _, tc := range []struct {
@@ -819,7 +825,8 @@ func TestARateLimited422IsGitHubsTroubleAndNotAGrant(t *testing.T) {
 
 			var stderr bytes.Buffer
 			tokens := New(config.GitHubApps{Review: config.GitHubApp{AppID: "67890", PrivateKey: privatePEM}},
-				Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }, Stderr: &stderr})
+				Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now },
+					Stderr: &stderr, Log: slog.New(slog.NewJSONHandler(&stderr, nil))})
 			defer tokens.Close()
 
 			lease, err := tokens.ReadToken(context.Background(), Review, "acme", []string{"legion"})
@@ -1091,7 +1098,9 @@ func (g *keyModeGitHub) permissionReads() []string {
 }
 
 // keyModeManager is a Manager holding a key for each App, minting against github, with its
-// stderr kept rather than written to the test's own.
+// stderr and its log both kept in stderr rather than written to the test's own: the log as one
+// JSON record a line (loggedRecords). A key-mode mint writes nothing to stderr itself, so what
+// the buffer holds is what the Manager logged.
 func keyModeManager(t *testing.T, github *keyModeGitHub, now *time.Time, stderr *bytes.Buffer) *Manager {
 	t.Helper()
 	_, privatePEM := testAppKey(t)
@@ -1099,9 +1108,51 @@ func keyModeManager(t *testing.T, github *keyModeGitHub, now *time.Time, stderr 
 	tokens := New(config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
 		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
-	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return *now }, Stderr: stderr})
+	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return *now },
+		Stderr: stderr, Log: slog.New(slog.NewJSONHandler(stderr, nil))})
 	t.Cleanup(tokens.Close)
 	return tokens
+}
+
+// loggedRecord is one record a Manager logged, as keyModeManager's JSON handler writes it: its
+// level and its message, and the fields a grant shortfall carries (sayShortfalls).
+type loggedRecord struct {
+	Level      string `json:"level"`
+	Msg        string `json:"msg"`
+	App        string `json:"app"`
+	Owner      string `json:"owner"`
+	Permission string `json:"permission"`
+	Asked      string `json:"asked"`
+	Granted    string `json:"granted"`
+}
+
+// loggedRecords is every record said holds, in the order they were logged.
+func loggedRecords(t *testing.T, said *bytes.Buffer) []loggedRecord {
+	t.Helper()
+	var records []loggedRecord
+	for line := range strings.Lines(said.String()) {
+		var record loggedRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("the log holds %q, which is no JSON record: %v", line, err)
+		}
+		records = append(records, record)
+	}
+	return records
+}
+
+// shortfallLogged is how many of records are the warn record a grant shortfall is logged as:
+// message line, and the App, the owner, the permission, the access asked and the access granted
+// (empty where none is) as its fields. A test writes line out in full, so the wording is held
+// to the text an operator reads.
+func shortfallLogged(records []loggedRecord, line string, app AppRole, owner, permission, asked, granted string) int {
+	want := loggedRecord{Level: "WARN", Msg: line, App: string(app), Owner: owner, Permission: permission, Asked: asked, Granted: granted}
+	count := 0
+	for _, record := range records {
+		if record == want {
+			count++
+		}
+	}
+	return count
 }
 
 // Each lease asks GitHub for exactly its set and names no repository at all: what the token

@@ -81,15 +81,15 @@ var accessOrder = map[string]int{"read": 1, "write": 2, "admin": 3}
 
 // grantShortfall is one permission a role's set asks for that the installation is not granted at
 // the access asked: the permission, the access the set asks for, and the access the installation
-// is granted, empty where it is granted none. It carries no token, and neither does the line it
-// is said on (shortfallMessage).
+// is granted, empty where it is granted none. It carries no token, and neither does the record it
+// is said in (sayShortfalls).
 type grantShortfall struct {
 	permission string
 	asked      string
 	granted    string
 }
 
-// granting is what the installation is granted of the permission, as a line says it.
+// granting is what the installation is granted of the permission, as the message says it.
 func (s grantShortfall) granting() string {
 	if s.granted == "" {
 		return "no " + s.permission
@@ -128,18 +128,18 @@ func narrowToGranted(asked, granted map[string]string) (map[string]string, []gra
 	return narrowed, short
 }
 
-// shortfallMessage is written to the daemon's stderr, once per App role, owner and shortfall,
-// when a mint asks for less than the role's set names because the installation is granted less:
-// the lease is served, and what the token cannot do is said once rather than at every mint. It
-// takes the role, the owner, what the installation is granted (granting), the permission and the
-// access asked for, what the request carries of it (minting), and the permission and access to
-// grant. It carries no token.
-const shortfallMessage = "appauth: the %s App's installation on %s is granted %s, where its token asks for %s: %s, so the token is minted %s; grant the App %s: %s and approve it on that account\n"
+// shortfallMessage is the message of the warn record a Manager logs once per App role, owner and
+// shortfall, when a mint asks for less than the role's set names because the installation is
+// granted less: the lease is served, and what the token cannot do is said once rather than at
+// every mint. It takes the role, the owner, what the installation is granted (granting), the
+// permission and the access asked for, what the request carries of it (minting), and the
+// permission and access to grant. It carries no token.
+const shortfallMessage = "appauth: the %s App's installation on %s is granted %s, where its token asks for %s: %s, so the token is minted %s; grant the App %s: %s and approve it on that account"
 
-// saidShortfall is the key one line of shortfallMessage is said under: the App role, the owner
+// saidShortfall is the key one record of a shortfall is logged under: the App role, the owner
 // lowercased as a scope's is, and what the installation is granted of the permission. A second
-// mint of any scope of that role and owner says nothing again, since the grant is the
-// installation's and the line is about the installation.
+// mint of any scope of that role and owner logs nothing again, since the grant is the
+// installation's and the record is about the installation.
 type saidShortfall struct {
 	role  AppRole
 	owner string
@@ -148,7 +148,7 @@ type saidShortfall struct {
 
 // exchangeGranted is exchange over what the installation is granted: the request's permissions
 // cut down to the access owner's account approved for the App (grantedPermissions,
-// narrowToGranted), with a line on stderr for each one left out or lowered (sayShortfalls). A
+// narrowToGranted), with a warn record for each one left out or lowered (sayShortfalls). A
 // permission the installation is not granted is left out, where asking for it would make GitHub
 // refuse the mint whole (a 422) and cost the role every other permission of its set, and the gh
 // bundle that mint belongs to (GitHubCredential).
@@ -216,9 +216,12 @@ func (m *Manager) grantedPermissions(ctx context.Context, jwt, installation stri
 	return payload.Permissions, nil
 }
 
-// sayShortfalls writes shortfallMessage for each of short the first time a mint of role for
+// sayShortfalls logs shortfallMessage at warn for each of short the first time a mint of role for
 // owner meets it, and nothing on any mint after it: the grant is the installation's and the
-// line is about the installation, which the owner names.
+// record is about the installation, which the owner names. Beside the message the record carries
+// what it says as fields, so a reader filtering the daemon's log finds it by them: the App, the
+// owner, the permission, the access the set asks for and the access the installation is granted,
+// empty where it is granted none.
 func (m *Manager) sayShortfalls(role AppRole, owner string, short []grantShortfall) {
 	for _, shortfall := range short {
 		key := saidShortfall{role: role, owner: strings.ToLower(strings.TrimSpace(owner)), grantShortfall: shortfall}
@@ -229,7 +232,9 @@ func (m *Manager) sayShortfalls(role AppRole, owner string, short []grantShortfa
 		if said {
 			continue
 		}
-		fmt.Fprintf(m.stderr, shortfallMessage, role, owner, shortfall.granting(),
-			shortfall.permission, shortfall.asked, shortfall.minting(), shortfall.permission, shortfall.asked)
+		m.log.Warn(fmt.Sprintf(shortfallMessage, role, owner, shortfall.granting(),
+			shortfall.permission, shortfall.asked, shortfall.minting(), shortfall.permission, shortfall.asked),
+			"app", string(role), "owner", owner, "permission", shortfall.permission,
+			"asked", shortfall.asked, "granted", shortfall.granted)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -201,12 +202,14 @@ type Tokens interface {
 var readPermissions = map[string]string{"contents": "read", "pull_requests": "read", "issues": "read", "actions": "read", "metadata": "read"}
 
 // Options makes a token manager testable. The zero value uses api.github.com, http.DefaultClient,
-// the wall clock, and the daemon's own stderr for what a token_command writes there.
+// the wall clock, the daemon's own stderr for what a token_command writes there, and
+// slog.Default for what the manager logs: a grant shortfall, at warn (sayShortfalls).
 type Options struct {
 	BaseURL    string
 	HTTPClient *http.Client
 	Now        func() time.Time
 	Stderr     io.Writer
+	Log        *slog.Logger
 }
 
 // Manager caches installation tokens by App and owner, and bot identities by App id. An App
@@ -218,6 +221,7 @@ type Manager struct {
 	client  *http.Client
 	now     func() time.Time
 	stderr  io.Writer
+	log     *slog.Logger
 
 	mu                sync.Mutex
 	leases            map[scope]Lease
@@ -235,9 +239,9 @@ type Manager struct {
 	// Forget of its owner.
 	refusals map[scope]refusedNarrowingAt
 
-	// saidShortfalls holds every shortfall already said on stderr, each by the App role, the
-	// owner whose installation is granted less than the role's set asks for, and the shortfall
-	// itself (shortfallMessage).
+	// saidShortfalls holds every shortfall already logged, each by the App role, the owner whose
+	// installation is granted less than the role's set asks for, and the shortfall itself
+	// (sayShortfalls).
 	saidShortfalls map[saidShortfall]bool
 
 	// root ends every token_command run on Close (stop), runs counts the runs still going, and
@@ -297,6 +301,10 @@ func New(apps config.GitHubApps, options Options) *Manager {
 	if stderr == nil {
 		stderr = os.Stderr
 	}
+	log := options.Log
+	if log == nil {
+		log = slog.Default()
+	}
 	root, stop := context.WithCancel(context.Background())
 	return &Manager{
 		root:              root,
@@ -306,6 +314,7 @@ func New(apps config.GitHubApps, options Options) *Manager {
 		client:            client,
 		now:               now,
 		stderr:            stderr,
+		log:               log,
 		leases:            map[scope]Lease{},
 		pending:           map[scope]*pendingLease{},
 		installations:     map[AppRole]map[string]string{},

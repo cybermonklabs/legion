@@ -359,7 +359,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if tokens == nil {
 		// The workflow owns a manager it makes: a boot that fails before the workflow is returned
 		// closes it, so a token_command still waiting on a grant does not outlive the boot.
-		owned := appauth.New(cfg.GitHubApps, appauth.Options{})
+		owned := appauth.New(cfg.GitHubApps, appauth.Options{Log: log})
 		tokens = owned
 		defer func() {
 			if opened == nil {

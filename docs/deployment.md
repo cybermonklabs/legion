@@ -108,8 +108,8 @@ repository, the role's App token for the issue's repository and no other, and in
 other directory that App's token narrowed to reading contents, pull requests, issues, Actions and metadata
 over the repositories that directory names, an `<owner>/<repo>` directory's over the one repository
 its own name resolves to (each token asks for what the App's installation on
-that owner is granted of the set, and a permission it is granted none of is left out, named on
-the daemon's stderr) — names the issue owner's directory as `GH_CONFIG_DIR`
+that owner is granted of the set, and a permission it is granted none of is left out, named in
+a warn record of the daemon's log) — names the issue owner's directory as `GH_CONFIG_DIR`
 and the bundle's root as `LEGION_GH_OWNERS_DIR`, with `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` set
 empty so nothing outranks the files, and rewrites each directory's `hosts.yml` in place every
 minute from its cached leases (the log lines `tmux runtime: github credential written` and `github
