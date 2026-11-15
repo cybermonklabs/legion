@@ -8989,6 +8989,82 @@ describe("executeDispatchTool", () => {
     }
   });
 
+  // A plan is approved by its plan review, never by a person, so the approval line names the plan
+  // review where a person's approval names the person.
+  test("doc-read names a plan review, not a person, as a plan's approver", async () => {
+    const hash = "cd".repeat(32);
+    const session = "01a1b464-9df7-7298-a78f-4ff4f8284ce7";
+    const cases = [
+      {
+        approval: {
+          kind: "plan_review",
+          state: "approved",
+          latest_version: 2,
+          version: 2,
+          by: { kind: "session", id: session },
+        },
+        line: `Approval: approved v2 by plan review (${session}), content sha256:${hash}`,
+      },
+      {
+        approval: {
+          kind: "plan_review",
+          state: "stale",
+          latest_version: 4,
+          version: 3,
+          by: { kind: "session", id: session },
+        },
+        line: `Approval: approved v3 by plan review (${session}), changed since (now v4) - the human's own answer to a decision block carries the approval when that answer is the whole change since v3; for any other change, request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v3, content sha256:${hash}`,
+      },
+      {
+        approval: {
+          kind: "person",
+          state: "approved",
+          latest_version: 2,
+          version: 2,
+          by: { kind: "user", id: "alice" },
+        },
+        line: `Approval: approved v2 by alice, content sha256:${hash}`,
+      },
+    ];
+    for (const { approval, line } of cases) {
+      const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+        const target = new URL(String(url));
+        if (target.pathname === "/api/v1/issues/DSP-42") {
+          return response({
+            key: "DSP-42",
+            primary_artifact_id: "artifact-42",
+            open_asks: [],
+            artifacts: [
+              { id: "artifact-42", slug: "spec", name: "spec.md", primary: true },
+              {
+                id: "artifact-43",
+                slug: "plan",
+                name: "plan.md",
+                approval: { ...approval, content_sha256: hash, content_sha256_source: "insert" },
+              },
+            ],
+          });
+        }
+        if (target.pathname === `/api/v1/artifacts/artifact-43/versions/${approval.version}`) {
+          return response({ markdown: "# Plan", number: approval.version, sha256: hash });
+        }
+        if (target.pathname === "/api/v1/issues/DSP-42/comments") return response([]);
+        throw new Error(`unexpected request: ${target.pathname}`);
+      };
+      const result = await executeDispatchTool({
+        tool: "dispatch_doc_read",
+        args: { issue: "DSP-42", artifact: "plan.md", version: approval.version },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+      expect(result.text.split("\n").find((row) => row.startsWith("Approval:"))).toBe(line);
+    }
+  });
+
   test("dispatch_doc_read tells the agent when the document's approval went stale", async () => {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const target = new URL(String(url));

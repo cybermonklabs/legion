@@ -294,7 +294,8 @@ export function anchor(
 }
 /** One line describing a document's approval, or undefined for a draft nobody has asked about. An
  *  awaiting approval says whom its request waits on: the agent once a version moved it, the
- *  agent's own revision included, which sends that agent no event. */
+ *  agent's own revision included, which sends that agent no event. A plan review's approval names
+ *  the plan review, never a person, as the approver. */
 export function approvalLine(artifact: Pick<Artifact, "approval">): string | undefined {
   const approval = artifact.approval;
   if (approval === undefined || approval.state === "draft") return undefined;
@@ -302,17 +303,19 @@ export function approvalLine(artifact: Pick<Artifact, "approval">): string | und
     approval.content_sha256 === undefined
       ? ""
       : `, content sha256:${approval.content_sha256}${approval.content_sha256_source === "backfill" ? " (hashed after approval)" : ""}`;
+  const by = approval.by?.id ?? "unknown";
+  const approver = approval.kind === "plan_review" ? `plan review (${by})` : by;
   switch (approval.state) {
     case "awaiting": {
       const turn = approval.waiting_on === undefined ? "" : `, waiting on ${approval.waiting_on}`;
       return `Approval: awaiting${turn} (requested by ${approval.requested_by?.id ?? "unknown"}, ask ${approval.ask_id ?? "?"})`;
     }
     case "approved":
-      return `Approval: approved v${approval.version} by ${approval.by?.id ?? "unknown"}${content}`;
+      return `Approval: approved v${approval.version} by ${approver}${content}`;
     case "stale":
-      return `Approval: approved v${approval.version} by ${approval.by?.id ?? "unknown"}, changed since (now v${approval.latest_version}) - the human's own answer to a decision block carries the approval when that answer is the whole change since v${approval.version}; for any other change, request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v${approval.version}${content}`;
+      return `Approval: approved v${approval.version} by ${approver}, changed since (now v${approval.latest_version}) - the human's own answer to a decision block carries the approval when that answer is the whole change since v${approval.version}; for any other change, request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v${approval.version}${content}`;
     case "changes_requested":
-      return `Approval: changes requested on v${approval.version} by ${approval.by?.id ?? "unknown"}: ${approval.reason ?? ""}${content}`;
+      return `Approval: changes requested on v${approval.version} by ${by}: ${approval.reason ?? ""}${content}`;
     // The route states an approval's state as a plain string, so a state this build does not know
     // prints no line at all rather than a line half of whose fields it would have to guess at.
     default:
