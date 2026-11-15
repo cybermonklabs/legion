@@ -27,17 +27,51 @@ import (
 //     the last two hold at once and which reads both sentences, the children and then the link;
 //   - unlisted, the issue whose cause the record carries (LEGION-401).
 //
-// And four issues carry no answer at all: LEGION-500, at work in a slot with its implementer
-// running; LEGION-501, at phase.Held, which holds a slot and so stands among the issues at work;
-// LEGION-502, which is done; and LEGION-503, which a person left on the backlog. The three states
-// that read a list are proved against the lists the same projection published, so a fixture that
-// stops placing an issue where this test says it stands fails here rather than drifting.
+// And eight issues carry no answer at all. Two are at work on a slot of the cap: LEGION-500,
+// with its implementer running, and LEGION-501, at phase.Held with no earlier phase on the
+// record, which keeps a slot and so stands among the issues at work. Three have left the
+// workflow: LEGION-502, which is done, LEGION-503, which a person left on the backlog, and
+// LEGION-710, the parked root itself, whose park took its own record out of the workflow while
+// the status of the child below it stands. The other three stand past their own review, where
+// an issue holds no slot at all since dispatch://INFRA-2560 and so is named by none of the
+// three lists, only by `admission.held` under at_work: LEGION-700, whose tree's architect is
+// reading the head its worker built, LEGION-701, whose retro implementer is at work, and
+// LEGION-702, whose merger rests between its turns. Each of the three is at work in a tree that
+// runs, the resting claim no less than the other two: a claim nothing will wake is the daemon's
+// own judgement, which the fixture hands over as the stranded set and claim_stopped answers
+// first, so what is left for the last arm of the pass is a worker between its turns.
+//
+// Two more stand past their review and are working on nothing, and each is served `unlisted`
+// with the sentence of its held word: LEGION-703, which the daemon holds from its retro, where
+// no worker of it runs, reads unclassified, since the ladder gives no held issue at_work
+// (record.HeldReasonOf), whose sentence says the workers run; and LEGION-711, a child of a root
+// a person parked, whose linger suspends every claim of the tree while its children keep the
+// Dispatch status that holds them in the workflow, reads tree_closed, since that linger is still
+// running. That tree's lifecycle stands open, so the linger is the whole of what says it runs
+// nothing (record.TreeRuns), and it is the one fact that tells LEGION-711 from LEGION-701 beside
+// it.
+// `unlisted` is the answer that child had before the phases past the review stopped holding a
+// slot as well, by another road: the park takes back the slot of every member of a tree it
+// stops (record.NeedsSlot), so there too it stood in none of the three lists.
+//
+// The three states that read a list are proved against the lists the same projection published,
+// so a fixture that stops placing an issue where this test says it stands fails here rather
+// than drifting.
 //
 // Every record is built by lineIssue (project_test), this package's one builder of a record
 // with the fields each judgement of the pass reads.
 func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 	opened := projectedAt.Add(-2 * time.Hour)
 	approved := 1
+	// The member its architect held from its retro, and the root a person parked. Neither
+	// field is lineIssue's to write: a hold names the phase the work stands at
+	// (record.StandsAt), and a linger is the deadline a root carries while the tree it closed
+	// may still be taken back (record.Issue.Lingers).
+	held := lineIssue("LEGION-703", "LEGION-700", "in_progress", phase.Held, "S")
+	held.Hold = &record.Hold{From: phase.Retro, Reason: record.HoldEscalated}
+	parked := lineIssue("LEGION-710", "LEGION-710", "backlog", phase.Implementing, "U")
+	lingerUntil := projectedAt.Add(time.Hour)
+	parked.LingerUntil = &lingerUntil
 	store := projectionStore{
 		issues: []record.Issue{
 			// The tree whose work has stopped: its architect's claim is stranded, and its child
@@ -65,15 +99,40 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 			lineIssue("LEGION-501", "LEGION-500", "in_progress", phase.Held, "K"),
 			lineIssue("LEGION-502", "LEGION-502", "done", phase.Done, "L"),
 			lineIssue("LEGION-503", "LEGION-503", "backlog", phase.Admitted, "M"),
+			// The tree that runs, every member of which stands past its own review and so
+			// holds none of the cap's slots, which the assertion over `admission.active`
+			// below is what proves: each of them reaches the last arm of the pass placed by
+			// no list, and what tells them apart there is the work rather than the phase.
+			// Three are at work — the architect reading the head LEGION-700's worker built,
+			// the retro of LEGION-701 and the merge of LEGION-702 — and are served no answer,
+			// because `unlisted` would serve a reader of `why` a sentence of the held list about
+			// issues whose work is running. The fourth, LEGION-703, the daemon holds from its
+			// retro: a hold is what stops the work, so no worker of it runs and it carries the
+			// answer the other three do not.
+			lineIssue("LEGION-700", "LEGION-700", "in_progress", phase.Accepting, "P"),
+			lineIssue("LEGION-701", "LEGION-700", "in_progress", phase.Retro, "Q"),
+			lineIssue("LEGION-702", "LEGION-700", "in_progress", phase.Merging, "R"),
+			held,
+			// The tree a person parked, which is the shape the phase alone cannot tell from
+			// the three above: its root's linger suspends every claim of it while its child
+			// keeps the Dispatch status that holds it in the workflow, so the record still
+			// shows a child at work in its retro and nothing of it will run again until the
+			// root is admitted afresh. The root's own lifecycle stands open below, so the
+			// linger is the whole of what says the tree runs nothing (record.TreeRuns).
+			parked,
+			lineIssue("LEGION-711", "LEGION-710", "in_progress", phase.Retro, "T"),
 		},
 		slots: []record.Slot{
 			{Issue: "LEGION-100", Index: 0, AdmittedAt: opened},
 			{Issue: "LEGION-500", Index: 1, AdmittedAt: opened},
 			{Issue: "LEGION-501", Index: 2, AdmittedAt: opened},
 		},
-		// Each of the two trees runs with its design gate approved, which is what makes a first
-		// phase of theirs a member of the line the children-first wait then holds back.
-		lifecycles: []string{"LEGION-300", "LEGION-600"},
+		// Each of the first two trees runs with its design gate approved, which is what makes a
+		// first phase of theirs a member of the line the children-first wait then holds back.
+		// LEGION-700's tree runs on its own record alone, since every member of it carries a
+		// run already; LEGION-710's lifecycle stands open beside it and its tree runs nothing,
+		// because its root lingers.
+		lifecycles: []string{"LEGION-300", "LEGION-600", "LEGION-700", "LEGION-710"},
 		gates: map[string]map[record.DesignStep]record.DesignGate{
 			// A root at accepting has opened its gate; without this row LEGION-110 would read
 			// design_gate's sentence.
@@ -83,6 +142,11 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 				LatestVersion: 1, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 7, At: opened}, EverOpened: true}},
 			"LEGION-600": {record.DesignStepSpec: {Issue: "LEGION-600", Step: record.DesignStepSpec,
 				LatestVersion: 1, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 8, At: opened}, EverOpened: true}},
+			// LEGION-700's root at accepting has opened its gate too; without this row every
+			// member of its tree would read design_gate in the held list, and LEGION-703 that
+			// word's sentence rather than at_work's.
+			"LEGION-700": {record.DesignStepSpec: {Issue: "LEGION-700", Step: record.DesignStepSpec,
+				LatestVersion: 1, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 9, At: opened}, EverOpened: true}},
 		},
 		mirror: []record.DispatchIssueRow{
 			{Key: "LEGION-110", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-900", "LEGION-901"}},
@@ -103,28 +167,44 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 			{Key: "LEGION-603", Project: "LEGION", Status: "todo", Parent: "LEGION-601"},
 		},
 	}
+	// The claim of one role of one issue, which this fixture builds seven of.
+	token := func(issue string, role claim.Role) claim.Token {
+		t.Helper()
+		token, err := claim.NewToken("legion", issue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
 	// The stranded set is the daemon's own judgement, handed to the projection: the tree
 	// architect of LEGION-100, suspended, and the implementer of LEGION-101, failed. The
 	// implementer of LEGION-500 is a live claim and no part of it, so that issue is at work.
-	architect, err := claim.NewToken("legion", "LEGION-100", claim.RoleArchitect)
-	if err != nil {
-		t.Fatal(err)
-	}
-	implementer, err := claim.NewToken("legion", "LEGION-101", claim.RoleImplementer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	running, err := claim.NewToken("legion", "LEGION-500", claim.RoleImplementer)
-	if err != nil {
-		t.Fatal(err)
-	}
 	stranded := []supervise.Claim{
-		{Token: architect, Project: "legion", Tree: "LEGION-100", Issue: "LEGION-100", Role: claim.RoleArchitect, State: supervise.StateSuspended},
-		{Token: implementer, Project: "legion", Tree: "LEGION-100", Issue: "LEGION-101", Role: claim.RoleImplementer, State: supervise.StateFailed},
+		{Token: token("LEGION-100", claim.RoleArchitect), Project: "legion", Tree: "LEGION-100", Issue: "LEGION-100",
+			Role: claim.RoleArchitect, State: supervise.StateSuspended},
+		{Token: token("LEGION-101", claim.RoleImplementer), Project: "legion", Tree: "LEGION-100", Issue: "LEGION-101",
+			Role: claim.RoleImplementer, State: supervise.StateFailed},
 	}
+	// The workers of the issues past their review, and the one the park suspended. The three
+	// of the running tree are a claim at work, a second at work and a third resting between
+	// its turns (supervise.StateIdle, one of the four states record's measure counts as no
+	// work under way), which is the pair of shapes the last arm must answer alike: the daemon
+	// will prompt an idle worker, and the set above is where a claim nothing will wake is
+	// named. The suspended worker of LEGION-711 is in no stranded set either, and for the
+	// reason the judgement itself gives: it refuses a tree that does not run
+	// (workflow.Stranded, over record.TreeRuns), so a park strands nothing and every answer
+	// about that tree is the last arm's.
 	claims := append([]supervise.Claim{
-		{Token: running, Project: "legion", Tree: "LEGION-500", Issue: "LEGION-500", Role: claim.RoleImplementer,
-			State: supervise.StateWorking, Session: "ses_implementer_500"},
+		{Token: token("LEGION-500", claim.RoleImplementer), Project: "legion", Tree: "LEGION-500", Issue: "LEGION-500",
+			Role: claim.RoleImplementer, State: supervise.StateWorking, Session: "ses_implementer_500"},
+		{Token: token("LEGION-700", claim.RoleArchitect), Project: "legion", Tree: "LEGION-700", Issue: "LEGION-700",
+			Role: claim.RoleArchitect, State: supervise.StateWorking, Session: "ses_architect_700"},
+		{Token: token("LEGION-701", claim.RoleImplementer), Project: "legion", Tree: "LEGION-700", Issue: "LEGION-701",
+			Role: claim.RoleImplementer, State: supervise.StateWorking, Session: "ses_implementer_701"},
+		{Token: token("LEGION-702", claim.RoleMerger), Project: "legion", Tree: "LEGION-700", Issue: "LEGION-702",
+			Role: claim.RoleMerger, State: supervise.StateIdle, Session: "ses_merger_702"},
+		{Token: token("LEGION-711", claim.RoleImplementer), Project: "legion", Tree: "LEGION-710", Issue: "LEGION-711",
+			Role: claim.RoleImplementer, State: supervise.StateSuspended, Session: "ses_implementer_711"},
 	}, stranded...)
 
 	got, err := Project(context.Background(), nil, store, "LEGION", nil, claims, stranded, nil, projectedAt)
@@ -184,6 +264,16 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 		"LEGION-401": {State: api.WhyUnlisted,
 			Reason: "The design gate of its tree stands shut: LEGION-401 waits for a person's approval of each gated " +
 				"step's document at its current version, and the daemon starts no issue of that tree until it opens."},
+		// The two past their review that nothing is working on, each served its held word's
+		// sentence: the one its architect held from its retro reads unclassified, since at_work's
+		// sentence says the workers run and the ladder gives that word to no held issue, and the
+		// child of the parked root, whose linger still runs, reads tree_closed.
+		"LEGION-703": {State: api.WhyUnlisted,
+			Reason: "The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, " +
+				"so no slot has been offered to it. No rule of the held list says what it waits for."},
+		"LEGION-711": {State: api.WhyUnlisted,
+			Reason: "Its tree is closed: LEGION-710 has finished, or lingers after leaving the workflow, " +
+				"and the daemon starts no issue of that tree."},
 	}
 	for key, view := range got.Issues {
 		answer, answered := answers[key]

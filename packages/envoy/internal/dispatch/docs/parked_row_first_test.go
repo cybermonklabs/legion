@@ -257,7 +257,7 @@ func TestTheMergedRowsOfAParkedRowStoredBeforeTheKeystrokesItCoversHoldTheKeystr
 	for i, row := range rows {
 		updates[i] = row.update
 	}
-	runs, err := runsThrough(memoryUpdates(ctx, updates))
+	runs, err := runsThrough(0, memoryUpdates(ctx, updates))
 	if err != nil {
 		t.Fatalf("cut the stored rows into runs: %v", err)
 	}
@@ -445,7 +445,7 @@ func TestAHistoryWhoseRunsDoNotApplyInOrderIsUnloadableAndItsRebuildRetiresItsCl
 			artifactID := createDocument(t, service.store, "before\n")
 			rows := runsPastThePendingQueue(t, order.parkedFirst)
 			appendUpdates(t, versioned, artifactID, rows...)
-			runs, err := runsThrough(memoryUpdates(ctx, rows))
+			runs, err := runsThrough(0, memoryUpdates(ctx, rows))
 			if err != nil {
 				t.Fatalf("cut the stored rows into runs: %v", err)
 			}

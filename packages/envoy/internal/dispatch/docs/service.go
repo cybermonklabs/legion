@@ -414,6 +414,10 @@ type Service struct {
 	// what it rendered of it (*preloadedDocument), for the room load that socket makes next
 	// (takePreload), which decodes that state rather than reading the store again.
 	preloads sync.Map
+	// schemaAdmissions holds each document socket's schema admission, from authorize until the
+	// socket ends: the token's answer reads it (authorizeSchemaVersion), and so does the re-check
+	// that closes a socket the live fleet no longer admits (RunSchemaAdmission).
+	schemaAdmissions schemaAdmissions
 	// replicas holds, for each resident room document, what the room's load listed under it
 	// (*roomListing): the weighing the peer update hook reads (roomWeighing), held strongly, and a
 	// weak pointer to the replica its update observer keeps, which the document's reads walk
@@ -992,7 +996,7 @@ func New(deps Deps) *Service {
 		panic(fmt.Sprintf("dispatch: attach the document awareness relay: %v", err))
 	}
 	srv.Authorize = service.authorize
-	srv.OnTokenAuth = service.authorizeSchemaVersion
+	srv.OnTokenAuthContext = service.authorizeSchemaVersion
 	srv.OnInject = service.allowInject
 	srv.OnPeerUpdate = service.onPeerUpdate
 	srv.OnLoadDocument = service.onLoadDocument

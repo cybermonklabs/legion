@@ -24,17 +24,13 @@ import (
 // asked for it is one the wake pacing never makes wait (exemptWake); every caller reads it from
 // its own event, so a request that carries no such field is paced.
 //
-// A claim in an open pod round it has not answered takes that round's ask into its free
-// delivery slot here, before the launch (takeSlotForUpdate): the process this starts is asked
-// to push its work and answer before the pod is replaced, and a resume that let the claim's own
-// next task into the slot first would leave the round waiting on a worker nothing ever asked.
-// A claim already holding a task — the ask the sweep queued for this suspension among them — is
-// given nothing more, so the operator's resume still sends what the suspension kept.
-//
 // admitted, where a caller gives one, runs once the admission has bound the claim and before
 // anything else of the start: it is where a caller puts what it may change only for a claim
 // that is being run again, since an admission the lifecycle refuses leaves the claim exactly as
 // it was (retry, whose failure record and budgets go there).
+//
+// The claims it starts — spawned, resumed, retried, a suspended claim given a task — record no
+// process, so its launch lets none go and records nothing of one (noEnd).
 func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) error {
 	bound, err := m.deps.Store.AdmitClaim(ctx, m.claim)
 	if err != nil {
@@ -44,10 +40,7 @@ func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) erro
 	if admitted != nil {
 		admitted()
 	}
-	if err := m.takeSlotForUpdate(ctx, true); err != nil {
-		return err
-	}
-	return m.launchAfter(ctx, false, exempt)
+	return m.launchAfter(ctx, false, exempt, noEnd)
 }
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is
@@ -155,8 +148,8 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 // session is watched by the runtime's sweep (observe) and by its own connection, and the probe
 // interval is an uncertain answer's retry rather than a watch of the claim's — the sweep asks
 // again at its own pass. The turn bound goes with them for a prompt Oh My Pi acknowledged and no
-// turn has started on (acked, awaitingResult), for the same RPC wait that prompt was given, so
-// one the agent read and never turned on still fails rather than waiting for ever (noTurn).
+// turn has started on (acked, Machine.outstanding), for the same RPC wait that prompt was given,
+// so one the agent read and never turned on still fails rather than waiting for ever (noTurn).
 //
 // A timer already armed keeps the moment it already holds: the park takes only the four timers
 // above, so whatever the claim still holds is a watch nothing of this launch disturbed, and
@@ -183,7 +176,7 @@ func (m *Machine) watchAgain() {
 			m.armRegistration()
 		}
 	}
-	if p := m.claim.Pending; p != nil && p.ID == m.awaitingResult && p.ConfirmedAt.IsZero() && !armed(TimerTurn) {
+	if p := m.claim.Pending; p != nil && m.outstandingPrompt(p.ID) && p.ConfirmedAt.IsZero() && !armed(TimerTurn) {
 		m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
 	}
 }

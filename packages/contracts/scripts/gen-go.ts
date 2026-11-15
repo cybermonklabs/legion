@@ -8,9 +8,13 @@ import {
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
   DISPATCH_SIGN_IN_REQUIRED,
+  DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE,
+  DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON,
   DOCUMENT_BUSY_CLOSE_CODE,
   DOCUMENT_BUSY_CLOSE_REASON,
   DOCUMENT_NEEDS_REBUILD_CLOSE_REASON,
+  DOCUMENT_NEWER_CONTENT_CLOSE_CODE,
+  DOCUMENT_NEWER_CONTENT_CLOSE_REASON,
   DOCUMENT_REBUILT_CLOSE_REASON,
   DOCUMENT_SCHEMA_CLOSE_CODE,
   DOCUMENT_SCHEMA_CLOSE_REASON,
@@ -37,6 +41,7 @@ import {
   LIVE_SOCKET_MAX_SUBSCRIPTIONS,
   LIVE_SOCKET_MIN_AGE_MS,
   MAX_BROADCAST_RECIPIENTS,
+  MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
@@ -401,6 +406,12 @@ const GoingRequestTTL = ${GOING_REQUEST_TTL_MS} * time.Millisecond
 // MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.
 const MaxIssueBlockers = ${MAX_ISSUE_BLOCKERS}
 
+// MaxIssueAdvances bounds the \`advances\` input of an issue write before deduplication: the most
+// priorities one issue states it advances, its own relations alone. Generated from
+// MAX_ISSUE_ADVANCES in packages/contracts so the server's refusal and every client's bound are
+// one number.
+const MaxIssueAdvances = ${MAX_ISSUE_ADVANCES}
+
 // MaxIssuePageLimit is the most issues one page of GET /api/v1/issues holds, and
 // DefaultIssuePageLimit the page size when a caller pages with offset alone. Generated from
 // MAX_ISSUE_PAGE_LIMIT and DEFAULT_ISSUE_PAGE_LIMIT in packages/contracts so the server's bounds
@@ -483,6 +494,23 @@ const DocumentRebuiltCloseReason = ${JSON.stringify(DOCUMENT_REBUILT_CLOSE_REASO
 const DocumentUpdateRefusedCloseReason = ${JSON.stringify(DOCUMENT_UPDATE_REFUSED_CLOSE_REASON)}
 const DocumentBusyCloseCode = ${DOCUMENT_BUSY_CLOSE_CODE}
 const DocumentBusyCloseReason = ${JSON.stringify(DOCUMENT_BUSY_CLOSE_REASON)}
+
+// DocumentNewerContentCloseCode and DocumentNewerContentCloseReason close a document websocket
+// whose room holds an element this build cannot read, before any sync. The Hocuspocus provider
+// reconnects on the code. Generated from DOCUMENT_NEWER_CONTENT_CLOSE_CODE and
+// DOCUMENT_NEWER_CONTENT_CLOSE_REASON in packages/contracts so the server's close and the
+// dashboard's reading of it cannot drift apart.
+const DocumentNewerContentCloseCode = ${DOCUMENT_NEWER_CONTENT_CLOSE_CODE}
+const DocumentNewerContentCloseReason = ${JSON.stringify(DOCUMENT_NEWER_CONTENT_CLOSE_REASON)}
+
+// DocumentAdmissionRevokedCloseCode and DocumentAdmissionRevokedCloseReason close an open writable
+// document socket whose page the live server processes no longer admit, once the message in flight
+// on it is out. The Hocuspocus provider reconnects on the code, and the reconnect is admitted
+// again. Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and
+// DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON in packages/contracts so the server's close and the
+// dashboard's reading of it cannot drift apart.
+const DocumentAdmissionRevokedCloseCode = ${DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE}
+const DocumentAdmissionRevokedCloseReason = ${JSON.stringify(DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON)}
 
 // LiveSocketMaxAgeClose is the close code Dispatch ends a live socket with once the socket reaches
 // its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), and LiveSocketMaxSubscriptions
@@ -882,9 +910,10 @@ ${keep}
 }
 
 // The slice of JSON Schema that schemas/block-schema.schema.json uses, which the block schema
-// renderers below read. `x-ordered` marks an object whose keys carry their declaration order,
-// `x-go-type` names the Go type holding such an object, and `x-go-constants` names the Go
-// constant of each value of a string enum.
+// renderers below read. `x-ordered` marks an object whose keys carry their declaration order and
+// `x-go-type` names the Go type holding such an object; an object without `x-ordered` is a plain
+// map, keyed by its property names. `x-go-constants` names the Go constant of each value of a
+// string enum.
 type BlockProp = {
   description?: string;
   type?: "object" | "array" | "string" | "integer" | "boolean";
@@ -950,10 +979,11 @@ function blockGoType(prop: BlockProp): string {
       if (!prop.items) throw new Error("a block schema array has no items");
       return `[]${blockGoType(prop.items)}`;
     case "object": {
+      const values = prop.additionalProperties;
+      if (!values) throw new Error("a block schema object property needs additionalProperties");
+      if (!prop["x-ordered"]) return `map[string]${blockGoType(values)}`;
       const goType = prop["x-go-type"];
-      if (!prop["x-ordered"] || !goType) {
-        throw new Error("a block schema object property needs x-ordered and x-go-type");
-      }
+      if (!goType) throw new Error("an ordered block schema object property needs x-go-type");
       return goType;
     }
     default:
@@ -976,11 +1006,9 @@ function blockTypeScriptType(prop: BlockProp): string {
       return `readonly ${blockTypeScriptType(prop.items)}[]`;
     case "object": {
       const values = prop.additionalProperties;
-      if (!prop["x-ordered"] || !values) {
-        throw new Error("a block schema object property needs x-ordered and additionalProperties");
-      }
-      // A JavaScript object keeps the insertion order of its string keys, so the object the
-      // server sends carries the declaration order the Go decoder keeps.
+      if (!values) throw new Error("a block schema object property needs additionalProperties");
+      // A JavaScript object keeps the insertion order of its string keys, so an ordered object
+      // the server sends carries the declaration order the Go decoder keeps.
       return `Readonly<Record<string, ${blockTypeScriptType(values)}>>`;
     }
     default:

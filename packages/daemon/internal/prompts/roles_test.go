@@ -302,11 +302,11 @@ func TestNoPartSaysTheDaemonMerges(t *testing.T) {
 
 // GitHub's default squash message, `squash_merge_commit_message` of `COMMIT_MESSAGES`, joins every
 // commit message of a pull request, which put this tree's Dispatch keys, `Omp-Session:` trailers
-// and `skip-checks: true` lines on the default branch (dispatch://INFRA-714, R2). So the merger
-// writes the message itself, and on the one path that cannot — `enqueuePullRequest` takes no
-// message — it reads the repository's setting first and stops rather than enqueueing under a
-// setting that joins them. The command's shape is the instruction: a merge that drops `--subject`
-// or `--body ”` lets GitHub write the message again.
+// and `skip-checks: true` lines on the default branch (dispatch://INFRA-714, R2), and would put its
+// `Legion-Role:` trailers there too. So the merger writes the message itself, and on the one path
+// that cannot — `enqueuePullRequest` takes no message — it reads the repository's setting first
+// and stops rather than enqueueing under a setting that joins them. The command's shape is the
+// instruction: a merge that drops `--subject` or `--body ”` lets GitHub write the message again.
 func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 	merger := rolePart(t, "merger.md")
 	for _, want := range []string{
@@ -602,6 +602,54 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 				t.Errorf("%s still contains %q", file, retired)
 			}
 		}
+	}
+}
+
+// Every file-backed role's handoff body names the head its work was done against
+// (dispatch://INFRA-3146). The daemon takes a completion of an earlier entry of the same phase
+// only at the head that entry's record holds, so a role whose handoff paragraph lost the field
+// would write a record the daemon cannot place, and its own completion would be refused for a
+// phase it is holding. Each of the four parts is pinned twice: the field as the body names it,
+// with the one thing its value is, and the clause that carries it to the daemon, which names
+// that role's own phase word, since a record of one phase is never read for another. Both
+// needles are short and sit inside the paragraph, so a rewording of the prose around them
+// stands and the field's removal is what fails them. The merger writes no handoff, so it is not
+// among them. The match runs over a body whose whitespace is collapsed to one space, since a
+// part hard-wraps and a sentence can cross the break.
+func TestEveryFileBackedRoleHandoffNamesTheHeadItWasDoneAgainst(t *testing.T) {
+	for _, role := range []struct{ part, phase string }{
+		{"planner.md", "plan"},
+		{"implementer.md", "implement"},
+		{"tester.md", "test"},
+		{"reviewer.md", "review"},
+	} {
+		body := foldWhitespace(rolePart(t, role.part))
+		for _, needle := range []string{
+			"`head` (the 40-character lower-case commit",
+			"to the daemon, which takes a completion of an earlier `" + role.phase + "` entry only at the head the record holds",
+		} {
+			if !strings.Contains(body, needle) {
+				t.Errorf("%s does not contain %q", role.part, needle)
+			}
+		}
+	}
+	// One field, not two: the reviewer's handoff named the head it reviewed under a longer name
+	// before this rule, and a part carrying both names has the role write one while the `legion`
+	// tool reads the other: the tool reads `head` out of the record's body (pi-shared's
+	// findHandoffReport) and sends it as the completion's commit, and the daemon reads no body at
+	// all. The retired name is joined from its halves, as TestNoPartSaysTheDaemonMerges keeps its
+	// claim a pattern, so that a grep for it over the repository finds the daemon's changelog
+	// fragment that records the rename (packages/daemon/.changes/unreleased), the frozen history
+	// that named the field before it, and never this test.
+	retired := "head" + "Reviewed"
+	err := eachPart(roleParts, "roles", func(name string, body []byte) error {
+		if strings.Contains(string(body), retired) {
+			t.Errorf("roles/%s still names %s, which `head` replaced", name, retired)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("read the roles parts: %v", err)
 	}
 }
 

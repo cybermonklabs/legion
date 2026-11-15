@@ -3,6 +3,7 @@ package admit
 import (
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -10,8 +11,9 @@ import (
 // A4's last clause, for a root that arrived from another tree: "a person's todo on a running root
 // that holds no slot does not put it in the line as a root that never ran."
 //
-// A handed-over root holds no slot once it is running and waiting for its merge, so a person who
-// moves it to todo on the dashboard leaves a record that reads, by status alone, exactly like one
+// A handed-over root can run with no slot row of its own — the row it holds is the row of the
+// tree it left, and this fixture seeds none — so a person who moves it to todo on the dashboard
+// leaves a record that reads, by status alone, exactly like one
 // that has still to be promoted. The hand-over mark used to say the tree had never been opened for
 // the whole life of that tree, so the line took it as a root that never ran and promoted it again:
 // a second in_progress write, a second architect start, a new issue branch, and a resume of every
@@ -39,10 +41,16 @@ func TestAPersonsTodoOnARunningHandedOverRootDoesNotPromoteItAgain(t *testing.T)
 		t.Fatalf("%s stands in %s after the pass, want merging: a running root a person set to todo is promoted by nothing", root, running.Phase)
 	}
 	if holders := slots(t, pool); len(holders) != 0 {
-		t.Fatalf("slots = %#v, want none: a root waiting for its merge has no worker with work", holders)
+		t.Fatalf("slots = %#v, want none: the fixture seeds no row, and the pass promotes nothing that would take one for a running root", holders)
 	}
-	if started := startsOf(t, pool, root); len(started) != 0 {
-		t.Fatalf("%d supervise rows were queued for %s, want none: nothing of a running root is started again", len(started), root)
+	// The repair of a worker with no task reaches an issue standing past its review, which holds
+	// no row of the cap's (record.PastReview, admit's resumeSlottedWorkers), so this root's
+	// merger is started again. What a second promotion would write is the architect's own start,
+	// and that is what must not be here.
+	for _, started := range startsOf(t, pool, root) {
+		if started.role != claim.RoleMerger {
+			t.Fatalf("a %s of %s was started, want the merger alone: nothing of a running root is promoted again", started.role, root)
+		}
 	}
 }
 

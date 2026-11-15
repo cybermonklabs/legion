@@ -237,41 +237,10 @@ two_builds_build() {
 
 # two_builds_reset_database empties the database's public schema. Empty, migrations included: the
 # base build migrates the new schema at boot, and this build migrates it forward, which is the
-# upgrade both proofs are about. Every table, view, routine and type of the public schema goes,
-# and the extensions it holds stay: `vector` is installed by the cluster's master role
-# (0072_embeddings_core.up.sql says so, and takes it as given with `create extension if not
-# exists`), which the role this run connects as is not, so dropping the schema would leave a
-# database no build can migrate.
+# upgrade both proofs are about. empty_public_schema (lib/loopback-dsn.sh) says what goes and why
+# the schema's extensions stay.
 two_builds_reset_database() {
-  local reset_sql="do \$\$
-declare object record;
-begin
-  for object in select table_name, table_type from information_schema.tables where table_schema = 'public' loop
-    if object.table_type = 'VIEW' then
-      execute format('drop view if exists public.%I cascade', object.table_name);
-    else
-      execute format('drop table if exists public.%I cascade', object.table_name);
-    end if;
-  end loop;
-  for object in
-    select p.oid::regprocedure as signature from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public' and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
-  loop
-    execute format('drop routine if exists %s cascade', object.signature);
-  end loop;
-  for object in
-    select t.oid::regtype as name from pg_type t join pg_namespace n on n.oid = t.typnamespace
-    where n.nspname = 'public' and t.typtype in ('e', 'c', 'd')
-      and not exists (select 1 from pg_depend d where d.objid = t.oid and d.deptype = 'e')
-      and not exists (select 1 from pg_class c where c.oid = t.typrelid and c.relkind <> 'c')
-  loop
-    execute format('drop type if exists %s cascade', object.name);
-  end loop;
-end
-\$\$;"
-  psql "$database_url" -X -q -v ON_ERROR_STOP=1 -c 'set client_min_messages = warning' \
-    -c "$reset_sql" >/dev/null ||
-    fail "could not empty the database's public schema"
+  empty_public_schema "$database_url" || fail "could not empty the database's public schema"
 }
 
 # two_builds_fake_envoy starts the listener both builds are pointed at, which is the Dispatch

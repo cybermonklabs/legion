@@ -9,21 +9,30 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
-// mergeStateLadderReads is how many times one ladder reads GitHub's merge state for a head GitHub
-// answers `unknown` for, and mergeStateLadderWait how long it waits between those reads. GitHub
-// computes the merge state lazily: the first read of a head it has not looked at yet asks it to,
-// and answers `unknown` while it works, which is an answer about GitHub and not about the head. A
-// few seconds is the usual wait, so five reads half a minute apart cover it with room over.
+// mergeStateLadderReads is how many times one climb of the ladder (climbMergeState) reads GitHub's
+// merge state for a head GitHub answers `unknown` for, and mergeStateLadderWait how long it waits
+// between those reads. GitHub computes the merge state lazily: the first read of a head it has not
+// looked at yet asks it to, and answers `unknown` while it works, which is an answer about GitHub
+// and not about the head. A few seconds is the usual wait, so five reads half a minute apart cover
+// it with room over.
 //
-// After the fifth `unknown` the ladder stops, and nothing stands behind it: no row waits in the
-// outbox, no timer is left armed, and no pass comes round again. `unknown` is no answer about the
-// head, so nobody is told of it: the issue's next event, its next handoff and the daemon's next
-// start each read again. Every other answer the ladder gets is recorded, and an approval left
-// standing on a head GitHub answers with a state it would not merge from tells the tree's
-// architect and the reviewer, once for that head and state, in the review-stuck notice the round
-// writes - but only once the CI settlement standing for the head says every check GitHub reported
-// on it has concluded, since until then the state says no more than that a check is running
-// (workflow's reviewRound, stuckMergeState).
+// After the fifth `unknown` the climb stops, and so does the ladder unless a request arrived during
+// the climb (mergeStateEnds); then nothing stands behind it: no row waits in the outbox, no timer
+// is left armed, and no pass comes round again. `unknown` is no answer about the head, so nobody is
+// told of it: the issue's next event, its next handoff and the daemon's next start each read again.
+// Every other answer the ladder gets is recorded, and an approval left standing on a head GitHub
+// answers with a state it would not merge from tells the tree's architect and the reviewer, once
+// for that head and state, in the review-stuck notice the round writes - but only once the CI
+// settlement standing for the head says every check GitHub reported on it has concluded, since
+// until then the state says no more than that a check is running (workflow's reviewRound,
+// stuckMergeState).
+//
+// Both numbers have a second user: the outbox's merge-queue read (merge_queue_removal.go's
+// mergeQueueRead), which reads a pull request GitHub reported leaving the merge queue as this
+// ladder reads a merge state GitHub answers `unknown` for (dispatch://INFRA-3274/spec R1). It
+// makes at most mergeStateLadderReads attempts, each with at most one read, and after a failed
+// read waits mergeStateLadderWait (mergeStateWait) or GitHub's Retry-After when that is longer.
+// So a change to either number changes that read too.
 const (
 	mergeStateLadderReads = 5
 	mergeStateLadderWait  = 30 * time.Second
@@ -132,7 +141,9 @@ func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) {
 }
 
 // mergeStateWait is how long the ladder waits between reads of a head GitHub is still computing
-// the merge state of: mergeStateLadderWait, which a test shortens through the runtime's own field.
+// the merge state of, and how long the outbox's merge-queue read waits after a failed read
+// (mergeQueueRead, which attach hands this wait): mergeStateLadderWait, which a test shortens
+// through the runtime's own field.
 func (w *workflowRuntime) mergeStateWait() time.Duration {
 	if w.mergeStateRetry > 0 {
 		return w.mergeStateRetry
@@ -161,10 +172,11 @@ func (w *workflowRuntime) readMergeState(ctx context.Context, issue string) (rec
 	}
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	_, pull, err := w.readPullRequest(read, *recorded)
+	answeredAt := time.Now().UTC()
 	cancel()
 	if err != nil {
 		return record.MergeStateUnread, fmt.Errorf("read pull request %s#%d and its merge state: %w", recorded.Repo, recorded.Number, err)
 	}
-	w.applyMergeability(ctx, *recorded, pull)
+	w.applyMergeability(ctx, *recorded, pull, answeredAt)
 	return pull.mergeState(), nil
 }

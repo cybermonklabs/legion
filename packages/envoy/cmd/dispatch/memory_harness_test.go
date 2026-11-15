@@ -34,7 +34,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // The real-process harness the memory tests (memory_test.go) drive Dispatch through: a test
@@ -115,9 +114,11 @@ func (h *memoryHarness) waitForSettled(t *testing.T, artifactID string) {
 type memoryServer struct {
 	command *exec.Cmd
 	base    string
-	output  *lockedBuffer
-	exited  chan struct{}
-	idle    int64
+	// output and exited are the process's (cmdtest.Process): its combined output, and closed
+	// once it has exited and released its connections.
+	output *lockedBuffer
+	exited <-chan struct{}
+	idle   int64
 	// trace is the file the server samples its memory into (DISPATCH_MEMORY_TRACE,
 	// memory_trace.go), which peakResident reads for what the pod's kernel would charge the
 	// server, where this kernel keeps pages the runtime released counted in VmRSS, and for what
@@ -181,19 +182,16 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	}
 	command.Env = append(command.Env, h.env...)
 	held.Pass(command, "DISPATCH_LISTEN_FD")
-	server := &memoryServer{command: command, base: "http://127.0.0.1:" + port, output: &lockedBuffer{}, exited: make(chan struct{}), trace: trace, database: h.database}
-	command.Stdout, command.Stderr = server.output, server.output
-	err := command.Start()
-	// The server holds its own copy of the socket from here on, so it releases the port when it
+	// This server is a Dispatch process like any other a test starts, so the connection guard
+	// counts it, and releases it before exited closes, so a test that sees the exit sees the
+	// count fall (requireConnectionCeiling, cmdtest.StartThen). StartThen closes the test's copy
+	// of the held socket once the server has started, so the server releases the port when it
 	// exits.
-	cmdtest.CloseExtraFiles(command)
-	if err != nil {
-		t.Fatalf("start a Dispatch server: %v", err)
-	}
-	go func() {
-		_ = command.Wait()
-		close(server.exited)
-	}()
+	releaseConnections := requireConnectionCeiling(t, h.database.Pool.Config().ConnString())
+	process := cmdtest.StartThen(t, "the Dispatch server", command, releaseConnections)
+	server := &memoryServer{command: command, base: "http://127.0.0.1:" + port, output: &lockedBuffer{process.Output}, exited: process.Exited, trace: trace, database: h.database}
+	// Registered after StartThen's own cleanup, so it runs first: the server is stopped with
+	// SIGTERM as a deploy stops it, and StartThen's kill finds it gone.
 	t.Cleanup(func() { server.stop(t) })
 	deadline := time.Now().Add(time.Minute)
 	// The kernel queues a request on the held socket until the server serves it, so each one is
@@ -1402,12 +1400,14 @@ func (d *browserDocument) size(t *testing.T) pmdoc.DocumentSize {
 	return pmdoc.MeasureDocument(markdown)
 }
 
-// lockedBuffer is the server's output, written by the process's copying goroutine and read by the
-// test when it fails, or whole by a test that asserts what the server logged.
+// lockedBuffer is the server's output, the process's own (cmdtest.Process.Output), written by the
+// process's copying goroutine and read by the test when it fails, or whole by a test that asserts
+// what the server logged.
 type lockedBuffer struct {
-	logtest.Buffer
+	*cmdtest.LockedBuffer
 }
 
+// tail is the last 4,000 bytes the server has written, for a failure to show.
 func (b *lockedBuffer) tail() string {
 	output := b.String()
 	if len(output) > 4000 {

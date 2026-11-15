@@ -301,13 +301,18 @@ export function createLegionTool(deps: {
   /** Told of each `handoff_complete` that succeeded: the session's phase is complete. */
   readonly onPhaseCompleted: (context: SessionContext) => void;
   /** Told of each `ready_for_update` that succeeded: the session has answered the daemon's
-   * update task on its pod, and its phase stays open. */
+   * update message on its pod, and its phase stays open. */
   readonly onUpdateAnswered: (context: SessionContext) => void;
-  /** What a completion of `phase` by `role` reports beside its summary (`findHandoffReport`): for
-   * a file-backed phase the role works, the newest Dispatch handoff record of the phase, with the
-   * pushed tip of `legion/<issue>@origin` for the implementer; otherwise the commit the workspace
-   * stands on. Throws naming the remedy when the phase has no record, Dispatch does not answer, or
-   * the implementer's work is not pushed. */
+  /** What a completion by `role` reports beside its summary while the issue stands at `phase`
+   * (`findHandoffReport`): for a file-backed phase the role works or, once the issue has moved
+   * on, the one it left, the newest Dispatch handoff record of that phase and the head its body
+   * names under `head`, which for the implementer's round, while the issue stands in
+   * implementing, must be the commit its workspace stands on, pushed to `legion/<issue>@origin`;
+   * otherwise, and for a left phase with no record or an implementer's left record naming no head,
+   * the commit the workspace stands on, alone. Throws
+   * naming the remedy when the phase the role works has no record, Dispatch does not answer, or,
+   * in implementing, the implementer's record names no head, the commit its workspace stands on
+   * is not pushed, or its record's head is not that pushed commit. */
   readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
    * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */
@@ -439,7 +444,7 @@ export function createLegionTool(deps: {
           );
           // A call that returned without throwing: a completion, and a backward move, which hands
           // the issue to another phase. Either way this session's phase is no longer open.
-          // `ready_for_update` ends no phase: it answers the pod's update task, and the worker
+          // `ready_for_update` ends no phase: it answers the pod's update message, and the worker
           // then waits for its process to be replaced rather than working, so the turn it ends
           // after answering earns no reminder (the `update-answered` input of
           // `@legion/pi-shared/phase-stall`).

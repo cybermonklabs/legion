@@ -102,7 +102,8 @@ func testSpec() runtime.SpawnSpec {
 // operator's own attributes and this launch's issue and role (here no operator sets any, so it is
 // the launch's two alone), the caller's own variables sorted, then one `<NAME>_FILE` pointer
 // per secret — the boot token's first. PATH is never a pair: tmux would discard it (LEGION-91); the
-// shell command exports it. No other tool path is a pair: a pane's git and jj are its PATH's. No
+// shell command exports it. No other tool path is a pair: a pane finds its jj and its git on its
+// PATH, whose launcher directory holds a git wrapper where workerbin.Install writes one. No
 // secret value is in any pair. This pane's repository is one the project names, so it carries
 // LEGION_ISSUE_TRAILER beside its issue, the key its commits are stamped with; the pane below,
 // whose repository the project does not name, carries no such pair rather than an empty one.

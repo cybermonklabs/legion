@@ -1,6 +1,6 @@
 ---
 name: legion-controller
-description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, unslotted, awaiting-person, parked-decision, held, worker-died, worker-stalled, update-stalled, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, an architect's escalation, or a person's message or mention.
+description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, unslotted, awaiting-person, tree-stalled, parked-decision, held, worker-died, worker-stalled, update-stalled, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, an architect's escalation, or a person's message or mention.
 ---
 
 # Legion Controller
@@ -74,6 +74,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `tick on <PROJECT>` | The every-turn steps, then the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`) |
 | `unslotted on <KEY>` | Re-admit nothing; name it in your summary |
 | `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
+| `tree-stalled on <KEY>` | Read the tree and decide: ask a role what it waits on, move an issue back a phase, or park the tree only as [Rules](#rules) allows |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
 | `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation, decided from the failed claim's `failure` in `read_state` and the limits in `settings` (`skill://legion-controller/references/escalation.md#an-escalated-hold`) |
 | `worker-died on <KEY>` (`role: "architect"`) | Nothing when the root's `phase` is `done`: the tree is parked already. Otherwise restart the tree when you find no cause or its cause is gone, and ask whether to park it when the cause stays (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`) |
@@ -149,10 +150,8 @@ When a tree holds a slot while it waits on an event outside Legion, that wait is
 it either (`skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion`).
 Report the free slots, or the full cap, to the person in the day's report, and move nothing for them.
 A slot is one issue the daemon has started, a root or a child, not one
-tree: a tree of four started issues holds four slots. An issue takes its slot when the daemon
-starts it and keeps it
-until it is done or leaves the workflow,
-so a root waiting on a person keeps the slot it took, and `admission.trees` is what names the
+tree: a tree of four issues at work holds four slots. An issue takes its slot when the daemon
+starts it and gives it back as [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says, so a root waiting on a person keeps the slot it took, and `admission.trees` is what names the
 roots of the live trees. The free slots are `admission.cap`, less every issue in
 `admission.active`, which is every issue holding a slot, and less again each issue of
 `admission.waiting` that stands in neither `admission.active` nor `admission.blocked`: the
@@ -163,13 +162,11 @@ a tree's own root at `admitted` under a design gate a person has opened, a root 
 handed over with the slot it held there, and a child the daemon started that a person set back
 to `todo` — and subtracting such an issue a second time would hide a slot that is free.
 
-The line has two parts, and reading it as one list makes a right order look like a wrong one.
-First the issues whose work came back, oldest first by the moment it came back; then the issues
-that have not started, by the Dispatch rank of each issue's tree root and then its own. Each
-free slot goes to the first issue of the whole line that needs one, so a P2 root can take the
-slot in front of a P0 root that ranks first: the P2 root's work came back, and the P0 root has
-not started. That is the approved design of dispatch://INFRA-980, which finishes started work
-before it starts new work, and it is no defect to report. A move to `backlog` or `icebox` takes
+The line has two parts, and reading it as one list makes a right order look like a wrong one:
+the issues whose work came back stand in the first part, and the issues that have not started in
+the second. So a P2 root whose work came back can take a slot before a P0 root that has not started.
+That is the approved design of dispatch://INFRA-980, and it is no defect to report
+(https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label). A move to `backlog` or `icebox` takes
 an issue out of the line, and a re-rank of the issues ahead of an issue that has not started
 raises that issue inside the second part; neither act moves it ahead of one issue whose work
 came back. `read_state` tells you which part each waiting issue stands in and why

@@ -25,6 +25,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
@@ -55,9 +56,6 @@ var (
 	// directory exceeds the tree API caps (100k entries / 7 MB), so the
 	// listing is not trustworthy and the sync must fail whole.
 	ErrTreeTruncated = errors.New("the directory tree is too large for the GitHub tree API")
-	// ErrFileTooLarge is a directory entry whose recorded size exceeds
-	// MaxFileSize: it is refused before its blob is fetched.
-	ErrFileTooLarge = errors.New("file too large")
 	// ErrRepositoryUnreadable is GitHub's 403 or 404 on a repository read the installation may
 	// not make, or on a repository or commit it cannot see: the answer the results read takes
 	// as unknown rather than as a commit it placed elsewhere (CheckRepositoryResponse, which
@@ -66,13 +64,9 @@ var (
 	ErrRepositoryUnreadable = errors.New("the GitHub App cannot read the repository")
 )
 
-// MaxFileSize bounds one architecture file. The tree entry's size is checked
-// against it before the blob is read.
-const MaxFileSize = 1 << 20
-
 // responseLimit caps a GitHub API response body; a blob response is read
 // through blobResponseLimit instead, since base64 with GitHub's line wrapping
-// inflates MaxFileSize bytes past responseLimit.
+// inflates notes.MaxFileSize bytes past responseLimit.
 const (
 	responseLimit     = 1 << 20
 	blobResponseLimit = 2 << 20
@@ -97,6 +91,26 @@ var commitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // responseLimit.
 // A var rather than a const so a test can shrink it; nothing outside a test writes it.
 var RequestTimeout = 20 * time.Second
+
+// limitRecordTimeout bounds one write of a limit GitHub answered to the shared ledger. The write
+// is one statement, which a healthy database answers in milliseconds, as the outbox's own
+// records are bounded (outbox's recordTimeout).
+const limitRecordTimeout = 5 * time.Second
+
+// limitRecordContext is the context a limit GitHub answered is written to the shared ledger
+// under: the caller's values without its deadline or its cancel, bounded by limitRecordTimeout.
+// GitHub's answer is a fact about the App's budget whatever time its caller has left. A caller
+// out of time -- a CI reconcile pass at its own bound -- would otherwise cut the write off, and
+// every process would go on asking GitHub inside the limit GitHub had just named.
+//
+// It keeps the caller's values, so a keyed request's commit step (store.WithBeforeCommit, which
+// api's request keys install) still runs in the ledger write: while the request's attempt holds
+// its key, the write marks that key committed, as ratelimit's Record says. An attempt that has
+// lost its key, past api's keyedHandlerLimit, has the mark refused, and the write of the limit
+// with it.
+func limitRecordContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), limitRecordTimeout)
+}
 
 // ResponseTooLargeError reports a response that did not fit inside a caller's configured limit.
 type ResponseTooLargeError struct {
@@ -714,9 +728,11 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 // secondary limit falls back to GraphQLScope: holding the App's queries is less than GitHub asks
 // for, and it is all this client knows to hold.
 func (c *Client) recordGraphQLLimit(ctx context.Context, installation string, limited *RateLimitError, secondary bool) {
+	record, cancel := limitRecordContext(ctx)
+	defer cancel()
 	if secondary && installation != "" {
 		limited.Scope = installation
-		struck, err := c.limits.Strike(ctx, installation, limited.Wait)
+		struck, err := c.limits.Strike(record, installation, limited.Wait)
 		if err != nil {
 			slog.Error("dispatch githubapp: GitHub's secondary rate limit was not recorded; other processes may ask GitHub inside it", "scope", installation, "wait", limited.Wait, "error", err)
 			return
@@ -727,7 +743,7 @@ func (c *Client) recordGraphQLLimit(ctx context.Context, installation string, li
 		return
 	}
 	limited.Scope = GraphQLScope
-	if err := c.limits.Record(ctx, GraphQLScope, limited.Wait); err != nil {
+	if err := c.limits.Record(record, GraphQLScope, limited.Wait); err != nil {
 		slog.Error("dispatch githubapp: GitHub's GraphQL rate limit was not recorded; other processes may query inside it", "scope", GraphQLScope, "wait", limited.Wait, "error", err)
 	}
 }
@@ -846,7 +862,11 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 		return responseBody, status, header, err
 	}
 	if limited := RateLimit(status, header, responseBody); limited != nil {
-		if err := c.limits.Record(ctx, scope, limited.Wait); err != nil {
+		// Recorded past the caller's own end: see limitRecordContext.
+		record, cancel := limitRecordContext(ctx)
+		err := c.limits.Record(record, scope, limited.Wait)
+		cancel()
+		if err != nil {
 			slog.Error("dispatch githubapp: GitHub's rate limit was not recorded; other processes may ask GitHub inside it", "scope", scope, "wait", limited.Wait, "error", err)
 		}
 	}
@@ -999,11 +1019,13 @@ type DirFile struct {
 // subtree read (`GET /repos/{owner}/{repo}/git/trees/{sha}:{dir}`): only the
 // directory's own entries come back, so a large repository elsewhere cannot
 // push the response past the read cap. GitHub's 404 for a commit without dir
-// is an empty Dir (a valid, empty model). Only regular blobs (mode 100644 /
-// 100755) count: symlinks (120000), submodules, and nested directories are
-// skipped. A listing GitHub answers truncated is ErrTreeTruncated — it cannot
-// be trusted, so the sync fails whole. dir is a plain repo-relative path, no
-// leading slash.
+// is an empty Dir (a valid, empty model). An entry counts when notes.IsNote
+// keeps it, read with notes.GitKind from its type and mode: the rule of which
+// entries are notes is the notes package's, which keeps the regular blobs
+// (mode 100644 / 100755) named *.md and skips symlinks (120000), submodules,
+// and nested directories. A listing GitHub answers truncated is
+// ErrTreeTruncated — it cannot be trusted, so the sync fails whole. dir is a
+// plain repo-relative path, no leading slash.
 func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (Dir, error) {
 	if c == nil {
 		return Dir{}, ErrNoAppKey
@@ -1043,8 +1065,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 	}
 	listing := Dir{SHA: tree.SHA}
 	for _, entry := range tree.Tree {
-		if entry.Type != "blob" || (entry.Mode != "100644" && entry.Mode != "100755") ||
-			strings.Contains(entry.Path, "/") || !strings.HasSuffix(entry.Path, ".md") {
+		if !notes.IsNote(entry.Path, notes.GitKind(entry.Type, entry.Mode)) {
 			continue
 		}
 		listing.Files = append(listing.Files, DirFile{
@@ -1055,16 +1076,17 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 }
 
 // DirFiles reads every file of a Dir listing (one blob read each, base64),
-// keyed by file name. A file whose listed size exceeds MaxFileSize is
-// ErrFileTooLarge before any blob is fetched; a blob that vanished between
-// the listing and the read fails the whole set.
+// keyed by file name. The bound is the notes package's: a file whose listed
+// size exceeds notes.MaxFileSize is notes.ErrFileTooLarge (notes.CheckSize)
+// before any blob is fetched, and so is a decoded blob over it; a blob that
+// vanished between the listing and the read fails the whole set.
 func (c *Client) DirFiles(ctx context.Context, token, owner, repo string, listing Dir) (map[string][]byte, error) {
 	if c == nil {
 		return nil, ErrNoAppKey
 	}
 	for _, file := range listing.Files {
-		if file.Size > MaxFileSize {
-			return nil, fmt.Errorf("%w: %s is %d bytes (limit %d)", ErrFileTooLarge, file.Path, file.Size, MaxFileSize)
+		if err := notes.CheckSize(file.Path, file.Size); err != nil {
+			return nil, err
 		}
 	}
 	repoBase := c.base + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
@@ -1102,8 +1124,8 @@ func (c *Client) blob(ctx context.Context, token, repoBase, path, sha string) ([
 	if err != nil {
 		return nil, fmt.Errorf("decode blob %s (%s) content: %w", sha, path, err)
 	}
-	if len(content) > MaxFileSize {
-		return nil, fmt.Errorf("%w: %s is %d bytes (limit %d)", ErrFileTooLarge, path, len(content), MaxFileSize)
+	if err := notes.CheckSize(path, int64(len(content))); err != nil {
+		return nil, err
 	}
 	return content, nil
 }

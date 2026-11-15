@@ -259,8 +259,7 @@ legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {why, waitingL
 child below it holds, and `unlisted` for one the record holds in the workflow that stands in
 none of the three admission lists; `why.reason` is the sentence. An issue holding an admission
 slot carries no `why` unless it also stands in `admission.waiting` or `admission.blocked`, or a
-stranded claim names it: an answered root reads `waiting`, a root whose open children hold its
-own first phase reads `blocked`, and an issue at work whose worker runs, one `held` and a root
+stranded claim names it: an answered root reads `waiting`, and an issue at work whose worker runs, one `held` and a root
 whose ask a person has not answered yet, which `waitingOn` answers for, read nothing. Neither
 does an issue the record does not hold in the workflow (`done`, `backlog`, `icebox`,
 `triage`). The daemon serves
@@ -348,8 +347,8 @@ person closed the question), `turn` (a session handed it back to the agent's tur
 (Dispatch's settlement), and `approved` also when the spec's gate stands open with nobody's
 approval on a deployment that gates no step, or when the last gated step was taken out of
 `gates.design` while the root waited on it. The root is in `admission.active` throughout, since an
-issue keeps its admission slot from the moment the daemon starts it
-until it is done or leaves the workflow;
+issue in `awaiting_person` keeps its admission slot
+([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label));
 once it is answered it stands in `admission.waiting` too,
 among the issues whose work came back, oldest first, until the pass that resumes it. That resume
 takes no further slot, so it happens however full the cap is, whether or not the design gate has
@@ -391,9 +390,13 @@ start it by hand. Without `answeredAt`, check, in order:
 
 A root whose architect registered its spec while the approval request waits on the person is in
 `awaiting_person` with `waitingOn.kind` `gate`, once nothing else of its tree is at work; one still
-`admitted` waiting on its design gate keeps its slot for one of the reasons above, or because
+`admitted` waiting on its design gate stays there for one of the reasons above, or because
 Dispatch shows the request on the architect's turn (a reply or a newer version since the request),
-when the architect has nothing handed to the person. A root waiting on its gate at a daemon's deploy
+when the architect has nothing handed to the person.
+It keeps its slot there,
+unless its gate has opened once and it waits on another issue
+([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
+A root waiting on its gate at a daemon's deploy
 is recorded as waiting at that daemon's first boot, keeping its slot. The gate stays closed until a person approves the
 spec at its current version; `designGate.approvedVersion` is `null`, or lower than `currentVersion`,
 until someone approves the latest version from the document's header or the Inbox. An approval of an
@@ -481,10 +484,9 @@ too: a credential error is the fleet's rather than this claim's work, so it clim
 any other and the controller's notice at six is what tells a person. A newer
 task for that claim replaces the one the error took back and is sent at once, so it does not wait
 out a ladder that reaches ten minutes a step; while that claim's session is being compacted it
-waits for the compaction's end instead, as everything the claim is owed does. An update round's
-question waits behind the owed task, as any other task does: the question needs a turn of the
-worker's own, and that turn would fail the way the task's did, so the pod's round waits until a
-turn of the owed task ends with no provider error.
+waits for the compaction's end instead, as everything the claim is owed does. An update round
+waits for none of this: the daemon publishes the round's message to the role's own topic, and the
+round ends at its bound whether or not a turn of that role succeeds.
 
 **One provider error does hold the issue**, for its architect: one whose HTTP status is a client
 error, 400 to 499, that is none of 401, 403, 408 and 429. A malformed request is
@@ -550,9 +552,9 @@ listing alone. What follows the colon says where to look:
 - `the daemon runs with no GitHub App, so it cannot read theorem-labs/agent-infra`, or `the daemon
   could not mint its read-only token for theorem-labs/agent-infra: …`: the daemon's GitHub App
   configuration, and the implement App's installation on theorem-labs.
-- `GitHub refused to narrow the daemon's implement App token to theorem-labs/agent-infra alone, …`:
-  the implement App's installation must reach theorem-labs/agent-infra. The daemon asks for no
-  wider token in its place.
+- `GitHub refused the daemon's implement App the reading permissions on theorem-labs, …`: what the
+  account grants the implement App's installation on theorem-labs. The read lease needs contents,
+  pull requests and metadata read. The daemon asks for no wider token in its place.
 - `GitHub answered the read of theorem-labs/agent-infra at <tag> with HTTP <status>…`, or `the
   tarball of theorem-labs/agent-infra at <tag> …`: check that the tag the worker image pins exists
   in that repository and holds its `leak-check` directory.
@@ -949,13 +951,46 @@ The report counts for the process the claim runs now and for no other.
 A worker whose pod was replaced while a background task of its own ran left that report behind, and the work it names died with the pod, so the daemon reads such a worker as one that has reported nothing: it is prompted at the silence bound like any other, and it earns no `worker-background-stalled` notice.
 That is why the daemon clears a worker's report when it launches the worker again, and why a worker on the Claude Code backend is repaired at all: that session reports at the end of a turn alone, and a worker nothing prompts has no turn to end.
 
-## A commit carries another role's App as its author
+## Which role made a commit
 
-Every role of an issue works in one jj workspace, and each role's commits must carry that role's own GitHub App as their author.
+Two trailers in a commit's message name the session and the role that made the commit: `Omp-Session: <session id>` and `Legion-Role: <role>`.
+Each role process writes them from its own environment, so the workspace that the roles of an issue share does not mix them up.
+A jj commit gets them from the role's jj overlay: the `omp-attribution-<session id>.toml` file that the role's harness plugin writes and puts at the end of `JJ_CONFIG`.
+The overlay sets `templates.commit_trailers`, `templates.revert_description` and `templates.duplicate_description`, so a `jj revert` and a `jj duplicate` get the two lines too.
+A `git commit` gets them from the git wrapper first on the role's `PATH`, which hands the commit to `legion git`: the image's `/opt/legion/bin/git` in a pod, and under tmux the `git` in the state directory's `bin/`, or the image's wrapper where that is the first git on the daemon's `PATH`.
+`Omp-Session` holds the role's session id, and `Legion-Role` holds the role process's `LEGION_ROLE`.
+Read the two lines of each commit on a branch with the template of `skills/legion-worker/references/default-branch-check.md`:
+
+```sh
+jj log --no-graph -r 'trunk()..<branch>@origin' -T '
+  commit_id.short() ++ " " ++ description.first_line() ++ "\n"
+  ++ trailers.filter(|t| t.key() == "Omp-Session" || t.key() == "Legion-Role")
+    .map(|t| "  " ++ t.key() ++ ": " ++ t.value() ++ "\n").join("")'
+```
+
+Nothing adds the two lines to these commits:
+
+- A commit that a process with no overlay made outside a role's shell.
+
+- A commit that a git command other than `git commit` made: a merge, a revert, a cherry-pick or a rebase.
+
+- A `git commit` when the git whose version `legion git` reads is older than 2.32, the first git with `git commit --trailer`: the real git in a pod, and under tmux the first git on `PATH` after `bin/` that is a compiled program.
+  A host's git wrapper script that runs another git older than 2.32 makes the commit fail on the two `--trailer` options instead (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
+
+- Under Claude Code, a jj commit from a subagent's shell that lacks the session's environment file (anthropics/claude-code#46696).
+  That subagent's `git commit` still gets the `Legion-Role` line.
+
+**The git author and committer name no role.**
+jj sets a commit's git author and committer by its own rules in the shared workspace.
+They depend on which role's jj command made or last rewrote the shared working-copy commit `@`, and not on which role committed.
+So a commit can show the GitHub App of another role as its author, and its trailers still name the role that made it.
+
+**The adoption sets the author of `@`.**
 Before the daemon sends a role a phase task, it asks that role's shim to adopt the working copy under the role's App identity.
 The shim runs `jj log` on `@`, which snapshots the working copy.
 Then it runs `jj metaedit --update-author` on an `@` that has no description, or `jj new` on an `@` that has one.
-So an adoption at the wrong time can make one role the author of another role's work.
+The metaedit fills an author that is empty: an `@` that jj makes with no identity has an empty author, and `jj git push` refuses such a commit.
+An adoption can also make one role the author of edits that another role left in `@`.
 
 **Which tasks adopt the working copy.**
 The daemon adopts only for a task that names a phase, and only for the role that owns that phase:
@@ -1008,11 +1043,11 @@ grep -i '<KEY>-' daemon.log | grep -e 'adopted for the phase task' \
 `kubectl logs` gives only the log file that the node keeps now, for the daemon's pod that runs now.
 On a busy daemon, that file can hold only the last minutes, and a new daemon pod starts with an empty log.
 Read the time of the first line.
-If the wrong commit is older than that line, read the daemon's lines from the log store of your cluster.
+If the commit is older than that line, read the daemon's lines from the log store of your cluster.
 A search that finds no line for a time before the first line does not show that no adoption occurred.
 
 - `supervise: the working copy was adopted for the phase task` is one adoption that the shim answered `ok`.
-  It names the `claim`, the `delivery`, the `phase`, the App's git name as `identity`, and the time the shim took as `took`, in nanoseconds.
+  It names the `claim`, the `delivery`, the `phase`, the App's git name as `identity`, and, as `took` in nanoseconds, how long the daemon's call to adopt took: the daemon's own check of where the claim's process runs, then the round trip to the shim and back, with the shim's own work inside it.
   The release that carries cybermonklabs/legion#3971 is the first to write this line.
 
 - `supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share` is a phase task that waits.
@@ -1022,11 +1057,12 @@ A search that finds no line for a time before the first line does not show that 
   The task stays queued, and the refusal counts against the prompt budget of the claim.
 
 - `supervise: the prompt was lost to the transport; the delivery waits` is a send that got no answer.
-  When its `error` starts `adopt <claim>'s working copy for <identity>`, the daemon sent the adoption to the shim, and the answer did not come back: the connection closed, or the daemon stopped its wait.
-  The shim runs jj on a time limit of its own, so jj can have run all the same, and the author can have moved.
+  When its `error` starts `adopt <claim>'s working copy for <identity>`, the daemon asked over the claim's connection, and the call did not succeed.
+  That does not show that the adoption reached the shim: the frame can fail its own check, the write can fail, or the connection can close before the frame goes out, and the shim can also answer with a frame of another type.
+  When the frame went out and its answer did not come back, because the connection closed or the daemon stopped its wait, the shim runs jj on a time limit of its own, so jj can have run all the same, and the author can have moved.
   The task stays queued.
 
-Compare the time of the wrong commit with these lines.
+Compare the time of the commit with these lines.
 An adoption line for another role of the issue just before the commit shows that the adoption moved the author.
 On a daemon that carries the rule, every adoption line names a phase, and its `claim` is the claim of the role that owns that phase.
 
@@ -1036,11 +1072,21 @@ On such a daemon, an update round or a message wake can take the author of the c
 **Other paths change an author, and no adoption line shows them.**
 
 - A role's own jj command in the shared workspace snapshots the working copy under that role's identity.
-  An architect's `jj git fetch` and the shell of a subagent are two such commands.
-  The roles container gives every role one git identity, and a subagent's shell can carry another identity: `dispatch://INFRA-2791` holds both.
+  An architect's `jj git fetch` and a jj command in the shell of a subagent are two such commands.
 
 - `jj split` keeps the author of the commit that it splits, so a role that splits a commit that another role made keeps that other role's App on both halves.
-  A check at push time that refuses a commit that the review App authored is `dispatch://INFRA-1185`.
+
+**Where jj reads the identity and the trailers.**
+
+- jj keeps one configuration file for each repository, `${XDG_CONFIG_HOME:-$HOME/.config}/jj/repos/<id>/config.toml`, and every workspace of that repository reads it.
+  In an issue pod it holds `trunk()` and `git.abandon-unreachable-commits`, and no identity and no trailer.
+  Print it with no jj command, from the `.jj` directory of the issue's workspace: `cd "$LEGION_WORKSPACE/.jj" && cat "${XDG_CONFIG_HOME:-$HOME/.config}/jj/repos/$(cat "$(cat repo)/config-id")/config.toml"`.
+
+- A `templates.commit_trailers` in that file replaces the overlay's trailers: a commit then carries the trailers of that file, and neither line of the overlay.
+
+- `JJ_USER` and `JJ_EMAIL` rank above every jj configuration file, and only `--config` and `--config-file` on the command line rank above them.
+
+So a role sets no `user.name`, no `user.email`, none of the overlay's three templates and no `trailer.*` key in any jj or git scope (`skills/legion-worker/references/default-branch-check.md`).
 
 ## A pod does not come up
 
@@ -1049,8 +1095,8 @@ On such a daemon, an update round or a message wake can take the author of the c
   the next pod unscheduled until the daemon reads it dead past `worker_boot_timeout_seconds` and,
   once its launch failures run out, fails the claim. `kubectl -n legion describe pod <pod>` names the
   reason. `admission_cap` counts the issues the daemon has started rather than the pods, and an
-  issue that only waits keeps both its slot and its pod,
-  so keep the pods a deployment's open trees run within what the pool's limits
+  issue can keep its pod where it holds no slot — past its review, or while it waits on another
+  issue — so keep the pods a deployment's open trees run within what the pool's limits
   can place ([The cluster](/legion/legion/running-legion/#the-cluster)). A pod replaced on another
   node waits for no volume to detach: an issue's disk is its own pod's, created with it and
   deleted with it, so a replacement brings a disk of its own. The image probe pod,
@@ -1174,6 +1220,77 @@ On such a daemon, an update round or a message wake can take the author of the c
   `supervise: claim failed`, `supervise: the agent reported its exit`, `supervise: the process
   speaks another plugin contract; relaunching it onto the current plugin`, or `supervise: the
   update round is over for this claim`, each of which says what became of the turn instead.
+- **`supervise: the agent's busy answer records the claim working; its task waits for the end of
+  the turn the agent is in`** at Info, with the `delivery` and the prompts still `outstanding`, is
+  Oh My Pi answering a prompt with `Agent is already processing`: at the send, after its
+  acknowledgement, or in the prompt's result. That answer means the session is in a prompt, so a
+  ready or idle claim is recorded `working`, with a `supervise: a turn started` line that names no
+  delivery, and its task is held for that turn's end rather than sent again at every sweep and
+  hello. When the turn's own start comes, **`supervise: the turn a busy answer recorded has
+  begun`** says so, with the delivery it confirms, and writes no second start line. When no start
+  or end of the turn is ever read, the next sweep asks the agent: **`supervise: the agent is in no
+  prompt; the turn its busy answer recorded is over`** ends the turn and sends the task, and
+  `supervise: the agent did not say whether the turn its busy answer recorded is over; the claim
+  stays working and the next sweep asks again` is an ask nobody answered. Nothing to do.
+- **`supervise: the agent refused the prompt; it is busy with the turn of an earlier prompt of
+  this task, whose result settles the task`** (and the same line for an acknowledged prompt, and
+  for `Oh My Pi ran no turn for the prompt`) is a re-send of a task whose first prompt Oh My Pi
+  acknowledged and is still preparing: its pre-turn work, such as a memory recall, outlasted the
+  daemon's five-second wait for the turn. The first prompt stays outstanding, its late turn
+  confirms the task, and its result retires it, so a completion made in that turn is accepted and
+  the task is not sent again after it. Nothing to do.
+- **`supervise: the relaunch ended work the agent had running`** at Warn, with the `cause`,
+  whether a `turn` and the task's turn (`taskTurn`) were cut off, the `background` work and its
+  `kinds` the process last reported, and whether a report covers its last turn (`reported`), is
+  a relaunch, a suspension, a failure or a stop that ended the process while work of its agent
+  ran. A stop is `legion claims stop`, the operator's close of a tree stopping its other claims,
+  or the daemon stopping a controller it launched, and its cause is `its claim was stopped`:
+  every retry that keeps the session resumes the stopped claim's session, which is told what the
+  stop ended. That is `legion claims retry` without `--fresh-session`, the daemon's own retry of
+  a retired controller it keeps, and the daemon's start of a retired worker's phase. A suspension
+  that lands over a process the daemon had already found gone, as a fresh session over a dead
+  role does, records the death in the runtime's words, not the suspension. The claim
+  records it (the `ended_work` column of its row), and the first prompt the next process is sent
+  carries a sentence naming it: in front of the task the claim holds, or, for a claim that holds
+  none, alone
+  in a delivery of the daemon's own (`supervise: the claim holds no task; a delivery of the
+  daemon's own tells its agent what the relaunch ended`, whose id starts `relaunch:` and which a
+  newer task replaces while no prompt of it is outstanding). That delivery is also given when the
+  claim's held task is dropped at its send: the issue left the task's phase, the task is an ask
+  an older daemon queued for an update round, or a root architect's held task names nothing any
+  more. A root
+  architect's catch-up opens with the same sentence, and the daemon-launched controller reads it
+  in front of its start message. Every turn cut off is told that its subagents and background
+  jobs are gone. A process whose newest activity report is older than the start of its last
+  turn is told the background work that report named, and that the daemon has no report of what
+  that turn started. A process in no turn that has no report of its last turn (it left no report,
+  or only one older than that turn) is told that the daemon has no report of the background work
+  of its last turn, and so that every subagent and background job it started is gone. Nothing to
+  do; the agent checks what that work did before it repeats it.
+- **`supervise: a turn took the prompt that told the agent what its relaunch ended`** and
+  **`supervise: a turn took the prompt that told the agent of the session its claim abandoned`**
+  at Info, each with the `delivery`, mark the claim's record told. A record is told when a turn
+  confirms a prompt that carried its sentence, and never when Oh My Pi only acknowledges the
+  prompt, since it can acknowledge and then answer busy. Nothing to do.
+- **`supervise: the confirmation of the prompt that told the agent what became of its earlier
+  work was taken back; the next prompt tells it again`** at Info, with the `delivery`, is the
+  turn that confirmed the task no longer counted as the agent reading that prompt: the turn was
+  another input's (an Envoy notice's, say), the prompt came to nothing (a refusal, a busy answer,
+  or no turn), a provider error failed a model call of the turn, a compaction aborted the turn,
+  or the process ended in a turn that confirmed the task before the prompt's result came (while
+  its send was in flight or it waited on its result), since only that result says the turn was
+  the prompt's. The record is untold again, and the next prompt carries the sentence. Nothing to
+  do.
+- **`supervise: the claim abandons its session, so the record of what the old session's process
+  ended is not told to the fresh agent; the abandoned session's sentence says that work is
+  gone`** at Info is a fresh session: the claim's first task names the session it left behind,
+  and the record of the old process's end is marked told with no prompt. A record written later,
+  of the fresh session's own process, is told after the abandoned session's sentence, in the
+  same prompt. Nothing to do.
+- **`supervise: the daemon's own delivery of a relaunch's record has nothing to say, since that
+  record no longer tells; it is dropped rather than sent`** at Info is a `relaunch:` delivery
+  that the claim still held when its record was told by other means, as a fresh session's
+  start tells it. Nothing to do.
 - **`supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no
   process is recorded for it`** at boot names a claim the store held live with no process, with the
   state it was stored in (`stored=`): a launch the previous daemon began and never recorded. The
@@ -1294,18 +1411,35 @@ These arrive as messages on the Dispatch issue:
   worked toward the merge. The daemon ends no turn, so the turn reporting the completion is of
   an entry behind the one the role's phases row names, and nothing is recorded. The refusal
   names the issue, the role and the phase, the entry the completion is of and the entry the
-  role's phases row is on, and, when the task of that entry already waits on the claim, that the
-  turn began before it reached the session. It then tells the worker what to do in the same
-  words the `legion` tool's description gives for the code
+  role's phases row is on, and then what decided it, which is one of four readings: the
+  completion is at another commit than the head the record holds, or the record holds no pull
+  request for the issue; it names no commit at all, so it says nothing about any head; the phase
+  ends with no handoff record this role writes — retro and merging — so nothing the completion
+  names says which entry's work it is, and no head it reports on answers for it; or the move
+  that handed the phase out again moved the issue back, which asks for this phase's work to be
+  done again whatever head the completion names. When the task of that entry already waits on
+  the claim, the refusal says the turn began before it reached the session. It then tells the
+  worker what to do in the same words the `legion` tool's description gives for the code
   (`packages/contracts/fixtures/daemon-api/stale-entry.json` holds the two equal): end the turn
   without completing; the task of the entry the phase is on is owed to the claim and the daemon
   sends it by itself, which it does on every admission pass and on a sweep each minute; and that
   task is work of its own, done at the head it names and completed with a handoff of its own,
   never the refused completion's record, commit or verdict. A testing entry after such a move is
   for the head the fix pushed, and the verdict on the head before it answers for nothing there.
-  The same code on a completion of an entry above the one the phases row names is one the
-  record never produces, since the daemon raises the row in the transaction that composes the
-  entry's task; that refusal tells the worker to end the turn and tell the architect.
+  A completion at the head the record holds is taken rather than refused, where the phase ends
+  with a handoff record this role writes and no move back raised the entry it is behind: the
+  phase was handed out again at that same head, so the work the new entry's task asks for is the
+  work that turn did. The same code on a completion of an entry above the one the phases row
+  names is one the record never produces, since the daemon raises the row in the transaction
+  that composes the entry's task; that refusal tells the worker to end the turn and tell the
+  architect. Either refusal comes only while the role works the phase the issue stands in. A
+  completion of another entry than the role's phases row names, from a role that no longer
+  works the issue's phase — a taken completion sent again once it has moved the issue on, or one
+  naming a newer record — is answered `HANDOFF_NOT_CURRENT_PHASE` instead, in the words the
+  workflow answers that code with, `the <role> does not run phase <phase> of <KEY>; this
+  completion changed nothing`, and nothing is recorded: the task of that role's entry was
+  queued for the phase the issue has left, so the daemon drops it unsent and owes the claim
+  none.
 
 An issue back in `in_progress` from `retro` or `merging` has a head that conflicts with its base:
 GitHub computes no merge ref for such a head and runs no check on it at all, so the daemon sent
@@ -1314,12 +1448,17 @@ the issue back to the implementer with the base to merge forward and told the ar
 from `merging` the merger kept its turn, its jobs, its process and its session. Neither turn was
 interrupted: each role was told on its own Envoy role topic that its phase had ended and that the
 workspace is the implementer's now. The implementer's retro completion after the move reports the
-entry retro handed it while its phases row is on the implementing one, so it is refused
-(`HANDOFF_STALE_ENTRY`), and the implementer merges the base forward in the implementing
-task's own turn and completes that work with a handoff of its own, never retro's commit; the
-merger's phases row still names the entry merging gave it, so a completion it sends for the phase
-it lost is refused (`HANDOFF_NOT_CURRENT_PHASE`). The work comes back through testing, review,
-acceptance and retro to a new merge. A red check sends nothing back from anywhere.
+entry retro handed it while its phases row is on the implementing one. The issue is in
+`implementing` by then, so the `legion` tool sends it as the implementer's completion of
+implementing, with the newest `implement` record and the head that record names, which can be the
+head the record holds; it is refused (`HANDOFF_STALE_ENTRY`) because retro back to `implementing`
+is a move back, which raised the entry the phase stands on, and the refusal names that move. The
+implementer merges the base forward in the implementing task's own turn and completes that work
+with a handoff of its own, never retro's commit; the merger's phases row still names the entry
+merging gave it, so a completion it sends for the phase it lost is refused
+(`HANDOFF_NOT_CURRENT_PHASE`).
+The work comes back through testing, review, acceptance and retro to a new merge. A red check
+sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:
 

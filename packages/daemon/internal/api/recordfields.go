@@ -128,8 +128,6 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "UpdateHead", Column: ColumnAgents, Keys: []string{"updateHead"},
 		Reason: "the commit the worker reported when it answered its round, which says what the replacement must carry"},
 	{Field: "UpdateToldAt", Column: ColumnWithheld, Reason: BookkeepingReason},
-	{Field: "UpdateAnsweredByTurnEnd", Column: ColumnWithheld, Reason: BookkeepingReason},
-	{Field: "UpdateReaskedForPushCheck", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "UpdateLeftRound", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ProviderErrorRun", Column: ColumnAgents, Keys: []string{"providerErrorRun"},
 		Reason: "the run of provider-error turns, which bounds nothing and which the controller is told of once at six, so without it the number behind that telling stands on no surface its reader can reach"},
@@ -157,13 +155,16 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the window the run of refused turns is derived from, whose count reaches a reader as the failure's own sentence"},
 	{Field: "Abandoned", Column: ColumnWithheld,
 		Reason: "the session this claim left behind, which reaches its replacement in that agent's first task and no surface"},
+	{Field: "EndedWork", Column: ColumnWithheld,
+		Reason: "what the last let-go of this claim's process ended, which reaches the next process in that agent's own prompt and in a root architect's catch-up, and no surface"},
 	{Field: "SessionLost", Column: ColumnWithheld,
 		Reason: "an argument of one spec build, set on the copy handed the builder and never on the claim, so no surface could carry it"},
 }
 
 // IssueRecordFields is every field of `record.Issue`, in the order the record declares them. No
 // field of it is a secret and none is the operator route's alone, so every entry is served to
-// the agent surfaces or withheld as bookkeeping.
+// the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, MovedAt and
+// TreeStalledToldAt, for the reason its own entry gives.
 var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Key", Column: ColumnAgents, Keys: []string{"key"}, Reason: "the issue the whole view is about"},
 	{Field: "Tree", Column: ColumnAgents, Keys: []string{"tree"},
@@ -194,6 +195,7 @@ var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Ancestry", Column: ColumnAgents, Keys: []string{"ancestry"},
 		Reason: "the chain that holds a labelled root under an unreleased child, which reaches no other surface"},
 	{Field: "HandedOverFrom", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "ToldParent", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "Awaiting", Column: ColumnAgents, Keys: []string{"waitingOn"},
 		Reason: "what a root in awaiting_person waits on from a person, and whether that person has answered"},
 	{Field: "HandoutSeq", Column: ColumnWithheld, Reason: BookkeepingReason},
@@ -205,5 +207,10 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "the project's memory mode in force when the tree was drawn, which the group is read against"},
 	{Field: "MemoryDrawnAt", Column: ColumnAgents, Keys: []string{"memoryDrawnAt"},
 		Reason: "when the tree was drawn, which says the draw happened rather than was never reached"},
-	{Field: "ToldParent", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "ReleasedForWaitAt", Column: ColumnWithheld,
+		Reason: "the moment a started issue gave its admission slot back because it waits on another issue, which orders it in the waiting line; a reader acts on what it causes, the issue's place in `admission.waiting` and `admission.blocked` and its own `waitingLine`, and never on the moment itself"},
+	{Field: "MovedAt", Column: ColumnWithheld,
+		Reason: "when this one issue last moved reaches no surface of its own: what a reader is served is its whole tree's measure, `treeMovedAt` and `quietHours`, which the projection builds from every member's movement and from their claims' steps (record.QuietTrees) and which no field of one record carries"},
+	{Field: "TreeStalledToldAt", Column: ColumnWithheld,
+		Reason: "the mark that holds one stall to one notice, written on a tree's root as the stalled-tree notice is queued: it is the daemon's own record of what it has already told a controller, and a reader of the state is told the tree's quiet time instead"},
 }

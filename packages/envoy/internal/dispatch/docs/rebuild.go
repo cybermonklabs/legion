@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 
@@ -309,14 +310,18 @@ func nearACap(ctx context.Context, doc *crdt.Doc, bytes int64, tracked int64) (w
 // from both caps, a room resident in another envoy-dispatch process (a holds query,
 // roomQueries.ask), a history that loads and is not near a cap, a history another rebuild or an
 // append moved past the one this rebuild loaded (RebuildTx), a closed issue (for supplied
-// markdown, which changes the document), and markdown that is not a Proof document, drops an open
-// ask block, introduces a block pointer at a block the attribute may not name
-// (refuseBlockPointers), or introduces a check block that breaks a rule of a check CI proves
-// (refuseCICheckBlocks), both against the latest version. Supplied markdown is caller text: it is
-// parsed as an upload is, and its rendering is weighed as a new document's is (SeedText). The
-// latest version is the server's own rendering of the document, read back as every stored
-// rendering is (pmdoc.ParseRendering), so a document whose version is past what one write may
-// make - stored before that bound, or grown past it by browser edits - still rebuilds. Supplied
+// markdown, which changes the document), a tree it would be built from - the history's own or the
+// latest version's - holding an element this build does not know (ErrDocNewerContent, as every
+// read of it answers), and markdown that is not a Proof document, drops an open ask block,
+// introduces a block pointer at a block the attribute may not name (refuseBlockPointers), or
+// introduces a check block that breaks a rule of a check CI proves (refuseCICheckBlocks), both
+// against the latest version. Supplied markdown is caller text: it is parsed as an upload is, and
+// its rendering is weighed as a new document's is (SeedText). The latest version is the server's
+// own rendering of the document, read back as every stored rendering is (pmdoc.ParseRendering), so
+// a document whose version is past what one write may make - stored before that bound, or grown
+// past it by browser edits - still rebuilds, and so does one holding an element this build reads
+// but may not create yet, which the seed puts back rather than creates (rebuiltSeed,
+// pmdoc.UpdateHolding), as it puts back such an element a history's own tree holds. Supplied
 // markdown that differs from the latest version is a document change, so the same transaction
 // writes its version, which moves the open approval request to it (writeVersionTx,
 // MoveApprovalAsk); the VersionResult is what the caller's artifact.version event names. A
@@ -418,7 +423,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 			return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: weigh document %s before its rebuild: %v", ErrServiceUnavailable, artifactID, err)
 		}
 		if !near {
-			return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: document %s is live in this server; close its editors and retry two minutes later, or replace it from markdown instead", ErrDocumentLive, artifactID)
+			return RebuildReport{}, VersionResult{}, liveRebuildRefusal(ctx, tx, artifactID, roomOpenHere, askAfterTwoMinutes)
 		}
 		decided = why
 		// The loads its browsers make as they reconnect are refused until this transaction
@@ -440,10 +445,17 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	}
 	for _, answer := range answers {
 		if answer.holds {
-			return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: document %s is live in another server process; close its editors and retry two minutes later, or replace it from markdown instead", ErrDocumentLive, artifactID)
+			return RebuildReport{}, VersionResult{}, liveRebuildRefusal(ctx, tx, artifactID, roomOpenElsewhere, askAfterTwoMinutes)
 		}
 	}
 	history, loaded, why, retired, err := s.rebuildSource(ctx, artifactID, decided)
+	if errors.Is(err, ErrDocumentLoads) {
+		latest, err := savedVersionNumber(ctx, tx, artifactID)
+		if err != nil {
+			return RebuildReport{}, VersionResult{}, err
+		}
+		return RebuildReport{}, VersionResult{}, fmt.Errorf("%w (document %s, latest saved version %d)", ErrDocumentLoads, artifactID, latest)
+	}
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
@@ -468,26 +480,50 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// and its marks map holds the margin; supplied markdown over it is taken as an upload over it
 	// is, its unchanged blocks keeping their ids and its anchors marked again (keptReplacement). A
 	// tree outside the schema has no text to carry anything from, and the markdown repairs it, as
-	// an upload repairs one. A history that does not load holds nothing that reads, so the text it
-	// is rebuilt from takes back what the rows record of it (restoredFromRows).
-	var tree *pmdoc.Node
+	// an upload repairs one; a tree holding an element this build does not know is refused, with
+	// or without markdown, as every read and write of the document refuses it, since a rebuild
+	// from here would drop that element. A history that does not load holds nothing that reads,
+	// so the text it is rebuilt from takes back what the rows record of it (restoredFromRows).
+	//
+	// stored is the tree the document already holds where the rebuild is built from it - the
+	// history's own tree, or the latest version's as the version holds it - which the seed puts
+	// back rather than creates, so an element this build reads and may not create yet is held
+	// already, not created (rebuiltSeed, pmdoc.UpdateHolding). Supplied markdown over a history
+	// that loads is taken as an upload over it is, and an upload holds what the document holds;
+	// supplied markdown with no tree to take it over creates every element it holds, so stored is
+	// nil for it.
+	var tree, stored *pmdoc.Node
 	var margin map[string]any
 	if history != nil {
 		margin = marginRecords(history)
 		current, treeErr := treeOf(history)
 		switch {
+		case errors.Is(treeErr, ErrDocNewerContent):
+			err = treeErr
 		case markdown == nil:
 			tree, err = current, treeErr
+			stored = current
 		case treeErr != nil:
 			tree, err = parseInput(*markdown)
 		default:
 			tree, err = s.keptReplacement(ctx, tx, artifactID, current, *markdown)
+			stored = current
 		}
 	} else {
 		if markdown != nil {
 			tree, err = parseInput(*markdown)
 		} else {
-			tree, err = uploadedInput(pmdoc.ParseRendering(latest.markdown))
+			// The version's markdown is the server's own, not the caller's, so an element this
+			// build does not know in it is newer content, as every read of the document answers
+			// it, not invalid markdown.
+			parsed, parseErr := pmdoc.ParseRendering(latest.markdown)
+			if newer := documentSchemaError(parseErr); errors.Is(newer, ErrDocNewerContent) {
+				return RebuildReport{}, VersionResult{}, newer
+			}
+			// uploadedInput copies parsed, so the rows' marks and the close's states written into
+			// tree below leave stored as the version holds it.
+			tree, err = uploadedInput(parsed, parseErr)
+			stored = parsed
 		}
 		if err == nil {
 			tree, margin, err = s.restoredFromRows(ctx, tx, artifactID, tree)
@@ -558,7 +594,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 			return RebuildReport{}, VersionResult{}, err
 		}
 	}
-	seed, err := rebuiltSeed(tree, retired, margin)
+	seed, err := rebuiltSeed(tree, stored, retired, margin)
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, fmt.Errorf("seed rebuilt document tree: %w", err)
 	}
@@ -628,10 +664,10 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 // has no bytes to decode, and carries its version and clients itself (unappliedHistory). decided
 // is why the room this server held stood near a cap, which RebuildDocument judged and closed, or
 // "" where no room decided: a history that loads is judged here only then, and one that stands
-// near no cap is ErrDocumentLoads. The read's fold, its decode (loadDecodedHistory) and the
-// check's re-scan of it run under one slot of the pod's load concurrency, whose wait ends with
-// ctx, held here rather than by the read, since the check runs inside it, and given back once
-// the history is the rebuild's.
+// near no cap is ErrDocumentLoads, which RebuildDocument answers with the latest saved version
+// named. The read's fold, its decode (loadDecodedHistory) and the check's re-scan of it run under
+// one slot of the pod's load concurrency, whose wait ends with ctx, held here rather than by the
+// read, since the check runs inside it, and given back once the history is the rebuild's.
 func (s *Service) rebuildSource(ctx context.Context, artifactID, decided string) (*crdt.Doc, persistence.Version, string, map[crdt.ClientID]uint64, error) {
 	ctx, _, done := withLoadSlot(ctx)
 	defer done()
@@ -662,16 +698,19 @@ func (s *Service) rebuildSource(ctx context.Context, artifactID, decided string)
 		return nil, 0, "", nil, fmt.Errorf("%w: weigh document %s before its rebuild: %v", ErrServiceUnavailable, artifactID, err)
 	}
 	if !near {
-		return nil, 0, "", nil, fmt.Errorf("%w: document %s", ErrDocumentLoads, artifactID)
+		return nil, 0, "", nil, ErrDocumentLoads
 	}
 	return history, read.loaded.Version, why, historyClients(history), nil
 }
 
-// rebuiltSeed writes tree into a fresh document, as encodeDocumentTree does, with the retired
-// clients listed under retiredMapName, each its client id in decimal against the clock it had
-// reached, and margin, the margin records the rebuild keeps, in the marks map under their keys,
-// and returns the document's first durable update.
-func rebuiltSeed(tree *pmdoc.Node, retired map[crdt.ClientID]uint64, margin map[string]any) ([]byte, error) {
+// rebuiltSeed writes tree into a fresh document, as encodeDocumentTreeHolding does with held, the
+// tree the document already holds that the rebuild is built from (nil for none): an element this
+// build reads and may not create yet is put back where held holds it, not created
+// (pmdoc.UpdateHolding). Beside it go the retired clients, listed under retiredMapName, each its
+// client id in decimal against the clock it had reached, and margin, the margin records the
+// rebuild keeps, in the marks map under their keys. It returns the document's first durable
+// update.
+func rebuiltSeed(tree, held *pmdoc.Node, retired map[crdt.ClientID]uint64, margin map[string]any) ([]byte, error) {
 	doc := crdt.New()
 	fragment := doc.GetXmlFragment(fragmentName)
 	marks := doc.GetMap(marksMapName)
@@ -683,7 +722,7 @@ func rebuiltSeed(tree *pmdoc.Node, retired map[crdt.ClientID]uint64, margin map[
 		for _, key := range sortedKeys(margin) {
 			marks.Set(transaction, key, margin[key])
 		}
-		return pmdoc.Update(transaction, fragment, tree)
+		return pmdoc.UpdateHolding(transaction, fragment, tree, held)
 	}); err != nil {
 		return nil, err
 	}
@@ -721,4 +760,38 @@ func undecodableHistoryClients(update []byte) map[crdt.ClientID]uint64 {
 		return nil
 	}
 	return to
+}
+
+// The causes and next steps of the rebuild refusals liveRebuildRefusal builds.
+const (
+	roomOpenHere       = "is open in this Dispatch process, or its last editor left it less than two minutes ago"
+	roomOpenElsewhere  = "is open in another Dispatch process, or its last editor left it less than two minutes ago"
+	askAfterTwoMinutes = "Stop. Ask a person whether to rebuild the document after two minutes"
+	readAgainFirst     = "Another rebuild may already have repaired the document: read it again, and ask a person whether to rebuild it only if it still does not load"
+)
+
+// liveRebuildRefusal is every ErrDocumentLive refusal of a rebuild that names what a rebuild would
+// discard: why Dispatch refused (cause), the latest saved version a rebuild from it would go back
+// to, read on tx, and what the caller does next (next). One builder, so no refusal keeps advice
+// another has dropped. The one ErrDocumentLive refusal it does not build is "already being
+// rebuilt" (RebuildDocument), which says only that a rebuild is running and offers no repair.
+func liveRebuildRefusal(ctx context.Context, tx pgx.Tx, artifactID, cause, next string) error {
+	latest, err := savedVersionNumber(ctx, tx, artifactID)
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: document %s %s, so Dispatch refused the rebuild. A rebuild from the latest saved version, %d, discards every edit made after it. %s",
+		ErrDocumentLive, artifactID, cause, latest, next)
+}
+
+// savedVersionNumber is the number of artifactID's latest saved version, which a refused rebuild
+// names: a rebuild discards every edit made after it.
+func savedVersionNumber(ctx context.Context, tx pgx.Tx, artifactID string) (int, error) {
+	var number int
+	if err := tx.QueryRow(ctx, `
+		select coalesce(max(number), 0) from artifact_versions where artifact_id = $1
+	`, artifactID).Scan(&number); err != nil {
+		return 0, fmt.Errorf("read latest document version number: %w", err)
+	}
+	return number, nil
 }

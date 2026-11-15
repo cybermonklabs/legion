@@ -5,10 +5,11 @@ import "testing"
 // A live claim whose registration declared a plugin contract below PodUpdateContract — a worker
 // started from the image of the release before this one, which is what every roll of this
 // deployment leaves behind for a moment — has no ready_for_update op: the op list is a closed enum
-// compiled into its plugin. An update round still asks it, and it answers by ending the turn its
-// task started (answerByTurnEnd). Outside a round, the stale-plugin relaunch is what brings an Oh
-// My Pi worker onto this daemon's plugin; it keeps the pod and the disk and resumes the claim's
-// own session. Once it has registered at this daemon's contract it answers with the op.
+// compiled into its plugin. An update round still asks it, and the round ends at its bound
+// whether or not it answers: the end of a turn is no answer. Outside a round, the stale-plugin
+// relaunch is what brings an Oh My Pi worker onto this daemon's plugin; it keeps the pod and the
+// disk and resumes the claim's own session. Once it has registered at this daemon's contract it
+// answers with the op.
 //
 // It is relaunched when it is not in a turn, and not before. A relaunch ends the process, and the
 // stale-plugin lane asks the worker nothing first, so ending a turn in flight where it stands

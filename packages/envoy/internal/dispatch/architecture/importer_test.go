@@ -24,6 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -1053,7 +1054,7 @@ func TestRecordedFailureIsCapped(t *testing.T) {
 	for n := range members {
 		files[fmt.Sprintf("c%d.md", n)] = []byte(fmt.Sprintf("---\nparent: c%d\n---\n", (n+1)%members))
 	}
-	_, err := Parse(files)
+	_, err := notes.Parse(files)
 	if err == nil || len(err.Error()) <= maxFailureMessage {
 		t.Fatalf("a %d-member cycle produced err=%v; want a problem longer than the cap", members, err)
 	}

@@ -262,7 +262,7 @@ func stoppedAtTheIndexLock(t *testing.T, jj, work string, files int) (time.Durat
 
 	started := time.Now()
 	go func() {
-		out, err := RunCommand(ctx, budget, started, setupEnvironment(), work, nil, []string{jj, "status"})
+		out, err := RunCommand(ctx, nil, budget, started, setupEnvironment(), work, nil, []string{jj, "status"})
 		returned <- outcome{out: out, err: err, elapsed: time.Since(started)}
 	}()
 	var took time.Time

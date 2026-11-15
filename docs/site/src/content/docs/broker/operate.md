@@ -715,19 +715,21 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 
 ## People who manage secrets
 
-The broker writes no secret. A person creates, changes and deletes agent secrets with
+The broker writes no secret. A person or an agent creates, changes and deletes agent secrets with
 `agent-secrets secret` ([manage a secret](/legion/broker/guides/manage-a-secret/)), which calls
-the store itself under that person's own cloud sign-in - AWS, their own IAM Identity Center
-sign-in; GCP, their own Google sign-in: their Application Default Credentials, or their gcloud
-login where those are absent or, for a write, a machine's own identity - so that cloud's own IAM
-is what decides who may change which secret, and with the tags (AWS) or annotations (GCP), who
-gets it. The CLI asks the broker only for its settings (`GET /v1/settings`) and, after each write,
-for a reread. Before anything else it refuses, on AWS, a sign-in in another account than the
-agent-secrets key's (GCP needs no equivalent: every GCP call already names the project
-explicitly, so the API itself refuses one in another project), and it writes under no sign-in but
-a person's own; those checks are the CLI's, and the cloud's IAM is the boundary. A person's access
-needs each form's permissions on the namespace's secrets, and the tables below say what each
-request carries that a policy's conditions can match.
+the store itself under whatever cloud credential its environment gives it - AWS, the sign-in
+`--profile`, `AWS_PROFILE` or the SDK's default chain names; GCP, an access token in
+`CLOUDSDK_AUTH_ACCESS_TOKEN`, else the Application Default Credentials, of any type, else the
+gcloud login - so that cloud's own IAM is what decides who may change which secret, and with the
+tags (AWS) or annotations (GCP), who gets it. The CLI asks the broker only for its settings
+(`GET /v1/settings`) and, after each write, for a reread. Before anything else it refuses, on AWS,
+a sign-in in another account than the agent-secrets key's (GCP needs no equivalent: every GCP call
+already names the project explicitly, so the API itself refuses one in another project). It
+refuses no credential for the kind of identity it is, a person's or a machine's: the cloud's IAM
+is the boundary, so grant the namespace's write permissions to no machine identity that should
+not write the agent secrets. Whoever holds a credential needs each form's permissions on the
+namespace's secrets, and the tables below say what each request carries that a policy's
+conditions can match.
 
 One kind is not a person's to write. A `google-service-account` secret the deployment binds to an
 account (`BROKER_SERVICE_ACCOUNT_SECRETS`) releases a token that acts as that account, and the
@@ -761,17 +763,18 @@ secret; the binding is what bounds which account it mints for.
 | every form | `sts:GetCallerIdentity`, which needs no permission | |
 | `list` | `secretsmanager:ListSecrets` (on `*`: it takes no resource) | |
 | `show` | `secretsmanager:DescribeSecret` | The secret's own tags (`aws:ResourceTag/owner`, `aws:ResourceTag/tier`) |
-| `create` | `secretsmanager:CreateSecret` and `secretsmanager:TagResource`, since it tags the secret as it creates it; `kms:GenerateDataKey` and `kms:Decrypt` on the agent-secrets key | The new secret's name under the namespace (its ARN, and `secretsmanager:Name`); the request tags: `aws:RequestTag/owner` (the person's email, from `--owner me`, or `shared`) and `aws:RequestTag/tier` always; `aws:RequestTag/kind` and `aws:RequestTag/mint-service-account` (the rollback guard, `kind-secret`, written beside every kind) with `--kind`; `aws:RequestTag/github-owners` (GitHub logins separated by spaces) with `--kind github-app`, which needs it; `aws:RequestTag/requesters` (emails and service names separated by spaces) with `--requesters`; `aws:RequestTag/scopes` (OAuth scope names separated by spaces) with `--scopes`; `aws:RequestTag/admin` (`true`) with `--admin`; `aws:RequestTag/shape` (`token` or `document`) with `--shape`; `aws:RequestTag/max-grant` with `--max-grant`; and `aws:RequestTag/default-grant` with `--default-grant` (`aws:TagKeys` is the tags sent, so a policy that limits it must allow `owner`, `tier`, `kind`, `mint-service-account`, `github-owners`, `requesters`, `scopes`, `admin`, `shape`, `max-grant` and `default-grant`); the key, named by its ARN (`secretsmanager:KmsKeyArn`); the `TagResource` check made on the new secret sees the requested tags as its own (`aws:ResourceTag/owner`, `aws:ResourceTag/tier`), so a policy that reserves a shared secret's tags for administrators still needs a statement that admits a shared create (request and resource owner both `shared`, the same tier). A secret created with `--owner shared` and `--tier agent` is served to every agent session without approval, so only a person whose access allows a shared create can create one. |
+| `create` | `secretsmanager:CreateSecret` and `secretsmanager:TagResource`, since it tags the secret as it creates it; `kms:GenerateDataKey` and `kms:Decrypt` on the agent-secrets key | The new secret's name under the namespace (its ARN, and `secretsmanager:Name`); the request tags: `aws:RequestTag/owner` (a person's email, from `--owner me` or `--owner <email>`, or `shared`) and `aws:RequestTag/tier` always; `aws:RequestTag/kind` and `aws:RequestTag/mint-service-account` (the rollback guard, `kind-secret`, written beside every kind) with `--kind`; `aws:RequestTag/github-owners` (GitHub logins separated by spaces) with `--kind github-app`, which needs it; `aws:RequestTag/requesters` (emails and service names separated by spaces) with `--requesters`; `aws:RequestTag/scopes` (OAuth scope names separated by spaces) with `--scopes`; `aws:RequestTag/admin` (`true`) with `--admin`; `aws:RequestTag/shape` (`token` or `document`) with `--shape`; `aws:RequestTag/max-grant` with `--max-grant`; and `aws:RequestTag/default-grant` with `--default-grant` (`aws:TagKeys` is the tags sent, so a policy that limits it must allow `owner`, `tier`, `kind`, `mint-service-account`, `github-owners`, `requesters`, `scopes`, `admin`, `shape`, `max-grant` and `default-grant`); the key, named by its ARN (`secretsmanager:KmsKeyArn`); the `TagResource` check made on the new secret sees the requested tags as its own (`aws:ResourceTag/owner`, `aws:ResourceTag/tier`), so a policy that reserves a shared secret's tags for administrators still needs a statement that admits a shared create (request and resource owner both `shared`, the same tier). A secret created with `--owner shared` and `--tier agent` is served to every agent session without approval, so only a person whose access allows a shared create can create one. |
 | `set` | `secretsmanager:DescribeSecret`, since a set reads the secret's tags for the shape it stores the value under before it writes; `secretsmanager:PutSecretValue`; `kms:GenerateDataKey` on the agent-secrets key | The secret's own tags (`aws:ResourceTag/owner`) |
 | `retag` | `secretsmanager:DescribeSecret`, and `secretsmanager:TagResource`, or `secretsmanager:UntagResource` for `--kind none`, `--github-owners none`, `--requesters none`, `--scopes none`, `--admin none`, `--shape none`, `--max-grant none` or `--default-grant none`. A retag that finds another writer raced it needs both `secretsmanager:TagResource` and `secretsmanager:UntagResource`, whichever it sent, since the restore re-sends the tags it read and removes any the race added | A retag reads the secret's tags, sends one request, then reads them back. A tag request carries owner and tier, the unchanged one re-sent as the secret holds it, plus `kind` and `mint-service-account` (the rollback guard) when the command sets a kind, `github-owners` when it names owners, `requesters` when it names who may ask, `scopes` when it names scopes, `admin` when it marks the secret an administrator's, `shape` when it sets a shape, `max-grant` when it sets one, and `default-grant` when it sets that; a policy that limits `aws:TagKeys` must allow each of them. An untag request's `aws:TagKeys` is the tags `none` removes: `--kind none` removes `kind` and `mint-service-account` together, and `--github-owners none`, `--requesters none`, `--scopes none`, `--admin none`, `--shape none`, `--max-grant none` and `--default-grant none` each remove the tag they name; a retag that removes a tag changes nothing else, so a refused call leaves the secret as it was. A retag that would leave a `github-app` secret without `github-owners`, or an `admin` or `google-service-account` secret without a `max-grant` of an hour or less, is refused before any write. When the read-back finds another writer's change left a `github-app` secret without `github-owners`, the retag restores the tags it read: a tag request re-sending them, as the secret held them, and an untag request for any tag the race added; then it exits 1. The secret's own tags let a policy allow a person to tag their own secret (`aws:ResourceTag/owner` their email) to themselves or `shared`, and reserve a shared secret's tags for administrators |
 | `delete` | `secretsmanager:DeleteSecret` | The secret's own tags; `secretsmanager:RecoveryWindowInDays` is 30, and `secretsmanager:ForceDeleteWithoutRecovery` is never set |
 | `restore` | `secretsmanager:RestoreSecret` | The secret's own tags |
 
-Secrets Manager makes the KMS calls itself, on the person's behalf, so the agent-secrets key's
+Secrets Manager makes the KMS calls itself, on the caller's behalf, so the agent-secrets key's
 policy can allow them only through Secrets Manager (`kms:ViaService` of
-`secretsmanager.<region>.amazonaws.com`, with `kms:CallerAccount`). The person's email in
-`aws:RequestTag/owner` is their Identity Center session name in lowercase, so a condition that
-compares it with a principal tag holding their email matches only where that tag is lowercase too.
+`secretsmanager.<region>.amazonaws.com`, with `kms:CallerAccount`). The email in
+`aws:RequestTag/owner` is lowercase: `--owner me` writes the Identity Center session name in
+lowercase, and `--owner <email>` lowercases the email it names, so a condition that compares it
+with a principal tag holding the caller's email matches only where that tag is lowercase too.
 No form calls `GetSecretValue` or prints a value. `delete` and `restore` are permissions of their
 own: an access that grants a person every other form on their own secret but not these refuses
 those two with `AccessDeniedException`.

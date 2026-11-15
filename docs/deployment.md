@@ -43,10 +43,10 @@ A daemon that holds no App key uses both Apps through `token_command`, as the li
 github_apps:
   implement:
     app_id: "5341240"
-    token_command: "agent-secrets LEGION_IMPLEMENT_APP --reason=legion-daemon-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner \"$LEGION_GITHUB_OWNER\"} ${LEGION_GITHUB_REPOS:+$(printf ' --github-repo %s' $LEGION_GITHUB_REPOS)} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s \"$LEGION_IMPLEMENT_APP\"'"
+    token_command: "agent-secrets LEGION_IMPLEMENT_APP --reason=legion-daemon-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner \"$LEGION_GITHUB_OWNER\"} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s \"$LEGION_IMPLEMENT_APP\"'"
   review:
     app_id: "5341243"
-    token_command: "agent-secrets LEGION_REVIEW_APP --ttl 12h --reason=legion-daemon-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner \"$LEGION_GITHUB_OWNER\"} ${LEGION_GITHUB_REPOS:+$(printf ' --github-repo %s' $LEGION_GITHUB_REPOS)} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s \"$LEGION_REVIEW_APP\"'"
+    token_command: "agent-secrets LEGION_REVIEW_APP --ttl 12h --reason=legion-daemon-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner \"$LEGION_GITHUB_OWNER\"} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s \"$LEGION_REVIEW_APP\"'"
 ```
 
 The live proofs take the review App's tokens that way no longer.
@@ -54,17 +54,14 @@ They resolve that App's key on the driver, from the operator's `LEGION_E2E_REVIE
 
 The daemon runs the command with `sh -c` whenever it needs a lease: at boot, and again once fewer
 than 20 minutes remain on a lease it holds.
-Its environment is the daemon's, less the NATS seeds, with three variables the daemon sets:
+Its environment is the daemon's, less the NATS seeds and every variable whose name starts
+`LEGION_GITHUB_`, with two variables the daemon sets:
 `LEGION_GITHUB_OWNER`, the account whose installation token the daemon wants (empty for every
-installation the command may release, which the boot's read of the App's login asks for),
-`LEGION_GITHUB_REPOS`, the repositories of that account the token may touch, separated by single
-spaces (empty where the daemon asks for no narrowing at all), and
+installation the command may release, which the boot's read of the App's login asks for), and
 `LEGION_GITHUB_READ_ONLY`, `1` for a read-only token and empty otherwise.
-The command maps each onto the flag `agent-secrets` narrows the release by, one `--github-repo`
-per repository.
-Keeping to that narrowing is the command's: the daemon holds GitHub's answer against what it
-asked for only where it mints with a key of its own, so a command that drops
-`LEGION_GITHUB_REPOS` hands every role a token over the whole installation.
+The command maps each onto the flag `agent-secrets` narrows the release by.
+The token reaches every repository the account's installation holds: the account chooses those
+when it installs the App, and the daemon asks for no narrowing by repository.
 Its stdout must be the broker's release,
 `{"installations":{"<account login>":{"installation_id":<id>,"token":"ghs_…","expires_at":"<RFC 3339>"}}}`,
 and the daemon takes the owner's entry, matched without regard to case.
@@ -73,11 +70,12 @@ With no key, the daemon reads each App's bot login from GraphQL's `viewer` under
 tokens, refuses a token whose `GET /apps/<slug>` names an id other than `app_id`, and reads whether
 the App is installed on a repository from that owner's installation's repository list.
 A read-only token holds what the command's read-only release gives: the broker's holds
-`contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`, the same set a
-configured key asks for, and the first three alone where the App's installation has not been
-granted Actions.
-A configured key reads what the installation is granted before each mint and asks for the set
-cut down to it, so the two end at the same place by different routes.
+`contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`, and the first three
+alone where the App's installation has not been granted Actions.
+A configured key asks for that set and `issues: read` besides, so a role reads an issue through a
+key-minted read-only token and not through the broker's.
+A configured key reads what the installation is granted before each mint and asks for its set
+cut down to it.
 The daemon passes the command's stderr through as it runs, with every GitHub token in it redacted,
 so `agent-secrets`' line naming the pending request appears in the daemon's log while the review
 App waits for its grant.
@@ -93,8 +91,8 @@ See [Rotating broker-held App keys](#rotating-broker-held-app-keys) for the rota
 ## What a pane's `gh`, `git` and `jj` are
 
 A tmux pane's `PATH` is the daemon's own with the state directory's `bin/` put first: its `legion`
-launcher and its `gh`, a script that runs `legion gh`. Nothing else of Legion's is on it, so the
-`git` and `jj` a pane runs are whatever the daemon's `PATH` resolves. The daemon resolves at boot a
+launcher, its `gh`, a script that runs `legion gh`, and its `git`, a script that runs `legion git`
+(below). The `jj` a pane runs is the first `jj` on the daemon's `PATH`. The daemon resolves at boot a
 jj of 0.38 or later — the jj bound it refuses to boot below (`resolveTools`, naming
 `LEGION_JJ_PATH`, its own override for the jj it runs) — and the real `gh` (`LEGION_GH_PATH`, or the
 first `gh` on its `PATH`, refused when that is a script), which every pane is told as `LEGION_GH_PATH`. A pane's GitHub identity is
@@ -107,11 +105,11 @@ daemon writes gh's own `hosts.yml` (an App installation token, user `x-access-to
 pane — in two directories, the issue's recorded owner's and the one named for the owner whose
 installation serves that repository now, which are one directory unless a rename moved the issue's
 repository, the role's App token for the issue's repository and no other, and in every
-other directory that App's token narrowed to reading contents, pull requests, Actions and metadata
+other directory that App's token narrowed to reading contents, pull requests, issues, Actions and metadata
 over the repositories that directory names, an `<owner>/<repo>` directory's over the one repository
 its own name resolves to (each token asks for what the App's installation on
-that owner is granted of the set, and a permission it is granted none of is left out, named on
-the daemon's stderr) — names the issue owner's directory as `GH_CONFIG_DIR`
+that owner is granted of the set, and a permission it is granted none of is left out, named in
+a warn record of the daemon's log) — names the issue owner's directory as `GH_CONFIG_DIR`
 and the bundle's root as `LEGION_GH_OWNERS_DIR`, with `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` set
 empty so nothing outranks the files, and rewrites each directory's `hosts.yml` in place every
 minute from its cached leases (the log lines `tmux runtime: github credential written` and `github
@@ -156,16 +154,54 @@ The shared clone's `credential.helper` is `!legion git-credential` with `credent
 on, so a pane's `git` and `jj git push` read the hosts.yml of the repository in the path git asks
 about where the bundle holds its directory, the owner's otherwise, and nothing else.
 
-A pane keeps the machine's own `git` and `jj`, unwrapped.
+The `git` in `bin/` runs `legion git --after <state_dir>/bin` (`packages/daemon/cmd/legion/git.go`).
+The daemon writes it at boot, unless the first `git` on the daemon's own `PATH` is the worker
+image's wrapper, `/opt/legion/bin/git`, which hands a commit to `legion git` itself. In that case
+the daemon writes no `git` and removes one that an earlier boot wrote.
+For a `git commit`, `legion git` adds two trailers: `Omp-Session`, with the session id that the
+`dispatch` command acts as, and `Legion-Role`, with the pane's `LEGION_ROLE`. It adds each line
+only when its value is valid, and only when git alone would accept the commit's message and the
+two lines change nothing else.
+It then runs the next `git` on `PATH` after `bin/`, a host's own git wrapper included, and it runs
+every other command through that `git` unchanged.
+Where a host's git wrapper runs `bin/git` again, as a wrapper that searches `PATH` for the next
+`git` can, that second run goes on past each `git` the first runs ran, a script or a compiled
+program, and adds nothing, so the loop ends. Where the `git` programs on `PATH` only run one
+another and `bin/git`, it stops them with exit 127 and says so.
+The trailers need git 2.32 or later, the first git with `git commit --trailer`.
+`legion git` reads the version of one `git`: the first `git` on `PATH` after `bin/` that is a
+compiled program and not a script. When that `git` is older than 2.32, the commit gets neither
+line.
+A host's git wrapper script can run a different `git`, and `legion git` does not read the version
+of that `git`. When that different `git` is older than 2.32, it refuses the two `--trailer`
+options with its unknown-option error, so the commit fails, although the same commit succeeds
+without `bin/git`.
+Every `git` command of a pane runs through `legion git`, so `git` can die of a signal that its
+caller ignores.
+The Go runtime puts its own handler over an ignore that the caller set, for each signal that it
+handles except SIGHUP and SIGINT.
+It does not handle SIGTSTP, SIGTTIN or SIGTTOU.
+The exec sets each handled signal back to its default action.
+So `git` dies of an ignored SIGTERM, SIGPIPE or SIGQUIT, for example, but an ignored SIGHUP,
+SIGINT, SIGTSTP, SIGTTIN or SIGTTOU stays ignored.
+`legion controller start` writes the same `git` into the `bin/` of its own state directory, by the
+same rule, for the operator's controller.
+The two lines record which session and which role made a commit, and they guard nothing.
+
+A release older than the first one that writes `bin/git` leaves `<state_dir>/bin/git` in place,
+and that file names a `legion` that has no `git` command, so every `git` command in a pane fails.
+So before you start the older daemon, remove `<state_dir>/bin/git`. Before you run an older
+`legion controller start`, remove the `bin/git` of its state directory too.
+
+No leak guard runs in a pane's `git` or `jj`.
 Legion's leak-guard wrappers and its pre-push hook are the worker image's, root-owned under
 `/opt/legion` in a filesystem no role can write ([Worker image](kubernetes.md#worker-image)), and
 a shared box has no such boundary: the daemon, its panes and the operator are one Unix user, so a
 wrapper put first on a pane's `PATH` would be one the pane can replace, and a `core.hooksPath`
 pinned for it one the pane can override.
 A copy of them here would read as a guard and hold nothing.
-What a pane does run the guard in is `legion gh` and the rescue helper, the same binary with the
-same rules compiled in, and each of them resolves the shared public leak check from the pane's
-own `PUBLIC_LEAK_CHECK`.
+What a pane does run the guard in is `legion gh`, the same binary with the same rules compiled
+in, which resolves the shared public leak check from the pane's own `PUBLIC_LEAK_CHECK`.
 A pane can find that check no other way: `PUBLIC_LEAK_CHECK` is not a name a pane reads from the
 daemon's environment, a pane's `XDG_CONFIG_HOME` is under the state directory rather than the
 operator's home, and the check's installer puts its files on no `PATH` a pane has.
@@ -455,14 +491,15 @@ provider_keys:
   whose commits carry their issue key
   (`commit_issue_trailer_repos: [acme/widgets]`).
   A pane working one of them is told that key, and its jj appends a `Dispatch: <KEY>` line to
-  every commit the pane makes in its own workspace, beside the `Omp-Session:` line every pane's
-  commits carry, so a squash landing that branch carries the issue key in its message.
+  every commit the pane makes in its own workspace, after the `Omp-Session:` and `Legion-Role:`
+  lines every pane's commits carry, so a squash landing that branch carries the issue key in its
+  message. A `git commit` gets the session and role lines from the pane's `git`, and no issue line.
   A repository the key names must be one Dispatch maps to the project (Settings → Repositories →
   Projects): the mapping is what the project serves, and this key only selects among it, so a name
   the project does not serve stamps nothing and boot says so once, naming the name and the
   project.
   A pane of a repository the key does not name is told no key and its commits carry the session
-  line alone, as does a commit the pane's shell makes in any other jj repository.
+  and role lines alone, as does a commit the pane's shell makes in any other jj repository.
   The variable the pane is told is the runtime's own, so a spec, a `pane_env` and a
   `runtime.kubernetes.pod.env` are each refused for setting it.
   The loader refuses a name that is no `owner/name`, and a repository the list names twice,
@@ -566,7 +603,7 @@ Rotate the keys in the broker's `github-app` secrets, not on the daemon's machin
    its value is the JSON document `{"app_id": …, "private_key": "<the new PEM>"}`, set with `agent-secrets secret set <NAME> < app-key.json`, never the bare PEM.
    Keep the secret's `github-app` kind and its GitHub owners.
 
-3. Open a registered shell of your own (`agent-secrets register --wait 10 --exec -- sh`; the daemon's session cannot be entered from another terminal), then run each role's `token_command` from [the App section](#the-legion-implementer-and-legion-reviewer-apps) there, with `LEGION_GITHUB_OWNER`, `LEGION_GITHUB_REPOS` and `LEGION_GITHUB_READ_ONLY` unset, and confirm it prints the installations' tokens (`LEGION_REVIEW_APP` waits for a person's approval).
+3. Open a registered shell of your own (`agent-secrets register --wait 10 --exec -- sh`; the daemon's session cannot be entered from another terminal), then run each role's `token_command` from [the App section](#the-legion-implementer-and-legion-reviewer-apps) there, with `LEGION_GITHUB_OWNER` and `LEGION_GITHUB_READ_ONLY` unset, and confirm it prints the installations' tokens (`LEGION_REVIEW_APP` waits for a person's approval).
    Then confirm a fresh worker pane's `gh auth status` succeeds with account `x-access-token`.
    The daemon needs no restart: `token_command` gets fresh tokens as its cached leases near expiry.
 

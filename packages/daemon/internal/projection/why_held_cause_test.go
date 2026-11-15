@@ -43,8 +43,10 @@ type heldFixture struct {
 //
 // The walk is read off a projected state, never from the renderer alone, so the row the pass
 // publishes and the sentence it serves are proved of one state. An entry no fixture walks fails
-// the test: an entry added to the table is given a fixture here. at_work is the one exception,
-// because no issue reads that word (record.HeldAtWork), so no fixture can stand for it.
+// the test: an entry added to the table is given a fixture here. at_work is the one exception:
+// the issues that read it stand past their review and are not held (record.HeldAtWork), one
+// whose tree runs is served no answer (atWorkPastReview), and no fixture here builds the member of
+// a tree that runs nothing that the entry is served to.
 func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.T) {
 	opened := projectedAt.Add(-time.Hour)
 	// The Dispatch link a blocked fixture adds: LEGION-101 waits on LEGION-900, which is open.
@@ -100,16 +102,25 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 		lifecycles: []string{"LEGION-100"},
 		gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": shutGate("LEGION-100")},
 	}
-	// An issue beneath an ancestor the daemon has accepted, which stands in merging and holds a
-	// slot, in a running tree under an open gate.
+	// An issue beneath an ancestor the daemon has accepted, in a running tree under an open
+	// gate, with the rows the admission pass leaves such a tree. The ancestor, LEGION-101, stands
+	// in merging, which holds no slot (record.KeepsSlot), so it holds no row. Dispatch names it a
+	// child of the root, and it is open, so the root's own first phase at admitted waits for it
+	// (the children-first wait): the root gave its row back for that wait and carries the mark of
+	// the release (ReleasedForWaitAt), as LEGION-170 does in held_test.go. No issue of the tree
+	// holds a row.
+	releasedRoot := treeRoot("LEGION-100", "todo", phase.Admitted)
+	releasedRoot.ReleasedForWaitAt = &opened
 	acceptedAncestor := projectionStore{
-		issues: []record.Issue{treeRoot("LEGION-100", "todo", phase.Admitted),
+		issues: []record.Issue{releasedRoot,
 			treeMember("LEGION-101", "LEGION-100", "LEGION-100", "needs_review", phase.Merging),
 			treeMember("LEGION-102", "LEGION-100", "LEGION-101", "todo", phase.Admitted)},
-		slots: []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: projectedAt},
-			{Issue: "LEGION-101", Index: 1, AdmittedAt: projectedAt}},
 		lifecycles: []string{"LEGION-100"},
 		gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
+		mirror: []record.DispatchIssueRow{
+			{Key: "LEGION-101", Project: "LEGION", Status: "needs_review", Parent: "LEGION-100"},
+			{Key: "LEGION-102", Project: "LEGION", Status: "todo", Parent: "LEGION-101"},
+		},
 	}
 	// A member of a tree whose root stands out of the workflow at triage, at phase done and
 	// under a gate a person approved, so no word above unclassified is true of it.
@@ -188,6 +199,30 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 				projected, err := Project(context.Background(), nil, fixture.store, "LEGION", nil, nil, nil, nil, projectedAt)
 				if err != nil {
 					t.Fatalf("Project: %v", err)
+				}
+				// The fixture's premise: its rows are the ones the admission pass leaves. Every
+				// row names an issue whose phase keeps one (record.KeepsSlot) and that waits on no
+				// other issue, since the pass takes the row of such a waiter back
+				// (blockers.waitsOf), and every issue marked released for a wait still waits.
+				issues := make(map[string]record.Issue, len(fixture.store.issues))
+				for _, issue := range fixture.store.issues {
+					issues[issue.Key] = issue
+				}
+				waits := make(map[string]bool, len(projected.Admission.Blocked))
+				for _, blocked := range projected.Admission.Blocked {
+					waits[blocked.Issue] = true
+				}
+				for _, slot := range fixture.store.slots {
+					if holder := issues[slot.Issue]; !record.KeepsSlot(holder) || waits[slot.Issue] {
+						t.Fatalf("the fixture gives %s, in %s, a row the pass does not leave it: its phase keeps a row %t, it waits on another issue %t",
+							slot.Issue, holder.Phase, record.KeepsSlot(holder), waits[slot.Issue])
+					}
+				}
+				for _, issue := range fixture.store.issues {
+					if issue.ReleasedForWaitAt != nil && !waits[issue.Key] {
+						t.Fatalf("the fixture marks %s released for a wait, and it waits on no other issue; blocked = %#v",
+							issue.Key, projected.Admission.Blocked)
+					}
 				}
 				row := heldRow(t, projected, key)
 				if row.Reason != fixture.row.Reason || !slices.Equal(row.HeldBy, fixture.row.HeldBy) {

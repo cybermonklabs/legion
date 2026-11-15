@@ -1,0 +1,9 @@
+kind: Changed
+custom:
+  Issue: pr3717
+body: |-
+  The controller's escalation and wake references (`skills/legion-controller/references/`) no
+  longer describe a push check before a pod replacement, its rescue branches or its failure: the
+  daemon reads nothing of the pod's disk before it replaces the pod, so a role's own push is what
+  keeps its work, and work not pushed before the pod goes, a failed claim's included, goes with the
+  pod and is done again in the new one.

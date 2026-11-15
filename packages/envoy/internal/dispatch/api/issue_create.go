@@ -50,10 +50,14 @@ type createIssueInput struct {
 	// Project and Title are not required of a caller: a create that names an external
 	// owner/repo#n takes the project from that repository's mapping and the title from the
 	// external issue (:92-127, :169-170), and only a create that names neither is refused.
-	Project    string          `json:"project"`
-	Title      string          `json:"title"`
-	Parent     *string         `json:"parent"`
-	BlockedBy  []string        `json:"blocked_by"`
+	Project   string   `json:"project"`
+	Title     string   `json:"title"`
+	Parent    *string  `json:"parent"`
+	BlockedBy []string `json:"blocked_by"`
+	// Advances is the priorities the new issue advances, a list of priority ids. A create
+	// carries the whole list and no revision, and is never refused for it: the issue holds no
+	// relation yet, so there is no read to be answering (refuseAdvancesRevision).
+	Advances   []string        `json:"advances"`
 	External   string          `json:"external"`
 	Force      bool            `json:"force"`
 	Spec       *string         `json:"spec"`
@@ -79,6 +83,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	blockers, err := normalizeIssueBlockers(input.BlockedBy)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	advances, err := normalizeIssueAdvances(input.Advances)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -135,8 +144,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// into another project is refused rather than answered that project's issue, which
 	// respondWithExistingExternalIssue would also record a related-check outcome on. Nothing
 	// is written before this point.
-	if covers, scoped := s.callerProject(r); scoped && covers != input.Project {
-		refuseWriteOutsideProjectScope(w, covers, input.Project)
+	// callerProject is empty for a credential that names none, which is every caller that
+	// exists today; the dependency lock step and writeBlockedBy below read it again, since a
+	// blocked_by target's project is no part of this address.
+	callerProject, scoped := s.callerProject(r)
+	if scoped && callerProject != input.Project {
+		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
 		return
 	}
 	if input.External != "" {
@@ -268,10 +281,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	// A create with blockers can close a wait cycle, and a create with a parent adds a link the
-	// depth cap counts (refuseParentTooDeep): both serialize on the project's dependency lock with
-	// every other blocker and parent write. A new issue with neither takes no dependency lock.
+	// depth cap counts (refuseParentTooDeep): both take the dependency locks before the number
+	// or the rank (lockIssueDependencyWrite). A new issue with neither takes none. Only the
+	// blockers can name another project, since a parent is of the issue's own project.
 	if len(blockers) > 0 || parentKey != "" {
-		if err := lockProjectIssueDependencies(r.Context(), tx, input.Project); err != nil {
+		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, blockers); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -354,9 +368,16 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := writeBlockedBy(r.Context(), tx, key, input.Project, blockers); err != nil {
+	if err := writeBlockedBy(r.Context(), tx, key, input.Project, callerProject, blockers); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// The new issue holds no relation, so every id it names is stated and none is retracted.
+	if len(advances) > 0 {
+		if err := writeIssueAdvances(r.Context(), tx, key, nil, advances, actor, time.Now().UTC()); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if componentsProvided {
 		if err := writeIssueComponents(r.Context(), tx, key, input.Project, *components); err != nil {

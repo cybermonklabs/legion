@@ -14,15 +14,20 @@ import { readUrl, type View, writeUrl } from "./issues-table-model";
  * written to the URL, so a shared link opens the same table. Every setter has the shape
  * TanStack's `on…Change` handlers expect, and every change but the page itself returns to the
  * first page: a filter that leaves fewer rows than the page the reader was on would otherwise
- * show nothing.
+ * show nothing. `stateKey` is the prefix the table's own controls are written under
+ * (`<stateKey>.sort`), so a page drawing two tables gives each one its own; a table with none
+ * keeps the bare `sort`, `q`, `group`, `page` and `size` this page has always published.
  */
-export function useTableView() {
+export function useTableView(stateKey?: string) {
   const [params, setParams] = useSearchParams();
-  const view = useMemo(() => readUrl(params), [params]);
+  const view = useMemo(() => readUrl(params, stateKey), [params, stateKey]);
   const updateView = (update: (current: View) => View) =>
-    setParams((current) => writeUrl(current, update(readUrl(current))), { replace: true });
+    setParams((current) => writeUrl(current, update(readUrl(current, stateKey)), stateKey), {
+      replace: true,
+    });
   return {
     params,
+    setParams,
     view,
     setSorting: (update: SortingState | ((current: SortingState) => SortingState)) =>
       updateView((current) => ({

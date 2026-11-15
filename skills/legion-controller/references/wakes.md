@@ -21,11 +21,9 @@ parent, which come as notices
 
 ## `slot-free on <KEY>` (`{kind: "slot-free"}`)
 
-The daemon deleted the slot row of `<KEY>` and no waiting issue took it: that issue is done, it
-left the workflow, or its tree closed or stopped running. An issue
-takes its slot when the daemon starts it and keeps it
-until it is done or leaves the workflow,
-so none of its own waits sends this wake. A slot is one issue the daemon has started, a root or a
+The daemon deleted the slot row of `<KEY>` and no waiting issue took it: that issue's work is past
+its review, it began waiting on another issue, it is done, it left the workflow, or its tree
+closed or stopped running ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)). A slot is one issue the daemon has started, a root or a
 child, so the issue it names may be either. Name the free slots; take nothing.
 
 ## `todo on <KEY>` (`{kind: "todo"}`)
@@ -51,7 +49,9 @@ because the operator closes or decides a deployment row, and the operator or the
 fixes a live row's session.
 
 `blocked`, when present, is `[{issue, blockedBy}, …]`: every root and child Legion is waiting to
-start, each with what it waits on — the unfinished Dispatch issues of its `blocked_by` links, or,
+start, and every issue the daemon has started that waits on another issue and gave its admission
+slot back for that wait, each with what it waits on — the unfinished Dispatch issues of its
+`blocked_by` links, or,
 for a parent, the open children beneath it that children-first holds it for. `read_state` shows the
 same list under `admission.blocked`, and `legion state` prints it as `blocked on Dispatch links:`.
 A link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own merge) or its
@@ -106,7 +106,7 @@ Name each silent issue in the day's report, with its role and the length of its 
 Either a root that waited for a slot was moved from `todo` to the status `reason` names, by a
 person or by another session, or a root waiting on a person (`awaiting_person`) could not be
 resumed — its `legion` label is gone, or a person or a session outside its tree took its Dispatch
-claim. Either way the daemon took it out of the workflow (`phase: done`) and starts nothing for it;
+claim. Either way the daemon set the root's `phase` to `done` and starts nothing for it;
 `reason` says which. Re-admit nothing, because the move was someone else's; `dispatch read` shows
 who claims it now. Tell the person in your summary: "<KEY> left Legion's workflow: <reason as the
 wake gives it>; `todo` with the `legion` label queues it again". Other admission states:
@@ -123,6 +123,50 @@ person's answer puts it in `admission.waiting` by itself, among the issues whose
 oldest first, and its promotion gives its architect the answer task, taking no further slot, so
 it happens however full the cap is. A lost label or a foreign Dispatch claim sends the separate
 `unslotted` wake.
+
+## `tree-stalled on <KEY>` (`{kind: "tree-stalled", reason}`)
+
+A tree of your project has stopped: `<KEY>` is its root, nothing of the tree has moved for longer
+than `stalled_tree_notice_hours` (six by default), and no agent of it is at work.
+The daemon does not tell you of a tree that waits by design. Two kinds of wait count:
+
+- An issue the daemon started that gave its slot back to wait on work outside its tree never makes
+  the tree read as stopped. That work is a `blocked_by` link to an issue of any project that is not
+  `done`, or an open child the daemon has released into the tree. A wait on an open child the
+  architect filed and has not released is not such a wait, because releasing that child is the
+  tree's own work.
+- A wait on a person, on a Dispatch blocker, for an open child, or for an admission slot the issue
+  needs and does not hold silences the tree only while the project's line can still move: some
+  issue of the project holds a slot and waits by none of those rules, some claim of the project is
+  at work, or an issue of the line that waits on no other issue can start, on a free slot or on
+  none, as a root past its review takes none.
+
+Every other quiet tree with no agent at work is named, and where the project's line cannot move no
+work of the project starts again by itself.
+When the issue a waiting issue waits on is in your project and its own tree has stopped, you are
+told of that tree.
+A wait on a blocker no tree runs (parked, never admitted, or in `icebox`) brings no stall notice:
+the waiting issue stands in `admission.waiting`, its `waitingLine` kind `waiting_on_issue`, under
+`admission.blocked` and in the tick notice's `blocked` list, which the day's report names.
+
+The
+`reason` says the root has stopped and how many hours the tree has been quiet. It then gives one
+line for each issue of the tree the workflow still runs: the phase its record carries, the role
+whose turn that phase is or that no role works it, and the state of that issue's pull request or
+that the record holds none. It ends by telling you to read the tree and decide.
+
+Read `issues.<KEY>.treeMovedAt`, when the daemon last saw anything of the tree move, and
+`issues.<KEY>.quietHours`, how long the tree has been still at that read. Every issue of the tree
+carries the same pair, so read it on any of them. A tree the record shows no movement for reads
+`quietHours` 2562047.788, which means "it has never moved" and is no fault of its own.
+
+Read the tree and decide what it needs. Ask a role what it waits on (`envoy_publish` to its role
+topic). Move an issue back a phase where the phase it stands in has nobody to work it. Park the
+tree only as the rule for a move to `backlog` or `icebox` allows
+([Rules](skill://legion-controller/SKILL.md#rules)), and for a tree that waits on an event outside
+Legion, do as [A tree that waits on an event outside Legion](#a-tree-that-waits-on-an-event-outside-legion) says.
+The daemon starts nothing for this wake, and tells you once for
+each tree: the next movement of that tree is what lets it tell you again.
 
 ## `parked-decision on <KEY>` (`{kind: "parked-decision", decision, root, ref, actor, version?, reason?}`)
 
@@ -181,7 +225,7 @@ releases the hold only on a root standing at `phase: held`: a root whose tree li
 at `admitted` with a new generation of its own.
 
 When an escalated hold's cause is not gone, do not park the tree. The tree stays admitted and
-keeps its slot. Ask the person whether to park it, as
+keeps working ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)). Ask the person whether to park it, as
 [Ask whether to park a tree](#ask-whether-to-park-a-tree) says. Its `<cause>` is what the held
 phase waits on: the payload's `phase` and `role`, and the held issue's `dispatch read`. Its
 `<key>` is `held <ISSUE> in <heldFrom> (<role>) at <failure.at>`: `<ISSUE>` is the held issue's
@@ -209,7 +253,7 @@ The `held` wake's escalated hold, a tree that waits on an event outside Legion, 
 `worker-died` wake send you here when a tree's wait has a cause that stays, with that cause as
 `<cause>`. Each of those sections also gives the cause a fixed key, `<key>`: its text is the same
 at every run, while the text of `<cause>` can change from one run to the next. The tree stays
-admitted and keeps its slot while you ask. A comment or a reply from any session counts as yours
+admitted and keeps working while you ask ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)). A comment or a reply from any session counts as yours
 here, because the controller's session id changes when it restarts or is taken over.
 
 1. Look for the ask you opened for this key already. List the root's comments that name an ask:
@@ -274,8 +318,14 @@ here, because the controller's session id changes when it restarts or is taken o
 ## A tree that waits on an event outside Legion
 
 A running tree can hold a slot while it waits on an event outside Legion: a deploy, another
-project's release, a vendor, or a person outside the company. Do not park it: the tree stays
-admitted and keeps its slot. Ask the person whether to park it, as
+project's release, a vendor, or a person outside the company.
+When the event is a Dispatch issue, of this project or of another, and the waiting issue names it
+in its `blocked_by` links, the waiting issue gives its slot back before its review while that
+issue is not `done` and takes one again by itself, unless it is one of the three roots that keep their
+slot through a wait ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)): it holds no slot for that wait, so there is
+nothing to park or ask.
+An event no `blocked_by` link names is no such wait.
+Do not park such a tree: it stays admitted and keeps working. Ask the person whether to park it, as
 [Ask whether to park a tree](#ask-whether-to-park-a-tree) says, with the event as `<cause>`. Its
 `<key>` is `event: <the event>`. `<the event>` is the one thing the tree waits on, named by a
 fixed reference: an issue's `dispatch://` reference, a pull request's or a release's URL, or the
@@ -307,7 +357,7 @@ architect's last message on the root issue. When you find none, or it is gone, r
 (`set_status` the root to `backlog`, then, in the same turn, to `todo`: a new generation whose
 architect starts with fresh budgets). That pair is a restart and not a park: the daemon re-admits
 only a root whose tree lingers or is done, so the `backlog` write is how a restart reaches `todo`.
-When the cause stays, the tree stays admitted and keeps its slot, because a relaunch would fail
+When the cause stays, the tree stays admitted and keeps working ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)), because a relaunch would fail
 the same way. Ask the person whether to park it, as
 [Ask whether to park a tree](#ask-whether-to-park-a-tree) says, with the architect's cause as
 `<cause>`. Its `<key>` is `architect failed: <cause word> at <failure.at>`, where `<cause word>`
@@ -376,8 +426,9 @@ records you were sent in it.
 
 ## `update-stalled on <KEY>` (`{kind: "update-stalled", reason, update}`)
 
-An update round over the issue's pod, or over one claim's own process, is not finishing. Handle
-it as `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled`
+The update round over the issue's pod has passed its bound, and something still holds it: an
+operator's suspension, a refused pod replacement, no process in the pod, or two pods. Handle it as
+`skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled`
 says.
 
 ## `provider-errors on <KEY>` (`{kind: "provider-errors", role, reason}`)

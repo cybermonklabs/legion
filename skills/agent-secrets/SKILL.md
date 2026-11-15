@@ -199,7 +199,8 @@ prompt, a skill, or the issue you work on. There is no list to browse and nothin
   grants a service-owned secret at once when the session's own service is the secret's owner, and
   denies every other session, with no person asked.
 - The `agent-secrets secret` forms (`list`, `show`, `create`, `set`, `retag`, `delete`, `restore`)
-  act under a person's own cloud sign-in. They belong to the secret's owner, not to an agent.
+  call the broker's store under whatever cloud credential the environment gives them, and the
+  store's IAM decides what each may read and write.
 - Slack's read methods go through `curl` under this client. Every post to Slack stays a `slack_post`
   call, which holds the reply to one thread, to 4,000 characters and to one send.
 
@@ -223,12 +224,17 @@ for two reasons:
   `agent-secrets register --wait 10 --exec -- <the agent's command>`.
 
 On `UNKNOWN_SECRET` you stop, as above. You may tell the secret's owner how to find the cause:
-`agent-secrets secret list` and `agent-secrets secret show NAME`, under their own cloud sign-in
-(`gcloud auth login` against a broker on Google Cloud, their `AWS_PROFILE` against one on AWS).
+`agent-secrets secret list` and `agent-secrets secret show NAME`, under a cloud sign-in that may
+read the store (`gcloud auth login` against a broker on Google Cloud, an `AWS_PROFILE` against one
+on AWS).
 
-An owner who must store a secret does every write under their own cloud sign-in.
+A write runs under whatever credential the environment gives the command, and the store's IAM
+decides whether it lands. On Google Cloud that is `CLOUDSDK_AUTH_ACCESS_TOKEN` when it is set, else
+the Application Default Credentials, else the gcloud login; on AWS, `--profile`, else `AWS_PROFILE`.
 `agent-secrets secret set NAME` replaces the value of a secret that exists. A new one is
-`agent-secrets secret create NAME --owner me|shared --tier agent|human`. Both read the value from
+`agent-secrets secret create NAME --owner me|shared|<email> --tier agent|human`. `--owner me` is
+the email of the person the credential names, and is refused where it names none, as a token
+minted for `cloud-platform` alone does: give `--owner <email>` there. Both read the value from
 standard input or from a prompt with echo off, never from an argument. Type it at the prompt, so it
 reaches no shell history.
 

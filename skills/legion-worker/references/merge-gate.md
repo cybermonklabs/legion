@@ -44,7 +44,8 @@ as the fingerprint decides (*The reviewer*, below, and
   base=$(gh pr view <n> -R <o>/<r> --json baseRefName -q .baseRefName) && \
     base_path=$(jq -rn --arg b "$base" '$b | split("/") | map(@uri) | join("/")') && \
     echo rulesets: && gh api --paginate "repos/<o>/<r>/rules/branches/$base_path" --jq '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context' && \
-    echo protection: && gh api "repos/<o>/<r>/branches/$base_path" --jq '.protection.required_status_checks.checks[].context'
+    echo protection: && gh api "repos/<o>/<r>/branches/$base_path" --jq '.protection.required_status_checks.checks[].context' && \
+    echo code_scanning: && gh api --paginate "repos/<o>/<r>/rules/branches/$base_path" --jq '.[] | select(.type=="code_scanning") | .parameters'
   ```
 
   A read GitHub refuses stops the command there, and is reported to the architect, never guessed.
@@ -52,8 +53,8 @@ as the fingerprint decides (*The reviewer*, below, and
   (`gh api repos/<o>/<r>/commits/<headRefOid>/check-runs --paginate --jq '.check_runs[] | [.name, .status, .conclusion] | @tsv'`):
   every required name present, `completed` and `success` (GitHub counts `neutral` and `skipped`
   as passing for a required check). A required check
-  `queued` or `in_progress`: wait. One `completed` as `cancelled`, or absent: on a `pull_request`
-  run, re-run that run's
+  `queued`, `requested`, `waiting`, `pending` or `in_progress`: wait. One `completed` as `cancelled`, or absent from a run at the
+  head that holds its job: on a `pull_request` run, re-run that run's
   failed and cancelled jobs, once, then wait — never the whole run, which runs again every job that
   succeeded too. A merge-group run is never re-run: the implementer finishes its round instead,
   and the pull request is tested again when it is queued again.
@@ -66,9 +67,48 @@ as the fingerprint decides (*The reviewer*, below, and
   cancelled jobs and the jobs that depend on them, and to nothing that succeeded. Never
   `--job <job-id>` alone: under a routing workflow, re-running only the final job reads the
   cancelled results again and stays red. GitHub refuses a re-run while an attempt of that run is
-  still in progress: wait for it. When no
-  run at the head holds the job, or nothing will run it (a check only a commit status reports, a
-  workflow another repository defines), tell the architect and do not approve.
+  still in progress: wait for it. When no run at the head holds the job, or nothing here will run
+  it (a check run another App made or a workflow posted, a workflow another repository defines, a
+  commit status), tell the architect, do not approve, and wait with a `WAITING` line naming what
+  you wait on, except in the remedy's own case below, which the sort that follows tells apart.
+  A required item with no run at the head at all is sorted below, with the reads that tell its
+  cases apart, and in every case but the remedy's own you tell the architect, do not approve, and
+  wait with a `WAITING` line naming what you wait on: never approve a head while a required item
+  has no run, since GitHub will not merge it and an approval only moves the round to wait on
+  GitHub's merge state, which the daemon reports stuck once a CI settlement has brought it runs
+  on the head and every one of them has concluded, and of which it tells nobody while no run on
+  the head has settled.
+  For such an item, what the base requires is more than its status checks: a `code_scanning` rule, which the read above prints under `code_scanning:`, requires an analysis no status-check list names, which is what held the six heads of dispatch://INFRA-3027 while every required status check was green.
+  Count the head's runs: `gh api repos/<o>/<r>/commits/<headRefOid>/check-runs --jq .total_count`.
+  Read the merge state first where that count is zero (`gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus`), because over the 100 open pull requests of cybermonklabs/legion, read on 2026-11-11, all 11 heads with no check run were heads GitHub computes no merge for.
+  A head GitHub computes no merge for (`DIRTY`) takes a merge of its base forward, which is the implementer's push, and never the remedy below; the daemon itself sends such a head back to implementing, so it never waits in the issue's `mergeWait` once a read has answered for it.
+  A second reading, of 60 open pull requests at 2026-11-12T22:16Z, found 12 heads with no check run: 10 `DIRTY`, and 2 `BLOCKED` fork pull requests whose workflow runs waited for a maintainer's approval (`action_required`, #2051 and #2646).
+  A commit status is no check run, so read the head's commit statuses as well as the check-runs list above, every page: `gh api --paginate 'repos/<o>/<r>/commits/<headRefOid>/status?per_page=100' --jq '.statuses[] | [.context, .state] | @tsv'`.
+  A required item in either list is reported: a check run whose status is `queued`, `requested`, `waiting`, `pending` or `in_progress`, or a commit status whose state is `pending`, is running, not missing, and a check run concluded `failure`, `timed_out`, `cancelled` or `startup_failure`, or a commit status in state `failure` or `error`, is red; read the status list, never that endpoint's top-level `state`, which reads `pending` for a head with no status at all.
+  Only a required item in neither list has no run, and it falls in one of the named cases below.
+  A fork head whose workflow runs wait for a maintainer's approval (`action_required`) takes the maintainer's approval of its runs, which is a person's: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on, and never close and reopen it.
+  A check only a commit status would report, or a workflow another repository defines, is one nothing in this repository will start: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on, and never close and reopen it.
+  A required workflow whose own `paths` or `paths-ignore` filter skips every file of the change gets no run from GitHub at all, and a close and a reopen send the same event.
+  So while the base still carries that filter the reopen does nothing, and the head takes a change to the workflow or to the head: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on.
+  When the base dropped that filter after the pull request opened, the head is the remedy's own case below: that was the cause in dispatch://INFRA-3027, `codeql.yaml`'s `paths-ignore`, where the reopen worked once cybermonklabs/legion#3279 had removed the filter from main.
+  The remedy's own case is a `BLOCKED` head, whatever its count, whose required workflow no event started on a pull request that was already open, and its test has three parts.
+  First, the pull request is not from a fork (`gh pr view <n> --repo <o>/<r> --json isCrossRepository`) and no workflow run of the head stands `action_required` (`gh api --paginate 'repos/<o>/<r>/actions/runs?head_sha=<headRefOid>&per_page=100' --jq '.workflow_runs[] | select(.conclusion == "action_required") | .id'` prints nothing).
+  Second, a workflow file under `.github/workflows/`, as the pull request's merge commit holds it, which is the base's own unless the change edits that file, has a job that reports the required item, and its `on:` runs it for `pull_request` with no `types` list that leaves out `reopened`, no `branches` filter that excludes the base, and no path filter that skips every file of the change.
+  A job reports its `name:`, an expression there evaluated for each matrix entry, or else its key, with ` (<matrix values>)` after it for a matrix job; a job of a reusable workflow reports `<calling job> / <job>` and runs on the calling file's `on:`; and for a `code_scanning` rule the jobs that run the tool's analysis report under their own names, while the tool's own check run (`CodeQL`) is the code-scanning App's, made when an analysis uploads, so a head whose analysis jobs ran with no `CodeQL` run is no head this test matches.
+  Third, neither list holds a run of it.
+  That head takes the remedy, which took one such head from zero check runs to four (dispatch://INFRA-2831).
+  A head that matches none of these cases takes no remedy: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on; the architect takes it to a person, since these cases are the ones measured on this deployment and GitHub has more, so an unknown case costs a person's look rather than a wrong action.
+  So does a head whose required item still has no run once every run the reopen started has concluded (before then the item is missing only because its run has not started): tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on, and never reopen it a second time.
+  Close the pull request, wait a minute, and reopen it at the same head: in cybermonklabs/legion a reopen within about a minute of the close can have its new CI run cancelled by the close's own run, which leaves a failing `ci-ok` (`.github/workflows/tests-closed.yaml`).
+  The reopen delivers the event the workflow needs, and the head and any approval already given stand.
+  It costs two things: the close writes a `pr-closed-unmerged` notice to the architect, and the reopen starts the head's other checks again.
+  So tell the architect before you close, and say why.
+  Do not approve until the required item's run at the head has concluded green: the remedy is how it gets a run, not a reason to approve without one.
+  It is for no other state: not a check that is running, not a check that is red, and not a head GitHub holds for a review the repository requires.
+  A head whose checks are still running is waited for, unapproved: in the two lists above, a check run whose status is `queued`, `requested`, `waiting`, `pending` or `in_progress`, or a commit status whose state is `pending`, is running, not missing.
+  For a GitHub Actions job, GitHub ends that wait itself: a job still queued for a self-hosted runner after 24 hours is cancelled, a running job ends at its own `timeout-minutes` or at GitHub's execution limit, 6 hours on a GitHub-hosted runner and 5 days on a self-hosted one, which fails it, and every workflow run ends at 35 days, its waiting included (GitHub's Actions limits page, read 2026-11-13); the settlement of that conclusion moves the round.
+  A run `waiting` on an environment's approval waits on a person, up to 30 days, and a check run no Actions job owns, another GitHub App's or one a workflow created through the API, or a commit status left `pending`, has no such bound and ends only when whoever made it ends it: one that stands longer than its CI usually takes is the architect's to raise with a person, so tell the architect, naming the run, do not approve, and wait with a `WAITING` line naming what you wait on.
+  The daemon's own count in the issue's `mergeWait`, `checkRuns`, is only the runs a CI settlement applied, so a zero there is no evidence of what GitHub holds: read the two lists on GitHub before you act.
   Approval is refused while any `before_merge` check of the issue's own Verification document has no pass standing at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it, under the check's own line saying whether a pass stands and from which roles. That answer leaves out a pass at another commit, a pass recorded under an older wording of the check and a retracted pass, each of which the command still prints; a fail recorded after a pass leaves that pass standing until someone retracts it.
   A check carrying `ci_check` is CI's: the one result that `dispatch results` derives from the named run decides it (`skill://legion-worker/references/ci-checks.md`). While that run has not concluded, wait for it by its name, and do not approve or request changes for that check. Wait the same way where GitHub could not be read. When no run of that name answers after the head's checks settle, tell the architect as a finding and request no changes for it.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
@@ -97,8 +137,39 @@ as the fingerprint decides (*The reviewer*, below, and
   architect is told the reason when the review's own webhook arrived, so the reviewer submits again at the head it read.
   A `COMMENT` decides nothing. After a
   forward merge, compute the fingerprint (*The unchanged-diff check* in
-  `skill://legion-worker/references/conflicts-and-rewrites.md`) at the
-  `commit_id` of your last submitted review and at the new head. Equal and that review was
+  `skill://legion-worker/references/conflicts-and-rewrites.md`) at the head your last submitted
+  review read and at the new head.
+  That head is the `head` of that review's Legion footer, never the review's `commit_id`, because GitHub can move a review's `commit_id` onto a later head: on cybermonklabs/legion#3516, review 5908357397 was submitted at 01:10:46Z at `e9a820cf`, and on 2026-11-15 its `commit_id` read `6019bdc9`, the forward merge committed at 05:20:10Z whose first parent is `e9a820cf`, so a fingerprint taken at `commit_id` compares the new head with itself.
+  This read lists the reviews your session submitted, each with the head its last Legion footer names, and its pages concatenate oldest first, so its last line is your last submitted review.
+  Put in it the session id your own footers carry: another reviewer session, a side review among them, writes `"phase":"review"` footers on the same pull request too.
+  Where it prints no line, your session submitted no review on this pull request, which leaves no head to take the fingerprint at: a new round.
+
+  ```bash
+  gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submitted_at, footer: ([.body // "" | scan("<!-- legion: (\\{.*?\\}) -->")] | last | .[0]? // "" | try fromjson catch {})} | select(.footer.phase == "review" and .footer.session == "<your session id>") | [.id, .state, .submitted_at, (.footer.head // "no head")] | @tsv'
+  ```
+
+  A footer that names no head, as none of the reviewer's seven footers on #3516 does, leaves the head named by that review's own `review` handoff, which the reviewer records before it submits each review, a confirmation's included.
+  That handoff is the newest version your session wrote at or before that review's `submitted_at`, and not the issue's newest: on #3516 the approval 5908357397, submitted at 01:10:46Z, has INFRA-1520's version 6, written at 01:10:08Z, which names `e9a820cf`, while version 7, written at 08:30:56Z for the confirmation, names `6019bdc9`.
+  `dispatch handoff-read` prints, on its first line, the version, the session that wrote it and when; this reads down from the newest until it finds that handoff, and prints the head it names, `head`, or `headReviewed` in a record an earlier reviewer prompt wrote:
+
+  ```bash
+  issue=<issue> sid=<your session id> at=<that review's submitted_at>; v=
+  while out=$(dispatch handoff-read --issue "$issue" --phase review ${v:+--version "$v"}) || { printf '%s\n' "$out"; false; }; do
+    line=$(printf '%s\n' "$out" | head -n 1); v=${line#*, version }; v=${v%% *}; written=${line##* at }
+    case $line in *" session $sid at "*)
+      if [ "$(jq -rn --arg w "$written" --arg a "$at" '$w[0:19] <= $a[0:19]')" = true ]; then
+        printf '%s\n' "$out" | tail -n +2 | jq -r '.head // .headReviewed // "no head"'; break; fi;;
+    esac
+    [ "$v" -gt 1 ] || { echo "no review handoff of this session at or before $at"; break; }; v=$((v - 1))
+  done
+  ```
+
+  Its last line says which case holds.
+  A full SHA is the head.
+  `no head` (a handoff that names none), `no review handoff of this session at or before …` or `HANDOFF_NOT_FOUND: …` says no handoff names the head for that review, as for a review made outside Legion's workflow: the head is then the one full SHA its body names as the head it reviewed or approved, and a confirmation's is the new head it approves.
+  Any other line, `Dispatch at … is unreachable` or another refusal (in a script `dispatch` prints its refusal on standard output, which the loop prints as it leaves), is Dispatch not answering, never "no handoff": run it again, and while it does not answer there is no head to take the fingerprint at, which is a new round.
+  A body that names more than one such SHA and does not say which it read, or names none, leaves no head to take the fingerprint at, which is a new round.
+  Equal and that review was
   `APPROVE`: submit one more `APPROVE` naming the new head by SHA, its body naming both SHAs
   and the fingerprint — a confirmation, not a round; no thermo pass, no thread pass. Equal and
   that review was `COMMENT` or `REQUEST_CHANGES`: continue that round against the new head;
@@ -200,8 +271,8 @@ it there until that answer comes clean.
   every step below names that `headRefOid`:
   - *The message, before the merge.* GitHub's default squash message,
     `squash_merge_commit_message` of `COMMIT_MESSAGES`, joins every commit message of the pull
-    request, which puts the tree's `Dispatch:` keys and its `Omp-Session:` trailers on the
-    default branch. So the merger writes the message itself,
+    request, which puts the tree's `Dispatch:` keys and its `Omp-Session:` and `Legion-Role:`
+    trailers on the default branch. So the merger writes the message itself,
     `--subject '<pull request title> (#<n>)' --body ''`, on every merge, whatever the repository's
     setting says. It reads that setting first all the same
     (`gh api "repos/<o>/<r>" --jq '[.squash_merge_commit_title, .squash_merge_commit_message] | @tsv'`),

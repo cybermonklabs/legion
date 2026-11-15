@@ -234,15 +234,172 @@ replace() {
   printf '%s\n' "${text/"$old"/"$new"}" > "$file"
 }
 
+check_report_section() {
+  local token tokens outside line stopped=false
+  tokens=$(grep -E '^::stop-commands::[0-9a-f]{32}$' <<<"$out" || true)
+  check "starts import and report sections with two tokens" \
+    "$(is "$(grep -Ecx '^::stop-commands::[0-9a-f]{32}$' <<<"$out" || true)" 2)"
+  while IFS= read -r token; do
+    token=${token#::stop-commands::}
+    check "ends a stopped command section with its token" \
+      "$(is "$(grep -Fxc -- "::$token::" <<<"$out" || true)" 1)"
+  done <<<"$tokens"
+  outside=
+  while IFS= read -r line; do
+    if [[ $line =~ ^::stop-commands::([0-9a-f]{32})$ ]]; then
+      token=${BASH_REMATCH[1]}
+      stopped=true
+      continue
+    fi
+    if [[ $stopped == true ]] && [[ $line == "::$token::" ]]; then
+      stopped=false
+      continue
+    fi
+    if [[ $stopped == false ]] && { [[ $line == report:* ]] || [[ $line =~ (::[a-z-]+|##\[) ]]; }; then
+      outside+="$line"$'\n'
+    fi
+  done <<<"$out"
+  check "keeps report lines and command syntax inside stopped sections" "$(is "$outside" "")"
+}
+
+unescaped_workflow_commands() {
+  local line unsafe= token stopped=false
+  while IFS= read -r line; do
+    if [[ $line =~ ^::stop-commands::([0-9a-f]{32})$ ]]; then
+      token=${BASH_REMATCH[1]}
+      stopped=true
+      continue
+    fi
+    if [[ $stopped == true ]] && [[ $line == "::$token::" ]]; then
+      stopped=false
+      continue
+    fi
+    if [[ $stopped == false ]] &&
+      { [[ $line == *'##['* ]] ||
+        { [[ ! $line =~ ^::(error|warning)\ file=.*:: ]] && [[ $line =~ ::[a-z-]+ ]]; }; }; then
+      unsafe+="$line"$'\n'
+    fi
+  done <<<"$out"
+  printf '%s' "$unsafe"
+}
+
+check_input_parse_error() {
+  local file=$1
+  check "fails" "$(is "$status" 1)"
+  check "emits one escaped input-error annotation" \
+    "$(is "$(grep -Fc -- "::error file=$file::cannot read repository input: " <<<"$out" || true)" 1)"
+  check "does not print a traceback for repository input" "$(is "$(contains "$out" 'Traceback')" false)"
+  check "keeps command syntax outside the input-error annotation" "$(is "$(unescaped_workflow_commands)" "")"
+}
+
+
 echo "case: the filter matches the job's closure, its test's read and its module files"
 root=$(fixture green)
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-check "counts the job's files" "$(contains "$out" '^app: 7 files, 0 uncovered (filter app)$')"
+check "counts the job's files" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
 check "holds the push workflow's paths to its filter" \
-  "$(contains "$out" '^.github/workflows/site.yaml: on.push.paths equals filter site (3 patterns)$')"
+  "$(contains "$out" '^report: .github/workflows/site.yaml: on.push.paths equals filter site (3 patterns)$')"
 check "says what it checked" "$(contains "$out" 'every ci.yaml filter matches every file its job reads (1 gates)')"
+check_report_section
 
+echo "case: an annotation escapes an unsafe file name"
+root=$(fixture annotation-escape)
+unsafe=$'unsafe%\n:,.txt'
+printf 'unsafe\n' > "$root/$unsafe"
+cat >> "$root/.github/scripts/ci_job_reads.py" <<'PY'
+GATES[0] = gate("app", "app", runs=GATES[0].runs, reads=GATES[0].reads + (
+    Read("unsafe%\n:,.txt", "the unsafe path"),
+))
+PY
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+expected='::error file=unsafe%25%0A%3A%2C.txt::app reads unsafe%25%0A:,.txt, which its filter app does not match, so a change to it skips the job: the unsafe path'
+check "emits exactly one annotation with escaped file and message data" \
+  "$(is "$(grep -Fxc -- "$expected" <<<"$out" || true)" 1)"
+
+
+echo "case: an annotation escapes :: and CR in a file name"
+root=$(fixture annotation-property-escape)
+unsafe=$'unsafe::\rname.txt'
+printf 'unsafe\n' > "$root/$unsafe"
+cat >> "$root/.github/scripts/ci_job_reads.py" <<'PY'
+GATES[0] = gate("app", "app", runs=GATES[0].runs, reads=GATES[0].reads + (
+    Read("unsafe::\rname.txt", "the unsafe path"),
+))
+PY
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+expected='::error file=unsafe%3A%3A%0Dname.txt::app reads unsafe::%0Dname.txt, which its filter app does not match, so a change to it skips the job: the unsafe path'
+check "emits one annotation with a fully escaped file property" \
+  "$(is "$(grep -Fxc -- "$expected" <<<"$out" || true)" 1)"
+
+echo "case: malformed ci.yaml cannot inject a legacy warning"
+root=$(fixture malformed-ci-legacy-warning)
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+bad: "##[warning]forged
+YAML
+run_check "$root"
+check_input_parse_error ".github/workflows/ci.yaml"
+
+echo "case: malformed extra workflow cannot inject a command annotation"
+root=$(fixture malformed-workflow-command-warning)
+cat > "$root/.github/workflows/forged.yaml" <<'YAML'
+bad: "::warning file=x::forged
+YAML
+run_check "$root"
+check_input_parse_error ".github/workflows/forged.yaml"
+
+echo "case: importing an unsafe data string cannot inject warning commands"
+root=$(fixture import-warning-command)
+cat >> "$root/.github/scripts/ci_job_reads.py" <<'PY'
+Read("unsafe\q##[warning]forged::warning file=x::forged", "the unsafe path")
+PY
+run_check "$root"
+check "passes after reporting the import warning" "$(is "$status" 0)"
+check "emits one escaped warning annotation" \
+  "$(is "$(grep -Ec '^::warning file=.github/scripts/ci_job_reads.py::line [0-9]+: SyntaxWarning: invalid escape sequence' <<<"$out" || true)" 1)"
+check "keeps commands out of standard output and standard error" "$(is "$(unescaped_workflow_commands)" "")"
+
+
+echo "case: a report path beginning with :: is not a command"
+root=$(fixture report-command-prefix)
+unsafe='::warning file=spoof.txt,line=7::forged.yaml'
+cp "$root/.github/workflows/site.yaml" "$root/$unsafe"
+cat >> "$root/.github/scripts/ci_job_reads.py" <<PY
+PUSH_WORKFLOWS = {"site": "$unsafe"}
+PY
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+expected="report: $unsafe: on.push.paths equals filter site (3 patterns)"
+check "prefixes the report line" "$(is "$(grep -Fxc -- "$expected" <<<"$out" || true)" 1)"
+check_report_section
+
+echo "case: a report path beginning with ##[ is not a command"
+root=$(fixture report-legacy-prefix)
+unsafe='##[warning]forged.yaml'
+cp "$root/.github/workflows/site.yaml" "$root/$unsafe"
+cat >> "$root/.github/scripts/ci_job_reads.py" <<PY
+PUSH_WORKFLOWS = {"site": "$unsafe"}
+PY
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+expected="report: $unsafe: on.push.paths equals filter site (3 patterns)"
+check "prefixes the report line" "$(is "$(grep -Fxc -- "$expected" <<<"$out" || true)" 1)"
+check_report_section
+
+echo "case: a report path with ##[ in the middle is not a command"
+root=$(fixture report-legacy-middle)
+unsafe='plain ##[warning]forged.yaml'
+cp "$root/.github/workflows/site.yaml" "$root/$unsafe"
+cat >> "$root/.github/scripts/ci_job_reads.py" <<PY
+PUSH_WORKFLOWS = {"site": "$unsafe"}
+PY
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+expected="report: $unsafe: on.push.paths equals filter site (3 patterns)"
+check "prefixes the report line" "$(is "$(grep -Fxc -- "$expected" <<<"$out" || true)" 1)"
+check_report_section
 echo "case: an import of a package outside the filter"
 root=$(fixture new-import)
 printf 'package lib\n\nimport _ "example.com/m/other"\n\nfunc Hello() {}\n' > "$root/mod/lib/lib.go"
@@ -250,7 +407,7 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the job, the filter, the file and the go command" \
   "$(contains "$out" '::error file=mod/other/other.go::app reads mod/other/other.go, which its filter app does not match.*go test ./cmd/app ./lib (go list -deps)')"
-check "counts it" "$(contains "$out" '^app: 8 files, 1 uncovered (filter app)$')"
+check "counts it" "$(contains "$out" '^report: app: 8 files, 1 uncovered (filter app)$')"
 
 echo "case: a file a test reads through .. that the filter leaves out"
 root=$(fixture rule-read)
@@ -617,7 +774,7 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the workflow, the pattern and the filter" \
   "$(contains "$out" "::error file=.github/workflows/site.yaml::.github/workflows/site.yaml's on.push.paths lacks mod/go.mod, which .github/workflows/ci.yaml's filter site has")"
-check "reports the lists differ" "$(contains "$out" '^.github/workflows/site.yaml: on.push.paths differs from filter site')"
+check "reports the lists differ" "$(contains "$out" '^report: .github/workflows/site.yaml: on.push.paths differs from filter site')"
 
 echo "case: a push workflow's paths name a pattern its filter lacks"
 root=$(fixture push-paths-extra)
@@ -662,7 +819,7 @@ tag_run "$root" "$entry"
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 check "reports the pairing" \
-  "$(contains "$out" '^image step "Build": 1 files selected by filter image, 0 uncovered by app (filter app)$')"
+  "$(contains "$out" '^report: image step "Build": 1 files selected by filter image, 0 uncovered by app (filter app)$')"
 
 echo "case: a tag step's -run while the untagged job's filter misses a file its own matches"
 root=$(fixture tag-run-uncovered)
@@ -673,7 +830,7 @@ check "fails" "$(is "$status" 1)"
 check "names both jobs, the step and the path" \
   "$(contains "$out" '::error file=.github/workflows/ci.yaml::image step "Build" runs only what its tag adds (-run), so app must run that package.s untagged tests in every run it runs (the app job runs the package untagged), but filter app does not match docs/readme.md, which filter image matches')"
 check "counts it" \
-  "$(contains "$out" '^image step "Build": 1 files selected by filter image, 1 uncovered by app (filter app)$')"
+  "$(contains "$out" '^report: image step "Build": 1 files selected by filter image, 1 uncovered by app (filter app)$')"
 
 echo "case: a TAG_RUNS entry naming a filter the changes job does not have"
 root=$(fixture tag-run-no-filter)
@@ -808,7 +965,7 @@ root=$(fixture called-workflow-green)
 calls_workflow "$root"
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-check "counts the called job's files" "$(contains "$out" '^suite: [0-9][0-9]* files, 0 uncovered (filter suite)$')"
+check "counts the called job's files" "$(contains "$out" '^report: suite: [0-9][0-9]* files, 0 uncovered (filter suite)$')"
 
 echo "case: a package added to the called workflow's go command, outside the job's filter"
 root=$(fixture called-workflow-package)
@@ -942,7 +1099,7 @@ replace "$root/.github/workflows/ci.yaml" "              - 'mod/cmd/app/*'" "   
 replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: GOFLAGS=-tags=probe go test ./cmd/app ./lib"
 run_check "$root"
 check "passes" "$(is "$status" 0)"
-check "counts every Go file of the module" "$(contains "$out" '^app: 8 files, 0 uncovered (filter app)$')"
+check "counts every Go file of the module" "$(contains "$out" '^report: app: 8 files, 0 uncovered (filter app)$')"
 replace "$root/.github/workflows/ci.yaml" "              - 'mod/**'" "              - 'mod/cmd/app/*'"
 run_check "$root"
 check "fails once its filter misses one of them" "$(is "$status" 1)"
@@ -1175,7 +1332,7 @@ root=$(fixture exact-step)
 exact_step_table "$root"
 run_check "$root"
 check "passes while the step holds the pinned script" "$(is "$status" 0)"
-check "counts the runs' closure" "$(contains "$out" '^app: 7 files, 0 uncovered (filter app)$')"
+check "counts the runs' closure" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
 printf 'package lib\n\nimport _ "example.com/m/other"\n\nfunc Hello() {}\n' > "$root/mod/lib/lib.go"
 run_check "$root"
 check "fails once the closure reads a file outside the filter" "$(is "$status" 1)"

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -166,10 +167,13 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		if err != nil {
 			return api.State{}, err
 		}
-		reviewDecision := ""
+		// The reviewer's own row, the single row of its role (the phases table is keyed by issue
+		// and role): the round's decision is read from it, and so is what the round waits on from
+		// GitHub (mergeWaitView). The zero row is an issue whose reviewer has never had one.
+		var reviewer record.PhaseRow
 		for _, item := range phases {
-			if item.Role == claim.RoleReviewer && item.Decision != nil {
-				reviewDecision = item.Decision.State
+			if item.Role == claim.RoleReviewer {
+				reviewer = item
 			}
 			claimView, live := claimViews[item.Claim]
 			if !live {
@@ -216,6 +220,10 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			return api.State{}, err
 		}
 		if pr != nil {
+			reviewDecision := ""
+			if reviewer.Decision != nil {
+				reviewDecision = reviewer.Decision.State
+			}
 			view.PullRequest = &api.PullRequestView{
 				Repo:           pr.Repo,
 				Number:         pr.Number,
@@ -225,6 +233,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				ReviewDecision: reviewDecision,
 			}
 		}
+		view.MergeWait = mergeWaitView(issue, reviewer, pr)
 
 		gates, err := s.GatesOf(ctx, tx, issue.Key)
 		if err != nil {
@@ -396,7 +405,44 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// It is decided here, after the line and `blocked` are both in hand, because three of the four
 	// states are read off them, and from the two judgements this pass still holds apart — the
 	// links and the children-first waits — which the published list has merged by now.
-	whyStates(&projected, own, stranded, rows, facts.ChildWaits)
+	//
+	// It reads the held list above for the sentence of most issues it answers, and it is not
+	// that list: the list says where every issue the daemon holds in the workflow stands and why
+	// nothing of it runs, and this answers why an issue is not working now. The two part at an
+	// issue whose work runs past its review, which the list names and this answers for not at
+	// all; where they part and why is written once, with the arm that parts them
+	// (atWorkPastReview).
+	//
+	// The running roots are the term that says an issue past its review is at work: it holds no
+	// slot since dispatch://INFRA-2560, so no list of the three places it and the answer turns
+	// on whether its tree runs at all (whyStates, atWorkPastReview). They are read from the
+	// records and the facts this pass already holds, so the reading costs no query, and they
+	// are the same roots record.LiveRoots is read from above — live is wider than running,
+	// and a parked root's tree is neither.
+	whyStates(&projected, own, record.RunningRoots(own, facts), stranded, rows, facts.ChildWaits)
+	// Every issue of a live tree carries that tree's quiet time (contract 111): `treeMovedAt`,
+	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
+	// it has been still at the instant the rest of this state is measured at. The pair is the
+	// tree's, so every issue of one tree carries the same two values — a child past its own
+	// review, which holds no slot, and a done child recorded under the tree among them, since
+	// what has stopped is the tree and not the issue a reader happens to hold. A tree that is no
+	// longer live is measured for nobody: its root is in no `admission.trees` entry, there is
+	// nothing of the deployment's left to wait on, and each of its issues carries neither key.
+	//
+	// The measure is read once for the whole state (quietTrees), from the records and the claims
+	// this pass already holds, and a live root is always one of its trees whatever its own
+	// status says (record.QuietTrees), so the lookup below cannot miss.
+	quiet := quietTrees(own, claims, now)
+	for _, issue := range own {
+		if _, live := trees[issue.Tree]; !live {
+			continue
+		}
+		measure := quiet[issue.Tree]
+		movedAt, hours := measure.MovedAt, measure.Quiet.Hours()
+		view := projected.Issues[issue.Key]
+		view.TreeMovedAt, view.QuietHours = &movedAt, &hours
+		projected.Issues[issue.Key] = view
+	}
 	projected.PendingStatusWrites = make([]api.PendingStatusWrite, 0, len(pending))
 	for _, row := range pending {
 		if _, known := knownIssues[row.Issue]; !known {
@@ -421,6 +467,34 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		}
 	}
 	return projected, nil
+}
+
+// quietTrees is the state's measure of its trees: how long each tree the state's own records
+// name has been still and whether any claim of it is at work (record.QuietTrees). It makes no
+// query of its own. own is the project's records, the same list the waiting line and the live
+// roots are judged from; claims are the claims Project was handed, read in its one snapshot
+// with those records, which carry each agent's state and step times already
+// (record.TreeClaimsOf), so the state never reads the claims a second time; now is the instant
+// the rest of the state is measured at.
+//
+// Where it is called from: Project, just past the live roots the measure answers for, which
+// writes each live tree's measure onto every issue of that tree (`treeMovedAt`, `quietHours`).
+// It stays a function of its own rather than a line of Project because its three arguments are
+// the three facts the measure may read and no others: a later reader of the same question takes
+// it from here and cannot quietly read a fourth. The admission pass measures the same thing
+// with the same statement, over the claims its own read gives it (admit's quietTrees), so the
+// two read one statement of the measure and neither keeps a rule of its own.
+//
+// One statement is what they share, and not one answer: the records each is handed differ.
+// This one is given `own`, every record of the project the state holds, a done one included,
+// while the pass is given record.Store.LiveIssues, which leaves out a done record holding no
+// slot. A root is a member of its tree whatever its own status says (record.TreeMember), so a
+// tree whose root is done is measured here from that root and is no tree of the pass's at all,
+// and the two can read one tree from different members. Nothing rests on their agreeing: the
+// state reports what it measures, and the pass tells the controller only of the trees it runs
+// (record.RunningRoots), which are trees whose records the live read holds.
+func quietTrees(own []record.Issue, claims []supervise.Claim, now time.Time) map[string]record.TreeQuiet {
+	return record.QuietTrees(own, record.TreeClaimsOf(claims), now)
 }
 
 // memoryDraw is one tree's memory draw as its root's record holds it (record.Issue.MemoryGroup,
@@ -455,6 +529,43 @@ func checkView(check record.ProductionCheck) *api.CheckView {
 	}
 	if check.LastWakeAt != nil {
 		view.LastWake = &api.CheckWakeView{Kind: check.LastWakeKind, Detail: check.LastWakeDetail, At: *check.LastWakeAt}
+	}
+	return view
+}
+
+// mergeWaitView is what an issue's review round waits on from GitHub (api.MergeWaitView), and nil
+// for a round that waits on nothing there. The rule is classify.RoundWaitsOnMergeState, the one
+// the engine reads to decide whether to read GitHub for this round (workflow's reviewRound), so
+// the view carries the object for exactly the rounds the daemon is reading for; the open pull
+// request is this caller's own test, since that rule makes none (the engine's read has one of its
+// own) and a record of a closed or merged pull request says nothing about a wait.
+//
+// It reads the record alone: the head the round waits on, the state the record holds for it, when
+// that state was last read and when GitHub last moved the pull request, the fence's runs stamped
+// with that head, and the marks the reviewer's decision carries once the architect and the
+// reviewer have been told of a stuck round. It counts the head's own runs through the one
+// predicate the daemon's readers share (classify.HeadRuns, which classify.ChecksConcludedOnHead
+// answers from too), so a run stored before the fence carried its head counts for no head and the
+// number here can never drift from the test the engine makes. The fence holds only runs a CI
+// settlement brought, so a zero is a head whose CI is still running as much as one GitHub
+// reported no check run on. The two times are absent when they are zero: a read time the record
+// does not hold (record.PullRequest.StateReadAt says when that is) and a lifecycle observation
+// that carried no clock are each a fact of their own, which a zero instant on the wire would read
+// as a moment in 1 CE.
+func mergeWaitView(issue record.Issue, reviewer record.PhaseRow, pr *record.PullRequest) *api.MergeWaitView {
+	if pr == nil || pr.State != record.PullRequestOpen || !classify.RoundWaitsOnMergeState(issue, reviewer, pr) {
+		return nil
+	}
+	view := &api.MergeWaitView{WaitsOn: pr.HeadSHA, MergeState: string(pr.MergeState)}
+	if read := pr.StateReadAt; !read.IsZero() {
+		view.StateReadAt = &read
+	}
+	if updated := pr.HeadUpdatedAt; !updated.IsZero() {
+		view.HeadUpdatedAt = &updated
+	}
+	view.CheckRuns = len(classify.HeadRuns(*pr))
+	if reviewer.Decision != nil {
+		view.ToldHead, view.ToldState = reviewer.Decision.ToldStuckHead, string(reviewer.Decision.ToldStuckState)
 	}
 	return view
 }

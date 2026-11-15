@@ -53,7 +53,7 @@ func TestHeartbeatKVWritesPerHeartbeat(t *testing.T) {
 		t.Fatalf("session cache not ready: %v", err)
 	}
 	routes := http.NewServeMux()
-	registerV1Routes(routes, &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}, "test-machine", logging.NewWithWriter("test", io.Discard))
+	registerV1Routes(routes, &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}, "test-machine", logging.NewWithWriter("test", io.Discard))
 
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)

@@ -250,13 +250,14 @@ start_dispatch() {
 }
 
 # The one difference from Stage 3's configuration: admission_cap 5, for the five issues this lane
-# runs at once. Five is this lane's peak under the slot rule of INFRA-1909, where an issue keeps
-# the row the daemon gave it until it is done or leaves the workflow. Its three roots hold a row
-# each from their admission on, the wait on the person at their gates included, and the two
-# children of root 1 run beside them at rerun-a-closed-child: the parked child, rerun into
-# planning, and the closed child, reopened into it. 3 + 2 = 5. A cap of three, which this lane
-# set while a waiting root gave its row back, now leaves the first child waiting at the gates
-# checkpoint, where the three roots alone fill it.
+# runs at once. Five is this lane's peak under the slot rule (root AGENTS.md, "Admission"). Its
+# three roots hold a row each from their admission on, through the wait on the person at their
+# gates and on to their reviews, and the two children of root 1
+# run beside them at rerun-a-closed-child, where all three roots are still short of their
+# reviews: the parked child, rerun into planning, and the closed
+# child, reopened into it. 3 + 2 = 5. A cap of three, which this lane set while a waiting root
+# gave its row back, now leaves the first child waiting at the gates checkpoint, where the three
+# roots alone fill it.
 write_legion_config() {
   cat >"$work/legion.yaml" <<EOF
 project: $project
@@ -440,8 +441,8 @@ gate_send() {
 # its admission, while its architect stays live (await_gate_wait); the proof human approves, and
 # the root resumes on the pass that reads the answer (await_answered_resume), taking no further
 # slot, and only then reaches planning. admission_cap 5 counts the issues the daemon has started,
-# roots and children alike, so the three roots hold three of the five throughout and root 1's two
-# children take the rest.
+# roots and children alike, so the three roots hold three of the five while their work stands
+# short of its review, and root 1's two children take the rest.
 gate_finish() {
   local issue=$1 artifact=${gate_artifacts[$1]}
   until_true 600 "$issue architect to register primary artifact $artifact" sh -c \
@@ -1085,13 +1086,14 @@ send_agent "$root1" merger "Acceptance merge operation: merge pull request #${pr
 await_merger_merge "$repo" "${pr_of[$root1]}"
 # The message the merger's own --subject and --body wrote: the pull request's title and number
 # alone. GitHub's default squash message joins every commit message of the branch, which would put
-# this tree's Dispatch key, its Omp-Session trailers and its skip-checks lines on the base.
+# this tree's Dispatch key, its Omp-Session and Legion-Role trailers and its skip-checks lines on the
+# base.
 merge_message=$(gh api "repos/$repo/commits/$merge_when_clean_commit" --jq .commit.message)
 printf '%s\n' "$merge_message" >"$evidence/merge-commit-message-$root1.txt"
 [ "$merge_message" = "$pr1_title (#${pr_of[$root1]})" ] ||
   soft "$repo#${pr_of[$root1]}'s squash commit message is '$merge_message', want the pull request's title and number alone"
 case "$merge_message" in
-  *"Omp-Session:"* | *"skip-checks: true"* | *"Dispatch: $root1"*)
+  *"Omp-Session:"* | *"Legion-Role:"* | *"skip-checks: true"* | *"Dispatch: $root1"*)
     soft "the squash commit message of $repo#${pr_of[$root1]} carries the branch's own commit messages: $merge_message" ;;
 esac
 # The merge closes the issue, and its architect is told no pr-merged: nothing of $root1's tree is

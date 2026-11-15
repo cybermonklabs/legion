@@ -197,7 +197,7 @@ func TestALateEventOfAMergedPullRequestChangesNothing(t *testing.T) {
 			now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
 			seedLateIssue(t, pool, phase.Merging, "retro", redRecord(record.PullRequestOpen, "head-c", merged.Add(-2*time.Hour)),
 				record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "head-c"})
-			seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
+			seedTreeLifecycle(t, pool, "LEGION-208")
 			apply := githubFacts(t, pool, New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckBound: 48 * time.Hour, ProductionCheckRole: claim.RoleTester, Clock: func() time.Time { return now }}, nil))
 			apply("merged-read", lateMerged)
 			assertPhase(t, pool, phase.Done)

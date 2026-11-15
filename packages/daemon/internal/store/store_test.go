@@ -269,6 +269,111 @@ func TestMigrateAppliesALowerMigrationADatabaseAlreadyPastItLacks(t *testing.T) 
 	}
 }
 
+// A migration whose own text runs a session SET, one without LOCAL, leaves that setting on its
+// connection after the commit. apply resets that connection's session before the connection
+// returns to the pool (releaseMigrationConn). So after migrate returns, no connection that the pool
+// can give carries the migration's statement_timeout or search_path. The test holds as many
+// connections as the pool can give at once (its MaxConns) and reads each one, because the
+// migration ran on one of them. Each one must read what a new connection reads, and the idle bound
+// too, which the reset must keep (idleBound). The control runs the same SETs in a committed
+// transaction on a connection of its own and reads them back. The SETs survive a commit, so the
+// row shows that the reset clears them.
+//
+// Control: remove the discard all and the DeallocateAll from releaseMigrationConn, so the
+// connection returns to the pool as the migration left it, and this fails: a pooled connection
+// reads 77s and the row's schema.
+func TestMigrateResetsTheSessionAMigrationLeftOnItsConnection(t *testing.T) {
+	ctx := context.Background()
+	store := emptyStore(t)
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	if all[0].Version != 1 {
+		t.Fatalf("the first embedded migration is %s, want 0001_init, which creates schema_version", all[0].Name)
+	}
+	// The schema is the row's own, in the database of the test's own that emptyStore drops.
+	schema := "migrate_leak_" + randomSuffix(t)
+	leaked := schema + ", public"
+	set := []migrations.Migration{
+		all[0],
+		{Version: 2, Name: "0002_leak_schema.up.sql", SQL: "create schema " + schema},
+		{Version: 3, Name: "0003_leak.up.sql", SQL: "set statement_timeout = '77s'; set search_path = " + leaked},
+	}
+	if _, err := store.migrate(ctx, set); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// The server compares the idle bound as an interval, as requireSetting does.
+	const read = "select current_setting('statement_timeout'), current_setting('search_path'), " +
+		"current_setting('idle_in_transaction_session_timeout')::interval = $1::text::interval"
+
+	// A new connection, opened as the pool opens its own, reads the values that the reset must
+	// give back on every pooled connection.
+	fresh, err := pgx.ConnectConfig(ctx, store.pool.Config().ConnConfig)
+	if err != nil {
+		t.Fatalf("connect a new connection: %v", err)
+	}
+	t.Cleanup(func() { fresh.Close(context.Background()) })
+	var wantTimeout, wantSearchPath string
+	var freshIdleBound bool
+	if err := fresh.QueryRow(ctx, read, idleBound.String()).Scan(&wantTimeout, &wantSearchPath, &freshIdleBound); err != nil {
+		t.Fatalf("read a new connection's settings: %v", err)
+	}
+	if wantTimeout == "77s" || wantSearchPath == leaked || !freshIdleBound {
+		t.Fatalf("a new connection reads statement_timeout %q, search_path %q and the idle bound %t; want neither of the migration's settings and the idle bound %s, or the row proves nothing", wantTimeout, wantSearchPath, freshIdleBound, idleBound)
+	}
+
+	acquiring, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	maxConns := store.pool.Config().MaxConns
+	held := make([]*pgxpool.Conn, 0, maxConns)
+	t.Cleanup(func() {
+		for _, conn := range held {
+			conn.Release()
+		}
+	})
+	for i := range maxConns {
+		// acquiring carries no mark, so the pool refuses none of these and the release that
+		// acquire returns has nothing to clear.
+		conn, _, err := store.pool.acquire(acquiring)
+		if err != nil {
+			t.Fatalf("acquire pooled connection %d of %d: %v", i+1, maxConns, err)
+		}
+		held = append(held, conn)
+	}
+	for i, conn := range held {
+		var timeout, searchPath string
+		var idle bool
+		if err := conn.QueryRow(ctx, read, idleBound.String()).Scan(&timeout, &searchPath, &idle); err != nil {
+			t.Fatalf("read pooled connection %d's settings: %v", i+1, err)
+		}
+		if timeout != wantTimeout || searchPath != wantSearchPath {
+			t.Errorf("pooled connection %d reads statement_timeout %q and search_path %q; want %q and %q, the values a new connection reads: the migration's session SET reached the pool", i+1, timeout, searchPath, wantTimeout, wantSearchPath)
+		}
+		if !idle {
+			t.Errorf("pooled connection %d does not read the idle bound %s: the reset lost the value that Open gives each connection", i+1, idleBound)
+		}
+	}
+
+	// The control: the same SETs on a connection of the test's own, in a transaction that commits.
+	control, err := pgx.ConnectConfig(ctx, store.pool.Config().ConnConfig)
+	if err != nil {
+		t.Fatalf("control: connect: %v", err)
+	}
+	t.Cleanup(func() { control.Close(context.Background()) })
+	if _, err := control.Exec(ctx, "begin; set statement_timeout = '77s'; set search_path = "+leaked+"; commit"); err != nil {
+		t.Fatalf("control: run the SETs in a committed transaction: %v", err)
+	}
+	var controlTimeout, controlSearchPath string
+	// The control's SETs do not change the idle bound, so its column is not read (nil).
+	if err := control.QueryRow(ctx, read, idleBound.String()).Scan(&controlTimeout, &controlSearchPath, nil); err != nil {
+		t.Fatalf("control: read the settings: %v", err)
+	}
+	if controlTimeout != "77s" || controlSearchPath != leaked {
+		t.Fatalf("control: after a committed SET the connection reads %q and %q; want 77s and %q: the SETs do not survive a commit, so the row proves nothing", controlTimeout, controlSearchPath, leaked)
+	}
+}
+
 func TestBootsCountsTheProjectsBootsFromItsFirst(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -675,14 +780,19 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // build the database shapes a deployment really has: one that recorded the other release's
 // versions and none of this one's. The list is what
 // `jj diff --from main@origin --to @ --name-only packages/daemon/internal/store/migrations`
-// names, so a migration this branch adds later belongs in it; one left out makes the cases below
-// weaker, never red, which is why the comment says where it comes from.
+// named on dispatch://INFRA-714's branch. A migration a later branch adds that rewrites
+// outbox_kind_check with a kind of its own belongs in it too, as dispatch://INFRA-3274's
+// 20261114031356 does: the case of a database main migrated applies a version left out of the
+// list before the list's own rewrites of that check, which do not name the later kind, so the
+// row seeded of that kind fails the upgrade. Any other version left out makes the cases below
+// weaker, never red, which is why the comment says where the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
 	20261029120900: true, 20261029121000: true, 20261029121100: true, 20261029121200: true,
 	20261102003600: true, 20261105081500: true, 20261105183200: true, 20261107095842: true,
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
+	20261113082214: true, 20261113110610: true, 20261114031356: true,
 }
 
 const idleRelease = 20261101222956

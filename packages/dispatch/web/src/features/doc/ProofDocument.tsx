@@ -14,12 +14,13 @@ import { Link, useLocation } from "react-router-dom";
 import {
   api,
   isArtifactNotFound,
+  isDocumentNewerContent,
   isDocumentSchemaError,
   isDocumentUnloadable,
   nearCapRefusalDocument,
 } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
-import type { Artifact, AuthenticatedUser, BlockSchema, Version } from "../../api/types";
+import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { copyText } from "../../lib/clipboard";
 import {
@@ -80,7 +81,7 @@ import { RefusedEditNotice } from "./RefusedEditNotice";
 import { refocusWhenSettled } from "./refocus-when-settled";
 import { FRAGMENT_NAME } from "./roots";
 import { DocumentRuntime } from "./runtime";
-import { loadBlockSchema } from "./schema";
+import { compiledBlockSchema, compiledSchemaCreatable } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
 import type { AskBlockHost } from "./typed-block-drawing";
 import { VersionView } from "./VersionView";
@@ -109,9 +110,10 @@ export const liveTextQueryOptions = (artifactId: string) =>
 
 /** Why an admission left the live editor closed, from its own `/text` read: a tree outside the
  * Proof schema the page offers to repair from markdown, a stored history that cannot load the page
- * offers to rebuild, or any other failure. */
+ * offers to rebuild, content this build of Dispatch cannot read yet, which the page reads again on
+ * its own, or any other failure. */
 interface AdmissionBlock {
-  readonly kind: "repair" | "rebuild" | "failed";
+  readonly kind: "repair" | "rebuild" | "newer" | "failed";
   readonly message: string;
 }
 
@@ -123,14 +125,23 @@ function admissionBlock(error: unknown): AdmissionBlock {
   if (isDocumentUnloadable(error)) {
     return { kind: "rebuild", message };
   }
+  if (isDocumentNewerContent(error)) {
+    return { kind: "newer", message };
+  }
   return { kind: "failed", message };
 }
 
-/** How long a socket the server refused as outside the Proof schema waits before its admission
- * reads `/text` again, by how many refusals in a row precede it. Past the last the editor stops
- * reconnecting: the server refuses a socket exactly when that read answers `409 DOC_SCHEMA`, so a
- * refusal is normally followed by the repair message, never by an endless reconnect. */
+/** How long a socket the server refused as outside the Proof schema, or a read that found content
+ * this build cannot read, waits before its admission reads `/text` again, by how many refusals in
+ * a row precede it. Past the last a refused socket stops reconnecting: the server refuses a socket
+ * exactly when that read answers `409 DOC_SCHEMA`, so a refusal is normally followed by the repair
+ * message, never by an endless reconnect. */
 const SCHEMA_REFUSAL_DELAYS_MS = [0, 1_000, 2_000, 4_000, 8_000] as const;
+
+/** How long a read that found content this build cannot read waits past the last of
+ * `SCHEMA_REFUSAL_DELAYS_MS`: a release that rolls out a build reading it takes minutes, and the
+ * page says it reloads in a minute. */
+const NEWER_CONTENT_RELOAD_MS = 60_000;
 
 /** What the live editor lets the reader do. A closed issue's document takes comments by quote (the
  * bar's Comment alone): the server admits every socket on a closed issue read-only, so its
@@ -311,11 +322,7 @@ export function ProofDocument({
   /** Why the closed document's last Comment opened no composer, for the reader. */
   const [quoteRefusal, setQuoteRefusal] = useState<string | undefined>(undefined);
   const [openDecisionIndex, setOpenDecisionIndex] = useState(0);
-  const {
-    blockSchema: runtimeBlockSchema,
-    createEditor,
-    loadTransport,
-  } = useContext(DocumentRuntime);
+  const { createEditor, loadTransport } = useContext(DocumentRuntime);
   const margin = useMargin();
   const { blockPlacements } = margin;
   // The editor effect and its callbacks reach the margin's latest functions through this ref
@@ -333,11 +340,6 @@ export function ProofDocument({
   // block of this document changes it in place, firing no event of the browser's own.
   const { hash: routedHash } = useLocation();
   const documentRef = buildDispatchReference(documentRoute(artifact));
-  const blockSchemaQuery = useQuery({
-    queryFn: loadBlockSchema,
-    queryKey: ["block-schema"],
-    staleTime: Number.POSITIVE_INFINITY,
-  });
   const artifactQuery = useQuery({
     queryKey: ["artifact", artifact.id],
     queryFn: () => api.getArtifact(artifact.id),
@@ -402,6 +404,14 @@ export function ProofDocument({
   }, [artifact.id, page, writes]);
   const repairError = page && admission?.kind === "repair" ? admission : undefined;
   const rebuildError = page && admission?.kind === "rebuild" ? admission : undefined;
+  // Content this build cannot read yet. The page says so and reads again; a reading column says
+  // nothing of it, since it has already reported the block upward and its host shows the
+  // question's own card instead.
+  const newerContent = page && admission?.kind === "newer";
+  // An admission the page explains in place of the editor: the repair and rebuild offers, and the
+  // newer-content note.
+  const admissionHidesEditor =
+    repairError !== undefined || rebuildError !== undefined || newerContent;
   const shownLoadError = admission?.kind === "failed" ? admission.message : loadError;
   const blockReferencesQuery = useQuery({
     ...artifactBlocksQuery(artifact.id),
@@ -487,7 +497,6 @@ export function ProofDocument({
     editorRef.current?.setBlockMarks(specMarks.marks);
   }, [specMarks.marks]);
   isClosedRef.current = isClosed;
-  const blockSchema: BlockSchema | undefined = runtimeBlockSchema ?? blockSchemaQuery.data;
   userRef.current = user;
 
   const requestNamedVersion = useCallback(() => {
@@ -683,9 +692,6 @@ export function ProofDocument({
   }, [onToolbarChange, page]);
 
   useEffect(() => {
-    if (blockSchema === undefined) {
-      return;
-    }
     const parent = root.current;
     if (parent === null) {
       return;
@@ -697,6 +703,8 @@ export function ProofDocument({
     let disposeEditorBindings: (() => void) | undefined;
     // Sockets the server refused in a row, since this editor last synced or a repair re-admitted it.
     let refusals = 0;
+    // Admission reads in a row that found content this build cannot read yet.
+    let newerReads = 0;
     let refusalTimer: number | undefined;
     // Counts the admissions begun and the suspensions for a rebuild: an admission whose read
     // answers after a later one began, or after a suspension, opens nothing.
@@ -838,7 +846,8 @@ export function ProofDocument({
     // later refetch that fails - an outage during an artifact event's invalidation, say - leaves a
     // connected editor and its unsent edits alone.
     // A blocked admission waits for the next successful read of the text, which a repair upload
-    // or a rebuild brings about, and is admitted again (`readmitRef`).
+    // or a rebuild brings about, and is admitted again (`readmitRef`). An admission that found
+    // content this build cannot read yet reads the text again on its own timer instead.
     const admit = () => {
       admissions += 1;
       const attempt = admissions;
@@ -868,6 +877,21 @@ export function ProofDocument({
           if (!mounted || attempt !== admissions) {
             return;
           }
+          if (block?.kind === "newer") {
+            // Nothing on this page repairs it, and a replacement would delete the content. A
+            // later read can reach a build that reads it, so the admission reads the text again
+            // on the refusal schedule, and then once a minute.
+            setConnection("connecting");
+            // Each read makes a new block; the one before stays while it says the same, so a
+            // retry that finds the same content renders nothing again.
+            setAdmission((previous) =>
+              previous?.kind === block.kind && previous.message === block.message ? previous : block
+            );
+            const delay = SCHEMA_REFUSAL_DELAYS_MS[newerReads] ?? NEWER_CONTENT_RELOAD_MS;
+            newerReads += 1;
+            refusalTimer = window.setTimeout(admit, delay);
+            return;
+          }
           if (block !== undefined) {
             setConnection("failed");
             setAdmission(block);
@@ -880,8 +904,11 @@ export function ProofDocument({
             };
             return;
           }
+          newerReads = 0;
+          setAdmission(undefined);
           const connection = connect(artifact.id, {
-            schemaVersion: blockSchema.version,
+            schemaCreatable: compiledSchemaCreatable,
+            schemaVersion: compiledBlockSchema.version,
             onAdmission: (readOnly) => {
               schemaReadOnlyRef.current = readOnly;
               setSchemaReadOnly(readOnly);
@@ -1009,7 +1036,7 @@ export function ProofDocument({
                   color: colorForLogin(userRef.current.login),
                   name: userRef.current.login,
                 },
-                blockSchema,
+                blockSchema: compiledBlockSchema,
                 watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
                 // The block the pane's thread hangs under: the node view it names publishes the
                 // host slot this page portals the thread into. A document's own page anchors no
@@ -1076,7 +1103,6 @@ export function ProofDocument({
   }, [
     anchoredBlockId,
     artifact.id,
-    blockSchema,
     createEditor,
     documentRef,
     focusInEditor,
@@ -1181,6 +1207,12 @@ export function ProofDocument({
         <LandedWithoutAnswer what={`The version “${nameVersion.unanswered.variables}”`} />
       )}
       {isClosed ? <p>This issue is closed. Its document is read-only.</p> : null}
+      {newerContent ? (
+        <p role="status">
+          This document holds content this version of Dispatch cannot show yet. It reloads in a
+          minute.
+        </p>
+      ) : null}
       {refusedEdit === undefined ? null : (
         <RefusedEditNotice
           notice={refusedEditNotice(refusedEdit)}
@@ -1256,17 +1288,13 @@ export function ProofDocument({
           ) : null}
         </div>
       )}
-      {/* The server admits a socket read-only for a closed issue as it does for a schema version
-          it does not serve, so the admission alone cannot say whether a reload would help. The
-          close state the page holds now decides: while the issue is open, a reload opens a new
-          socket the server admits on the issue as it stands, so a reload makes the document
-          editable again. A closed issue shows its own line above instead, and a socket that is
-          not connected shows nothing: its reconnect's admission decides. A block schema that
-          could not load leaves the page no editor to bind at all, and only a reload fixes that
-          too. */}
-      {blockSchemaQuery.isError || (schemaReadOnly && !isClosed && connection === "connected") ? (
-        <p>Reload to edit.</p>
-      ) : null}
+      {/* The server admits a socket read-only for a closed issue as it does for a page the
+          fleet's schema numbers do not admit, so the admission alone cannot say whether a reload
+          would help. The close state the page holds now decides: while the issue is open, a
+          reload opens a new socket the server admits on the issue as it stands, so a reload makes
+          the document editable again. A closed issue shows its own line above instead, and a
+          socket that is not connected shows nothing: its reconnect's admission decides. */}
+      {schemaReadOnly && !isClosed && connection === "connected" ? <p>Reload to edit.</p> : null}
       {/* The Open-decisions navigator walks the page's own document; a pane leaves it to the
           list beside it. */}
       {page && version === undefined && openDecision !== undefined ? (
@@ -1318,9 +1346,7 @@ export function ProofDocument({
           {readLineText(specMarks.changed)}
         </p>
       )}
-      {shownLoadError === undefined ||
-      repairError !== undefined ||
-      rebuildError !== undefined ? null : (
+      {shownLoadError === undefined || admissionHidesEditor ? null : (
         <p className={dangerText} role="alert">
           This document could not load: {shownLoadError}
         </p>
@@ -1331,7 +1357,7 @@ export function ProofDocument({
         aria-label="Document"
         className="dispatch-doc relative"
         data-read-only={isClosed || schemaReadOnly}
-        hidden={version !== undefined || repairError !== undefined || rebuildError !== undefined}
+        hidden={version !== undefined || admissionHidesEditor}
         onClick={followReference}
       >
         <div ref={root} />
@@ -1418,7 +1444,6 @@ export function ProofDocument({
           <VersionView
             artifactId={artifact.id}
             asks={blockAsks}
-            blockSchema={blockSchema}
             createdAt={versions.find((item) => item.number === version)?.created_at}
             highlight={highlight}
             owner={owner.kind === "document" ? owner : undefined}

@@ -39,7 +39,7 @@ name: CI
 # nothing about it, and a gate in
 # .github/scripts/ci_job_reads.py. An output an event must force is written in `changes`' outputs
 # rather than left to its filter, as every output's workflow_dispatch case is, and so is one an
-# event must hold back, as the eight slow suites' pull-request case is (the comment on them
+# event must hold back, as the nine slow suites' pull-request case is (the comment on them
 # below). The ci-filters job's .github/scripts/check-ci-filters.sh holds the filter to that gate,
 # CI_OK_SELECTED_BY to the `if:`s, the report step to every job, the ci-ok job's `needs:` to
 # every job of the file but the exempt ones, and the re-run term to every job but `ci-ok` and
@@ -47,8 +47,10 @@ name: CI
 # passing required check, so each refuses such an attempt in a step of its own instead.
 # docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
 #
-# Caches: no job of this workflow saves an Actions cache entry. setup-go caches nothing here
-# (`cache: false` on every step). The jobs that cache Go restore one of six families with
+# Caches: no step of this workflow saves an Actions cache entry itself; two actions its jobs call
+# can, and only in a dispatched run (setup-bun and architecture-check, at this paragraph's end).
+# setup-go caches nothing here (`cache: false` on every step, the architecture-check action's
+# included). The jobs that cache Go restore, in steps of their own, one of six families with
 # actions/cache/restore: go-daemon (typecheck, test and pi-legion), go-docs (docs, and the build job
 # of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 # build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
@@ -65,7 +67,9 @@ name: CI
 # go.sum files left a whole entry, up to a gigabyte, per change for seven days. The fallback by
 # prefix, when the exact key misses, now applies on every run, a dispatched one on main
 # included: it was held off main so that the entry a run saved after a Go bump held nothing the
-# older Go built, and no run here saves any more. There is no browser cache beside the Go
+# older Go built, and no step of this workflow saves a family any more (the architecture-check
+# action below falls back only to an entry of its own Go version, so an entry it saves holds
+# nothing an older Go built). There is no browser cache beside the Go
 # families any more: dispatch-browser.yaml's shard and alone jobs run in the image this
 # repository builds, which carries Chromium, WebKit and Firefox at /ms-playwright, so a
 # ~/.cache/ms-playwright restore would carry nothing they do not already have, and
@@ -74,7 +78,18 @@ name: CI
 # (.github/actions/setup-bun), which of this workflow's events is the dispatched run alone, and
 # not in the tool-fallback and tool-fallback-arm jobs at all: that action reads the id of the
 # job that called it and passes no-cache for those two on every ref, so a restored Bun cannot
-# stand in for the install each of their cases is a reading of.
+# stand in for the install each of their cases is a reading of. A seventh family,
+# architecture-check-<os>-<arch>-go<version>-<hash>, is the composite action
+# .github/actions/architecture-check's own, which envoy-go-checks runs: the action restores it
+# and saves it itself, from $RUNNER_TEMP/architecture-check and not from the Go caches above,
+# keyed on the Go version its own setup-go installed and on the SHA-256 of packages/envoy/go.sum
+# (a miss restores the newest entry of that Go version), and ci-caches.yaml's architecture-check
+# job fills it on main. The action saves only in a push, schedule or workflow_dispatch run, so
+# within this workflow, which runs on no push and no schedule, only a dispatched run can save it
+# (the bypass check dispatches one at main), only on a miss of the exact key, and into the scope
+# of the ref it was dispatched on. check-ci-filters.sh's cache-family rule reads a workflow's own
+# actions/cache steps and not a composite action's, so this paragraph is the one record of the
+# action's restore and save.
 
 # No `paths:`: every change starts this workflow, and `changes` selects what runs. No `branches:`
 # on pull_request: a pull request on any base is tested. No `edited`: a title or body edit starts
@@ -161,6 +176,7 @@ env:
       "envoy-go-docs-finalizers": "envoy_go_race_docs",
       "dispatch-memory": "dispatch_memory",
       "dispatch-multiprocess": "dispatch_multiprocess",
+      "dispatch-two-builds": "dispatch_two_builds",
       "listener-server-change": "listener_server_change",
       "broker-multiprocess": "broker_multiprocess",
       "airlock-lean": "airlock_lean",
@@ -265,7 +281,7 @@ jobs:
       # says what each event gets.
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser }}
       claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
-      # The eight slow suites, whose runner time dwarfs every other job's. The merge queue runs
+      # The nine slow suites, whose runner time dwarfs every other job's. The merge queue runs
       # them on the tree the change lands as, and that is where their result normally comes from;
       # a pull request runs them only when it carries the label `full-ci`. Each is false on a
       # pull-request run without that label, so the skip is one `changes` chose: ci-ok reads it as
@@ -280,12 +296,16 @@ jobs:
       # term, only the dispatched one above.
       envoy_go_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_go_checks }}
       envoy_infra_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_infra_go }}
-      # Six slow suites, gated as the comment above `envoy_go` says.
+      # Seven slow suites, gated as the comment above `envoy_go` says.
       envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
       envoy_go_race_docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_docs || 'false' }}
       dispatch_memory: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_memory || 'false' }}
       dispatch_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_multiprocess || 'false' }}
+      # The two-build job builds the previous release and runs both halves against it (the Go
+      # suite and the cross-build browser spec), which is the longest run of them all, so it is
+      # gated like the other slow suites.
+      dispatch_two_builds: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_two_builds || 'false' }}
       listener_server_change: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.listener_server_change }}
       broker_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.broker_multiprocess }}
       # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
@@ -486,6 +506,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/agentstream/*'
               - 'packages/envoy/internal/dispatch/api/*'
               - 'packages/envoy/internal/dispatch/architecture/*'
+              - 'packages/envoy/internal/dispatch/architecture/notes/*'
               - 'packages/envoy/internal/dispatch/asks/*'
               - 'packages/envoy/internal/dispatch/auth/*'
               - 'packages/envoy/internal/dispatch/bytelru/*'
@@ -509,6 +530,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
+              - 'packages/envoy/internal/dispatch/prioritystore/*'
               - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/rank/*'
               - 'packages/envoy/internal/dispatch/redeliver/*'
@@ -592,7 +614,6 @@ jobs:
               - 'packages/daemon/internal/record/*'
               - 'packages/daemon/internal/registry/*'
               - 'packages/daemon/internal/repocache/*'
-              - 'packages/daemon/internal/rescue/*'
               - 'packages/daemon/internal/runtime/*'
               - 'packages/daemon/internal/runtime/sandbox/*'
               - 'packages/daemon/internal/runtime/shellprefix/*'
@@ -715,11 +736,8 @@ jobs:
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/infra/gcp/testdata/dispatch-pod.golden'
-            # Oh My Pi, which .github/actions/install-omp installs at the version .omp-pin names,
-            # through the mise .github/actions/install-jj leaves.
-            omp_install: &omp_install
-              - '.omp-pin'
-              - '.github/actions/install-omp/**'
+            # The jj .github/actions/install-jj installs, and the mise it installs that jj with.
+            jj_install: &jj_install
               - '.github/actions/install-jj/**'
               # install-jj's second step reads `ARG JJ_TOOL` from here, the tool spec mise
               # installs.
@@ -729,6 +747,12 @@ jobs:
               # row's digest, or fetches that row's second source when mise cannot.
               - '.github/ci-tools.yaml'
               - '.github/scripts/ci-tools.sh'
+            # Oh My Pi, which .github/actions/install-omp installs at the version .omp-pin names,
+            # through the mise .github/actions/install-jj leaves.
+            omp_install: &omp_install
+              - '.omp-pin'
+              - '.github/actions/install-omp/**'
+              - *jj_install
             # What the test job's two Go steps read together — the plain step, which tests every
             # package of packages/daemon but the three concurrent ones, and the race step, which
             # tests those three — so the filter still covers the whole module's closure. The
@@ -855,6 +879,10 @@ jobs:
               - 'scripts/third-party-notices.test.ts'
               - 'scripts/semantic-line-breaks.ts'
               - 'scripts/semantic-line-breaks.test.ts'
+              - 'scripts/priorities-seed.ts'
+              - 'scripts/priorities-seed.test.ts'
+              - 'scripts/priorities-seed-check.sh'
+              - 'scripts/priorities-seed-check.test.sh'
               - 'scripts/sessions-import-pods.sh'
               - 'scripts/sessions-import-pods.test.sh'
               # `bun test scripts/e2e/lib` scans scripts/e2e/*.sh (lib/script-functions.test.ts:101-104),
@@ -1067,12 +1095,15 @@ jobs:
               # reads the Go package's own testdata by relative path, that file itself and never a
               # copy, so a field added there must start this job.
               - 'packages/envoy/internal/brokerclient/testdata/wire.json'
-            # The private workspace package both Oh My Pi plugins import.
+            # The private workspace package both Oh My Pi plugins import, and the jj
+            # .github/actions/install-jj installs for the one case of src/jj-attribution.test.ts
+            # that runs the real jj.
             pi_shared:
               - '.github/workflows/ci.yaml'
               - *bun_install
               - *biome
               - 'packages/pi-shared/**'
+              - *jj_install
               - 'packages/envoy-client/src/**'
               # And @legion/broker-client with it: src/broker-credential.ts:21-22 imports it, so
               # this job compiles its sources too (ci_job_reads.py's envoy_client_dep).
@@ -1233,6 +1264,12 @@ jobs:
               - *go_workspace
               - *dispatch_server
               - 'scripts/e2e/lib/held-port.py'
+              # e2e/harness-postgres.ts sizes each stack's Postgres from
+              # `go run ./internal/dispatch/store/cmd/connections`, which dispatch-browser.yaml's
+              # binaries job runs for the shard and alone jobs and its visual job runs for itself;
+              # *dispatch_server carries the store.
+              - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
+              - 'packages/envoy/internal/dispatch/testlimits/*'
               # The SPA build writes dist/THIRD_PARTY_NOTICES.txt (web/vite.config.ts:11).
               - 'scripts/third-party-notices.ts'
               # The workflow that holds every browser step, which this job reads as its own
@@ -1409,6 +1446,13 @@ jobs:
               # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document,
               # so an edit of it alone must start this job.
               - 'packages/contracts/schemas/dispatch-openapi.json'
+              # The two documents outside this module that
+              # internal/dispatch/store/counts_in_documents_test.go reads (its RULES entry in
+              # .github/scripts/ci_job_reads.py), which every job compiling that file inherits:
+              # it holds the connection counts they state to store.LeasePoolSize and
+              # store.ConnectionsPerProcess, so an edit of either alone must start this job.
+              - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
+              - '.dispatch/architecture/dispatch-store.md'
               # Fixtures its Go tests read: cmd/listener/api_test.go:191,
               # internal/contracts/dedupe_test.go:14, golden_test.go:72,
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011,
@@ -1429,11 +1473,19 @@ jobs:
               - '.github/actions/pull-test-images/**'
               # Its natslive step takes that tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
+              - '.github/scripts/pg-connection-ceiling.sh'
+              # internal/dispatch/testlimits/testlimits_test.go holds this script's
+              # max_connections to testlimits.ServerConnections.
+              - 'packages/daemon/docker/legion-testpg'
             # envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
-            # checks, the seven shell-script tests, and the build and pack of the envoy commands.
-            # gofmt -l . walks every .go file under packages/envoy, those tests and the scripts
-            # they drive live there, and `go build ./cmd/dispatch ./cmd/listener` compiles
-            # packages of that module alone.
+            # checks, the seven shell-script tests, and the build and pack of the envoy commands,
+            # with the tests of internal/dispatch/architecture/notes and cmd/architecture-check
+            # (envoy-go's unit step tests them again in the merge queue) and the architecture-note
+            # check over this repository's own notes through the composite action
+            # .github/actions/architecture-check. gofmt -l . walks every .go file under
+            # packages/envoy, those tests and the scripts they drive live there, and `go build
+            # ./cmd/dispatch ./cmd/listener` compiles packages of that module alone, as the
+            # action's build of cmd/architecture-check does.
             envoy_go_checks:
               - '.github/workflows/ci.yaml'
               - *bun_install
@@ -1450,6 +1502,12 @@ jobs:
               # Its pack step writes each archive's notices, for each target the list names.
               - 'scripts/go-third-party-notices.sh'
               - '.github/go-release-targets.json'
+              # The step "Check this repository's architecture notes with the composite action"
+              # runs the action from this checkout: its action.yml and the check.sh beside it.
+              - '.github/actions/architecture-check/action.yml'
+              - '.github/actions/architecture-check/check.sh'
+              # That same step judges the notes at the action's default path.
+              - '.dispatch/architecture/**'
             # The envoy-infra module's own workspace (packages/envoy/infra/go.work binds it and
             # packages/envoy), the envoy packages its tests compile, and the Dispatch server and
             # listener infra/core/permissions_live_test.go:298-299 builds in the root workspace.
@@ -1493,6 +1551,14 @@ jobs:
               - '.github/scripts/go-tagged-tests.sh'
               # The fixture cmd/listener/api_test.go:191,436,480 reads.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
+              # The two documents outside this module that
+              # internal/dispatch/store/counts_in_documents_test.go reads, this being the job
+              # that runs internal/dispatch/store: it holds the connection counts those
+              # documents state to store.LeasePoolSize and store.ConnectionsPerProcess, so an
+              # edit of either alone must start this job.
+              - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
+              - '.dispatch/architecture/dispatch-store.md'
+              - '.github/scripts/pg-connection-ceiling.sh'
             # The API race job. internal/dispatch/api's lock_level_test.go:120-133 walks every
             # non-test .go file under packages/envoy (event_insert_guard_test.go:32 and
             # review_write_guard_test.go:44 use the same walk), so this filter keeps the wide root
@@ -1507,6 +1573,7 @@ jobs:
               - 'packages/contracts/schemas/dispatch-openapi.json'
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011.
               - 'packages/contracts/fixtures/live/**'
+              - '.github/scripts/pg-connection-ceiling.sh'
             # The document service's own race job. Not packages/envoy/**, as envoy_go_race has:
             # a race job of twenty minutes or more must not run on every change under that tree
             # (INFRA-490). This is the closure of ./internal/dispatch/docs/ (`go list -deps -test
@@ -1516,6 +1583,9 @@ jobs:
               - '.github/workflows/ci.yaml'
               # The race step runs the package under this sampler (the step's comment says why).
               - '.github/scripts/race_memory.py'
+              # The step that sizes each job's Postgres runs this script, which runs
+              # internal/dispatch/store/cmd/connections (and so testlimits and the store, below).
+              - '.github/scripts/pg-connection-ceiling.sh'
               - *go_workspace
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/contracts/testdata/**'
@@ -1542,12 +1612,17 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/testdata/**'
               # docs/block_pointer_links_test.go imports pmdoc/pmdoctest.
               - 'packages/envoy/internal/dispatch/pmdoc/pmdoctest/*'
+              # internal/dispatch/docs reads the live server processes' schema numbers
+              # (schema_admission.go).
+              - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/refs/*'
               - 'packages/envoy/internal/dispatch/store/*'
+              - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
               # internal/dispatch/store embeds every migration.
               - 'packages/envoy/internal/dispatch/store/migrations/**'
               - 'packages/envoy/internal/dispatch/store/searchtest/*'
               - 'packages/envoy/internal/dispatch/store/storetest/*'
+              - 'packages/envoy/internal/dispatch/testlimits/*'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/dispatch/text/testdata/**'
               - 'packages/envoy/internal/dispatch/texttrees/*'
@@ -1577,6 +1652,7 @@ jobs:
               - 'packages/envoy/internal/testwait/*'
               # The step takes the memory tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
+              - '.github/scripts/pg-connection-ceiling.sh'
             # `go test -tags multiprocess ./cmd/dispatch`, the same closure as dispatch_memory.
             dispatch_multiprocess:
               - '.github/workflows/ci.yaml'
@@ -1587,6 +1663,32 @@ jobs:
               - 'packages/envoy/internal/testwait/*'
               # The step takes the multiprocess tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
+              - '.github/scripts/pg-connection-ceiling.sh'
+            # `go test -tags twobuild ./cmd/dispatch`, as dispatch_multiprocess plus what the job
+            # runs beside it: the current build's CLI (`bun packages/envoy-client/bin/dispatch.ts`,
+            # with the contracts it imports, after a frozen Bun install) and the script that builds
+            # the previous build. Then the browser half,
+            # `bun run e2e:multiprocess -- cross-build.multiprocess` in packages/dispatch: the
+            # harness and spec under e2e/, the two SPA builds (web/, the editor package and the
+            # patches it takes, the notices script the build runs), the Dispatch server
+            # e2e/run-server.sh builds (dispatch_command_tests holds its packages) and the script
+            # that holds each server's socket (run-server.sh:37, e2e/harness-start.ts).
+            dispatch_two_builds:
+              - '.github/workflows/ci.yaml'
+              - *go_workspace
+              - *dispatch_command_tests
+              - 'packages/envoy/internal/githubtest/*'
+              - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testwait/*'
+              - 'packages/envoy/scripts/build-dispatch-build.sh'
+              - 'packages/envoy-client/**'
+              - 'packages/contracts/**'
+              - 'packages/dispatch/**'
+              - 'packages/proof-editor/**'
+              - 'scripts/third-party-notices.ts'
+              - 'scripts/e2e/lib/held-port.py'
+              - '.github/scripts/pg-connection-ceiling.sh'
+              - *bun_install
             # The server-change soak (listener-server-change): `go test -tags serverchange
             # ./cmd/listener`. The listener's own packages, and what its test binary compiles
             # beyond them - the in-process NATS and Postgres helpers, the builder of the binary it
@@ -1626,6 +1728,7 @@ jobs:
               # internal/dispatch/api/write_advice_test.go:504 reads testdata/decision-block-inserts.json.
               - 'packages/envoy/internal/dispatch/api/testdata/**'
               - 'packages/envoy/internal/dispatch/architecture/*'
+              - 'packages/envoy/internal/dispatch/architecture/notes/*'
               - 'packages/envoy/internal/dispatch/asks/*'
               - 'packages/envoy/internal/dispatch/auth/*'
               - 'packages/envoy/internal/dispatch/bytelru/*'
@@ -1654,6 +1757,7 @@ jobs:
               # serverchange soak compiles this package: a change to it must re-run that soak.
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
+              - 'packages/envoy/internal/dispatch/prioritystore/*'
               - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/rank/*'
               - 'packages/envoy/internal/dispatch/refs/*'
@@ -1665,6 +1769,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/fixtureenv/*'
               - 'packages/envoy/internal/githubappjwt/*'
+              # The fake timer cmd/listener's repair and grant-guard tests share.
+              - 'packages/envoy/internal/kvwatch/kvwatchtest/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/pglisten/*'
@@ -1875,6 +1981,7 @@ jobs:
               # loads six of @legion/broker-client's seven modules through envoy-client's
               # src/broker-credential.ts:21-22.
               - 'packages/broker-client/**'
+              - '.github/scripts/pg-connection-ceiling.sh'
             # Every file packages/daemon/docker/worker.Dockerfile builds from, for the worker-image
             # job (.github/workflows/worker-image.yaml, which the build reads too): the root
             # manifest, lockfile, patches and every workspace manifest the plugin stage's frozen
@@ -3792,6 +3899,11 @@ jobs:
       - name: Test the semantic line-break checker
         run: bun test scripts/semantic-line-breaks.test.ts
 
+      # The seed that writes the first priorities from the table kept by hand, driven against a
+      # fake Dispatch of the test's own: it reaches no network and no deployment.
+      - name: Test the priorities seed
+        run: bun test scripts/priorities-seed.test.ts
+
       - name: Test the Bun pin check
         run: .github/scripts/check-bun-version.test.sh
 
@@ -3914,6 +4026,9 @@ jobs:
 
       - name: Test the session import pods script (a stand-in kubectl)
         run: bash scripts/sessions-import-pods.test.sh
+
+      - name: Test the priorities seed check (a stand-in Dispatch)
+        run: bash scripts/priorities-seed-check.test.sh
 
       - name: Lint the Dispatch census script
         run: bunx biome check --error-on-warnings scripts/dispatch
@@ -4301,6 +4416,9 @@ jobs:
       - name: Typecheck pi-shared
         run: bun run typecheck
         working-directory: packages/pi-shared
+      # src/jj-attribution.test.ts runs the real jj in a scratch repository for one case, and
+      # refuses on GitHub Actions without one.
+      - uses: ./.github/actions/install-jj
       # test/skills-partition.test.ts stages each plugin's skills with scripts/pi-plugin-prepack.sh
       # --stage-skills and holds the two lists to a partition of skills/.
       - name: Test pi-shared
@@ -4404,14 +4522,17 @@ jobs:
     # copied from another job: the job's set-up with the NATS service started and the checkout
     # (15 s), setup-bun (2), install-jj (3), install-omp (6), setup-go and the go-daemon cache
     # restore (26), the workspace install and contracts' build (14), the lint and the typecheck
-    # (16), the test step (646), the pack, the upload and the ci-ok report (4), the post steps
+    # (16), the test step (708), the pack, the upload and the ci-ok report (4), the post steps
     # with the containers stopped (5), and the seconds the job's own clock holds over the sum of
-    # its steps (5). That is 742 s, 12 m 22 s, the floor a ceiling here has to clear.
+    # its steps (5). That is 804 s, 13 m 24 s, the floor a ceiling here has to clear.
     # The test step is added up from its rows at their slowest over the four most recent runs of
     # the whole suite rather than from one total: legion-stall-watchdog 232 s, controller-start
-    # 123 s, legion-model-fallback 106 s, legion-phase-stall 99 s, legion-session-activity 28 s,
-    # daemon-pane 21 s and legion-role-tools 11 s are 620 of the 646, and the 25 rows left the
-    # other 26.
+    # 123 s, legion-model-fallback 106 s, legion-phase-stall 99 s, legion-commit-trailers 62 s,
+    # legion-session-activity 28 s, daemon-pane 21 s and legion-role-tools 11 s are 682 of the
+    # 708, and the 25 rows left the other 26.
+    # legion-commit-trailers' 62 s is the slowest of three runs of the file in a Legion pod on
+    # 2026-11-14 (26 s, 30 s and 62 s, the last with other work on the pod), before a CI run
+    # measured it.
     # The stall watchdog's suites among them are cybermonklabs/legion#2922's, merged
     # 2026-11-08T18:46:47Z, and the 10 minutes that stood here came from #2512 (a limit above
     # each job's slowest green run, 2026-10-30), which is before them.
@@ -4516,7 +4637,7 @@ jobs:
   # The dashboard's and the proof editor's lint, typecheck, unit tests, build and asset checks.
   # They were split out of the browser suite (dispatch-browser below), whose full lane - the one
   # the merge queue, the nightly and a pull request labelled `full-ci` run - is as slow as the
-  # eight suites that label holds back, while these checks must come back on every push.
+  # nine suites that label holds back, while these checks must come back on every push.
   # No Postgres service and no Go, but contracts is built
   # before the suites: one case of the dashboard's test run spawns Playwright, whose own
   # resolution reads contracts' built dist/ (the step below says what failed without it). tsc and
@@ -4687,12 +4808,16 @@ jobs:
           job-status: ${{ job.status }}
 
   # envoy-go's fast half: the Go format check, the two generated-code checks, the seven
-  # shell-script tests and the build and pack of the envoy commands. The slow half below (the
-  # module's unit tests, the container-backed NATS matrix and the integration suite) is one of
-  # the eight slow suites, which run in the merge queue and on a pull request labelled `full-ci`,
-  # while these checks must come back on every push. No Postgres service: nothing here opens a
-  # database. It restores go-envoy rather than go-envoy-test, which is the slow half's family
-  # alone (the test binary of every package of the envoy module).
+  # shell-script tests and the build and pack of the envoy commands. It also runs the tests of
+  # internal/dispatch/architecture/notes and cmd/architecture-check, which envoy-go's unit step
+  # tests again in the merge queue, and the architecture-note check over this repository's own
+  # .dispatch/architecture through the composite action .github/actions/architecture-check,
+  # which other repositories call. The slow half below (the module's unit tests, the
+  # container-backed NATS matrix and the integration suite) is one of the nine slow suites,
+  # which run in the merge queue and on a pull request labelled `full-ci`, while these checks
+  # must come back on every push. No Postgres service: nothing here opens a database. It
+  # restores go-envoy rather than go-envoy-test, which is the slow half's family alone (the test
+  # binary of every package of the envoy module).
   envoy-go-checks:
     needs: changes
     if: needs.changes.outputs.envoy_go_checks == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -4707,6 +4832,32 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The composite action other repositories call, run over this repository's own
+      # .dispatch/architecture (its default path), so every part of it is exercised here before
+      # another repository relies on it: its setup-go, its removal of setup-go's `go` problem
+      # matcher, its path resolved against the workspace, its cache restore, and its count output,
+      # which the next step reads. In a pull request and a merge group it restores its cache and
+      # saves nothing (the header's "Caches" paragraph). It runs right after the checkout, before
+      # this job's own setup-go, which adds setup-go's `go` problem matcher back for every later
+      # step of the job: the placement "before the Go setup of the job" of the action's README.md,
+      # "The Go toolchain". The checkout removes the problem matcher it adds before it ends, so no
+      # matcher of an earlier step reads the check's lines (README.md, "What the runner reads from
+      # the check's lines"). A refused note set fails the job before its other checks run.
+      - id: architecture-notes
+        name: Check this repository's architecture notes with the composite action
+        uses: ./.github/actions/architecture-check
+      # A caller reads the count through env, never inside run:, and so does this step. It runs
+      # only when the action succeeded, which without allow-empty means a valid set of one note or
+      # more, so a count that is missing or not a positive whole number is the action's fault.
+      - name: Read the note count the action hands to the job
+        env:
+          COUNT: ${{ steps.architecture-notes.outputs.count }}
+        run: |
+          if ! [[ $COUNT =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::the architecture-check action's count output is '$COUNT', not a positive whole number"
+            exit 1
+          fi
+          echo "The architecture-check action judged $COUNT notes."
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - id: setup-go
@@ -4729,6 +4880,14 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
+        working-directory: packages/envoy
+      # These two packages need no database, so they run here on every push. envoy-go's unit
+      # step tests every package of the module but the race lane's, these two among them, so they
+      # run again in the merge queue: leaving them out there would add a second exclusion list to
+      # the grep that picks that step's packages, to save a few seconds a group. This step accepts
+      # the overlap, as the display-tree fixture check below does for pmdoc.
+      - name: Test the architecture-note rules and their command
+        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./cmd/architecture-check/
         working-directory: packages/envoy
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go
@@ -4865,6 +5024,8 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
       # the run shows which Postgres the tests below ran on.
       - name: Postgres service version
@@ -5116,6 +5277,8 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache and kvwatch
         run: go test -count=1 -race -timeout 30m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/...
         working-directory: packages/envoy
@@ -5163,6 +5326,8 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Race-test the Dispatch API
         run: go test -count=1 -race -timeout 30m ./internal/dispatch/api/
         working-directory: packages/envoy
@@ -5229,6 +5394,8 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # Under the sampler, not bare: the race detector maps about four bytes of shadow memory per
       # byte of heap, and this package's race binary asked for more than the runner's 16 GiB,
       # which has no swap. The kernel killed this step three times with no output at all, which
@@ -5319,6 +5486,8 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # -v, because the package's leak check prints its line from TestMain after the tests have
       # run: go test in package-list mode buffers the test binary's own output and drops it when
       # the package passes, so without -v a green run would carry the `ok` line and nothing else,
@@ -5372,6 +5541,8 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Memory tests of the Dispatch server
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch)
@@ -5426,6 +5597,8 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Two-process tests of the Dispatch server
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/dispatch)
@@ -5433,6 +5606,169 @@ jobs:
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          changes: ${{ toJSON(needs.changes) }}
+          job-status: ${{ job.status }}
+
+  # The two-build tests (packages/envoy/cmd/dispatch/twobuild_*_test.go): each row starts
+  # an envoy-dispatch of the previous build and one of this tree against one Postgres and one NATS,
+  # which is what a rolling release runs, and drives each build's CLI, stored documents, document
+  # socket and bus traffic against the other (cmd/dispatch/README.md, "Two builds at once"). They
+  # build only under the `twobuild` tag and are a job of their own for the reason
+  # dispatch-multiprocess is: a row waits out durable hand-overs and settings polls, tens of seconds
+  # each, and the previous build is built here first. The previous build is the newest
+  # legion-envoy-v* release in the history of origin/main; build-dispatch-build.sh resolves it,
+  # which needs the whole history and the tags (fetch-depth 0), and builds it from `git archive`.
+  # The build is cached by the commit and the script that built it, so a pull request builds each
+  # release once; its src/ is left out of the cache, since the test reads only the parts the script
+  # copies out of it. Each row's NATS runs in its own test process (internal/testnats), so the job
+  # needs no container runtime of its own. Then the browser half
+  # (packages/dispatch/e2e/cross-build.multiprocess.e2e.ts): the browser suite's two-process mode
+  # with Dispatch B run from the previous build's envoy-dispatch and web dist, and each direction's
+  # page served by one build against the other build's server. Playwright installs as it does for
+  # dispatch-browser-multiprocess, and the rows get a database of their own, since they truncate
+  # it.
+  dispatch-two-builds:
+    needs: changes
+    if: needs.changes.outputs.dispatch_two_builds == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      # The browser half's own database, which its rows truncate.
+      DATABASE_URL: postgres://postgres:ci@localhost:5432/dispatch_cross_build?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      - uses: ./.github/actions/setup-bun
+      # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
+      - run: bun install --frozen-lockfile
+      - name: Resolve the previous build's commit
+        id: previous
+        run: |
+          commit=$(packages/envoy/scripts/build-dispatch-build.sh --previous-release --resolve)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      # The cache saves the build when the job ends in success and found none under this key.
+      - name: Cache the previous build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-previous
+            !${{ runner.temp }}/dispatch-previous/src
+          key: dispatch-previous-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.previous.outputs.commit }}
+      # A restored directory holds the complete build of that commit, which the script leaves as it
+      # is. The runner context is not available in a job's env, so each step that reads the build's
+      # directory names it in its own.
+      - name: Build the previous build
+        env:
+          PREVIOUS_COMMIT: ${{ steps.previous.outputs.commit }}
+          DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
+        run: packages/envoy/scripts/build-dispatch-build.sh --commit "$PREVIOUS_COMMIT" --out "$DISPATCH_PREVIOUS_BUILD"
+      # The first-rollout build: the newest release before the first that registers its schema
+      # numbers (firstRolloutRelease in packages/envoy/cmd/dispatch/twobuild_harness_test.go, which
+      # names the same tag). The transition row that drives the fleet's first rollout runs it as its
+      # earlier build, since every previous release from legion-envoy-v30.21.0 on registers its
+      # numbers. The release is pinned, so its cache entry is written once and restored after that.
+      - name: Resolve the first-rollout build's commit
+        id: first-rollout
+        run: |
+          commit=$(packages/envoy/scripts/build-dispatch-build.sh --commit legion-envoy-v30.20.2 --resolve)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - name: Cache the first-rollout build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-first-rollout
+            !${{ runner.temp }}/dispatch-first-rollout/src
+          key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.first-rollout.outputs.commit }}
+      - name: Build the first-rollout build
+        env:
+          FIRST_ROLLOUT_COMMIT: ${{ steps.first-rollout.outputs.commit }}
+          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
+        run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      - name: Two-build tests of the Dispatch server
+        env:
+          DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
+          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
+        run: go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch
+        working-directory: packages/envoy
+      - name: Build contracts for dispatch e2e
+        # The e2e helpers the specs import read some of contracts' values from its built dist/
+        # (the dispatch job's step of the same name).
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Build the Dispatch server
+        # Dispatch A's; run-server.sh builds it too, inside the harness's boot wait for each server
+        # (e2e/harness-start.ts, bounded by the listener's bootMs); built here, A finds it current
+        # and starts in seconds.
+        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        working-directory: packages/envoy
+      - name: Install Playwright Chromium
+        # No apt in this step: Playwright's `chromium` entry in its ubuntu24.04-x64 table adds no
+        # package this image lacks, and this job's one spec runs headless Chromium and compares no
+        # screenshot, so the font packages `--with-deps` brought are not needed either. The
+        # dispatch-browser-multiprocess job's step of the same name measured both and says so, and
+        # with the apt work gone this step's removal of the runner image's chrome-stable apt
+        # source goes with it. The 4-minute budget is that step's, for the same download.
+        timeout-minutes: 4
+        run: bunx playwright install chromium
+        working-directory: packages/dispatch
+      - name: Browser-test each build's page against the other build's server
+        # B is the previous build, which serves on the socket the harness holds for it, as A does,
+        # so this step names no port for it.
+        env:
+          DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
+        run: |
+          psql "postgres://postgres:ci@localhost:5432/postgres" -c 'create database dispatch_cross_build'
+          DISPATCH_E2E_BINARY_B="$DISPATCH_PREVIOUS_BUILD/envoy-dispatch" \
+            DISPATCH_E2E_WEB_DIST_B="$DISPATCH_PREVIOUS_BUILD/web" \
+            bun run e2e:multiprocess -- cross-build.multiprocess
+        working-directory: packages/dispatch
+      # The same rows with B the first-rollout build, a release before the fleet columns, which
+      # registers no schema numbers: a page of either build is read-only on A's server while it is
+      # live, which the previous release, registering its numbers, no longer shows. The spec reads
+      # which of the two B is from the live registry (pageWritable). The database is made again,
+      # so this run starts from what the step above started from.
+      - name: Browser-test each build's page against the first-rollout build's server
+        env:
+          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
+        run: |
+          psql "postgres://postgres:ci@localhost:5432/postgres" \
+            -c 'drop database dispatch_cross_build with (force)' \
+            -c 'create database dispatch_cross_build'
+          DISPATCH_E2E_BINARY_B="$DISPATCH_FIRST_ROLLOUT_BUILD/envoy-dispatch" \
+            DISPATCH_E2E_WEB_DIST_B="$DISPATCH_FIRST_ROLLOUT_BUILD/web" \
+            bun run e2e:multiprocess -- cross-build.multiprocess
+        working-directory: packages/dispatch
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: dispatch-two-builds-browser-test-results-${{ github.run_attempt }}
+          path: packages/dispatch/e2e/test-results
+
+      - name: Report ci-ok when this is the run's last job
         if: always()
         uses: ./.github/actions/ci-ok-report
         with:
@@ -5910,6 +6246,8 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Build contracts for the stall suites
         run: bun run build
         working-directory: packages/contracts
@@ -6440,6 +6778,7 @@ jobs:
       - envoy-go-docs-finalizers
       - dispatch-memory
       - dispatch-multiprocess
+      - dispatch-two-builds
       - listener-server-change
       - broker-multiprocess
       - airlock-lean

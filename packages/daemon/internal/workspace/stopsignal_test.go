@@ -50,7 +50,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		script := `: >"$1"; trap 'rm -f "$1"; exit 0' TERM; : >"$2"; ` + commandLives
 
 		started := time.Now()
-		_, err := RunCommand(ctx, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready})
+		_, err := RunCommand(ctx, nil, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready})
 		elapsed := time.Since(started)
 
 		if _, statErr := os.Stat(ready); statErr != nil {
@@ -94,7 +94,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		script := `sh -c "$2" sh "$3" "$4" & trap '' TERM; until [ -e "$4" ]; do sleep 0.01; done; : >"$1"; ` + commandLives
 
 		started := time.Now()
-		_, err := RunCommand(ctx, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped})
+		_, err := RunCommand(ctx, nil, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped})
 		elapsed := time.Since(started)
 
 		if _, statErr := os.Stat(ready); statErr != nil {

@@ -221,6 +221,47 @@ func (c *HTTPClient) PostMessage(ctx context.Context, key, body string) error {
 	}, nil)
 }
 
+// ArtifactSlugs reads GET /api/v1/issues/{key}/artifacts and returns the slug of every document
+// and file the issue holds. A caller that names its own document reads it before an upload, so
+// a retry finds the document its first attempt made rather than writing it a second version.
+func (c *HTTPClient) ArtifactSlugs(ctx context.Context, key string) ([]string, error) {
+	var artifacts []struct {
+		Slug string `json:"slug"`
+	}
+	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key)+"/artifacts", nil, &artifacts); err != nil {
+		return nil, err
+	}
+	slugs := make([]string, len(artifacts))
+	for i, artifact := range artifacts {
+		slugs[i] = artifact.Slug
+	}
+	return slugs, nil
+}
+
+// UploadArtifact writes a markdown document on the issue through POST
+// /api/v1/issues/{key}/artifacts, as the daemon's own session, and returns the slug Dispatch filed
+// it under, which a link to it names (dispatch://<key>/artifact/<slug>). The body holds only
+// fields Dispatch's JSON upload reads (its jsonArtifactUpload), since its decoder refuses any
+// other. A name the issue already holds is that document's next version.
+func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content string) (string, error) {
+	var response struct {
+		Artifact struct {
+			Slug string `json:"slug"`
+		} `json:"artifact"`
+	}
+	if err := c.request(ctx, http.MethodPost, "/api/v1/issues/"+url.PathEscape(key)+"/artifacts", artifactUpload{
+		Name:    name,
+		Content: content,
+		Actor:   daemonActor(key),
+	}, &response); err != nil {
+		return "", err
+	}
+	if response.Artifact.Slug == "" {
+		return "", fmt.Errorf("upload Dispatch document %s of %s: the answer names no slug", name, key)
+	}
+	return response.Artifact.Slug, nil
+}
+
 // EventsAfter reads the issue's Dispatch event log after sequence after, oldest first, through GET
 // /api/v1/issues/{key}/events?after=…, every page of it: each event as Dispatch serves it, which is
 // the shape its durable stream carries, so the boot catch-up applies each through the live
@@ -626,6 +667,14 @@ type daemonWrite struct {
 	ExpectedSequence int64    `json:"expected_sequence,omitempty"`
 	Body             string   `json:"body,omitempty"`
 	Actor            actor    `json:"actor"`
+}
+
+// artifactUpload is the body of a document upload: its name, its markdown and the daemon's actor,
+// all fields Dispatch's JSON upload reads.
+type artifactUpload struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+	Actor   actor  `json:"actor"`
 }
 
 // gatedStepsWrite is the body of the gated-steps publish: the list, never omitted, and the

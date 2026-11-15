@@ -65,7 +65,8 @@ func parks(doc *crdt.Doc) bool {
 // holds what the runs applied. A log whose runs do not apply in order either, parking past the
 // pending queue, makes no state: stateThrough answers it as an unappliedHistory, which is
 // ErrDocumentUnloadable, carrying what the rebuild that error offers reads. A merge of such runs
-// is no stand-in for them. Twenty keystrokes with the parked row stored after the first three,
+// is no stand-in for them. A log ygo will not even merge into runs is that same state, answered
+// the same way (runsThrough). Twenty keystrokes with the parked row stored after the first three,
 // then another client's rows that park past the queue until a later row of that client's arrives,
 // merged into bytes a room's load decoded holding three of the twenty keystrokes, under ygo
 // v1.55.1-theorem.3 and with the fix of its parked merge ported onto it alike; with the parked row
@@ -84,7 +85,7 @@ func stateThrough(ctx context.Context, room string, version persistence.Version,
 	}
 	slog.Warn(misreadWarning+"; serving them applied in order",
 		"room", room, "version", int64(version), "error", misread)
-	runs, err := runsThrough(updates)
+	runs, err := runsThrough(version, updates)
 	if err != nil {
 		return nil, err
 	}
@@ -110,28 +111,28 @@ func runsState(ctx context.Context, version persistence.Version, runs [][]byte, 
 }
 
 // unappliedHistory is a stored history whose runs do not apply in order to one document of the
-// store's pending queue (runsDocument, refused): it makes no state, so Load and MaterializeAt
-// answer it as this error, which is ErrDocumentUnloadable, and no bytes. A socket's admission
-// (loadTree) and a cold write's fork (coldFork) answer it as the document's own failure, as they
-// answer a history ygo refuses the bytes of, and a room's load fails on it (LoadDoc). What the
-// rebuild ErrDocumentUnloadable offers reads of a history (rebuildSource) it carries itself: the
-// version the history stands at, and every client its runs name at the clock each reached, which
-// for a history ygo refuses the bytes of is read from those bytes (undecodableHistoryClients).
+// store's pending queue (runsDocument, refused), or whose rows ygo will not merge into runs at all
+// (runsThrough): it makes no state, so Load and MaterializeAt answer it as this error, which is
+// ErrDocumentUnloadable, and no bytes. A socket's admission (loadTree) and a cold write's fork
+// (coldFork) answer it as the document's own failure, as they answer a history ygo refuses the
+// bytes of, and a room's load fails on it (LoadDoc). What the rebuild ErrDocumentUnloadable offers
+// reads of a history (rebuildSource) it carries itself: the version the history stands at, and
+// every client its runs name at the clock each reached, which for a history ygo refuses the bytes
+// of is read from those bytes (undecodableHistoryClients).
 type unappliedHistory struct {
 	version persistence.Version
 	clients map[crdt.ClientID]uint64
 	refused error
 }
 
-// newUnappliedHistory is the unappliedHistory through version whose runs runsDocument refused.
-func newUnappliedHistory(version persistence.Version, runs [][]byte, refused error) error {
+// newUnappliedHistory is the unappliedHistory through version whose updates - the runs
+// runsDocument refused, or the rows runsThrough could not merge into runs - ygo refused. An update
+// whose header does not read retires no client, as undecodableHistoryClients reads one: no clock
+// of it can be trusted, and the rebuild replaces the history either way.
+func newUnappliedHistory(version persistence.Version, updates [][]byte, refused error) error {
 	clients := make(map[crdt.ClientID]uint64)
-	for _, run := range runs {
-		_, to, err := crdt.ParseUpdateMeta(run)
-		if err != nil {
-			return fmt.Errorf("read the clocks of a stored update: %w", err)
-		}
-		for client, clock := range to {
+	for _, update := range updates {
+		for client, clock := range undecodableHistoryClients(update) {
 			clients[client] = max(clients[client], clock)
 		}
 	}
@@ -165,19 +166,25 @@ func documentThrough(ctx context.Context, room string, version persistence.Versi
 	}
 	slog.Warn(misreadWarning+"; serving them applied in order",
 		"room", room, "version", int64(version), "error", misread)
-	runs, err := runsThrough(updates)
+	runs, err := runsThrough(version, updates)
 	if err != nil {
 		return nil, err
 	}
 	return runsDocument(ctx, runs, maxPending)
 }
 
-// runsThrough is the stored updates updates replays, in the order they were stored, as the runs
-// a document applies them in (mergedRuns, which a catch-up applies its rows by): a run ends before
-// a row carrying some client's clocks below the end of an earlier row of the run, and each run is
-// its rows merged, which within a run keeps every struct whole. Rows typed one after another are
-// one run.
-func runsThrough(updates updateSource) ([][]byte, error) {
+// runsThrough is the stored updates through version updates replays, in the order they were
+// stored, as the runs a document applies them in (mergedRuns, which a catch-up applies its rows
+// by): a run ends before a row carrying some client's clocks below the end of an earlier row of
+// the run, and each run is its rows merged, which within a run keeps every struct whole. Rows
+// typed one after another are one run.
+//
+// A history ygo will not merge does not decode either: it refuses a clock or a client its state
+// encodings cannot carry wherever it reads one, so every read of this document meets the refusal.
+// That is a history that does not load, the state a rebuild repairs, not a fault of the server
+// this read can retry past, so it is an unappliedHistory, carrying the version and the clients
+// that rebuild reads.
+func runsThrough(version persistence.Version, updates updateSource) ([][]byte, error) {
 	var stored [][]byte
 	if err := updates(func(update []byte) error {
 		stored = append(stored, update)
@@ -187,7 +194,7 @@ func runsThrough(updates updateSource) ([][]byte, error) {
 	}
 	runs, err := mergedRuns(stored)
 	if err != nil {
-		return nil, fmt.Errorf("merge document updates into runs: %w", err)
+		return nil, newUnappliedHistory(version, stored, fmt.Errorf("%w: merge document updates into runs: %w", ErrDocumentUnloadable, err))
 	}
 	return runs, nil
 }

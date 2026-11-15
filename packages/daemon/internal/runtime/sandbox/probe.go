@@ -1335,8 +1335,9 @@ func (r *Runtime) probeManifest(name string, p ImageProbe, shutdown time.Time) p
 	// the providers Secret there, which it does when something needs it (mountsProviders: a provider
 	// key, a providers secret, or a session database URL key); a directory it is told and cannot read
 	// refuses the probe, and with it the daemon's boot. Under cloudsql-iam no URL key is held — each
-	// pod signs in to Cloud SQL as itself — so a deployment with no provider key and no providers
-	// secret has no such directory, and the probe is told none.
+	// pod signs in to Cloud SQL as itself, or as the service account it impersonates — so a
+	// deployment with no provider key and no providers secret has no such directory, and the probe
+	// is told none.
 	if r.mountsProviders() {
 		command = append(command, "--provider-env-dir", ProvidersDir)
 	}

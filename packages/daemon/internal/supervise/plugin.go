@@ -8,29 +8,27 @@ import (
 
 // PodUpdateContract is the daemon contract that introduced ready_for_update (api/version.go's
 // 46), the op a worker answers the update round over its pod with. A claim whose registration
-// declared a contract below it has no op to answer that round's task with: the op list is a
+// declared a contract below it has no op to answer that round's ask with: the op list is a
 // closed enum compiled into the plugin, and a Claude Code role's plugin is its image's own,
-// never installed. Such a claim is asked all the same, and the end of the turn its task starts
-// is its answer (askForUpdate, answerByTurnEnd) — as it is for every other claim that ends that
-// turn without calling, since a plugin at this contract can be built without the op too — so a
-// round over it completes and its pod is replaced like any other.
+// never installed. Such a claim is asked all the same, on its role's own Envoy topic
+// (internal/daemon's openPodUpdate), and the round over it ends at its bound whether or not it
+// answers, so its pod is replaced like any other. The end of a turn is no answer, at any
+// contract: an ask an older daemon queued as a task is answered with the op or not at all.
 //
 // The stale-plugin lane reads it no longer. That lane asks its worker nothing: a stale claim is
 // relaunched onto this daemon's plugin at one paced wake (refreshPlugin, relaunchStale), which
 // keeps the pod and the disk, so what op a claim's plugin holds decides nothing there. What a
-// claim can answer is the pod round's question alone, and the two readers left each make a
-// decision of their own: internal/api serves a caller in a pod whose claims record a contract
-// below this one the state without the two update-round keys that contract added (stateFor,
-// withoutUpdateRounds), and internal/daemon's reaskedForPushCheck asks no second push check of a
-// worker that has no op to answer it with.
+// claim can answer is the pod round's question alone, and the one reader left makes a decision
+// of its own: internal/api serves a caller in a pod whose claims record a contract below this
+// one the state without the two update-round keys that contract added (stateFor,
+// withoutUpdateRounds).
 //
 // It lives here rather than beside DaemonAPIVersion because internal/api imports this package.
 // internal/api's own test pins it to the contract that brought the op, so an edit of this
 // constant alone cannot move it; a merge that renumbers this change moves that test's literal
 // and api/version.go's entry with it, which names this constant. Behind is the dangerous
 // direction: at 45, with the op at 46, a pod of the released plugin is served the two keys its
-// strict schema refuses and reads no state at all, and a worker with no op to call is asked a
-// second time for a push check it can only answer by ending another turn.
+// strict schema refuses and reads no state at all.
 const PodUpdateContract = 46
 
 // refreshPlugin is the claim's process found to speak a plugin contract this daemon does not: at
@@ -306,9 +304,14 @@ func (m *Machine) relaunchStale(ctx context.Context, kind WakeKind, trigger stri
 // unmarked, and a resumed process that still speaks another contract is relaunched once more
 // uncharged. That is one relaunch, not a loop: the relaunch that follows marks the claim where
 // it starts its process, and the registration after it is the second in a row.
+//
+// The launch it raises lets the stale process go as one that ran an older plugin
+// (endStalePlugin), and records what that process ended where it lets it go: here, or at the
+// turn of the wake the pacing parks it on, which is when a process the park left running is let
+// go (launchNow, runWake, letGo).
 func (m *Machine) relaunchMarked(ctx context.Context, kind WakeKind, interruption string) error {
 	m.markPluginRelaunch(kind)
-	_, err := m.replaceProcess(ctx, interruption, ordinaryEnd)
+	_, err := m.replaceProcess(ctx, interruption, ordinaryEnd, endStalePlugin)
 	return err
 }
 
@@ -439,9 +442,9 @@ func (m *Machine) refreshOverturned() bool {
 // failed — so the rule is the install alone.
 //
 // What replaces such a claim's plugin is a new image, which the update round over its pod is
-// opened for: it is asked like every other worker and answers either with the op or by ending
-// the turn its task starts (answerByTurnEnd), and the round's replacement brings the image
-// (internal/daemon's refreshStalePlugins, which posts no relaunch for it either).
+// opened for: it is asked like every other worker, answers with the op or not at all, and the
+// round's replacement brings the image, at the latest at the round's bound (internal/daemon's
+// refreshStalePlugins, which posts no relaunch for it either).
 //
 // A registration that arrives while a launch the pacing holds waits over the process it comes
 // from relaunches nothing and is charged nothing. PluginRelaunchFor is written where the
@@ -469,7 +472,8 @@ func (m *Machine) refreshOverturned() bool {
 // registration in front of it rather than working through a fleet, and a reader of the daemon's
 // state counting what the refresh has left to do must not count it (dispatch://INFRA-2712 R4).
 // The charged path beside it raises no stale-plugin intent at all, so its launch takes the kind
-// every launch takes (relaunchAfterFailure, launchAfter).
+// every launch takes (relaunchAfterFailure, launchAfter). Both let the stale process go as one
+// that ran an older plugin (endStalePlugin), which is what their launch records of what it ended.
 func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	if got == m.deps.PluginContract {
 		return m.endCurrentPluginRound(ctx)
@@ -491,7 +495,7 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	}
 	var err error
 	if m.claim.PluginRelaunchFor == m.deps.PluginContract {
-		err = m.relaunchAfterFailure(ctx, CauseStalePlugin)
+		err = m.relaunchAfterFailure(ctx, CauseStalePlugin, endStalePlugin)
 	} else {
 		err = m.relaunchStale(ctx, WakeLaunch, "registration")
 	}

@@ -258,7 +258,7 @@ func rebuiltRoom(t *testing.T, markdown string, retired map[crdt.ClientID]uint64
 	if err != nil {
 		t.Fatal(err)
 	}
-	seed, err := rebuiltSeed(tree, retired, nil)
+	seed, err := rebuiltSeed(tree, nil, retired, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

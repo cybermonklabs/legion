@@ -104,6 +104,11 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	if err := configureRepositoryCredential(ctx, run, workspace.Clone, request.CredentialHelper); err != nil {
 		return Workspace{}, err
 	}
+	// Every provision writes it, so a clone made before this setting existed takes it at its next
+	// provision.
+	if err := configureCloneReads(ctx, run, workspace.Clone); err != nil {
+		return Workspace{}, err
+	}
 	if err := removeRepositoryIdentity(ctx, run, workspace.Clone); err != nil {
 		return Workspace{}, err
 	}
@@ -314,7 +319,7 @@ func Location(stateDir string, repository ghrepo.Repository, issue string) (Work
 // shallow for the layout, one whose owner and name are no repository, one whose issue Location
 // would case differently — is in no layout this inverts, and is refused rather than guessed at.
 //
-// It reads no file and is the one inverse of Location this package keeps: located asks it whether
+// It reads no file and is the one inverse of Location the daemon keeps: located asks it whether
 // the pair it was handed is a workspace Location names, and WorkspaceOf (gitworktree.go) asks it
 // for the clone of the directory a process stands in. A caller's own refusals — the derivation's
 // absolute path among them — stay with that caller.

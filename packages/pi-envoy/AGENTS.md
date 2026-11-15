@@ -795,7 +795,7 @@ checks' mode into the session's own record for the CLI (`checkMode`: block only 
 chose it; `setRecordMode` keys it per session, so a switch never changes another session's mode),
 apart from the verdict's mode (`sessionMode`, block by default); `envoy.ts` turns each write the
 CLI logged as unmarked into an `unmarked` entry, and, where the CLI's own line says the write
-carried asks for a person (`asksCarried`, counted with `newAsks` in
+carried asks for a person (`asksCarried`, counted with `newAskCount` in
 `@legion/envoy-client/askgate-new-asks`), publishes one decision record for it through the
 recorder `registerAskGate` returns, which runs until Dispatch answers it or the shutdown cut ends it.
 The entry is appended before that record starts and the tool result awaits none of it — a session's
@@ -995,8 +995,10 @@ unpinned.
 table the row, column, header and cells), and `dispatch read` prints it as `Position:` after the
 quote. When Dispatch could not read the document, the read carries `anchor_block_error` instead
 and `dispatch read` prints `Position: unavailable (<code>)`, the code the API answers that error
-with elsewhere (`DOC_SERVICE_UNAVAILABLE`, `DOC_SCHEMA` or `INTERNAL`); the read itself, and
-`dispatch follow`, which reads the ask first, still succeed.
+with elsewhere (`DOC_SERVICE_UNAVAILABLE`, `DOC_SCHEMA`, `DOC_NEWER_CONTENT`, `DOCUMENT_UNLOADABLE`
+or `INTERNAL`); the read itself, and `dispatch follow`, which reads the ask first, still succeed.
+`DOC_NEWER_CONTENT` is a document holding an element this Dispatch build cannot read, which a newer
+build wrote during a release: try again in one minute.
 
 `dispatch doc-edit` may retype an identified paragraph or typed block into any schema-declared typed block with
 the `--ops-json` entry `{ "op": "retype", block, type, attributes }`, delete or move a whole block by id with

@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
 // HeldReason is the one word for why the daemon runs nothing of an issue its own record holds in
@@ -46,10 +47,17 @@ const (
 	// HeldAcceptedAncestor is an issue beneath an ancestor the daemon has already accepted:
 	// nothing of it starts before that ancestor closes (HeldUnderAccepted).
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
-	// HeldAtWork is the ladder's `!KeepsSlot(issue)`: an issue that keeps none of the cap's
-	// slots where it stands, whose workers run as they did and which no other issue holds.
-	// KeepsSlot is InWorkflow, and HeldList keeps only InWorkflow candidates, so no issue reads
-	// this word today. This is the one statement of that; every other reader points here.
+	// HeldAtWork is the ladder's `!KeepsSlot(issue)` for an issue not standing in held: an issue
+	// that keeps none of the cap's slots where it stands, whose workers run as they did and which
+	// no other issue holds. KeepsSlot is InWorkflow and a phase up to the review
+	// (PhaseKeepsSlot, over StandsAt), and HeldList keeps only InWorkflow candidates, so the
+	// issues that read this word are the ones past their review — in accepting, retro or merging
+	// — whose sign-off, retro and merge run on no slot at all. An issue held from one of those
+	// phases keeps no slot either, but its hold stopped its work, so it does not read this word
+	// and falls to unclassified (HeldReasonOf states why at the clause). Of the issues that read
+	// it, one whose tree runs is served no `why` (projection's atWorkPastReview), so `why`
+	// serves this word's sentence only to a member past its review of a tree that runs nothing.
+	// This is the one statement of that; every other reader points here.
 	HeldAtWork HeldReason = "at_work"
 	// HeldUnclassified is an issue none of the ten words above is true of (C2). The record holds
 	// it in the workflow and no rule here says what it waits for, which is a gap in the words
@@ -232,7 +240,12 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	if accepted := acceptedAncestorHolding(issue, facts.Chain); accepted != "" {
 		return HeldAcceptedAncestor, []string{accepted}
 	}
-	if !KeepsSlot(issue) {
+	// The issue must not stand in held. Since dispatch://INFRA-2560 a hold from a phase past the
+	// review keeps no slot (KeepsSlot reads StandsAt), which makes this word reachable for a held
+	// issue, and its sentence — that the issue's workers run as they did — is false for an issue
+	// whose hold stopped its work. Such an issue falls to unclassified instead. The stalled-tree
+	// measure is unmoved: neither word silences a tree (admit's silencedTree).
+	if !KeepsSlot(issue) && issue.Phase != phase.Held {
 		return HeldAtWork, nil
 	}
 	return HeldUnclassified, nil

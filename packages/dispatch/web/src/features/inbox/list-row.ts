@@ -19,6 +19,7 @@ import type {
   MyReplyRow,
   OpenAskOwner,
 } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { issuePriority } from "../issue/issue-priority";
 import type { DispatchReferenceRoute } from "../refs/routes";
 import { isDecisionAsk } from "./ask-decision";
@@ -69,14 +70,8 @@ export function rowProject(row: InboxListRow): string | null {
   return thread.kind === "agent" ? null : (thread.project ?? null);
 }
 
-/** The project an issue key belongs to. A project key holds no hyphen, so the part of an issue
- *  key before the first one is its project: `CORE-12` belongs to `CORE`. */
-export function issueProject(key: string): string {
-  return key.split("-")[0] ?? key;
-}
-
 /** Which project an ask belongs to, or null for one that belongs to none: the project of its
- *  issue (`issueProject`) or of the document it was asked on. */
+ *  issue (`issueProject`, `lib/issue-key.ts`) or of the document it was asked on. */
 export function askProject(ask: InboxRow): string | null {
   const issue = ask.issue?.key ?? ask.issue_key;
   if (issue !== null && issue !== undefined) return issueProject(issue);

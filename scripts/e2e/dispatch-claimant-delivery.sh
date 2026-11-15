@@ -15,8 +15,9 @@
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [DISPATCH_BIN=<envoy-dispatch>] bash scripts/e2e/dispatch-claimant-delivery.sh
 #
-# DATABASE_URL is required and must name a loopback host: the run drops and recreates its `public`
-# schema before the server migrates it, and leaves what the run wrote there for inspection.
+# DATABASE_URL is required and must name a loopback host: the run empties its `public` schema
+# before the server migrates it, keeping the extensions that schema holds, and leaves what the run
+# wrote there for inspection.
 # DISPATCH_BIN names a prebuilt envoy-dispatch (the negative control runs one built from the base
 # commit); unset, the script builds ./cmd/dispatch from this checkout. The ports are
 # CLAIMANT_E2E_DISPATCH_PORT (19051) and CLAIMANT_E2E_ENVOY_PORT (19053), each refused when
@@ -129,10 +130,9 @@ pass
 
 begin reset-database
 # Empty, migrations included: the server migrates the new schema at boot, so a base binary and this
-# checkout's each start from a database of their own migrations.
-psql "$database_url" -X -q -v ON_ERROR_STOP=1 -c 'set client_min_messages = warning' \
-  -c 'drop schema if exists public cascade' -c 'create schema public' >/dev/null ||
-  fail "could not reset the database's public schema"
+# checkout's each start from a database of their own migrations. empty_public_schema
+# (lib/loopback-dsn.sh) says what goes and why the schema's extensions stay.
+empty_public_schema "$database_url" || fail "could not empty the database's public schema"
 pass
 
 begin nats
