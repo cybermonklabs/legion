@@ -195,7 +195,7 @@ func (s *Service) Pause(ctx context.Context, by store.PauseActor, reason string)
 	if err != nil {
 		return store.Pause{}, err
 	}
-	req := store.PauseRequest{Project: s.project, By: by, Reason: reason, At: s.now(), StopRow: stopRow}
+	req := store.PauseRequest{Project: s.project, By: by, Reason: reason, At: s.now(), StopRow: StopRow}
 	if tell {
 		req.Notice = pausedNotice
 	}
@@ -325,10 +325,12 @@ func (s *Service) tellsController(ctx context.Context, by store.PauseActor) (boo
 	return registered, nil
 }
 
-// stopRow is the `pause_stop` row of one claim the pause asks to stop (decision 4): a supervise row
+// StopRow is the `pause_stop` row of one claim the pause asks to stop (decision 4): a supervise row
 // of the claim's issue naming the pause, the claim's role, tree and generation, and a reason the
-// stopped claim's log line carries.
-func stopRow(pause store.Pause, stop store.PauseStopClaim) (store.PauseRow, error) {
+// stopped claim's log line carries. The pause's transaction builds its rows with it, and so do the
+// daemon's catch-up after a pause and its boot's pass while paused (store.Store.AskPauseStops,
+// AskLivePauseStops), so every stop of a pause is one row of one shape.
+func StopRow(pause store.Pause, stop store.PauseStopClaim) (store.PauseRow, error) {
 	return pauseRow(stop.Issue, record.SuperviseRequest{Op: "pause_stop", Tree: stop.Tree, Role: stop.Role,
 		Generation: stop.Generation, Pause: pause.ID,
 		Reason: fmt.Sprintf("project %s is paused (pause %d): %s", pause.Project, pause.ID, pause.Reason)}, pause.Since)

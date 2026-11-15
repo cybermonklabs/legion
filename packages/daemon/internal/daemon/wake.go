@@ -306,21 +306,31 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 }
 
 // takeOverRelease is what every path that suspends, stops or closes a claim does to a pod that
-// was released: it drops the open backstops of the issue, so no later backstop acts on a claim
-// this path has taken over. The claim's own suspension source is re-stamped by
-// the machine (supervise's suspendedAgain), which is what takes it out of every released-claim
-// read; this drops what is left behind in the record.
+// was released: it drops the open backstops the path has taken over, so no later backstop acts on
+// a claim this path owns. A `suspend` row takes one role over and drops that role's backstop alone
+// (decision 17 of dispatch://INFRA-3759): another role of the pod may be waiting on a deploy with
+// nothing but its own backstop to bring it back. An issue's close and a tree's close name no role
+// (dropReleasedWork), and drop every backstop of the issue, since the issue's work is over. The
+// claim's own suspension source is re-stamped by the machine (supervise's suspendedAgain), which
+// is what takes it out of every released-claim read; this drops what is left behind in the
+// record.
 //
 // A runner with no tree store does nothing here. Every runner the daemon builds has one
 // (newOutbox), so this is the test that builds a runner by hand for a path of its own, as the
 // zero clock and the zero design gate are; such a runner has released no pod, so there is
 // nothing of a release to take over.
-func (r *outbox) takeOverRelease(ctx context.Context, issue string) {
+func (r *outbox) takeOverRelease(ctx context.Context, issue string, role claim.Role) {
 	if r.trees == nil {
 		return
 	}
-	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue); err != nil {
-		r.log.Warn("wake: could not forget the wakes of a pod another path took over", "issue", issue, "error", err)
+	var err error
+	if role == "" {
+		err = r.trees.CancelPodBackstopsOf(ctx, r.project, issue)
+	} else {
+		err = r.trees.CancelRolePodBackstops(ctx, r.project, issue, role)
+	}
+	if err != nil {
+		r.log.Warn("wake: could not forget the wakes of a pod another path took over", "issue", issue, "role", role, "error", err)
 	}
 }
 
@@ -329,7 +339,7 @@ func (r *outbox) takeOverRelease(ctx context.Context, issue string) {
 // nothing should. A linger and a park keep theirs, because their issue comes back. A runner with
 // no tree store does nothing, as takeOverRelease says.
 func (r *outbox) dropReleasedWork(ctx context.Context, issue string) {
-	r.takeOverRelease(ctx, issue)
+	r.takeOverRelease(ctx, issue, "")
 	if r.trees == nil {
 		return
 	}

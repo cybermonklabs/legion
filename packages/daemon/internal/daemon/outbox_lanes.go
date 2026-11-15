@@ -88,10 +88,25 @@ func (r *outbox) Run(ctx context.Context) {
 	}
 }
 
-// sweep wakes every lane of the project with a row still in the outbox: due, running, backing off
-// or held. A lane that has nothing to run goes back to waiting, so the sweep costs an idle lane one
-// list; a lane whose rows a lapsed lease held back is the one it is for.
+// sweep reads the project's pause into the daemon's flag (refreshPause, decision 18 of
+// dispatch://INFRA-3759) and wakes every lane of the project with a row still in the outbox
+// (wakeUnfinished). A pause read that fails is logged and the flag keeps what it held: the next
+// sweep reads it again, and the outbox's own claim reads the pause from the store at every row
+// regardless (record's outboxPauseFree).
 func (r *outbox) sweep(ctx context.Context) {
+	if r.refreshPause != nil {
+		if err := r.refreshPause(ctx); err != nil && ctx.Err() == nil {
+			r.log.Error("pause: the outbox sweep could not read whether the project is paused; the flag keeps what it held until the next sweep", "error", err)
+		}
+	}
+	r.wakeUnfinished(ctx)
+}
+
+// wakeUnfinished wakes every lane of the project with a row still in the outbox: due, running,
+// backing off or held. A lane that has nothing to run goes back to waiting, so it costs an idle
+// lane one list; a lane whose rows a lapsed lease held back is the one it is for, and so is every
+// lane a resume lets its held rows out on (decision 22).
+func (r *outbox) wakeUnfinished(ctx context.Context) {
 	var lanes []record.LaneKey
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		var err error

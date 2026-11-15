@@ -143,6 +143,11 @@ type outbox struct {
 	// limitsMu guards it (deferral, noteLimit).
 	limitsMu sync.Mutex
 	limits   map[githubrest.Budget]rateLimit
+	// refreshPause reads the project's open pause into the daemon's flag
+	// (internal/pause's Service.Refresh) at each sweep (decision 18 of dispatch://INFRA-3759), so a
+	// pause made or ended through another daemon of a rolling restart holds this daemon's launches
+	// within one sweep. nil — a daemon with no pause service, a test's runner — reads nothing.
+	refreshPause func(context.Context) error
 	// The lane registry (outbox_lanes.go). mu guards running, laneCtx and lanes; running is true
 	// between Run's start and its stop, laneCtx is Run's context, which every lane runs under, and
 	// lanes is each live lane by its key. wg counts the lane goroutines, so Run returns only once
@@ -156,7 +161,7 @@ type outbox struct {
 
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
 // suspension, an idle release's own two decisions and the bundle it saves, a stop's wait for a
-// stored claim's machine, and a workflow tree close's cleanup.
+// stored claim's machine, a workflow tree close's cleanup, and a project pause's stop of a role.
 type outboxTrees interface {
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
 	IssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
@@ -173,9 +178,12 @@ type outboxTrees interface {
 	CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser store.TreeReleaser) error
 	TakePodWake(ctx context.Context, project, issue string, role claim.Role, kind string, at time.Time) (bool, error)
 	CancelPodBackstopsOf(ctx context.Context, project, issue string) error
+	CancelRolePodBackstops(ctx context.Context, project, issue string, role claim.Role) error
 	ReleasedClaimsIn(ctx context.Context, project, issue string) ([]supervise.Claim, error)
 	ClaimStatesIn(ctx context.Context, project, issue string) (store.ClaimStates, error)
 	ArmPodBackstop(ctx context.Context, backstop store.PodWakeBackstop) error
+	PauseByID(ctx context.Context, id int64) (store.Pause, error)
+	EndPauseStop(ctx context.Context, pause int64, token claim.Token, end store.PauseStopEnd, at time.Time) (bool, error)
 }
 
 func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, log *slog.Logger) *outbox {
@@ -1669,6 +1677,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	if r.supervisor == nil {
 		return errors.New("supervise executor has no claim supervisor")
 	}
+	// A pause's stop is fenced on its pause alone (pauseStop): it stops every live role of the
+	// project whatever the issue's generation, phase or tree, as the pause asked it to.
+	if payload.Op == "pause_stop" {
+		return r.pauseStop(ctx, row, payload)
+	}
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
 		return err
@@ -1733,6 +1746,17 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	machine, found := r.supervisor.Machine(token)
 	switch payload.Op {
 	case "start":
+		// A wake's start (WakeKind) brings a released role back, and one a park, a close or a
+		// moved phase took over while the row waited — the pause holds a wake's row for as long as
+		// it stands — is that path's to start again, not the wake's: the row finishes here, above
+		// StartedBy, so it records no start against the claim (decision 10 of dispatch://INFRA-3759).
+		if payload.WakeKind != "" && found {
+			if held := machine.Claim(); held.State == supervise.StateSuspended && held.SuspendedBy == supervise.SuspendedByDaemon {
+				r.log.Info("outbox wake start of a role the daemon took over; finished without acting", "row", row.ID,
+					"issue", issue.Key, "role", payload.Role, "wake", payload.WakeKind, "pause", payload.Pause)
+				return nil
+			}
+		}
 		// An issue the workflow has taken out — closed, parked, iceboxed, sent back to triage —
 		// has had its Sandbox given back by the departure that took it out, so a start that
 		// reaches the runner behind that departure would build the pod again and pick up the
@@ -2005,9 +2029,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// A linger, a park, a hand-over and a close all stop a claim through this one row, and
 		// each takes a released claim over: the machine re-stamps the suspension's source and
-		// this drops the backstop the release left behind, so no later backstop acts on a claim
-		// this suspension now owns. The bundle stays: the issue comes back.
-		r.takeOverRelease(ctx, row.Issue)
+		// this drops the backstop the release left that role, so no later backstop acts on a
+		// claim this suspension now owns. Another role's backstop stays (decision 17 of
+		// dispatch://INFRA-3759): a worker waiting on a deploy has nothing else to bring it back.
+		// The bundle stays: the issue comes back.
+		r.takeOverRelease(ctx, row.Issue, payload.Role)
 		return nil
 	case "release":
 		// One role stop of an idle pod's release. Its fence is the release's own mark and nothing

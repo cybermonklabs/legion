@@ -174,11 +174,7 @@ func (s *Store) Pause(ctx context.Context, req PauseRequest) (Pause, []PauseStop
 			if _, err := OpenPauseStopTx(ctx, tx, pause.ID, stop, req.At); err != nil {
 				return err
 			}
-			row, err := req.StopRow(pause, stop)
-			if err != nil {
-				return fmt.Errorf("build the stop of %s: %w", stop.Claim, err)
-			}
-			if _, err := insertOutboxRow(ctx, tx, stop.Issue, IdleReleaseRow{Kind: row.Kind, Payload: row.Payload}); err != nil {
+			if err := queuePauseStopRow(ctx, tx, pause, stop, req.StopRow); err != nil {
 				return err
 			}
 			stops = append(stops, stop)
@@ -192,6 +188,107 @@ func (s *Store) Pause(ctx context.Context, req PauseRequest) (Pause, []PauseStop
 		return Pause{}, nil, fmt.Errorf("pause %s: %w", req.Project, err)
 	}
 	return pause, stops, nil
+}
+
+// queuePauseStopRow queues pause's `pause_stop` outbox row of one claim, built by stopRow
+// (PauseRequest.StopRow), on the claim's issue, which runs it in that issue's lifecycle lane.
+func queuePauseStopRow(ctx context.Context, tx pgx.Tx, pause Pause, stop PauseStopClaim, stopRow func(Pause, PauseStopClaim) (PauseRow, error)) error {
+	row, err := stopRow(pause, stop)
+	if err != nil {
+		return fmt.Errorf("build the stop of %s: %w", stop.Claim, err)
+	}
+	_, err = insertOutboxRow(ctx, tx, stop.Issue, IdleReleaseRow{Kind: row.Kind, Payload: row.Payload})
+	return err
+}
+
+// AskPauseStops asks, in one transaction, for pause's stop of each of claims the pause has asked
+// no stop of yet: one stop row (OpenPauseStopTx) and one `pause_stop` outbox row (stopRow, the
+// builder the pause's own transaction takes, PauseRequest.StopRow) per claim, as the pause's
+// transaction writes them. It is the daemon's catch-up once a pause has committed: the claims
+// its machines hold live that the transaction did not name, such as a launch that passed the gate
+// before the flag was set (decision 3 of dispatch://INFRA-3759). It answers the claims it asked
+// to stop; see askPauseStopsTx for the claims it passes over.
+func (s *Store) AskPauseStops(ctx context.Context, pause int64, claims []PauseStopClaim, at time.Time,
+	stopRow func(Pause, PauseStopClaim) (PauseRow, error)) ([]PauseStopClaim, error) {
+	var asked []PauseStopClaim
+	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		held, err := LockPauseTx(ctx, tx, pause)
+		if err != nil {
+			return err
+		}
+		asked, err = askPauseStopsTx(ctx, tx, held, claims, at, stopRow)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ask pause %d's stops: %w", pause, err)
+	}
+	return asked, nil
+}
+
+// AskLivePauseStops is AskPauseStops over every live claim of the pause's project as the claims
+// table holds it in the same transaction (liveClaimsOf: not suspended, failed or retired, the
+// controller's excepted): the boot's pass while the project is paused (decision 5), run once the
+// supervisor has restored every claim, so a role a restart finds live is stopped for the pause
+// whatever the daemon that stopped knew of it.
+func (s *Store) AskLivePauseStops(ctx context.Context, pause int64, at time.Time,
+	stopRow func(Pause, PauseStopClaim) (PauseRow, error)) ([]PauseStopClaim, error) {
+	var asked []PauseStopClaim
+	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		held, err := LockPauseTx(ctx, tx, pause)
+		if err != nil {
+			return err
+		}
+		token, err := claim.ProjectToken(held.Project)
+		if err != nil {
+			return err
+		}
+		live, err := liveClaimsOf(ctx, tx, token)
+		if err != nil {
+			return err
+		}
+		asked, err = askPauseStopsTx(ctx, tx, held, live, at, stopRow)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ask pause %d's stops of the live claims: %w", pause, err)
+	}
+	return asked, nil
+}
+
+// askPauseStopsTx opens held's stop of each of claims at at and queues its `pause_stop` row, and
+// answers the claims it did. It asks nothing of a pause that has ended, since its stops would
+// finish without acting (decision 4), and it passes over a claim of which held already has a
+// stop, open or ended: an open one has its row queued already, and an ended one is a stop this
+// pause already made, which a second row would only ask again. The caller has locked held's row
+// for share (LockPauseTx), so a resume of it waits for this transaction.
+func askPauseStopsTx(ctx context.Context, tx pgx.Tx, held Pause, claims []PauseStopClaim, at time.Time,
+	stopRow func(Pause, PauseStopClaim) (PauseRow, error)) ([]PauseStopClaim, error) {
+	if held.Ended() {
+		return nil, nil
+	}
+	var asked []PauseStopClaim
+	for _, stop := range claims {
+		var stopped bool
+		if err := tx.QueryRow(ctx, `select exists (select 1 from project_pause_stops where pause_id = $1 and claim = $2)`,
+			held.ID, string(stop.Claim)).Scan(&stopped); err != nil {
+			return nil, fmt.Errorf("read pause %d's stop of %s: %w", held.ID, stop.Claim, err)
+		}
+		if stopped {
+			continue
+		}
+		opened, err := OpenPauseStopTx(ctx, tx, held.ID, stop, at)
+		if err != nil {
+			return nil, err
+		}
+		if !opened {
+			continue
+		}
+		if err := queuePauseStopRow(ctx, tx, held, stop, stopRow); err != nil {
+			return nil, err
+		}
+		asked = append(asked, stop)
+	}
+	return asked, nil
 }
 
 // ResumeRequest is what the resume's transaction is given.
@@ -364,6 +461,17 @@ func LockPauseTx(ctx context.Context, tx pgx.Tx, id int64) (Pause, error) {
 	return p, nil
 }
 
+// PauseByID is pause id as it stands, open or ended: the `pause_stop` executor reads it to finish
+// without acting once the pause its row names has ended (decision 4). A pause no row holds is an
+// error.
+func (s *Store) PauseByID(ctx context.Context, id int64) (Pause, error) {
+	p, err := scanPause(s.pool.QueryRow(ctx, `select `+pauseColumns+` from project_pauses where id = $1`, id))
+	if err != nil {
+		return Pause{}, fmt.Errorf("read pause %d: %w", id, err)
+	}
+	return p, nil
+}
+
 // LastEndedPause is the newest pause of project a resume ended, and whether there is one: the
 // state's `lastPause` while the project runs (decision 25). project is the Dispatch key.
 func (s *Store) LastEndedPause(ctx context.Context, project string) (Pause, bool, error) {
@@ -422,9 +530,11 @@ func liveClaimsOf(ctx context.Context, tx pgx.Tx, project string) ([]PauseStopCl
 type PauseStopEnd string
 
 const (
-	// PauseStopStopped: the role stopped (RecordPauseStoppedTx).
+	// PauseStopStopped: the role stopped (RecordPauseStoppedTx), or stood queued with nothing to
+	// stop (EndPauseStopTx).
 	PauseStopStopped PauseStopEnd = "stopped"
-	// PauseStopTakenOver: a park, a close, a linger or an operator took the role over first.
+	// PauseStopTakenOver: something else stopped the role first: a park, a close, a linger, an
+	// operator, an earlier pause's late stop or an idle release (EndPauseStopTx).
 	PauseStopTakenOver PauseStopEnd = "taken_over"
 	// PauseStopFailed: the claim failed or retired.
 	PauseStopFailed PauseStopEnd = "failed"
@@ -504,14 +614,19 @@ func (s *Store) EndPauseStop(ctx context.Context, pause int64, token claim.Token
 	return ended, err
 }
 
-// EndPauseStopTx ends pause's open stop of token at at as end — taken over, failed or cancelled —
-// and answers whether one was open. A role that stopped is recorded by RecordPauseStoppedTx
-// instead, which also ends a stop the resume cancelled.
+// EndPauseStopTx ends pause's open stop of token at at as end and answers whether one was open.
+// The `pause_stop` executor ends a stop this way when the claim answers it is stopped other than
+// by this pause's own suspension (decision 4): `taken_over` where a park, a close, the operator,
+// an earlier pause's late stop or an idle release stopped it first, `failed` where it failed or
+// retired, `stopped` where it is queued with nothing to stop; the resume ends them `cancelled`. A
+// stop ended here owes no launch. A stop the pause's own suspension made is recorded by
+// RecordPauseStoppedTx instead, with the launch it owes, and that also ends a stop the resume
+// cancelled.
 func EndPauseStopTx(ctx context.Context, tx pgx.Tx, pause int64, token claim.Token, end PauseStopEnd, at time.Time) (bool, error) {
 	switch end {
-	case PauseStopTakenOver, PauseStopFailed, PauseStopCancelled:
+	case PauseStopStopped, PauseStopTakenOver, PauseStopFailed, PauseStopCancelled:
 	default:
-		return false, fmt.Errorf("end pause %d's stop of %s: %q is not how a stop is ended here; a stop that stopped is recorded with RecordPauseStoppedTx", pause, token, end)
+		return false, fmt.Errorf("end pause %d's stop of %s: %q is no way a stop ends", pause, token, end)
 	}
 	tag, err := tx.Exec(ctx, `update project_pause_stops set ended_at = $3, ended_as = $4
 		where pause_id = $1 and claim = $2 and ended_at is null`, pause, string(token), at, string(end))
@@ -524,36 +639,56 @@ func EndPauseStopTx(ctx context.Context, tx pgx.Tx, pause int64, token claim.Tok
 // RecordPauseStopped records, in a transaction of its own, that pause's stop of the claim
 // stopped; see RecordPauseStoppedTx.
 func (s *Store) RecordPauseStopped(ctx context.Context, pause int64, stop PauseStopClaim, at time.Time, launchOwed bool) error {
-	return s.Tx(ctx, func(tx pgx.Tx) error { return RecordPauseStoppedTx(ctx, tx, pause, stop, at, launchOwed) })
+	return s.Tx(ctx, func(tx pgx.Tx) error {
+		_, err := RecordPauseStoppedTx(ctx, tx, pause, stop, at, launchOwed)
+		return err
+	})
 }
 
 // RecordPauseStoppedTx records that the claim stopped for pause at at, and whether it was owed a
-// launch: it ends the claim's newest stop of that pause that is open or that the resume ended
-// `cancelled`, since the role did stop (decision 6), and writes one stop already ended where the
-// pause asked none — the gate's own stop of a launch (decision 7) — so the role's newest stop is
-// always on record. The stop transaction calls it under the issue's lock (LockIssueForPause), so
-// two stops of one claim never write it side by side.
-func RecordPauseStoppedTx(ctx context.Context, tx pgx.Tx, pause int64, stop PauseStopClaim, at time.Time, launchOwed bool) error {
+// launch, and answers whether this is the first record of that stop. The claim's newest stop of
+// that pause decides how:
+//
+//   - open, or ended `cancelled` by the resume: it ends `stopped`, since the role did stop
+//     (decision 6), and the call answers true;
+//   - ended `stopped` already: the stop is on record — a stop transaction made again because the
+//     answer of its commit was lost (supervise.Deps.PauseStopped), or a role stopped twice within
+//     one pause — so the row stays, owing a launch where either stop owed one, and the call
+//     answers false, which tells the caller its other records stand too;
+//   - ended otherwise, or none: one stop already ended is written, as for the gate's own stop of
+//     a launch (decision 7), so the role's newest stop is always on record, and the call answers
+//     true.
+//
+// The stop transaction calls it under the issue's lock (LockIssueForPause), so two stops of one
+// claim never write it side by side.
+func RecordPauseStoppedTx(ctx context.Context, tx pgx.Tx, pause int64, stop PauseStopClaim, at time.Time, launchOwed bool) (bool, error) {
 	if err := validPauseStopClaim(stop); err != nil {
-		return err
+		return false, err
 	}
-	tag, err := tx.Exec(ctx, `update project_pause_stops set ended_at = $3, ended_as = 'stopped', launch_owed = $4
-		where id = (select id from project_pause_stops where pause_id = $1 and claim = $2
-			and (ended_at is null or ended_as = 'cancelled') order by id desc limit 1)`,
-		pause, string(stop.Claim), at, launchOwed)
+	var newest int64
+	var end string
+	err := tx.QueryRow(ctx, `select id, coalesce(ended_as, '') from project_pause_stops
+		where pause_id = $1 and claim = $2 order by id desc limit 1`, pause, string(stop.Claim)).Scan(&newest, &end)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, fmt.Errorf("record pause %d's stop of %s: %w", pause, stop.Claim, err)
+	}
+	found := err == nil
+	switch {
+	case found && PauseStopEnd(end) == PauseStopStopped:
+		_, err = tx.Exec(ctx, `update project_pause_stops set launch_owed = launch_owed or $2 where id = $1`, newest, launchOwed)
+	case found && (end == "" || PauseStopEnd(end) == PauseStopCancelled):
+		_, err = tx.Exec(ctx, `update project_pause_stops set ended_at = $2, ended_as = 'stopped', launch_owed = $3 where id = $1`,
+			newest, at, launchOwed)
+	default:
+		_, err = tx.Exec(ctx, `insert into project_pause_stops
+			(pause_id, claim, issue, role, asked_at, ended_at, ended_as, launch_owed)
+			values ($1, $2, $3, $4, $5, $5, 'stopped', $6)`,
+			pause, string(stop.Claim), stop.Issue, string(stop.Role), at, launchOwed)
+	}
 	if err != nil {
-		return fmt.Errorf("record pause %d's stop of %s: %w", pause, stop.Claim, err)
+		return false, fmt.Errorf("record pause %d's stop of %s: %w", pause, stop.Claim, err)
 	}
-	if tag.RowsAffected() > 0 {
-		return nil
-	}
-	if _, err := tx.Exec(ctx, `insert into project_pause_stops
-		(pause_id, claim, issue, role, asked_at, ended_at, ended_as, launch_owed)
-		values ($1, $2, $3, $4, $5, $5, 'stopped', $6)`,
-		pause, string(stop.Claim), stop.Issue, string(stop.Role), at, launchOwed); err != nil {
-		return fmt.Errorf("record pause %d's stop of %s: %w", pause, stop.Claim, err)
-	}
-	return nil
+	return !found || PauseStopEnd(end) != PauseStopStopped, nil
 }
 
 // OpenPauseStops are pause's open stops, oldest first: the claims whose stop the pause still
@@ -756,6 +891,35 @@ func (s *Store) OpenPausePodHolds(ctx context.Context, project string) ([]PauseP
 		return nil, fmt.Errorf("read the pod holds of %s: %w", project, err)
 	}
 	return holds, nil
+}
+
+// IssueHasLiveRoleTx is whether any claim of issue is live through tx: not suspended, failed or
+// retired, as liveClaimsOf reads a live claim. Read under the issue's lock (LockIssueForPause), it
+// is what the pod-hold writers ask of a pod (decision 13): the stop transaction opens a hold only
+// where no role of the pod is live, and the resume ends one only where a role is. project is the
+// project token, as the claims table holds it.
+func IssueHasLiveRoleTx(ctx context.Context, tx pgx.Tx, project, issue string) (bool, error) {
+	var live bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from claims where project = $1 and issue = $2 and state <> all($3))`,
+		project, issue, []string{string(supervise.StateSuspended), string(supervise.StateFailed), string(supervise.StateRetired)}).Scan(&live); err != nil {
+		return false, fmt.Errorf("read whether a role of %s is live: %w", issue, err)
+	}
+	return live, nil
+}
+
+// ExpeditePauseStopRowsTx makes due at at every `pause_stop` row of issue's role that waits for a
+// later moment, and answers how many it moved: a stop the claim held for its turn retries on a
+// bounded wait (the outbox's pauseStop), and the stop transaction that records the claim stopped
+// makes its row due at once, so it ends within a lane's wake of the turn's end (decision 4). The
+// caller wakes the issue's lifecycle lane once the transaction commits.
+func ExpeditePauseStopRowsTx(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, at time.Time) (int64, error) {
+	tag, err := tx.Exec(ctx, `update outbox set next_at = $3
+		where kind = 'supervise' and issue = $1 and payload->>'op' = 'pause_stop' and payload->>'role' = $2 and next_at > $3`,
+		issue, string(role), at)
+	if err != nil {
+		return 0, fmt.Errorf("make the pause stops of %s's %s due: %w", issue, role, err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // CloseRoleOpenResumeTx closes, at at, the open resume of issue's role — the one no first turn has

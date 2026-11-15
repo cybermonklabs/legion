@@ -121,6 +121,17 @@ func (s *Store) CancelPodBackstopsOf(ctx context.Context, project, issue string)
 	return s.Tx(ctx, func(tx pgx.Tx) error { return CancelPodBackstops(ctx, tx, project, issue, "") })
 }
 
+// CancelRolePodBackstops cancels the open backstops of issue that role armed, in a transaction of
+// its own: the outbox's `suspend` row, which takes one role of a released pod over, drops that
+// role's backstop alone (decision 17 of dispatch://INFRA-3759), so a stop of another role of the
+// issue — a pause's, a park's of the architect — never cancels a worker's backstop.
+func (s *Store) CancelRolePodBackstops(ctx context.Context, project, issue string, role claim.Role) error {
+	if role == "" {
+		return fmt.Errorf("cancel the backstops of %s: no role named; CancelPodBackstopsOf cancels every one", issue)
+	}
+	return s.Tx(ctx, func(tx pgx.Tx) error { return CancelPodBackstops(ctx, tx, project, issue, role) })
+}
+
 // TakePodWake takes one wake outside any fact transaction, for the wakes the outbox takes: a
 // notice or a phase-ended message that found the role it is for released. Inside a fact's
 // transaction the workflow takes its four through PodRecords.TakePodWake, which is where taking

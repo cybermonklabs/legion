@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/memorygroup"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -1591,6 +1592,12 @@ func (a *Admission) promote(ctx context.Context, tx pgx.Tx) (int, []string, erro
 // at every slot whose worker has lost its task, and at every tree a step that left gates.design
 // released (record.Waiting's LineFirstPhase).
 func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bool) (int, []string, error) {
+	// A paused project promotes nothing (decision 11 of dispatch://INFRA-3759): no slot, no owed
+	// entry, no stalled-tree notice and no children-first notice. The tick's wake of the
+	// controller is the caller's and still runs, and the resume applies one pass of its own.
+	if paused, err := a.paused(ctx, tx); err != nil || paused {
+		return 0, nil, err
+	}
 	issues, slots, facts, err := a.adoptQueuedRoots(ctx, tx, respectHolds)
 	if err != nil {
 		return 0, nil, err
@@ -2807,11 +2814,29 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 // on a period of its own — so what the sweep adds is the one convergence, run when no fact of
 // the project arrives to run it.
 func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
+	// A paused project sends no role its entry's work (decision 11 of dispatch://INFRA-3759), as
+	// its promotion sends none (promoteHolds).
+	if paused, err := a.paused(ctx, tx); err != nil || paused {
+		return err
+	}
 	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
 		return err
 	}
 	return a.resumeSlottedWorkers(ctx, tx, issues, slots, facts)
+}
+
+// paused is whether the project stands paused, read on the pass's own transaction
+// (store.OpenPauseTx) rather than from the daemon's flag (internal/pause's Service.Paused): the
+// pass then judges the pause in the snapshot it judges everything else in, a pause another daemon
+// of a rolling restart made counts before this daemon's next sweep reads it, and the read is the
+// one the outbox's claim makes of the same table (record's outboxPauseFree).
+func (a *Admission) paused(ctx context.Context, tx pgx.Tx) (bool, error) {
+	_, open, err := store.OpenPauseTx(ctx, tx, a.project)
+	if err != nil {
+		return false, fmt.Errorf("read whether %s is paused: %w", a.project, err)
+	}
+	return open, nil
 }
 
 // finishFencedStarts is the repair of a held start row that has outlived the fences the outbox

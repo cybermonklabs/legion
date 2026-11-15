@@ -88,6 +88,12 @@ type workflowRuntime struct {
 	// through them, so the wake forwards to whatever attach has stored, and to nothing before
 	// then — the outbox's boot sweep finds every row written before it ran.
 	outboxWake atomic.Pointer[outbox]
+	// pauses is the project's pause (projectPause, dispatch://INFRA-3759): the pause service the
+	// API's routes are handed, with the stop transaction, the let-out stamp and the after-commit
+	// steps the machines and the service call. run builds it once this runtime is open and before
+	// supervision, since a pause's stops run on this runtime's outbox; a runtime a test builds by
+	// hand holds none.
+	pauses *projectPause
 	// limits are where the deployment's claim budgets run out (supervise.Limits, built once at
 	// daemon.go's Deps), taken from the supervisor at attach: a failed claim's fact carries them
 	// to the workflow engine (applyTerminal), which holds neither the claim nor the configuration
@@ -1081,6 +1087,11 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
 	supervision.applySweepFacts = w.applySweepFacts
+	if w.pauses != nil {
+		// The flag is read again at each sweep (decision 18), so a pause made or ended through
+		// another daemon of a rolling restart reaches this daemon's machines within one sweep.
+		w.outbox.refreshPause = w.pauses.service.Refresh
+	}
 	w.attachIdleRelease(supervision)
 }
 

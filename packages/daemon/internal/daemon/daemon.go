@@ -378,6 +378,17 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
+		// The project's pause (dispatch://INFRA-3759) runs its stops on this runtime's outbox, so
+		// it is built with the workflow, before supervision: the machines are handed its flag, its
+		// stop transaction and its let-out stamp (openSupervision), and the boot loads its flag
+		// before any claim is restored (supervision.start).
+		pauses, err := newProjectPause(cfg, st, plan.project, workflow, plan.clock, log)
+		if err != nil {
+			workflow.stop()
+			st.Close()
+			return err
+		}
+		workflow.pauses = pauses
 	}
 	if cfg.Runtime.Name == "tmux" {
 		executable, err := os.Executable()
@@ -416,10 +427,11 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	}
 
 	var apps appauth.Tokens
+	var pauses *projectPause
 	if workflow != nil {
-		apps = workflow.tokens
+		apps, pauses = workflow.tokens, workflow.pauses
 	}
-	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, refreshGate)
+	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, refreshGate, pauses)
 	if err != nil {
 		listener.Close()
 		workflow.stop()
@@ -1212,6 +1224,10 @@ type supervision struct {
 	// hand gives it supervise.NewRefreshGate(0), the gate of a daemon that paces nothing, which
 	// grants every refresh.
 	refreshGate supervise.RefreshAdmitter
+	// pauses is the project's pause (projectPause), nil without a workflow: the boot loads its
+	// flag before it restores any claim, and asks the stop of every claim it finds live while the
+	// project is paused (start).
+	pauses *projectPause
 	// imageReport is what the worker image's passed probe reported: of the image, from its OK line,
 	// and of the pool, the attempts that waited on its capacity (bootprobe.ImageReport); under
 	// tmux, the model-fallback mark alone, read by plan.modelFallback. probed is whether the probe
@@ -1401,7 +1417,12 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // every machine of this daemon asks the same gate, and the supervision keeps the same reference,
 // because the refresh pass corrects it from the wakes those machines publish and asks it for
 // each claim it posts (refreshStalePlugins, waitingWakes).
-func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Tokens, reserve func(time.Time) time.Time, refreshGate supervise.RefreshAdmitter) (*supervision, error) {
+//
+// pauses is the project's pause (projectPause, nil without a workflow): the machines read its flag
+// (Deps.Paused, the service's one atomic load), write a pause's stop through its stop transaction
+// (Deps.PauseStopped) and stamp each paced launch's let-out moment through it (Deps.WakeLetOut);
+// it reads the machines this supervisor holds for its catch-up and its resume.
+func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Tokens, reserve func(time.Time) time.Time, refreshGate supervise.RefreshAdmitter, pauses *projectPause) (*supervision, error) {
 	claims, err := st.Claims(boot)
 	if err != nil {
 		return nil, err
@@ -1490,10 +1511,14 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 	}
+	if pauses != nil {
+		sup.deps.Paused, sup.deps.PauseStopped, sup.deps.WakeLetOut = pauses.service.Paused, pauses.stopped, pauses.wakeLetOut
+		pauses.supervisor = sup
+	}
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
-		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate,
+		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop,
 	}
@@ -1632,10 +1657,31 @@ func (s sessionStop) send(supervising context.Context, session string, goneAt ti
 // is a second guard beside that check, so boot does not report the retired claim as an unrecorded
 // launch. The steps before the relaunches run on boot, settle on budgets of its own, and the
 // relaunches on the machines' context; the daemon's stop ends all three (run).
+//
+// The project's pause is read before any claim is restored (decision 18 of
+// dispatch://INFRA-3759): the flag holds the open pause before any machine exists, so every launch
+// this boot makes meets the gate. While the project is paused, the boot then asks the stop of each
+// live claim but the controller's that the pause has not stopped (projectPause.askBootStops), and
+// the relaunches and the stale-plugin pass below meet the gate, so the boot launches nothing but
+// the controller (R5). A boot that cannot read the pause, or cannot ask those stops, does not
+// start: it would launch roles a pause holds.
 func (s *supervision) start(boot context.Context, settle func() error) error {
+	var open store.Pause
+	paused := false
+	if s.pauses != nil {
+		var err error
+		if open, paused, err = s.pauses.service.Load(boot); err != nil {
+			return fmt.Errorf("read whether the project is paused: %w", err)
+		}
+	}
 	unfinished, err := s.supervisor.restore(boot, s.claims)
 	if err != nil {
 		return err
+	}
+	if paused {
+		if err := s.pauses.askBootStops(boot, open); err != nil {
+			return fmt.Errorf("ask the stops of pause %d: %w", open.ID, err)
+		}
 	}
 	if s.cfg.ControllerLaunch != config.ControllerLaunchDaemon {
 		if err := s.stopLaunchedController(boot); err != nil {

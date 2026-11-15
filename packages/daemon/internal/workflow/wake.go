@@ -78,6 +78,18 @@ func wakeRow(issue record.Issue, role claim.Role, task string) record.SuperviseR
 	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Generation: issue.Generation, Task: task}
 }
 
+// PauseWakeRow is the start a project's pause owes a role it stopped with a launch owed: the row
+// the stop transaction writes beside its held wake (pods.WakePause, decision 6 of
+// dispatch://INFRA-3759), in wakeRow's shape, marked with the wake's kind and the pause, so the
+// outbox holds it while a pause stands and finishes it without acting once a park, a close or a
+// moved phase has taken the role over (decision 10). It carries no task: the task the role holds
+// pending, if any, is what its launch delivers.
+func PauseWakeRow(issue record.Issue, role claim.Role, pause int64) record.SuperviseRequest {
+	row := wakeRow(issue, role, "")
+	row.WakeKind, row.Pause = pods.WakePause, pause
+	return row
+}
+
 // WakeTask is the one task a woken role is given, the sentence its first turn reads before
 // anything else: which wake brought its pod back and what that wake was about. R6 asks for
 // exactly one such task or message per wake, and the outbox row that carries it is written in the

@@ -66,6 +66,13 @@ func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 	return putClaim(ctx, s.pool, c)
 }
 
+// PutClaimTx is PutClaim inside a caller's transaction: the stop a project's pause makes writes
+// the claim with the pause's records in one transaction (decision 6 of dispatch://INFRA-3759,
+// supervise.Deps.PauseStopped), so a stopped claim never stands without them.
+func PutClaimTx(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
+	return putClaim(ctx, tx, c)
+}
+
 // PutClaimActivity writes the four activity columns of token's claim row and nothing else: what
 // that claim's session last reported of what it is doing (INFRA-945). The report is no part of
 // the claim's machine state — it arrives between a machine's writes, and the machine's in-memory
@@ -652,12 +659,16 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 // never prompted again and the phase waits. It is also where a confirmation tells the decisions
 // its delivery holds, in that same transaction and for the same reason.
 func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d supervise.Delivery) error {
-	return s.Tx(ctx, func(tx pgx.Tx) error {
-		if err := putClaim(ctx, tx, c); err != nil {
-			return err
-		}
-		return putDelivery(ctx, tx, c.Token, d)
-	})
+	return s.Tx(ctx, func(tx pgx.Tx) error { return PutClaimAndDeliveryTx(ctx, tx, c, d) })
+}
+
+// PutClaimAndDeliveryTx is PutClaimAndDelivery inside a caller's transaction, for the stop a
+// project's pause makes of a claim that holds a pending delivery (PutClaimTx).
+func PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervise.Claim, d supervise.Delivery) error {
+	if err := putClaim(ctx, tx, c); err != nil {
+		return err
+	}
+	return putDelivery(ctx, tx, c.Token, d)
 }
 
 // RetireDelivery removes the claim's pending delivery, fenced on its id: retiring a delivery the
