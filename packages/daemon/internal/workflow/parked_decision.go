@@ -204,7 +204,9 @@ func HandOverKept(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // nothing, and what it is owed waits KEPT for its next start or ready to name, since a catch-up
 // queued for nobody would only be dropped by the ready that follows. No catch-up of a hand-over
 // is paced: it answers a person who is waiting, and it reaches an architect the daemon did not
-// wake, so it is due at once (the zero moment QueueCatchUp reads as now).
+// wake, so it is due at once (the zero moment QueueCatchUp reads as now). Nor does one carry the
+// sentence of what a relaunch ended, which only a launch's ready knows: the prompt the claim's
+// own machine sends carries that sentence whatever becomes of a catch-up.
 func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, trees []string, now time.Time) error {
 	launches, err := store.ArchitectLaunches(ctx, tx, trees)
 	if err != nil {
@@ -225,7 +227,7 @@ func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, ste
 		if !hears {
 			continue
 		}
-		if err := QueueCatchUp(ctx, tx, store, steps, *root, launches[key], now, time.Time{}); err != nil {
+		if err := QueueCatchUp(ctx, tx, store, steps, *root, launches[key], "", now, time.Time{}); err != nil {
 			return err
 		}
 	}

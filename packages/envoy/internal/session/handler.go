@@ -38,7 +38,8 @@ type HandleAgentResult struct {
 // stored message carries its own, and a core path's message, which is not the durable's copy of
 // anything, resolves under 0, which leaves a session on consumer delivery its consumer's copy
 // whatever that copy's sequence is. An agent message is stored on the subject it names as its
-// topic, the session's own agent subject, so Resolve reads that topic for both paths below.
+// topic, the session's own agent subject, and captured is whether the deployed stream captures
+// that topic (Resolve), which both paths below read.
 func HandleAgentMessage(
 	item contracts.Envelope,
 	sessionID string,
@@ -46,10 +47,11 @@ func HandleAgentMessage(
 	interest *store.Interest,
 	entry *SessionEntry,
 	storedSeq uint64,
+	captured bool,
 ) HandleAgentResult {
 	// Interest path: the stored subscription names this listener, which owns the session.
 	if interest != nil && interest.MachineID == machineID {
-		if err := Resolve(item, sessionID, entry, storedSeq); err != nil {
+		if err := Resolve(item, sessionID, entry, storedSeq, captured); err != nil {
 			return HandleAgentResult{Err: err}
 		}
 		return HandleAgentResult{Relayed: true}
@@ -66,7 +68,7 @@ func HandleAgentMessage(
 	// No stored subscription names an owner, so this listener answers for the session: there is
 	// nobody else the message can be left to. The entry is the one the caller resolved, delivered
 	// through directly rather than read a second time.
-	if err := Resolve(item, sessionID, entry, storedSeq); err != nil {
+	if err := Resolve(item, sessionID, entry, storedSeq, captured); err != nil {
 		// Resolve fails only with ErrNoSessionRecord. The zero result carries no error, so the
 		// listener defers the message for its retry window (cmd/listener/unplaceable_delivery.go)
 		// rather than NAK it.
