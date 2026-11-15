@@ -131,16 +131,33 @@ function withinWindow(items: readonly SessionAnswer[], now: number): SessionAnsw
   return items.filter((item) => Date.parse(item.at) >= start);
 }
 
+/** A read's `words` and `since` for a list rendered from `items` at `now`: every item of the
+ *  window, shown or left out by the cap, and where the window starts. */
+function windowOf(
+  items: readonly SessionAnswer[],
+  now: number
+): { readonly words: string[]; readonly since: string } {
+  return {
+    words: sessionAnswersWords(withinWindow(items, now)),
+    since: new Date(now - SESSION_ANSWERS_WINDOW_MS).toISOString(),
+  };
+}
+
 /**
  * What the people wrote in each of `items`, one string per item: its kind, id, author and times,
- * the options chosen and the words. `readSessionAnswers` gives it for the items its list shows, so
- * a host comparing two reads' sets tells a new item shown, or an answer or comment a person
- * changed, from a list that only lost items or changed what the session or Dispatch says around
- * them (an issue's title, an ask's question, a cached list's header).
+ * the options chosen and the words. `readSessionAnswers` gives it for every item of the read's
+ * 72-hour window, the ones its list shows and the ones the character cap left out, so a host
+ * comparing two reads (`sessionAnswersChanged`) tells a new item, or an answer or comment a person
+ * changed, from a list that only lost items to the window or changed what the session or Dispatch
+ * says around them (an issue's title, an ask's question, a cached list's header). An item the cap
+ * leaves out counts too: a newest item longer than the cap, or a comment an edit made too long to
+ * fit, is shown to nobody, and a host that compared only the items shown would go on showing the
+ * person's old words as current.
  *
  * The author is the rendered act (`actorActText`), not the person's id alone, so the same words
  * from the person themselves and from an agent acting for them are two different items: a host
- * that compared ids would carry the second as if the person had written it.
+ * that compared ids would carry the second as if the person had written it. The fourth field is
+ * the item's time, which `sessionAnswersChanged` reads back.
  */
 export function sessionAnswersWords(items: readonly SessionAnswer[]): string[] {
   return items.map((item) =>
@@ -154,6 +171,45 @@ export function sessionAnswersWords(items: readonly SessionAnswer[]): string[] {
       item.text,
     ])
   );
+}
+
+/** The time (epoch ms) of the item a `sessionAnswersWords` string names, or NaN when `word` is no
+ *  such string. */
+function wordTime(word: string): number {
+  try {
+    const fields: unknown = JSON.parse(word);
+    return Array.isArray(fields) && typeof fields[3] === "string"
+      ? Date.parse(fields[3])
+      : Number.NaN;
+  } catch {
+    return Number.NaN;
+  }
+}
+
+/**
+ * Whether a read whose `words` are `next` shows something that a list with the `words` `shown`
+ * did not: an item new to it, or an answer or comment a person changed (a string `shown` lacks);
+ * or an item `shown` held that is gone from the read while its time is still inside the read's
+ * window, at or after `since` (`SessionAnswersRead.since`), which a person retracted (an answer
+ * set back to none) or Dispatch removed. An item gone because its time left the window is no
+ * change: the window moved, and nothing a person wrote did. A string whose time cannot be read,
+ * or a read with no `since`, counts as gone inside the window, so a host never goes on showing
+ * what may have been retracted.
+ */
+export function sessionAnswersChanged(
+  shown: readonly string[],
+  next: readonly string[],
+  since: string | undefined
+): boolean {
+  const before = new Set(shown);
+  if (next.some((word) => !before.has(word))) return true;
+  const after = new Set(next);
+  const start = since === undefined ? Number.NaN : Date.parse(since);
+  return shown.some((word) => {
+    if (after.has(word)) return false;
+    const at = wordTime(word);
+    return Number.isNaN(at) || Number.isNaN(start) || at >= start;
+  });
 }
 
 /** `SESSION_ANSWERS_MAX_CHARS` as the left-out line prints it. */
@@ -198,14 +254,6 @@ export function renderSessionAnswers(
   items: readonly SessionAnswer[],
   options: RenderSessionAnswersOptions
 ): string | undefined {
-  return renderShown(items, options)?.text;
-}
-
-/** `renderSessionAnswers`'s text, and the items it shows. */
-function renderShown(
-  items: readonly SessionAnswer[],
-  options: RenderSessionAnswersOptions
-): { readonly text: string; readonly shown: readonly SessionAnswer[] } | undefined {
   const inWindow = withinWindow(items, Number(options.now));
   // A list the server cut short with max_chars left out only items older than every one it sent,
   // so once any item it sent has left the window, every one it left out has too.
@@ -232,12 +280,11 @@ function renderShown(
     length += 2 + block.length;
   }
   const leftOut = count - blocks.length;
-  const text = [
+  return [
     header,
     ...blocks,
     ...(leftOut === 0 ? [] : [leftOutLine(leftOut, namesCommand)]),
   ].join("\n\n");
-  return { text, shown: inWindow.slice(0, blocks.length) };
 }
 
 /** What `dispatch answers` prints: every item of the 72 hours before `now`, newest first, in the
@@ -394,8 +441,13 @@ export interface SessionAnswersRead {
   readonly source: "fresh" | "cache" | "failure" | "unavailable" | "off";
   /** When the list shown was read (`fresh` and `cache`). */
   readonly readAt?: string;
-  /** `sessionAnswersWords` of the list shown (`fresh` and `cache`): what the people wrote in it. */
+  /** `sessionAnswersWords` of every item of the 72-hour window the list was rendered for (`fresh`
+   *  and `cache`), the ones the character cap left out included: what the people wrote. */
   readonly words?: readonly string[];
+  /** The start of that window (ISO 8601 UTC), 72 hours before the render (`fresh` and `cache`):
+   *  an item `words` no longer holds whose time is at or after it left the read inside the window
+   *  (`sessionAnswersChanged`). */
+  readonly since?: string;
   /** Why the read gave no list (`cache`, `failure`, `unavailable`), or the notice that turns
    *  Dispatch off. */
   readonly reason?: string;
@@ -470,28 +522,23 @@ export async function readSessionAnswers(
     reason: string,
     noRoute = false
   ): SessionAnswersRead => {
-    const rendered =
+    const at = now();
+    const text =
       cache === undefined
         ? undefined
-        : renderShown(cache.items, {
-            now: now(),
+        : renderSessionAnswers(cache.items, {
+            now: at,
             total: cache.total,
             cached: { readAt: cache.read_at, reason },
             withoutCommand: noRoute,
           });
-    if (cache === undefined || rendered === undefined) {
+    if (cache === undefined || text === undefined) {
       if (noRoute) return { text: undefined, source: "unavailable", reason };
       // A cache that renders nothing is no list to show: the failure line keeps a read that failed
       // from looking like no person wrote.
       return { text: sessionAnswersFailureLine(reason), source: "failure", reason };
     }
-    return {
-      text: rendered.text,
-      source: "cache",
-      readAt: cache.read_at,
-      words: sessionAnswersWords(rendered.shown),
-      reason,
-    };
+    return { text, source: "cache", readAt: cache.read_at, ...windowOf(cache.items, at), reason };
   };
   if (!dispatch.enabled) {
     const url = options.dispatchUrl;
@@ -591,12 +638,12 @@ export async function readSessionAnswers(
   }
   if ("noRoute" in outcome) return noRoute();
   if ("failure" in outcome) return carry(current.cache, outcome.failure);
-  const rendered = renderShown(outcome.cache.items, { now: now(), total: outcome.cache.total });
+  const at = now();
   return {
-    text: rendered?.text,
+    text: renderSessionAnswers(outcome.cache.items, { now: at, total: outcome.cache.total }),
     source: "fresh",
     readAt: outcome.cache.read_at,
-    words: sessionAnswersWords(rendered?.shown ?? []),
+    ...windowOf(outcome.cache.items, at),
   };
 }
 

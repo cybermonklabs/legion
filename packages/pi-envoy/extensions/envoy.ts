@@ -4145,14 +4145,17 @@ export default function envoyExtension(pi: PiApi): void {
         env: process.env,
       });
       if (read.notice !== undefined) logger.warn(`envoy: ${read.notice}`);
-      // The failure line shows nothing a person wrote.
-      return read.text === undefined ? undefined : { text: read.text, words: read.words ?? [] };
+      return read.text === undefined
+        ? undefined
+        : { text: read.text, words: read.words, since: read.since };
     } catch (error) {
       // Oh My Pi drops all a `context` handler returns when it throws, the dispatch-first skill
       // with it, so a read that throws instead of answering with its failure line still costs
-      // only the list: the request says the list could not be read, and why.
+      // only the list: the request says the list could not be read, after its last message where
+      // a list sat (`withSessionAnswers`), and the log says why. A failure line already placed
+      // keeps its own reason.
       logger.warn(`envoy: people's answers could not be read: ${messageFor(error)}`);
-      return { text: sessionAnswersFailureLine(messageFor(error)), words: [] };
+      return { text: sessionAnswersFailureLine(messageFor(error)) };
     }
   };
 
