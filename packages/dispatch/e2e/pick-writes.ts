@@ -2,16 +2,19 @@
  *  pick on screen") hold, log and read: each save of an issue held by Playwright's route control
  *  with the window it was held in, each read of a list or of the issue with when it was sent and
  *  answered, what the server stored from the issue's own events, every value a control or a
- *  table's cell shows at every animation frame, and the issue page's own picker. The rows live in
- *  the spec files of the pages they drive (`project.e2e.ts`, `board.e2e.ts`,
- *  `issues-table.e2e.ts`, `inbox-drawer.e2e.ts`, `inbox-reading-pane.e2e.ts`); this module holds
- *  no row. */
+ *  table's cell shows at every animation frame, and the issue page's own picker, with the controls
+ *  that reach it and the Inbox drawer on either issue page: the one with the sidebar, which holds
+ *  Peek, and whose `main` holds every picker, and that of dispatch://INFRA-1196, whose icon rail
+ *  opens the navigation that holds Peek and whose Details holds the repository. The rows live in
+ *  the spec files of the pages they drive (`project.e2e.ts`, `board.e2e.ts`, `issues-table.e2e.ts`,
+ *  `inbox-drawer.e2e.ts`, `inbox-reading-pane.e2e.ts`); this module holds no row. */
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { expect, type Locator, type Page, type Request } from "@playwright/test";
 
 import type { IssueField } from "../web/src/features/issue/issue-field-writes";
 import { getIssueEvents } from "./api";
+import { drawer, peekTrigger } from "./inbox-drawer";
 import { keptWrites } from "./keyed-writes";
 
 /** At least how long `holdIssuePatches` holds each save: long enough for a row to make its next
@@ -165,10 +168,50 @@ export function expectReadWhileHeld(
   ).toBe(true);
 }
 
-/** The issue page's own picker named `name` (an `aria-label`, such as `Priority of CORE-1`): the
- *  Inbox drawer draws outside `main`. */
+/** Where the issue page draws its own pickers, as a CSS selector: `main`, and Details, the drawer
+ *  beside `main` in which the issue page of dispatch://INFRA-1196 keeps the repository. The Inbox
+ *  drawer draws outside both. */
+export const ISSUE_PAGE_PICKERS = ':is(main, aside[aria-label="Details"])';
+
+/** The issue page's own picker named `name` (an `aria-label`, such as `Priority of CORE-1`),
+ *  inside `ISSUE_PAGE_PICKERS`. */
 export function pagePicker(page: Page, name: string): Locator {
-  return page.getByRole("main").getByRole("combobox", { name });
+  return page.locator(ISSUE_PAGE_PICKERS).getByRole("combobox", { name });
+}
+
+/**
+ * Brings the issue page's own picker named `name` into view, as a reader does: the issue page
+ * with the sidebar draws it in `main`; that of dispatch://INFRA-1196 keeps the repository in
+ * Details, which the Details control in the issue's header opens. Waits for whichever of the two
+ * the page draws, presses Details only where the picker is behind it, and returns once the picker
+ * is visible.
+ */
+export async function revealPagePicker(page: Page, name: string): Promise<void> {
+  const picker = pagePicker(page, name);
+  const details = page
+    .locator("header[data-issue-header]")
+    .getByRole("button", { exact: true, name: "Details" });
+  await expect(picker.or(details).first()).toBeVisible();
+  if (!(await picker.isVisible())) await details.click();
+  await expect(picker).toBeVisible();
+}
+
+/**
+ * Opens the Inbox drawer over the page through the control the page draws for it, as a reader
+ * does: the sidebar's Peek beside its Inbox (`peekTrigger`); or, on the issue page of
+ * dispatch://INFRA-1196, which draws the icon rail in place of the sidebar, the rail's Open
+ * navigation, then the Peek in the navigation it opens over the page. Either way it is the same
+ * drawer over the same page.
+ */
+export async function openInboxDrawer(page: Page): Promise<void> {
+  const peek = peekTrigger(page);
+  const openNavigation = page
+    .getByRole("navigation", { name: "App" })
+    .getByRole("button", { exact: true, name: "Open navigation" });
+  await expect(peek.or(openNavigation).first()).toBeVisible();
+  if (!(await peek.isVisible())) await openNavigation.click();
+  await peek.click();
+  await expect(drawer(page)).toBeVisible();
 }
 
 /** The sequence of the newest event of `issueKey`: the events a row reads after it are the
@@ -220,8 +263,9 @@ async function exposeShown(page: Page): Promise<{ binding: string; shown: Shown 
  * show in `page`, read at every animation frame of every document the page loads from now on -
  * so from the first frame a reload paints. A `<select>` shows its value; any other element its
  * text. `within`, a CSS selector, reads only the controls inside what it matches - the page's
- * `main`, or the Inbox drawer (`[role="dialog"][aria-label="Inbox"]`). Call it before the page
- * loads the document a row watches.
+ * `main`, `main` and Details (`ISSUE_PAGE_PICKERS`), or the Inbox drawer
+ * (`[role="dialog"][aria-label="Inbox"]`). Call it before the page loads the document a row
+ * watches.
  */
 export async function watchShown(page: Page, name: string, within = ":root"): Promise<Shown> {
   const { binding, shown } = await exposeShown(page);

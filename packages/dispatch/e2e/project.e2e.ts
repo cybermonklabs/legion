@@ -13,9 +13,11 @@ import {
   detailRead,
   expectReadWhileHeld,
   holdIssuePatches,
+  ISSUE_PAGE_PICKERS,
   lastEventSeq,
   logReads,
   pagePicker,
+  revealPagePicker,
   savesEnded,
   storedValues,
   watchShown,
@@ -353,11 +355,14 @@ test("picker keeps a pick on screen: the repository on the issue page, over a re
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    const shown = await watchShown(page, `Repository of ${issue.key}`, "main");
+    const shown = await watchShown(page, `Repository of ${issue.key}`, ISSUE_PAGE_PICKERS);
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, detailRead(issue.key));
     const picker = pagePicker(page, `Repository of ${issue.key}`);
     await page.goto(`/issues/${issue.key}`);
+    // The repository is in `main` on the issue page with the sidebar, and in Details on that of
+    // dispatch://INFRA-1196, which the reader opens to reach it.
+    await revealPagePicker(page, `Repository of ${issue.key}`);
     await expect(picker).toHaveValue("acme/widgets");
 
     // Its project's mappings are read once the reader reaches for the control.

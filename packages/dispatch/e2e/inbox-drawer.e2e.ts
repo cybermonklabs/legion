@@ -1,5 +1,5 @@
 import { getAsk, getIssue, patchIssue, setAgentStreamResponder } from "./api";
-import { attachShot, drawer, peekTrigger, seedAsk } from "./inbox-drawer";
+import { attachShot, drawer, seedAsk } from "./inbox-drawer";
 import {
   detailRead,
   expectReadWhileHeld,
@@ -7,6 +7,7 @@ import {
   inboxRead,
   lastEventSeq,
   logReads,
+  openInboxDrawer,
   pagePicker,
   readAnsweredSince,
   savesEnded,
@@ -66,10 +67,11 @@ test("a half-typed message in a live conversation survives opening the drawer, a
 // card rows carry a priority picker of their own (`InboxDrawer`, `pane={false}`), so the issue's
 // priority has a second picker beside the page's own, and the drawer lists the reader's own rows,
 // so an assignee picked on the page decides whether the issue's row is listed there. The drawer
-// is modal: the page under it is not pressed while it is open. Each save is held by Playwright's
-// route control at least `PICK_HOLD_MS` (`holdIssuePatches`), what the server received is read
-// from the issue's own events (`storedValues`), and the value stored from a fresh read once
-// every save has ended.
+// opens through the control the issue page draws for it (`openInboxDrawer`), and is modal: the
+// page under it is not pressed while it is open. Each save is held by Playwright's route control
+// at least `PICK_HOLD_MS` (`holdIssuePatches`), what the server received is read from the
+// issue's own events (`storedValues`), and the value stored from a fresh read once every save
+// has ended.
 
 /** A project, and an issue of it at P3 that `assignee` holds, with a question open on it that
  *  nobody has handed on (`seedAsk`), so it has a row in the Inbox of whoever holds the issue. */
@@ -99,7 +101,7 @@ test("picker keeps the newest pick: a pick in the Inbox drawer's row after two i
     // of the same field, takes it out.
     await headerPicker.selectOption("2");
     await expect(headerPicker).toHaveValue("2");
-    await peekTrigger(page).click();
+    await openInboxDrawer(page);
     const rowPicker = drawer(page).getByRole("combobox", { name: `Priority of ${key}` });
     await expect(rowPicker).toHaveValue("2");
     await rowPicker.selectOption("0");
@@ -159,7 +161,7 @@ test("picker keeps a pick on screen: the assignee on the issue page and on its I
     await expect.poll(() => shownOnPage.values.at(-1)).toBe("alice");
     const fromPick = shownOnPage.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);
-    await peekTrigger(page).click();
+    await openInboxDrawer(page);
     await expect(drawer(page).getByRole("combobox", { name: `Priority of ${key}` })).toBeVisible();
     // A rename of the issue, straight to the server, with the issue's row painted in the drawer
     // and the save held: its live event has the page read the issue and its Inbox rows again, and
