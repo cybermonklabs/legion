@@ -166,9 +166,11 @@ test("a file saves under its own name, and its older version under its number on
 // SLOW(>=2s): a cold load of the issue and its Artifacts tab, an upload through it, and the
 // download the browser saves.
 // @webkit @firefox: the name the engine saves from `filename*` where the name holds spaces and a
-// character outside ASCII, which the ASCII `filename` beside it cannot carry.
+// character outside ASCII, which the ASCII `filename` beside it cannot carry, and WebKit's own
+// rule of writing each space of the name it read as `_`.
 test("a file whose name holds spaces and a character outside ASCII saves under that name @webkit @firefox", async ({
   page,
+  browserName,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Accented downloads" });
@@ -180,7 +182,10 @@ test("a file whose name holds spaces and a character outside ASCII saves under t
     .getByRole("listitem")
     .filter({ has: page.getByRole("link", { exact: true, name }) });
   const saved = await saveFrom(page, row.getByRole("link", { name: "Download version 1" }));
-  expect(saved.suggestedFilename()).toBe(name);
+  // WebKit reads `filename*`, since the `é` stays where the ASCII `filename` has `_`, and then
+  // writes each space as `_` (CI run 43750246861). Chromium and Firefox save the name exactly.
+  const expected = browserName === "webkit" ? "Q3_final_résumé.pdf" : name;
+  expect(saved.suggestedFilename()).toBe(expected);
 });
 
 // SLOW(>=2s): a cold load of the issue and its Artifacts tab, and a download the browser saves
