@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A reviewer's approval that stands on the head of a pull request that has already merged ends the
+  review round and moves the issue to `accepting`, whether the approval came before the merge or
+  after it. Before, the round waited for GitHub's merge state of the head, which the daemon never
+  reads for a merged pull request, so the issue stayed in `reviewing` and its reviewer was resumed
+  again and again. An approval that stands on the head of a pull request closed without merging no
+  longer ends the round on a later fact: the architect decides what comes next.
