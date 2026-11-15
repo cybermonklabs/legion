@@ -49,6 +49,15 @@ function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary
     ...overrides,
   };
 }
+/** An issue as a Dispatch process of the release before the one that added `created_by` and
+ *  `created_at` answers it: neither member is there. While a release rolls out, a page of this
+ *  build reads such a row ("Two builds at once", `packages/envoy/cmd/dispatch/README.md`). */
+function issueFromOlderServer(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
+  const row: Partial<IssueSummary> = issue(key, overrides);
+  delete row.created_at;
+  delete row.created_by;
+  return row as IssueSummary;
+}
 function savedIssue(key: string): Issue {
   return {
     ...issue(key),
@@ -680,6 +689,71 @@ test("created-by sessions use their live name and state, and a null creator is U
   expect(
     within(screen.getByRole("row", { name: "CORE-2 Work CORE-2" })).getByText("Unknown")
   ).toBeDefined();
+});
+
+/** The rows below give the issue a server sent without the two members the lower key, so neither
+ *  the key order nor the order they are listed in can stand in for the ordering under test. */
+test("a row a server sends without created_by or created_at renders, with no author and no time", async () => {
+  table([issue("CORE-2"), issueFromOlderServer("CORE-1")], "?sort=created");
+  const row = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  expect(within(row).getByRole("link", { name: "CORE-1" }).getAttribute("href")).toContain(
+    "CORE-1"
+  );
+  expect(within(row).getByText("Unknown")).toBeDefined();
+  expect(row.querySelector("time")).toBeNull();
+  expect(
+    screen.getByRole("row", { name: "CORE-2 Work CORE-2" }).querySelector("time")
+  ).not.toBeNull();
+  // Created sorts without throwing on the absent time, and keeps that row after the one that
+  // carries a time, although its key sorts first.
+  expect(
+    screen
+      .getAllByRole("row")
+      .filter((candidate) => candidate.hasAttribute("data-issue-row"))
+      .map((candidate) => candidate.getAttribute("data-issue-row"))
+  ).toEqual(["CORE-2", "CORE-1"]);
+});
+
+test("a row with no created_at stays last when Created is sorted the other way", async () => {
+  // A sorting function alone cannot do this: the table orders an absent accessor value before it
+  // calls one and then reverses that for a descending sort, so the column says `sortUndefined:
+  // "last"`. Two rows without a time keep their own order beside the one that has one.
+  table(
+    [issue("CORE-3"), issueFromOlderServer("CORE-1"), issueFromOlderServer("CORE-2")],
+    "?sort=-created"
+  );
+  await screen.findByRole("row", { name: "CORE-3 Work CORE-3" });
+  expect(
+    screen
+      .getAllByRole("row")
+      .filter((candidate) => candidate.hasAttribute("data-issue-row"))
+      .map((candidate) => candidate.getAttribute("data-issue-row"))
+  ).toEqual(["CORE-3", "CORE-1", "CORE-2"]);
+});
+
+test("the Created filter files a row a server sent with no created_at under Older", async () => {
+  // The column's filter asks `createdAt` and files a row without a time under Older
+  // (`issues-table-model.ts`), the bucket an issue old enough to come from a server of the
+  // release before `created_at` would reach anyway, so a reader who picks that age still sees
+  // the row. The row that carries a time is today's, so the filter is doing the choosing.
+  table(
+    [issue("CORE-1", { created_at: new Date().toISOString() }), issueFromOlderServer("CORE-2")],
+    "?f.created=Older"
+  );
+  expect(await screen.findByRole("row", { name: "CORE-2 Work CORE-2" })).toBeDefined();
+  expect(screen.queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
+});
+
+test("the Legion queue puts an issue with no created_at after one of the same rank that has one", async () => {
+  table([
+    issueFromOlderServer("CORE-1", { labels: ["legion"], rank: "m" }),
+    issue("CORE-2", { labels: ["legion"], rank: "m" }),
+  ]);
+  const older = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  expect(
+    within(screen.getByRole("row", { name: "CORE-2 Work CORE-2" })).getByText("#1")
+  ).toBeDefined();
+  expect(within(older).getByText("#2")).toBeDefined();
 });
 
 test("a refused merge move leaves the source open and does not post the close reason", async () => {

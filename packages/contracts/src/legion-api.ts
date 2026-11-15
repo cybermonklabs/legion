@@ -753,7 +753,7 @@ const legionIssue = z.object({
    * number is below the entry its row names, on every admission pass and on a sweep of its own
    * each minute, so the two are equal for a role holding its work and differ for one the daemon
    * has still to reach. A root carries them as a child does, since the architect is the role
-   * that works `admitted` (contract 139); both are absent together for a phase no role works —
+   * that works `admitted` (contract 144); both are absent together for a phase no role works —
    * `awaiting_person`, `done` and `held` — and each is absent where it is 0, which is a role no
    * entry has been raised for and one the daemon holds no claim row of; a daemon before contract
    * 94 writes neither, and a caller in a pod whose plugin declares a contract below 94 is served
@@ -762,7 +762,7 @@ const legionIssue = z.object({
   phaseEntry: z.number().int().nonnegative().optional(),
   givenEntry: z.number().int().nonnegative().optional(),
   /** The two times of a claim's handshake of the last entry it was queued a task of (contract
-   * 139): when a task of that entry was first queued to the claim, and when a turn of that
+   * 144): when a task of that entry was first queued to the claim, and when a turn of that
    * claim's worker first confirmed one. The claim keeps both in a record of its own, so they
    * outlast the task, which the end of the confirming turn retires. A tree's own root carries its
    * architect's handshake whatever phase it stands in — through `awaiting_person` and the phases
@@ -770,15 +770,15 @@ const legionIssue = z.object({
    * the handshake of the role of its current phase. Both are absent where no entry was queued to
    * that claim in the issue's current generation — a role the daemon holds no claim row of, a
    * re-admitted root whose new architect entry is not queued yet, and a root of the release
-   * before contract 139, which carries the two numbers and no handshake — and `entryConfirmedAt`
+   * before contract 144, which carries the two numbers and no handshake — and `entryConfirmedAt`
    * alone is absent while no turn has confirmed a task of the entry. A daemon before contract
-   * 139 writes neither, and a caller in a pod whose plugin declares a contract below 139 is
+   * 144 writes neither, and a caller in a pod whose plugin declares a contract below 144 is
    * served the state with neither (the daemon's `withoutEntryTimes`), which is why a reader takes
    * both as optional. */
   entryQueuedAt: timestamp.optional(),
   entryConfirmedAt: timestamp.optional(),
   /** For a tree's own root, every arm of the daemon's architect-stalled reading that holds for its
-   * architect at this read, in the order the controller is told them (contract 139):
+   * architect at this read, in the order the controller is told them (contract 144):
    * `took-nothing`, the task of its entry was queued to its claim more than ten minutes ago and no
    * turn confirmed it; `claim-unreachable`, the claim is failed or retired and no start of the
    * root's run is the daemon's next move for it (a start the outbox is running is, and so is a
@@ -792,8 +792,8 @@ const legionIssue = z.object({
    * reads the arms by the predicates its own `architect-stalled` wake uses and serves them whether
    * or not the controller was told, and `legion state`'s plain line prints them and names a root
    * for nothing else. Absent for a root no arm holds for and for every issue that is not a tree's
-   * root; a daemon before contract 139 writes none, and a caller in a pod whose plugin declares a
-   * contract below 139 is served the state without it (the daemon's `withoutEntryTimes`), which is
+   * root; a daemon before contract 144 writes none, and a caller in a pod whose plugin declares a
+   * contract below 144 is served the state without it (the daemon's `withoutEntryTimes`), which is
    * why a reader takes it as optional. */
   architectStalls: z
     .array(z.enum(["took-nothing", "claim-unreachable", "slow-before-gate"]))

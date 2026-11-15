@@ -1725,7 +1725,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
 //
-// 139: INFRA-2614 (cybermonklabs/legion) -- a root's architect is a role the record states work
+// 144: INFRA-2614 (cybermonklabs/legion) -- a root's architect is a role the record states work
 // for, so the two keys contract 94 added carry a root: `phase.RoleFor` answers the architect for
 // `admitted`, the phase a root's own architect works, and each root's view carries the entry its
 // architect's work stands at and the entry its claim was queued, as a child's carries its
@@ -1761,7 +1761,7 @@ package api
 // snapshot), whether or not the controller was told of an arm, and the key is absent for a root
 // no arm holds for and for every issue that is not a tree's root.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 139 is served the issues without both times and without `architectStalls`
+// contract below 144 is served the issues without both times and without `architectStalls`
 // (api's stateFor, withoutEntryTimes) — as a caller below 133, the entry right above, is served
 // the issues without `mergeWait`, one below 132 every member of the waiting line whose `kind` is
 // `waiting_on_issue` without its `kind`, one below 111 the issues without `treeMovedAt` and
@@ -1776,7 +1776,7 @@ package api
 // below 55 without the gated steps, one below 53 a body with no wakes waiting, one below 51
 // without the admission's trees and each issue's tree, one below 49 without the memory draw and
 // one below 46 without the claim views' update rounds; the bands compose, and every reader
-// from 139 on takes both times and `architectStalls` as optional. The two entry numbers move no
+// from 144 on takes both times and `architectStalls` as optional. The two entry numbers move no
 // further: a plugin at 94 parses them already, and a root carrying them is the same shape the
 // issue beside it carries.
 // `legion state`'s plain line changes with them: it names a tree's own root where the state
@@ -1817,17 +1817,23 @@ package api
 // above and the number the base then carried, so 127 was no longer above it. A reading of
 // `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request of this repository,
 // made between 2026-11-15T00:05:55Z and 00:10:18Z, found no head declaring 133 or above, so this
-// change took 133, the lowest free number above main's 132 at that reading. It takes 139 at the
-// forward merge of 2026-11-15 that brings main in at 2e546572f2b8, which lands
+// change took 133, the lowest free number above main's 132 at that reading. It took 139 at the
+// forward merge of 2026-11-15 that brought main in at 2e546572f2b8, which landed
 // cybermonklabs/legion#3937's INFRA-3027 at 133, the entry right above and the number the base
-// now carries, so 133 is no longer this change's. A reading of `const DaemonAPIVersion` at
+// then carried, so 133 was no longer this change's. A reading of `const DaemonAPIVersion` at
 // refs/pull/<n>/head for every open pull request of this repository, made between
 // 2026-11-15T03:58:42Z and 04:03:11Z, gave above the base's 133: 134 (#4017 and #4021), 135
 // (#3659), 136 (#3575 and #3730), 137 (#4046) and 138 (#3712), and no head declared a number
-// above 138, so this change takes 139, the lowest free number above main's 133 at that reading.
-// Each of those numbers is the number that head declared at that reading and no head's for good.
-// Read the base's own number and every open pull request again at the next merge rather than
-// from this line, as
+// above 138, so this change took 139, the lowest free number above main's 133 at that reading.
+// It takes 144 at the forward merge of 2026-11-15 that brings main in at 66ee7eb9100d, which
+// still declares 133. A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open
+// pull request of this repository, made between 2026-11-15T10:07:01Z and 10:17:18Z, gave above
+// the base's 133: 134 (#4021), 135 (#3659), 136 (#4065), 137 (#4046), 138 (#4017), 139 (#2731
+// and #3993), 140 (#3519), 141 (#3575), 142 (#3712) and 143 (#3730), and no head declared a
+// number above 143, so 139 was no longer free and this change takes 144, the lowest free number
+// above main's 133 at that reading. Each of those numbers is the number that head declared at
+// that reading and no head's for good. Read the base's own number and every open pull request
+// again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 139
+const DaemonAPIVersion = 144

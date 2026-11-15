@@ -222,11 +222,15 @@ func (r *Reconciler) kept(writer Writer, head pullHead) headState {
 // Every other failure is the head's own. It drops what the pass kept of that head, so the next
 // pass reads it in full, and leaves the pass to the head after it.
 func (r *Reconciler) headFailed(ctx context.Context, err error, head pullHead, c *counts) *stop {
-	if r.cutShort(ctx, c) {
-		return nil
-	}
+	// A limit GitHub answered is read before the pass's own end, as every other read of the pass
+	// reads it (identify, openPullRequests, the query): it is GitHub's answer, not a request the
+	// ending killed, so the pass line says rate_limited even where the bound fell while the limit
+	// was being recorded.
 	if at := stopAt(err, head.scope); at != nil {
 		return at
+	}
+	if r.cutShort(ctx, c) {
+		return nil
 	}
 	c.heads++
 	delete(r.heads, head.key())

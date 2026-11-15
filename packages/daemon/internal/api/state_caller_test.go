@@ -555,7 +555,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `treeMovedAt` and `quietHours` (withoutQuietTime), with what each reviewing issue's
 			// round waits on from GitHub gone, the object contract 133 added (withoutMergeWait),
 			// and with each issue's `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` gone,
-			// the three keys contract 139 added (withoutEntryTimes). Every row that reaches here is
+			// the three keys contract 144 added (withoutEntryTimes). Every row that reaches here is
 			// below all of them, so every one of them goes whatever the row is; contract 132's
 			// strip takes a word of the line's `kind` and no key, and this fixture stands no member
 			// of that kind.

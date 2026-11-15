@@ -7,9 +7,11 @@
 -- (handshake_confirmed_at). The claim's machine writes them where the claim is given an entry's
 -- work (supervise's queue and EntryGiven) and where a turn confirms a task of that entry
 -- (confirm), clears the confirmed moment where the daemon takes that confirmation back as never
--- the worker's (takeBackPending, refused), and a queue of another entry replaces them. Nothing
--- else clears them. The delivery the two times are first read from is deleted when the turn that
--- confirmed it ends, and these columns stay.
+-- the worker's (takeBackPending, refused) or as one a let-go cannot vouch for, cut off while its
+-- prompt's send was in flight or a prompt of the task still waited on its result (interrupted),
+-- and a queue of another entry replaces them. Nothing else clears them. The delivery the two
+-- times are first read from is deleted when the turn that confirmed it ends, and these columns
+-- stay.
 --
 -- They are what GET /legion/v1/state reads an issue's entryQueuedAt and entryConfirmedAt from
 -- (internal/projection/project.go): for a tree's own root, the handshake of its architect's claim
@@ -27,7 +29,7 @@
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction below, run with the daemon
 -- stopped and before the one the phase entry's own header carries
--- (20261111225552_phase_entry.up.sql). It is the way back of the four migrations of contract 139:
+-- (20261111225552_phase_entry.up.sql). It is the way back of the four migrations of contract 144:
 -- this one, 20261114061900_phase_entry_verbatim, 20261113182000_architect_entry_upgrade and
 -- 20261113181500_architect_stalled_notices, whose headers carry the same block. docs/kubernetes.md
 -- carries it as the step an operator runs before the phase entry's, and the header of

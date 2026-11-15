@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -137,10 +138,8 @@ func confirmedEntryOne(h *harness) (queued, confirmed time.Time) {
 // turn's end sends it again. The handshake gives that confirmation back too, in memory and in the
 // store, so the state's `entryConfirmedAt` does not say the worker took a task it never read. The
 // task's real confirmation, by the turn its re-send starts, is then the one recorded. A death in
-// the turn is the other way about: a turn did start on the task, so the worker took it, and the
-// handshake keeps that confirmation while the task goes back to be sent to the relaunched agent
-// (interrupted).
-func TestATakenBackConfirmationIsTakenFromTheHandshakeAndADeathsIsNot(t *testing.T) {
+// the turn is TestADeathTakesTheHandshakesConfirmationBackOnlyWhileItIsInDoubt's.
+func TestATakenBackConfirmationIsTakenFromTheHandshake(t *testing.T) {
 	t.Run("a busy answer after the turn started", func(t *testing.T) {
 		h := newHarness(t)
 		queued, _ := confirmedEntryOne(h)
@@ -175,17 +174,94 @@ func TestATakenBackConfirmationIsTakenFromTheHandshakeAndADeathsIsNot(t *testing
 		h.wantHandshake("after the re-sent task's turn confirmed it,",
 			EntryHandshake{Entry: 1, Generation: 7, QueuedAt: queued, ConfirmedAt: confirmed})
 	})
+}
 
-	t.Run("a death in the turn", func(t *testing.T) {
-		h := newHarness(t)
-		queued, confirmed := confirmedEntryOne(h)
-
-		h.observe(runtime.Gone)
-
+// A death takes back the task whose turn it cut off, for the relaunch to send again
+// (interrupted), and the handshake keeps that turn's confirmation only where nothing leaves it in
+// doubt (confirmationInDoubt). A turn that starts while the send of the task's prompt is in flight,
+// or while an acknowledged prompt of the task still waits on its result, is taken for the task's,
+// but it may be another input's, an Envoy notice's, and the answer that would say so dies with
+// the process. So the handshake gives that confirmation back, in memory and in the store, and the
+// state's `entryConfirmedAt` does not say the worker took an entry it may never have taken. A
+// confirmation whose prompt's result has come is one a turn of the task did take, and the
+// handshake keeps it across the relaunch.
+func TestADeathTakesTheHandshakesConfirmationBackOnlyWhileItIsInDoubt(t *testing.T) {
+	// tookBack holds the claim to the death's take-back: the task waits for the relaunch,
+	// interrupted and unconfirmed, whatever the handshake keeps.
+	tookBack := func(t *testing.T, h *harness) {
+		t.Helper()
 		if p := h.claim().Pending; p == nil || !p.Interrupted || !p.ConfirmedAt.IsZero() {
 			t.Fatalf("after the death the claim holds %+v, want the task taken back, interrupted and unconfirmed: this test proves nothing", p)
 		}
-		h.wantHandshake("after the death took the task back,",
+	}
+
+	t.Run("with the send in flight", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateReady)
+		gated := newGatedConn()
+		h.conns.Register(testToken, gated)
+		// Handle, not must: must waits for the send, which the gate is holding.
+		if err := h.m.Handle(h.ctx, RequestDeliver{Claim: testToken, Task: "implement the plan", ID: "outbox:40", Row: 40,
+			Phase: phase.Implementing, Generation: 7, Entry: 1}); err != nil {
+			t.Fatal(err)
+		}
+		inFlight := waitFor(t, "the send", gated.entered)
+		if err := h.m.Handle(h.ctx, StreamTurnStart{Claim: testToken}); err != nil {
+			t.Fatal(err)
+		}
+		p := h.claim().Pending
+		if p == nil || p.ID != inFlight || p.ConfirmedAt.IsZero() {
+			t.Fatalf("after the turn began the claim holds %+v, want the delivery %s in flight confirmed by it: this test proves nothing", p, inFlight)
+		}
+		queued := p.QueuedAt
+		h.wantHandshake("once a turn confirmed the task whose send is in flight,",
+			EntryHandshake{Entry: 1, Generation: 7, QueuedAt: queued, ConfirmedAt: p.ConfirmedAt})
+
+		gone := runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}
+		if err := h.m.Handle(h.ctx, RuntimeObservation{Observation: gone}); err != nil {
+			t.Fatal(err)
+		}
+
+		tookBack(t, h)
+		unconfirmed := EntryHandshake{Entry: 1, Generation: 7, QueuedAt: queued}
+		h.wantHandshake("after the death took the task back with its send in flight,", unconfirmed)
+		gated.release <- struct{}{}
+		h.m.Wait()
+		h.wantHandshake("after the send of the dead process answered,", unconfirmed)
+		h.restart()
+		h.wantHandshake("after a restart read the claim back,", unconfirmed)
+	})
+
+	t.Run("with the acknowledged prompt still waiting on its result", func(t *testing.T) {
+		h := newHarness(t)
+		queued, _ := confirmedEntryOne(h)
+		if id := h.claim().Pending.ID; !slices.Contains(h.outstanding(), id) {
+			t.Fatalf("the acknowledged prompt %s waits on no result (outstanding %v), want it to: this test proves nothing", id, h.outstanding())
+		}
+
+		h.observe(runtime.Gone)
+
+		tookBack(t, h)
+		h.wantHandshake("after the death took the task back before its prompt's result,",
+			EntryHandshake{Entry: 1, Generation: 7, QueuedAt: queued})
+	})
+
+	t.Run("once the prompt's result came", func(t *testing.T) {
+		h := newHarness(t)
+		queued, confirmed := confirmedEntryOne(h)
+		h.must(StreamPromptResult{Claim: testToken, DeliveryID: h.claim().Pending.ID, AgentInvoked: true})
+		if p := h.claim().Pending; p == nil || p.ConfirmedAt.IsZero() || len(h.outstanding()) != 0 {
+			t.Fatalf("after the prompt's result in its turn the claim holds %+v with prompts %v outstanding, want the task confirmed and none: this test proves nothing",
+				p, h.outstanding())
+		}
+
+		h.observe(runtime.Gone)
+
+		tookBack(t, h)
+		h.wantHandshake("after the death took the task back once its prompt's result had come,",
+			EntryHandshake{Entry: 1, Generation: 7, QueuedAt: queued, ConfirmedAt: confirmed})
+		h.restart()
+		h.wantHandshake("after a restart read the claim back,",
 			EntryHandshake{Entry: 1, Generation: 7, QueuedAt: queued, ConfirmedAt: confirmed})
 	})
 }

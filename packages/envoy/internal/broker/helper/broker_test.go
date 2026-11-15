@@ -155,6 +155,22 @@ type fakeBroker struct {
 	// refuseKinds answers an enroll naming one of these kinds 400 INVALID_KIND, as a broker before
 	// the session kind refuses "session".
 	refuseKinds map[string]bool
+	// deviceAuthFail answers the next N device authorizations 503 without reading them: an outage
+	// of the broker's OAuth front door, whose 503 can come after the broker acted.
+	deviceAuthFail int
+	// deviceAuthHold, when set, holds every device authorization until its request's context ends
+	// (the client has given up on it), and deviceAuthEnded counts each such end, so a test can tell
+	// that the helper ended the request rather than left it running.
+	deviceAuthHold  bool
+	deviceAuthEnded int
+	// revokeGate, when set, holds every DELETE until the test closes it, after revokeAttempts has
+	// counted it, so a test can keep a revoke in flight for exactly as long as it needs.
+	revokeGate chan struct{}
+	// enrollEmpty2xx answers every enroll 200 with {} — no enrollment_id — a 2xx the helper cannot
+	// read, so the outcome is unknown. deviceAuthEmpty2xx does the same for the device
+	// authorization, answering 200 with no device_code or user_code.
+	enrollEmpty2xx     bool
+	deviceAuthEmpty2xx bool
 }
 
 func newFakeBroker(t *testing.T) *fakeBroker {
@@ -186,6 +202,10 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		if f.failFirst > 0 {
 			f.failFirst--
 			writeJSON(w, 503, map[string]string{"code": "DATABASE", "error": "postgres unreachable"})
+			return
+		}
+		if f.enrollEmpty2xx {
+			writeJSON(w, 200, map[string]string{})
 			return
 		}
 		var body map[string]any
@@ -239,6 +259,12 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		}
 		f.mu.Lock()
 		f.revokeAttempts++
+		gate := f.revokeGate
+		f.mu.Unlock()
+		if gate != nil {
+			<-gate
+		}
+		f.mu.Lock()
 		if f.revokeForbidden[r.PathValue("id")] {
 			f.mu.Unlock()
 			writeJSON(w, 403, map[string]string{"code": "OPERATOR_MISMATCH", "error": "the enrollment belongs to another operator"})
@@ -343,7 +369,27 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 	})
 	mux.HandleFunc("POST /v1/oauth/device_authorization", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
+		if f.deviceAuthHold {
+			f.mu.Unlock()
+			// The server watches the connection for the client's close, which is what ends the
+			// request's context, only once the request's body is read.
+			_ = r.ParseForm()
+			<-r.Context().Done()
+			f.mu.Lock()
+			f.deviceAuthEnded++
+			f.mu.Unlock()
+			return
+		}
 		defer f.mu.Unlock()
+		if f.deviceAuthFail > 0 {
+			f.deviceAuthFail--
+			writeJSON(w, 503, map[string]string{"code": "DATABASE", "error": "postgres unreachable"})
+			return
+		}
+		if f.deviceAuthEmpty2xx {
+			writeJSON(w, 200, map[string]any{})
+			return
+		}
 		_ = r.ParseForm()
 		f.lastLoginRequest = r.PostForm.Get("request")
 		ro, err := record.VerifyRequestObject(f.lastLoginRequest, f.srv.URL, time.Minute, time.Now())
@@ -869,5 +915,27 @@ func TestMissingCredentialNamesTheLoginCommand(t *testing.T) {
 	_, _, err := b.EnrollIdentity(context.Background(), sess.identity())
 	if err == nil || !strings.Contains(err.Error(), "agent-secrets machine login") {
 		t.Fatalf("expected the remedy in the error, got %v", err)
+	}
+}
+
+// TestABrokerErrorNamesOnlyTheFieldsItHas pins BrokerError.Error's four shapes: the status alone,
+// the status with a code, the status with a message, and the filled form. The filled form is what
+// the broker's own refusals carry, and nocredential_test.go matches its "broker 401
+// LAUNCHER_INVALID" prefix; each shape with an empty part drops that part, so a front door's 502
+// with no JSON body does not read "broker 502 : ".
+func TestABrokerErrorNamesOnlyTheFieldsItHas(t *testing.T) {
+	for _, tc := range []struct {
+		err  BrokerError
+		want string
+	}{
+		{BrokerError{Status: 502}, "broker 502"},
+		{BrokerError{Status: 502, Code: "DATABASE"}, "broker 502 DATABASE"},
+		{BrokerError{Status: 502, Message: "postgres unreachable"}, "broker 502: postgres unreachable"},
+		{BrokerError{Status: 403, Code: "SESSION_HELD", Message: "the session s belongs to another principal"},
+			"broker 403 SESSION_HELD: the session s belongs to another principal"},
+	} {
+		if got := tc.err.Error(); got != tc.want {
+			t.Errorf("BrokerError%+v: %q; want %q", tc.err, got, tc.want)
+		}
 	}
 }

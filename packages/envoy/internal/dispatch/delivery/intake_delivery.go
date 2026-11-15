@@ -13,16 +13,28 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 )
 
-// intakeDelivery is one subscription of the intake's: the client it subscribed on, the
-// subscription, the keyed runner its callback (receive) hands messages to, and the context every
-// handler of it runs under. Each subscribe makes one of its own, so stopping one ends that
-// subscription and nothing a later subscribe starts.
+// intakeDelivery is one subscription of an intake's: the client it subscribed on, the
+// subscription, the keyed runner its callback (receive) hands messages to, the hold it delivers
+// under, and the context every handler of it runs under. Each subscribe makes one of its own, so
+// stopping one ends that subscription and nothing a later subscribe starts.
 type intakeDelivery struct {
 	nats *bus.Client
 	sub  *natsgo.Subscription
 	keys *keyedRunner[intakeMessage]
+	// key reads whether this delivery wants a message at all and the key its handler runs under
+	// (heldDurable.key).
+	key func(*natsgo.Msg) (string, *contracts.Envelope, bool)
+	// hold is the hold the subscription delivers under: once its loss deadline has passed, every
+	// message is handed back rather than handled, since this intake may no longer act on the
+	// durable's messages.
+	hold *duty.Hold
+	// subject is the deliver subject this subscription was bound to: the subject the hold's
+	// token records while this delivery is the one the durable delivers to
+	// (heldDurable.finishTakeOver), and the one every message of it was fetched on.
+	subject string
 	// handling is the parent of every handler's context (deliver), and abandon cancels it: the stop
 	// gives up the handlers still running when its context ends.
 	handling context.Context
@@ -31,14 +43,11 @@ type intakeDelivery struct {
 	stopped  sync.Once
 
 	mu sync.Mutex
-	// held is what the stop answers once no handler of this delivery is running and the client has
-	// a connection to answer over: the messages that were waiting behind their keys, those the
-	// callback was handed since, and those whose handler finished before the stop released and
-	// whose own acknowledgement the bus refused (acknowledgeOrHold), a refusal that can come before
-	// the stop begins. A handler that finishes over a live link acknowledges its message itself and
-	// leaves nothing here.
-	held []heldMessage
-	// released is set once held has been answered; the callback then answers a message at once.
+	// held is what the stop hands back to NATS once no handler of this delivery is running: the
+	// messages that were waiting behind their keys, and those the callback was handed since.
+	held []*natsgo.Msg
+	// released is set once held has been handed back; the callback then hands a message back at
+	// once.
 	released bool
 }
 
@@ -51,76 +60,80 @@ type intakeMessage struct {
 	envelope *contracts.Envelope
 }
 
-// heldMessage is one message the stop holds and the answer that message is owed: a negative
-// acknowledgement for one this process did not finish handling (giveBack), and an
-// acknowledgement for one whose own acknowledgement the bus refused before the stop released
-// (acknowledgeOrHold). Both are publishes, and a client with no live connection refuses one, so
-// both wait for the connection the stop waits for and are published over it (answerHeld).
-type heldMessage struct {
-	msg *natsgo.Msg
-	// handled is set for a message its handler finished: the stop acknowledges it rather than
-	// handing it back, so the next holder does not redo work that is done.
-	handled bool
-}
-
-// subscribe subscribes the intake's handling to its durable's push deliveries
-// (subscribeDurable): at the deliver subject the durable carries when deliverSubject is empty, as
-// bind does, or at deliverSubject, for a caller that has just created the durable with it. The
+// subscribe subscribes the intake's handling to its durable's push deliveries at deliverSubject
+// (subscribeDurable), for a caller that creates the durable with it right after (takeOver). The
 // subscription's callback only routes each message (receive); its handler runs on the goroutine of
-// the message's key (keyedRunner) and acknowledges it there, or, when the stop gave its handling
-// up, hands it back through this delivery (deliver). StopDelivering stops the subscription this
-// made last, so a caller subscribing again stops the one before first. A subscribe that fails
-// gives up its handling and the registration the client kept of it
-// (bus.Client.ReleaseFailed): a reconnect would bind that registration otherwise, and its
-// callback, its handling given up, would hand back every message until the intake's next subscribe
-// replaced it.
-func (in *Intake) subscribe(deliverSubject string) (*natsgo.Subscription, error) {
+// the message's key (keyedRunner) and acknowledges it there. StopDelivering stops the subscription
+// this made last, so a caller subscribing again stops the one before first. A subscribe that fails
+// gives up its handling and the registration the client kept of it (bus.Client.ReleaseFailed): a
+// reconnect would bind that registration otherwise, and its callback, its handling given up, would
+// hand back every message until the intake's next subscribe replaced it.
+func (d *heldDurable) subscribe(deliverSubject string) (*natsgo.Subscription, error) {
 	handling, abandon := context.WithCancel(context.Background())
-	delivery := &intakeDelivery{nats: in.nats, handling: handling, abandon: abandon}
-	delivery.keys = newKeyedRunner(func(message intakeMessage) { in.deliver(delivery, message) })
-	wanted := deliveryConsumerConfig()
-	sub, err := subscribeDurable(in.nats, wanted, deliverSubject, delivery.receive)
+	delivery := &intakeDelivery{
+		nats: d.nats, key: d.key, hold: d.hold, subject: deliverSubject,
+		handling: handling, abandon: abandon,
+	}
+	delivery.keys = newKeyedRunner(func(message intakeMessage) { d.handle(delivery, message) })
+	wanted := d.config()
+	sub, err := subscribeDurable(d.nats, wanted, deliverSubject, delivery.receive)
 	if err != nil {
 		abandon()
-		in.nats.ReleaseFailed(wanted.FilterSubject)
+		d.nats.ReleaseFailed(wanted.FilterSubject)
 		return nil, err
 	}
 	delivery.sub = sub
-	in.mu.Lock()
-	in.delivering = delivery
-	in.mu.Unlock()
+	d.mu.Lock()
+	d.delivering = delivery
+	d.mu.Unlock()
 	return sub, nil
 }
 
-// intakeStopBudget is the deadline of an intake's stop, counted by each of Run's two stops from
-// its own start: from the moment Run's ctx ends (stopContext) for the stop the process stopping
-// runs, and from the event itself for the stop a connection event runs (giveUpOnConnectionChange).
-// The messages in their handlers have until then to finish and be answered before the stop gives
-// them up (StopDelivering), the drain's wait ends by then, and a bind under way as ctx ended ends
-// by then too (bindDurableConsumer), so one that binds after ctx ended is stopped under the same
-// deadline rather than one of its own. It bounds the stop's wait for a live connection too,
-// whatever deadline its caller gave it (awaitLiveConnection). In cmd/dispatch that ctx is the
-// signal context, so the stop begins at SIGTERM and runs beside the HTTP drain and the document
-// shutdown, which take up to stopGrace (30 s) less a 5 s reserve: httpDrainBeforeDocuments then
-// documentShutdownTimeout (cmd/dispatch/shutdown.go); StartIntakes' stop, which the shutdown waits
-// for, adds no deadline of its own. The shutdown waits for the intakes after the document service
-// and before it deregisters this process and closes the database pool, so that a handler's writes
-// never meet a closed pool. 15 s leaves 10 s before the document budget's latest end for what
-// follows the deadline -- the handlers given up returning, which they do as soon as their context
-// is cancelled, the acknowledgements it holds, the drain's end, which the given-up handlers'
-// cancelled context cuts short, and the clients closing -- so the intakes never hold the shutdown
-// past what that budget already can, and 15 s before the kubelet's kill. It is also well past what
-// a handler GitHub answers needs, a pull request and its commit pages with a page GitHub answered
-// 502 asked again (after 1 s, then 2 s: githubPageRetryWait), so an ordinary handler finishes and
-// is acknowledged rather than redone. A call GitHub does not answer holds one attempt for up to
-// githubapp.RequestTimeout (20 s), and is then asked again, which no budget inside stopGrace could
-// wait out. A var so a test can shrink it.
+// subscribeDurable subscribes deliver to wanted's durable through client.Subscribe at
+// deliverSubject, acknowledging by hand. Bind with DeliverSubject and SkipConsumerLookup
+// subscribes without looking the durable up, so the durable need not exist yet: nats.go sends
+// the SUB and creates nothing (js.go, the SkipConsumerLookup branch of subscribe with Bind). It
+// is for a caller that creates the durable with that deliver subject right after, under its
+// consumer lease (takeOver).
+func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverSubject string, deliver natsgo.MsgHandler) (*natsgo.Subscription, error) {
+	options := []natsgo.SubOpt{
+		natsgo.Bind(bus.Stream, wanted.Durable),
+		natsgo.ManualAck(),
+		natsgo.DeliverSubject(deliverSubject),
+		natsgo.SkipConsumerLookup(),
+	}
+	// The subject must be the consumer's own filter subject: nats.go checks a bound
+	// subscription's subject against it, and refuses an empty one ("subject does not match
+	// consumer").
+	return client.Subscribe(wanted.FilterSubject, deliver, options...)
+}
+
+// intakeStopBudget is the one deadline of an intake's stop, counted from the moment Run's ctx ends
+// (stopContext): the messages in their handlers have until then to finish and be acknowledged
+// before the stop gives them up (StopDelivering), the drain's wait ends by then, and a take-over
+// under way as ctx ended ends by then too (takeOverFinishWithin, 10 s), so one that binds after
+// ctx ended is stopped under the same deadline rather than one of its own. In cmd/dispatch that
+// ctx is the signal context, so the stop begins at SIGTERM and runs beside the HTTP drain and the
+// document shutdown, which take up to stopGrace (30 s) less a 5 s reserve: httpDrainBeforeDocuments
+// then documentShutdownTimeout (cmd/dispatch/shutdown.go); StartIntakes' stop, which the shutdown
+// waits for, adds no deadline of its own. The shutdown waits for the intakes after the document
+// service and before it deregisters this process and closes the database pool, so that a handler's
+// writes never meet a closed pool. 15 s leaves 10 s before the document budget's latest end for
+// what follows the deadline -- the handlers given up returning, which they do as soon as their
+// context is cancelled, the negative acknowledgements, the drain's end, which the given-up
+// handlers' cancelled context cuts short, the hold's release and the clients closing -- so the
+// intakes never hold the shutdown past what that budget already can, and 15 s before the kubelet's
+// kill. It is also well past what a handler GitHub answers needs, a pull request and its commit
+// pages with a page GitHub answered 502 asked again (after 1 s, then 2 s: githubPageRetryWait), so
+// an ordinary handler finishes and is acknowledged rather than redone. A call GitHub does not
+// answer holds one attempt for up to githubapp.RequestTimeout (20 s), and is then asked again,
+// which no budget inside stopGrace could wait out. A var so a test can shrink it.
 var intakeStopBudget = 15 * time.Second
 
 // stopContext returns the stop deadline of an intake whose Run runs until ctx ends: a context that
-// ends intakeStopBudget after ctx does, armed by ctx's end, so everything of the stop -- a bind
-// under way at that moment, the handler wait, the drain's wait -- runs under one deadline counted
-// from it. release frees it, for Run to defer.
+// ends intakeStopBudget after ctx does, armed by ctx's end, so everything of the stop -- a
+// take-over under way at that moment, the handler wait, the drain's wait -- runs under one
+// deadline counted from it. release frees it, for run to defer.
 func stopContext(ctx context.Context) (stopping context.Context, release func()) {
 	// Read now rather than as ctx ends, so a test restoring intakeStopBudget after Run has
 	// returned never races the read.
@@ -134,63 +147,46 @@ func stopContext(ctx context.Context) (stopping context.Context, release func())
 }
 
 // StopDelivering stops this intake's subscription so that another process can take the durable
-// over with nothing waiting out the ack wait. What it does with the subscription depends on the
-// link (bus.Client.DrainSubscription). On a live one it drains it, so the server delivers it
-// nothing more while the callback is handed what the client had already buffered. With the link
-// down it unsubscribes it instead, and nats.go drops that subscription's pending messages without
-// calling the callback at all (waitForMsgs): those messages are not handed back here, and there
-// is no drain to wait for. They are the price of leaving the durable free, and the server
-// redelivers them to the next holder when their ack wait expires.
+// over with nothing waiting out the ack wait. It drains the subscription, so the server delivers it
+// nothing more, and waits for the messages in their handlers until ctx ends: one that finishes by
+// then is acknowledged, and the handlers still running when ctx ends are given up -- their context
+// is cancelled, so a GitHub call that does not answer is abandoned -- and their messages
+// negatively acknowledged as they return. Only once no handler is running does it negatively
+// acknowledge every message that was waiting behind its key and every message the callback was
+// handed meanwhile, those NATS had already delivered to the client's buffer included, so the server
+// redelivers them at once -- to the next holder, which can then not start a pull request's or run's
+// next message while this process still works on the one before it. A message the callback is
+// handed after that is handed back at once. Every one of those hand-backs is withheld once the
+// hold's loss deadline has passed (handBack), since from that moment the durable they would
+// answer may be one a take-over recreated; the messages stay outstanding, and that take-over
+// hands them to the new holder. It returns once the drain has ended -- at the latest
+// intakeDrainWait after the last handler returned, or as ctx ends if that is sooner, when it
+// unsubscribes instead. The drain gives up the subscription's registration on the client
+// (bus.Client.DrainSubscription), so that no reconnect binds it again and a later subscribe on the
+// same client starts afresh.
 //
-// Either way it waits for the messages in their handlers until ctx ends: one that finishes by
-// then is acknowledged, and held for the stop only where the bus refused that acknowledgement
-// (deliver, acknowledgeOrHold), and the handlers still running when ctx ends are given up --
-// their context is cancelled, so a GitHub call that does not answer is abandoned -- and their
-// messages held for the hand-back the rest are in (deliver, giveBack). Only once no handler is
-// running, and the client has a connection to answer over, does it answer what it holds, each
-// message by its own kind: an acknowledgement for one whose handler finished and whose own
-// acknowledgement was refused, and a negative acknowledgement for every message that was
-// waiting behind its key, every message a given-up handler held, and every message the callback
-// was handed meanwhile, so the server redelivers those at once -- to the next holder, which can
-// then not start a pull request's or run's next message while this process still works on the
-// one before it. A message the callback is handed after that is answered at once. It returns
-// once a drain it began has ended -- at the latest intakeDrainWait after the last handler
-// returned, or as ctx ends if that is sooner, when it unsubscribes instead -- and at once where
-// it unsubscribed. Either path gives up the subscription's registration on the client, so that
-// no reconnect binds it again and a later subscribe on the same client starts afresh.
-//
-// Two callers run it, both Run's: as its ctx ends, under its stop deadline (stopContext), and on a
-// connection event, under a budget of its own (giveUpOnConnectionChange). The second is the stop
-// whose answers begin with the link down, and so the reason the stop waits for a connection at
-// all. It is safe from any goroutine and idempotent: a second call returns once the first has
-// stopped, and a call with nothing subscribed returns at once. Every call's ctx bounds the handler
-// wait of the stop under way, so a caller with a nearer deadline than the first has the handlers
-// given up when its own ctx ends.
-func (in *Intake) StopDelivering(ctx context.Context) {
-	in.mu.Lock()
-	delivery := in.delivering
-	in.mu.Unlock()
+// run calls it as its ctx ends, under its stop deadline (stopContext), and when the hold is lost
+// or the durable no longer delivers here, under a budget of its own (stopDeliveringWithin). It is
+// safe from any goroutine and idempotent: a second call returns once the first has stopped, and a
+// call with nothing subscribed returns at once. Every call's ctx bounds the handler wait of the
+// stop under way, so a caller with a nearer deadline than the first has the handlers given up when
+// its own ctx ends.
+func (d *heldDurable) StopDelivering(ctx context.Context) {
+	d.mu.Lock()
+	delivery := d.delivering
+	d.mu.Unlock()
 	if delivery != nil {
 		delivery.stop(ctx)
 	}
 }
 
-// stop is StopDelivering for this subscription. The drain or unsubscribe goes first, so the
-// server has the subscription's interest gone before any negative acknowledgement reaches it,
-// and redelivers what this one gives back to the next subscriber rather than straight back here.
-// It is the subscription the client holds for this one's registration that it ends
-// (bus.Client.DrainSubscription): a handle of the client's own once it has replaced its
-// connection, not sub, which went with the replaced connection while the client's handle went on
-// delivering here. The client holds nothing of this stopped callback's from that call on, and
-// with the link down that call is an unsubscribe, which leaves no drain to wait for and hands
-// this callback none of what the client had buffered.
-//
-// Between the handler wait and the answers it waits for a live connection (awaitLiveConnection):
-// an acknowledgement, negative or not, is a publish, and a stop a connection event runs begins
-// while the link is down, where the client refuses one. Each held message is then answered by
-// its own kind (heldMessage), over the connection the client holds now (answerHeld):
-// acknowledged when its handler finished before the stop released and its own acknowledgement was
-// refused, handed back when this process did not finish it.
+// stop is StopDelivering for this subscription. The drain goes first, so the server has the
+// subscription's interest gone before any negative acknowledgement reaches it, and redelivers
+// what this one gives back to the next subscriber rather than straight back here. It drains the
+// subscription the client holds for this one's registration (bus.Client.DrainSubscription): a
+// handle of the client's own once it has replaced its connection, not sub, which went with the
+// replaced connection while the client's handle went on delivering here. The client holds nothing
+// of this stopped callback's from the drain on.
 func (d *intakeDelivery) stop(ctx context.Context) {
 	giveUp := context.AfterFunc(ctx, d.abandon)
 	defer giveUp()
@@ -206,25 +202,13 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 		// Returns once every handler has, which a handler given up (abandon) does promptly: its
 		// GitHub calls and its writes all run under its context.
 		d.keys.wait()
-		// Only an answer needs a connection. With nothing held and the handle ended rather
-		// than drained -- the unsubscribe a give-up with the link down makes, which leaves
-		// nats.go delivering this callback nothing more -- there is no acknowledgement to wait
-		// for, and waiting would hold this stop's caller through the whole outage: the undo of a
-		// bind the server never confirmed runs inside the durable's consumer lease, so no other
-		// process could take the durable over for every second of it.
-		d.mu.Lock()
-		holding := len(d.held)
-		d.mu.Unlock()
-		if holding > 0 || draining != nil {
-			d.awaitLiveConnection(ctx, holding)
-		}
 		d.mu.Lock()
 		d.released = true
 		held := d.held
 		d.held = nil
 		d.mu.Unlock()
-		for _, entry := range held {
-			d.answerHeld(entry)
+		for _, msg := range held {
+			d.handBack(msg)
 		}
 		// nats.go ends a drain on a goroutine of its own, once the callback has run every message
 		// the client had buffered, and reports it only by the subscription turning invalid.
@@ -243,152 +227,51 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 	})
 }
 
-// awaitLiveConnection waits for the client's connection to be live, bounded by ctx and by
-// intakeStopBudget. The answers that follow it are publishes, and the bus buffers none while the
-// client reconnects (opts.ReconnectBufSize = -1, internal/bus/connect.go): one made over a dead
-// link is refused, and the message it would have answered waits out intakeAckWait in the next
-// holder's four-slot window (intakeMaxAckPending) rather than being redelivered at once, or, for
-// a message whose handler finished, for no reason at all. A stop the process stopping runs has a
-// live connection, so its wait returns on the first read; a stop a connection event runs waits
-// out the outage, within its own budget.
-//
-// The budget bounds the wait even where ctx does not. One caller's ctx has no deadline until
-// Run's ctx ends: the undo bindDurableConsumer runs for a bind the server never confirmed, which
-// runs inside that durable's consumer lease. A link that does not come back would otherwise hold
-// that lease for as long as the process lives, and no other process could reconcile the durable.
-//
-// The signal is taken before the connection's state is read, as ConnectionChanged's own contract
-// asks, so a connection installed between the two still wakes the wait. holding is how many
-// messages the stop has to answer, for the line a wait the budget ends writes: its caller waits
-// at all only while there are messages or a drain that may yet deliver one.
-func (d *intakeDelivery) awaitLiveConnection(ctx context.Context, holding int) {
-	waiting, cancel := context.WithTimeout(ctx, intakeStopBudget)
-	defer cancel()
-	waitedFrom := time.Now()
-	for {
-		changed := d.nats.ConnectionChanged()
-		if d.nats.Connected() {
-			return
-		}
-		select {
-		case <-waiting.Done():
-			slog.Warn("dispatch delivery: no NATS connection to answer the intake's messages over; they wait out the ack wait",
-				"messages", holding, "waited", time.Since(waitedFrom), "ack_wait", intakeAckWait())
-			return
-		case <-changed:
-		}
-	}
-}
-
 // giveBack hands msg back to NATS for the next holder: once no handler of this delivery is
-// running, at once; until then it is held, and the stop hands it back with the rest. Handed back
-// earlier, a message of a key whose handler is still running here could be redelivered to the
-// next holder and run there beside it, and two fetches of one pull request or run at once can
-// write the older answer last.
+// running, at once (handBack); until then it is held, and the stop hands it back with the rest.
+// Handed back earlier, a message of a key whose handler is still running here could be
+// redelivered to the next holder and run there beside it, and two fetches of one pull request or
+// run at once can write the older answer last.
 func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 	d.mu.Lock()
 	if !d.released {
-		d.held = append(d.held, heldMessage{msg: msg})
+		d.held = append(d.held, msg)
 		d.mu.Unlock()
 		return
 	}
 	d.mu.Unlock()
-	redeliverAfter(msg, 0)
+	d.handBack(msg)
 }
 
-// acknowledgeOrHold acknowledges msg, the message of a handler that has finished, and holds it
-// for the stop only when that acknowledgement was refused and this delivery has not released
-// what it holds (released). The acknowledgement goes first because holding one protects
-// nothing, unlike giveBack, whose hold keeps the next holder from starting a key's next
-// message while this process is still on the one before it. A stop with a live link is this
-// process shutting down, and there a handler that finished at the first second would otherwise
-// wait for the slowest handler or for the budget (intakeStopBudget, up to 15 s) while its
-// message holds one of the next holder's four in-flight slots (intakeMaxAckPending) -- during a
-// rolling deploy, the slots of the process taking over.
+// handBack publishes msg's hand-back to the durable, so the server redelivers it at once, while
+// the hold still covers this delivery (holdCovers), and withholds it once the hold's loss
+// deadline has passed.
 //
-// What is held is therefore a refused answer rather than every answer. An acknowledgement is a
-// publish, and the stop a connection event runs begins with the link down, where the bus refuses
-// one; the message would then stay outstanding for the whole ack wait (intakeAckWait) although
-// its handling had finished, and four such handlers would stop the next holder being delivered
-// anything. A refused Ack leaves the message unacknowledged -- nats.go sets ackd only where the
-// publish succeeded (js.go:3661-3664) -- so the stop can answer it again (answerHeld). Reading
-// the refusal rather than the stopping flag also covers the handler that finishes after the link
-// has dropped and before the disconnect callback sets stopping, whose acknowledgement is refused
-// with no stop yet to hold it.
+// Every hand-back this process makes is a publish at the message's reply subject, which names
+// the durable rather than the consumer this message was fetched on. A take-over deletes the
+// durable and creates it again under the same name (heldDurable.takeOver), so a hand-back
+// published after the lapse lands on the new holder's consumer, where it moves that message's
+// pending entry and has the new holder delivered it a second time -- two processes fetching one
+// pull request or run at once, which is what the hold exists to stop. Nothing is lost by
+// withholding it: the message was never acknowledged, so it stays outstanding, and the
+// take-over's recreate at the durable's ack floor hands it to the new holder once.
 //
-// It covers that handler only once nats.go has noticed the drop, which is all any reading here
-// can cover. Until it does, the connection's status is still CONNECTED and the acknowledgement
-// is appended to the connection's write buffer, where the publish returns nil unless that append
-// flushes a full buffer into the dead socket (nats.go v1.53.1's Conn.publish, nats.go:4649-4661;
-// its one refusal before that, atLimitIfUsingPending, is false while the writer holds no pending
-// buffer, nats.go:2368-2373). Returning nil, it goes out on a socket that is gone and is lost
-// with no error to read, and intakeAckWait is its backstop. From the moment nats.go switches the
-// writer to pending and goes to RECONNECTING (processOpErr, nats.go:3556-3574) a publish is
-// refused -- the bus sets opts.ReconnectBufSize = -1 (internal/bus/connect.go), so that pending
-// buffer is at its limit from the first byte -- and that refusal is the one this reads.
+// A holder whose hold is live still hands its messages back at once, which is what makes a
+// graceful stop's hand-back reach the standby within seconds rather than after the ack wait: a
+// stop begins intakeHoldMargin before the hold's loss deadline at the latest (heldDurable.run),
+// and only the part of it that runs past that deadline -- a handler given up late, a process
+// frozen and resumed -- is withheld.
 //
-// Once the stop has released, there is nobody left to answer the message: the refusal is logged
-// and the message handed back, as acknowledge does for every other caller, and the ack wait is
-// the backstop when that hand-back is refused too.
-func (d *intakeDelivery) acknowledgeOrHold(msg *natsgo.Msg) {
-	err := msg.Ack()
-	if err == nil {
+// It reads the hold alone, and not the stop's flag as mayAnswer does: the stop is itself one of
+// the callers, and a hand-back of a message this delivery was handed is sound while the hold
+// covers it whether or not this subscription still delivers.
+func (d *intakeDelivery) handBack(msg *natsgo.Msg) {
+	if !d.holdCovers() {
+		slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the message is left with the durable for the next holder's take-over",
+			"subject", msg.Subject)
 		return
 	}
-	d.mu.Lock()
-	if !d.released {
-		d.held = append(d.held, heldMessage{msg: msg, handled: true})
-		d.mu.Unlock()
-		return
-	}
-	d.mu.Unlock()
-	slog.Error("dispatch delivery: acknowledge message", "subject", msg.Subject, "error", err)
 	redeliverAfter(msg, 0)
-}
-
-// intakeAckBody and intakeNakBody are the bodies NATS reads an acknowledgement and a negative
-// acknowledgement as. They are nats.go's own ackAck and ackNak (js.go:3865-3866), which that
-// package keeps unexported, so they are named here rather than imported: a held answer is
-// published by hand (answerHeld) and cannot go through Msg.Ack or Msg.Nak.
-var (
-	intakeAckBody = []byte("+ACK")
-	intakeNakBody = []byte("-NAK")
-)
-
-// answerHeld answers one message the stop held, over the connection the client holds now
-// (bus.Client.Connection) rather than over the one the message arrived on. Msg.Ack and Msg.Nak
-// publish on the connection of the message's own subscription (sub.conn, js.go:3608-3610), and
-// removeSub never changes that field, so where the client closed that connection and dialled a
-// replacement (internal/bus/recovery.go's onClosed) the connection awaitLiveConnection returned
-// on is the replacement while those answers go out on the closed one and fail with
-// ErrConnectionClosed. Every held message, finished or abandoned, would then wait out the whole
-// ack wait (intakeAckWait) in the next holder's four-slot window. The answer is published at the
-// message's own reply subject, which belongs to the consumer and not to this subscription, so
-// any connection of the account can make it and the server takes it after this subscription has
-// ended.
-//
-// An answer this cannot make -- a message with no reply subject, a client with no connection, or
-// a publish the connection refuses -- is logged at ERROR with the message and the answer it was:
-// this is the last chance the process has to answer, and what follows it is the ack wait.
-func (d *intakeDelivery) answerHeld(entry heldMessage) {
-	body, answer := intakeNakBody, "hand back"
-	if entry.handled {
-		body, answer = intakeAckBody, "acknowledge"
-	}
-	connection := d.nats.Connection()
-	switch {
-	case entry.msg.Reply == "":
-		slog.Error("dispatch delivery: the held message carries no reply subject to answer at",
-			"subject", entry.msg.Subject, "answer", answer)
-	case connection == nil:
-		slog.Error("dispatch delivery: no NATS connection to answer the held message over",
-			"subject", entry.msg.Subject, "answer", answer, "ack_wait", intakeAckWait())
-	default:
-		if err := connection.Publish(entry.msg.Reply, body); err != nil {
-			slog.Error("dispatch delivery: answer the held message",
-				"subject", entry.msg.Subject, "answer", answer, "ack_wait", intakeAckWait(), "error", err)
-		}
-	}
 }
 
 // intakeDrainWait bounds how long stop waits for the drain to end once every handler has returned.
@@ -399,15 +282,18 @@ func (d *intakeDelivery) answerHeld(entry heldMessage) {
 // context ending cuts it shorter: by then the drain has had the whole handler wait to end.
 const intakeDrainWait = natsgo.DefaultDrainTimeout
 
-// receive is the subscription's callback, and only routes: a message once stopping is set is
-// handed back (giveBack), a subject intakeKey does not want is acknowledged, and any other message
-// goes to its key's handler (deliver).
+// receive is the subscription's callback, and only routes: a message once stopping is set, or once
+// the hold's loss deadline has passed, is handed back (giveBack) -- this intake may no longer act
+// on the durable's messages, and the server redelivers them to the next holder, or, once that
+// deadline has passed, the next holder's take-over hands them over instead (handBack); a subject
+// the intake's key does not want is acknowledged; and any other message goes to its key's handler
+// (deliver).
 func (d *intakeDelivery) receive(msg *natsgo.Msg) {
-	if d.stopping.Load() {
+	if d.stopping.Load() || !d.holdCovers() {
 		d.giveBack(msg)
 		return
 	}
-	key, envelope, wanted := intakeKey(msg)
+	key, envelope, wanted := d.key(msg)
 	if !wanted {
 		acknowledge(msg)
 		return
@@ -415,6 +301,47 @@ func (d *intakeDelivery) receive(msg *natsgo.Msg) {
 	if !d.keys.run(key, intakeMessage{msg: msg, envelope: envelope}) {
 		d.giveBack(msg)
 	}
+}
+
+// holdCovers reports whether the hold this delivery delivers under has not passed its loss
+// deadline (duty.Hold.Deadline), and so whether this intake may still act on the durable's
+// messages. A delivery with no hold is one no hold governs, and is covered.
+func (d *intakeDelivery) holdCovers() bool {
+	return d.hold == nil || time.Now().Before(d.hold.Deadline())
+}
+
+// mayAnswer reports whether this delivery may answer the durable with a hand-back of its own,
+// which is the one answer no stop of this intake makes for it (Intake.deliver's ErrHeadNotStored
+// case). Two things have to hold, and both are the hold's:
+//
+//   - the hold has not passed its loss deadline (holdCovers), so no other process can hold the
+//     durable yet;
+//   - this subscription is still the one the hold's durable delivers to (stopping), so the
+//     durable this answer names is the one the message was fetched on, at the deliver subject
+//     the hold's token records (subject).
+//
+// Either gone, the answer is withheld rather than published. A take-over deletes the durable and
+// creates it again under the same name (heldDurable.takeOver), and the server reads a message's
+// reply subject for that name: a hand-back published after it would move the new holder's
+// pending entry for that message and have the new holder delivered it a second time. Nothing is
+// lost by withholding it -- the message is still outstanding, and the take-over's recreate at
+// the durable's ack floor hands it to the new holder once.
+//
+// The second reading is the stop's flag rather than the hold's token read from the database:
+// this path is one a database that refused a write put us on, so a read of the row here would
+// be refused with it, and the token can move to another deliver subject only once this
+// subscription has been stopped. The intake stops it the moment it is no longer the one the
+// durable delivers to -- the hold lost, a check finding the durable bound elsewhere, the
+// process stopping -- and every one of those sets stopping before anything else (stop); its run
+// loop takes the durable over again only while it delivers nothing (heldDurable.run), so the
+// subject the hold records cannot change under a delivery that is still running. What the flag
+// does not do, and no reading of the row would do either, is cover the moment between this
+// subscription binding and the take-over recording its subject: there the hold's token still
+// names the holder before this one, while the durable this answers was created by this process,
+// under this hold and the durable's consumer lease, and delivers here alone. A message handed
+// over in that moment is this delivery's to answer.
+func (d *intakeDelivery) mayAnswer() bool {
+	return !d.stopping.Load() && d.holdCovers()
 }
 
 // intakeKey reads from a message's subject, notifications.github.<owner>.<repo>.<kind>..., and
