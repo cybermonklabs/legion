@@ -581,8 +581,8 @@ func TestAReviewNamingAVersionRecordsOnlyTheVersionTheReviewWouldRecord(t *testi
 	}
 }
 
-// A {number} that is no version of any document, whether zero, a negative number or no number at
-// all, is refused 400 INVALID_REVIEW before the document is read, and nothing is written.
+// A {number} that is no version of any document, whether zero, a negative number or a word, is
+// refused 400 INVALID_REVIEW before the document is read, and nothing is written.
 func TestAReviewNamingNoVersionOfTheDocumentIsRefusedWithNothingWritten(t *testing.T) {
 	handler, issueKey, artifactID := specMovedToVersionTwo(t)
 	approvalBefore := approvalShown(t, handler, artifactID)

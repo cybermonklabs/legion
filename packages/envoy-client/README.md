@@ -901,12 +901,15 @@ ignores a body member it does not declare, so a version sent in the body of the 
 `POST /api/v1/artifacts/{id}/reviews` would be dropped by a build that predates the guard, and
 the review recorded at a version that build chooses. A build without the versioned route answers
 no route instead: once the client's no-route retries are spent, the command fails `NOT_FOUND`,
-says that nothing was recorded, and names `GET /healthz`, whose `commit` member says which build
-answered. A review records an approval or a request for changes in the
-person's name, so it works only with a token that names a person who holds `approve`. A session
-gets such a token from a person's sign-in on the machine (above). Dispatch refuses any other
-token with `403 OAUTH_SCOPE_REQUIRED` or `403 SIGN_IN_REQUIRED`. `--version` is the version the
-caller read, and it must be the version the review would record: the document's latest settled
+says that nothing was recorded, and names `GET /healthz`, whose `commit` member is the commit of
+the build that answers that probe where its image was stamped with one (`null` otherwise). The
+no-route answer does not name the build, and while a release rolls out the build that answers
+`/healthz` may not be the one that refused, so run the command again a minute later before
+reading the refusal as an older Dispatch. A review records an approval or a request for changes
+in the person's name, so it works only with a token that names a person who holds `approve`. A
+session gets such a token from a person's sign-in on the machine (above). Dispatch refuses any
+other token with `403 OAUTH_SCOPE_REQUIRED` or `403 SIGN_IN_REQUIRED`. `--version` is the version
+the caller read, and it must be the version the review would record: the document's latest settled
 version, or the version an open approval request names for the document. Dispatch refuses any
 other version with `409 REVIEW_VERSION_MOVED`, which names the version to read, and records
 nothing. With an approval request open, the review answers that request and records the same
