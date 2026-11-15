@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  Every `agent-secrets secret` form prints one line on standard error before its first call to
+  the store, `agent-secrets secret <form>: using <source>: <principal>`, naming where the
+  credential came from (`the gcloud configuration NAME (--profile)`, `the AWS profile NAME
+  (AWS_PROFILE)`, `the metadata server`, and the rest) and whom it acts as: the account, with
+  `impersonating SA` where gcloud impersonates one, the AWS ARN, or `principal unknown` for a lent
+  token, an `authorized_user` file and a gcloud token from a file. A store refusal names the same
+  credential and how to choose another: `choose another with --profile <gcloud configuration>
+  (configurations here: …)` on Google Cloud, `choose another with --profile <AWS profile> or
+  AWS_PROFILE` on AWS. No userinfo or tokeninfo call is made to name a principal.

@@ -18,6 +18,13 @@ refused, with the commands that move its data onto the right one). Without Docke
 yourself and set `DEV_BROKER_POSTGRES_URL` to `postgres://<user>@<host>:<port>/<database>`, for a
 role that may create databases; the script then creates and drops its database there with `psql`.
 
+Set `DEV_BROKER_GCP_PREFIX` (`projects/<project number>/secrets/<id prefix>`) and
+`DEV_BROKER_GCP_KMS_KEY_NAME` (a global Cloud KMS key) together to give the broker Google Cloud
+Secret Manager as its store under them, with an empty fake secrets file: `GET /v1/settings` then
+describes that store, so `agent-secrets secret` writes the real Secret Manager under the
+credential you choose for it ([Manage a secret](/legion/broker/guides/manage-a-secret/#before-you-start)),
+while the broker serves none of the demo secrets below. One of the two alone is refused (exit 2).
+
 ## Start the stack
 
 With Docker the command is the script alone; this run used a Postgres server of its own:

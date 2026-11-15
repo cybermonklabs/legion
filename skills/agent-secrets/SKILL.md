@@ -280,9 +280,14 @@ On `UNKNOWN_SECRET` you stop, as above. You may tell the secret's owner how to f
 read the store (`gcloud auth login` against a broker on Google Cloud, an `AWS_PROFILE` against one
 on AWS).
 
-A write runs under whatever credential the environment gives the command, and the store's IAM
-decides whether it lands. On Google Cloud that is `CLOUDSDK_AUTH_ACCESS_TOKEN` when it is set, else
-the Application Default Credentials, else the gcloud login; on AWS, `--profile`, else `AWS_PROFILE`.
+A write runs under the credential of the first source the command finds, and the store's IAM
+decides whether it lands. On Google Cloud the order is `--profile` (a gcloud configuration), then
+`CLOUDSDK_AUTH_ACCESS_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_ACTIVE_CONFIG_NAME` or
+`CLOUDSDK_CORE_ACCOUNT`, the well-known credentials file, the active gcloud account and last the
+metadata server; on AWS, `--profile`, else `AWS_PROFILE`, else the SDK's default chain. Every form
+prints the credential it uses (`agent-secrets secret <form>: using …`) before it calls the store,
+and a store refusal names it and how to choose another. A source that is present but broken stops
+the command; it never falls through to the machine's identity.
 `agent-secrets secret set NAME` replaces the value of a secret that exists. A new one is
 `agent-secrets secret create NAME --owner me|shared|<email> --tier agent|human`. `--owner me` is
 the email of the person the credential names, and is refused where it names none, as a token

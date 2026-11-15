@@ -185,15 +185,13 @@ func gcloudLogins(ctx context.Context, gcloud gcloudCommand) (accounts []string,
 	return accounts, active, nil
 }
 
-// gcloudSettings are the properties of gcloud's effective configuration a gcloud source reads, as
-// `gcloud config list --format=json` shows them, environment overrides included: the second of a
-// gcloud source's three calls. Core.Account is the account the configuration names; the auth
-// properties are those that change whose token `gcloud auth print-access-token` prints -
-// impersonation, an access token file and a credential file override.
+// gcloudSettings are the auth properties of gcloud's effective configuration that change whose
+// token `gcloud auth print-access-token` prints - impersonation, an access token file and a
+// credential file override - as `gcloud config list --format=json` shows them, environment
+// overrides included: the second of a gcloud source's three calls. The account a chosen
+// configuration names is read from the configuration itself (gcloudConfigurationAccount), never
+// from here, where gcloud on a Compute Engine VM fills a missing one in with the machine's.
 type gcloudSettings struct {
-	Core struct {
-		Account string `json:"account"`
-	} `json:"core"`
 	Auth struct {
 		ImpersonateServiceAccount string `json:"impersonate_service_account"`
 		AccessTokenFile           string `json:"access_token_file"`
@@ -245,12 +243,13 @@ func personAccount(email string) bool {
 // account it is, as `gcloud auth list` names it (an email, or a principal:// identifier for a
 // workload or workforce identity federation login): the one gcloud's own CLOUDSDK_CORE_ACCOUNT
 // names, outside --profile; else, where the caller chose a configuration (chosen, by --profile or
-// CLOUDSDK_ACTIVE_CONFIG_NAME), the account that configuration names (configured); else the one
-// gcloud marks active, else the only one. An account or a configuration the caller chose is the
-// caller's choice, so where it names no login gcloud holds the command is refused, naming it and
-// each login gcloud holds, rather than run as another login - a configuration that names no
-// account at all included, which gcloud's only other login would otherwise stand in for. It also
-// refuses no login at all, and several of which none is active, naming each.
+// CLOUDSDK_ACTIVE_CONFIG_NAME), the account that configuration itself names (configured,
+// gcloudConfigurationAccount); else the one gcloud marks active, else the only one. An account or
+// a configuration the caller chose is the caller's choice, so where it names no login gcloud holds
+// the command is refused, naming it and each login gcloud holds, rather than run as another login -
+// a configuration that names no account at all included, for which gcloud on a Compute Engine VM
+// would lend the machine's own login. It also refuses no login at all, and several of which none
+// is active, naming each.
 func chooseGcloudAccount(gcloud gcloudCommand, chosen string, accounts []string, active, configured string) (string, error) {
 	held := "none"
 	if len(accounts) > 0 {
@@ -265,9 +264,9 @@ func chooseGcloudAccount(gcloud gcloudCommand, chosen string, accounts []string,
 	if chosen != "" {
 		switch {
 		case configured == "":
-			return "", fmt.Errorf("the gcloud configuration %s names no account (gcloud holds logins for %s): sign in to it with `gcloud auth login --configuration=%s`, or name a login gcloud holds with `gcloud config set account ACCOUNT --configuration=%s`", chosen, held, chosen, chosen)
+			return "", fmt.Errorf("it names no account, so no login is chosen (gcloud holds logins for %s): sign in to it with `gcloud auth login --configuration=%s`, or name a login gcloud holds with `gcloud config set account ACCOUNT --configuration=%s`", held, chosen, chosen)
 		case !slices.Contains(accounts, configured):
-			return "", fmt.Errorf("the gcloud configuration %s names %s, and gcloud holds no login for it (it holds %s): sign in to it with `gcloud auth login --configuration=%s`", chosen, configured, held, chosen)
+			return "", fmt.Errorf("it names %s, and gcloud holds no login for it (it holds %s): sign in to it with `gcloud auth login --configuration=%s`", configured, held, chosen)
 		}
 		return configured, nil
 	}
@@ -420,11 +419,12 @@ func (b *gcpBackend) signIn(ctx context.Context, profile string) error {
 		if !slices.Contains(gcloudConfigurations(), profile) {
 			return usageErr{fmt.Errorf("--profile names the gcloud configuration %s, which gcloud's configuration directory %s does not hold (it holds %s): name one of those, or create it with `gcloud config configurations create %s`", profile, cmp.Or(gcloudConfigDir(), "(none: CLOUDSDK_CONFIG and HOME are unset)"), gcloudConfigurationList(), profile)}
 		}
+		phrase := fmt.Sprintf("the gcloud configuration %s (--profile)", profile)
 		gcloud, err := findGcloud(profile)
 		if err != nil {
-			return fmt.Errorf("--profile names the gcloud configuration %s, but %w", profile, err)
+			return fmt.Errorf("%s: %w", phrase, err)
 		}
-		return b.signInWithGcloud(ctx, sourceProfileFlag, fmt.Sprintf("the gcloud configuration %s (--profile)", profile), gcloud, profile, nil)
+		return b.signInWithGcloud(ctx, sourceProfileFlag, phrase, gcloud, profile, nil)
 	}
 	skip(sourceProfileFlag, "not given")
 
@@ -452,7 +452,7 @@ func (b *gcpBackend) signIn(ctx context.Context, profile string) error {
 		}
 		gcloud, err := findGcloud("")
 		if err != nil {
-			return fmt.Errorf("%s chooses a gcloud login, but %w", sourceChosenGcloud.name(), err)
+			return fmt.Errorf("%s: %w", phrase, err)
 		}
 		return b.signInWithGcloud(ctx, sourceChosenGcloud, phrase, gcloud, config, nil)
 	}
@@ -507,12 +507,12 @@ type gcloudLoginList struct {
 
 // signInWithGcloud sets b's credential from gcloud's login, as source names it in phrase, under
 // the configuration the caller chose (chosen; "" for gcloud's own): it reads which logins gcloud
-// holds (gcloudLogins, unless listed already holds that answer), gcloud's settings
-// (readGcloudSettings), which login to use (chooseGcloudAccount), and asks for the first token at
-// once, so a login gcloud cannot lend is refused here, before any call is made under it;
-// gcloudToken then runs `gcloud auth print-access-token` again as each token nears its end,
-// gcloud refreshing the login as it does for itself, through the interface gcloud offers for that,
-// never its credential files.
+// holds (gcloudLogins, unless listed already holds that answer), the account a chosen
+// configuration names (gcloudConfigurationAccount), gcloud's auth settings (readGcloudSettings),
+// which login to use (chooseGcloudAccount), and asks for the first token at once, so a login
+// gcloud cannot lend is refused here, before any call is made under it; gcloudToken then runs
+// `gcloud auth print-access-token` again as each token nears its end, gcloud refreshing the login
+// as it does for itself, through the interface gcloud offers for that, never its credential files.
 func (b *gcpBackend) signInWithGcloud(ctx context.Context, source gcpSource, phrase string, gcloud gcloudCommand, chosen string, listed *gcloudLoginList) error {
 	if listed == nil {
 		accounts, active, err := gcloudLogins(ctx, gcloud)
@@ -521,11 +521,18 @@ func (b *gcpBackend) signInWithGcloud(ctx context.Context, source gcpSource, phr
 		}
 		listed = &gcloudLoginList{accounts, active}
 	}
+	configured := ""
+	if chosen != "" {
+		var err error
+		if configured, err = gcloudConfigurationAccount(chosen); err != nil {
+			return fmt.Errorf("%s: %w", phrase, err)
+		}
+	}
 	settings, err := readGcloudSettings(ctx, gcloud)
 	if err != nil {
 		return fmt.Errorf("%s: %w", phrase, err)
 	}
-	account, err := chooseGcloudAccount(gcloud, chosen, listed.accounts, listed.active, settings.Core.Account)
+	account, err := chooseGcloudAccount(gcloud, chosen, listed.accounts, listed.active, configured)
 	if err != nil {
 		return fmt.Errorf("%s: %w", phrase, err)
 	}

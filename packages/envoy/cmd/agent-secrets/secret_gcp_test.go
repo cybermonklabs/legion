@@ -1,10 +1,12 @@
 // packages/envoy/cmd/agent-secrets/secret_gcp_test.go
 //
 // The GCP secret forms run in-process here, against a fake Secret Manager gRPC server
-// (fakeSecretManager) standing in for the real API, with gcpCredentials and gcpUserinfo replaced
-// so no form makes a network call for its identity, a stub gcloud alone on PATH (useGcloud) where
-// a form can reach for the person's gcloud login, and the shared fake broker (secretBroker,
-// secret_test.go) answering GET /v1/settings with the GCP store's shape and the reread.
+// (fakeSecretManager) standing in for the real API, with the credential seams
+// (gcpCredentialsFile, gcpMetadataCredentials) and gcpUserinfo replaced so no form makes a network
+// call for its identity, a stub gcloud alone on PATH (useGcloud) where a form can reach for a
+// gcloud login, and the shared fake broker (secretBroker, secret_test.go) answering
+// GET /v1/settings with the GCP store's shape and the reread. secret_gcp_order_test.go runs the
+// order of those sources through the real ones instead.
 package main
 
 import (

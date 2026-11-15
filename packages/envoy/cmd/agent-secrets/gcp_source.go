@@ -7,6 +7,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -119,6 +120,35 @@ func gcloudConfigurationList() string {
 		return strings.Join(names, ", ")
 	}
 	return "none"
+}
+
+// gcloudConfigurationAccount is the account the gcloud configuration name itself names: the
+// [core] account property of its file in gcloudConfigDir, as gcloud's configparser reads it
+// (`key = value` or `key: value`, `#` and `;` comments); "" where it names none. It is read from
+// the file, not from `gcloud config list`, which on a Compute Engine VM answers a configuration
+// that names no account with the metadata server's service account (gcloud's core/account
+// callback), so a person's empty configuration would read as the machine's: measured on
+// sami-devbox on 2026-11-15, where `config list --configuration=theorem` named the VM's account
+// and `config configurations describe theorem` named none. A file it cannot read is an error.
+func gcloudConfigurationAccount(name string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(gcloudConfigDir(), "configurations", "config_"+name))
+	if err != nil {
+		return "", fmt.Errorf("read the gcloud configuration %s: %w", name, err)
+	}
+	section, account := "", ""
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "" || line[0] == '#' || line[0] == ';':
+		case strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]"):
+			section = strings.ToLower(strings.TrimSpace(line[1 : len(line)-1]))
+		case section == "core":
+			if i := strings.IndexAny(line, "=:"); i > 0 && strings.EqualFold(strings.TrimSpace(line[:i]), "account") {
+				account = strings.TrimSpace(line[i+1:])
+			}
+		}
+	}
+	return account, nil
 }
 
 // activeGcloudConfiguration is the configuration gcloud runs under when nothing names one: the

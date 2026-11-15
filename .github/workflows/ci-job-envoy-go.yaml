@@ -143,10 +143,22 @@ jobs:
         run: |
           go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/cmd/architecture-check$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
         working-directory: packages/envoy
+      # Each named test runs every store form once against the GCP fake and once against the
+      # in-process AWS store, as its `aws` and `gcp` subtests (onEachStore); this step counts the
+      # passes of each, so a test whose AWS half was skipped or removed reads aws=0 and fails, and
+      # it fails as well when a database suite skipped for want of BROKER_TEST_DATABASE_URL
+      # (dispatch://INFRA-3801/artifact/verification-md, c8).
+      - name: Count the store-form rows on each backend
+        run: packages/envoy/scripts/backend-count.sh TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential
       # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
       # never runs it. Vetting it keeps it compiling as the package changes.
       - name: Vet agentloop's live proof (no model call)
         run: go vet -tags modellive ./agentloop/
+        working-directory: packages/envoy
+      # The run of the built agent-secrets against moto needs moto, so it sits behind a build tag
+      # and packages/envoy/scripts/aws-moto-check.sh runs it. Vetting it keeps it compiling.
+      - name: Vet agent-secrets' moto run (no moto)
+        run: go vet -tags moto ./cmd/agent-secrets/
         working-directory: packages/envoy
       # internal/testnats runs its server in the test process, so the untagged step above starts
       # no container. The two-image matrix, which proves a rendered authorization on nats:2.10 and

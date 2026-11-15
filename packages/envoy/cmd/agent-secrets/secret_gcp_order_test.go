@@ -151,7 +151,11 @@ func (m *metadataServer) tokenRequests() int {
 // marked ACTIVE), `config list` (core.account) and `auth print-access-token … ACCOUNT`
 // (gcloud-not-a-secret-for-ACCOUNT), where the configuration is the --configuration= its command line
 // names, else CLOUDSDK_ACTIVE_CONFIG_NAME, else active_config, and CLOUDSDK_CORE_ACCOUNT, where
-// set, replaces that configuration's account; any other command fails. It answers the
+// set, replaces that configuration's account; any other command fails. Where the configuration
+// names no account, the effective account is the active configuration's, as real gcloud on a
+// Compute Engine VM answers one with the metadata server's service account (its core/account
+// callback): measured on sami-devbox on 2026-11-15, `gcloud config list --configuration=theorem`
+// for a configuration whose file is `[core]` alone named the VM's account. It answers the
 // configuration directory.
 func useGcloudConfigurations(t *testing.T, active string, configs map[string]string) string {
 	t.Helper()
@@ -188,6 +192,7 @@ func useGcloudConfigurations(t *testing.T, active string, configs map[string]str
 		`[ -n "$config" ] || { [ -f ` + shellWord(filepath.Join(dir, "active_config")) + ` ] && read -r config <` + shellWord(filepath.Join(dir, "active_config")) + `; }`,
 		`account=`,
 		`case "$config" in ` + strings.Join(cases, " ") + ` *) ;; esac`,
+		`[ -n "$account" ] || case "` + active + `" in ` + strings.Join(cases, " ") + ` *) ;; esac`,
 		`[ -n "$CLOUDSDK_CORE_ACCOUNT" ] && account=$CLOUDSDK_CORE_ACCOUNT`,
 		`case "$1 $2" in`,
 		`"auth list") printf '['; sep=; for held in ` + strings.Join(accounts, " ") + `; do status=; [ "$held" = "$account" ] && status=ACTIVE; printf '%s{"account":"%s","status":"%s"}' "$sep" "$held" "$status"; sep=,; done; printf ']\n' ;;`,

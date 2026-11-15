@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  `--profile NAME` names a gcloud configuration on a broker whose store is Google Cloud Secret
+  Manager, where it was refused before, and comes before every other credential source: every
+  gcloud call then carries `--configuration=NAME` and runs without `CLOUDSDK_CORE_ACCOUNT`. A
+  configuration gcloud's configuration directory does not hold is a usage error (exit 2) naming
+  the configurations that exist. On AWS `--profile` names an AWS profile, as before.

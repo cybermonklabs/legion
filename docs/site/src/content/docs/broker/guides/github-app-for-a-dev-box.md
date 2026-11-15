@@ -105,12 +105,13 @@ sign-in that you leave there. Thus, on the box, delete the key files and delete 
 you complete the step.
 
 Sign in one time with `gcloud auth login`. This command does not change the credentials of the
-box. `agent-secrets` writes with the credentials that its environment gives it: first an access
-token in `CLOUDSDK_AUTH_ACCESS_TOKEN`, then the Application Default Credentials, then your gcloud
-login. A box usually has Application Default Credentials of its own. Thus, on the box, give your
-access token to the command, as the `set` command below does. For more information, refer to
-[Before you start](/legion/broker/guides/manage-a-secret/#before-you-start) in "Manage a secret".
-Then build the file and set the secret.
+box. `agent-secrets` writes with the credential of the first source it finds, and a choice you
+make comes before the box's own identity: first `--profile`, the gcloud configuration that holds
+your login, then an access token in `CLOUDSDK_AUTH_ACCESS_TOKEN`, then the credentials of the
+box. Thus, on the box, name the configuration your `gcloud auth login` signed in to, as the `set`
+command below does; the command's first line names the credential it used. For more
+information, refer to [Before you start](/legion/broker/guides/manage-a-secret/#before-you-start)
+in "Manage a secret". Then build the file and set the secret.
 
 Build `app-key.json` from the App ID and the private key file that GitHub gave you. A PEM key
 spans several lines, which JSON must escape, so let `jq` write the file. Do not paste the key into
@@ -125,8 +126,7 @@ Set the secret from standard input, then delete the two key files once the set s
 put the private key on a command line.
 
 ```sh
-CLOUDSDK_AUTH_ACCESS_TOKEN="$(gcloud auth print-access-token)" \
-  agent-secrets secret set GITHUB_APP_<PERSON> < app-key.json \
+agent-secrets secret set GITHUB_APP_<PERSON> --profile '<your gcloud configuration>' < app-key.json \
   && rm app-key.json '<private key file>.pem'
 ```
 
