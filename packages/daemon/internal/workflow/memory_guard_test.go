@@ -63,6 +63,36 @@ func TestMemoryGuardAKillIsToldToTheReportingRoleAlone(t *testing.T) {
 	}
 }
 
+// A process a microVM pod's own kernel stopped is told to the role whose connection reported it
+// with the kernel's note, not the guard's: the process named and escaped as the guard's note names
+// it, its size, the pod's memory counter (not the guard's anonymous reading) and its limit, in the
+// guard's units, and where heavy work runs. The guard's own note, for a report with no cause, is
+// TestMemoryGuardAKillIsToldToTheReportingRoleAlone's, pinned whole.
+func TestAKernelKillTellsItsRoleTheKernelStoppedItsProcess(t *testing.T) {
+	pool := migratedPool(t)
+	seedTestingIssue(t, pool, "LEGION-209")
+	token := claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleTester))
+	report := memoryGuardKillReport()
+	report.Cause = shimwire.MemoryKillCauseKernel
+	report.Executable = "x`y"
+
+	if _, err := intake.ApplyFact(t.Context(), pool, "launcher", "memory-guard-kill:guard-7f3a:3", intake.MemoryGuardKill{
+		Issue: "LEGION-209", Token: token, PodUID: "pod-209", Report: report,
+	}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		t.Fatalf("apply the kill: %v", err)
+	}
+
+	want := "The pod's kernel stopped one of your processes because the pod ran out of memory: " +
+		"``x`y`` (pid 4242) held 812.40 MiB when the pod's memory read 3.26 GiB of its 4.00 GiB limit. " +
+		"The pod's other processes and your session go on. " +
+		"Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: " +
+		"read skill://legion-worker/references/tools.md before you run it again."
+	assertRoleMessages(t, pool, "LEGION-209", []record.RoleMessage{{Role: string(token), Body: want}})
+	if rows := outboxRowsOf(t, pool, "LEGION-209"); rows != 1 {
+		t.Fatalf("the outbox holds %d rows of LEGION-209, want the one role message", rows)
+	}
+}
+
 // A kill that names an issue the daemon does not record has no role of the workflow's to tell:
 // it queues nothing and says so in one line.
 func TestMemoryGuardAKillOfAnIssueTheDaemonDoesNotRecordIsLoggedAndDropped(t *testing.T) {

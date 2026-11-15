@@ -739,3 +739,132 @@ func TestMemoryGuardKillValidateRefusesWhatTheDaemonCannotApply(t *testing.T) {
 		})
 	}
 }
+
+// kernelKillLine is a launcher's report of one process the pod's kernel stopped, as it crosses
+// the wire: the guard's report with the cause last.
+const kernelKillLine = `{"type":"launcher_memory_kill","guard":"3f2a9c1d5e7b8a60","sequence":1,"pid":4242,"executable":"python3",` +
+	`"sizeBytes":1048576000,"readingBytes":3774873600,"counterBytes":4089446400,"limitBytes":4294967296,"at":"2026-11-14T03:00:00Z","cause":"kernel"}`
+
+// A report of a process the pod's kernel stopped crosses the wire whole, through the writer and
+// the reader a launcher and the daemon speak, with its cause, and the frame's own rule takes it.
+func TestMemoryKillAKernelKillRoundTripsThroughTheWireWithItsCause(t *testing.T) {
+	kill := memoryKill()
+	kill.Cause = MemoryKillCauseKernel
+	var wire bytes.Buffer
+	if err := NewWriter(&wire).WriteFrame(kill); err != nil {
+		t.Fatal(err)
+	}
+	if wire.String() != kernelKillLine+"\n" {
+		t.Fatalf("the writer wrote %s, want %s", wire.String(), kernelKillLine)
+	}
+	line, err := NewReader(&wire).ReadLine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := Decode(line)
+	if err != nil {
+		t.Fatalf("Decode(%s): %v", line, err)
+	}
+	if !reflect.DeepEqual(decoded, kill) {
+		t.Fatalf("Decode(%s) = %#v, want %#v", line, decoded, kill)
+	}
+	if err := decoded.(LauncherMemoryKill).Validate(); err != nil {
+		t.Fatalf("the decoded kernel kill does not validate: %v", err)
+	}
+}
+
+// A report that carries no cause, which is every report a launcher built before the member sends,
+// decodes with none and validates: it is the guard's own kill. The guard's report still encodes
+// as those bytes, with no cause member.
+func TestMemoryKillAReportWithNoCauseIsTheGuardsOwn(t *testing.T) {
+	decoded, err := Decode([]byte(memoryKillLine))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kill, ok := decoded.(LauncherMemoryKill)
+	if !ok || kill.Cause != "" {
+		t.Fatalf("decoded %#v, want a launcher_memory_kill with no cause", decoded)
+	}
+	if err := kill.Validate(); err != nil {
+		t.Fatalf("a report with no cause does not validate: %v", err)
+	}
+	line, err := json.Marshal(memoryKill())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(line) != memoryKillLine {
+		t.Fatalf("the guard's report encodes as %s, want %s", line, memoryKillLine)
+	}
+}
+
+// A cause other than none and MemoryKillCauseKernel is one no note says, and the frame's own rule
+// refuses it, naming the cause; the two it knows are taken.
+func TestMemoryKillValidateRefusesACauseItDoesNotKnow(t *testing.T) {
+	for _, cause := range []string{"", MemoryKillCauseKernel} {
+		k := memoryKill()
+		k.Cause = cause
+		if err := k.Validate(); err != nil {
+			t.Fatalf("cause %q is refused: %v", cause, err)
+		}
+	}
+	for _, cause := range []string{"guard", "Kernel", " kernel", "oom"} {
+		t.Run(cause, func(t *testing.T) {
+			k := memoryKill()
+			k.Cause = cause
+			err := k.Validate()
+			want := fmt.Sprintf("launcher_memory_kill cause is %q, not \"kernel\" or none", cause)
+			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Validate = %v, want ErrMalformedFrame naming %q", err, want)
+			}
+		})
+	}
+}
+
+// An acknowledgement without kernelKills, an older daemon's or the controller's pod's, decodes
+// with it false, whether or not it carries guard settings; one with it decodes true.
+func TestHelloAckKernelKillsDecodesFalseWithoutTheMemberAndTrueWithIt(t *testing.T) {
+	settings := &LauncherMemoryGuard{ActPercent: 85, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 100}
+	for _, tc := range []struct {
+		line string
+		want LauncherHelloAck
+	}{
+		{`{"type":"launcher_hello_ack"}`, LauncherHelloAck{}},
+		{memoryGuardAckLine, LauncherHelloAck{MemoryGuard: settings}},
+		{`{"type":"launcher_hello_ack","kernelKills":true}`, LauncherHelloAck{KernelKills: true}},
+		{`{"type":"launcher_hello_ack","memoryGuard":{"actPercent":85,"floorPercent":10,"waitSeconds":5,"intervalMilliseconds":100},"kernelKills":true}`,
+			LauncherHelloAck{MemoryGuard: settings, KernelKills: true}},
+	} {
+		decoded, err := Decode([]byte(tc.line))
+		if err != nil {
+			t.Fatalf("Decode(%s): %v", tc.line, err)
+		}
+		if !reflect.DeepEqual(decoded, tc.want) {
+			t.Fatalf("Decode(%s) = %#v, want %#v", tc.line, decoded, tc.want)
+		}
+	}
+}
+
+// An acknowledgement whose KernelKills is false carries no kernelKills member, so it is byte for
+// byte the acknowledgement a daemon built before the member writes, with guard settings or
+// without; one whose KernelKills is true carries the member after the settings.
+func TestHelloAckEncodesKernelKillsOnlyWhenTrue(t *testing.T) {
+	settings := &LauncherMemoryGuard{ActPercent: 85, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 100}
+	for _, tc := range []struct {
+		ack  LauncherHelloAck
+		line string
+	}{
+		{LauncherHelloAck{}, `{"type":"launcher_hello_ack"}`},
+		{LauncherHelloAck{MemoryGuard: settings}, memoryGuardAckLine},
+		{LauncherHelloAck{KernelKills: true}, `{"type":"launcher_hello_ack","kernelKills":true}`},
+		{LauncherHelloAck{MemoryGuard: settings, KernelKills: true},
+			`{"type":"launcher_hello_ack","memoryGuard":{"actPercent":85,"floorPercent":10,"waitSeconds":5,"intervalMilliseconds":100},"kernelKills":true}`},
+	} {
+		line, err := json.Marshal(tc.ack)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(line) != tc.line {
+			t.Fatalf("%+v encodes as %s, want %s", tc.ack, line, tc.line)
+		}
+	}
+}

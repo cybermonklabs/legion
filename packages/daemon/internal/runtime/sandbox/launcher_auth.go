@@ -106,11 +106,15 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 // guard's settings (Options.MemoryGuard), none when the deployment turned the guard off; the
 // controller's pod is handed none here, since its guard's settings are a block of their own
 // that this runtime does not carry, and an absent member is what its launcher reads as "run no
-// guard".
+// guard". Every issue pod's launcher is also told that this daemon knows the pod's kernel's kill
+// (KernelKills), whatever the guard's settings, since a microVM pod's launcher sends those reports
+// only where it is told so and its roles are owed the note however the guard is set; the
+// controller's pod runs no watch whose reports it would carry.
 func (r *Runtime) launcherHelloAck(kind podKind) shimwire.LauncherHelloAck {
 	var ack shimwire.LauncherHelloAck
 	if _, issue := kind.(issuePod); issue {
 		ack.MemoryGuard = r.memoryGuard
+		ack.KernelKills = true
 	}
 	return ack
 }

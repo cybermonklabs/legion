@@ -269,8 +269,8 @@ func (m *manager) logf(format string, args ...any) {
 // names the launcher's leak-check pin and whether this process has installed it, so the daemon
 // pushes the check only to a launcher that still needs it. The acknowledgement is logged as one
 // line, so a launcher the daemon accepted reads apart from one still dialing; the memory guard
-// settings it carries, or their absence, go to the pod's guard, and decide whether the guard's
-// reports of this role's processes go on this connection (openMemoryReports).
+// settings it carries, or their absence, go to the pod's guard, and what it carries decides
+// whether the kill reports of this role's processes go on this connection (openMemoryReports).
 func (m *manager) serve(ctx context.Context, address string) error {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	if err != nil {
@@ -324,9 +324,16 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	// A restore whose outcome no connection has carried yet goes over this one: until the daemon
 	// has it, the saved work stays in its database (bundleRestore.owed).
 	m.reportRestore()
-	// The guard's reports of this role's processes go on this connection from here, after its
-	// state, or are dropped when its acknowledgement carried no settings.
-	m.openMemoryReports(writer, ack.MemoryGuard != nil)
+	// The kill reports of this role's processes go on this connection from here, after its state,
+	// or are dropped where the daemon behind it may not know them: a gVisor pod's launcher sends
+	// them where the acknowledgement carried guard settings, and a microVM pod's where it carried
+	// KernelKills, whatever MemoryGuard says, since a daemon that sends guard settings and no
+	// KernelKills would tell a role of the kernel's kill in the guard's words.
+	carried := ack.MemoryGuard != nil
+	if m.cfg.MicroVM {
+		carried = ack.KernelKills
+	}
+	m.openMemoryReports(writer, carried)
 	for {
 		frame, err := readFrame(reader)
 		if err != nil {
@@ -553,13 +560,14 @@ type manager struct {
 	// (serve). It is nil in the controller's pod and in a launcher that is not its container's
 	// first process, which run none (serveMemoryGuard).
 	memoryGuard *memoryguard.Guard
-	// memoryKills are the guard's reports of this role's processes it ended that no connection
+	// memoryKills are the reports of this role's processes stopped for memory that no connection
 	// has carried yet, oldest first, at most maxWaitingMemoryKills (queueMemoryKill). reportWriter
 	// is the connection they go on, this role's current one from its state frame on, nil while
-	// none is up; reportsCarried is whether that connection's acknowledgement carried guard
-	// settings, without which the daemon behind it may not know the report (openMemoryReports).
-	// memorySending is the sequence of the oldest report while it is being written, 0 while none
-	// is, since a guard counts its kills from 1 (sendMemoryKills). All four are guarded by mu.
+	// none is up; reportsCarried is whether that connection's acknowledgement says the daemon
+	// behind it knows the report: guard settings for a gVisor pod's launcher, KernelKills for a
+	// microVM pod's (serve, openMemoryReports). memorySending is the sequence of the oldest report
+	// while it is being written, 0 while none is, since a guard counts its kills from 1
+	// (sendMemoryKills). All four are guarded by mu.
 	memoryKills    []shimwire.LauncherMemoryKill
 	reportWriter   *shimwire.Writer
 	reportsCarried bool

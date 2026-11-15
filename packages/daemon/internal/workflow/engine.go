@@ -1046,13 +1046,18 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 		Kind: "session-store-fault", Role: fact.Role, Phase: issue.Phase, Reason: told}))
 }
 
-// memoryGuardKill tells the role whose process an issue pod's memory guard ended why that
-// process is gone (intake.MemoryGuardKill): one role message on that role's own topic, enqueued
-// in the fact's transaction as every role message is (tellChecks, tellGateMoved), so a fact that
-// rolls back tells nobody and the outbox carries the telling across a restart. The topic is the
-// session's claim token, the role the launcher's connection authenticated for, and never one the
-// report named. A role whose session holds no topic when the row runs is told nothing, and the
-// outbox finishes the row (roleMessage); the guard's kill line in the pod's own log stays.
+// memoryGuardKill tells the role whose process an issue pod's memory guard ended, or a microVM
+// pod's own kernel stopped, why that process is gone (intake.MemoryGuardKill): one role message on
+// that role's own topic, enqueued in the fact's transaction as every role message is (tellChecks,
+// tellGateMoved), so a fact that rolls back tells nobody and the outbox carries the telling across
+// a restart. The topic is the session's claim token, the role the launcher's connection
+// authenticated for, and never one the report named. A role whose session holds no topic when the
+// row runs is told nothing, and the outbox finishes the row (roleMessage); the kill's line in the
+// pod's own log stays.
+//
+// The report's cause chooses the note: the kernel's (kernelKillNote) for
+// shimwire.MemoryKillCauseKernel, the guard's (memoryGuardNote) for none, the only other cause
+// the launcher session lets through (shimwire.LauncherMemoryKill.Validate).
 //
 // An issue the daemon does not record has no role of the workflow's to tell, so the fact is
 // logged and dropped.
@@ -1064,17 +1069,28 @@ func (e *Engine) memoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.Mem
 	}
 	if issue == nil {
 		e.logOnCommit(ctx, "workflow: a memory guard kill names an issue the daemon does not record, so no role is told",
-			"issue", fact.Issue, "role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID)
+			"issue", fact.Issue, "role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "cause", report.Cause)
 		return intake.Result{}, nil
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.RoleMessage{Role: string(fact.Token), Body: memoryGuardNote(report)}); err != nil {
+	note, told := memoryGuardNote(report), "workflow: the role whose process the memory guard ended is told why"
+	if report.Cause == shimwire.MemoryKillCauseKernel {
+		note, told = kernelKillNote(report), "workflow: the role whose process the pod's kernel stopped is told why"
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, record.RoleMessage{Role: string(fact.Token), Body: note}); err != nil {
 		return intake.Result{}, err
 	}
-	e.logOnCommit(ctx, "workflow: the role whose process the memory guard ended is told why",
+	e.logOnCommit(ctx, told,
 		"issue", issue.Key, "role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID,
-		"sizeBytes", report.SizeBytes, "readingBytes", report.ReadingBytes, "limitBytes", report.LimitBytes)
+		"cause", report.Cause, "sizeBytes", report.SizeBytes, "readingBytes", report.ReadingBytes, "counterBytes", report.CounterBytes,
+		"limitBytes", report.LimitBytes)
 	return intake.Result{}, nil
 }
+
+// memoryKillNoteEnd ends each note of a role's process stopped for memory: what goes on, and
+// where heavy work runs instead.
+const memoryKillNoteEnd = "The pod's other processes and your session go on. " +
+	"Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: " +
+	"read skill://legion-worker/references/tools.md before you run it again."
 
 // memoryGuardNote is what a role reads when the memory guard ended one of its processes: which
 // process, how much it held, how near the limit the pod was, that nothing else of the role
@@ -1085,11 +1101,19 @@ func (e *Engine) memoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.Mem
 // (codeSpan).
 func memoryGuardNote(report shimwire.LauncherMemoryKill) string {
 	return fmt.Sprintf("The launcher's memory guard stopped one of your processes with SIGKILL because the pod was near its memory limit: "+
-		"%s (pid %d) held %s of anonymous memory while the pod's anonymous memory read %s of its %s limit. "+
-		"The pod's other processes and your session go on. "+
-		"Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: "+
-		"read skill://legion-worker/references/tools.md before you run it again.",
+		"%s (pid %d) held %s of anonymous memory while the pod's anonymous memory read %s of its %s limit. "+memoryKillNoteEnd,
 		codeSpan(report.Executable), report.PID, binarySize(report.SizeBytes), binarySize(report.ReadingBytes), binarySize(report.LimitBytes))
+}
+
+// kernelKillNote is what a role reads when a microVM pod's own kernel stopped one of its processes
+// because the pod ran out of memory (shimwire.MemoryKillCauseKernel): which process, how much it
+// held, the pod's memory counter against its limit, that nothing else of the role stopped, and
+// where heavy work runs instead. The process and the sizes are written as memoryGuardNote writes
+// them.
+func kernelKillNote(report shimwire.LauncherMemoryKill) string {
+	return fmt.Sprintf("The pod's kernel stopped one of your processes because the pod ran out of memory: "+
+		"%s (pid %d) held %s when the pod's memory read %s of its %s limit. "+memoryKillNoteEnd,
+		codeSpan(report.Executable), report.PID, binarySize(report.SizeBytes), binarySize(report.CounterBytes), binarySize(report.LimitBytes))
 }
 
 // codeSpan is text as one Markdown code span that nothing in text ends early or spreads over

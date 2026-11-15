@@ -3,6 +3,7 @@ package launcher
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1098,5 +1099,104 @@ func TestMemoryGuardDropsTheNextOldestWhileTheOldestIsBeingWritten(t *testing.T)
 	m.mu.Unlock()
 	if left != 0 {
 		t.Fatalf("%d reports still wait after every write succeeded", left)
+	}
+}
+
+// waitingKillReport builds the tester's manager of an issue pod's launcher as Run builds it
+// (newManagers), from a configuration that says whether the pod is a microVM's, and queues report
+// on it as the pod's watch does while no connection is up (queueMemoryKill). The manager then
+// serves its connections to a listener of the test's; the test gets the daemon's end of the
+// first, up to its hello, and the launcher's log.
+func waitingKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemoryKill) (*roleConn, *lockedBuffer) {
+	t.Helper()
+	rolesDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rolesDir, "tester", RoleLauncherDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rolesDir, "tester", RoleLauncherDir, LauncherTokenFile), []byte(roleToken("tester")+"\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	stderr := &lockedBuffer{}
+	managers, err := newManagers(Config{
+		Connect: "tcp://" + listener.Addr().String(), Sandbox: "legion-legion-legion-208", PodUID: "pod-1",
+		RolesDir: rolesDir, Roles: []string{"tester"}, MicroVM: microVM, Stdout: stderr, Stderr: stderr, StopGrace: 2 * time.Second,
+	}, &pidGuard{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tester := managers[0]
+	tester.queueMemoryKill(report)
+	ctx, cancel := context.WithCancel(context.Background())
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		_ = tester.serveUntil(ctx, listener.Addr().String())
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-served:
+		case <-time.After(30 * time.Second):
+			t.Errorf("the tester's manager did not return after its context ended; its log: %s", stderr.String())
+		}
+	})
+	return acceptRole(t, listener), stderr
+}
+
+// A microVM pod's launcher opens its kill reports on a connection whose acknowledgement carries
+// kernelKills, whatever it says of the guard, so a deployment that turned the guard off still
+// tells its microVM roles of the kernel's kills; it drops them on one without kernelKills, a
+// daemon that does not know the report or, with guard settings, one that would tell a role of the
+// kernel's kill in the guard's words. A gVisor pod's launcher keeps the guard's rule on the same
+// acknowledgements: it sends its report where guard settings came and drops it where only
+// kernelKills did, with the line it always wrote.
+func TestAMicroVMLauncherSendsItsKillReportsOnKernelKillsAndAGVisorLauncherOnGuardSettings(t *testing.T) {
+	const noKernelKills = "reason=this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report"
+	const noSettings = "reason=this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report"
+	both := defaultsAck()
+	both.KernelKills = true
+	for _, tc := range []struct {
+		name    string
+		microVM bool
+		ack     shimwire.LauncherHelloAck
+		dropped string
+	}{
+		{"a microVM launcher on kernelKills and no guard settings", true, shimwire.LauncherHelloAck{KernelKills: true}, ""},
+		{"a microVM launcher on kernelKills and guard settings", true, both, ""},
+		{"a microVM launcher on guard settings and no kernelKills", true, defaultsAck(), noKernelKills},
+		{"a microVM launcher on an older daemon's acknowledgement", true, shimwire.LauncherHelloAck{}, noKernelKills},
+		{"a gVisor launcher on kernelKills and no guard settings", false, shimwire.LauncherHelloAck{KernelKills: true}, noSettings},
+		{"a gVisor launcher on kernelKills and guard settings", false, both, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report := shimwire.LauncherMemoryKill{Guard: "0123456789abcdef", Sequence: 1, PID: 900, Executable: "python3",
+				SizeBytes: 600 * guardMiB, ReadingBytes: 3500 * guardMiB, CounterBytes: 3900 * guardMiB, LimitBytes: 4096 * guardMiB,
+				At: time.Date(2026, 11, 15, 6, 0, 0, 0, time.UTC)}
+			if tc.microVM {
+				report.Cause = shimwire.MemoryKillCauseKernel
+			}
+			conn, stderr := waitingKillReport(t, tc.microVM, report)
+			conn.acknowledgeWith(tc.ack)
+			if tc.dropped == "" {
+				if got := conn.nextMemoryKill(); got != report {
+					t.Fatalf("the connection carries the report %+v, want the one that waited for it, %+v", got, report)
+				}
+				conn.noMemoryKill("after the report that waited for it, the connection")
+				if strings.Contains(stderr.String(), "report dropped") {
+					t.Fatalf("the launcher logged %s, want no report dropped", stderr.String())
+				}
+				return
+			}
+			conn.noMemoryKill("a connection whose acknowledgement does not say the daemon knows the report")
+			line := "tester: launcher: memory guard: report dropped sequence=1 pid=900 " + tc.dropped
+			if !strings.Contains(stderr.String(), line) {
+				t.Fatalf("the launcher logged %s, want the line %q", stderr.String(), line)
+			}
+		})
 	}
 }

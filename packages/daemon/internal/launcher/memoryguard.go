@@ -375,13 +375,15 @@ func (m *manager) sendMemoryKillsUntil(ctx context.Context) {
 	}
 }
 
-// openMemoryReports makes writer, this role's new connection, the one the guard's reports of this
+// openMemoryReports makes writer, this role's new connection, the one the kill reports of this
 // role's processes go on, and sends the reports waiting for it. serve calls it after the
 // connection's state frame, as it calls reportRestore, so the daemon reads the role's state
-// first. carried is whether the connection's acknowledgement carried guard settings: one that
-// carried none may come from a daemon that does not know the report, which closes a connection on
-// a frame it does not know, so every report waiting then, and each made while that connection is
-// up, is dropped with a line rather than sent.
+// first. carried is whether the connection's acknowledgement says the daemon behind it knows the
+// report (serve): guard settings for a gVisor pod's launcher, KernelKills for a microVM pod's. A
+// daemon that does not know the report may close a connection on a frame it does not know, or
+// tell a role of the kernel's kill in the guard's words, so where carried is false every report
+// waiting then, and each made while that connection is up, is dropped with a line rather than
+// sent.
 func (m *manager) openMemoryReports(writer *shimwire.Writer, carried bool) {
 	m.mu.Lock()
 	m.reportWriter, m.reportsCarried = writer, carried
@@ -411,9 +413,12 @@ func (m *manager) sendMemoryKills() {
 			dropped := m.memoryKills
 			m.memoryKills = nil
 			m.mu.Unlock()
+			reason := "this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report"
+			if m.cfg.MicroVM {
+				reason = "this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report"
+			}
 			for _, report := range dropped {
-				m.logf("launcher: memory guard: report dropped sequence=%d pid=%d reason=this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report",
-					report.Sequence, report.PID)
+				m.logf("launcher: memory guard: report dropped sequence=%d pid=%d reason=%s", report.Sequence, report.PID, reason)
 			}
 			return
 		}
