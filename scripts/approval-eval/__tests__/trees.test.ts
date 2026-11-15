@@ -16,6 +16,7 @@ import {
   type TreeChecks,
   type TreeGroup,
   TreeLog,
+  type TreeOutcome,
   treeGroupingOf,
   treeOutcomeOf,
 } from "../trees";
@@ -385,7 +386,7 @@ describe('near-duplicate grouping (dispatch://INFRA-3189 v8, "Grouping")', () =>
       issueKey: null,
       askCreatedAt: "2026-11-15T23:59:59Z",
     };
-    const cases: Array<[CaseRow, string]> = [
+    const cases: Array<[CaseRow, TreeOutcome]> = [
       [before, "ask-before-cut"],
       [{ ...before, askCreatedAt: null }, "ask-before-cut"],
       [{ ...before, askCreatedAt: "2026-11-16T00:00:00Z" }, "not-held-at-opening"],
