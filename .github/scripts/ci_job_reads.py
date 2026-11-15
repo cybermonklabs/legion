@@ -53,7 +53,7 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
-from ci_filter_coverage import CACHE_WORKFLOW, Read, TagRun, exact, go_skips_dir, run
+from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, go_skips_dir, run
 from ci_filter_coverage import at as at_in, gate as gate_in
 
 ENVOY = "packages/envoy"
@@ -149,6 +149,48 @@ def envoy_go_files_but_infra():
         if entry.is_dir() and entry.name not in {"infra", "node_modules", "testdata"} and holds_go(entry):
             globs.append(f"{ENVOY}/{entry.name}/**/*.go")
     return globs
+
+
+def files_but_tests(directory, suffix=".go", tree=False, skip=()):
+    """The files of `directory` a reader that passes over Go test files reads, one path each: the
+    ones whose name ends in `suffix` ("" for every name) but each `_test.go` one, and with `tree`
+    those of every directory under it too, but a directory named in `skip` and node_modules, which
+    holds no file of the repository. A `<dir>/*` or `<dir>/**` read would count every test file
+    of the directory as read, so rule 17 of check-ci-filters.sh would write no `!` pattern for one
+    and a change to a test file alone would start the job; no glob leaves the test files out, so
+    the files are listed from the directory as it is on each run, and one added later is declared
+    with no edit here."""
+    out = []
+    for current, subdirs, names in os.walk(directory):
+        subdirs[:] = sorted(s for s in subdirs if tree and s not in {"node_modules", *skip})
+        out += [f"{current}/{n}" for n in sorted(names) if n.endswith(suffix) and not n.endswith(TEST_SUFFIX)]
+    return out
+
+
+ENVOY_MODULE = "github.com/sjawhar/envoy"
+GO_IMPORT = re.compile(r'^\s*(?:import\s+)?(?:[A-Za-z_.][A-Za-z0-9_]*\s+)?"(' + re.escape(ENVOY_MODULE) + r'/[^"]+)"', re.M)
+GO_IMPORT_BLOCK = re.compile(r'^import\s*\((.*?)^\)', re.M | re.S)
+GO_IMPORT_LINE = re.compile(r'^import\s+(?:[A-Za-z_.][A-Za-z0-9_]*\s+)?"[^"]*"', re.M)
+
+
+def envoy_import_closure(*directories):
+    """The directories of `directories` and of every package of this module their non-test .go
+    files import, then those packages' imports in turn, sorted: each a package directory under
+    packages/envoy. The imports are read from each file's import declarations as text, whatever
+    build constraint the file carries, so the set holds every package a build of any tag reaches."""
+    seen, todo = set(), list(directories)
+    while todo:
+        directory = todo.pop()
+        if directory in seen:
+            continue
+        seen.add(directory)
+        for path in files_but_tests(directory):
+            text = Path(path).read_text(encoding="utf-8")
+            decls = "\n".join([m.group(1) for m in GO_IMPORT_BLOCK.finditer(text)]
+                              + [m.group(0) for m in GO_IMPORT_LINE.finditer(text)])
+            for imported in GO_IMPORT.findall(decls):
+                todo.append(f"{ENVOY}/{imported.removeprefix(ENVOY_MODULE + '/')}")
+    return tuple(sorted(seen))
 
 
 # ---------------------------------------------------------------- shared step reads
@@ -333,12 +375,25 @@ PACK_READS = [  # bun pm pack of pi-envoy / pi-legion runs their prepack (script
     "package.json", "bun.lock", "patches/**",
 ]
 PMDOC_GEN = [f"{ENVOY}/internal/dispatch/pmdoc/gen/**", "packages/proof-editor/**", CONTRACTS_SRC, "package.json", "bun.lock", "patches/**"]
-BROKER_REFGEN_DIRS = ("internal/broker/api", "internal/broker/helper", "internal/broker/config", "internal/broker/approval", "cmd/broker", "cmd/agent-secrets")
-MODULE_SOURCES = [Read(f"{ENVOY}/**", "internal/dispatch/api/module_source_test.go:73 walks every non-test .go file "
-                                      "under packages/envoy (infra included), for the tests that ask it for the "
-                                      "module's sources: lock_level_test.go:89, event_insert_guard_test.go:44, "
-                                      "review_order_guard_test.go:49, review_write_guard_test.go:51, "
-                                      "one_expression_guard_test.go:66")]
+# The broker's packages broker-refgen's tests parse through parseDir (cmd/broker-refgen/source.go:34),
+# which reads the non-test .go files of one directory and none under it (:42). readAPI
+# (pages.go:34) parses the API package (routes.go:226), the approval page's through the
+# pageAnswerers call its routes make (routes.go:668), and each package a route's refusal takes a
+# sentinel error's message from (routes.go:557); apiPage (pages.go:58) parses the packages
+# declaring the struct types of the bodies it documents (bodies.go:59); and checkRefusalWrites
+# parses refusalDirs (recorder.go:78). refgen finds a sentinel's or a body's package from the import
+# of the file naming it (importDir, source.go:222), an import of this module, so every package it
+# can parse beside those two is in their import closure within the module: REFGEN_API is that
+# closure, read from the imports of the non-test files at each run (envoy_import_closure), so a
+# route that names one more package's error or type is declared with no edit here.
+REFGEN_API = envoy_import_closure(f"{ENVOY}/internal/broker/api", f"{ENVOY}/internal/broker/approval")
+REFGEN_REFUSALS = tuple(f"{ENVOY}/internal/broker/{d}" for d in ("api", "approval", "airlockproxy"))
+MODULE_SOURCES = [Read(path, "internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata "
+                             "and all) and :83 parses every .go file it finds but the test files (:80), for "
+                             "the tests that ask it for the module's sources: lock_level_test.go:89, "
+                             "event_insert_guard_test.go:44, review_order_guard_test.go:49, "
+                             "review_write_guard_test.go:51, one_expression_guard_test.go:66")
+                  for path in files_but_tests(ENVOY, tree=True)]
 
 
 def legion_build(why):
@@ -354,8 +409,9 @@ RULES = {
     f"{DAEMON}/internal/admit/admit_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/admit/admit_test.go:1058")),
     # main's #2780 added the guard that holds internal/api's reachable claim states to the ones
     # internal/supervise declares, which it reads by parsing that package's own sources.
-    f"{DAEMON}/internal/api/reachstates_test.go": reads(
-        (f"{DAEMON}/internal/supervise/*", "internal/api/reachstates_test.go:47 lists ../supervise and :57 parses each file of it")),
+    f"{DAEMON}/internal/api/reachstates_test.go": [
+        Read(path, "internal/api/reachstates_test.go:47 lists ../supervise and :57 parses each .go file of it but the test files (:54)")
+        for path in files_but_tests(f"{DAEMON}/internal/supervise")],
     f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:115 runs it in bash, and :208,249 read it")),
     f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:868 (path from goldenPath at :857, declared :32)")),
     f"{DAEMON}/internal/capabilities/capabilities_test.go": reads(
@@ -393,7 +449,9 @@ RULES = {
         (f"{DAEMON}/internal/intake/testdata/github/pr-opened.json", "internal/daemon/nats_permissions_test.go:77")),
     f"{DAEMON}/internal/daemon/outbox_scratch_dispatch_test.go": [
         run(ENVOY, ["./cmd/dispatch"], "internal/daemon/outbox_scratch_dispatch_test.go:354 testbuild.EnvoyBinary, which runs go build ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
-    f"{DAEMON}/internal/daemon/supervision_test.go": reads((f"{DAEMON}/internal/stream/*", "internal/daemon/supervision_test.go:1254 Glob ../stream/*.go")),
+    f"{DAEMON}/internal/daemon/supervision_test.go": [
+        Read(path, "internal/daemon/supervision_test.go:1254 Glob ../stream/*.go, and :1263 parses each file it finds but the test files (:1260)")
+        for path in files_but_tests(f"{DAEMON}/internal/stream")],
     f"{DAEMON}/internal/intake/redelivered_test.go": [
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:802 globs it and :808 reads each file; :902 reads one")),
@@ -419,8 +477,9 @@ RULES = {
         (f"{DAEMON}/internal/prompts/roles/architect-root.md", "internal/textcheck/design_approved_wake_test.go:33-39 reads it under ../../../..")),
     f"{DAEMON}/internal/textcheck/file_copy_test.go": reads(
         (f"{DAEMON}/**/*.go", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/daemon (../..)")),
-    f"{DAEMON}/internal/textcheck/classify_imports_test.go": reads(
-        (f"{DAEMON}/internal/classify/*", "internal/textcheck/classify_imports_test.go:14-15 globs ../classify/*.go")),
+    f"{DAEMON}/internal/textcheck/classify_imports_test.go": [
+        Read(path, "internal/textcheck/classify_imports_test.go:19 globs ../classify/*.go, and :29 parses each file it finds but the test files (:26)")
+        for path in files_but_tests(f"{DAEMON}/internal/classify")],
     f"{DAEMON}/internal/textcheck/reclaim_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/reclaim_doc_test.go:44,167 reads it under ../../../.."),
         (f"{DAEMON}/internal/runtime/sandbox/reclaim_doc_extract.txt",
@@ -510,10 +569,14 @@ RULES = {
         run(ENVOY, ["./cmd/broker"], "cmd/agent-secrets/modules_test.go:188 cmdtest.BuildCommand . in ../broker CGO_ENABLED=0 GOOS=linux",
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"})],
     f"{ENVOY}/cmd/broker-refgen/auth_test.go": [
-        Read(f"{ENVOY}/{d}/*", "cmd/broker-refgen/auth_test.go:14 readAPI(repo root) parses it") for d in BROKER_REFGEN_DIRS],
+        Read(path, "cmd/broker-refgen/auth_test.go:14 readAPI(repo root) parses it")
+        for d in REFGEN_API for path in files_but_tests(d)],
     f"{ENVOY}/cmd/broker-refgen/recorder_test.go": [
-        Read(f"{ENVOY}/{d}/*", "cmd/broker-refgen/recorder_test.go:383 checkRefusalWrites(repo root) parses it")
-        for d in ("internal/broker/api", "internal/broker/approval", "internal/broker/airlockproxy")],
+        Read(path, "cmd/broker-refgen/recorder_test.go:384 checkRefusalWrites(repo root) parses it")
+        for d in REFGEN_REFUSALS for path in files_but_tests(d)],
+    f"{ENVOY}/cmd/broker-refgen/routes_test.go": [
+        Read(path, "cmd/broker-refgen/routes_test.go:16,76,128 readAPI(repo root) and :143 apiPage of what it read parse it")
+        for d in REFGEN_API for path in files_but_tests(d)],
     f"{ENVOY}/cmd/broker/main_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem", "cmd/broker/main_test.go:348 sslrootcert=../../docker/rds-global-bundle.pem")),
     f"{ENVOY}/cmd/broker/outage_test.go": [
         run(ENVOY, ["./cmd/agent-secrets"], "cmd/broker/outage_test.go:323-325 cmdtest.BuildCommand . in ../agent-secrets", mode="build")],
@@ -670,9 +733,11 @@ RULES = {
         ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:36,43 reads it under ../../../.."),
         (f"{ENVOY}/internal/broker/oauth/claims_doc_extract.txt",
          "internal/textcheck/claims_doc_test.go:70 reads the committed copy it holds the guide's list to (extractLines, called with it at :53)")),
-    f"{ENVOY}/internal/textcheck/environment_reads_test.go": reads(
-        (f"{ENVOY}/cmd/dispatch/**", "internal/textcheck/environment_reads_test.go's environmentReads walks .go files"),
-        (f"{ENVOY}/internal/dispatch/**", "internal/textcheck/environment_reads_test.go's environmentReads walks .go files")),
+    f"{ENVOY}/internal/textcheck/environment_reads_test.go": [
+        Read(path, "internal/textcheck/environment_reads_test.go:117 environmentReads walks it (:36), testdata and "
+                   "node_modules passed over (:41-42), and :49 parses each .go file but the test files (:46)")
+        for root in ("cmd/dispatch", "internal/dispatch")
+        for path in files_but_tests(f"{ENVOY}/{root}", tree=True, skip=("testdata",))],
     f"{ENVOY}/internal/textcheck/file_copy_test.go": reads(
         (f"{ENVOY}/**", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/envoy (../.., infra included)")),
     f"{ENVOY}/internal/textcheck/readme_commands_test.go": reads(
@@ -2191,14 +2256,19 @@ GATES = [
         (BUILD_BINARIES, f"docs/site/scripts/generate.ts:116 runs it ({at_docs('Build the docs site')})"),
         (RUN_SERVER, f"packages/dispatch/e2e/harness-listeners.ts's dispatchServer runs it ({at_docs('Take the screenshots')})"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80 holds the server's port through it"),
-        # broker-refgen (docs/site/generators/broker-reference.sh:15) parses these at run time.
-        (f"{ENVOY}/internal/broker/api/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/routes.go:17,226)"),
-        (f"{ENVOY}/internal/broker/config/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/config.go:11,36)"),
-        (f"{ENVOY}/cmd/broker/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/config.go:12,40)"),
-        (f"{ENVOY}/internal/broker/helper/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/pages.go:16, codes.go:15)"),
-        (f"{ENVOY}/cmd/agent-secrets/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/pages.go:17, codes.go:68)"),
-        (f"{ENVOY}/internal/broker/approval/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/routes.go:668 g.in of the pageAnswerers directory named at :34, which parses it at bodies.go:26)"),
-        (f"{ENVOY}/internal/broker/airlockproxy/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/recorder.go:13,77)"),
+        # broker-refgen (docs/site/generators/broker-reference.sh:15) parses these at run time,
+        # each directory's non-test .go files alone (packages/envoy/cmd/broker-refgen/source.go:34-45),
+        # and the packages of REFGEN_API past them, whose non-test files the build of
+        # ./cmd/broker above reads already.
+        *[(path, f"broker-refgen parses it (packages/envoy/cmd/broker-refgen/{where})") for directory, where in (
+            ("internal/broker/api", "routes.go:17,226"),
+            ("internal/broker/config", "config.go:11,36"),
+            ("cmd/broker", "config.go:12,40"),
+            ("internal/broker/helper", "pages.go:16, codes.go:15"),
+            ("cmd/agent-secrets", "pages.go:17, codes.go:68"),
+            ("internal/broker/approval", "routes.go:668 g.in of the pageAnswerers directory named at :34, which parses it at bodies.go:26"),
+            ("internal/broker/airlockproxy", "recorder.go:13,78"),
+        ) for path in files_but_tests(f"{ENVOY}/{directory}")],
     ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE)
       + bun_job(DOCS_JOB, DOCS_SITE) + CI_SELF + DOCS_SITE_SELF, workflow=CI),
 
@@ -2266,7 +2336,7 @@ GATES = [
         (f"{FIX}/daemon-api/**", "packages/pi-shared/src/daemon-client.test.ts:18, legion-claim-core.test.ts:11, legion-phase-ops.test.ts:21"),
         ("skills/**", "packages/pi-shared/test/skills-partition.test.ts:22,35-36,53-54 reads every skills/ directory and stages both partitions"),
         ("scripts/pi-plugin-prepack.sh", "packages/pi-shared/test/skills-guard.ts:17,34 runs scripts/pi-plugin-prepack.sh --stage-skills"),
-        (f"{DAEMON}/internal/prompts/**", "packages/pi-shared/test/skills-partition.test.ts:70-76 reads every .md under packages/daemon/internal/prompts"),
+        (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-shared/test/skills-partition.test.ts:70-76 reads every .md under packages/daemon/internal/prompts"),
         (".github/workflows/release.yaml", "packages/pi-shared/test/skills-partition.test.ts:95"),
         (f"{DAEMON}/internal/workspace/stale-git-lock-note.txt",
          "packages/pi-shared/src/git-lock.test.ts:63 reads it and holds git-lock.ts's copy to it"),
@@ -2290,7 +2360,7 @@ GATES = [
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-envoy/package.json:27 prepack ({at('pi-envoy', 'Pack pi-envoy')}); packages/pi-envoy/scripts/prepack.test.ts:84"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100 write dist/THIRD_PARTY_NOTICES with it"),
         ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:119-122"),
-        (f"{DAEMON}/internal/prompts/**", "packages/pi-envoy/src/skills-guard.test.ts:123 reads every .md of skillAndPromptRoots (:30-33)"),
+        (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:208-212 reads every .md of skillAndPromptRoots (:30-33)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-101 imports")
       + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")),
 
@@ -2824,23 +2894,36 @@ GATES = [
         ("packages/claude-envoy/package.json", "packages/envoy/docker/Dockerfile:37"),
         ("packages/test-fixtures/package.json", "packages/envoy/docker/Dockerfile:43"),
         ("docs/site/package.json", "packages/envoy/docker/Dockerfile:45; :62 RUN bun install --frozen-lockfile reads every manifest above"),
-        ("packages/contracts/**", "packages/envoy/docker/Dockerfile:31 and :68 COPY packages/contracts packages/contracts, which :76 runs gen:go in"),
-        ("packages/dispatch/**", "packages/envoy/docker/Dockerfile:38 and :69 COPY packages/dispatch packages/dispatch, which :78 runs build:web in"),
+        ("packages/contracts/**", "packages/envoy/docker/Dockerfile:31 and :68 COPY packages/contracts packages/contracts, which :78 runs gen:go in"),
+        ("packages/dispatch/**", "packages/envoy/docker/Dockerfile:38 and :69 COPY packages/dispatch packages/dispatch, which :80 runs build:web in"),
         ("packages/proof-editor/**", "packages/envoy/docker/Dockerfile:39, :42 and :70 COPY packages/proof-editor packages/proof-editor, which the SPA build aliases"),
-        ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile:72 COPY scripts/third-party-notices.ts, which the SPA build writes its notices with"),
-        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:95 COPY, run by :96 and :128"),
-        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:95 COPY, run by :130"),
-        (f"{ENVOY}/cmd/**", "packages/envoy/docker/Dockerfile:100 COPY packages/envoy/cmd ./cmd, which :145-151 builds the four binaries from"),
+        ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile:74 COPY scripts/third-party-notices.ts, which the SPA build writes its notices with"),
+        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :98 and :130"),
+        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :132"),
+        # Each COPY of a tree of packages/envoy below reads every file of it but its test files,
+        # which the root .dockerignore:24 (packages/envoy/**/*_test.go) leaves out of the context;
+        # listenfd, which the held-port image copies too, is the one tree read whole.
+        *[(path, "packages/envoy/docker/Dockerfile:102 COPY packages/envoy/cmd ./cmd, which :146-153 builds the four binaries from")
+          for path in files_but_tests(f"{ENVOY}/cmd", suffix="", tree=True)],
         # agentloop: the model loop cmd/broker's judge compiles in, a package outside internal/,
         # so the image build copies it beside cmd and internal (main's #2984). No go command of
         # this gate reaches it, so rule 9 of check-ci-filters.sh reads the filter's pattern as
         # dead without this row, while check-image-trigger-paths.sh refuses the filter without
         # the pattern: the read is the image build's, and this is where the two checks meet.
-        (f"{ENVOY}/agentloop/**", "packages/envoy/docker/Dockerfile:105 COPY packages/envoy/agentloop ./agentloop"),
-        (f"{ENVOY}/going/**", "packages/envoy/docker/Dockerfile:112 COPY packages/envoy/going ./going"),
-        (f"{ENVOY}/listenfd/**", "packages/envoy/docker/Dockerfile:108 COPY packages/envoy/listenfd ./listenfd"),
-        (f"{ENVOY}/migrationid/**", "packages/envoy/docker/Dockerfile:115 COPY packages/envoy/migrationid ./migrationid"),
-        (f"{ENVOY}/roleholder/**", "packages/envoy/docker/Dockerfile:117 COPY packages/envoy/roleholder ./roleholder"),
+        *[(path, "packages/envoy/docker/Dockerfile:107 COPY packages/envoy/agentloop ./agentloop")
+          for path in files_but_tests(f"{ENVOY}/agentloop", suffix="", tree=True)],
+        *[(path, "packages/envoy/docker/Dockerfile:114 COPY packages/envoy/going ./going")
+          for path in files_but_tests(f"{ENVOY}/going", suffix="", tree=True)],
+        # listenfd's test files too: the held-port image's build copies the whole package
+        # (packages/envoy/infra/host/heldportwrapper/Dockerfile:29), its own Dockerfile.dockerignore
+        # standing in for the root one and keeping the package whole (`!packages/envoy/listenfd`).
+        (f"{ENVOY}/listenfd/**", "packages/envoy/docker/Dockerfile:110 COPY packages/envoy/listenfd ./listenfd, and "
+                                 "packages/envoy/infra/host/heldportwrapper/Dockerfile:29 COPY packages/envoy/listenfd "
+                                 "/src/packages/envoy/listenfd, test files and all"),
+        *[(path, "packages/envoy/docker/Dockerfile:117 COPY packages/envoy/migrationid ./migrationid")
+          for path in files_but_tests(f"{ENVOY}/migrationid", suffix="", tree=True)],
+        *[(path, "packages/envoy/docker/Dockerfile:119 COPY packages/envoy/roleholder ./roleholder")
+          for path in files_but_tests(f"{ENVOY}/roleholder", suffix="", tree=True)],
         # The second image this job builds. Its context is that directory alone, test file and
         # all, so the filter owes every file of it: check-image-trigger-paths.sh refuses a
         # trigger that leaves one out, and rule 17 of check-ci-filters.sh would otherwise write
