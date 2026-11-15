@@ -896,7 +896,7 @@ document is the issue's spec unless `--artifact` names another, resolved as `dis
 resolves it. `changes_requested` needs `--reason`, and the command refuses it without one before
 it sends anything. It posts `{state, reason?}` to
 `POST /api/v1/artifacts/{id}/versions/{number}/reviews` (`DispatchClient.reviewArtifact`), the
-review route that names the version in its path, and sends no other request. A Dispatch route
+review route that names the version in its path, and asks no other review route. A Dispatch route
 ignores a body member it does not declare, so a version sent in the body of the older
 `POST /api/v1/artifacts/{id}/reviews` would be dropped by a build that predates the guard, and
 the review recorded at a version that build chooses. A build without the versioned route answers

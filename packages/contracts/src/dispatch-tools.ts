@@ -1591,8 +1591,9 @@ export const dispatchToolSpecs = [
       "open on it, the version that request names for it. Any other is refused 409 " +
       "REVIEW_VERSION_MOVED, which names the version to read, and nothing is recorded. A " +
       "Dispatch build without the versioned review route answers no route and records nothing; " +
-      "the command then says so and names /healthz, which reports the commit a build runs. With " +
-      "a request open the review answers it, and records the same verdict on every document the " +
+      "the command then says so and names /healthz, which names the commit of the build that " +
+      "answers it when that build was stamped with one. With a request open the review answers " +
+      "it, and records the same verdict on every document the " +
       "request names, each at the version the request names. A later version makes an approval " +
       "stale. A review is the one browser action this command takes for a person; every other " +
       "browser action is dispatch://INFRA-910's. " +

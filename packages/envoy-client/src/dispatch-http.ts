@@ -282,11 +282,12 @@ export class DispatchNoRouteError extends DispatchServiceError {
  * method and path it sent the review to) each time it was sent. The code and status are that
  * answer's, so a caller reads it as the refusal it is. The words are not
  * `DispatchNoRouteError`'s: a build without the versioned review route may simply be older than
- * that route rather than half of a release in progress, and no other route is asked, so the
- * message says why. Dispatch's no-route answer carries only a code, an error and a hint
- * (`staticHandler`, packages/envoy/internal/dispatch/routes/router.go) and names no build, so
- * it points at the probe that does, `/healthz`, whose `commit` member is the commit that build
- * runs (`healthzHandler`, packages/envoy/cmd/dispatch/main.go), rather than guessing.
+ * that route rather than half of a release in progress, and no other review route is asked, so
+ * the message says why. Dispatch's no-route answer carries only a code, an error and a hint
+ * (`staticHandler`, packages/envoy/internal/dispatch/routes/router.go) and names no build, so it
+ * points at `/healthz`, whose `commit` member names the commit of the build that answers it when
+ * that build was stamped with one and is null otherwise (`buildCommit` and `healthzHandler`,
+ * packages/envoy/cmd/dispatch/main.go), rather than guessing.
  */
 function reviewNoRouteRefusal(
   baseUrl: string,
@@ -297,10 +298,11 @@ function reviewNoRouteRefusal(
     "NOT_FOUND",
     404,
     `Dispatch at ${baseUrl} answered no route for ${route} each time the review was sent, so it ` +
-      "recorded no review. This build is older than that route. No other request was sent: the " +
-      "review route an older build serves takes no version, and it would record the review at " +
-      `a version that build chooses, which may not be version ${version}. The no-route answer ` +
-      `does not name the build; GET ${baseUrl}/healthz shows its commit.`
+      "recorded no review. This build is older than that route. No other review route was asked " +
+      "and nothing was written: the review route an older build serves takes no version, and it " +
+      `would record the review at a version that build chooses, which may not be version ${version}. ` +
+      `The no-route answer does not name the build; GET ${baseUrl}/healthz names the commit of the ` +
+      "build that answers it, when that build was stamped with one."
   );
 }
 
@@ -1379,8 +1381,8 @@ export class DispatchClient {
    * names the request it answered.
    *
    * A build without the route answers no route each time the review is sent (`#noRoute`), and
-   * this then throws `reviewNoRouteRefusal`'s refusal. No other route is asked, since the review
-   * route such a build serves takes no version.
+   * this then throws `reviewNoRouteRefusal`'s refusal. No other review route is asked, since the
+   * review route such a build serves takes no version.
    */
   async reviewArtifact(
     artifactID: string,

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 
@@ -602,6 +603,87 @@ func TestAReviewNamingNoVersionOfTheDocumentIsRefusedWithNothingWritten(t *testi
 	}
 	if approval := approvalShown(t, handler, artifactID); approval != approvalBefore {
 		t.Fatalf("approval after the refusals = %s, want it unchanged from %s", approval, approvalBefore)
+	}
+}
+
+// The version a review names is read only once the credential is known to be that of a person who
+// may review (recordArtifactReview), so a caller who may not review is told that, and never that
+// its {number} is no version. A credential without the person scope - a machine's broker token
+// that names no person, or a personal token holding no scope - is refused 403
+// OAUTH_SCOPE_REQUIRED by the row's scope gate (gateRouteScopes), which runs before the handler.
+// A person's broker token whose session parameter names another session than the one it proved
+// passes that gate and is refused 403 ACTOR_SESSION_MISMATCH by actingPerson: that row holds the
+// handler's own order, and reads 400 INVALID_REVIEW in a handler that reads the number first. The
+// same token naming no other session is refused that 400, so the number check is live for the
+// caller the 403 turned away. None of them writes a review.
+func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const personToken = "a-person-token-that-reviews"
+	person := liveNamedToken(caller.jkt)
+	person.ProjectScope, person.Project = brokertoken.ProjectScopePerson, ""
+	rig.broker.Says(personToken, person)
+	const machineToken = "a-machine-token-naming-no-person"
+	rig.broker.Says(machineToken, serviceOnlyToken(caller.jkt))
+	unscoped := personalTokenOwnedBy(t, rig.database, brokerTestPerson)
+
+	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
+		"key": "REV", "name": "Reviews",
+	}); created.Code != http.StatusCreated {
+		t.Fatalf("create the project: status=%d body=%s", created.Code, created.Body.String())
+	}
+	issue := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "REV", "title": "Reviewed by callers who may not review", "spec": "# Spec\n\nA passage.",
+	})
+	if issue.Code != http.StatusCreated {
+		t.Fatalf("create the issue: status=%d body=%s", issue.Code, issue.Body.String())
+	}
+	artifactID := decodeBody[struct {
+		PrimaryArtifactID string `json:"primary_artifact_id"`
+	}](t, issue).PrimaryArtifactID
+	body := map[string]any{"state": "approved"}
+
+	for _, number := range []string{"0", "two"} {
+		path := versionReviewPath(artifactID, number)
+		for _, row := range []struct {
+			caller string
+			send   func() *httptest.ResponseRecorder
+			code   string
+		}{
+			{
+				caller: "a machine's broker token naming no person",
+				send: func() *httptest.ResponseRecorder {
+					return rig.serve(caller.presenting(t, http.MethodPost, path, machineToken, body))
+				},
+				code: codeScopeRequired,
+			},
+			{
+				caller: "a personal token holding no scope",
+				send: func() *httptest.ResponseRecorder {
+					return agentRequest(t, rig.handler, http.MethodPost, path, body, unscoped)
+				},
+				code: codeScopeRequired,
+			},
+			{
+				caller: "a person's broker token whose session parameter names another session",
+				send: func() *httptest.ResponseRecorder {
+					return rig.serve(caller.presenting(t, http.MethodPost, path+"?session=session-someone-else", personToken, body))
+				},
+				code: "ACTOR_SESSION_MISMATCH",
+			},
+		} {
+			refused := row.send()
+			if code, _ := refusalOf(t, refused); refused.Code != http.StatusForbidden || code != row.code {
+				t.Fatalf("%s reviewing version %q: status=%d body=%s, want 403 %s", row.caller, number, refused.Code, refused.Body.String(), row.code)
+			}
+		}
+		live := rig.serve(caller.presenting(t, http.MethodPost, path, personToken, body))
+		if code, _ := refusalOf(t, live); live.Code != http.StatusBadRequest || code != "INVALID_REVIEW" {
+			t.Fatalf("the person's own token reviewing version %q: status=%d body=%s, want 400 INVALID_REVIEW", number, live.Code, live.Body.String())
+		}
+	}
+	if reviews := listReviews(t, rig.handler, artifactID); len(reviews) != 0 {
+		t.Fatalf("reviews after the refusals = %#v, want none", reviews)
 	}
 }
 
