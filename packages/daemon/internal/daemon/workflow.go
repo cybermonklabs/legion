@@ -359,7 +359,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if tokens == nil {
 		// The workflow owns a manager it makes: a boot that fails before the workflow is returned
 		// closes it, so a token_command still waiting on a grant does not outlive the boot.
-		owned := appauth.New(cfg.GitHubApps, appauth.Options{})
+		owned := appauth.New(cfg.GitHubApps, appauth.Options{Log: log})
 		tokens = owned
 		defer func() {
 			if opened == nil {
@@ -389,6 +389,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos,
 		defaultBranches:         newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
 	}
+	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is
+	// logged and read again once the limit has passed, wherever it is made.
+	w.defaultBranches.onHold = w.heldThroughLimit
 	log.Info("legion workflow boot stage", "stage", "dispatch")
 	if err := w.loadMapping(ctx); err != nil {
 		return nil, err
@@ -412,14 +415,18 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 			return nil, err
 		}
 	}
+	// The database is shared by every project's daemon: the workflow reads this project's issues.
+	// The rows the workflow writes through these records wake the outbox's lanes (projectRecords),
+	// through the runtime, since the outbox itself is built later (attach). The records and the
+	// pool are the workflow's before it reads GitHub's spelling of each repository, since a
+	// repository whose read GitHub's rate limit refuses is served on the default branch a record
+	// of the project holds for it (holdLimited).
+	w.records = projectRecords{Store: record.NewStore(), project: cfg.Project, wake: w.wakeOutbox, log: log}
+	w.pool = st.Pool()
 	log.Info("legion workflow boot stage", "stage", "appauth")
 	if err := w.nameMapping(ctx); err != nil {
 		return nil, err
 	}
-	// The database is shared by every project's daemon: the workflow reads this project's issues.
-	// The rows the workflow writes through these records wake the outbox's lanes (projectRecords),
-	// through the runtime, since the outbox itself is built later (attach).
-	w.records = projectRecords{Store: record.NewStore(), project: cfg.Project, wake: w.wakeOutbox, log: log}
 	engineCfg := engineConfig(cfg, reviewAppLogin, hookPrompts)
 	// The engine reads and writes the pod tables of the idle release through the store's own
 	// view of this project (store.Store.PodRecordsOf), which derives the claim token's spelling
@@ -454,7 +461,6 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// blocked-by-only edit this mirror exists for, and admission runs second in any case.
 	w.handlers, w.reviewAppLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission}, reviewAppLogin
 	w.gatedSteps = cfg.Gates.Steps()
-	w.pool = st.Pool()
 	if err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, log); err != nil {
 		return nil, err
 	}

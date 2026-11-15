@@ -344,7 +344,7 @@ Then:
 - `ensure` is idempotent and cheap when the server is up:
   it returns after one connection through the DSN itself (`psql … select 1`, with a connect timeout), and otherwise initialises and starts under `flock -o`.
   The `-o` closes the lock's descriptor in the child, without which the server inherits it and every later `ensure` waits on a lock the server holds for the pod's life.
-  That connection is a connection: a suite that has taken all `max_connections=100` slots makes each tick's `ensure` fail and log, and spend a slot trying, until the suite gives them back.
+  That connection is a connection: a suite that has taken every slot the server allows (the script's `max_connections`, which `packages/envoy/internal/dispatch/testlimits/testlimits_test.go` holds to `testlimits.ServerConnections` plus Postgres's default superuser reserve) makes each tick's `ensure` fail and log, and spend a slot trying, until the suite gives them back.
 
 - Each run of the script is bounded at 60 s.
   The first `ensure` runs before the launcher serves any role, and the daemon gives a pod 120 s to boot by default, so an `ensure` that hangs costs that pod a log line and not its boot.
@@ -3238,8 +3238,8 @@ for every directory of the bundle, `github-hosts-<dir>`, gh's `hosts.yml` carryi
 A directory names a GitHub owner of the project, or one repository of that owner as `<owner>/<repo>`, whose `/` the key writes as a `.`, since a Secret key holds no slash.
 The bundle holds one directory per owner, one more per owner a configured rename moved a repository away from while the project serves the name it moved to, and `<owner>/<repo>` directories beside them, cut under the directory named for the issue's recorded owner and under the one named for the owner whose installation serves that repository, less every directory GitHub refuses the role's App a lease for: an owner whose every repository that App's installation does not reach is left out of that role's bundle, said once on the daemon's stderr, where the role's own repository refused fails its launch instead.
 The write token is the role's App's (the implement App's for the implementer and the merger, the review App's for every other role), it reaches the issue's repository and no other, and it stands in two directories, the one named for the issue's recorded owner, which `GH_CONFIG_DIR` names, and the one named for the owner whose installation serves that repository now, which are one directory unless a rename moved the issue's repository;
-every other directory's token is the same App's narrowed to reading contents, pull requests, Actions and metadata over the repositories that directory names, an `<owner>/<repo>` directory's over the one repository its own name resolves to.
-Each mint asks for what the App's installation on that owner is granted of the set it names, so a permission the account has not approved — Actions most often — is left out of the request and said once on the daemon's stderr, rather than costing the role the whole bundle.
+every other directory's token is the same App's narrowed to reading contents, pull requests, issues, Actions and metadata over the repositories that directory names, an `<owner>/<repo>` directory's over the one repository its own name resolves to.
+Each mint asks for what the App's installation on that owner is granted of the set it names, so a permission the account has not approved — Actions most often — is left out of the request and said once in a warn record of the daemon's log, naming the App, the owner, the permission and the access asked and granted, rather than costing the role the whole bundle.
 
 The `roles` container mounts each role `<r>`'s own volumes under its directory of `/var/run/legion/roles`:
 `/var/run/legion/roles/<r>/launcher` (volume `launcher-<r>`, read-only:
@@ -5024,7 +5024,7 @@ launch failure 1/3; relaunching the same agent with --resume and its catch-up`, 
 
 ### Trust model: the provisioning token
 
-The provisioning token is the implement App's installation token narrowed to reading — contents, pull requests, Actions and metadata at read (`ReadToken`, `internal/appauth/appauth.go`), which is all a clone, a fetch and a repository cache do.
+The provisioning token is the implement App's installation token narrowed to reading — contents, pull requests, issues, Actions and metadata at read (`ReadToken`, `internal/appauth/appauth.go`), nothing a clone, a fetch or a repository cache could write with.
 It is minted naming no repository, so it reaches every repository of the owner's installation and a plant that reaches it reads every one of them; what it still cannot do there is push, open or merge a pull request, or change a repository or its settings.
 The narrowing makes that risk smaller and does not end it, and every agent of an issue can write the issue's volume
 — its own issue's alone, since no other issue's pod mounts it:
@@ -5035,9 +5035,9 @@ git and jj obey all of it — they run hooks, the git jj is told to run, working
 The daemon mints it with `ReadToken` (`implementTokens`, `internal/daemon/kubernetes.go`), and the three places that mint one — an issue pod's provisioning as the daemon makes the pod (`issuePod.provision`), the gh refresher's minute and the repository cache's Secret — share that one source.
 An installation that refuses the reading lease — GitHub answers 422 to a token request for a permission the installation is not granted, and mints nothing rather than leaving it out; the permissions the request names are what the installation was granted a moment before, so a refusal here is a grant that changed between the two calls — fails the mint, in key mode as in token mode, and no wider token is minted in its place.
 The failure shows as the launch's `mint the provisioning token for <owner>/<repo>` and the refresher's `sandbox runtime: provisioning token mint failed`, as it does below for a command that releases no token.
-An installation that holds the other three but has not been granted Actions needs no second call: the mint reads what the installation is granted and asks for that alone, so `actions` is left out of the request rather than refused with it (`exchangeGranted`, `internal/appauth/appauth.go`).
+An installation that has not been granted Actions, or issues, needs no second call: the mint reads what the installation is granted and asks for that alone, so the permission is left out of the request rather than refused with it (`exchangeGranted`, `internal/appauth/appauth.go`).
 A deployment whose Apps are configured by `token_command` (docs/deployment.md, "The `legion-implementer` and `legion-reviewer` Apps") asks GitHub for no token itself:
-`ReadToken` asks the command for its read-only release (`LEGION_GITHUB_READ_ONLY=1`) and takes what that release holds, be it narrower or wider than the four reads, and no wider token is asked for in its place.
+`ReadToken` asks the command for its read-only release (`LEGION_GITHUB_READ_ONLY=1`) and takes what that release holds, be it narrower or wider than the five reads it asks for with a key, and no wider token is asked for in its place.
 Such a command must therefore release a read-only token for every owner it serves: an owner it releases none for fails every launch that makes an issue pod on that owner, at the provisioning mint (`mint the provisioning token for <owner>/<repo>`), and the refresher logs `sandbox runtime: provisioning token mint failed` for that repository each minute.
 
 The Go coordinator's pods (`packages/daemon`) keep to that rule with two init containers, and with a third where the deployment names a `skills_repository`:

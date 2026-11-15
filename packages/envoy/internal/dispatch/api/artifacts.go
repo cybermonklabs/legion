@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -264,11 +265,13 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	s.storeArtifact(w, r, input, actor, kind, target)
 }
 
+// jsonArtifactUpload reads an inline upload's JSON body. As decodeJSON does, it ignores a member
+// jsonArtifactUpload does not declare and logs it at debug with the route; it keeps its own size
+// refusal for the artifact cap.
 func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (artifactUploadInput, bool) {
 	var body jsonArtifactUpload
 	var read bytes.Buffer
 	decoder := json.NewDecoder(io.TeeReader(r.Body, &read))
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
@@ -286,6 +289,9 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		s.writeHandlerError(w, refusal)
 		return artifactUploadInput{}, false
 	}
+	logUndeclaredMembers(r, &body, read.Bytes())
+	// `primary` stays declared, though no upload may set it, so that it is refused by name rather
+	// than ignored: an upload never makes a document the issue's primary one.
 	if body.Primary != nil {
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "primary is fixed at issue creation")
 		return artifactUploadInput{}, false
@@ -444,9 +450,11 @@ func (s *server) queueNewArtifact(
 // queueFileVersion queues the insert of an uploaded file's or image's version and returns the row
 // as the insert will leave it: numbered and dated by the ledger (docs.Ledger.NextVersion), with
 // its uploader as its one author. The bytes are written to the row only where no file store holds
-// them (putUploadedFile).
+// them (putUploadedFile), or while a live server process has no bucket and so serves a file only
+// from its row (fleetServesFilesFromRows, read here in the read phase through db).
 func (s *server) queueFileVersion(
 	ctx context.Context,
+	db processes.Querier,
 	ledger *docs.Ledger,
 	artifactID string,
 	input artifactUploadInput,
@@ -472,7 +480,13 @@ func (s *server) queueFileVersion(
 	}
 	content := input.content
 	if s.deps.Files != nil {
-		content = nil
+		keep, err := fleetServesFilesFromRows(ctx, db)
+		if err != nil {
+			return model.Version{}, err
+		}
+		if !keep {
+			content = nil
+		}
 	}
 	return version, queueExec(ledger, `
 		insert into artifact_versions (artifact_id, number, content, mime, size, sha256, authors, named, summary, created_at)
@@ -667,7 +681,7 @@ func (s *server) storeArtifact(
 			return
 		}
 	} else {
-		version, err = s.queueFileVersion(r.Context(), ledger, artifact.ID, input, sha, documentSummary, actor)
+		version, err = s.queueFileVersion(r.Context(), tx, ledger, artifact.ID, input, sha, documentSummary, actor)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

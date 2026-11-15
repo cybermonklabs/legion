@@ -161,13 +161,32 @@ func loadSourceIDs(ctx context.Context, pool Pool, query string) ([]string, erro
 
 // replaceInTx reconciles one source's refs with its text in a transaction of its own, and
 // reports false for a source gone since it was listed, whose edges the orphan sweep deletes.
+//
+// It reads the text under the lock every writer of that text takes, the source's owner lock
+// (readSourceUnderOwner), so this index of the text and a concurrent edit of it are ordered
+// rather than racing: without it a rebuild reads a source, an editor writes new text and its own
+// edges, and this transaction then replaces those edges with the ones it built from the text it
+// read, losing the edit's own index until something re-indexes that source (INFRA-3285). The
+// lock is taken before the read and the read is a statement after it, so a write committed while
+// the rebuild waited is the text it indexes; it is an advisory lock, so it assigns no transaction
+// id, and the edges are planned under it and written last as one batch (replaceRefs). The
+// re-index paths beside this one take the same lock through the same read, for the same reason
+// (ReindexOwed and ReindexScopeSource below). The lock is one owner at a time, held for the
+// length of that source's own transaction, so a rebuild still never holds every owner: making the
+// rebuild one transaction instead would order it against every writer at once and hold every
+// owner for the length of the pass, which is minutes on a large database.
 func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL string) (bool, error) {
+	read, err := sourceRead(fromKind, fromID)
+	if err != nil {
+		return false, err
+	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	body, _, found, err := sourceText(ctx, tx, fromKind, fromID)
+	var body string
+	found, err := readSourceUnderOwner(ctx, tx, fromKind, fromID, read, &body, new(time.Time))
 	if err != nil || !found {
 		return false, err
 	}
@@ -183,7 +202,7 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 // created_at, an ask's question, a comment's body, or an issue message's body, with the row's
 // edited_at where its table has one (asks, comments) and its created_at otherwise. It locks
 // nothing: a caller that orders itself against the edits of that text holds the source's owner
-// lock and runs this statement after it (ReindexOwed).
+// lock and runs this statement after it (replaceInTx, ReindexOwed).
 func sourceRead(kind, id string) (string, error) {
 	switch kind {
 	case "artifact":
@@ -220,7 +239,7 @@ func sourceText(ctx context.Context, q Queryer, kind, id string) (string, time.T
 
 // readSourceUnderOwner takes the owner lock of reference source kind id (sourceOwner) and runs
 // read, the statement that lock guards, in the statement after it, scanning its one row into dest.
-// It is how a background pass reads a source it is about to re-index (ReindexOwed,
+// It is how a background pass reads a source it is about to re-index (replaceInTx, ReindexOwed,
 // IndexOwedItemBlocks): the lock excludes every writer of that source, and the read sees what the
 // lock's previous holder committed. A source whose owner is nil - a direct message, whose
 // conversation is no owner - is read with no lock, since nothing rewrites a message's body.

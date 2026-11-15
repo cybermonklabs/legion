@@ -4,7 +4,8 @@
 // makes is bounded by pgmigrate.LockTimeout. Migrate holds a broker-specific
 // pg_advisory_xact_lock for the whole run, so concurrent callers serialize instead of racing on
 // `create table if not exists`, and applies every pending migration inside one shared
-// transaction, recording each in broker_schema_migrations.
+// transaction, recording each in broker_schema_migrations. Once that transaction ends, it resets
+// the session of the connection it ran on before that connection goes back to the pool.
 package store
 
 import (
@@ -13,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net"
 	"strconv"
 	"sync"
@@ -180,6 +182,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return s.migrate(ctx, migrationFiles)
 }
 
+// migrate applies every pending migration of fsys in one transaction, on a connection it takes
+// from the pool for itself (Acquire), and resets that connection's session before it gives it back
+// (releaseMigrationConn).
 func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 	migrations, err := pgmigrate.Load(fsys, "migrations")
 	if err != nil {
@@ -190,31 +195,82 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 			return fmt.Errorf("migrations refused, none applied: migration %s is non-transactional; the broker runner applies its whole set in one transaction", migration.Name)
 		}
 	}
-	tx, err := s.Pool.Begin(ctx)
+	conn, err := s.Pool.Acquire(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, int64(8330001)); err != nil {
-		return fmt.Errorf("lock migrations: %w", err)
+	defer releaseMigrationConn(ctx, conn)
+	// BeginFunc commits when the callback returns nil and rolls the whole set back when it returns
+	// an error, so a failed migration leaves none of the set applied.
+	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, int64(8330001)); err != nil {
+			return fmt.Errorf("lock migrations: %w", err)
+		}
+		// Pin gives the transaction, until it ends, lock_timeout at LockTimeout, the text settings,
+		// and session_authorization, role and search_path at the values that RESET gives them. So
+		// the create table and the first applied check below are bounded by LockTimeout and resolve
+		// broker_schema_migrations under those values, whatever session the pooled connection
+		// brings. Exec pins the transaction again after each migration's statements, so each later
+		// check and insert runs pinned too. The pin comes after the advisory lock and not before it,
+		// because lock_timeout bounds the wait for an advisory lock too. A pin before the lock would
+		// make a second broker process that starts while another one migrates give up after
+		// LockTimeout, where it must wait its turn.
+		if err := pgmigrate.Pin(ctx, tx); err != nil {
+			return fmt.Errorf("pin the runner's settings: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `create table if not exists broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now())`); err != nil {
+			return fmt.Errorf("create broker_schema_migrations: %w", err)
+		}
+		for _, migration := range migrations {
+			var applied bool
+			if err := tx.QueryRow(ctx, `select exists(select 1 from broker_schema_migrations where version=$1)`, migration.Version).Scan(&applied); err != nil {
+				return fmt.Errorf("check whether migration %s is applied: %w", migration.Name, err)
+			}
+			if applied {
+				continue
+			}
+			if err := pgmigrate.Exec(ctx, tx, migration, s.Pool.Config().BeforeConnect); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `insert into broker_schema_migrations (version) values ($1)`, migration.Version); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// releaseMigrationConn gives conn back to the pool once migrate's transaction has ended, after it
+// resets conn's session with pgmigrate.ResetSession, which says why a migration's connection needs
+// the reset. A migration's own text can run a SET without LOCAL, and its stored code can call
+// set_config(…, false). Either one stays on the session past the commit, so without the reset the
+// pool's next caller would meet it. The reset runs DISCARD ALL, which also releases the session's
+// advisory locks. The broker's lock is a transaction lock (pg_advisory_xact_lock), which the commit
+// or the rollback has already released, so no unlock has to run before the reset, as one does in
+// Dispatch's runner. The store's connection options, such as a search_path in the database URL,
+// are the values that the reset gives back.
+//
+// The reset and the close run on a context that a cancelled ctx does not cancel, bounded by
+// pgmigrate.LockTimeout as the rest of the runner's waits are. A connection that is already closed,
+// as pgx closes one whose context was cancelled during a statement, goes back to the pool, which
+// destroys it. A connection whose reset fails carries a session that is unknown, so it is taken out
+// of the pool (Hijack) and closed, never given back. migrate's own answer does not change: the set
+// has committed or rolled back already, and the closed connection reaches no later caller. So the
+// failed reset is logged at WARN.
+func releaseMigrationConn(ctx context.Context, conn *pgxpool.Conn) {
+	if conn.Conn().IsClosed() {
+		conn.Release()
+		return
 	}
-	if _, err := tx.Exec(ctx, `create table if not exists broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now())`); err != nil {
-		return err
+	resetCtx, resetCancel := context.WithTimeout(context.WithoutCancel(ctx), pgmigrate.LockTimeout)
+	defer resetCancel()
+	err := pgmigrate.ResetSession(resetCtx, conn.Conn())
+	if err == nil {
+		conn.Release()
+		return
 	}
-	for _, migration := range migrations {
-		var applied bool
-		if err := tx.QueryRow(ctx, `select exists(select 1 from broker_schema_migrations where version=$1)`, migration.Version).Scan(&applied); err != nil {
-			return err
-		}
-		if applied {
-			continue
-		}
-		if err := pgmigrate.Exec(ctx, tx, migration, s.Pool.Config().BeforeConnect); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `insert into broker_schema_migrations (version) values ($1)`, migration.Version); err != nil {
-			return err
-		}
-	}
-	return tx.Commit(ctx)
+	slog.Warn("broker: the migration connection's session reset failed; the connection is closed, not given back to the pool", "error", err)
+	closeCtx, closeCancel := context.WithTimeout(context.WithoutCancel(ctx), pgmigrate.LockTimeout)
+	defer closeCancel()
+	_ = conn.Hijack().Close(closeCtx)
 }

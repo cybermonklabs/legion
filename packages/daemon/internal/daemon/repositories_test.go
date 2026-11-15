@@ -213,8 +213,9 @@ func TestTheMappingServesOnlyRepositoriesBothAppsAreInstalledOn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readMapping: %v", err)
 	}
-	if accepted, err = nameAccepted(context.Background(), accepted, branches); err != nil {
-		t.Fatalf("nameAccepted: %v", err)
+	var limited []limitedRead
+	if accepted, limited, err = nameAccepted(context.Background(), accepted, branches); err != nil || len(limited) != 0 {
+		t.Fatalf("nameAccepted: %v, rate limited %v; want every repository named", err, limited)
 	}
 	repos.set(accepted, refused)
 	if got, want := repos.Owners(), []string{"acme", "zeta"}; !reflect.DeepEqual(got, want) {

@@ -373,6 +373,29 @@ RULES = {
         Read(g, "internal/dispatch/pmdoc/render_readback_test.go:34 bun run gen/differential.ts") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/store/search_text_test.go": reads(
         (f"{ENVOY}/**", "internal/dispatch/store/search_text_test.go:102-120 walks every .md under packages/envoy (infra included)")),
+    f"{ENVOY}/internal/dispatch/store/counts_in_documents_test.go": reads(
+        ("docs/site/src/content/docs/dispatch/running-dispatch.md",
+         "internal/dispatch/store/counts_in_documents_test.go reads it: the connection counts it "
+         "states of this package's pools must equal the constants that decide them: "
+         "store.LeasePoolSize, store.ConnectionsPerProcess and every pool of the sum "
+         "(sharedPoolSize, RoomsPoolSize, roomAppendsPoolSize, compactionPoolSize, "
+         "healthPoolSize, outboxPoolSize, horizonPoolSize, registryPoolSize, listenerConnections)"),
+        (".dispatch/architecture/dispatch-store.md",
+         "internal/dispatch/store/counts_in_documents_test.go reads it, for the lease pool's own "
+         "count, which that document states in words")),
+    f"{ENVOY}/internal/dispatch/processes/counts_in_documents_test.go": reads(
+        ("docs/site/src/content/docs/dispatch/running-dispatch.md",
+         "internal/dispatch/processes/counts_in_documents_test.go reads it: the cadences it "
+         "states must equal processes.HeartbeatInterval and processes.LiveWindow")),
+    f"{ENVOY}/internal/pgmigrate/counts_in_documents_test.go": reads(
+        ("docs/site/src/content/docs/dispatch/running-dispatch.md",
+         "internal/pgmigrate/counts_in_documents_test.go reads it: how long a migration waits "
+         "for its lock, which that page states and pgmigrate.LockTimeout decides")),
+    f"{ENVOY}/internal/dispatch/testlimits/testlimits_test.go": reads(
+        (f"{DAEMON}/docker/legion-testpg",
+         "internal/dispatch/testlimits/testlimits_test.go:31 os.ReadFile (legionTestPG :12, "
+         "../../../../daemon/docker/legion-testpg): its max_connections literal must equal "
+         "testlimits.ServerConnections plus Postgres's default superuser reserve")),
     f"{ENVOY}/internal/dispatch/text/whitespace_fixture_test.go": reads(
         (f"{FIX}/go-unicode-isspace.json", "internal/dispatch/text/whitespace_fixture_test.go:34 os.ReadFile (goSpaceFixturePath :17, ../../../../contracts/fixtures)")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [
@@ -516,6 +539,25 @@ RACE_DOCS_SCRIPT = ("RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory
 # ENV_ALLOWED wherever it is set, so this step too is pinned whole rather than reduced.
 FINALIZERS_STEP = "Test the document service under the cleanup detector"
 FINALIZERS_SCRIPT = "GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/"
+# Every lane whose tests start a Dispatch process sizes its Postgres service in its CEILING_STEP,
+# which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's run: line, not
+# what the script runs, so each such gate declares the script, and the go run on the script's line
+# CEILING_GO_RUN, whose closure is internal/dispatch/store/cmd/connections,
+# internal/dispatch/testlimits and the store.
+CEILING = ".github/scripts/pg-connection-ceiling.sh"
+CEILING_STEP = "Size the service for this lane's Dispatch processes"
+CEILING_GO_RUN = 'server=$(cd -- "$repo_root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections)'
+
+
+def ceiling_run(job):
+    """The go run pg-connection-ceiling.sh starts in `job`'s sizing step."""
+    return script_run(CEILING, CEILING_GO_RUN, f"run by {at(job, CEILING_STEP)}", ENVOY,
+                      ["./internal/dispatch/store/cmd/connections"], mode="build")
+
+
+def ceiling_reads(job):
+    """pg-connection-ceiling.sh itself, which `job`'s sizing step runs."""
+    return reads((CEILING, f"{at(job, CEILING_STEP)} runs it"))
 
 
 # The three packages the test job's race step runs, and which its plain step therefore leaves out.
@@ -782,6 +824,17 @@ BROWSER_BINARIES_STEP = "Build the binaries the browser suite runs"
 BROWSER_BINARIES_SCRIPT = """\
 mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
 CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed"""
+# The steps that read the stacks' connection limit before a browser step starts its stacks
+# (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS): the binaries job's, for the
+# shard and alone jobs, whose containers have no Go, and the visual job's own, outside its browser
+# step's budget. One script; two names, since the check finds a step by name across the workflow.
+# Pinned whole, since `go run` is not a form the simple form reduces.
+BROWSER_CONNECTIONS_STEP = "Read the connections each stack's Postgres must allow"
+BROWSER_VISUAL_CONNECTIONS_STEP = "Read the connections the visual stack's Postgres must allow"
+BROWSER_CONNECTIONS_SCRIPT = """\
+connections=$(go run ./internal/dispatch/store/cmd/connections)
+[[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+echo "connections=$connections" >> "$GITHUB_OUTPUT\""""
 BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)"
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
@@ -1147,7 +1200,9 @@ GATES = [
     # and the visual job still start compile closures this filter already carries:
     # run-server.sh, which both of them start, builds ./cmd/dispatch, which the multiprocess
     # job's own pinned build step below names, and run-signin-issuer.sh builds
-    # ./cmd/dev-oidc-issuer, which that first entry names.
+    # ./cmd/dev-oidc-issuer, which that first entry names. No job's e2e/harness-postgres.ts runs
+    # a go command in CI: each job that starts stacks there hands it the connection limit that
+    # a pinned step below reads.
     gate("dispatch_browser", BROWSER_JOB, exact=[
         # The four commands the shard and alone jobs' scripts built before those jobs moved
         # into a container, built once in the binaries job and downloaded by both: this is the
@@ -1160,6 +1215,15 @@ GATES = [
              "CGO_ENABLED=0 go build of the Dispatch server, the real broker, its dev OIDC issuer and the seeding step",
              {"mode": "build", "env": {"CGO_ENABLED": "0"}}),
         ], workflow=BROWSER_SITE),
+        # The stacks' connection limit, read on the host for the shard and alone jobs, whose
+        # containers have no Go, and in the visual job before its timed browser step.
+        *[pinned_step(job, step, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
+            (ENVOY, ["./internal/dispatch/store/cmd/connections"],
+             "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
+             {"mode": "build"}),
+        ], workflow=BROWSER_SITE)
+          for job, step in ((BROWSER_BINARIES, BROWSER_CONNECTIONS_STEP),
+                            (BROWSER_VISUAL, BROWSER_VISUAL_CONNECTIONS_STEP))],
         # The multiprocess job builds the server once, so its two processes find it current and
         # start in seconds rather than waiting out run-server.sh's own build in each boot wait.
         # The line has an `-o`, which is no form this check reduces, so the entry pins the whole
@@ -1217,6 +1281,7 @@ GATES = [
                  "go test ./internal/integration/ -timeout 300s -count=1", ENVOY, ["./internal/integration/"]),
         step_run("envoy-go", "Vet agentloop's live proof (no model call)", "go vet -tags modellive ./agentloop/", ENVOY,
                  ["./agentloop/"], tags="modellive", mode="vet"),
+        ceiling_run("envoy-go"),
     ], exact=[
         # One go test per package of the plain run the race lane cannot make (RACE_IMPOSSIBLE_*),
         # each selecting that package's own tests with -run.
@@ -1242,7 +1307,7 @@ GATES = [
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
         (TAGGED_TESTS, f"{at('envoy-go', NATS_MATRIX_STEP)} takes its -run from it"),
-    ) + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go") + CI_SELF),
+    ) + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go") + CI_SELF),
 
     # envoy-go's fast half: its format and generated-code checks, the seven shell-script tests
     # and the build and pack of the envoy commands (ci.yaml's comment on envoy-go-checks says why
@@ -1332,44 +1397,73 @@ GATES = [
     # whose step is not race_step's text: it runs the package under .github/scripts/race_memory.py
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
     # the package, which is what keeps it out of the unit step.
-    gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"])],
-         reads=setup_go("envoy-go-race", f"{ENVOY}/go.mod") + CI_SELF),
+    gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")],
+         reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod") + CI_SELF),
 
-    gate("envoy_go_race_api", "envoy-go-race-api", runs=[race_step(RACE_JOBS["envoy-go-race-api"])],
-         reads=setup_go("envoy-go-race-api", f"{ENVOY}/go.mod") + CI_SELF),
+    gate("envoy_go_race_api", "envoy-go-race-api",
+         runs=[race_step(RACE_JOBS["envoy-go-race-api"]), ceiling_run("envoy-go-race-api")],
+         reads=ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod") + CI_SELF),
 
-    gate("envoy_go_race_docs", "envoy-go-race-docs", exact=[
+    gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/docs/"], "go test -race -count=1 -timeout 60m ./internal/dispatch/docs/", {"race": True}),
         ]),
     ], reads=reads(
         (".github/scripts/race_memory.py", f"{at('envoy-go-race-docs', RACE_DOCS_STEP)} runs the package under it"),
-    ) + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod") + CI_SELF),
+    ) + ceiling_reads("envoy-go-race-docs") + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod") + CI_SELF),
 
     # A second gate on envoy_go_race_docs: this job runs the same package, so it reads that
     # closure and no other, and check-ci-filters.sh keys a claim by (job, step), so the two gates
     # claim different steps and do not collide.
-    gate("envoy_go_race_docs", "envoy-go-docs-finalizers", exact=[
+    gate("envoy_go_race_docs", "envoy-go-docs-finalizers", runs=[ceiling_run("envoy-go-docs-finalizers")], exact=[
         pinned_step("envoy-go-docs-finalizers", FINALIZERS_STEP, ENVOY, FINALIZERS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/docs/"], "go test -v -count=1 -timeout 34m ./internal/dispatch/docs/", {}),
         ]),
-    ], reads=setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod") + CI_SELF),
+    ], reads=ceiling_reads("envoy-go-docs-finalizers") + setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod")
+       + CI_SELF),
 
-    gate("dispatch_memory", "dispatch-memory", exact=[
+    gate("dispatch_memory", "dispatch-memory", runs=[ceiling_run("dispatch-memory")], exact=[
         pinned_step("dispatch-memory", MEMORY_STEP, ENVOY, MEMORY_SCRIPT, [
             (ENVOY, ["./cmd/dispatch"], "go test -tags memory ./cmd/dispatch", {"tags": "memory"}),
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('dispatch-memory', MEMORY_STEP)} takes its -run from it"),
-    ) + setup_go("dispatch-memory", f"{ENVOY}/go.mod") + CI_SELF),
+    ) + ceiling_reads("dispatch-memory") + setup_go("dispatch-memory", f"{ENVOY}/go.mod") + CI_SELF),
 
-    gate("dispatch_multiprocess", "dispatch-multiprocess", exact=[
+    gate("dispatch_multiprocess", "dispatch-multiprocess", runs=[ceiling_run("dispatch-multiprocess")], exact=[
         pinned_step("dispatch-multiprocess", DISPATCH_MP_STEP, ENVOY, DISPATCH_MP_SCRIPT, [
             (ENVOY, ["./cmd/dispatch"], "go test -tags multiprocess ./cmd/dispatch", {"tags": "multiprocess"}),
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('dispatch-multiprocess', DISPATCH_MP_STEP)} takes its -run from it"),
-    ) + setup_go("dispatch-multiprocess", f"{ENVOY}/go.mod") + CI_SELF),
+    ) + ceiling_reads("dispatch-multiprocess") + setup_go("dispatch-multiprocess", f"{ENVOY}/go.mod") + CI_SELF),
+
+    # Its "Build the Dispatch server" step names an output (-o), which the simple form does not
+    # reduce, so the step is pinned whole, as dispatch-browser-multiprocess's is.
+    gate("dispatch_two_builds", "dispatch-two-builds", runs=[
+        step_run("dispatch-two-builds", "Two-build tests of the Dispatch server",
+                 "go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch", ENVOY, ["./cmd/dispatch"], tags="twobuild"),
+        script_run(RUN_SERVER, DISPATCH_SERVER_BUILD, "started by packages/dispatch/e2e/harness-listeners.ts's dispatchServer (harness-start.ts, which "
+                   "e2e/global-setup.ts runs) in "
+                   + at("dispatch-two-builds", "Browser-test each build's page against the other build's server"),
+                   ENVOY, ["./cmd/dispatch"], mode="build"),
+        ceiling_run("dispatch-two-builds"),
+    ], exact=[
+        pinned_step("dispatch-two-builds", "Build the Dispatch server", ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
+            (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
+        ]),
+    ], reads=reads(
+        (f"{ENVOY}/scripts/build-dispatch-build.sh", at("dispatch-two-builds", "Build the previous build")),
+        ("packages/dispatch/**", at("dispatch-two-builds", "Browser-test each build's page against the other build's server")),
+        ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:73-87 (build:web)"),
+        (CONTRACTS_SRC, f"{at('dispatch-two-builds', 'Build contracts for dispatch e2e')}; packages/dispatch/web/vite.config.ts:63-72 aliases"),
+        ("packages/envoy-client/bin/dispatch.ts", "packages/envoy/cmd/dispatch/twobuild_cli_test.go runs this tree's dispatch command"),
+        (ENVOY_CLIENT_SRC, "imported by packages/envoy-client/bin/dispatch.ts, which the two-build CLI test runs"),
+        (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-tables.ts:9-10"),
+        ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:37 holds the server's port through it"),
+        ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
+    ) + ceiling_reads("dispatch-two-builds") + setup_go("dispatch-two-builds", f"{ENVOY}/go.mod")
+      + bun_job("dispatch-two-builds") + CI_SELF),
 
     gate("listener_server_change", "listener-server-change", exact=[
         pinned_step("listener-server-change", SOAK_STEP, ENVOY, SOAK_SCRIPT, [
@@ -1465,6 +1559,7 @@ GATES = [
                    f"the packages that rig hands buildGoBinaries, run by "
                    f"{at(STALL, 'Design-gate advice of the real CLI against a real Dispatch')}",
                    ENVOY, ["./cmd/dispatch"], mode="build"),
+        ceiling_run(STALL),
     ], reads=reads(
         ("packages/envoy-client/**", f"{at(STALL, STALL_CLIENT)}: src/__tests__/nats-stall.test.ts and test/*.ts, which the other two import"),
         ("packages/pi-envoy/**", at(STALL, "Stall test of pi-envoy")),
@@ -1473,7 +1568,7 @@ GATES = [
         ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
         ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),
         (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/broker-client's seven modules through packages/envoy-client/src/broker-credential.ts:21-22"),
-    ) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL) + CI_SELF),
+    ) + ceiling_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL) + CI_SELF),
 
     gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(
         (NOTICES_LOOPS, f"{at('lint', NOTICES_STEP)} runs it; it holds the loops"),

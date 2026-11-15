@@ -344,8 +344,10 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	refreshGate := supervise.NewRefreshGate(cfg.WorkerWakesPerMinute)
 	// The mapping read waits out an unreachable Dispatch without limit, and the App mint waits out
 	// GitHub's transient failures within appMintRetry; a repository whose installation read fails
-	// is left out and read again, never a refused boot. The boot budget bounds none of them, as it
-	// does not bound the plugin gate or the image probe: the work after them has a budget of its own.
+	// is left out and read again, and one whose default-branch read GitHub's rate limit refuses is
+	// served on the default branch the daemon holds or waited out (nameMapping), never a refused
+	// boot. The boot budget bounds none of them, as it does not bound the plugin gate or the image
+	// probe: the work after them has a budget of its own.
 	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake)
 	if err != nil {
 		st.Close()

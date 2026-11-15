@@ -1,5 +1,12 @@
 kind: Fixed
-body: 'Two envoy-dispatch processes no longer both bind one delivery durable, which routed every GitHub webhook envelope twice: a bind now runs whole under that durable''s own Postgres consumer lease and gives the lease back only once the server reports the durable push-bound, so exclusion no longer rests on the NATS client''s own refusal, which is derived from a flag the server sets a goroutine hop after the first subscriber''s subscription lands. A bind the server does not confirm within five seconds is given up whole and tried again on the next poll.'
+body: |-
+  Two envoy-dispatch processes no longer both bind one delivery durable, which routed every
+  GitHub webhook envelope twice. Which process delivers from a durable is now settled by that
+  durable's hold, taken and renewed on Postgres: the holder takes the durable over under it,
+  recreating the durable at its ack floor on a deliver subject of its own, and every other
+  process stands by and polls for the hold rather than binding anything. A holder that stops
+  renewing -- stopped, killed, or cut off from Postgres -- loses the hold within its lapse, and
+  the standby that takes it over is handed everything that holder had not acknowledged.
 time: 2026-11-07T05:21:41Z
 custom:
     Issue: pr2913

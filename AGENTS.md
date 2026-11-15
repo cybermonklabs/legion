@@ -564,6 +564,9 @@ a name the project does not serve selects nothing, and boot warns about it.
 The daemon reads the mapping at boot and on Dispatch's `settings.repo_project.updated`, serves each mapped repository both GitHub Apps are installed on, and leaves out, and reports in `legion state --json` (`repositories.refused`), one either App is missing from.
 A repository whose installation read GitHub does not answer (any failure but a 404) is left out for now the same way and read again, 30 s doubling to 10 min, until GitHub answers;
 a served one whose read fails stays served.
+A repository whose default-branch read GitHub refuses for its rate limit (a 429, or a 403 whose headers or body name the limit) never stops the boot:
+one the daemon holds a default branch for, from its last read or a record of an issue on it, is served on that branch and read again once the limit resets;
+one it holds none for is waited out for as long as GitHub asks (the `Retry-After` it names, else until the reset when no call is left, at most an hour, else a minute), with one log line that names the repository, the limit's headers and the time it waits until, and is then read once more, and left out for now and read again as above if GitHub still does not answer.
 A repository that moved is named in `repository_renames`, a top-level key of `legion.yaml` (`- from: <old owner>/<name>` with `to: <new owner>/<name>`), and the daemon then treats the pair's two names as one repository wherever it compares a name, so the trees it recorded under the old name take the events GitHub sends under the new one, a pull request open at the transfer included.
 The equivalence is read-side only and rewrites no record, so keep the pair configured for as long as any record names the old repository;
 it serves no repository of its own, which is why a pair may be configured before the transfer, and `legion start --check-config` prints one line per pair.
@@ -759,11 +762,11 @@ Each item below names a task and where its code is, then notes on it.
 - **Tests** — co-located `__tests__/` dirs, Bun test runner (`bun:test`)
 
 - **The slow test suites run in the merge queue, not on a pull-request push**
-  — eight jobs of `ci.yaml` (`envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
+  — nine jobs of `ci.yaml` (`envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess`, `dispatch-two-builds` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
   The browser suite (`dispatch-browser`, whose called workflow builds the Go commands its stacks run in a `binaries` job of its own) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
   A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, or when a person asks.
   The label is read from the pull request as the run's own event carries it, so it takes effect at the next push, not when it is added.
-  The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the eight again, and the browser suite's full lane with them.
+  The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the nine again, and the browser suite's full lane with them.
 
 - **Release jobs keep credentials away from dependency code**
   — in `release.yaml`, `release-envoy-listener.yaml` and `release-envoy-infra.yaml`, a job that holds `contents: write`, `id-token: write`, `attestations: write`, `actions: write` or the deploy key runs no dependency code (no `bun`, `go`, `node`, no built binary, no `scripts/` program) and restores no cache (`cache-mode: none`);

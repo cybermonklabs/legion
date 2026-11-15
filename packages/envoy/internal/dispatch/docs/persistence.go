@@ -633,7 +633,8 @@ func (p *PgVersioned) RebuildTx(ctx context.Context, tx pgx.Tx, room string, loa
 		return RebuildReport{}, err
 	}
 	if current != loaded {
-		return RebuildReport{}, fmt.Errorf("%w: document %s changed while it was being rebuilt (its head moved from %d to %d), by another rebuild or an edit; read it again before rebuilding", ErrDocumentLive, room, loaded, current)
+		cause := fmt.Sprintf("changed while it was being rebuilt (its head moved from %d to %d), by another rebuild or an edit", loaded, current)
+		return RebuildReport{}, liveRebuildRefusal(ctx, tx, room, cause, readAgainFirst)
 	}
 	head, pending, err := p.headAfterPrune(ctx, tx, room)
 	if err != nil {

@@ -59,7 +59,10 @@ func EditedTargets(previous, body string, found []text.Ref) []Target {
 // an edge that persists keeps its created_at and source_seq. It returns the targets whose inbound
 // edges moved — deleted or inserted, oldest state first — so its caller can resolve the ones
 // a reader refreshes by name (CountedChanges). It is PlanReplace and Queue back to back, the
-// queued statements run at once as a batch of their own.
+// queued statements run at once as a batch of their own. Only targets of a node kind this
+// build knows (nodeKinds) are deleted: during a release a newer build writes the same sources, and
+// an edge to a node kind it added is one this build cannot read out of the body, so it keeps that
+// edge.
 //
 // What it queues settles what the source owes the re-index queue (Replacement.Queue): this text
 // has now been read with the whole grammar, so a write this build makes costs the drain nothing
@@ -106,11 +109,12 @@ func PlanReplace(ctx context.Context, q Queryer, fromKind, fromID string, found 
 }
 
 // HeldTargets is the targets of the edges q holds for one source, read with the predicate the
-// reconciling delete visits them by.
+// reconciling delete visits them by: an edge to a node kind this build does not know (nodeKinds)
+// is one that delete keeps, so it is neither held nor moved here (replaceRefs).
 func HeldTargets(ctx context.Context, q Queryer, fromKind, fromID string) ([]Target, error) {
 	held, err := scanTargets(q.Query(ctx, `
-		select to_kind, to_id from refs where from_kind = $1 and from_id = $2
-	`, fromKind, fromID))
+		select to_kind, to_id from refs where from_kind = $1 and from_id = $2 and to_kind = any($3)
+	`, fromKind, fromID, nodeKinds))
 	if err != nil {
 		return nil, fmt.Errorf("read references: %w", err)
 	}
@@ -163,12 +167,12 @@ func (r Replacement) Held() []Target {
 func (r Replacement) Queue(b *store.WriteBatch) {
 	b.Queue("clear references", `
 		delete from refs
-		where from_kind = $1 and from_id = $2
+		where from_kind = $1 and from_id = $2 and to_kind = any($5)
 		  and not exists (
 		    select 1 from unnest($3::text[], $4::text[]) as target(kind, id)
 		    where target.kind = refs.to_kind and target.id = refs.to_id
 		  )
-	`, r.fromKind, r.fromID, r.kinds, r.ids)
+	`, r.fromKind, r.fromID, r.kinds, r.ids, nodeKinds)
 	if len(r.kinds) > 0 {
 		b.Queue("write reference", `
 			insert into refs (from_kind, from_id, to_kind, to_id, created_at)
