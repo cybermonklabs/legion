@@ -58,7 +58,7 @@ func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessi
 		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}
 	t.Cleanup(delivery.close)
-	observer, err := bus.ConnectSessionConsumers([]string{url}, 0)
+	observer, err := bus.ConnectSessionConsumers([]string{url}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)
 	}

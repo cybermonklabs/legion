@@ -4569,6 +4569,7 @@ export interface components {
       token: string;
       unchanged_ops: number[] | null;
       version: components["schemas"]["Version"] | null;
+      written: string;
     };
     EditAskInput: {
       actor?: components["schemas"]["Actor"] | null;

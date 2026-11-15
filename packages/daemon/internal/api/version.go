@@ -6,8 +6,10 @@ package api
 // `packages/contracts/src/legion-api.ts`), the pane environment it reads — every variable
 // the tmux runtime sets on a pane (`internal/runtime/tmux/spawn.go`'s `panePairs`) and the Sandbox
 // runtime on a pod's worker container (`internal/runtime/sandbox/manifest.go`'s
-// `mainEnvironment`) — and the command line and environment of a pod's `workspace-init provision`
+// `mainEnvironment`) — the command line and environment of a pod's `workspace-init provision`
 // container (`initContainers` in `internal/runtime/sandbox/podkind.go`, and `initEnvironment`),
+// and the command line of a pod's `legion launcher` container (each pod kind's
+// `launcherContainer` in `internal/runtime/sandbox/podkind.go`, and `sessionProxyFlags`), both of
 // which the image's own `legion` reads. The installed plugin declares the
 // number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
 // gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
@@ -1724,4 +1726,22 @@ package api
 // head again at the next merge rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
-const DaemonAPIVersion = 133
+//
+// 137: INFRA-3621 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
+// `--session-impersonate-service-account <email>`, a fourth session flag after the three that name
+// the Cloud SQL session database (`sessionProxyAccountFlag` after `sessionProxyFlagNames`,
+// `internal/runtime/sandbox/manifest.go`). The daemon renders it
+// only when `runtime.kubernetes.session_database.impersonate_service_account` is set, and the
+// launcher's session proxy then impersonates that Google service account with the pod's own
+// credentials and signs in to Cloud SQL as it (`connectorOptions`, `internal/sessionproxy`). A
+// launcher built before 137 exits 2 on the unknown flag in every pod the daemon creates with it,
+// so the image probe, which holds the image's pi-legion to this number, refuses such an image at
+// boot instead, as it did for 27's new flag. A deployment that sets no account renders no fourth
+// flag, and its pods carry the command they carried before. (The number was the lowest above
+// main's 132 that no open pull request of cybermonklabs/legion declared at 2026-11-15T02:27Z, read
+// with the `take` of .github/scripts/check-daemon-api-contract.sh. It stays above main's 133 at the
+// forward merge of 2026-11-15 that brought in 2e546572 (#3937's 133, the entry above), and the same
+// reading at 2026-11-15T03:57Z found no other open pull request declaring 137: it passed over 134
+// (#4017 and #4021), 135 (#3659) and 136 (#3575 and #3730). Read the base's own number and every
+// open pull request again at every forward merge rather than from this line.)
+const DaemonAPIVersion = 137

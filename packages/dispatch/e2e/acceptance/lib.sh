@@ -1,7 +1,13 @@
 # shellcheck shell=bash
-# The bearer preamble the acceptance drivers share. Sourced, never run. Each function that refuses
-# prints why on stderr and exits the calling script with 2; one that names its usage calls the
-# caller's own `usage`.
+# The preamble the acceptance drivers share: the bearer each run reads, the directory it works in,
+# the lines it prints for a check and the CLI it runs. Sourced, never run. Each function that
+# refuses prints why on stderr and exits the calling script with 2; one that names its usage calls
+# the caller's own `usage`.
+#
+# The functions below read what the run sets: `token` (read_bearer), `work` (work_dir), and
+# `bun_bin`, `saved_path`, `saved_tmpdir` and the `home` and `state` directories under $work
+# (cli_env). `cli` needs three more, which each driver sets itself and nothing here sets: the
+# `base` URL it talks to, the driver's own `session` and its `cli_entry`.
 
 # require_env NAME…: refuses the first named environment variable that is unset or empty.
 require_env() {
@@ -51,4 +57,60 @@ read_bearer() {
     exit 2
   }
   unset DISPATCH_TOKEN DISPATCH_TOKEN_FILE
+}
+
+# work_dir sets the caller's `work` to a directory of its own, which the caller removes. The umask
+# is the run's own, so nothing it writes there is readable by another account.
+work_dir() {
+  umask 077
+  work="$(mktemp -d)"
+  readonly work
+}
+
+# cli_env saves what `cli` needs from the environment it scrubs — the caller's `bun_bin`,
+# `saved_path` and `saved_tmpdir` — and makes the `home` and `state` directories under $work that
+# `cli` points the CLI at. A driver that runs the CLI calls it after work_dir.
+cli_env() {
+  bun_bin="$(command -v bun)"
+  readonly bun_bin
+  readonly saved_path="$PATH"
+  readonly saved_tmpdir="${TMPDIR:-}"
+  mkdir "$work/home" "$work/state"
+}
+
+pass() { printf 'PASS: %s %s\n' "$1" "$2"; }
+fail() {
+  printf 'FAIL: %s %s: %s\n' "$1" "$2" "$3" >&2
+  exit 1
+}
+skip() { printf 'SKIP: %s %s\n' "$1" "$2"; }
+
+# The real `dispatch` CLI as an agent session runs it, in an environment holding only what this
+# driver names: nothing a calling shell exported (its Dispatch URL, token file or Envoy config)
+# reaches it. It reads the caller's $base, $token, $session, $work, $cli_entry and what cli_env
+# saved.
+cli() {
+  (
+    set +x
+    local name
+    local -a exported
+    mapfile -t exported < <(compgen -e)
+    for name in "${exported[@]}"; do
+      unset "$name" 2>/dev/null || true
+    done
+    export PATH="$saved_path" HOME="$work/home" DISPATCH_STATE_DIR="$work/state"
+    if [[ -n "$saved_tmpdir" ]]; then
+      export TMPDIR="$saved_tmpdir"
+    fi
+    export DISPATCH_HOST=omp DISPATCH_SESSION_ID="$session" DISPATCH_URL="$base"
+    export DISPATCH_TOKEN="$token"
+    exec "$bun_bin" "$cli_entry" "$@"
+  )
+}
+
+# run SECTION WHAT ARGS...: runs the CLI with ARGS, its output in $work/out; a non-zero exit fails.
+run() {
+  local section="$1" what="$2"
+  shift 2
+  cli "$@" >"$work/out" 2>&1 || fail "$section" "$what" "dispatch $1 exited $?: $(<"$work/out")"
 }

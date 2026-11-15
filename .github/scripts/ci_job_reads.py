@@ -2699,7 +2699,9 @@ GATES = [
     gate("dispatch_two_builds", TWO_BUILDS_JOB, runs=[
         script_run(RUN_SERVER, DISPATCH_SERVER_BUILD, "started by packages/dispatch/e2e/harness-listeners.ts's dispatchServer (harness-start.ts, which "
                    "e2e/global-setup.ts runs) in "
-                   + at(TWO_BUILDS_JOB, "Browser-test each build's page against the other build's server"),
+                   + at(TWO_BUILDS_JOB, "Browser-test each build's page against the other build's server")
+                   + " and "
+                   + at(TWO_BUILDS_JOB, "Browser-test each build's page against the first-rollout build's server"),
                    ENVOY, ["./cmd/dispatch"], mode="build"),
         ceiling_run(TWO_BUILDS_JOB),
     ], exact=[

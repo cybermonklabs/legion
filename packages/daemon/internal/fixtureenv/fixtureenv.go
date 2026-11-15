@@ -19,8 +19,8 @@ import (
 // reaches is whether a variable can lead git or jj to a workspace, repository, remote or
 // credential other than the test's own (Isolated's doc says how each does), or can hand the leak
 // guard a shared check of the machine's rather than the test's own stand-in (PUBLIC_LEAK_CHECK
-// and the rest of the check's own prefix, which internal/leakguard reads), HOME and
-// XDG_CONFIG_HOME aside.
+// and the rest of the check's own prefix, which internal/leakguard reads), HOME, XDG_CONFIG_HOME
+// and XDG_STATE_HOME aside.
 func reaches(key string) bool {
 	for _, prefix := range []string{"LEGION_", "GIT_", "JJ_", "GH_", "GITHUB_", "PUBLIC_LEAK_CHECK"} {
 		if strings.HasPrefix(key, prefix) {
@@ -168,8 +168,8 @@ func RequireGuarded(t testing.TB) {
 
 // Isolated is the process's environment without anything that could lead git or jj to a real
 // workspace, repository, remote or credential, or Oh My Pi to a real session store, and with home
-// as the home, an empty user configuration and an identity of the test's. It keeps no test input
-// either, so a fixture that needs one appends it after. It drops:
+// as the home, an empty user configuration, an empty state home and an identity of the test's. It
+// keeps no test input either, so a fixture that needs one appends it after. It drops:
 //
 //   - LEGION_*: LEGION_WORKSPACE names the workspace a shim adopts and bundles
 //     (shim.runAdoption, shim.runBundle); a test that leaves it out to see a refusal would
@@ -178,6 +178,9 @@ func RequireGuarded(t testing.TB) {
 //     whatever directory a command runs in, a pod hands every process a GIT_CONFIG_* block of its
 //     own, and a home carries configuration and an identity.
 //   - GH_*, GITHUB_*, SSH_AUTH_SOCK, SSH_ASKPASS: a credential git could push with.
+//   - XDG_STATE_HOME: where `legion gh` keeps its call log and the leak guard its cache of the
+//     repositories GitHub answered public (internal/leakguard); a fixture that inherited the
+//     runner's would read the answers kept there and write its own among them.
 //   - OMP_SESSION_SQL_DSN_FILE, OMP_SESSION_STORAGE, OMP_SESSION_SQL_DSN: the session store Oh My
 //     Pi places a session in, which in a Legion pod is the deployment's own, holding every agent's
 //     conversation; a fixture that carried them would have whatever it starts read and write it.
@@ -189,7 +192,7 @@ func RequireGuarded(t testing.TB) {
 func Isolated(home string) []string {
 	env := slices.DeleteFunc(os.Environ(), func(entry string) bool {
 		key, _, _ := strings.Cut(entry, "=")
-		return guarded(key) || key == "HOME" || key == "XDG_CONFIG_HOME"
+		return guarded(key) || key == "HOME" || key == "XDG_CONFIG_HOME" || key == "XDG_STATE_HOME"
 	})
 	env = append(env, Home(home)...)
 	return append(env,
@@ -202,13 +205,16 @@ func Isolated(home string) []string {
 }
 
 // Home is the home Isolated gives a command, as KEY=value entries: HOME, the config home under it
-// (XDG_CONFIG_HOME, where jj keeps each repository's own configuration), and a JJ_CONFIG naming a
-// file that does not exist, so jj reads no user configuration. A test whose code under test reads
-// the process's own environment sets these on the process, so that code and its fixtures under
-// Isolated of the same home read the same jj repository configuration.
+// (XDG_CONFIG_HOME, where jj keeps each repository's own configuration), the state home under it
+// (XDG_STATE_HOME, where `legion gh` and the leak guard keep what they remember between calls),
+// and a JJ_CONFIG naming a file that does not exist, so jj reads no user configuration. A test
+// whose code under test reads the process's own environment sets these on the process, so that
+// code and its fixtures under Isolated of the same home read the same jj repository configuration
+// and the same state.
 func Home(home string) []string {
 	return []string{
 		"HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
+		"XDG_STATE_HOME=" + filepath.Join(home, ".local", "state"),
 		"JJ_CONFIG=" + filepath.Join(home, "no-jj-config.toml"),
 	}
 }

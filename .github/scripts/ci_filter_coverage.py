@@ -955,8 +955,9 @@ ENV_ALLOWED = frozenset({
     "AIRLOCK_MODEL",
     "BROKER_TEST_DATABASE_URL", "CI_OK_ALWAYS_RUN", "CI_OK_EXEMPT", "CI_OK_PULL_REQUEST_ONLY", "CI_OK_SELECTED_BY",
     "DATABASE_URL",
-    "DISPATCH_E2E_FILE_STORE_BUCKET", "DISPATCH_E2E_FILE_STORE_ENDPOINT", "DISPATCH_PREVIOUS_BUILD",
-    "DISPATCH_TEST_DATABASE_URL", "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE", "ENVOY_SMOKE_IMAGE",
+    "DISPATCH_E2E_FILE_STORE_BUCKET", "DISPATCH_E2E_FILE_STORE_ENDPOINT", "DISPATCH_FIRST_ROLLOUT_BUILD",
+    "DISPATCH_PREVIOUS_BUILD", "DISPATCH_TEST_DATABASE_URL", "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
+    "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
     # The token gh reads. A step of the lint job sets it for the daemon API contract check, and
     # env_reason reads every step's block whatever its order, so without this name here every go
     # command of that job would count as unreduced and go_notices would have to match every Go

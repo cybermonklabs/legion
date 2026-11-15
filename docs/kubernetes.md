@@ -860,11 +860,14 @@ runtime:
 ```yaml
 runtime:
   kubernetes:
-    session_store: cloudsql-iam    # every pod signs in to Cloud SQL as itself; no URL is held anywhere
-    session_database:              # the database each pod signs in to; all three members are required
+    session_store: cloudsql-iam    # every pod signs in to Cloud SQL over IAM, and no URL is held anywhere
+    session_database:              # the database each pod signs in to: instance, name and user are required
       instance: example-project:us-central1:example-instance  # the connection name, project:region:instance
       name: legion_sessions                                   # the database in that instance
       user: legion-sessions@example-project.iam               # the IAM login a pod signs in as
+      # optional: the Google service account that each pod's proxy impersonates and signs in as.
+      # With it, user must be that account's IAM login: its email without .gserviceaccount.com.
+      impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com
 ```
 
 `postgres` and `cloudsql-iam` both keep every pod agent's conversation, each role's and a daemon-launched controller's, in Oh My Pi's table;
@@ -890,17 +893,56 @@ cloudsql-iam; remove it`, and `runtime.kubernetes.session_database is not used w
 runtime.kubernetes.session_store is postgres; remove it`.
 `postgres` without its key is refused (`runtime.kubernetes.session_dsn_secret is required with runtime.kubernetes.session_store postgres:
 the key of the providers Secret that holds the session database's postgres:// URL`), and so is a value that is no Secret data key (`[-._a-zA-Z0-9]+`), naming it.
-All three members of `session_database` are required, since no pod reaches the database without them;
+`instance`, `name` and `user` are required, since no pod reaches the database without them;
 `instance` must be a connection name the Cloud SQL connector uses whole
 — `project:region:instance`, or `domain:project:region:instance` for a legacy domain-scoped project, with no whitespace anywhere, which its own parser (`instance.ParseConnName`) accepts and reads back as exactly that string, so a longer string it would take only part of is refused too (`ValidInstance`, `internal/ompsessions/store.go`, which the pod's proxy holds to as well);
 and a member the mapping does not model is refused by name (`readSessionStore` and `readSessionDatabase`, `internal/config/kubernetes.go`).
 
-**No deployment runs `cloudsql-iam` yet, and the sign-in it needs cannot be granted from here.**
-Every Legion pod of every project runs as the one Kubernetes ServiceAccount the operator's `runtime.kubernetes.pod.service_account` names (`ServiceAccountName`, `manifest.go`), so every pod presents the same cloud identity:
-a federated principal with no email address, where Cloud SQL accepts only a user, a service account or a group as a database login.
-Giving that shared account an email-bearing identity of its own would hand every project's pods one sign-in, so it is not done here.
-`dispatch://INFRA-321` gives each project's pods an account of their own, `dispatch://INFRA-311` declares the login, its grant and the instance's identity flag where the deployment is declared, and `dispatch://INFRA-320` points a deployment's session store at that login once its pods can use it.
-Everything written below is implemented and configurable on this branch; no deployment has it turned on.
+`impersonate_service_account` is optional.
+The loader refuses a value of it that is not a Google service account's email:
+`runtime.kubernetes.session_database.impersonate_service_account "<value>" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`.
+When the member is set, the loader also refuses a `user` that is not that account's IAM login:
+`runtime.kubernetes.session_database.user "<user>" must be "<login>": Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com`.
+Both checks use `ompsessions.ServiceAccountLogin` (`internal/ompsessions/store.go`), and the pod's proxy holds to the same rule.
+
+**What a pod signs in as, and what a deployment grants for it.**
+Every Legion pod runs as the Kubernetes ServiceAccount that `runtime.kubernetes.pod.service_account` names (`ServiceAccountName`, `manifest.go`).
+Under Workload Identity Federation for GKE, the pod's cloud identity is the principal of that ServiceAccount, a federated principal with no email address.
+Cloud SQL takes only a user, a service account or a group as an IAM database login, so that principal cannot have a login.
+
+`impersonate_service_account` names a Google service account for the pods to sign in as.
+Each pod's proxy impersonates that account with the pod's own credentials, for both of the connector's token sources, and signs in as it (`connectorOptions`, `internal/sessionproxy`).
+Both sources must be the account's, because Google says that "the IAM account that you use to start the connector must be the same account that authenticates to the database" ([Log in using IAM database authentication](https://cloud.google.com/sql/docs/postgres/iam-logins)).
+A deployment that sets the member makes these four things true in Google Cloud:
+
+- The principal of the pods' Kubernetes ServiceAccount holds a role on the account, and that role holds `iam.serviceAccounts.getAccessToken`.
+  `roles/iam.workloadIdentityUser` holds it.
+
+- The account holds `roles/cloudsql.instanceUser` and `roles/cloudsql.client`.
+
+- The account has an IAM database login on the instance, and the name of that login is `user`.
+
+- The IAM Service Account Credentials API (`iamcredentials.googleapis.com`) is enabled in the cluster's project.
+  GKE's Workload Identity prerequisites say to enable it ([Authenticate to Google Cloud APIs from GKE workloads](https://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity)).
+  A workload's `GenerateAccessToken` calls count against the quota of that project, unless the Kubernetes ServiceAccount names another quota project ([Use quota from a different project with Workload Identity Federation for GKE](https://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity#quota-project)).
+
+Use an account that has no other purpose.
+Every process that has the pods' cloud identity can impersonate the account with any scope: every role in every pod of the deployment, and a `kubectl exec` shell in such a pod.
+So each of them can do all that the account's roles let it do in Google Cloud, not only sign in to the session database.
+Give the account the two Cloud SQL roles above and no other role.
+
+Set the member in the same change that turns `cloudsql-iam` on.
+A pod keeps the session flags it was created with for its whole life.
+A role launched again into an issue pod whose update round is still open keeps that pod's flags.
+So until the round replaces the pod, the role signs in as those flags say.
+The controller's pod has no update round, so the next launch into it replaces it when its flags differ from the configured ones.
+
+A refused impersonation, such as a missing grant or a disabled API, fails the proof dial.
+The generation's start error then names the instance and carries Google's refusal, as any refused start does ([What `cloudsql-iam` puts in a pod](#what-cloudsql-iam-puts-in-a-pod)).
+
+A daemon before this release refuses `impersonate_service_account` as an unknown key.
+The worker image moves with the daemon at this release's daemon API contract.
+So a rollback takes back the file, the daemon and the image together.
 
 `postgres` holds the whole connection URL, password and all, in one providers-Secret key.
 The daemon never holds the connection string:
@@ -1019,10 +1061,10 @@ The recreated-workspace notice reaches a Claude Code role too:
 its own MCP server (`packages/claude-envoy`) reads `LEGION_WORKSPACE_RECREATED` at start and writes the same text into the session over the bridge's inbox, once per launch, recorded beside the phase reminder's state so a restarted server does not repeat it.
 
 The variables are a generation's, but the store a pod was created under is the pod's:
-the providers volume's session item under `postgres`, and the three session-proxy flags the pod's launcher container carries under `cloudsql-iam` (`sessionStoreInPod`).
+the providers volume's session item under `postgres`, and under `cloudsql-iam` the session-proxy flags the pod's launcher container carries: three, and a fourth when `impersonate_service_account` is set (`sessionStoreInPod`).
 A pod that holds another session store than a pod created now would holds a move (`movedSessionStore`, `internal/runtime/sandbox/addresses.go`)
-— one created before this release, under a deployment whose sessions were still files, one created under the other kind or another key, or, under `cloudsql-iam`, a changed instance, database or login
-— and the next relaunch of any of its roles replaces the pod, as it does a pod that dials a moved worker stream.
+— one created before this release, under a deployment whose sessions were still files, one created under the other kind or another key, or, under `cloudsql-iam`, a changed instance, database or login, or a service account named, dropped or changed
+— and the pod is replaced: an issue pod by its update round, and the controller's pod at the next launch into it ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 Under `postgres` the image probe's container is told `OMP_SESSION_SQL_DSN_FILE` too, so `legion probe-image`, which reads the providers directory as the shim does, never exports the URL into Oh My Pi's environment;
 under `cloudsql-iam` the probe's pod mounts no session key and is told no pointer at all (`sessionDSNPointer`, `manifest.go`).
 
@@ -1036,6 +1078,8 @@ No session key, anywhere.
 No issue pod, no controller pod and no image-probe pod mounts one (`sessionSecretKey`, `internal/runtime/sandbox/manifest.go`, which answers for `postgres` alone), the daemon holds no connection string, and no URL sits in a Secret, a volume, an argv, an environment value or a log.
 What the pod's `legion launcher` is told instead is where the database is
 — `--session-instance <project:region:instance>`, `--session-database <name>` and `--session-user <login>`, in that order, the three values of `session_database` (`sessionProxyFlags` over `sessionProxyFlagNames`, `manifest.go`), once for every role it serves.
+When `impersonate_service_account` is set, a fourth flag follows the three: `--session-impersonate-service-account <email>` (`sessionProxyAccountFlag`, `manifest.go`).
+A launcher told the fourth without all of the three refuses the database as named in part before it connects, and names each missing flag (`validateSessionDatabase`, `internal/launcher/launcher.go`).
 There is no address among them: the launcher binds each generation's socket in that generation's own directory, under the role's own private directory, which it already knows from `--roles-dir` (`--private-dir` in the controller's pod).
 
 Every generation of that role then gets its own connection, in this order (`manager.start`, `packages/daemon/internal/launcher/launcher.go`):
@@ -1087,13 +1131,19 @@ When the proxy is closed, it lets connections still open finish for up to one se
 In a pod that drain costs nothing, since every process that could hold a connection is gone by then;
 it bounds the case where the launcher is not PID 1, where signals reach only the child's process group and a holder outside it could otherwise keep the stop, the next generation and the launcher's exit waiting.
 
-That URL carries a login and no password, because the credential is the pod's own cloud identity:
+That URL carries a login and no password, because the credential is the pod's own cloud identity or, with `impersonate_service_account`, the service account that identity impersonates:
 the Cloud SQL Go connector puts it in the instance's ephemeral-certificate exchange (automatic IAM database authentication, `cloudsqlconn.WithIAMAuthN`), never in the Postgres startup packet, and mints one as it dials, per connection, from a certificate cache it keeps refreshed (`newConnectorDialer` and `serve`, `internal/sessionproxy`).
 That is why the proxy reads no Postgres protocol at all:
 it accepts a connection, dials the instance over its private IP, and copies bytes both ways
 — which is what Google's own `cloud-sql-proxy` does over the same connector.
 Google runs that connector as a container beside the application;
 a Legion pod admits no further container, since `runtime.kubernetes.pod` takes only env, volumes, mounts and a service account, so the same library runs inside the pod's own first process, the launcher itself.
+
+With `impersonate_service_account`, the connector also takes two token sources, and each of them impersonates that service account with the pod's own credentials (`cloudsqlconn.WithIAMAuthNTokenSources`, `connectorOptions`, `internal/sessionproxy`).
+The source for the Cloud SQL Admin API has the `sqlservice.admin` and `cloud-platform` scopes.
+The source for the database login has the `sqlservice.login` scope alone.
+Each source refreshes its one-hour token for as long as the proxy serves.
+The proxy's start line then names the account: `sessionproxy: serving <instance> on <socket> as <account>`.
 
 The two readers of that socket spell it differently, so `ompsessions.Endpoint` composes both (`internal/ompsessions/store.go`):
 
@@ -1107,8 +1157,11 @@ Neither carries a password.
 The file is the agent's to read through its pointer and nothing else's to export:
 it is in the generation's private directory, not in the providers mount the worker shim exports from.
 
-What the operator supplies is the three values of `session_database`, the pods' cloud identity — the ServiceAccount `runtime.kubernetes.pod.service_account` names, which is what the connector signs in as — and the login's rights in the database.
-Those rights are the ones `postgres` needs too: Oh My Pi creates and migrates `omp_session_files` and `omp_session_files_parts` in the `public` schema when it starts, so the login needs `USAGE, CREATE ON SCHEMA public` beside the database, or it must own the schema.
+What the operator supplies is the three required values of `session_database`, the pods' cloud identity and the login's rights in the database.
+The pods' cloud identity is the identity of the ServiceAccount that `runtime.kubernetes.pod.service_account` names.
+Without `impersonate_service_account`, the connector signs in as that identity.
+With it, the connector signs in as the service account, and the operator also supplies that fourth value and the four things [Selecting the store](#selecting-the-store) lists.
+The login's rights are the ones `postgres` needs too: Oh My Pi creates and migrates `omp_session_files` and `omp_session_files_parts` in the `public` schema when it starts, so the login needs `USAGE, CREATE ON SCHEMA public` beside the database, or it must own the schema.
 `legion sessions import` is unchanged and keeps `--dsn-file`: it is the operator's own command, run with no launcher and no proxy, so the operator supplies a connection URL the machine it runs on can reach.
 A tree volume is a PersistentVolumeClaim, so the copy itself runs where that claim can be mounted: `scripts/sessions-import-pods.sh` runs it in a pod of the worker image, under gVisor, with the volume mounted read-only at `/legion`, as the recipe under [Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on) lower on this page says.
 
@@ -2659,7 +2712,7 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
 - a `session_store` that keeps sessions as files (`pvc`), and an omitted `session_store`, which settles to it and is the same refusal rather than a default;
   a `session_store` other than `pvc`, `postgres` or `cloudsql-iam`;
   `postgres` without `session_dsn_secret`, or with one that is empty or not a Secret data key (`[-._a-zA-Z0-9]+`);
-  `cloudsql-iam` without `session_database`, or with one that is not a mapping, names a member but `instance`, `name` and `user`, leaves one of the three empty, or whose `instance` is not a connection name the Cloud SQL connector uses whole (`project:region:instance`, or `domain:project:region:instance` for a domain-scoped project, with no whitespace);
+  `cloudsql-iam` without `session_database`, or with one that is not a mapping, names a member but `instance`, `name`, `user` and `impersonate_service_account`, leaves one of the three required members empty or `impersonate_service_account` blank, or whose `instance` is not a connection name the Cloud SQL connector uses whole (`project:region:instance`, or `domain:project:region:instance` for a domain-scoped project, with no whitespace), whose `impersonate_service_account` is not a Google service account's email, or whose `user` is not that account's IAM login (its email without `.gserviceaccount.com`);
   a `session_dsn_secret` under `cloudsql-iam`; and a `session_database` under `postgres` (an inert key is refused, never ignored).
   At boot the daemon also refuses, under `postgres`, a `session_dsn_secret` that is the providers Secret's `NATS_NKEY_SEED` and a `provider_keys` entry that reads the same key (the shim would export the URL into Oh My Pi's environment)
   — neither can arise under `cloudsql-iam`, where no pod mounts a session key
@@ -3398,6 +3451,8 @@ Every role can write the whole issue volume, and the roles share the pod's netwo
 
 - the session transcripts: under `postgres` they are rows, and the database's URL is in the providers mount the container holds for the pod rather than for a role, so every role of the issue reaches them there.
   Under `cloudsql-iam` each generation's connection is private to its role (the socket is in that role's private directory), but every role signs in as the pod's one IAM login, whose rights reach every session row, so any role that opens a connection of its own reads and writes a sibling's transcript as well ([Session store](#session-store)).
+  With `impersonate_service_account`, that login is the service account's.
+  The pod's identity can impersonate that account, so every role can sign in as it, and can use every other role that the account holds ([Selecting the store](#selecting-the-store)).
 
 The issue's roles trust one another's writes to the volume as they did when each ran in a container of its own.
 The namespaces keep a role's tokens and private files out of a sibling's own reads, and no further.
@@ -3836,6 +3891,7 @@ Run no `git` or `jj` in the pod, and bring no credential into it, for two reason
   It reads the rest as their owner: each running generation's `<role>/private/g<generation>/` files, which the launcher writes owner-only (the boot token, the Envoy and Dispatch bearers, a spec's secrets and, under `cloudsql-iam`, the session database's URL file and socket), each role's `<role>/agent-secrets/` key directory and each role's home under `.homes/`, whose files a role writes as user 1000 outside its namespaces.
   It reads each agent's environment through `/proc/<pid>/environ` too, and whatever the operator's `runtime.kubernetes.pod.volume_mounts` mount.
   Where the pods' ServiceAccount is federated to a cloud identity, it can act as that identity, as every role can.
+  Under `cloudsql-iam` with `impersonate_service_account`, that identity can also impersonate the service account, so the shell and every role can act as that account: they can sign in to the session database as it, and use every other role that it holds.
 
 - **The clone's configuration is every role's to write.**
   The clone's `.git/config`, its hooks, a legacy jj configuration file and the workspace's `.jj/repo` pointer are on the issue's disk, which every role writes ([Trust model](#trust-model-the-provisioning-token)), and the shell's git is given none of the overrides a role's git is.
@@ -5313,6 +5369,7 @@ runtime:
       instance: example-project:us-central1:example-instance  # the Cloud SQL connection name, project:region:instance
       name: legion_sessions      # the database in that instance
       user: legion-sessions@example-project.iam  # the IAM login every pod signs in as
+      impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com  # optional: the service account every pod impersonates to sign in as user
     resources:                   # optional overrides of the profile table below, per quantity
       large:
         limits:
@@ -5366,7 +5423,7 @@ Startup refuses, naming the field, when:
 — provider keys come from the mounted Secret, so the prefix has no process to wrap;
 `session_store` is anything but `pvc`, `postgres` or `cloudsql-iam`;
 `session_store: postgres` comes without `session_dsn_secret`, or with one that is empty, is not a Secret data key (`[-._a-zA-Z0-9]+`), or is named `OMP_SESSION_STORAGE` or `OMP_SESSION_SQL_DSN_FILE` (see [Selecting the store](#selecting-the-store));
-`session_store: cloudsql-iam` comes without `session_database`, or with one that is not a mapping, names a member but `instance`, `name` and `user`, leaves one of the three empty, or whose `instance` is not a Cloud SQL connection name the connector uses whole (`project:region:instance`, or `domain:project:region:instance` for a domain-scoped project, with no whitespace);
+`session_store: cloudsql-iam` comes without `session_database`, or with one that is not a mapping, names a member but `instance`, `name`, `user` and `impersonate_service_account`, leaves one of the three required members empty or `impersonate_service_account` blank, or whose `instance` is not a Cloud SQL connection name the connector uses whole (`project:region:instance`, or `domain:project:region:instance` for a domain-scoped project, with no whitespace), whose `impersonate_service_account` is not a Google service account's email, or whose `user` is not that account's IAM login (its email without `.gserviceaccount.com`);
 `session_dsn_secret` is set under `pvc` or `cloudsql-iam`, or `session_database` under `pvc` or `postgres` (an inert key is refused, never ignored);
 or the daemon runs neither with a `kubeconfig` nor inside a pod (`runtime.kubernetes.kubeconfig is not set and /var/run/secrets/kubernetes.io/serviceaccount/token
 does not exist`).
