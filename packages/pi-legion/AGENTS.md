@@ -107,8 +107,13 @@ among the claims whose locator names a pod and that record a contract, and every
 gains `updateState` and `wake`, which a
 caller from an earlier contract is served without, and `handoff_complete` reads the `ready` that
 a plugin below 86 still sends, so that such a pod can end its phase: `false` is ignored, and `true` is refused
-`READY_RETIRED`, since no daemon from 86 on acts on READY), after contract 141's experiment
-assignments (dispatch://INFRA-2566: each issue of `GET /legion/v1/state` carries `assignments`, one
+`READY_RETIRED`, since no daemon from 86 on acts on READY), after contract 144's memory guard
+(dispatch://INFRA-3557: the daemon's answer to an issue pod launcher's hello, `launcher_hello_ack`,
+carries the guard's settings in `memoryGuard`, and the launcher reports each process its guard ended
+in a new `launcher_memory_kill` frame, which names the process by its executable and no argument; a
+launcher that reads an acknowledgement with no settings runs no guard, and no shape the plugin
+parses moves), after contract 141's experiment assignments (dispatch://INFRA-2566: each issue of
+`GET /legion/v1/state` carries `assignments`, one
 `{experiment, variant, mode, drawnAt}` per experiment answer that applies to it, absent from an
 issue no experiment holds an answer for; the reader this plugin parses the state through takes the
 key as optional, because a caller from a pod whose claims record a contract under 141 is served
