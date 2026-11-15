@@ -70,16 +70,6 @@ const (
 	// that could not reach the broker names it, so a session that inherited a stale address
 	// reads a stale address rather than a broker that is down.
 	brokerURLVar = "AGENT_SECRETS_URL"
-	// passThroughCallWait is how long this client waits for one helper call of a pass-through
-	// op — login, enroll-session-key and unenroll-session-key — the calls the helper bounds by
-	// helper.DefaultBrokerCallBound (20 s) before it answers that the broker timed out. This
-	// wait sits above that bound so the helper's own answer, the broker's result or its
-	// timed-out refusal, always reaches the client before the client gives up: a client that
-	// waited less would read a transport timeout of its own instead, the empty reply the bound
-	// exists to replace. It is used at enroll, unenroll and machine login (enroll.go,
-	// machine.go). login-status, sign and the rest keep their own shorter waits: they make no
-	// pass-through broker call.
-	passThroughCallWait = 30 * time.Second
 )
 
 // keyDir is AGENT_SECRETS_KEY_DIR, else the default $XDG_RUNTIME_DIR/agent-secrets — the

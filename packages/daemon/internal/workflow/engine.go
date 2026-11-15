@@ -84,7 +84,8 @@ type Config struct {
 	RepositoryRenames ghrepo.Renames
 	// NoteUnread is told, inside the fact's transaction, of each issue the workflow did not record
 	// because its repository resolved Unread (left out for now, GitHub not answering its
-	// installation read): the daemon takes it into that repository's recovery whatever it resolves
+	// installation read, or its default-branch read past GitHub's rate limit): the daemon takes it
+	// into that repository's recovery whatever it resolves
 	// to by then. It keeps no state of the issue's own. Nil notes none.
 	NoteUnread func(key, resolved string)
 	// ReadMergeState is asked, on the commit of a fact that leaves a review round waiting on
@@ -470,8 +471,8 @@ const releaseReason = "the issue was set to todo while its phase was held"
 // does not act on. A session holding a claim in the issue's tree is an agent, never a human move,
 // since a phase ends only by its completion (the `legion` tool's `handoff_complete`) and a tree
 // only by the architect's sign-off. Any other session on the root of a running tree — one holding
-// its admission slot, or one waiting on a person, whose tree stays live while it gave its slot
-// back — another tree's agent, or one outside Legion that took the issue for its own, has no part
+// its admission slot, or one waiting on a person, whose tree stays live and which keeps its slot
+// — another tree's agent, or one outside Legion that took the issue for its own, has no part
 // in the tree it would end or park, so the tree's architect is told who wrote what. Either way the
 // workflow does not react: the observation is recorded with the status kept (keepStatus), and the
 // daemon re-asserts its own status through the outbox. A person's move and the daemon's own write

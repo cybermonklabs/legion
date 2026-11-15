@@ -15,9 +15,12 @@ package api
 //   - Nothing moves an object between projects. An issue's, an artifact's, an ask's, a comment's
 //     and a message's project is written when the row is inserted and updated by no route: no
 //     `update ... set project_key` and no `update ... set issue_key` exists outside the
-//     migrations and the tests, and the two writes that take another issue's project into
-//     account (a parent, a rank neighbour) refuse one outside the issue's own project rather
-//     than move anything. So the project this check reads before the handler runs is the project
+//     migrations and the tests, and the three writes that take another issue's project into
+//     account move nothing: a parent and a rank neighbour outside the issue's own project are
+//     refused, while a `blocked_by` target may be an issue of any project, which the write
+//     refuses only to a caller whose credential names one project (`PROJECT_SCOPE`, written
+//     inside the write because this check reads the project of the object the path names and no
+//     key in the body). So the project this check reads before the handler runs is the project
 //     the handler will write, and the check needs no transaction of its own.
 //   - The check is a no-op for a credential that carries no project: a browser cookie, a personal
 //     agent token, a Kubernetes service-account token and the shared token name none, and so do

@@ -253,9 +253,8 @@ pod_sessions_dir=/home/legion/.omp/profiles/legion/agent/sessions
 stream=ENVOY_NOTIFICATIONS
 # The issues the run's daemon runs at once. Since dispatch://INFRA-980 a slot is one issue the
 # daemon has started, a root or a child, so tree 1's children count against this cap as its root
-# does, and since dispatch://INFRA-2560 an issue holds one of the cap's slots from the moment the
-# daemon starts it until its work is past its review — accepting, retro and merging hold
-# none — or until it is done or Dispatch takes it out of the workflow. Four is
+# does, and an issue holds one as root AGENTS.md's "Admission" says: since
+# dispatch://INFRA-2560 an issue in accepting, retro or merging holds none. Four is
 # the run's own peak under that rule, reached once, at issue-independence: tree 1's root and its
 # two children beside tree 2's root, which is where the cap stands full and tree 3, set todo
 # there, waits for it. The later gathering is three and not four: at children-first-acceptance

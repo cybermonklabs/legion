@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -105,6 +106,9 @@ func normalizeIssueBlockers(targets []string) ([]string, error) {
 
 // lockProjectIssueDependencies serializes blocker and parent changes before any row or rank
 // lock. The two-key namespace is separate from Dispatch's one-key rank, document and event locks.
+// It is the one statement of a project's dependency lock: lockIssueDependencyWrite takes each
+// project's lock through it, and its id is hashtext of the project key, so a caller holding
+// several takes them in docs.ProjectsInLockOrder's order.
 func lockProjectIssueDependencies(ctx context.Context, tx pgx.Tx, project string) error {
 	if _, err := tx.Exec(ctx, `
 		select pg_advisory_xact_lock(hashtext('dispatch-issue-dependencies'), hashtext($1))
@@ -112,6 +116,131 @@ func lockProjectIssueDependencies(ctx context.Context, tx pgx.Tx, project string
 		return fmt.Errorf("lock project issue dependencies: %w", err)
 	}
 	return nil
+}
+
+// lockDeploymentIssueDependencies is the one dependency lock that is not a project's, and the
+// last lock every dependency write takes. Every writer of this build takes it exclusively, so no
+// two dependency walks of this build ever run at once and no ring can be closed by two writes of
+// this build that each walk a graph the other is changing — whatever projects their components
+// touch, and with nothing read before a lock deciding it. What it costs is that dependency
+// writes — a blocked_by write and a reparent — serialize across the deployment rather than per
+// project; every other write takes neither this lock nor a project's.
+//
+// It serializes every dependency write only while one build serves: a server of the build
+// before this one takes only its own project's dependency lock and never this one. The
+// deployment this repository describes holds that, because gcp:Dispatch rolls the app
+// Deployment with the Recreate strategy at one replica (infra/gcp/dispatch.go,
+// dispatchStrategyFor, minDispatchReplicas), so the old pod stops before the new one starts. A
+// deployment that serves two builds at once — a rolling update above one replica — must not
+// serve a build before this one beside it, since such a writer shares no lock with a writer of
+// this build across three projects.
+//
+// The project locks are kept for two reasons. Beside the exclusive deployment lock they decide
+// nothing among writers of this build; what they still do is fence a writer of an earlier
+// build, which holds only its project's lock, on every project this write names (its own and
+// each target's), so even with two builds serving only a ring through a project this write does
+// not name could close. And the test gates use them: a caller that holds a project's dependency
+// lock fences that project's dependency writes
+// (TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks, issue_dependencies_test.go).
+//
+// The key is its own name rather than lockProjectIssueDependencies' namespace with a literal
+// second key, so a project whose key happens to hash to that literal cannot collide with it; the
+// two-key shape with a literal is the one refuseRepoRenameChain already uses for a
+// deployment-wide lock.
+func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `
+		select pg_advisory_xact_lock(hashtext('dispatch-issue-dependencies-deployment'), 0)
+	`); err != nil {
+		return fmt.Errorf("lock deployment issue dependencies: %w", err)
+	}
+	return nil
+}
+
+// lockIssueDependencyWrite takes every lock a blocker or parent write needs, in the one order
+// every such write takes them: the project lock of the issue's own project and of each project a
+// target of this write belongs to, each through lockProjectIssueDependencies in
+// docs.ProjectsInLockOrder's order (ascending lock id, then key), and then the deployment-wide
+// dependency lock (lockDeploymentIssueDependencies). The number, rank and row locks follow, as
+// they did before. project is the issue's own project, targets are its blocked_by targets, and
+// caller is the one project the request's credential may write, empty for a credential that
+// names none.
+//
+// The project locks are taken in lock id order, not key order, because the lock id is what
+// Postgres waits on: two key sets whose keys collide in hashtext would, in key order, take the
+// same two ids in opposite orders. Two keys that collide take the same id twice in a row, which
+// is harmless because an advisory lock is re-entrant within one session. That order never
+// inverts, because every dependency write takes its project locks first, in id order, and the
+// deployment lock last, so no two writes can hold what the other waits for.
+//
+// The one read it makes runs with no lock held, and nothing that read says decides which locks
+// are taken: the projects it names are locked on top of the issue's own, and the deployment lock
+// is taken exclusively whatever it said. Reading a target's project unlocked is sound because no
+// route moves an issue between projects (project_scope.go's file doc), and a key created between
+// that read and the lock is still refused by writeBlockedBy's own read inside the transaction.
+//
+// A caller whose credential names one project is refused a target outside it here, before any
+// lock is taken: the pre-handler check reads the project of the object the path names and no key
+// of the body (project_scope.go), so this is the first point at which a target's project is
+// known, and a caller that may not write at all would otherwise take the deployment-wide lock
+// first. writeBlockedBy refuses it again under the locks, which is the authoritative refusal;
+// both word it through refuseBlockedByOutsideCallerProject.
+func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller string, targets []string) error {
+	foreign, err := foreignTargets(ctx, tx, project, targets)
+	if err != nil {
+		return err
+	}
+	if caller != "" && len(foreign) > 0 {
+		return refuseBlockedByOutsideCallerProject(caller, foreign[0].key, foreign[0].project)
+	}
+	projects := make([]string, 0, len(foreign)+1)
+	projects = append(projects, project)
+	for _, target := range foreign {
+		projects = append(projects, target.project)
+	}
+	ordered, err := docs.ProjectsInLockOrder(ctx, tx, projects)
+	if err != nil {
+		return err
+	}
+	for _, p := range ordered {
+		if err := lockProjectIssueDependencies(ctx, tx, p); err != nil {
+			return err
+		}
+	}
+	return lockDeploymentIssueDependencies(ctx, tx)
+}
+
+// foreignTarget is a blocked_by target of a project other than the issue's own, and the project
+// it belongs to.
+type foreignTarget struct{ key, project string }
+
+// foreignTargets is every target belonging to a project other than project, in key order, which
+// is the order writeBlockedBy reads its targets in, so a scoped caller is refused the same target
+// by both. A target with no row is left out: writeBlockedBy's own read refuses it inside the
+// transaction, which is where an unknown key is answered.
+func foreignTargets(ctx context.Context, q queryer, project string, targets []string) ([]foreignTarget, error) {
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `
+		select key, project_key from issues where key = any($1) and project_key <> $2 order by key
+	`, targets, project)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (foreignTarget, error) {
+		var target foreignTarget
+		return target, row.Scan(&target.key, &target.project)
+	})
+}
+
+// refuseBlockedByOutsideCallerProject is what a caller whose credential names one project is
+// answered for a blocked_by target outside it. Two steps of the same write refuse it — the lock
+// step before any lock is taken, and writeBlockedBy under the locks — so the wording lives here
+// once and the two cannot drift.
+func refuseBlockedByOutsideCallerProject(caller, target, targetProject string) error {
+	return errorf(http.StatusForbidden, codeProjectScope,
+		"this request's credential may write project %s; blocked_by issue %s belongs to project %s",
+		caller, target, targetProject)
 }
 
 // lockIssueRows locks key and the rows in others `for no key update` in one key order, the order
@@ -297,8 +426,15 @@ func assertParentLeavesNoDependencyCycle(ctx context.Context, tx pgx.Tx, child, 
 	return assertNoWaitPath(ctx, tx, []waitNode{{key: parent}}, waitNode{key: child})
 }
 
-// writeBlockedBy validates and replaces the normalized same-project target list.
-func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project string, targets []string) error {
+// writeBlockedBy validates and replaces the normalized target list. A target may be an issue of
+// another project: an issue that waits on work tracked elsewhere has to be able to record that
+// wait, and the walk below is what refuses a ring, between projects as inside one.
+//
+// caller is the one project the request's credential may write, empty for a credential that
+// names none (callerProject). A target outside it is refused here, under the locks, which is the
+// authoritative refusal: lockIssueDependencyWrite refuses the same caller before any lock is
+// taken, and both word it through refuseBlockedByOutsideCallerProject.
+func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project, caller string, targets []string) error {
 	if slices.Contains(targets, issue) {
 		return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "%s cannot be blocked by itself", issue)
 	}
@@ -311,8 +447,8 @@ func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project string, targe
 		if err != nil {
 			return err
 		}
-		if targetProject != project {
-			return errorf(http.StatusBadRequest, "BLOCKED_BY_OUTSIDE_PROJECT", "blocked_by issue %s must be in the same project", target)
+		if targetProject != project && caller != "" {
+			return refuseBlockedByOutsideCallerProject(caller, target, targetProject)
 		}
 	}
 	from := make([]waitNode, len(targets))

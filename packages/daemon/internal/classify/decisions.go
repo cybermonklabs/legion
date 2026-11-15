@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -117,7 +118,8 @@ func inWindow(named record.Named, start string, since time.Time) bool {
 // recorded CI settlement stays, as CheckedHead's, but stands for nothing at the new head: a
 // settlement stands only for the head it names, and the new head's own replaces it
 // (SettlementFor). GitHub's own verdict on merging the head - Mergeability and MergeState - goes
-// with the move, since any push may change the code GitHub answered about.
+// with the move, and the time that verdict was read (StateReadAt) with them, since any push may
+// change the code GitHub answered about.
 //
 // The alternative was to record the head GitHub answered for beside the answer and read a verdict
 // of another head as unread; this is the same rule with no second field to keep true, and a kept
@@ -139,9 +141,11 @@ func advance(pr record.PullRequest, arrival Arrival, headSHA string, names []rec
 		chained = chain != nil
 	}
 	// GitHub's verdict is its answer about the head the record stands at, so a move to another
-	// head leaves nothing to read: any push may change the code GitHub answered about.
+	// head leaves nothing to read: any push may change the code GitHub answered about. The time
+	// it was read goes with it, since it is then the time of a read about the head the record has
+	// left, and a stamp kept over a move would say this head had been read when it never was.
 	if headSHA != pr.HeadSHA {
-		pr.Mergeability, pr.MergeState = "", record.MergeStateUnread
+		pr.Mergeability, pr.MergeState, pr.StateReadAt = "", record.MergeStateUnread, time.Time{}
 	}
 	if !read.waits {
 		// An arrival that waits is judged for now by pushes that may not be its own (provisional),
@@ -671,12 +675,34 @@ func Settled(pr record.PullRequest) bool {
 // A run stored before the fence carried the head it ran on names no head, so it is no run on the
 // current head and such a record waits for the head's next settlement (record.AttemptRun).
 func ChecksConcludedOnHead(pr record.PullRequest) bool {
+	return len(HeadRuns(pr)) > 0
+}
+
+// HeadRuns is the runs of the pull request's fence that are the current head's own: runs GitHub
+// reported on the head the pull request now stands at, in the fence's order; nil when the fence
+// holds none. The fence holds the newest run of each check name with the head GitHub reported it
+// on (record.AttemptRun), so these are one run per check name rather than every attempt, and a
+// run stored before the fence carried its head names no head and is the run of no head at all.
+//
+// The fence holds only the runs a CI settlement brought, and the listener settles a head only once
+// every check it has seen there is terminal. So no run here is one still going, and an empty
+// answer does not say GitHub ran no check on the head: it is as much every head whose CI is still
+// running as a head GitHub reported nothing on.
+//
+// It is the one place the test of a run's head is written, and every reader of the daemon that
+// asks which runs are the current head's reads it, so none of them can drift from another:
+// ChecksConcludedOnHead is this list being non-empty, the state build counts it for the number
+// the issue's view carries (projection's mergeWaitView, api.MergeWaitView.CheckRuns), and the
+// notice of a head GitHub will not merge names each of its runs with its conclusion (workflow's
+// headChecks).
+func HeadRuns(pr record.PullRequest) []record.AttemptRun {
+	var runs []record.AttemptRun
 	for _, run := range pr.CheckRuns {
 		if run.Head != "" && run.Head == pr.HeadSHA {
-			return true
+			runs = append(runs, run)
 		}
 	}
-	return false
+	return runs
 }
 
 // SettlementFor says whether a CI settlement of candidate.Head may stand for the pull request's
@@ -1082,6 +1108,40 @@ func ApprovalSetAside(pr record.PullRequest, reviewed string) bool {
 // lands no merge meanwhile: the merger merges, and it merges the head its review approved.
 func CodeOnItsWay(pr record.PullRequest) bool {
 	return len(pathFrom(pr.Pushes, pr.HeadSHA, true)) > 0
+}
+
+// RoundWaitsOnMergeState says whether a review round waits on GitHub's answer about merging the
+// pull request's head: the issue is in reviewing, its reviewer's review approved the head the
+// pull request now stands at (ApprovalStands, which is the whole of that test: a review of
+// another head approves nothing, and a push on its way takes an approval of this head back), and
+// the merge state the record holds for that head is not one the issue may advance on
+// (record.MergeState.Mergeable), the unread state among them.
+//
+// Two readers ask it, and they must answer alike, which is the whole reason the rule is here
+// rather than in either of them: the engine asks it to decide whether this round is one the
+// daemon reads GitHub's merge state for (workflow's reviewRound, round.waitsOnMergeState, which
+// the read behind daemon's readMergeState follows), and the state build asks it to decide whether
+// the issue's view carries a mergeWait object (projection's mergeWaitView). Restated in either,
+// the two would drift, and the state would then say the daemon waits on an answer it never asks
+// for, or stay silent about a round it does read for.
+//
+// It holds for the round waiting for a first answer and for the stuck round alike - the head the
+// record holds no merge state for, the head whose own checks are still running, and the head GitHub
+// answered `blocked` or `behind` for and the architect was told of - because each of them is
+// waiting on GitHub's next answer about the same head: the state a head is in changes under it, a
+// base push clearing `behind` and a required check that runs clearing `blocked`, and a read is the
+// only thing that would ever say so. What tells those apart is read by the caller that needs them
+// apart (ChecksConcludedOnHead), never here.
+//
+// It makes no test of the pull request being open: reviewRound makes none, the read the engine
+// asks for has its own (workflow's askMergeStateFor), and a caller that needs one makes it itself
+// (projection's mergeWaitView, over record.PullRequestOpen).
+func RoundWaitsOnMergeState(issue record.Issue, reviewer record.PhaseRow, pr *record.PullRequest) bool {
+	if issue.Phase != phase.Reviewing || pr == nil || reviewer.Decision == nil {
+		return false
+	}
+	return reviewer.Decision.State == "approved" &&
+		ApprovalStands(*pr, reviewer.Decision.Head) && !pr.MergeState.Mergeable()
 }
 
 // HeadConflicts says whether an open pull request's head has started conflicting with its base:

@@ -10,16 +10,22 @@ import (
 	"time"
 )
 
-// slowAnswer is how long the broker takes to answer the rows that must still be answered: 8 s,
-// well past the 5 s deadline handle put on every connection, and well inside
-// DefaultBrokerCallBound. These rows run against the REAL bound, because the deadline they
-// prove gone is the one those 8 s are measured against.
-const slowAnswer = 8 * time.Second
+// SetBrokerCallBound, replyWriteSlack, overBound and clientCallWait adapt the tester's red test
+// of this issue (passthrough_signin_test.go, which is kept as it was written) to main's bound
+// (#4037, Server.brokerCall), and this file's table and passthrough_refresh_test.go read them
+// too. They are test code only: production has main's bound alone, Server.BrokerCallBound,
+// DefaultBrokerCallBound and BrokerCallWait.
 
-// clientCallWait is the wait `agent-secrets enroll --helper` and `unenroll --helper` give one
-// call (helper.Call in cmd/agent-secrets/enroll.go), the wait DefaultBrokerCallBound is set
-// under; every row reads its reply with it, as those clients do.
-const clientCallWait = 30 * time.Second
+// SetBrokerCallBound sets main's bound, Server.BrokerCallBound, and nothing else.
+func (s *Server) SetBrokerCallBound(d time.Duration) { s.BrokerCallBound = d }
+
+// replyWriteSlack is how long past the bound the connection of a broker-call op stays open:
+// brokerCall sets its deadline to the bound plus 5 s, and answers by the bound plus 1 s.
+const replyWriteSlack = 5 * time.Second
+
+// clientCallWait is the wait every client of a broker-call op gives one call, BrokerCallWait;
+// every row reads its reply with it, as those clients do.
+const clientCallWait = BrokerCallWait
 
 // overBound is the bound the rows that run out of time give their own Server, and
 // pastOverBound how long their broker then takes: a row that proves the bound answers need not
@@ -33,20 +39,29 @@ const (
 	pastOverBound = 3 * time.Second
 )
 
-// TestEachPassThroughOpAnswersASlowBrokerAndSaysWhenItTimedOut drives each pass-through op —
-// enroll-session-key, unenroll-session-key and login — through the REAL helper socket against a
-// broker that answers after a delay the row sets.
+// slowAnswer is how long the broker takes to answer the rows that must still be answered: 8 s,
+// well past the 5 s deadline handle puts on every connection, and well inside
+// DefaultBrokerCallBound. These rows run against the REAL bound, because the deadline they
+// prove gone is the one those 8 s are measured against.
+const slowAnswer = 8 * time.Second
+
+// TestEachBrokerCallOpAnswersASlowBrokerOrSaysItsOutcomeIsUnknown drives main's bound (#4037,
+// Server.brokerCall) on each broker-call op — enroll-session-key, unenroll-session-key and
+// login — through the REAL helper socket against a broker that answers after a delay the row
+// sets.
 //
 // Two rows for each op. The first is answered after 8 s and must reach the client as a JSON
 // reply carrying the broker's own result: that is what the defect cost, a helper that made the
 // enrollment and could not write its reply, leaving `agent-secrets enroll --helper` reading an
 // empty one and exiting 1 (dispatch://INFRA-49/comment/9bf092b6). The second is answered later
-// than the bound and must reach the client as that op's own failure code saying it timed out,
-// never as an empty reply either.
+// than the bound and must reach the client, never as an empty reply either, with that op's
+// answer for an outcome the helper does not know: ENROLL_OUTCOME_UNKNOWN,
+// UNENROLL_OUTCOME_UNKNOWN, or LOGIN_FAILED saying the outcome is unknown, since the broker may
+// have acted on a request it was still answering.
 //
-// The named revert: put the 5 s connection deadline back over the pass-through ops (drop the
-// SetDeadline of handle's passThroughOps branch) and every 8 s row fails with its reply unread.
-func TestEachPassThroughOpAnswersASlowBrokerAndSaysWhenItTimedOut(t *testing.T) {
+// The named revert: put the 5 s connection deadline back over the broker-call ops (drop
+// brokerCall's SetDeadline) and every 8 s row fails with its reply unread.
+func TestEachBrokerCallOpAnswersASlowBrokerOrSaysItsOutcomeIsUnknown(t *testing.T) {
 	const rowsToDrive = 6
 	var driven atomic.Int64
 	rows := []struct {
@@ -61,7 +76,7 @@ func TestEachPassThroughOpAnswersASlowBrokerAndSaysWhenItTimedOut(t *testing.T) 
 	}{
 		{
 			op:   "enroll-session-key",
-			code: CodeEnrollFailed,
+			code: CodeEnrollUnknown,
 			request: func(*testing.T, *rig) Request {
 				return Request{Op: "enroll-session-key", RuntimeID: "rt-slow-box", Thumbprint: "tp-slow-box"}
 			},
@@ -81,7 +96,7 @@ func TestEachPassThroughOpAnswersASlowBrokerAndSaysWhenItTimedOut(t *testing.T) 
 		},
 		{
 			op:   "unenroll-session-key",
-			code: CodeUnenrollFailed,
+			code: CodeUnenrollUnknown,
 			request: func(t *testing.T, r *rig) Request {
 				t.Helper()
 				enrolled := r.call(t, Request{Op: "enroll-session-key", RuntimeID: "rt-ended-box", Thumbprint: "tp-ended-box"})
@@ -139,10 +154,10 @@ func TestEachPassThroughOpAnswersASlowBrokerAndSaysWhenItTimedOut(t *testing.T) 
 				row.answered(t, r, req, resp)
 				driven.Add(1)
 			})
-			t.Run(row.op+" says it timed out past its bound", func(t *testing.T) {
+			t.Run(row.op+" says its outcome is unknown past its bound", func(t *testing.T) {
 				t.Parallel()
 				r := startRig(t, "")
-				r.srv.SetBrokerCallBound(overBound)
+				r.srv.BrokerCallBound = overBound
 				req := row.request(t, r)
 				r.fake.slowAnswers(pastOverBound)
 				started := time.Now()
@@ -151,8 +166,8 @@ func TestEachPassThroughOpAnswersASlowBrokerAndSaysWhenItTimedOut(t *testing.T) 
 				if err != nil {
 					t.Fatalf("%s against a broker slower than its bound: %v after %s; the client must read one JSON reply, never an empty one", row.op, err, waited)
 				}
-				if resp.OK || resp.Code != row.code || !strings.Contains(resp.Error, "timed out") {
-					t.Fatalf("%s past its bound: %+v; want %s saying it timed out", row.op, resp, row.code)
+				if resp.OK || resp.Code != row.code || !strings.Contains(resp.Error, "the outcome is unknown") {
+					t.Fatalf("%s past its bound: %+v; want %s saying the outcome is unknown", row.op, resp, row.code)
 				}
 				if waited >= pastOverBound {
 					t.Fatalf("%s past its bound answered after %s: it waited out the broker rather than its bound", row.op, waited)

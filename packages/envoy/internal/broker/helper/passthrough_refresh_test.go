@@ -11,24 +11,23 @@ import (
 )
 
 // TestAPassThroughOpAnswersInsideItsBoundWhileARefreshHoldsTheMachineLogin: A10 says the helper
-// answers every request it accepted within the time its client waits, and that a pass-through
-// call that runs out of time answers with its own failure code saying it timed out, so a client
-// never reads an empty reply.
+// answers every request it accepted within the time its client waits, and adds that no lock the
+// helper holds for its own work outlives a caller's bound.
 //
 // A refresh of the machine login holds credMu from its token request to its save and swap, on
 // the refresh loop's context, which has no deadline. An enroll-session-key whose enrolment the
 // broker refuses 401 LAUNCHER_INVALID drops the credential it signed with, and that drop waits
-// for a refresh in flight (dropOutsideRefresh), so a refresh the broker is slow to answer held
-// the call past its bound and past the connection deadline that bound's reply is written inside:
-// the helper had nothing to write by the time it could, and the client read an empty reply. The
-// drop's wait now ends with the call's context; the refresh it stood behind goes on to its own
-// answer and settles the credential.
+// for a refresh in flight (dropOutsideRefresh). The drop's wait ends with the op's context, at
+// main's bound (Server.brokerCall), so the op answers then with what it knows: the broker
+// refused it, ENROLL_FAILED carrying the broker's LAUNCHER_INVALID, and not an unknown outcome.
+// The refresh it stood behind goes on to its own answer and settles the credential.
 //
 // The row runs under a bound of overBound, so the refresh it holds need only outlast
 // overBound + replyWriteSlack rather than the real 25 s.
 //
-// The named revert: put a sync.Mutex back as credMu, so the drop waits with no context, and the
-// client reads an empty reply once the refresh is let go.
+// The named revert: put a sync.Mutex back as credMu, so the drop waits with no context, and
+// brokerCall's timer answers ENROLL_OUTCOME_UNKNOWN at the bound plus 1 s for an enrolment the
+// broker refused.
 func TestAPassThroughOpAnswersInsideItsBoundWhileARefreshHoldsTheMachineLogin(t *testing.T) {
 	r := startRig(t, "")
 	r.srv.SetBrokerCallBound(overBound)
@@ -58,8 +57,8 @@ func TestAPassThroughOpAnswersInsideItsBoundWhileARefreshHoldsTheMachineLogin(t 
 		t.Fatalf("enroll-session-key refused while the machine login is refreshing: %v after %s; the client must read one JSON reply, never an empty one (the bound is %s, its reply written inside %s)",
 			err, waited, overBound, overBound+replyWriteSlack)
 	}
-	if resp.OK || resp.Code != CodeEnrollFailed || !strings.Contains(resp.Error, "timed out") || !strings.Contains(resp.Error, "LAUNCHER_INVALID") {
-		t.Fatalf("enroll-session-key refused while the machine login is refreshing: %+v after %s; want %s saying it timed out with the broker's LAUNCHER_INVALID", resp, waited, CodeEnrollFailed)
+	if resp.OK || resp.Code != CodeEnrollFailed || !strings.Contains(resp.Error, "LAUNCHER_INVALID") || strings.Contains(resp.Error, "the outcome is unknown") {
+		t.Fatalf("enroll-session-key refused while the machine login is refreshing: %+v after %s; want %s with the broker's LAUNCHER_INVALID, a known refusal", resp, waited, CodeEnrollFailed)
 	}
 	if waited >= overBound+replyWriteSlack {
 		t.Fatalf("enroll-session-key answered after %s, past the %s its reply is written inside", waited, overBound+replyWriteSlack)

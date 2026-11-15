@@ -15,11 +15,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// What the cap can and cannot hold back, now that an issue keeps its row from the moment the
-// daemon starts it until its work is past its review (record.KeepsSlot). An issue that holds a
-// row starts its next phase whatever admission_cap says, because its promotion takes no second
-// row (admit's slotFor); an issue that holds none takes one when the daemon starts it, and
-// waits in the line while the project is at its cap.
+// What the cap can and cannot hold back, now that an issue holds its row from the moment the
+// daemon starts it until its work is past its review (record.KeepsSlot), except while it waits on
+// another issue before then (releaseSlotsForWaits). An issue that holds a row starts its next
+// phase whatever admission_cap says, because its promotion takes no second row (admit's slotFor);
+// an issue that holds none takes one when the daemon starts it, and waits in the line while the
+// project is at its cap.
 
 // capMember records key under root in stands, with the Dispatch status a member in that phase
 // shows. It writes no row: what each case here is about is whether the issue holds one.
@@ -246,8 +247,8 @@ func TestAnIssueSentBackFromItsMergeStandsAtTheFrontOfTheLine(t *testing.T) {
 	seedSlotted(t, pool, "LEGION-100", "A")
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", ArtifactID: "artifact-1", LatestVersion: 1, ApprovedVersion: new(1)})
 	acceptingRoot(t, pool, "LEGION-100")
-	// The issue whose merge sent it back, holding no row, and a sibling whose first phase has
-	// yet to start, which ranks ahead of it on the board.
+	// The issue whose work came back, holding no row, and a sibling whose first phase has yet
+	// to start, which ranks ahead of it on the board.
 	capMember(t, pool, "LEGION-100", "LEGION-101", phase.Implementing, "in_progress", "A1")
 	oweMemberStart(t, pool, "LEGION-100", "LEGION-101", phase.Implementing)
 	capMember(t, pool, "LEGION-100", "LEGION-102", phase.Admitted, "todo", "A0")

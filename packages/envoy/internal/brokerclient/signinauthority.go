@@ -144,8 +144,9 @@ type SignInAuthority struct {
 // (SignInStore.Choose).
 //
 // One call at a time reads and renews the held credential, and a call that finds another doing
-// so waits for it only as long as its own ctx lives: once ctx ends it answers ctx's error, so
-// its own bound, and not the other call's trade, decides when it answers.
+// so waits for it only as long as its own ctx lives: once ctx ends it answers an error that
+// wraps ctx's (SignInWaitEnded), so its own bound, and not the other call's trade, decides when
+// it answers.
 func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 	if a.Machine == nil || a.Flow == nil {
 		return nil, errors.New("brokerclient: a sign-in's authority needs this machine's own identity and the sign-in client that renews the person's")
@@ -159,7 +160,7 @@ func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 	}
 
 	if err := a.mu.LockContext(ctx); err != nil {
-		return nil, fmt.Errorf("wait for %s's sign-in on this machine, which another call holds while it trades: %w", record.Person, err)
+		return nil, fmt.Errorf("%s: %w", SignInWaitEnded(record.Person, err), err)
 	}
 	defer a.mu.Unlock()
 	name := record.Person + "\x00" + record.Thumbprint
@@ -209,6 +210,18 @@ func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 	}
 	a.heldCredential = token.CredentialID
 	return &Authority{Key: a.held.Key(), CredentialID: token.CredentialID, Operator: record.Person}, nil
+}
+
+// SignInWaitEnded says how a wait for person's sign-in on this machine, which another call holds
+// while it trades (Current, Refused), ended with err, its context's error: "timed out waiting
+// for …" when the context's deadline passed, and "wait for …" when it was cancelled. A message
+// made from it wraps err after it, so errors.Is still reads the context's error.
+func SignInWaitEnded(person string, err error) string {
+	wait := "wait for "
+	if errors.Is(err, context.DeadlineExceeded) {
+		wait = "timed out waiting for "
+	}
+	return wait + person + "'s sign-in on this machine, which another call holds while it trades"
 }
 
 // SessionFor is the session name a person's trade on this box asks under. The exchange fixes

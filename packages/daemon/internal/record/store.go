@@ -65,7 +65,7 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
 // it was written.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), memory_group, memory_draw_mode, memory_drawn_at, moved_at, tree_stalled_told_at`
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), memory_group, memory_draw_mode, memory_drawn_at, moved_at, tree_stalled_told_at, released_for_wait_at`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -241,8 +241,9 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// spelling it was recorded with: a write naming others changes no row, and is refused below.
 	// handout_seq, declared_seq and declared_at are StartHandout's, TakeInThrough's, Declare's and
 	// ClearDeclared's alone, memory_group, memory_draw_mode and memory_drawn_at are DrawMemory's
-	// and CarryMemory's, and moved_at is MarkIssueMoved's, so a copy of the issue read before any
-	// of them never writes them back. That is what makes a tree's memory group write-once: a
+	// and CarryMemory's, moved_at is MarkIssueMoved's, and released_for_wait_at is
+	// ReleaseSlotForWait's and ClearReleasedForWait's, so a copy of the issue read before any of
+	// them never writes them back. That is what makes a tree's memory group write-once: a
 	// re-admission, a new generation and ClearTreeGeneration each record the issue again from a
 	// copy read before the draw, and each keeps it; and it is what keeps the movement safe, since
 	// every write site that marks one holds a copy of the issue read before its own fact and
@@ -486,12 +487,12 @@ func scanIssue(row scanner) (*Issue, error) {
 	var answeredAt *time.Time
 	var answeredBy, answeredDetail string
 	var sinceSeq *int64
-	var since, declaredAt, memoryDrawnAt, treeStalledToldAt *time.Time
+	var since, declaredAt, memoryDrawnAt, treeStalledToldAt, releasedForWaitAt *time.Time
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
-		&issue.ToldParent, &issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt, &issue.MovedAt, &treeStalledToldAt); err != nil {
+		&issue.ToldParent, &issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt); err != nil {
 		return nil, err
 	}
 	if declaredAt != nil {
@@ -507,6 +508,10 @@ func scanIssue(row scanner) (*Issue, error) {
 	if treeStalledToldAt != nil {
 		utc := treeStalledToldAt.UTC()
 		issue.TreeStalledToldAt = &utc
+	}
+	if releasedForWaitAt != nil {
+		utc := releasedForWaitAt.UTC()
+		issue.ReleasedForWaitAt = &utc
 	}
 	if generation < 0 {
 		return nil, fmt.Errorf("issue %s has negative generation %d", issue.Key, generation)
@@ -643,7 +648,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 const pullRequestColumns = `issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 	failing, cancelled, check_runs,
 	generation, snapshot, pushes, head_moves, head_run, review_seen, review_seen_at, state,
-	checked_head, mergeability, merge_state, conflicting_head, merge_sha`
+	checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha`
 
 func (s *Postgres) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
 	pr, err := scanPullRequest(tx.QueryRow(ctx, "select "+pullRequestColumns+" from pull_requests where issue = $1", issue))
@@ -833,9 +838,9 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	// and need not be named at all, being nullable or defaulted (migrations 0013, 0028, 0029).
 	_, err = tx.Exec(ctx, `insert into pull_requests (issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 		failing, cancelled, check_runs, generation, snapshot, pushes, head_moves,
-		head_run, review_seen, review_seen_at, state, checked_head, mergeability, merge_state, conflicting_head, merge_sha,
+		head_run, review_seen, review_seen_at, state, checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha,
 		fix_attempts, blocked_attempts, head_counted)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, 0, 0, '')
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, 0, 0, '')
 		on conflict (issue) do update set repo = excluded.repo, number = excluded.number, branch = excluded.branch,
 		base = excluded.base, base_moved = excluded.base_moved,
 		head_sha = excluded.head_sha, head_updated_at = excluded.head_updated_at,
@@ -844,13 +849,13 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 		pushes = excluded.pushes, head_moves = excluded.head_moves, head_run = excluded.head_run,
 		review_seen = excluded.review_seen,
 		review_seen_at = excluded.review_seen_at, state = excluded.state, checked_head = excluded.checked_head,
-		mergeability = excluded.mergeability, merge_state = excluded.merge_state,
+		mergeability = excluded.mergeability, merge_state = excluded.merge_state, state_read_at = excluded.state_read_at,
 		conflicting_head = excluded.conflicting_head, merge_sha = excluded.merge_sha`,
 		pr.Issue, pr.Repo, pr.Number, pr.Branch, pr.Base, pr.BaseMoved, pr.HeadSHA, pr.HeadUpdatedAt,
 		failing, cancelled, checkRuns,
 		pr.Generation, pr.Snapshot, pushes, moves, run,
 		pr.ReviewSeen.ID, pr.ReviewSeen.SubmittedAt, pr.State, pr.CheckedHead,
-		pr.Mergeability, pr.MergeState, pr.ConflictingHead, pr.MergeSHA,
+		pr.Mergeability, pr.MergeState, pr.StateReadAt, pr.ConflictingHead, pr.MergeSHA,
 	)
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: %w", pr.Issue, err)
@@ -1352,7 +1357,7 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 	if err := row.Scan(&pr.Issue, &pr.Repo, &pr.Number, &pr.Branch, &pr.Base, &pr.BaseMoved, &pr.HeadSHA, &pr.HeadUpdatedAt,
 		&failing, &cancelled, &checkRuns, &pr.Generation, &pr.Snapshot,
 		&pushes, &moves, &run, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
-		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.ConflictingHead, &pr.MergeSHA); err != nil {
+		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.StateReadAt, &pr.ConflictingHead, &pr.MergeSHA); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(failing, &pr.Failing); err != nil {
@@ -1898,6 +1903,26 @@ func (s *Postgres) PutSlot(ctx context.Context, tx pgx.Tx, slot Slot) error {
 func (s *Postgres) ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) error {
 	if _, err := tx.Exec(ctx, "delete from slots where issue = $1", issue); err != nil {
 		return fmt.Errorf("release slot for %s: %w", issue, err)
+	}
+	return nil
+}
+
+// ReleaseSlotForWait deletes the row and writes the mark in one statement, because the two are
+// one fact: the delete's returning feeds the update, so a transaction can neither take the row
+// away without the mark nor mark an issue that kept its row. An issue holding no row is marked
+// by neither, which is the truth about it — nothing released it for a wait.
+func (s *Postgres) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue string, at time.Time) error {
+	_, err := tx.Exec(ctx, `with released as (delete from slots where issue = $1 returning issue)
+		update issues set released_for_wait_at = $2 from released where issues.key = released.issue`, issue, at)
+	if err != nil {
+		return fmt.Errorf("release the slot of %s for what it waits on: %w", issue, err)
+	}
+	return nil
+}
+
+func (s *Postgres) ClearReleasedForWait(ctx context.Context, tx pgx.Tx, issue string) error {
+	if _, err := tx.Exec(ctx, "update issues set released_for_wait_at = null where key = $1", issue); err != nil {
+		return fmt.Errorf("clear the release of %s's slot for what it waits on: %w", issue, err)
 	}
 	return nil
 }
