@@ -1,7 +1,6 @@
 package classify
 
 import (
-	"slices"
 	"sort"
 	"time"
 
@@ -1120,16 +1119,25 @@ func ApprovalSetAside(pr record.PullRequest, reviewed string) bool {
 // the release before recorded, or a merge that names no head. That push can be the code GitHub
 // merged, so it stays on its way, and an approval of the head it left does not stand.
 func CodeOnItsWay(pr record.PullRequest) bool {
-	pushes := pr.Pushes
-	if slices.ContainsFunc(pushes, deletesBranch) {
-		pushes = slices.DeleteFunc(slices.Clone(pushes), deletesBranch)
-	}
-	return len(pathFrom(pushes, pr.HeadSHA, true)) > 0
+	return len(pathFrom(withoutDeletions(pr.Pushes), pr.HeadSHA, true)) > 0
 }
 
-// deletesBranch is whether p is GitHub's deletion of the branch: a push to no commit.
-func deletesBranch(p record.ClassifiedPush) bool {
-	return p.SHA == record.NoCommit
+// withoutDeletions is pushes less GitHub's deletions of the branch, the pushes to no commit
+// (record.NoCommit). It returns pushes itself, with no copy, when it holds none.
+func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
+	for i, p := range pushes {
+		if p.SHA != record.NoCommit {
+			continue
+		}
+		kept := append(make([]record.ClassifiedPush, 0, len(pushes)-1), pushes[:i]...)
+		for _, q := range pushes[i+1:] {
+			if q.SHA != record.NoCommit {
+				kept = append(kept, q)
+			}
+		}
+		return kept
+	}
+	return pushes
 }
 
 // RoundWaitsOnMergeState says whether a review round waits on GitHub's answer about merging the
