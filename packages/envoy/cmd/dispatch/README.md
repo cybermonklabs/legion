@@ -3825,11 +3825,12 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
 
-  The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-four tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-five tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  The one it leaves out is `dispatch_review`, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations on the graph must never propose one.
   Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
   Twenty actions is under the count where a model's choice falls apart, so the catalogue is read whole: it takes no query and serves no page.
   A tool naming a row this table does not hold, a row the table does not class as a write, a placeholder no argument of the tool fills, or a relation in neither edge family makes the server refuse to mount the table.
-  A write no tool performs is named by the catalogue's own test instead, since it is work still to do rather than an error.
+  A write no catalogue action performs is named by the catalogue's own test instead: most are work still to do rather than an error, and the review route is kept out on purpose.
 
 - `/api/v1/projects/{key}/related?title=&text=&exclude_issue=&exclude_issues=&keywords_only=` (GET, POST; cookie, trusted header, or bearer)
 
@@ -4313,7 +4314,7 @@ Each item below names a path with its method and identity, then its purpose.
   With `include_verification` it asks for the issue's Verification document (`role` `verification`) in the same request, each document at its own current settled version, and the answer records the human's review on each;
   an issue with no Verification document is `409 NO_VERIFICATION_DOCUMENT`, and one whose Verification document has no settled version is `409 NO_VERSION`.
   The flag is for the issue's spec alone: on any other document it is `409 NOT_SPEC_DOCUMENT`.
-  A document whose role is `plan` is `409 PLAN_APPROVED_BY_REVIEW`: a plan is approved by its plan review, never by a person.
+  A closed issue's document is `409 ISSUE_CLOSED`, before any other 409; an issue's plan is `409 PLAN_APPROVED_BY_REVIEW`, as its plan review approves it, and a project `plan.md` is no plan.
   The question is `Approve <name> (version <N>)?`, or `Approve <name> (version <N>) and <name> (version <N>)?` for a request naming two documents, followed by the optional `summary` (blank is `400 SUMMARY_INPUT`;
   past the ask cap at the longest version a request can reach, ten digits, is `400 CAP_EXCEEDED` naming `summary`).
   A request on a document a human approved earlier names that approval in `ask.approval.approved` (`{version, at, by}`);
@@ -4336,7 +4337,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Record a plan review's approval of a plan version: `{version}`, the version the review read.
   It writes an `approved` review of kind `plan_review` and emits `artifact.approved`, so every read of the document shows it approved and a later version makes it stale, as a spec's approval goes stale.
-  It is `409 NOT_PLAN_DOCUMENT` on any document that is not the issue's plan, the issue's spec included — a document whose `role` is `plan`, or one a rolling deploy left with no role whose slug is `plan-md`, is the plan — `409 NO_VERSION` on a plan with no settled version, and `400 INVALID_REVIEW` for a version the plan does not have.
+  It is `409 NOT_PLAN_DOCUMENT` on any document that is not the issue's plan, the issue's spec and a project document named `plan.md` included — an issue document whose `role` is `plan`, or an issue document a rolling deploy left with no role whose slug is `plan-md`, is the plan — `409 NO_VERSION` on a plan with no settled version, and `400 INVALID_REVIEW` for a version the plan does not have.
   No person is ever asked to approve a plan, which is why `/api/v1/artifacts/{id}/approval-requests` refuses one.
   A review Dispatch carries to a later version keeps the `kind` of the review it carries, so a plan version restored to the text its plan review approved is still `plan_review` and no carry ever records a plan's approval as a person's.
 
