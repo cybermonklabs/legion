@@ -13,6 +13,7 @@ import {
   verdictOf,
 } from "./corpus-io";
 import { type DispatchEvent, pageEventLog } from "./dispatch-read";
+import { noteIssueCreated, reserveOf } from "./reserve";
 
 /**
  * Builds the corpus of one person's approval decisions: every ask that person answered, up to a
@@ -26,6 +27,10 @@ import { type DispatchEvent, pageEventLog } from "./dispatch-read";
  * settlement can write the same answer again under its editor, so the repeats of one answer (its
  * ask and its own `at`) collapse to the earliest event; an answer the person changed carries a
  * later `at` and is a second case.
+ *
+ * The same walk reads each issue's `issue.created` event, so each case carries when its issue was
+ * created. The reserve of INFRA-2897's next final test reads that time (`reserve.ts`), and the
+ * build prints how many of its cases the reserve holds from every command.
  *
  * Nothing it writes goes into this repository: `--out` is an absolute path outside the workspace,
  * since a corpus of a production log is large and the workspace is snapshotted whole.
@@ -119,6 +124,12 @@ export interface CaseRow {
   words: string | null;
   hasWords: boolean;
   askCreatedAt: string | null;
+  /**
+   * When the case's issue was created, from the log's `issue.created` event: null where the walk
+   * found none, and absent from a corpus built before the build recorded it. The reserve of the
+   * next final test reads it (`reserve.ts`).
+   */
+  issueCreatedAt?: string | null;
   answeredAt: string;
   eventCreatedAt: string;
   approval: CaseApproval | null;
@@ -139,12 +150,13 @@ interface Snapshot {
   readFinishedAt: string;
 }
 
-/** The shape of the corpus, by kind and by verdict. */
-interface Counts {
+/** The shape of the corpus, by kind and by verdict, and how many cases the reserve holds. */
+export interface Counts {
   total: number;
   byKind: Record<CaseKind, number>;
   approvalByVerdict: Record<CaseVerdict, number>;
   withWordsByKind: Record<CaseKind, number>;
+  reserved: number;
 }
 
 /** The flags as `parseArgs` reads them, before their rules are checked. */
@@ -306,14 +318,25 @@ function withConfounds(seeds: readonly CaseSeed[]): CaseRow[] {
   return rows;
 }
 
-function countsOf(rows: readonly CaseRow[]): Counts {
+/**
+ * The counts a build prints and writes, over the cases a command may read. A case the reserve
+ * holds (`reserve.ts`) is counted only as reserved: a verdict count that took it in would tell its
+ * answer to whoever compares two builds, which the reserve allows no reader.
+ */
+export function countsOf(rows: readonly CaseRow[]): Counts {
   const counts: Counts = {
-    total: rows.length,
+    total: 0,
     byKind: { approval: 0, question: 0 },
     approvalByVerdict: { approve: 0, request_changes: 0, other: 0 },
     withWordsByKind: { approval: 0, question: 0 },
+    reserved: 0,
   };
   for (const row of rows) {
+    if (reserveOf(row) === "held") {
+      counts.reserved += 1;
+      continue;
+    }
+    counts.total += 1;
     counts.byKind[row.kind] += 1;
     if (row.kind === "approval" && row.verdict !== null) counts.approvalByVerdict[row.verdict] += 1;
     if (row.hasWords) counts.withWordsByKind[row.kind] += 1;
@@ -327,13 +350,14 @@ function report(counts: Counts, snapshot: Snapshot, directory: string): string {
     `corpus for ${snapshot.person} through event ${snapshot.throughEventId}`,
     `  events read            ${snapshot.eventsRead}`,
     `  events kept            ${snapshot.keptEvents}`,
-    `  cases                  ${counts.total}`,
+    `  cases                  ${counts.total} (the reserved cases left out of every count)`,
     `    approval             ${counts.byKind.approval}` +
       ` (approve ${verdicts.approve}, request_changes ${verdicts.request_changes},` +
       ` other ${verdicts.other})`,
     `    question             ${counts.byKind.question}`,
     `  cases with their words ${counts.withWordsByKind.approval} approval,` +
       ` ${counts.withWordsByKind.question} question`,
+    `  reserved cases         ${counts.reserved}, written and held from every command (reserve.ts)`,
     `  written to             ${directory}`,
   ].join("\n");
 }
@@ -352,11 +376,13 @@ async function build(flags: Flags): Promise<number> {
     console.log(`no --through given: pinned to the log's newest event, ${through}`);
   }
   const seeds = new Map<string, CaseSeed>();
+  const issueCreated = new Map<string, string>();
   let keptEvents = 0;
   const walk = await pageEventLog({
     through,
     onPage: (events) => {
       for (const event of events) {
+        noteIssueCreated(issueCreated, event);
         if (KEPT_TYPES[event.type] !== true) continue;
         keptEvents += 1;
         const seed = caseOf(event, flags.person);
@@ -366,7 +392,12 @@ async function build(flags: Flags): Promise<number> {
     },
   });
   const readFinishedAt = new Date().toISOString();
-  const rows = withConfounds([...seeds.values()]);
+  const rows = withConfounds(
+    [...seeds.values()].map((seed) => ({
+      ...seed,
+      issueCreatedAt: seed.issueKey === null ? null : (issueCreated.get(seed.issueKey) ?? null),
+    }))
+  );
   const counts = countsOf(rows);
   const snapshot: Snapshot = {
     person: flags.person,
@@ -412,4 +443,5 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-process.exit(await main(Bun.argv.slice(2)));
+// Only when run: a test that imports `countsOf` must not run a build.
+if (import.meta.main) process.exit(await main(Bun.argv.slice(2)));

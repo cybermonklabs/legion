@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  A send to a session with no registration now that registered in the last 30 days is stored for
+  that session's own consumer and answered 200 with `state: stopped`, where it was answered 404.
+  Dispatch records a message the listener stored for a stopped session as a `queued` attempt,
+  where it recorded `sent`, or `failed` for the 404, and shows it as
+  `Queued: <session> is stopped; it gets the message if it runs again within 72 hours`.
+custom:
+    Issue: pr2643

@@ -476,6 +476,30 @@ func TestTheAirlocksProxySettingsAreRequiredWithItsRulesFile(t *testing.T) {
 	}
 }
 
+// TestLoadReadsTheMetricsListenAddr: the metrics port binds BROKER_METRICS_LISTEN_ADDR as
+// written, and 127.0.0.1:13382 when it is unset - beside the API's 13380 and the airlock's
+// 13381, and like both of them on the loopback address, so a broker started with no setting
+// serves its metrics to its own host alone. Unlike the airlock's port it is read whatever else
+// is configured, since every broker serves its metrics.
+func TestLoadReadsTheMetricsListenAddr(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MetricsListenAddr != "127.0.0.1:13382" {
+		t.Errorf("default metrics listen addr = %q; want 127.0.0.1:13382", cfg.MetricsListenAddr)
+	}
+	for _, e := range []map[string]string{validEnv(), airlockEnv()} {
+		e["BROKER_METRICS_LISTEN_ADDR"] = "0.0.0.0:13382"
+		if cfg, err = Load(env(e)); err != nil {
+			t.Fatal(err)
+		}
+		if cfg.MetricsListenAddr != "0.0.0.0:13382" {
+			t.Errorf("metrics listen addr = %q; want 0.0.0.0:13382 as BROKER_METRICS_LISTEN_ADDR names it", cfg.MetricsListenAddr)
+		}
+	}
+}
+
 // TestTheAirlocksProxyURLIsHeldToItsForm: every release of a name the rules hold back carries
 // this string, and a command's own client reads it as the proxy to dial, so a value with no
 // scheme or no host must refuse the boot rather than fail every airlock run one command at a

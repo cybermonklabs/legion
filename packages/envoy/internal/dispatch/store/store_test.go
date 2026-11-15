@@ -263,7 +263,7 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 		"messages_replies_to_block",
 		"events_person_words_with_declines",
 		"comment_deliveries_session",
-		"message_deliveries_session_created",
+		"message_deliveries_session_taken",
 		"embeddings_window_owner",
 		"asks_issue_key",
 		"messages_issue_roots",
@@ -279,12 +279,14 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 	// api.TestTheAuditedReadsSearchTheirIndex holds it to. Migration 20261111002445 drops
 	// events_person_words, the partial index 0145 built for the read that lists what people wrote
 	// to a session: that read names a fifth event type now and reads
-	// events_person_words_with_declines instead.
+	// events_person_words_with_declines instead. Migration 20261114081436 drops
+	// message_deliveries_session_created, 0147's index over a session's sent message deliveries:
+	// the same read takes queued ones too and reads message_deliveries_session_taken instead.
 	assertDatabaseObjectsAbsent(t, ctx, store.Pool, `
 		select indexname
 		from pg_indexes
 		where schemaname = current_schema()
-	`, []string{"asks_open_artifact", "events_person_words"})
+	`, []string{"asks_open_artifact", "events_person_words", "message_deliveries_session_created"})
 	assertDatabaseObjects(t, ctx, store.Pool, `
 		select viewname
 		from pg_views
