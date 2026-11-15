@@ -1,6 +1,7 @@
 package classify
 
 import (
+	"slices"
 	"sort"
 	"time"
 
@@ -1101,22 +1102,34 @@ func ApprovalSetAside(pr record.PullRequest, reviewed string) bool {
 }
 
 // CodeOnItsWay says whether a push lies on the path forward from the pull request's current head,
-// its new head not arrived yet: any push may change code. A push delivered late, after its new head
+// its new head not arrived yet: any push may change code. It is the one rule of what a recorded
+// push does to an approval. A recorded push from the head is code on its way, and it takes back an
+// approval of the head until its new head arrives. A push delivered late, after its new head
 // arrived and the branch returned to this one, is spent by the move the record made
 // (unspentPushes), so it is not on its way; the same two heads pushed again are spent as its repeat
 // (record.Move.Repeats), and look the same until their synchronize moves the head. The daemon
 // lands no merge meanwhile: the merger merges, and it merges the head its review approved.
 //
-// A merged pull request has no code on its way. The merge recorded the head the pull request
-// merged at (workflow's merged moves the record to the head the merge names), and that head is
-// final. So no push the record holds takes back an approval of that head: not GitHub's deletion
-// of the branch, which a release before the deletion guard (intake's decodePush) stored as a push
-// from the head, not a push to a branch kept after the merge, and not a push made after the merge
-// and delivered before it. Nothing would ever spend such a push on a merged record either: the
-// synchronize handler drops a merged record, and the daemon's reads follow only an open pull
-// request's head (daemon's followHead).
+// A push to no commit (record.NoCommit) is GitHub's deletion of the branch. It names no code, so
+// it is never on its way, and the path does not run through it. A release before the deletion
+// guard (intake's decodePush) stored such a push as it stored any push, so a record can hold one.
+//
+// A merged record keeps no pushes once its merge named the head, since that head is final
+// (workflow's merged), and it records no push after the merge (workflow's push). So a merged
+// record that still holds a push from its head is one whose merge did not name that head: a merge
+// the release before recorded, or a merge that names no head. That push can be the code GitHub
+// merged, so it stays on its way, and an approval of the head it left does not stand.
 func CodeOnItsWay(pr record.PullRequest) bool {
-	return pr.State != record.PullRequestMerged && len(pathFrom(pr.Pushes, pr.HeadSHA, true)) > 0
+	pushes := pr.Pushes
+	if slices.ContainsFunc(pushes, deletesBranch) {
+		pushes = slices.DeleteFunc(slices.Clone(pushes), deletesBranch)
+	}
+	return len(pathFrom(pushes, pr.HeadSHA, true)) > 0
+}
+
+// deletesBranch is whether p is GitHub's deletion of the branch: a push to no commit.
+func deletesBranch(p record.ClassifiedPush) bool {
+	return p.SHA == record.NoCommit
 }
 
 // RoundWaitsOnMergeState says whether a review round waits on GitHub's answer about merging the

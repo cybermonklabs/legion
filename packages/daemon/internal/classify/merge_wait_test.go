@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -76,32 +75,38 @@ func TestARoundWaitsOnTheMergeStateOnlyWhereAnApprovalStandsOnAHeadGitHubWillNot
 	}
 }
 
-// A merged pull request has no code on its way (CodeOnItsWay): the head it merged at is final, so
-// no push its record holds from that head takes back an approval of it. One such push is GitHub's
-// deletion of the merged branch, a push from the head to no commit (intake.NoCommit), which a
-// release before the deletion guard stored as it stored any push. Another is an ordinary push to a
-// branch kept after the merge, or one made after the merge and delivered before it. On the merged
-// record an approval of the head stands (ApprovalStands), and an approval of another head is set
-// aside (ApprovalSetAside), since nothing more is coming. The same record open holds the push on
-// its way: no approval stands, and none is set aside, since the push's new head decides the round.
-func TestAMergedPullRequestHasNoCodeOnItsWay(t *testing.T) {
+// A push to no commit (record.NoCommit) is GitHub's deletion of the branch. It names no code, so it
+// is never on its way (CodeOnItsWay), whether the record holds the pull request open or merged, and
+// the path does not run through it to a push that makes the branch again. A release before the
+// deletion guard stored the deletion as it stored any push. With nothing else on its way, an
+// approval of the head stands (ApprovalStands), and an approval of another head is set aside
+// (ApprovalSetAside), since nothing more is coming. A real push from the head is on its way in
+// either state, beside a deletion or not. A merged record holds one only where its merge did not
+// name the head, and that push can be the code that merged. While a push is on its way no approval
+// stands, and none is set aside, since the push's new head decides the round.
+func TestAPushToNoCommitIsNeverCodeOnItsWay(t *testing.T) {
 	const head, other = "h2", "h1"
-	deletion := record.ClassifiedPush{SHA: intake.NoCommit, Before: head, Sender: "author"}
+	deletion := record.ClassifiedPush{SHA: record.NoCommit, Before: head, Sender: "author"}
+	madeAgain := record.ClassifiedPush{SHA: "h4", Before: record.NoCommit, Sender: "author"}
 	push := record.ClassifiedPush{SHA: "h3", Before: head, Sender: "author"}
 	for _, tc := range []struct {
 		name     string
 		state    record.PullRequestState
-		push     record.ClassifiedPush
+		pushes   []record.ClassifiedPush
 		onItsWay bool
 	}{
-		{"a merged pull request holding the deletion of its branch", record.PullRequestMerged, deletion, false},
-		{"a merged pull request holding a push from its head", record.PullRequestMerged, push, false},
-		{"an open pull request holding the deletion of its branch", record.PullRequestOpen, deletion, true},
-		{"an open pull request holding a push from its head", record.PullRequestOpen, push, true},
+		{"an open pull request holding the deletion of its branch", record.PullRequestOpen, []record.ClassifiedPush{deletion}, false},
+		{"a merged pull request holding the deletion of its branch", record.PullRequestMerged, []record.ClassifiedPush{deletion}, false},
+		{"a merged pull request holding its branch's deletion and the branch made again", record.PullRequestMerged,
+			[]record.ClassifiedPush{deletion, madeAgain}, false},
+		{"an open pull request holding a push from its head", record.PullRequestOpen, []record.ClassifiedPush{push}, true},
+		{"a merged pull request at a head its merge did not name, holding a push from it", record.PullRequestMerged,
+			[]record.ClassifiedPush{push}, true},
+		{"a merged pull request holding the deletion of its branch and a push from its head", record.PullRequestMerged,
+			[]record.ClassifiedPush{deletion, push}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pr := record.PullRequest{Issue: "LEGION-208", Number: 42, HeadSHA: head, State: tc.state,
-				Pushes: []record.ClassifiedPush{tc.push}}
+			pr := record.PullRequest{Issue: "LEGION-208", Number: 42, HeadSHA: head, State: tc.state, Pushes: tc.pushes}
 			if got := CodeOnItsWay(pr); got != tc.onItsWay {
 				t.Fatalf("CodeOnItsWay = %v, want %v", got, tc.onItsWay)
 			}

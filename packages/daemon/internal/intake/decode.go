@@ -759,16 +759,13 @@ func decodeReview(repository ghrepo.Repository, raw map[string]json.RawMessage) 
 // A push to anything but a branch - a tag - is no fact, and neither is one that names no branch or
 // no commit it left.
 //
-// A push to an issue's branch whose after is NoCommit is no fact either. It is GitHub deleting the
-// branch, which a repository that deletes a merged pull request's branch (delete_branch_on_merge)
-// does right after every merge. The deletion names no head, so no head ever arrives for it.
-// Recorded as a push from the head while the record still holds the pull request open (the
-// deletion delivered before the merge), it would be a push on its way from that head
-// (classify.CodeOnItsWay), and an approval of that head would not stand until the merge is
-// recorded. Once the merge is recorded, no push takes back the approval of the head the pull
-// request merged at. A push to a base with that after is still a BasePush: the commit it records
-// (record.PullRequest.BaseMoved) is only a mark that the merge state on record may be stale. It is
-// compared for equality and cleared by the next read, and nothing reads it as a commit.
+// A push to an issue's branch whose after is record.NoCommit is no fact either. It is GitHub
+// deleting the branch, which a repository that deletes a merged pull request's branch
+// (delete_branch_on_merge) does right after every merge. The deletion names no head, so it is no
+// Push. Workflow's push refuses a deletion from any other source too, and says why. A push to a
+// base with that after is still a BasePush: the commit it records (record.PullRequest.BaseMoved) is
+// only a mark that the merge state on record may be stale. It is compared for equality and cleared
+// by the next read, and nothing reads it as a commit.
 func decodePush(repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
 	ref, _ := rawString(raw, "ref")
 	branch, isHead := strings.CutPrefix(ref, "refs/heads/")
@@ -782,7 +779,7 @@ func decodePush(repository ghrepo.Repository, raw map[string]json.RawMessage) (F
 	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch {
 		return BasePush{Repo: repository.String(), Branch: branch, After: after}, nil
 	}
-	if after == NoCommit {
+	if after == record.NoCommit {
 		return nil, nil
 	}
 	pusher, _ := rawString(raw, "pusher")

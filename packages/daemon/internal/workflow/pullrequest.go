@@ -273,20 +273,16 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 }
 
 // push records a push to the pull request's branch (classify.ApplyPushDropping) and re-asks the
-// review round (reaskRound). A push whose After is intake.NoCommit is GitHub's deletion of the
-// branch, and it records nothing. The deletion names no head. Recorded as a push from the head
-// while the record still holds the pull request open (the deletion delivered before the merge), it
-// would be a push on its way from that head (classify.CodeOnItsWay), and an approval of that head
-// would not stand until the merge is recorded. intake's decodePush makes no fact of a deletion;
-// this test holds for a Push from any other source too. A push to the branch of a pull request
-// recorded merged is recorded too, and it takes back no approval: a merged pull request has no
-// code on its way.
+// review round (reaskRound). It records nothing for a push whose After is record.NoCommit, which is
+// GitHub's deletion of the branch, and nothing for a push to a pull request recorded merged, as the
+// synchronize handler drops one; classify.CodeOnItsWay says why. intake's decodePush makes no fact
+// of a deletion; this test holds for a Push from any other source too.
 func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.Result, error) {
-	if fact.After == intake.NoCommit {
+	if fact.After == record.NoCommit {
 		return intake.Result{}, nil
 	}
 	pr, err := e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
-	if err != nil || pr == nil {
+	if err != nil || pr == nil || pr.State == record.PullRequestMerged {
 		return intake.Result{}, err
 	}
 	prior := *pr
@@ -352,7 +348,9 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // It records the head the merge names, as a close does (closed). A synchronize or a push of that
 // head can be lost or wait behind a backlog, and after the merge nothing else moves the record's
 // head: the synchronize handler drops a merged record, and the daemon's reads follow only an open
-// pull request's head (daemon's followHead). A merge that names no head leaves the recorded one.
+// pull request's head (daemon's followHead). It then drops the pushes the record holds, since the
+// head the merge names is final and no push from it is code on its way (classify.CodeOnItsWay). A
+// merge that names no head leaves the recorded head and its pushes.
 //
 // In reviewing, after the architect's notice, the merge settles the review round (settleRound):
 // an approval that stands on the head the pull request merged at ends the round and moves the
@@ -368,8 +366,11 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 		return intake.Result{}, err
 	}
 	prior := *pr
-	if fact.HeadSHA != "" && fact.HeadSHA != pr.HeadSHA {
-		*pr = classify.AdvancePullRequestHead(*pr, classify.Arrival{}, fact.HeadSHA)
+	if fact.HeadSHA != "" {
+		if fact.HeadSHA != pr.HeadSHA {
+			*pr = classify.AdvancePullRequestHead(*pr, classify.Arrival{}, fact.HeadSHA)
+		}
+		pr.Pushes = nil
 	}
 	pr.State, pr.MergeSHA = record.PullRequestMerged, fact.MergeSHA
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil {

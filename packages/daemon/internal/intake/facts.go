@@ -822,16 +822,12 @@ type PullRequestMissing struct {
 
 func (PullRequestMissing) isFact() {}
 
-// NoCommit is the commit GitHub names for a ref that does not exist: a push webhook's `after`
-// when the push deleted the branch, and its `before` when the push created it.
-const NoCommit = "0000000000000000000000000000000000000000"
-
 // Push records a branch push.
 type Push struct {
 	Repo   string
 	Branch string
 	// Before is the head the push replaced, After the head it left. A push that deleted the branch
-	// leaves no head: its After is NoCommit, which decodePush makes no fact.
+	// leaves no head: its After is record.NoCommit, which decodePush makes no fact.
 	Before string
 	After  string
 	// Pusher is the push's pusher login (the listener's `pusher`, GitHub's pusher.name).

@@ -1216,8 +1216,9 @@ func TestConsumeAppliesAPushToAnIssuesBranchAndToABase(t *testing.T) {
 // Push the workflow applies to the pull request it records there; a push to a branch of any other
 // shape decodes to the BasePush that says a pull request's base may have moved, since that is the
 // shape of a branch pull requests sit on. A push to a ref that is no branch at all decodes to
-// neither. GitHub's deletion of an issue's branch, a push whose after is NoCommit, names no head
-// and decodes to no fact; the deletion of a base is still the BasePush that says the base moved.
+// neither. GitHub's deletion of an issue's branch, a push whose after is record.NoCommit, names no
+// head and decodes to no fact; the deletion of a base is still the BasePush that says the base
+// moved.
 func TestDecodeAPushIsAPushOnAnIssuesBranchAndABasePushOnAnyOther(t *testing.T) {
 	captured := capturedGitHubEnvelope(t, "push.json")
 	for _, tc := range []struct {
@@ -1238,8 +1239,8 @@ func TestDecodeAPushIsAPushOnAnIssuesBranchAndABasePushOnAnyOther(t *testing.T) 
 		{ref: "refs/heads/bot/LEGION-208", base: "bot/LEGION-208"},
 		{ref: "refs/tags/legion/LEGION-208"},
 		{ref: "refs/heads/"},
-		{ref: "refs/heads/legion/LEGION-208", after: NoCommit},
-		{ref: "refs/heads/main", after: NoCommit, base: "main"},
+		{ref: "refs/heads/legion/LEGION-208", after: record.NoCommit},
+		{ref: "refs/heads/main", after: record.NoCommit, base: "main"},
 	} {
 		t.Run(strings.TrimSpace(tc.ref+" "+tc.after), func(t *testing.T) {
 			data := bytes.ReplaceAll(captured, []byte("refs/heads/legion/LEGION-208"), []byte(tc.ref))

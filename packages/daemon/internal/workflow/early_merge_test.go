@@ -63,17 +63,18 @@ func TestAPullRequestFinishingOutsideMergingTellsTheArchitectOnce(t *testing.T) 
 //
 // Each of those rows also carries GitHub's deletion of the merged branch, which a repository that
 // deletes a merged pull request's branch sends as a push from the head to no commit
-// (intake.NoCommit). The deletion names no head, so it takes no approval back, whether it arrives
+// (record.NoCommit). The deletion names no head, so it takes no approval back, whether it arrives
 // after the merge, before the approval, or while the pull request is still open.
 //
-// A push the record holds from the head the pull request merged at takes no approval back either:
-// the head a merge recorded is final, so a merged pull request has no code on its way
-// (classify.CodeOnItsWay). The record holds such a push in three ways: the deletion a release
-// before the deletion guard stored as a push, a push to a branch kept after the merge, and a push
-// made after the merge but delivered before it. In each of them the approval of the head ends the
-// round. On a merged record that holds such a push, an approval of another head is set aside: once
-// its reviewer has completed, the round is stuck on other code, and the architect is told once, by
-// the completion.
+// The record can hold a push from the head too, and what that push does to the approval is
+// classify.CodeOnItsWay's rule. The deletion a release before the deletion guard stored as a push
+// takes no approval back. A push delivered before a merge that names its head takes none back
+// either: the merge drops the pushes the record holds. A push to the branch after the merge is not
+// recorded. On a merged record that holds the stored deletion, an approval of another head is set
+// aside: once its reviewer has completed, the round is stuck on other code, and the architect is
+// told once, by the completion. A merged record at a head its merge did not name, holding a push
+// from that head, keeps the round open and tells no one: a merge the release before recorded, or a
+// merge that names no head, leaves that push on its way.
 //
 // A merge at a head the record does not hold ends no round: GitHub merged a head whose
 // synchronize and push the record has not applied, and the reviewer approved the head before it.
@@ -93,14 +94,17 @@ func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testin
 		HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)}
 	merge := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge", HeadSHA: headOne}
 	mergeOfAnotherHead := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge", HeadSHA: headTwo}
-	deletion := intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: intake.NoCommit, Pusher: "author", Sender: "author"}
-	// pushFromHead is a push from the head the merge names, to the branch the merge left in place.
+	mergeNamingNoHead := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"}
+	deletion := intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: record.NoCommit, Pusher: "author", Sender: "author"}
+	// pushFromHead is a push from headOne to headTwo, to a branch kept in place.
 	pushFromHead := intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: headTwo, Pusher: "author", Sender: "author"}
+	// heldPush is pushFromHead as the push handler records it (classify.ApplyPushDropping): by its
+	// sender, and not the review App's, since the pusher is the author.
+	heldPush := []record.ClassifiedPush{{SHA: headTwo, Before: headOne, Sender: "author"}}
 	// storedDeletion is the deletion of the branch from head as the push handler stored it before
-	// the deletion guard: a push like any other (classify.ApplyPushDropping), from the head to no
-	// commit, by its sender, and not the review App's, since the pusher is the author.
+	// the deletion guard: a push like any other, from the head to no commit.
 	storedDeletion := func(head string) []record.ClassifiedPush {
-		return []record.ClassifiedPush{{SHA: intake.NoCommit, Before: head, Sender: "author"}}
+		return []record.ClassifiedPush{{SHA: record.NoCommit, Before: head, Sender: "author"}}
 	}
 	closeUnmerged := intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 42, HeadSHA: headOne}
 	completion := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim",
@@ -117,6 +121,8 @@ func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testin
 		facts    []intake.Fact
 		want     phase.Phase
 		notices  []record.NoticeKind
+		// held is the pushes the record ends holding, none where it is empty.
+		held []record.ClassifiedPush
 		// head is the head the record ends at, and stuckBy the summary of its one review-stuck
 		// notice; each is checked only where it is set.
 		head, stuckBy string
@@ -135,7 +141,7 @@ func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testin
 			want: phase.Reviewing, notices: []record.NoticeKind{"pr-merged", "review-stuck"}, head: headTwo, stuckBy: byMerge},
 		{name: "a merged record holding the deletion push stored before the guard", state: record.PullRequestMerged, mergeState: record.MergeStateBlocked,
 			pushes: storedDeletion(headOne), reviewer: reviewer, facts: []intake.Fact{approval},
-			want: phase.Accepting, notices: []record.NoticeKind{"phase-finished"}, head: headOne},
+			want: phase.Accepting, notices: []record.NoticeKind{"phase-finished"}, held: storedDeletion(headOne), head: headOne},
 		{name: "a push from the merged head delivered before the merge", state: record.PullRequestOpen, mergeState: record.MergeStateBlocked,
 			reviewer: reviewer, facts: []intake.Fact{approval, pushFromHead, merge},
 			want: phase.Accepting, notices: []record.NoticeKind{"pr-merged", "phase-finished"}, head: headOne},
@@ -144,7 +150,13 @@ func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testin
 			want: phase.Accepting, notices: []record.NoticeKind{"phase-finished"}, head: headOne},
 		{name: "an approval of another head on a merged record that holds a push", state: record.PullRequestMerged, mergeState: record.MergeStateBlocked,
 			at: headTwo, pushes: storedDeletion(headTwo), reviewer: approved, facts: []intake.Fact{completion},
-			want: phase.Reviewing, notices: []record.NoticeKind{"review-stuck"}, head: headTwo, stuckBy: byCompletion},
+			want: phase.Reviewing, notices: []record.NoticeKind{"review-stuck"}, held: storedDeletion(headTwo), head: headTwo, stuckBy: byCompletion},
+		{name: "a merged record at a head its merge did not name, holding a push from it", state: record.PullRequestMerged, mergeState: record.MergeStateBlocked,
+			pushes: heldPush, reviewer: reviewer, facts: []intake.Fact{approval},
+			want: phase.Reviewing, notices: []record.NoticeKind{}, held: heldPush, head: headOne},
+		{name: "a push from the head, then a merge that names no head", state: record.PullRequestOpen, mergeState: record.MergeStateBlocked,
+			reviewer: reviewer, facts: []intake.Fact{approval, pushFromHead, mergeNamingNoHead},
+			want: phase.Reviewing, notices: []record.NoticeKind{"pr-merged"}, held: heldPush, head: headOne},
 		{name: "a close without merging after the approval", state: record.PullRequestOpen, mergeState: record.MergeStateClean,
 			reviewer: approved, facts: []intake.Fact{closeUnmerged, completion},
 			want: phase.Reviewing, notices: []record.NoticeKind{"pr-closed-unmerged"}},
@@ -180,8 +192,12 @@ func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testin
 			if got := noticeKinds(t, pool, "LEGION-208"); !slices.Equal(got, tc.notices) {
 				t.Fatalf("notices %v, want %v", got, tc.notices)
 			}
-			if got := recordedPR(t, pool, "LEGION-208"); tc.head != "" && got.HeadSHA != tc.head {
+			got := recordedPR(t, pool, "LEGION-208")
+			if tc.head != "" && got.HeadSHA != tc.head {
 				t.Fatalf("the record ends at head %s, want %s", got.HeadSHA, tc.head)
+			}
+			if !slices.Equal(got.Pushes, tc.held) {
+				t.Fatalf("the record ends holding pushes %+v, want %+v", got.Pushes, tc.held)
 			}
 			if got := reviewStuckNotices(t, pool); tc.stuckBy != "" && (len(got) != 1 || got[0].Summary != tc.stuckBy) {
 				t.Fatalf("review-stuck notices %+v, want one written by %q", got, tc.stuckBy)
