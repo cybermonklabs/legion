@@ -481,9 +481,9 @@ func writeStoreError(ctx context.Context, w http.ResponseWriter, err error, stat
 }
 
 // validateMessageBody refuses a body no envelope may be built from, naming the refusal and the
-// field it is about, and returns the body's parsed expects_reply so messageEnvelope takes the
-// value this parse already read instead of parsing the same bytes again. A refused body returns
-// the unset value, which no caller reads.
+// field it is about, and returns the body's parsed expects_reply so the envelope's message
+// (messageBody.message) takes the value this parse already read instead of parsing the same bytes
+// again. A refused body returns the unset value, which no caller reads.
 func validateMessageBody(body messageBody) (string, string, contracts.ExpectsReply) {
 	for _, field := range []struct {
 		name  string
@@ -515,34 +515,20 @@ func optionalString(value *string) string {
 	return *value
 }
 
-func messageEnvelope(body messageBody, topic, dedupeKey string, expectsReply contracts.ExpectsReply) contracts.Envelope {
-	summary := contracts.OneLineSummary(body.Message)
-	payload := ""
-	if body.Payload != nil {
-		payload = *body.Payload
-	} else if body.Message != summary {
-		payload = body.Message
-	}
-	source := body.Source
-	if source == "" {
-		source = "agent"
-	}
-	return contracts.Envelope{
-		EventID:        id.New(),
-		Source:         source,
-		SourceSession:  body.SourceSession,
-		SourceEventID:  id.New(),
-		Topic:          topic,
-		DedupeKey:      dedupeKey,
-		IssuedAt:       contracts.NowMillis(),
-		ExpiresAt:      body.ExpiresAt,
-		PayloadSummary: summary,
-		Payload:        payload,
-		TraceID:        id.New(),
-		InReplyTo:      optionalString(body.InReplyTo),
-		Supersedes:     optionalString(body.Supersedes),
-		Urgency:        optionalString(body.Urgency),
-		ExpectsReply:   expectsReply,
+// message is what the request's sender wrote, as the envelope builders take it
+// (contracts.MessageEnvelope, contracts.AgentSendEnvelope), its expects_reply the value
+// validateMessageBody parsed from the same bytes.
+func (body messageBody) message(expectsReply contracts.ExpectsReply) contracts.Message {
+	return contracts.Message{
+		Source:        body.Source,
+		SourceSession: body.SourceSession,
+		Text:          body.Message,
+		Payload:       body.Payload,
+		InReplyTo:     optionalString(body.InReplyTo),
+		Supersedes:    optionalString(body.Supersedes),
+		Urgency:       optionalString(body.Urgency),
+		ExpectsReply:  expectsReply,
+		ExpiresAt:     body.ExpiresAt,
 	}
 }
 
@@ -768,12 +754,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, message, field)
 			return
 		}
-		idempotencyKey := body.IdempotencyKey
-		if idempotencyKey == "" {
-			idempotencyKey = id.New()
-		}
-		dedupeKey := contracts.AgentSendDedupeKey(targetSession, idempotencyKey)
-		item := messageEnvelope(body, contracts.AgentSubject(targetSession), dedupeKey, bodyExpectsReply)
+		item := contracts.AgentSendEnvelope(targetSession, body.IdempotencyKey, body.message(bodyExpectsReply))
 		record.item = &item
 		if err := item.Validate(); err != nil {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error())
@@ -1093,7 +1074,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		case request.IdempotencyKey != "":
 			dedupeKey = "publish." + request.IdempotencyKey
 		}
-		item := messageEnvelope(request.messageBody, request.Topic, dedupeKey, bodyExpectsReply)
+		item := contracts.MessageEnvelope(request.message(bodyExpectsReply), request.Topic, dedupeKey)
 		record.item = &item
 		if err := item.Validate(); err != nil {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error())

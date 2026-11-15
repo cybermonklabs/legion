@@ -4261,7 +4261,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   the field is omitted (read as false) otherwise, which is also what an older listener answers.
   It means "the stream already held this MsgId", which includes the publish path's own reconnect retry whose first attempt landed and lost its acknowledgement.
   A message NATS cannot take whole is a 413 naming its size against the server's max payload, and a topic NATS does not accept (one holding whitespace or an empty token) a 400.
-  The route takes the caller's `source` and idempotency key as given (`messageEnvelope`), so any caller can send a `source: "dispatch"` frame under the key a Dispatch send will use, which a core-NATS host then drops as a repeat when the real send or its Retry arrives.
+  The route takes the caller's `source` and idempotency key as given (`contracts.AgentSendEnvelope`), so any caller can send a `source: "dispatch"` frame under the key a Dispatch send will use, which a core-NATS host then drops as a repeat when the real send or its Retry arrives.
   That key is not secret: a comment mention's is `<comment id>:<target>:<the mention's mode>` (`model.CommentMentionIdempotencyKey`), and the comment id rides the `comment.created` envelope on the issue's owner topic.
   It is accepted because every caller `apiAuth` admits (the shared bearer, or any service-account token the verifier accepts, whose claims it does not read) can already send any `source: "dispatch"` frame, with any content, to any live session;
   suppressing one Retry is a subset of that, and a Dispatch-only credential is the fix for the whole class.

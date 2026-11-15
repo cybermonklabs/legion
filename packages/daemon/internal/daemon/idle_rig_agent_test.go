@@ -358,7 +358,7 @@ type idleRigEnvelope struct {
 }
 
 // text is the message a sender sent: its payload, which the listener fills only for a message
-// longer than the one-line summary it also carries (cmd/listener's messageEnvelope).
+// longer than the one-line summary it also carries (envoy's contracts.MessageEnvelope).
 func (e idleRigEnvelope) text() string {
 	if e.Payload != "" {
 		return e.Payload
