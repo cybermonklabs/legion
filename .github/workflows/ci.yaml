@@ -4079,7 +4079,15 @@ jobs:
       - name: Test the Go daemon
         run: |
           set -o pipefail
-          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher)$' | xargs go test -count=1 -timeout 15m
+          mkdir -p "$RUNNER_TEMP/go-test-json"
+          s=0
+          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher)$' | xargs go test -json -count=1 -timeout 15m > "$RUNNER_TEMP/go-test-json/daemon.json" || s=$?
+          if [ "$s" -eq 0 ]; then
+            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/daemon.json"
+          else
+            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/daemon.json"
+          fi
+          exit $s
         working-directory: packages/daemon
 
       # The outbox's lane registry, lease renewal and held clock are the daemon's first goroutines
@@ -4100,8 +4108,22 @@ jobs:
       # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
       # slowest run.
       - name: Test the concurrent packages under the race detector
-        run: go test -count=1 -race -timeout 30m ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
+        run: |
+          s=0
+          go test -json -count=1 -race -timeout 30m ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ > "$RUNNER_TEMP/go-test-json/daemon-race.json" || s=$?
+          if [ "$s" -eq 0 ]; then
+            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/daemon-race.json"
+          else
+            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/daemon-race.json"
+          fi
+          exit $s
         working-directory: packages/daemon
+      - name: Upload the go test -json stream
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-test-json-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-test-json/
 
       - name: Stage 1 live proof
         run: bash scripts/e2e/stage1-skeleton.sh
