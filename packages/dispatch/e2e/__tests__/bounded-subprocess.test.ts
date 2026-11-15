@@ -326,3 +326,29 @@ test("a child's name hides each password libpq reads and keeps the rest", () => 
       "this process's environment",
   });
 });
+
+test("a child's name hides the sslpassword libpq reads, as it hides password", () => {
+  // `sslpassword` is the libpq connection parameter that holds the password of the client's SSL
+  // key, in the keyword form and as a URL query parameter alike, and libpq reads it beside
+  // `password`. `packages/envoy/loadtest/guard.go` counts it as a secret beside `password` too.
+  // Every password here is made up.
+  const forms: Record<string, readonly [text: string, shown: string]> = {
+    "the sslpassword keyword": [
+      "host=127.0.0.1 sslpassword=sekrit dbname=mine",
+      "host=127.0.0.1 sslpassword=*** dbname=mine",
+    ],
+    "an sslpassword query parameter": [
+      "postgres://127.0.0.1:5433/?sslpassword=sekrit&dbname=mine",
+      "postgres://127.0.0.1:5433/?sslpassword=***&dbname=mine",
+    ],
+    "keys that are not sslpassword": [
+      "host=127.0.0.1 sslmode=require sslpasswords=x mysslpassword=x dbname=mine",
+      "host=127.0.0.1 sslmode=require sslpasswords=x mysslpassword=x dbname=mine",
+    ],
+  };
+  expect(
+    Object.fromEntries(Object.entries(forms).map(([form, [text]]) => [form, masked(text)])),
+    "A child's name, which the cost line and a failure print on the run's stderr, still holds " +
+      "the sslpassword of the form named, or hides a key that is no password."
+  ).toEqual(Object.fromEntries(Object.entries(forms).map(([form, [, shown]]) => [form, shown])));
+});
