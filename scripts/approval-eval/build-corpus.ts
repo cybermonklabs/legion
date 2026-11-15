@@ -523,6 +523,13 @@ async function build(flags: Flags): Promise<number> {
     console.error(`no case: ${flags.person} answered no ask through event ${through}`);
     return 1;
   }
+  if (reserve.leftOut && reserve.cases === seeded.length) {
+    console.error(
+      `no case written: the reserve holds all ${seeded.length} cases of ${flags.person} through ` +
+        `event ${through}, so corpus.jsonl is empty`
+    );
+    return 1;
+  }
   return 0;
 }
 
