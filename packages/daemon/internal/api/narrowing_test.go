@@ -288,11 +288,14 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// Every narrowing says what it dropped, not only the mark's own: a caller below every row of
 	// stateNarrowings is served one line per row, each naming its own keys, and one more for the
 	// value strip that took the retired entries out of its body; and a caller at
-	// quietTimeContract is served the line of the value strip of waitingOnIssueContract, the one
-	// strip the first caller's body no longer reaches, since a band below it has taken `kind`
-	// already. Between them every row and both strips write their line, and no request writes
-	// one twice. One line for all of them, or a line that named the contract and nothing else,
-	// would leave a reader of the log to find out elsewhere what left the body.
+	// quietTimeContract is served the line of every row above it and the line of the value strip
+	// of waitingOnIssueContract, the one strip the first caller's body no longer reaches, since a
+	// band below it has taken `kind` already. One line for all of them, or a line that named the
+	// contract and nothing else, would leave a reader of the log to find out elsewhere what left
+	// the body. Three checks share the work. The table check guards the table: no two rows of
+	// stateNarrowings name the same keys, whichever callers would see them, so a line names one
+	// row. The per-caller check guards what one caller is told: no line twice. The last two loops
+	// guard the sample: between the two callers every row and both strips write their line.
 	//
 	// A value strip's line names the lowest contract the pod records, which is restore for this
 	// caller, where a band's line names the highest; the clause under `follows` is what tells an
@@ -301,6 +304,14 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		if want := narrowingsExpected(narrowingState(t), supervise.PodUpdateContract-1); len(want) != len(stateNarrowings)+1 {
 			t.Fatalf("a caller below every row expects %d lines, want the %d rows and the retired entries' own: %v",
 				len(want), len(stateNarrowings), want)
+		}
+		namedBy := map[string]int{}
+		for _, narrowing := range stateNarrowings {
+			if contract, named := namedBy[narrowing.dropped]; named {
+				t.Errorf("the rows of contracts %d and %d both drop %q: each row names its own keys",
+					contract, narrowing.contract, narrowing.dropped)
+			}
+			namedBy[narrowing.dropped] = narrowing.contract
 		}
 		told := map[string]bool{}
 		for _, contract := range []int{supervise.PodUpdateContract - 1, quietTimeContract} {

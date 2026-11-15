@@ -492,6 +492,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: heldContract, state: withoutHeld, dropped: "admission.held"},
 	{contract: quietTimeContract, issue: withoutQuietTime, dropped: "the issues' treeMovedAt and quietHours"},
 	{contract: podUpdateGraceContract, state: withoutPodUpdateGrace, dropped: "settings.pod_update_grace_minutes"},
+	{contract: mergeWaitContract, issue: withoutMergeWait, dropped: "the issues' mergeWait"},
 	{contract: shapedAnswersContract, state: withoutLowestPluginContract, issue: withoutClaimRoundReport,
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 }
@@ -797,6 +798,19 @@ const podUpdateGraceContract = 123
 // that constant, and the contract the word arrived at stays where it is.
 const waitingOnIssueContract = 132
 
+// mergeWaitContract is the daemon contract that added `mergeWait`, what a reviewing issue's
+// round waits on from GitHub (version.go's 133). A plugin below it is served every issue without
+// the object (withoutMergeWait): one built before sjawhar/legion#2788 reads the state with a
+// strict schema and would refuse the whole body for a key it does not name, and one built after
+// strips the key instead, so the strip is what keeps the object from a caller that did not ask
+// for it rather than what keeps such a caller reading at all. The object's `mergeState` and
+// `toldState` are enumerated (answers.go's mergeWaitStates), and their words arrived with the
+// key at this contract, so no value strip is needed.
+//
+// It is a literal of its own and never shapedAnswersContract: a renumber of this change moves
+// that constant, and the contract the object arrived at stays where it is.
+const mergeWaitContract = 133
+
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
 // deployment that gates no step carries an empty list of it (GatedStepViewsOf), which the wire
@@ -821,6 +835,14 @@ func withoutPhaseEntries(issue Issue) (Issue, bool) {
 func withoutQuietTime(issue Issue) (Issue, bool) {
 	moved := issue.TreeMovedAt != nil || issue.QuietHours != nil
 	issue.TreeMovedAt, issue.QuietHours = nil, nil
+	return issue, moved
+}
+
+// withoutMergeWait is the issue with no `mergeWait`, the object mergeWaitContract added to the
+// state; nothing else of that contract is on the route.
+func withoutMergeWait(issue Issue) (Issue, bool) {
+	moved := issue.MergeWait != nil
+	issue.MergeWait = nil
 	return issue, moved
 }
 

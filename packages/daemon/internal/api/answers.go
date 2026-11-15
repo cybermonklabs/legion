@@ -42,7 +42,7 @@ const ServingFloor = 46
 // The last is the constant rather than its number, because this change's own entry is the last
 // one: a renumber of this change moves shapedAnswersContract and this list with it, and moving
 // one of the two alone would describe a shape at a contract no entry declares.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, shapedAnswersContract}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, shapedAnswersContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -252,6 +252,13 @@ var stateEnumeratedFields = []EnumeratedField{
 	// below that contract with the rest of that contract's keys (shaping.go's
 	// withoutStateMachineFields), so no body below 86 carries a value of it.
 	{Answer: AnswerState, KeyPath: "issues.*.pullRequest.mergeState", Values: mergeStates},
+	// `mergeState` and `toldState` of what the issue's review round waits on from GitHub
+	// (api.MergeWaitView): the merge state the record holds for the head the round waits on,
+	// and the state the reviewer's decision last records as told. Both take GitHub's merge
+	// states, arrived with `mergeWait` and are served down below that contract with the whole
+	// object (shaping.go's withoutMergeWait), so no body below 133 carries a value of either.
+	{Answer: AnswerState, KeyPath: "issues.*.mergeWait.mergeState", Values: mergeWaitStates},
+	{Answer: AnswerState, KeyPath: "issues.*.mergeWait.toldState", Values: mergeWaitStates},
 	// `step` and `status` of one row of the deployment's design gate as the issue stands in it
 	// (api.GatedStepView, record.DesignStep). Both arrived with `gatedSteps`, which is served
 	// down below that contract whole (shaping.go's withoutGatedSteps).
@@ -481,6 +488,14 @@ var pullRequestStates = valuesFrom(ServingFloor,
 // the pull request without the key at all (shaping.go's withoutStateMachineFields).
 // record.MergeStateUnread is no value of the field: it is the empty state the view leaves off.
 var mergeStates = valuesFrom(stateMachineContract,
+	record.MergeStateClean, record.MergeStateUnstable, record.MergeStateHasHooks,
+	record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft,
+	record.MergeStateUnknown)
+
+// mergeWaitStates is the same eight words at the contract `mergeWait` arrived at, which the
+// object's `mergeState` and `toldState` share: no `mergeWait` is served below that contract at
+// all (shaping.go's withoutMergeWait).
+var mergeWaitStates = valuesFrom(mergeWaitContract,
 	record.MergeStateClean, record.MergeStateUnstable, record.MergeStateHasHooks,
 	record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft,
 	record.MergeStateUnknown)

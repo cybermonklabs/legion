@@ -1731,6 +1731,112 @@ func TestPlainStateSummarizesTheOpenProductionChecks(t *testing.T) {
 	}
 }
 
+// Plain `legion state` names the oldest head's merge wait by what its record holds:
+//   - a merge state and a read time -> `GitHub said <state>, read <time>`
+//   - a merge state and no read time -> `GitHub said <state>, read time not recorded`
+//   - a read time and no merge state -> `read <time> with no merge state`
+//   - no merge state and no read time -> `no read recorded for this head`
+func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	// Two waits holding a merge state and a read time: LEGION-208's `headUpdatedAt` is the day
+	// before and its read an hour ago, LEGION-209's head time this morning and its read a minute
+	// ago, so the older head is the one named although its read is the older too.
+	oldest := `"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"reviewing","status":"needs_review",` +
+		`"pullRequest":{"repo":"acme/widgets","number":1301,"head":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","state":"open","mergeState":"blocked","reviewDecision":"approved"},` +
+		`"mergeWait":{"waitsOn":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","mergeState":"blocked","stateReadAt":"2026-10-19T09:00:00Z",` +
+		`"headUpdatedAt":"2026-10-18T14:00:00Z","checkRuns":2,"toldHead":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","toldState":"blocked"}}`
+	newer := `"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"reviewing","status":"needs_review",` +
+		`"pullRequest":{"repo":"acme/widgets","number":1302,"head":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","state":"open","reviewDecision":"approved"},` +
+		`"mergeWait":{"waitsOn":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","mergeState":"behind","stateReadAt":"2026-10-19T09:59:00Z",` +
+		`"headUpdatedAt":"2026-10-19T08:00:00Z","checkRuns":4}}`
+	// A wait holding no merge state, no read time and no `headUpdatedAt`, which sorts it behind
+	// every wait that holds one.
+	noStateNoStamp := `"LEGION-210":{"key":"LEGION-210","generation":1,"phase":"reviewing","status":"needs_review",` +
+		`"pullRequest":{"repo":"zeta/tools","number":642,"head":"c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2","state":"open","reviewDecision":"approved"},` +
+		`"mergeWait":{"waitsOn":"c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2","checkRuns":0}}`
+	// The same, on a second issue: with neither wait holding a head time the issue key decides,
+	// so LEGION-210 is named over LEGION-211.
+	alsoNoStateNoStamp := `"LEGION-211":{"key":"LEGION-211","generation":1,"phase":"reviewing","status":"needs_review",` +
+		`"pullRequest":{"repo":"zeta/tools","number":643,"head":"d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3","state":"open","reviewDecision":"approved"},` +
+		`"mergeWait":{"waitsOn":"d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3","checkRuns":0}}`
+	// A wait holding `blocked` and no read time, whose `headUpdatedAt` stands before LEGION-208's,
+	// so it is the oldest head.
+	stateNoStamp := `"LEGION-212":{"key":"LEGION-212","generation":1,"phase":"reviewing","status":"needs_review",` +
+		`"pullRequest":{"repo":"zeta/tools","number":644,"head":"e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4","state":"open","mergeState":"blocked","reviewDecision":"approved"},` +
+		`"mergeWait":{"waitsOn":"e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4","mergeState":"blocked",` +
+		`"headUpdatedAt":"2026-10-17T10:00:00Z","checkRuns":1}}`
+	// A wait holding a read time and no merge state, whose `headUpdatedAt` stands before
+	// LEGION-208's, so it is the oldest head.
+	stampNoState := `"LEGION-214":{"key":"LEGION-214","generation":1,"phase":"reviewing","status":"needs_review",` +
+		`"pullRequest":{"repo":"zeta/tools","number":646,"head":"a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6","state":"open","reviewDecision":"approved"},` +
+		`"mergeWait":{"waitsOn":"a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6","stateReadAt":"2026-10-19T09:30:00Z",` +
+		`"headUpdatedAt":"2026-10-18T12:00:00Z","checkRuns":1}}`
+	// An issue whose record holds no `mergeWait`.
+	working := `"LEGION-207":{"key":"LEGION-207","generation":1,"phase":"implementing","status":"in_progress"}`
+	for _, tc := range []struct {
+		name, issues, want string
+	}{
+		{
+			name:   "two waiting, the oldest head not the first listed",
+			issues: `{` + newer + `,` + working + `,` + oldest + `}`,
+			want:   "merge waits: 2; the oldest head, LEGION-208 #1301, head a1b2c3d, GitHub said blocked, read 2026-10-19T09:00:00Z\n",
+		},
+		{
+			name:   "one waiting with a merge state and a read time names the state and the read",
+			issues: `{` + working + `,` + newer + `}`,
+			want:   "merge waits: 1; the oldest head, LEGION-209 #1302, head b2c3d4e, GitHub said behind, read 2026-10-19T09:59:00Z\n",
+		},
+		{
+			name:   "a wait with no head time sorts behind one that has one",
+			issues: `{` + noStateNoStamp + `,` + oldest + `}`,
+			want:   "merge waits: 2; the oldest head, LEGION-208 #1301, head a1b2c3d, GitHub said blocked, read 2026-10-19T09:00:00Z\n",
+		},
+		{
+			name:   "one waiting with no merge state and no read time says no read is recorded for its head",
+			issues: `{` + noStateNoStamp + `}`,
+			want:   "merge waits: 1; the oldest head, LEGION-210 #642, head c3d4e5f, no read recorded for this head\n",
+		},
+		{
+			name:   "no wait holds a head time, so the issue key decides",
+			issues: `{` + alsoNoStateNoStamp + `,` + noStateNoStamp + `}`,
+			want:   "merge waits: 2; the oldest head, LEGION-210 #642, head c3d4e5f, no read recorded for this head\n",
+		},
+		{
+			name:   "a merge state with no read time says the read time is not recorded",
+			issues: `{` + oldest + `,` + stateNoStamp + `,` + noStateNoStamp + `}`,
+			want:   "merge waits: 3; the oldest head, LEGION-212 #644, head e5f6a7b, GitHub said blocked, read time not recorded\n",
+		},
+		{
+			name:   "a read time with no merge state names the read and says it carried no merge state",
+			issues: `{` + oldest + `,` + stampNoState + `}`,
+			want:   "merge waits: 2; the oldest head, LEGION-214 #646, head a7b8c9d, read 2026-10-19T09:30:00Z with no merge state\n",
+		},
+		{name: "none waiting", issues: `{` + working + `}`, want: "merge waits: none\n"},
+		{name: "no issues", issues: `{}`, want: "merge waits: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"issues":` + tc.issues + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
 // An operator reading plain `legion state` is told which roots gave their slot up to wait on a
 // person, how many of them a person answered and the daemon's own published waiting line still
 // names, and each by key with what it waits on: an unanswered one is
