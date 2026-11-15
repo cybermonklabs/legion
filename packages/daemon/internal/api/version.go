@@ -1725,7 +1725,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
 //
-// 141: INFRA-2543 -- the GitHub App installation, and no longer the project's Dispatch repository
+// 143: INFRA-2543 -- the GitHub App installation, and no longer the project's Dispatch repository
 // mapping, decides which repositories a project works in, so the `repositories` block of
 // `GET /legion/v1/state` stops being that mapping. `mapped` is every repository the daemon
 // serves, the ones the mapping names and the ones the project's own records name, and each entry
@@ -1798,11 +1798,12 @@ package api
 // and 135 (#3659), with nothing above, so 136 is the lowest number above 132 that no open head
 // declares. Read main's own number and every open pull request's again at the next forward
 // merge rather than from this line.)
-// (The forward merge of 2026-11-15 that brought main in at 133 takes this entry to 141: a census
+// (The forward merge of 2026-11-15 that brought main in at 133 takes this entry to 143. A census
 // of const DaemonAPIVersion at refs/pull/<n>/head over every open pull request of this
-// repository, taken at 2026-11-15T05:33:22Z, reads above main's 133: 134 (#4021), 135 (#3659),
-// 136 (#3575, which took this entry's own earlier number, and this head), 137 (#4046), 138
-// (#3712, #4017), 139 (#2731, #3993) and 140 (#3519), with nothing above, so 141 is the lowest
-// number above main's that no open head declares. Read main's own number and every open pull
-// request's again at the next forward merge rather than from this line.)
-const DaemonAPIVersion = 141
+// repository, taken at the push at 2026-11-15T08:52:37Z, reads above main's 133: 134 (#4021),
+// 135 (#3659), 136 (#4065), 137 (#4046), 138 (#4017), 139 (#2731, #3711, #3993), 140 (#3519),
+// 141 (#3575, which took this entry's earlier number while it stood there, and this head) and
+// 142 (#3712), with nothing above, so 143 is the lowest number above main's that no open head
+// declares. Read main's own number and every open pull request's again at the next forward
+// merge rather than from this line.)
+const DaemonAPIVersion = 143
