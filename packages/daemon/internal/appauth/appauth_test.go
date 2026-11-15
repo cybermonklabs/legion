@@ -148,7 +148,7 @@ func askedInExchange(t *testing.T, r *http.Request) (string, accessTokensBody) {
 // at the highest access any of them names: what an installation whose account has approved all
 // of Legion's grants is granted.
 var grantedEverythingAsked = map[string]string{
-	"actions": "write", "checks": "write", "contents": "write", "metadata": "read",
+	"actions": "write", "checks": "write", "contents": "write", "issues": "write", "metadata": "read",
 	"pull_requests": "write", "security_events": "write", "statuses": "write", "workflows": "write",
 }
 
@@ -501,11 +501,11 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	// json.Marshal of a map sorts its keys, so each body is this exact text: the permissions and
-	// nothing else — the four read ones a reading lease carries, actions among them and nothing
-	// writable, and the implement App's write set.
+	// nothing else — the five read ones a reading lease carries, actions and issues among them and
+	// nothing writable, and the implement App's write set.
 	want := []string{
-		`{"permissions":{"actions":"read","contents":"read","metadata":"read","pull_requests":"read"}}`,
-		`{"permissions":{"actions":"write","checks":"read","contents":"write","metadata":"read","pull_requests":"write","security_events":"read","statuses":"write","workflows":"write"}}`,
+		`{"permissions":{"actions":"read","contents":"read","issues":"read","metadata":"read","pull_requests":"read"}}`,
+		`{"permissions":{"actions":"write","checks":"read","contents":"write","issues":"write","metadata":"read","pull_requests":"write","security_events":"read","statuses":"write","workflows":"write"}}`,
 	}
 	if len(bodies) != len(want) || bodies[0] != want[0] || bodies[1] != want[1] {
 		t.Fatalf("exchange bodies = %q, want %q", bodies, want)
@@ -513,9 +513,10 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 }
 
 // A write mint asks for what the installation is granted of the role's set and leaves the rest
-// out: an account that has approved three of the implement App's seven permissions gets a token
-// holding those three, in one exchange, where asking for all seven would make GitHub refuse the
-// mint whole and cost the role its gh bundle.
+// out: an account that has approved three of the implement App's nine permissions gets a token
+// holding those three, in one exchange, where asking for all nine would make GitHub refuse the
+// mint whole and cost the role its gh bundle. Each permission left out is said once on stderr,
+// issues among them, so an installation whose account has not approved a grant is named.
 func TestGrantedWriteSetAsksForTheThreeTheInstallationGrants(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	var stderr bytes.Buffer
@@ -552,7 +553,7 @@ func TestGrantedWriteSetAsksForTheThreeTheInstallationGrants(t *testing.T) {
 	if !slices.Equal(github.permissionReads(), []string{"101"}) {
 		t.Errorf("the installation was read %v, want the one read before the exchange", github.permissionReads())
 	}
-	for _, left := range []string{"actions", "pull_requests", "statuses", "workflows"} {
+	for _, left := range []string{"actions", "issues", "pull_requests", "statuses", "workflows"} {
 		if _, named := asked[0].Permissions[left]; named {
 			t.Errorf("the request named %s, which the installation is granted none of", left)
 		}
@@ -642,7 +643,7 @@ func TestGrantedAnAccessThisDoesNotKnowIsGrantedNone(t *testing.T) {
 }
 
 // An account approves each of an App's grants, so an installation may be granted no actions at
-// all. The read mint leaves actions out of the request and asks for the other three in one
+// all. The read mint leaves actions out of the request and asks for the other four in one
 // exchange, so every owner's read token is served rather than the first such owner's mint
 // failing. What the token cannot read is said once per App role and owner: a second mint of the
 // same scope says nothing again, since the grant is the installation's.
@@ -652,7 +653,7 @@ func TestGrantedReadSetLeavesOutActionsAndSaysSoOncePerOwner(t *testing.T) {
 	github := &keyModeGitHub{
 		owners: []string{"acme", "sjawhar"},
 		slug:   "legion-reviewer",
-		grants: map[string]string{"contents": "read", "metadata": "read", "pull_requests": "read"},
+		grants: map[string]string{"contents": "read", "issues": "read", "metadata": "read", "pull_requests": "read"},
 	}
 	github.answer = func(exchange int, body accessTokensBody) (int, string) {
 		if body.Permissions["actions"] != "" {
@@ -667,7 +668,7 @@ func TestGrantedReadSetLeavesOutActionsAndSaysSoOncePerOwner(t *testing.T) {
 	for _, owner := range []string{"acme", "sjawhar"} {
 		lease, err := tokens.ReadToken(context.Background(), Review, owner, []string{"legion"})
 		if err != nil || lease.Token == "" {
-			t.Fatalf("read token for %s = %q, %v; want the lease the three granted reads mint", owner, lease.Token, err)
+			t.Fatalf("read token for %s = %q, %v; want the lease the four granted reads mint", owner, lease.Token, err)
 		}
 	}
 	// Forget drops acme's lease, so the next read token of that scope mints again.
@@ -680,7 +681,7 @@ func TestGrantedReadSetLeavesOutActionsAndSaysSoOncePerOwner(t *testing.T) {
 	if len(asked) != 3 {
 		t.Fatalf("%d exchanges, want one for each of the three mints: a cut request is never asked twice", len(asked))
 	}
-	want := map[string]string{"contents": "read", "metadata": "read", "pull_requests": "read"}
+	want := map[string]string{"contents": "read", "issues": "read", "metadata": "read", "pull_requests": "read"}
 	for i, body := range asked {
 		if !maps.Equal(body.Permissions, want) {
 			t.Errorf("exchange %d named permissions %v, want exactly %v", i+1, body.Permissions, want)
@@ -706,7 +707,7 @@ func TestGrantedNoneOfTheSetRefusesTheMintBeforeTheTokenEndpoint(t *testing.T) {
 	github := &keyModeGitHub{
 		owners: []string{"acme"},
 		slug:   "legion-implementer",
-		grants: map[string]string{"issues": "write", "members": "read"},
+		grants: map[string]string{"members": "read", "repository_projects": "write"},
 	}
 	github.answer = func(int, accessTokensBody) (int, string) {
 		t.Error("GitHub was asked for a token whose every permission the installation is granted none of")
@@ -1103,66 +1104,36 @@ func keyModeManager(t *testing.T, github *keyModeGitHub, now *time.Time, stderr 
 	return tokens
 }
 
-// A write mint asks for exactly the permissions that App's roles use, each App's set its own,
-// and names no repository at all: what the token reaches is what the account chose when it
-// installed the App, and what the token may do there is these permissions (INFRA-2543). The
-// installation holds more — issues, projects, packages — and a token that asks for none of it
-// cannot be made to use them.
-func TestTokenAsksForNoRepositoryAndTheAppsWritePermissions(t *testing.T) {
+// Each lease asks GitHub for exactly its set and names no repository at all: what the token
+// reaches is what the account chose when it installed the App, and what the token may do there
+// is these permissions. Each App's write lease asks for that App's own set, issues: write among
+// it, since the implementer's code, and the tester running that code under the review App, post
+// on an issue of the repository they work in. Either App's read lease asks for the five reads a
+// role and a controller need of a repository that is not their own issue's, issues: read among
+// them and nothing writable. Every other permission of each set is the one it was before issues
+// joined it. The installation holds more, such as projects and packages, and a token that asks
+// for none of it cannot be made to use them.
+func TestEachLeaseAsksForItsSetIssuesIncluded(t *testing.T) {
+	reads := map[string]string{"actions": "read", "contents": "read", "issues": "read", "metadata": "read", "pull_requests": "read"}
 	for _, tc := range []struct {
+		name string
 		role AppRole
 		slug string
+		read bool
 		want map[string]string
 	}{
-		{Implement, "legion-implementer", map[string]string{
-			"actions": "write", "checks": "read", "contents": "write", "metadata": "read",
+		{"implement write", Implement, "legion-implementer", false, map[string]string{
+			"actions": "write", "checks": "read", "contents": "write", "issues": "write", "metadata": "read",
 			"pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write",
 		}},
-		{Review, "legion-reviewer", map[string]string{
-			"actions": "write", "checks": "write", "contents": "write", "metadata": "read",
+		{"review write", Review, "legion-reviewer", false, map[string]string{
+			"actions": "write", "checks": "write", "contents": "write", "issues": "write", "metadata": "read",
 			"pull_requests": "write", "security_events": "write",
 		}},
+		{"implement read", Implement, "legion-implementer", true, reads},
+		{"review read", Review, "legion-reviewer", true, reads},
 	} {
-		t.Run(string(tc.role), func(t *testing.T) {
-			now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-			var stderr bytes.Buffer
-			github := &keyModeGitHub{owners: []string{"sjawhar"}, slug: tc.slug}
-			github.answer = func(exchange int, body accessTokensBody) (int, string) {
-				return http.StatusOK, mintedFor(fmt.Sprintf("ghs_%d", exchange), now.Add(time.Hour), body.Permissions, "legion")
-			}
-			tokens := keyModeManager(t, github, &now, &stderr)
-
-			if _, err := tokens.Token(context.Background(), tc.role, ghrepo.MustParse("sjawhar/legion")); err != nil {
-				t.Fatalf("Token: %v", err)
-			}
-
-			asked := github.exchanges()
-			if len(asked) != 1 {
-				t.Fatalf("%d exchanges, want the one mint", len(asked))
-			}
-			if !maps.Equal(asked[0].Permissions, tc.want) {
-				t.Errorf("the %s App's write request named permissions %v, want exactly %v", tc.role, asked[0].Permissions, tc.want)
-			}
-			if text := github.exchangeTexts()[0]; strings.Contains(text, "repositor") {
-				t.Errorf("the request body is %s, want the permissions and no repository", text)
-			}
-		})
-	}
-}
-
-// A read mint asks for the four reads a role and a controller need of a repository that is not
-// their own issue's — nothing writable — and names no repository either, for either App: the
-// lease reaches every repository the owner's installation holds, and reading is the whole of
-// what holds it.
-func TestReadTokenAsksForTheFourReadsAndNoRepository(t *testing.T) {
-	for _, tc := range []struct {
-		role AppRole
-		slug string
-	}{
-		{Implement, "legion-implementer"},
-		{Review, "legion-reviewer"},
-	} {
-		t.Run(string(tc.role), func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 			var stderr bytes.Buffer
 			github := &keyModeGitHub{owners: []string{"acme"}, slug: tc.slug}
@@ -1171,20 +1142,28 @@ func TestReadTokenAsksForTheFourReadsAndNoRepository(t *testing.T) {
 			}
 			tokens := keyModeManager(t, github, &now, &stderr)
 
-			if _, err := tokens.ReadToken(context.Background(), tc.role, "acme", []string{"legion"}); err != nil {
-				t.Fatalf("ReadToken: %v", err)
+			var err error
+			if tc.read {
+				_, err = tokens.ReadToken(context.Background(), tc.role, "acme", []string{"legion"})
+			} else {
+				_, err = tokens.Token(context.Background(), tc.role, ghrepo.MustParse("acme/legion"))
+			}
+			if err != nil {
+				t.Fatalf("the %s lease: %v", tc.name, err)
 			}
 
 			asked := github.exchanges()
 			if len(asked) != 1 {
 				t.Fatalf("%d exchanges, want the one mint", len(asked))
 			}
-			want := map[string]string{"actions": "read", "contents": "read", "metadata": "read", "pull_requests": "read"}
-			if !maps.Equal(asked[0].Permissions, want) {
-				t.Errorf("the %s App's read request named permissions %v, want exactly %v", tc.role, asked[0].Permissions, want)
+			if !maps.Equal(asked[0].Permissions, tc.want) {
+				t.Errorf("the %s request named permissions %v, want exactly %v", tc.name, asked[0].Permissions, tc.want)
 			}
 			if text := github.exchangeTexts()[0]; strings.Contains(text, "repositor") {
-				t.Errorf("the request body is %s, want the four reads and no repository", text)
+				t.Errorf("the request body is %s, want the permissions and no repository", text)
+			}
+			if stderr.Len() != 0 {
+				t.Errorf("stderr = %q, want nothing: the installation is granted every permission the set asks for", stderr.String())
 			}
 		})
 	}
@@ -1283,7 +1262,7 @@ func TestTokenRefusesATokenWiderThanThePermissionsAsked(t *testing.T) {
 		permissions string
 		named       string
 	}{
-		{"a permission the request did not ask for", `{"issues":"write","contents":"read","metadata":"read","pull_requests":"read","actions":"read"}`, "issues: write"},
+		{"a permission the request did not ask for", `{"administration":"write","contents":"read","metadata":"read","pull_requests":"read","actions":"read"}`, "administration: write"},
 		{"an access above the one asked for", `{"contents":"write","metadata":"read","pull_requests":"read","actions":"read"}`, "contents: write"},
 		{"an access this daemon cannot order", `{"contents":"maintain","metadata":"read","pull_requests":"read","actions":"read"}`, "contents: maintain"},
 	} {

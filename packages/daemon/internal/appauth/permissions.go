@@ -38,10 +38,19 @@ import (
 // approved is the account's, and the cut takes each mint's request down to it (exchangeGranted),
 // so an installation granted less than a set names is asked for less rather than refused.
 //
-// Issues, repository projects and packages are in neither set, though both Apps' installations
-// hold them: Legion writes no GitHub issue and no project, and a comment on a pull request needs
-// Issues write or Pull requests write (GitHub's own documentation of the create-comment endpoint,
-// read 2026-11-06), which both sets hold.
+// issues:write is in both sets, though the daemon itself reads and writes no GitHub issue: the
+// roles do, through their tokens. The implementer runs the work's own code, which may read an
+// issue of the repository it works in and post or edit a comment there, such as a release script
+// marking that an issue's run should stop or be tried again. The tester runs that same code under
+// the review App, so that App's set needs what the code needs. The write lease already holds
+// contents:write and pull_requests:write wherever it reaches, so issues:write adds no new kind of
+// harm; giving the review App's other roles issues read alone would mean keying the set by
+// workflow role rather than by App, a larger change for no measured risk. A token whose request
+// names no issues permission is refused an issue of a private repository with 403 "Resource not
+// accessible by integration" (readPermissions says where that was measured).
+//
+// Repository projects and packages are in neither set, though both Apps' installations hold
+// them: Legion writes no project and no package.
 //
 // security_events is the code-scanning alerts of the repository, and it differs by App as checks
 // does: the review App's set asks for write and the implement App's for read, its roles reading
@@ -59,8 +68,8 @@ import (
 // token carrying what the request names. A deployment in token mode asks its command for no
 // permissions at all (tokencommand.go), so this set decides nothing there (dispatch://INFRA-1639).
 var writePermissions = map[AppRole]map[string]string{
-	Implement: {"actions": "write", "checks": "read", "contents": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"},
-	Review:    {"actions": "write", "checks": "write", "contents": "write", "metadata": "read", "pull_requests": "write", "security_events": "write"},
+	Implement: {"actions": "write", "checks": "read", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"},
+	Review:    {"actions": "write", "checks": "write", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "write"},
 }
 
 // accessOrder ranks GitHub's three accesses, each holding every one below it: a permission
