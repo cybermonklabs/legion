@@ -83,13 +83,15 @@ func spentRateLimit(reset time.Time, reads string) string {
 }
 
 // recordsItsCall is the start of a stand-in git: it appends to record one line per call, with
-// its arguments, the variables the read without REST sets or must not inherit, what its HOME
-// holds, and the directory it runs in, each as key=value and separated by tabs (readCalls).
+// its arguments, the variables the read without REST sets, must not inherit or must keep, what
+// its HOME holds, and the directory it runs in, each as key=value and separated by tabs
+// (readCalls).
 func recordsItsCall(record string) string {
-	return `printf 'argv=%s\tprompt=%s\taskpass=%s\tnosystem=%s\tglobal=%s\tcount=%s\tkey0=%s\tparameters=%s\tgitdir=%s\tprotocol=%s\tlang=%s\thome=%s\tnetrc=%s\thomeholds=%s\tdir=%s\n' ` +
+	return `printf 'argv=%s\tprompt=%s\taskpass=%s\tnosystem=%s\tglobal=%s\tcount=%s\tkey0=%s\tparameters=%s\tgitdir=%s\tprotocol=%s\tcainfo=%s\tcapath=%s\tproxy=%s\tlang=%s\thome=%s\tnetrc=%s\thomeholds=%s\tdir=%s\n' ` +
 		`"$*" "${GIT_TERMINAL_PROMPT-unset}" "${GIT_ASKPASS-unset}" "${GIT_CONFIG_NOSYSTEM-unset}" ` +
 		`"${GIT_CONFIG_GLOBAL-unset}" "${GIT_CONFIG_COUNT-unset}" "${GIT_CONFIG_KEY_0-unset}" ` +
 		`"${GIT_CONFIG_PARAMETERS-unset}" "${GIT_DIR-unset}" "${GIT_ALLOW_PROTOCOL-unset}" ` +
+		`"${GIT_SSL_CAINFO-unset}" "${GIT_SSL_CAPATH-unset}" "${HTTPS_PROXY-unset}" ` +
 		`"${LC_ALL-unset}" "${HOME-unset}" "${NETRC-unset}" "$(ls -A "${HOME-/nonexistent}" 2>&1 | tr '\n' ' ')" ` +
 		`"$(pwd -P)" >> '` + record + "'\n"
 }
@@ -135,7 +137,8 @@ func countLines(t *testing.T, path string) int {
 // REST request. An answer is public, and the push is scanned; GitHub asking for a credential is
 // private, and the push is not; any other failure refuses the push, naming the spent limit and
 // its reset. In every case gh is read once and nothing is waited for, and git is run once, with
-// the credential helper emptied on its command line and with GIT_TERMINAL_PROMPT=0.
+// the credential helper and the extra headers emptied on its command line, after the package's
+// pins and before ls-remote, and with GIT_TERMINAL_PROMPT=0.
 func TestLsRemoteReadsTheVisibilityWhenTheRateLimitIsSpent(t *testing.T) {
 	now := time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)
 	reset := now.Add(30 * time.Minute)
@@ -217,7 +220,7 @@ func TestLsRemoteReadsTheVisibilityWhenTheRateLimitIsSpent(t *testing.T) {
 				t.Fatalf("git ran %d times, want the one ls-remote", len(calls))
 			}
 			want := "--no-replace-objects -c core.quotePath=false -c core.hooksPath=/dev/null -c core.fsmonitor=false " +
-				"-c credential.helper= ls-remote " + theURL + " HEAD"
+				"-c credential.helper= -c http.extraHeader= -c http." + theURL + ".extraHeader= ls-remote " + theURL + " HEAD"
 			if calls[0]["argv"] != want {
 				t.Errorf("git ran as\n%s\nwant\n%s", calls[0]["argv"], want)
 			}
@@ -287,8 +290,8 @@ func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 	} else if _, err := os.Stat(gitHome); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("git's HOME %s is still there after the read (%v), want it removed", gitHome, err)
 	}
-	if !strings.Contains(" "+calls[0]["argv"]+" ", " -c credential.helper= ls-remote "+theURL+" ") {
-		t.Errorf("git ran as %q, want the credential helper emptied in front of ls-remote %s", calls[0]["argv"], theURL)
+	if resets := " -c credential.helper= -c http.extraHeader= -c http." + theURL + ".extraHeader= ls-remote " + theURL + " "; !strings.Contains(" "+calls[0]["argv"]+" ", resets) {
+		t.Errorf("git ran as %q, want the credential helper and the extra headers emptied in front of ls-remote %s", calls[0]["argv"], theURL)
 	}
 	askpass := calls[0]["askpass"]
 	if askpass == "unset" || askpass == "" {
@@ -296,6 +299,45 @@ func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 	}
 	if status, _, err := guard.run(bound(t), child{argv: []string{askpass}}); err != nil || status == 0 {
 		t.Errorf("the askpass program %s answered %d, %v; want a program that answers no credential", askpass, status, err)
+	}
+}
+
+// The read without REST reaches GitHub the way the caller's environment says to, and asks for
+// no credential however the caller asks for one. The CA bundle git trusts (GIT_SSL_CAINFO,
+// GIT_SSL_CAPATH) and libcurl's proxy (HTTPS_PROXY), none of which carries a credential, reach
+// git as the caller set them. A caller's GIT_TERMINAL_PROMPT=1, and a GIT_ASKPASS that would
+// print a credential, do not: git sees GIT_TERMINAL_PROMPT=0 and the guard's own askpass.
+func TestLsRemoteKeepsTheCallersTransportButNotItsPrompts(t *testing.T) {
+	bin, record, askpasses := t.TempDir(), filepath.Join(t.TempDir(), "record"), t.TempDir()
+	writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
+	writeProgram(t, askpasses, "answers", "echo invented-token\n")
+	cainfo, capath := filepath.Join(t.TempDir(), "ca.pem"), t.TempDir()
+	guard := New(Options{Env: append(fixtureenv.Isolated(t.TempDir()),
+		pathWith(bin),
+		"GIT_SSL_CAINFO="+cainfo,
+		"GIT_SSL_CAPATH="+capath,
+		"HTTPS_PROXY=http://proxy.invented:3128",
+		"GIT_TERMINAL_PROMPT=1",
+		"GIT_ASKPASS="+filepath.Join(askpasses, "answers"),
+	)})
+	visibility, err := guard.lsRemote(bound(t), githubOrigin, theRepo)
+	if err != nil || visibility != Public {
+		t.Fatalf("read %q, %v; want public", visibility, err)
+	}
+	calls := readCalls(t, record)
+	if len(calls) != 1 {
+		t.Fatalf("git ran %d times, want once", len(calls))
+	}
+	for key, want := range map[string]string{
+		"cainfo":  cainfo,
+		"capath":  capath,
+		"proxy":   "http://proxy.invented:3128",
+		"prompt":  "0",
+		"askpass": guard.noAnswer,
+	} {
+		if got := calls[0][key]; got != want {
+			t.Errorf("git ran with %s=%q, want %q", key, got, want)
+		}
 	}
 }
 
@@ -375,6 +417,83 @@ func TestLsRemoteThatHangsEndsAtItsOwnBound(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the failure %q does not say %q", err, want)
 		}
+	}
+}
+
+// The read without REST also ends when the caller's context ends, before its own cap: a caller
+// that cancels while git hangs, and one whose deadline comes before lsRemoteBound, each get the
+// call back at once, refused naming the spent limit, its reset and git's stop. Nothing is kept,
+// so the next call reads the visibility again. lsRemoteBound keeps its own two minutes here.
+func TestLsRemoteStopsWithTheCallersContext(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// caller is the caller's context, given the file the stand-in git writes before it
+		// hangs.
+		caller func(t *testing.T, started string) context.Context
+		// stop is what the failure says of git's stop.
+		stop string
+	}{
+		{
+			name: "the caller cancels",
+			caller: func(t *testing.T, started string) context.Context {
+				ctx, cancel := context.WithCancel(bound(t))
+				t.Cleanup(cancel)
+				// The cancel waits for git to start, so that it is git the cancel stops.
+				go func() {
+					for ctx.Err() == nil {
+						if _, err := os.Stat(started); err == nil {
+							cancel()
+							return
+						}
+						time.Sleep(10 * time.Millisecond)
+					}
+				}()
+				return ctx
+			},
+			stop: "and was stopped by a cancel",
+		},
+		{
+			name: "the caller's deadline comes first",
+			caller: func(t *testing.T, _ string) context.Context {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				t.Cleanup(cancel)
+				return ctx
+			},
+			stop: "and was stopped by its bound of",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
+			reset := clock.Now().Add(30 * time.Minute)
+			bin, started := t.TempDir(), filepath.Join(t.TempDir(), "started")
+			writeProgram(t, bin, "git", ": > '"+started+"'\nsleep 30\n")
+			guard := New(Options{
+				Clock: clock,
+				Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
+				Visibility: func(context.Context, string) (Visibility, error) {
+					return "", &rateLimitError{reset: reset}
+				},
+			})
+			ctx := tc.caller(t, started)
+			began := time.Now()
+			_, err := guard.Visibility(ctx, theRepo)
+			answeredWithin10s(t, began)
+			if err == nil {
+				t.Fatal("the visibility read passed while git never answered")
+			}
+			for _, want := range []string{
+				"the installation's rate limit is spent until " + reset.Format(time.RFC3339),
+				"the read without REST could not answer: git ran ",
+				tc.stop,
+			} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the failure %q does not say %q", err, want)
+				}
+			}
+			if _, err := os.Stat(guard.visibilityCachePath(theRepo)); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("a visibility was kept for the refused read (%v), want none", err)
+			}
+		})
 	}
 }
 
@@ -494,32 +613,44 @@ func pktLine(payload string) string {
 	return fmt.Sprintf("%04x%s", len(payload)+4, payload)
 }
 
-// The lines lsRemote reads are the ones a real git prints. A server of the test's own stands in
-// for GitHub's smart HTTP endpoint, and the git on this machine reads it with the environment the
-// guard gives it: a repository whose refs it lists is public, one it answers 401 for is private,
-// and a 403 or a 404 is no answer.
-func TestLsRemoteReadsWhatARealGitPrints(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("no git on this machine")
-	}
+// gitHubStandIn is a server of the test's own that stands in for GitHub's smart HTTP endpoint,
+// answering by the repository's owner. "public" lists its refs to a request that carries no
+// credential, and refuses one that carries any 401 with a challenge, as GitHub refuses a bad
+// credential for a public repository. "private" answers every request 401 with a challenge, as
+// GitHub answers an anonymous read of a private repository. "forbidden" answers 403, and any
+// other owner 404.
+func gitHubStandIn(t *testing.T) *httptest.Server {
+	t.Helper()
 	head := strings.Repeat("1", 40)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		owner, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
-		switch owner {
-		case "public":
+		switch {
+		case owner == "public" && r.Header.Get("Authorization") == "":
 			w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
 			fmt.Fprint(w, pktLine("# service=git-upload-pack\n")+"0000"+
 				pktLine(head+" HEAD\x00agent=invented\n")+pktLine(head+" refs/heads/main\n")+"0000")
-		case "private":
+		case owner == "public", owner == "private":
 			w.Header().Set("WWW-Authenticate", `Basic realm="invented"`)
 			w.WriteHeader(http.StatusUnauthorized)
-		case "forbidden":
+		case owner == "forbidden":
 			w.WriteHeader(http.StatusForbidden)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
+	return server
+}
+
+// The lines lsRemote reads are the ones a real git prints. A server of the test's own stands in
+// for GitHub's smart HTTP endpoint (gitHubStandIn), and the git on this machine reads it with the
+// environment the guard gives it: a repository whose refs it lists is public, one it answers 401
+// for is private, and a 403 or a 404 is no answer.
+func TestLsRemoteReadsWhatARealGitPrints(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git on this machine")
+	}
+	server := gitHubStandIn(t)
 	// The process's own git may use local files alone (TestMain); this test's server is http.
 	guard := New(Options{Env: append(fixtureenv.Isolated(t.TempDir()), "GIT_ALLOW_PROTOCOL=http")})
 	for _, tc := range []struct {
@@ -548,5 +679,34 @@ func TestLsRemoteReadsWhatARealGitPrints(t *testing.T) {
 				t.Errorf("the error %q does not say %q", err, tc.fails)
 			}
 		})
+	}
+}
+
+// No extra header a git wrapper adds reaches the read without REST, however closely its setting
+// names the URL. `legion git --after` runs the host's next git on PATH, and a wrapper there can
+// put a -c of its own in front of the guard's arguments. Here the machine's real git sits behind
+// such a wrapper, which names the stand-in server's own URL for an Authorization header. The
+// server refuses that header 401 for its public repository, as GitHub refuses a bad credential,
+// and the read still answers public. A generic `-c http.extraHeader=` does not clear a header
+// named for the host: without the reset that names the repository's whole URL, this read
+// answers private (measured with git 2.47.3), which would skip the rule pass for a public
+// repository.
+func TestLsRemoteClearsTheHeaderAGitWrapperAdds(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git on this machine")
+	}
+	server := gitHubStandIn(t)
+	bin, record := t.TempDir(), filepath.Join(t.TempDir(), "record")
+	writeProgram(t, bin, "git", "echo ran >> '"+record+"'\n"+
+		"exec '"+git+"' -c 'http."+server.URL+"/.extraHeader=Authorization: Basic aW52ZW50ZWQ6aW52ZW50ZWQ=' \"$@\"\n")
+	// The process's own git may use local files alone (TestMain); this test's server is http.
+	guard := New(Options{Env: append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "GIT_ALLOW_PROTOCOL=http")})
+	visibility, err := guard.lsRemote(bound(t), server.URL, "public/invented-repo")
+	if err != nil || visibility != Public {
+		t.Fatalf("read %q, %v; want public: the wrapper's header reached the request", visibility, err)
+	}
+	if got := countLines(t, record); got != 1 {
+		t.Errorf("the wrapper ran %d times, want once: the read must go through it", got)
 	}
 }

@@ -6,9 +6,10 @@ body: |-
   write. The read carries no credential: git keeps no `GIT_` variable of the caller's but
   `GIT_ALLOW_PROTOCOL`, `GIT_SSL_CAINFO` and `GIT_SSL_CAPATH`, reads no system, user or
   repository configuration, and runs with an empty `HOME` of its own and no `NETRC`, so libcurl
-  finds no netrc file. An answer is public, and the write is scanned. GitHub asking for a
-  credential is private, which is also what a repository that does not exist answers, and the
-  write's own request then decides. Any other failure refuses the write as before, naming the
-  spent limit and its reset, with git's output after them. The read runs at most two minutes of
-  its own, after any wait for a near reset. The `legion gh` call log records such an answer as
-  `visibility="ls-remote"`.
+  finds no netrc file. Its command line empties the credential helpers and every extra HTTP header
+  that a git wrapper in front of it may have added, for any URL. An answer is public, and the
+  write is scanned. GitHub asking for a credential is private, which is also what a repository
+  that does not exist answers, and the write's own request then decides. Any other failure
+  refuses the write as before, naming the spent limit and its reset, with git's output after
+  them. The read runs at most two minutes of its own, after any wait for a near reset. The
+  `legion gh` call log records such an answer as `visibility="ls-remote"`.

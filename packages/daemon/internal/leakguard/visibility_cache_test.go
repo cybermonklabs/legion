@@ -126,6 +126,68 @@ func TestVisibilityRetriesRateLimitAtNearReset(t *testing.T) {
 	}
 }
 
+// A near reset whose retried read is still refused for the spent limit is not waited out again:
+// the guard reads the visibility through git's ls-remote. The call waits once, reads the
+// visibility twice and runs ls-remote once. ls-remote's answer stands, and where ls-remote cannot
+// answer either, the refusal names the reset of the retried read, the latest GitHub gave, rather
+// than the one already waited out.
+func TestVisibilityReadsWithoutRESTWhenTheRetryIsStillLimited(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// git is what the stand-in git does after it records its call, and want the answer of the
+		// call, empty where the call is refused.
+		git  string
+		want Visibility
+	}{
+		{name: "ls-remote answers", git: answersTheRefs, want: Public},
+		{name: "ls-remote fails", git: cannotConnect},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
+			first := clock.Now().Add(time.Minute)
+			latest := first.Add(time.Hour)
+			bin, record := t.TempDir(), filepath.Join(t.TempDir(), "record")
+			writeProgram(t, bin, "git", recordsItsCall(record)+tc.git)
+			var reads int
+			visibility, err := New(Options{
+				Clock: clock,
+				Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
+				Visibility: func(context.Context, string) (Visibility, error) {
+					reads++
+					if reads == 1 {
+						return "", &rateLimitError{reset: first}
+					}
+					return "", &rateLimitError{reset: latest}
+				},
+			}).Visibility(bound(t), "invented-org/invented-repo")
+			switch {
+			case tc.want != "":
+				if err != nil || visibility != tc.want {
+					t.Errorf("read visibility = %q, %v; want %s from ls-remote", visibility, err, tc.want)
+				}
+			case err == nil:
+				t.Errorf("read visibility = %q, want the call refused", visibility)
+			default:
+				if want := "the installation's rate limit is spent until " + latest.Format(time.RFC3339); !strings.Contains(err.Error(), want) {
+					t.Errorf("the failure %q does not name the latest reset: %q", err, want)
+				}
+				if strings.Contains(err.Error(), first.Format(time.RFC3339)) {
+					t.Errorf("the failure %q names the reset already waited out, %s", err, first.Format(time.RFC3339))
+				}
+			}
+			if reads != 2 {
+				t.Errorf("the visibility was read %d times, want the failed read and one retry", reads)
+			}
+			if want := []time.Duration{time.Minute}; !slices.Equal(clock.waits, want) {
+				t.Errorf("the waits are %v, want %v", clock.waits, want)
+			}
+			if calls := readCalls(t, record); len(calls) != 1 {
+				t.Errorf("git ran %d times, want the one ls-remote", len(calls))
+			}
+		})
+	}
+}
+
 // A reset beyond the two-minute limit is not waited for. The guard reads the visibility through
 // git's ls-remote instead (TestLsRemoteReadsTheVisibilityWhenTheRateLimitIsSpent), and where that
 // read cannot answer either, the call is refused at once and tells the role when the
