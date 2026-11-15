@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -485,6 +486,48 @@ func TestSessionAnswersListsATargetedMessage(t *testing.T) {
 		t.Fatalf("direct message item = %+v, want no owner, no ref and the session's conversation link", item)
 	}
 	f.empty(t, answersOther)
+}
+
+// keepOnlyFor keeps through recorder what is for session's own subject and refuses every other
+// publish, as a bus that took one copy and then went away would.
+type keepOnlyFor struct {
+	session  string
+	recorder *AgentPublishRecorder
+}
+
+func (k keepOnlyFor) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
+	if item.Topic != contracts.AgentSubject(k.session) {
+		return false, errors.New("nats: no responders available for request")
+	}
+	return k.recorder.PublishReportingDuplicateWithin(ctx, item)
+}
+
+// A person's message to a session the listener holds no record of is kept on the session's own
+// subject, and the session reads it when it comes back: it is a person's words delivered to the
+// session, so the session's list holds it, though nothing marks it sent until the session replies.
+// A message Dispatch could not keep failed, reached nobody, and is left out.
+func TestSessionAnswersListsAKeptMessageAndLeavesOutAFailedOne(t *testing.T) {
+	const released, unkept = "session-released", "session-unkept"
+	listener, _ := newBroadcastListener(t, `[]`)
+	handler, database, deps := newTestServer(t, testServerOptions{
+		envoyURL: listener.URL, agentPublisher: keepOnlyFor{session: released, recorder: NewAgentPublishRecorder()},
+	})
+	f := &answersFixture{handler: handler, database: database, deps: deps}
+	kept := f.write(t, http.MethodPost, "/api/v1/agents/"+released+"/messages", map[string]any{"body": "Pick the release back up.", "delivery": "steer"}, "alice")
+	failed := f.write(t, http.MethodPost, "/api/v1/agents/"+unkept+"/messages", map[string]any{"body": "This one reached nobody.", "delivery": "steer"}, "alice")
+	for id, want := range map[string]string{kept: "kept", failed: "failed"} {
+		var state string
+		if err := database.Pool.QueryRow(context.Background(), `select state from message_deliveries where message_id = $1`, id).Scan(&state); err != nil || state != want {
+			t.Fatalf("message %s's attempt is %q (%v), want %s", id, state, err, want)
+		}
+	}
+
+	item := f.only(t, released)
+	if item.ID != kept || item.Kind != model.SessionAnswerKindMessage || item.Relation != model.SessionAnswerRelationSentYouMessage ||
+		item.Author != answersAlice || item.Text != "Pick the release back up." {
+		t.Fatalf("item = %+v, want the message alice sent the session, kept for it", item)
+	}
+	f.empty(t, unkept)
 }
 
 func TestSessionAnswersListsABroadcastCopy(t *testing.T) {

@@ -33,11 +33,17 @@ const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclin
 //     delivered, and never what an issue's role: route delivered to a role topic, which names no
 //     session. It reads the partial index events_person_words_with_declines for the window and
 //     filters the array on those rows.
-//   - S2 (message_ids' second arm): the session's sent message deliveries: targeted messages, direct
-//     or on an issue, and broadcast copies. It is an index-only scan of
-//     message_deliveries_session_created (0147), whose predicate is the arm's state = 'sent' and
-//     which carries message_id, so a cached generic plan chooses it over message_deliveries_session
-//     (0051, session_id alone) too.
+//   - S2 (message_ids' second and third arms): the session's sent and kept message deliveries:
+//     targeted messages, direct or on an issue, and broadcast copies. A kept one is a person's
+//     message Dispatch stored on the session's own subject when the listener held no record of
+//     the session, which the session reads when it comes back, and which nothing moves to sent
+//     unless the session replies. Each state is an arm of its own, an index-only scan of the
+//     partial index whose predicate is that arm's: message_deliveries_session_created (0147) for
+//     state = 'sent' and message_deliveries_session_kept (20261115130748) for state = 'kept'. Each
+//     carries message_id, so a cached generic plan chooses it over message_deliveries_session
+//     (0051, session_id alone) too, for the reason 0147 gives. One arm over both states reads the
+//     heap through a bitmap scan instead, in a generic plan too (20261115130748 says what was
+//     measured).
 //   - S3 (mentioned): the session's sent comment deliveries, a mention's (comment_deliveries_session,
 //     0146).
 //
@@ -113,6 +119,10 @@ const query = `
 		select md.message_id::text
 		from message_deliveries md
 		where md.session_id = $1 and md.state = 'sent' and md.created_at >= $2 - interval '1 hour'
+		union
+		select md.message_id::text
+		from message_deliveries md
+		where md.session_id = $1 and md.state = 'kept' and md.created_at >= $2 - interval '1 hour'
 	)
 	select 'answer' as kind, a.id::text as id, (a.answer->>'at')::timestamptz as at,
 	       null::timestamptz as edited_at, null::jsonb as author, null::text as body,

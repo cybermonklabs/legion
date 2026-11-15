@@ -354,9 +354,14 @@ type attemptClaim struct {
 	claimedAt time.Time
 }
 
-// deliveryOutcome maps what a send reported to the state and error an attempt row records.
-func deliveryOutcome(deliveryError string) (string, *string) {
-	if deliveryError == "" {
+// deliveryOutcome maps what a send reported to the state and error an attempt row records. kept
+// is a targeted message Dispatch stored on its session's own subject after the listener held no
+// record of that session (keepForSession), which records no error.
+func deliveryOutcome(deliveryError string, kept bool) (string, *string) {
+	switch {
+	case kept:
+		return "kept", nil
+	case deliveryError == "":
 		return "sent", nil
 	}
 	return "failed", &deliveryError

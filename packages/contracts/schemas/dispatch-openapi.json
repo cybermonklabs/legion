@@ -8470,6 +8470,46 @@
         "x-write-scope": "session"
       }
     },
+    "/api/v1/messages/_test/kept": {
+      "get": {
+        "description": "Test hook: list the targeted messages this process kept for a session the listener held no record of, each as the envelope its session's subject would hold: {kept: [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}, oldest first; 404 TEST_HOOKS_OFF on a process that keeps them on NATS.",
+        "operationId": "getApiV1MessagesTestKept",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeptMessages"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true
+      }
+    },
     "/api/v1/messages/{id}": {
       "get": {
         "description": "Read the conversation a message belongs to by any message id in it, issue-less or not: the thread root with its deliveries and every reply, oldest first. An issue thread follows the issue's rule. A direct (issue-less) thread is read whole by a credential holding the person scope, since the conversation is that person's own; every other credential names its session in ?session= and reads only one whose root targets that session or that it replied in (403 THREAD_FORBIDDEN), a guard against reading another session's conversation by mistake, not an authorization boundary. Direct-conversation text also reaches every authenticated caller through that caller's events view on GET /ws/live; nothing in Dispatch restricts it by session.",
@@ -8624,7 +8664,7 @@
     },
     "/api/v1/messages/{id}/deliveries/{attempt}/accept": {
       "post": {
-        "description": "The attempt's session records that it took the message as its user's own turn; the session names itself in actor (403 ACCEPT_FORBIDDEN for another's attempt). One compare-and-set: only a direct message to that session, on no issue, neither a broadcast's copy nor a reply in a broadcast's thread, in a thread whose root targets it (409 ACCEPT_NOT_DIRECT), that a person wrote (409 ACCEPT_NOT_WRITTEN_BY_PERSON), sent as a Send or an Aside (409 ACCEPT_NOT_ASIDE_OR_STEER); only the message's latest attempt (409 ACCEPT_SUPERSEDED), when no attempt of it was accepted before (409 ACCEPT_ALREADY_ACCEPTED), which a person requested (409 ACCEPT_NOT_REQUESTED_BY_PERSON), that person being the message's author (409 ACCEPT_NOT_REQUESTED_BY_AUTHOR), which did not fail (409 ACCEPT_FAILED; a pending or sent attempt is taken), within the last minute (409 ACCEPT_STALE). Answers the attempt with accepted_at and accepted_as and the message's stored body; leaves the attempt's state to the send, and appends message.accepted.",
+        "description": "The attempt's session records that it took the message as its user's own turn; the session names itself in actor (403 ACCEPT_FORBIDDEN for another's attempt). One compare-and-set: only a direct message to that session, on no issue, neither a broadcast's copy nor a reply in a broadcast's thread, in a thread whose root targets it (409 ACCEPT_NOT_DIRECT), that a person wrote (409 ACCEPT_NOT_WRITTEN_BY_PERSON), sent as a Send or an Aside (409 ACCEPT_NOT_ASIDE_OR_STEER); only the message's latest attempt (409 ACCEPT_SUPERSEDED), when no attempt of it was accepted before (409 ACCEPT_ALREADY_ACCEPTED), which a person requested (409 ACCEPT_NOT_REQUESTED_BY_PERSON), that person being the message's author (409 ACCEPT_NOT_REQUESTED_BY_AUTHOR), which did not fail (409 ACCEPT_FAILED; a pending, sent or kept attempt is taken), within the last minute (409 ACCEPT_STALE). Answers the attempt with accepted_at and accepted_as and the message's stored body; leaves the attempt's state to the send, and appends message.accepted.",
         "operationId": "postApiV1MessagesByIdDeliveriesByAttemptAccept",
         "parameters": [
           {
@@ -22077,6 +22117,57 @@
         },
         "required": [
           "text_sha256"
+        ],
+        "type": "object"
+      },
+      "KeptMessage": {
+        "properties": {
+          "dedupe_key": {
+            "type": "string"
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "string"
+          },
+          "payload_summary": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "urgency": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "dedupe_key",
+          "event_id",
+          "source",
+          "payload_summary",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "KeptMessages": {
+        "properties": {
+          "kept": {
+            "items": {
+              "$ref": "#/components/schemas/KeptMessage"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kept"
         ],
         "type": "object"
       },

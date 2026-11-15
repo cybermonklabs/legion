@@ -128,27 +128,9 @@ func (s *server) sendResolvedDelivery(
 	if target.SessionID == nil {
 		return nil, false, "no live session"
 	}
-	// What the delivered thing wants back, except in btw mode, which interrupts the session it
-	// reaches to ask something of it and so always waits on an answer, whatever the thing
-	// delivered says. The mode is read here, on every try, because a try after a listener
-	// take-over resolves the target again and sends in the mode that resolution names
-	// (mentionResolutionFor).
-	expectsReply := wanted
-	if target.Delivery == "btw" {
-		expectsReply = contracts.ExpectsReplyRequired
-	}
-	// Message is the body a second time, beside the frame, and the listener puts it on the
-	// envelope: it takes the part an event carries (model.EventBody), as the frame's own copy
-	// does, so one send never carries a body twice at two lengths.
-	carried, _ := model.EventBody(body)
-	send, err := s.deps.Envoy.Send(ctx, dispatchenvoy.SendInput{
-		TargetSession:  *target.SessionID,
-		Message:        carried,
-		Payload:        frame,
-		IdempotencyKey: idempotencyKey,
-		Urgency:        deref(urgency),
-		ExpectsReply:   expectsReply,
-	})
+	send, err := s.deps.Envoy.Send(ctx, listenerSendInput(
+		*target.SessionID, target.Delivery, body, idempotencyKey, urgency, wanted, frame,
+	))
 	if errors.Is(err, dispatchenvoy.ErrReceiptTimeout) {
 		return nil, false, receiptTimeoutText
 	}
@@ -160,6 +142,36 @@ func (s *server) sendResolvedDelivery(
 		return nil, true, ""
 	}
 	return &send.EnvelopeID, false, ""
+}
+
+// listenerSendInput is the listener send of one delivery to sessionID in mode delivery, carrying
+// frame. A targeted message Dispatch keeps for a session the listener holds no record of is the
+// envelope this send would have stored (keptEnvelope), so both are built from it.
+func listenerSendInput(
+	sessionID, delivery, body, idempotencyKey string, urgency *string,
+	wanted contracts.ExpectsReply, frame []byte,
+) dispatchenvoy.SendInput {
+	// What the delivered thing wants back, except in btw mode, which interrupts the session it
+	// reaches to ask something of it and so always waits on an answer, whatever the thing
+	// delivered says. The mode is read here, on every try, because a try after a listener
+	// take-over resolves the target again and sends in the mode that resolution names
+	// (mentionResolutionFor).
+	expectsReply := wanted
+	if delivery == "btw" {
+		expectsReply = contracts.ExpectsReplyRequired
+	}
+	// Message is the body a second time, beside the frame, and the listener puts it on the
+	// envelope: it takes the part an event carries (model.EventBody), as the frame's own copy
+	// does, so one send never carries a body twice at two lengths.
+	carried, _ := model.EventBody(body)
+	return dispatchenvoy.SendInput{
+		TargetSession:  sessionID,
+		Message:        carried,
+		Payload:        frame,
+		IdempotencyKey: idempotencyKey,
+		Urgency:        deref(urgency),
+		ExpectsReply:   expectsReply,
+	}
 }
 
 // commentExpectsReply is what a mention of one comment wants back. A comment that joins no ask
@@ -443,7 +455,8 @@ func (s *server) completeCommentDelivery(
 	deliveryError string,
 ) (model.CommentDelivery, error) {
 	sent := recorded
-	sent.State, sent.Error = deliveryOutcome(deliveryError)
+	// A mention is never kept: only a targeted message is (keepForSession).
+	sent.State, sent.Error = deliveryOutcome(deliveryError, false)
 	sent.Duplicate, sent.EnvelopeID = duplicate, envelopeID
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, sent),
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
@@ -493,7 +506,7 @@ func (s *server) supersedeCommentDelivery(
 	ctx context.Context, comment model.Comment, bound model.CommentDelivery, actor model.Actor, claim attemptClaim,
 ) (model.CommentDelivery, error) {
 	failed := bound
-	failed.State, failed.Error = deliveryOutcome(mentionSupersededError)
+	failed.State, failed.Error = deliveryOutcome(mentionSupersededError, false)
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, failed),
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
 			return scanCommentDelivery(tx.QueryRow(ctx, `

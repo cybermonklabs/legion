@@ -238,11 +238,13 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "ACCEPT_NOT_REQUESTED_BY_AUTHOR", http.StatusConflict,
 			fmt.Sprintf("attempt %d was requested by someone other than the person who wrote the message", number))
 		return
-	case state != "pending" && state != "sent":
+	case state != "pending" && state != "sent" && state != "kept":
 		// Dispatch told the person this attempt failed, and they may already have sent the message
-		// another way; a frame naming it is not the delivery they were shown.
+		// another way; a frame naming it is not the delivery they were shown. A kept attempt is taken
+		// as a sent one: its session comes back and is handed the frame Dispatch kept for it, which
+		// is the delivery the person was shown, and the minute below still bounds how late.
 		writeError(w, "ACCEPT_FAILED", http.StatusConflict,
-			fmt.Sprintf("attempt %d failed, and only a pending or sent attempt is taken as the session's turn", number))
+			fmt.Sprintf("attempt %d failed, and only a pending, sent or kept attempt is taken as the session's turn", number))
 		return
 	case !fresh:
 		writeError(w, "ACCEPT_STALE", http.StatusConflict,
@@ -643,7 +645,9 @@ func messageDeliveryReceipt(
 }
 
 // completeMessageDelivery is the settle transaction of a targeted delivery: it records what the
-// send did and appends the message.delivery receipt, holding no listener call.
+// send did and appends the message.delivery receipt, holding no listener call. kept is a message
+// stored on its session's own subject when the listener held no record of that session
+// (keepForSession), which settles kept rather than sent.
 func (s *server) completeMessageDelivery(
 	ctx context.Context,
 	message model.Message,
@@ -652,8 +656,9 @@ func (s *server) completeMessageDelivery(
 	envelopeID *string,
 	duplicate bool,
 	deliveryError string,
+	kept bool,
 ) (model.MessageDelivery, error) {
-	state, failure := deliveryOutcome(deliveryError)
+	state, failure := deliveryOutcome(deliveryError, kept)
 	// The receipt this send owes, read off the row it is about to write.
 	receipt := messageDeliveryReceipt(message, actor, model.MessageDelivery{
 		MessageID: message.ID, Attempt: pending.attempt, Delivery: pending.resolved.Delivery,
@@ -718,6 +723,10 @@ var errAttemptNotPending = errors.New("delivery attempt is no longer pending")
 //
 // Bound or not, a send that meets a listener take-over tries again under the attempt it claimed
 // (takeoverRetry.retry, renewMessageDeliveryClaim) and settles only with the last try's outcome.
+// A last try that found no live session for the session the attempt names - the registry read's
+// answer or the send's own 404 - keeps the message for that session (keepForSession) while this
+// sender still holds the attempt, so every sender of a targeted message keeps it alike: the
+// request, a keyed repeat, a broadcast's copy, a Retry and the delivery sweep.
 func (s *server) deliverMessageResuming(
 	ctx context.Context,
 	message model.Message,
@@ -749,32 +758,42 @@ func (s *server) deliverMessageResuming(
 	// listener scopes it further by recipient, which is what lets a role's new holder still be
 	// reached.
 	key := message.ID + ":" + pending.resolved.Delivery
+	// A direct message is written to the session it names and invites its answer; nothing about
+	// one says a reply is unwanted. A copy kept for its session says the same.
+	wanted := contracts.ExpectsReplyOptional
 	takeover := s.newTakeoverRetry()
 	var envelopeID *string
 	var duplicate bool
+	// held is whether this sender still holds the attempt's claim when its tries end. A renew that
+	// found the attempt answered or taken meanwhile ends them holding nothing, and then nothing is
+	// kept: the settle below reads what the row holds now.
+	held := true
 	deliveryError, err := takeover.retry(ctx,
 		func() string {
 			var failure string
-			// A direct message is written to the session it names and invites its answer;
-			// nothing about one says a reply is unwanted.
 			envelopeID, duplicate, failure = s.sendResolvedDelivery(
-				ctx, pending.resolved, message.Body, key, pending.urgency,
-				contracts.ExpectsReplyOptional, pending.frame,
+				ctx, pending.resolved, message.Body, key, pending.urgency, wanted, pending.frame,
 			)
 			return failure
 		},
 		func() (bool, error) {
-			renewed, held, err := s.renewMessageDeliveryClaim(ctx, message, pending)
-			if held {
+			renewed, stillHeld, err := s.renewMessageDeliveryClaim(ctx, message, pending)
+			if stillHeld {
 				pending = renewed
 			}
-			return held, err
+			held = stillHeld
+			return stillHeld, err
 		},
 	)
 	if err != nil {
 		return model.MessageDelivery{}, err
 	}
-	return s.completeMessageDelivery(ctx, message, actor, pending, envelopeID, duplicate, deliveryError)
+	kept := false
+	if held && s.deps.AgentPublisher != nil && keepsForSession(deliveryError, pending.resolved.attemptSessionID) {
+		envelopeID, duplicate, deliveryError = s.keepForSession(ctx, message, pending, key, wanted, deliveryError)
+		kept = deliveryError == ""
+	}
+	return s.completeMessageDelivery(ctx, message, actor, pending, envelopeID, duplicate, deliveryError, kept)
 }
 
 // renewMessageDeliveryClaim prepares one more try of an attempt this sender holds, after a try a

@@ -198,7 +198,7 @@ func TestTargetedMessageDeliveryRetriesAndAcceptsOnlyTargetReplies(t *testing.T)
 		}
 	}))
 	defer listener.Close()
-	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	handler, _, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
 	issue := createInteractionIssue(t, handler, "TEST", "Targeted message", "before")
 
 	created := createIssueMessage(t, handler, issue.Key, map[string]any{
@@ -277,17 +277,32 @@ func TestTargetedMessageDeliveryRetriesAndAcceptsOnlyTargetReplies(t *testing.T)
 		t.Fatalf("bearer target without actor = %d %s", anonymous.Code, anonymous.Body.String())
 	}
 
+	// The listener holds no record of s1 now, so the message is kept for it rather than failed:
+	// the envelope the listener's send would have stored goes on s1's own subject, and no send is
+	// made.
 	live = false
-	failed := createIssueMessage(t, handler, issue.Key, map[string]any{
+	sentBefore := len(sent)
+	kept := createIssueMessage(t, handler, issue.Key, map[string]any{
 		"body": "Retry me", "target": "session:s1", "delivery": "btw",
 	}, "alice")
-	if len(failed.Deliveries) != 1 || failed.Deliveries[0].State != "failed" ||
-		failed.Deliveries[0].Error == nil || *failed.Deliveries[0].Error != "no live session s1" {
-		t.Fatalf("failed delivery = %#v", failed.Deliveries)
+	if len(kept.Deliveries) != 1 || kept.Deliveries[0].State != "kept" ||
+		kept.Deliveries[0].Error != nil || kept.Deliveries[0].SessionID != "s1" {
+		t.Fatalf("delivery to a session with no record = %#v, want it kept for s1 with no error", kept.Deliveries)
+	}
+	if len(sent) != sentBefore {
+		t.Fatalf("the listener was sent %d more requests, want none: the registry said s1 has no record", len(sent)-sentBefore)
+	}
+	stored := keptBy(t, deps)
+	if len(stored) != 1 {
+		t.Fatalf("kept %d envelopes, want the one", len(stored))
+	}
+	assertKeptEnvelope(t, stored[0], "s1", kept, 1, "btw")
+	if kept.Deliveries[0].EnvelopeID == nil || *kept.Deliveries[0].EnvelopeID != stored[0].EventID {
+		t.Fatalf("kept attempt's envelope = %v, want the kept envelope %s", kept.Deliveries[0].EnvelopeID, stored[0].EventID)
 	}
 
 	live = true
-	retry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/messages/"+failed.ID+"/deliveries",
+	retry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/messages/"+kept.ID+"/deliveries",
 		map[string]any{"delivery": "steer"}, "alice")
 	if retry.Code != http.StatusCreated {
 		t.Fatalf("retry delivery: status=%d body=%s", retry.Code, retry.Body.String())
@@ -296,7 +311,7 @@ func TestTargetedMessageDeliveryRetriesAndAcceptsOnlyTargetReplies(t *testing.T)
 	if retried.Attempt != 2 || retried.Delivery != "steer" || retried.State != "sent" {
 		t.Fatalf("retried delivery = %#v", retried)
 	}
-	agentRetry := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+failed.ID+"/deliveries", map[string]any{
+	agentRetry := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+kept.ID+"/deliveries", map[string]any{
 		"delivery": "btw", "actor": map[string]any{"kind": "session", "id": "s2"},
 	})
 	if agentRetry.Code != http.StatusCreated {
@@ -319,7 +334,7 @@ func TestTargetedMessageDeliveryRetriesAndAcceptsOnlyTargetReplies(t *testing.T)
 	}](t, retryEventsResponse)
 	foundAgentRetryEvent := false
 	for _, event := range retryEvents {
-		if event.Type == "message.delivery" && event.Payload.MessageID == failed.ID && event.Payload.Attempt == 3 {
+		if event.Type == "message.delivery" && event.Payload.MessageID == kept.ID && event.Payload.Attempt == 3 {
 			foundAgentRetryEvent = true
 			if event.Actor.Kind != "session" || event.Actor.ID != "s2" {
 				t.Fatalf("bearer retry event actor = %#v, want session s2", event.Actor)
@@ -327,30 +342,30 @@ func TestTargetedMessageDeliveryRetriesAndAcceptsOnlyTargetReplies(t *testing.T)
 		}
 	}
 	if !foundAgentRetryEvent {
-		t.Fatalf("bearer retry event for message %s attempt 3 not found in %#v", failed.ID, retryEvents)
+		t.Fatalf("bearer retry event for message %s attempt 3 not found in %#v", kept.ID, retryEvents)
 	}
-	anonymousRetry := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+failed.ID+"/deliveries", map[string]any{"delivery": "btw"})
+	anonymousRetry := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+kept.ID+"/deliveries", map[string]any{"delivery": "btw"})
 	if anonymousRetry.Code != http.StatusBadRequest || !strings.Contains(anonymousRetry.Body.String(), `"code":"ACTOR_KIND"`) {
 		t.Fatalf("bearer retry without actor = %d %s", anonymousRetry.Code, anonymousRetry.Body.String())
 	}
 
-	reply := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+failed.ID+"/reply", map[string]any{
+	reply := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+kept.ID+"/reply", map[string]any{
 		"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 2, "body": "Ship it.",
 	})
 	if reply.Code != http.StatusCreated {
 		t.Fatalf("reply: status=%d body=%s", reply.Code, reply.Body.String())
 	}
 	answered := decodeBody[model.Message](t, reply)
-	if answered.InReplyTo == nil || *answered.InReplyTo != failed.ID {
+	if answered.InReplyTo == nil || *answered.InReplyTo != kept.ID {
 		t.Fatalf("answer = %#v", answered)
 	}
-	repeated := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+failed.ID+"/reply", map[string]any{
+	repeated := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+kept.ID+"/reply", map[string]any{
 		"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 2, "body": "Ship it.",
 	})
 	if repeated.Code != http.StatusOK || decodeBody[model.Message](t, repeated).ID != answered.ID {
 		t.Fatalf("repeated reply: status=%d body=%s", repeated.Code, repeated.Body.String())
 	}
-	wrongSession := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+failed.ID+"/reply", map[string]any{
+	wrongSession := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+kept.ID+"/reply", map[string]any{
 		"actor": map[string]any{"kind": "session", "id": "s2"}, "attempt": 2, "body": "No.",
 	})
 	if wrongSession.Code != http.StatusForbidden || !strings.Contains(wrongSession.Body.String(), `"code":"REPLY_FORBIDDEN"`) {
@@ -499,15 +514,18 @@ func TestTargetedMessageRecordsCapabilityAndListenerFailures(t *testing.T) {
 		t.Fatalf("missing capability sent %d listener requests", sendCalls)
 	}
 
+	// The listener's own send refuses a mode its record of the session does not take, whatever
+	// the registry read said a moment before. That refusal is the listener's answer, which is
+	// recorded as it stands and which no keep takes.
 	capabilities = []string{"aside", "btw"}
-	sendStatus = http.StatusNotFound
-	sendError = "no live session s1"
+	sendStatus = http.StatusForbidden
+	sendError = "session s1 (planner) does not advertise btw"
 	listenerFailure := createIssueMessage(t, handler, issue.Key, map[string]any{
 		"body": "Can you receive now?", "target": "session:s1", "delivery": "btw",
 	}, "alice")
 	if got := listenerFailure.Deliveries; len(got) != 1 || got[0].State != "failed" ||
-		got[0].Error == nil || *got[0].Error != "no live session s1" {
-		t.Fatalf("listener 404 delivery = %#v", got)
+		got[0].Error == nil || *got[0].Error != "session s1 (planner) does not advertise btw" {
+		t.Fatalf("listener 403 delivery = %#v", got)
 	}
 }
 
@@ -736,7 +754,9 @@ func TestAgentTargetedMessagesNeedThePersonScopeAndKeepTheirOwnConversation(t *t
 				_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"error":"no live session s1"}`))
+			// The listener's own refusal of a mode, which no keep takes, so the attempt fails and
+			// the person's Retry below is what reaches the session.
+			_, _ = w.Write([]byte(`{"error":"session s1 (planner) does not advertise btw"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"not found"}`))
@@ -776,7 +796,7 @@ func TestAgentTargetedMessagesNeedThePersonScopeAndKeepTheirOwnConversation(t *t
 		t.Fatalf("issue-less message event sequence = %d, want 0", sequence)
 	}
 
-	sendStatus = http.StatusNotFound
+	sendStatus = http.StatusForbidden
 	failed := postAgentMessage(t, handler, "s1", map[string]any{
 		"body": "Second question", "delivery": "btw",
 	}, "alice")
@@ -785,7 +805,7 @@ func TestAgentTargetedMessagesNeedThePersonScopeAndKeepTheirOwnConversation(t *t
 	}
 	failedMessage := decodeBody[model.Message](t, failed)
 	if len(failedMessage.Deliveries) != 1 || failedMessage.Deliveries[0].State != "failed" ||
-		failedMessage.Deliveries[0].Error == nil || *failedMessage.Deliveries[0].Error != "no live session s1" {
+		failedMessage.Deliveries[0].Error == nil || *failedMessage.Deliveries[0].Error != "session s1 (planner) does not advertise btw" {
 		t.Fatalf("failed issue-less delivery = %#v", failedMessage.Deliveries)
 	}
 
@@ -954,59 +974,74 @@ func sessionListener(t *testing.T, live *bool, sent *[]map[string]any) *httptest
 	}))
 }
 
+// The listener holds no record of s1, so the attempt is kept for s1 where Dispatch has a bus to
+// keep it on and recorded failed where it has none. Either way the message can still reach the
+// session - the kept copy once it comes back, or a frame its host already held - and the session
+// answers through the attempt it was handed: the answer moves the attempt to sent.
 func TestReplyOnFailedAttemptRecordsTheAnswer(t *testing.T) {
-	live := false
-	sent := []map[string]any{}
-	listener := sessionListener(t, &live, &sent)
-	defer listener.Close()
-	handler, _ := newTargetedMessageHandler(t, listener.URL)
-	issue := createInteractionIssue(t, handler, "TEST", "Failed then answered", "before")
+	for _, tc := range []struct {
+		name    string
+		options testServerOptions
+		state   string
+	}{
+		{name: "a kept attempt", state: "kept"},
+		{name: "a failed attempt", options: testServerOptions{noAgentPublisher: true}, state: "failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			live := false
+			sent := []map[string]any{}
+			listener := sessionListener(t, &live, &sent)
+			defer listener.Close()
+			options := tc.options
+			options.envoyURL = listener.URL
+			handler, _, _ := newTestServer(t, options)
+			issue := createInteractionIssue(t, handler, "TEST", "Failed then answered", "before")
 
-	// The listener listed no session, so Dispatch recorded the attempt as failed - yet the
-	// message did reach the session, which now answers through the attempt it was handed.
-	message := createIssueMessage(t, handler, issue.Key, map[string]any{
-		"body": "Did you get this?", "target": "session:s1", "delivery": "btw",
-	}, "alice")
-	if len(message.Deliveries) != 1 || message.Deliveries[0].State != "failed" {
-		t.Fatalf("failed delivery = %#v", message.Deliveries)
-	}
-	before := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
-	reply := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
-		"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 1, "body": "Loud and clear.",
-	})
-	if reply.Code != http.StatusCreated {
-		t.Fatalf("reply on failed attempt: status=%d body=%s", reply.Code, reply.Body.String())
-	}
-	answer := decodeBody[model.Message](t, reply)
-	if answer.InReplyTo == nil || *answer.InReplyTo != message.ID || answer.Body != "Loud and clear." {
-		t.Fatalf("answer = %#v", answer)
-	}
-	after := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
-	if strings.Count(after.Body.String(), `"type":"message.answered"`) != strings.Count(before.Body.String(), `"type":"message.answered"`)+1 {
-		t.Fatalf("answer did not append one message.answered event: before=%s after=%s", before.Body.String(), after.Body.String())
-	}
+			message := createIssueMessage(t, handler, issue.Key, map[string]any{
+				"body": "Did you get this?", "target": "session:s1", "delivery": "btw",
+			}, "alice")
+			if len(message.Deliveries) != 1 || message.Deliveries[0].State != tc.state {
+				t.Fatalf("delivery to a session with no record = %#v, want it %s", message.Deliveries, tc.state)
+			}
+			before := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
+			reply := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
+				"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 1, "body": "Loud and clear.",
+			})
+			if reply.Code != http.StatusCreated {
+				t.Fatalf("reply on %s attempt: status=%d body=%s", tc.state, reply.Code, reply.Body.String())
+			}
+			answer := decodeBody[model.Message](t, reply)
+			if answer.InReplyTo == nil || *answer.InReplyTo != message.ID || answer.Body != "Loud and clear." {
+				t.Fatalf("answer = %#v", answer)
+			}
+			after := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
+			if strings.Count(after.Body.String(), `"type":"message.answered"`) != strings.Count(before.Body.String(), `"type":"message.answered"`)+1 {
+				t.Fatalf("answer did not append one message.answered event: before=%s after=%s", before.Body.String(), after.Body.String())
+			}
 
-	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/messages/"+message.ID, nil, "alice")
-	if read.Code != http.StatusOK {
-		t.Fatalf("get message: status=%d body=%s", read.Code, read.Body.String())
-	}
-	stored := decodeBody[messageRead](t, read)
-	if len(stored.Message.Deliveries) != 1 {
-		t.Fatalf("deliveries = %#v", stored.Message.Deliveries)
-	}
-	if attempt := stored.Message.Deliveries[0]; attempt.State != "sent" || attempt.Error != nil ||
-		attempt.ReplyID == nil || *attempt.ReplyID != answer.ID {
-		t.Fatalf("answered attempt = %#v, want sent with reply %s and no error", attempt, answer.ID)
-	}
-	if len(stored.Replies) != 1 || stored.Replies[0].ID != answer.ID {
-		t.Fatalf("replies = %#v, want [%s]", stored.Replies, answer.ID)
-	}
+			read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/messages/"+message.ID, nil, "alice")
+			if read.Code != http.StatusOK {
+				t.Fatalf("get message: status=%d body=%s", read.Code, read.Body.String())
+			}
+			stored := decodeBody[messageRead](t, read)
+			if len(stored.Message.Deliveries) != 1 {
+				t.Fatalf("deliveries = %#v", stored.Message.Deliveries)
+			}
+			if attempt := stored.Message.Deliveries[0]; attempt.State != "sent" || attempt.Error != nil ||
+				attempt.ReplyID == nil || *attempt.ReplyID != answer.ID {
+				t.Fatalf("answered attempt = %#v, want sent with reply %s and no error", attempt, answer.ID)
+			}
+			if len(stored.Replies) != 1 || stored.Replies[0].ID != answer.ID {
+				t.Fatalf("replies = %#v, want [%s]", stored.Replies, answer.ID)
+			}
 
-	repeated := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
-		"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 1, "body": "Loud and clear.",
-	})
-	if repeated.Code != http.StatusOK || decodeBody[model.Message](t, repeated).ID != answer.ID {
-		t.Fatalf("repeated reply: status=%d body=%s", repeated.Code, repeated.Body.String())
+			repeated := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
+				"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 1, "body": "Loud and clear.",
+			})
+			if repeated.Code != http.StatusOK || decodeBody[model.Message](t, repeated).ID != answer.ID {
+				t.Fatalf("repeated reply: status=%d body=%s", repeated.Code, repeated.Body.String())
+			}
+		})
 	}
 }
 
@@ -2019,7 +2054,7 @@ func TestASupersededAttemptIsNotSettledAgainByItsOriginalSender(t *testing.T) {
 				attemptSessionID: "s1", title: "planner",
 			},
 		},
-		nil, false, "",
+		nil, false, "", false,
 	); err != nil {
 		t.Fatalf("the returning sender's settle: %v", err)
 	}
@@ -2452,7 +2487,7 @@ func TestAMessageSenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testi
 				attemptSessionID: "s1", title: "planner",
 			},
 		},
-		&envelope, false, "",
+		&envelope, false, "", false,
 	)
 	if err != nil {
 		t.Fatalf("the stalled sender's settle: %v", err)

@@ -996,6 +996,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"DELETE /api/v1/artifacts/{id}/_test/live-write-pauses/{point}": {Status: http.StatusOK, Response: liveWritePauseState{}},
 	"POST /api/v1/writes/_test/slow":                                {Status: http.StatusOK, Response: testHookOK{}, Request: slowWriteInput{}},
+	"GET /api/v1/messages/_test/kept":                               {Status: http.StatusOK, Response: keptMessages{}},
 }
 
 // shapelessRoutes names every mounted row routeShapes does not name. A row with no shape is a

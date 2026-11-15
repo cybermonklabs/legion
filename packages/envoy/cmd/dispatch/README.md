@@ -3507,6 +3507,13 @@ Each item below names a path with its method and identity, then its purpose.
   A browser test reads the bar with a label and a session configured and then with the session cleared, which no deployment setting can change while the server runs.
   Not mounted otherwise.
 
+- `/api/v1/messages/_test/kept` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  List the targeted messages this process kept for a session the listener held no record of, oldest first, each as the envelope that session's own subject would hold:
+  `{"kept": [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}`.
+  A process with `DISPATCH_NATS_DISABLED=1` keeps them in its own memory, where this route reads them; a process with NATS publishes them to the stream, and answers `404 TEST_HOOKS_OFF` here.
+  Not mounted otherwise.
+
 - `/ws/live` (GET; cookie, trusted header, or bearer)
 
   One WebSocket per browser tab, serving delivery, events, and agent subscriptions.

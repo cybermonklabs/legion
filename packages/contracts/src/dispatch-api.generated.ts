@@ -2100,6 +2100,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/messages/_test/kept": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Test hook: list the targeted messages this process kept for a session the listener held no record of, each as the envelope its session's subject would hold: {kept: [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}, oldest first; 404 TEST_HOOKS_OFF on a process that keeps them on NATS. */
+    get: operations["getApiV1MessagesTestKept"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/messages/{id}": {
     parameters: {
       query?: never;
@@ -2160,7 +2177,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description The attempt's session records that it took the message as its user's own turn; the session names itself in actor (403 ACCEPT_FORBIDDEN for another's attempt). One compare-and-set: only a direct message to that session, on no issue, neither a broadcast's copy nor a reply in a broadcast's thread, in a thread whose root targets it (409 ACCEPT_NOT_DIRECT), that a person wrote (409 ACCEPT_NOT_WRITTEN_BY_PERSON), sent as a Send or an Aside (409 ACCEPT_NOT_ASIDE_OR_STEER); only the message's latest attempt (409 ACCEPT_SUPERSEDED), when no attempt of it was accepted before (409 ACCEPT_ALREADY_ACCEPTED), which a person requested (409 ACCEPT_NOT_REQUESTED_BY_PERSON), that person being the message's author (409 ACCEPT_NOT_REQUESTED_BY_AUTHOR), which did not fail (409 ACCEPT_FAILED; a pending or sent attempt is taken), within the last minute (409 ACCEPT_STALE). Answers the attempt with accepted_at and accepted_as and the message's stored body; leaves the attempt's state to the send, and appends message.accepted. */
+    /** @description The attempt's session records that it took the message as its user's own turn; the session names itself in actor (403 ACCEPT_FORBIDDEN for another's attempt). One compare-and-set: only a direct message to that session, on no issue, neither a broadcast's copy nor a reply in a broadcast's thread, in a thread whose root targets it (409 ACCEPT_NOT_DIRECT), that a person wrote (409 ACCEPT_NOT_WRITTEN_BY_PERSON), sent as a Send or an Aside (409 ACCEPT_NOT_ASIDE_OR_STEER); only the message's latest attempt (409 ACCEPT_SUPERSEDED), when no attempt of it was accepted before (409 ACCEPT_ALREADY_ACCEPTED), which a person requested (409 ACCEPT_NOT_REQUESTED_BY_PERSON), that person being the message's author (409 ACCEPT_NOT_REQUESTED_BY_AUTHOR), which did not fail (409 ACCEPT_FAILED; a pending, sent or kept attempt is taken), within the last minute (409 ACCEPT_STALE). Answers the attempt with accepted_at and accepted_as and the message's stored body; leaves the attempt's state to the send, and appends message.accepted. */
     post: operations["postApiV1MessagesByIdDeliveriesByAttemptAccept"];
     delete?: never;
     options?: never;
@@ -5225,6 +5242,18 @@ export interface components {
     };
     KeepDecisionInput: {
       text_sha256: string;
+    };
+    KeptMessage: {
+      dedupe_key: string;
+      event_id: string;
+      payload: string;
+      payload_summary: string;
+      source: string;
+      subject: string;
+      urgency?: string;
+    };
+    KeptMessages: {
+      kept: components["schemas"]["KeptMessage"][] | null;
     };
     LauncherCredentialResp: {
       approved_by: string;
@@ -11561,6 +11590,38 @@ export interface operations {
       };
     };
   };
+  getApiV1MessagesTestKept: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["KeptMessages"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1MessagesById: {
     parameters: {
       query?: {
@@ -13796,6 +13857,8 @@ export type ItemBlock = components["schemas"]["ItemBlock"];
 export type ItemBlocks = components["schemas"]["ItemBlocks"];
 export type JsonArtifactUpload = components["schemas"]["JsonArtifactUpload"];
 export type KeepDecisionInput = components["schemas"]["KeepDecisionInput"];
+export type KeptMessage = components["schemas"]["KeptMessage"];
+export type KeptMessages = components["schemas"]["KeptMessages"];
 export type LauncherCredentialResp = components["schemas"]["LauncherCredentialResp"];
 export type LauncherCredentialsResponse = components["schemas"]["LauncherCredentialsResponse"];
 export type LeadTime = components["schemas"]["LeadTime"];

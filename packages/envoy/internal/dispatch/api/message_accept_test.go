@@ -350,16 +350,16 @@ func TestAcceptTakesTheAuthorsOwnRetryHoweverTheirLoginIsCased(t *testing.T) {
 	}
 }
 
-// A person's Send to a session Dispatch finds not live is recorded as failed: no frame of it ever
-// left. A frame forged inside the minute naming that attempt must not make it the session's turn,
-// or the person, shown "Failed", may already have sent it another way (Deep's first round-2
-// construction).
+// A person's Send to a session Dispatch finds not live, on a deployment with no bus to keep it
+// on, is recorded as failed: no frame of it ever left. A frame forged inside the minute naming
+// that attempt must not make it the session's turn, or the person, shown "Failed", may already
+// have sent it another way (Deep's first round-2 construction).
 func TestAcceptRefusesASendDispatchCouldNotDeliver(t *testing.T) {
 	live := false
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
 	t.Cleanup(listener.Close)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, noAgentPublisher: true})
 	created := postAgentMessage(t, handler, "s1", map[string]any{
 		"body": "Restart the deploy.", "delivery": "steer",
 	}, "alice")
@@ -377,6 +377,61 @@ func TestAcceptRefusesASendDispatchCouldNotDeliver(t *testing.T) {
 		t.Fatalf("accept: status=%d body=%s, want 409 ACCEPT_FAILED", refused.Code, refused.Body.String())
 	}
 	assertNothingAccepted(t, database, message.ID, 1, 0)
+}
+
+// A person's Send to a session the listener holds no record of is kept for that session, and the
+// person is shown it kept. A session that comes back within the minute and is handed the kept frame
+// takes it as its turn, as it takes a sent attempt; one that comes back later is refused, and the
+// frame reaches it as a card.
+func TestAcceptTakesAKeptAttemptWithinTheMinute(t *testing.T) {
+	live := false
+	sent := []map[string]any{}
+	listener := sessionListener(t, &live, &sent)
+	t.Cleanup(listener.Close)
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	send := func(body string) model.Message {
+		t.Helper()
+		created := postAgentMessage(t, handler, "s1", map[string]any{"body": body, "delivery": "steer"}, "alice")
+		if created.Code != http.StatusCreated {
+			t.Fatalf("direct message: status=%d body=%s", created.Code, created.Body.String())
+		}
+		message := decodeBody[model.Message](t, created)
+		if len(message.Deliveries) != 1 || message.Deliveries[0].State != "kept" {
+			t.Fatalf("the Send to a session with no record = %+v, want one kept attempt", message.Deliveries)
+		}
+		return message
+	}
+	fresh := send("Restart the deploy.")
+	stale := send("And then the canary.")
+	if kept := keptBy(t, deps); len(kept) != 2 || len(sent) != 0 {
+		t.Fatalf("kept %d envelopes with %d sends, want both messages kept and nothing sent", len(kept), len(sent))
+	}
+	if _, err := database.Pool.Exec(context.Background(), `
+		update message_deliveries set created_at = now() - interval '61 seconds'
+		where message_id = $1 and attempt = 1
+	`, stale.ID); err != nil {
+		t.Fatalf("age the second attempt: %v", err)
+	}
+	live = true
+
+	accepted := acceptDelivery(t, handler, fresh.ID, 1, "s1")
+	if accepted.Code != http.StatusOK {
+		t.Fatalf("accept of a kept attempt: status=%d body=%s, want 200", accepted.Code, accepted.Body.String())
+	}
+	// The accept never settles the attempt: it stays kept, and only the session's reply moves it.
+	if got := decodeBody[acceptedAttempt](t, accepted); got.AcceptedAs == nil || *got.AcceptedAs != "user_turn" ||
+		got.State != "kept" || got.Body != "Restart the deploy." {
+		t.Fatalf("accepted = %+v, want the kept attempt taken as the session's turn with the stored body", got)
+	}
+	if len(acceptedEvents(t, database, fresh.ID)) != 1 {
+		t.Fatalf("message.accepted events = %d, want 1", len(acceptedEvents(t, database, fresh.ID)))
+	}
+
+	refused := acceptDelivery(t, handler, stale.ID, 1, "s1")
+	if refused.Code != http.StatusConflict || responseCode(t, refused) != "ACCEPT_STALE" {
+		t.Fatalf("accept of a kept attempt past the minute: status=%d body=%s, want 409 ACCEPT_STALE", refused.Code, refused.Body.String())
+	}
+	assertNothingAccepted(t, database, stale.ID, 1, 0)
 }
 
 // assertNothingAccepted fails t when a refused accept of attempt `attempt` recorded anything: an
