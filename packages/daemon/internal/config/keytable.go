@@ -804,7 +804,7 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: kubernetesKey + ".memory_guard.issue_pods", Members: []member{
 		{Name: "enabled", Default: "`true`", RequiredBy: "no",
-			Description: "Whether the guard runs in issue pods; `false` turns it off at each launcher's next hello, and until that answer a launcher runs it at the defaults."},
+			Description: "Whether the guard runs in issue pods; `false` turns it off at each launcher's next hello, and until that answer a launcher runs it at the settings it last took, or at the defaults where it has taken none."},
 		{Name: "act_percent", Default: "`85`", RequiredBy: "no",
 			Description: "The share of the container's memory limit, from 50 to 95, at which the pod's anonymous memory makes the guard end the largest process it may end."},
 		{Name: "floor_percent", Default: "`10`", RequiredBy: "no",
