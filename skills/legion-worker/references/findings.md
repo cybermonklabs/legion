@@ -76,7 +76,8 @@ next look of its own.
 
 The controller topic is a live wake: a message published while no controller runs reaches nobody
 at the time. `envoy_publish`'s own answer tells you whether one took it. A publish to a role
-answers with its live `holder`. With no claim on `legion-<project>-controller` at all, the answer
+answers with its live `holder`, and with no count of recipients: the listener forwards a role
+message to its holder alone. With no claim on `legion-<project>-controller` at all, the answer
 says Envoy kept the message instead (`packages/envoy/cmd/listener`, the test "unheld role is kept
 and answered 202 without publishing on the role topic"): the next session that claims the role is
 handed each kept message once, within one hour of the keep. A keep is not a delivery: a

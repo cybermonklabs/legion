@@ -4794,6 +4794,8 @@ export default function envoyExtension(pi: PiApi): void {
             recipient: result.recipient,
             recipient_state: result.recipientState,
             confirmed: result.confirmed,
+            state: result.state,
+            ...(result.lastSeen === undefined ? {} : { last_seen: result.lastSeen }),
           });
         }
         case EnvoyToolOperation.publish: {
@@ -4813,8 +4815,8 @@ export default function envoyExtension(pi: PiApi): void {
           // role lane, which its holder does not follow, actually goes undelivered: a
           // subagent's source is its parent, so a publish to a role that parent holds is
           // accepted, answers with that holder, and reaches nobody. Only the role case is
-          // visible here: a plain topic's subscribers are not in the answer at all, since the
-          // stream stores one copy each session's own consumer delivers. AGENTS.md and the
+          // visible here: a plain topic's answer counts its subscribers and names none, since
+          // the stream stores one copy each session's own consumer delivers. AGENTS.md and the
           // envoy skill carry the general rule. A direct envoy_send is unaffected: the
           // agent-subject lane has no such skip.
           // A kept answer reached no session at all, so the echo rule cannot apply to it: the
@@ -4831,6 +4833,10 @@ export default function envoyExtension(pi: PiApi): void {
               topic,
               ...(result.holder === undefined ? {} : { holder: result.holder }),
               ...(result.holderState === undefined ? {} : { holder_state: result.holderState }),
+              ...(result.recipients === undefined ? {} : { recipients: result.recipients }),
+              ...(result.recipientsConnected === undefined
+                ? {}
+                : { recipients_connected: result.recipientsConnected }),
               ...(result.kept === undefined ? {} : { kept: result.kept }),
               ...(result.keptReason === undefined ? {} : { kept_reason: result.keptReason }),
               ...(undelivered ? { undelivered_echo: true } : {}),

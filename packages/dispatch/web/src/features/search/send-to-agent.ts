@@ -1,5 +1,6 @@
 import { api } from "../../api/client";
 import type { Message } from "../../api/types";
+import { deliveryOutcomeState } from "../conversation/delivery";
 import type { Attempt, Writes } from "../writes/write-store";
 import { press } from "./offer";
 
@@ -29,9 +30,15 @@ export interface SendToAgentWrite {
   readonly words: string;
 }
 
-/** How the offer sends; the tests pass their own. It answers why the words did not reach the
- *  session, and undefined where they did. */
-export type SendToAgent = (writes: Writes, write: SendToAgentWrite) => Promise<string | undefined>;
+/** What became of one send: it reached the session (`sent`); the listener took it for a session
+ *  it knows and that is not running, and hands it over when that session runs again (`queued`);
+ *  or it did not reach the session, with why (`refused`). */
+export type SendToAgentOutcome =
+  | { readonly kind: "sent" | "queued" }
+  | { readonly kind: "refused"; readonly refusal: string };
+
+/** How the offer sends; the tests pass their own. */
+export type SendToAgent = (writes: Writes, write: SendToAgentWrite) => Promise<SendToAgentOutcome>;
 
 /**
  * Sends the person's words to the session on the issue, through the route every other client
@@ -47,12 +54,14 @@ export type SendToAgent = (writes: Writes, write: SendToAgentWrite) => Promise<s
  * settle as `failed` under a `201` - a session that does not advertise the mode is never
  * switched to another one, and the listener can refuse the send. The message is written either
  * way, so the answer here is the attempt's own reason rather than a throw: the bar says the
- * words did not reach the agent instead of saying they did.
+ * words did not reach the agent instead of saying they did. An attempt can settle as `queued`
+ * too, for a session that stopped since the bar offered it: the words are stored for it rather
+ * than refused, so the bar says that instead of either (INFRA-626).
  */
 export async function sendToAgent(
   writes: Writes,
   { block, issue, session, words }: SendToAgentWrite
-): Promise<string | undefined> {
+): Promise<SendToAgentOutcome> {
   const write: Attempt<Message> = (bounds) =>
     api.createAgentMessage(
       session,
@@ -61,8 +70,10 @@ export async function sendToAgent(
     );
   const message = await press(writes, `“${words}” to the agent on ${issue}`, write);
   const attempt = message?.deliveries?.at(-1);
-  if (attempt === undefined || attempt.state !== "failed") {
-    return undefined;
+  if (attempt === undefined) return { kind: "sent" };
+  const state = deliveryOutcomeState(attempt.state);
+  if (state === "failed") {
+    return { kind: "refused", refusal: attempt.error ?? "Dispatch gave no reason." };
   }
-  return attempt.error ?? "Dispatch gave no reason.";
+  return { kind: state === "queued" ? "queued" : "sent" };
 }

@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
@@ -119,9 +120,14 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 	if !ok {
 		return
 	}
+	// The route's adapter (accountAuthAfterRecordKind) noted this route's caller unauthenticated,
+	// since it is this handler that reads the credential, and a caller without the route's power
+	// is refused as unauthenticated, as authenticate's refusal of every other account route
+	// records it; from here on the refusals are the listed caller's.
 	if refuseWithoutPower(w, who.account, needs, r.Pattern) {
 		return
 	}
+	answer.FromContext(r.Context()).NoteCaller(answer.CallerAccount, who.account.Name)
 	switch {
 	case errors.Is(kindErr, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such credential request")
@@ -137,7 +143,9 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 	if !requireApprover(w, body.Approver) {
 		return
 	}
-	slog.Info("decision relayed", "caller", who.account.Name, "approver", body.Approver, "record", recordID, "approve", approve)
+	// The approver is the caller's word, of any length requireApprover takes, so the line cuts it
+	// (answer.ClipFields).
+	slog.Info("decision relayed", answer.ClipFields([]any{"caller", who.account.Name, "approver", body.Approver, "record", recordID, "approve", approve})...)
 	s.decideMachineLogin(w, r, recordID, approve, body)
 }
 
