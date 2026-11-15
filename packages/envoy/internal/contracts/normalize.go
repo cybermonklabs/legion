@@ -1641,10 +1641,10 @@ func ghostWisprSummary(eventType string, body map[string]any) string {
 	return OneLineSummary(summary)
 }
 
-// ghostWisprPayload copies the event's fields. A current unit sends no title or summary text,
-// because the stream keeps an envelope for its whole retention window and no deletion on the unit
-// can recall it; it sends when the session ran and where its current text is, so a reader fetches
-// that text itself. An older unit still sends its title and summary, and both pass when present.
+// ghostWisprPayload builds the envelope payload from the body's payload object: the session id,
+// its times and links, its title and its duration for every event type, and the summary fields
+// for summary_ready. payloadJSON drops a field the unit did not send. A current unit sends no
+// title or summary text (packages/envoy/AGENTS.md says why), and an older unit's still pass.
 func ghostWisprPayload(eventType string, body map[string]any) string {
 	normalizedEventType := normalizeGhostWisprEventType(eventType)
 	data := map[string]string{"event_type": normalizedEventType}
