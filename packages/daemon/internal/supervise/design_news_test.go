@@ -175,6 +175,83 @@ func TestANewsOnlyTaskARestartRetiresAnswersTheQuestionTheRestartLeft(t *testing
 	h.wantState(StateWorking)
 }
 
+// restoredUnsentNews is a daemon restarted over a ready claim that holds a task carrying news of
+// the approved design that no prompt has carried (Delivery.Prompted false): a task queued while
+// the agent's turn ran, with the daemon stopped before that turn ended. The restart arms its
+// question over the task (askFirst), as over every unconfirmed task it restores. The agent's
+// connection is registered, and the agent is in a turn of its own, an Envoy message's, so it
+// answers a prompt busy.
+func restoredUnsentNews(t *testing.T, answer *designNewsAnswer) *harness {
+	t.Helper()
+	restored := queuedClaim()
+	restored.State, restored.Generation = StateReady, 3
+	restored.Session, restored.SessionFile = session, sessionFile
+	restored.Locator = &runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: testToken, Incarnation: "4242:77",
+		Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"}}
+	restored.Pending = &Delivery{ID: "outbox:46", Task: queuedTask, Phase: phase.Reviewing, Generation: 7, QueuedAt: epoch,
+		News: []byte(queuedNews)}
+	h := newBareHarness(t)
+	h.deps.DesignNews = answer.answer
+	if err := h.store.PutClaim(h.ctx, restored); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.PutDelivery(h.ctx, testToken, *restored.Pending); err != nil {
+		t.Fatalf("seed the restored delivery: %v", err)
+	}
+	h.conns.Register(testToken, h.conn)
+	h.conn.SetStreaming(true)
+	h.conn.RefusePrompt(busyAnswer)
+	h.start(restored)
+	return h
+}
+
+// After a restart, a task carrying news that no prompt carried is never confirmed by a turn the
+// agent started by itself. Its confirmation records the news as taken, and the agent never read
+// it. So the question the restart left (askFirst) never takes the agent's turn for the task's, at
+// either place it could: the send the ready makes, where the agent says it is in a turn, and a
+// turn's start seen before anything was sent. The task stays unconfirmed and is sent: the send
+// the busy agent refuses records the claim working for the agent's own turn, and the end of that
+// turn sends the task again, so the turn that starts on it confirms it.
+func TestARestartNeverConfirmsANewsTaskNoPromptCarriedByATurnOfTheAgentsOwn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// first is what reaches the restored claim first, and refused the prompts it leads to.
+		first   Event
+		refused int
+	}{
+		{name: "the ready's send finds the agent in a turn of its own",
+			first: RequestReady{Claim: testToken, Generation: 3, Session: session}, refused: 1},
+		{name: "a turn of the agent's own starts before anything is sent",
+			first: StreamTurnStart{Claim: testToken}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			answer := &designNewsAnswer{task: queuedTask, news: []byte(queuedNews)}
+			h := restoredUnsentNews(t, answer)
+
+			h.must(tc.first)
+
+			if stored, ok := h.store.delivery(testToken); !ok || !stored.ConfirmedAt.IsZero() {
+				t.Fatalf("stored delivery after %s = %+v (held %t), want outbox:46 unconfirmed: no prompt carried its news", tc.name, stored, ok)
+			}
+			h.wantPrompts(tc.refused)
+			h.wantState(StateWorking)
+
+			h.conn.FailPrompt(nil)
+			h.conn.SetStreaming(false)
+			h.mustQuiet(StreamTurnEnd{Claim: testToken})
+
+			sent := h.wantPrompts(tc.refused + 1)[tc.refused]
+			if sent.DeliveryID != h.pending().ID || sent.Message != queuedTask {
+				t.Fatalf("the send at the end of the agent's own turn = %+v, want the news task %q under its pending id", sent, queuedTask)
+			}
+			h.must(StreamTurnStart{Claim: testToken})
+			if stored, ok := h.store.delivery(testToken); !ok || stored.ConfirmedAt.IsZero() || !bytes.Equal(stored.News, []byte(queuedNews)) {
+				t.Fatalf("stored delivery after the turn its send started = %+v (held %t), want it confirmed carrying its news", stored, ok)
+			}
+		})
+	}
+}
+
 // A task carrying news is a task like any other in when it is sent: queued while the claim is in
 // a turn, it waits for that turn's end, and nothing asks the record about it until then. The news
 // it carries is rendered at the send that turn's end makes, not at the queue.

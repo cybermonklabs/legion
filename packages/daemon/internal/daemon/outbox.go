@@ -1989,14 +1989,17 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// the task carries travels the same way (supervise.Delivery.News): the task is the
 			// start's own text and the news after it, the send renders that news again from the
 			// record (the daemon's designNews), and the write recording the turn's confirmation is
-			// what raises what it told (the claim store's settleDesignNews).
+			// what raises what it told (the claim store's settleDesignNews). A start queued for news
+			// alone travels marked so (supervise.RequestDeliver.NewsOnly): its task holds no work, so
+			// the machine refuses it behind any task that does, the one a running turn works among
+			// them, and the row waits on its backoff until that turn has ended.
 			kept, err := keptJSON(payload.Kept)
 			if err != nil {
 				return err
 			}
 			if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
 				Entry: payload.Entry, ResendEntry: payload.ResendEntry, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news}); err != nil {
+				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News}); err != nil {
 				return fmt.Errorf("deliver to claim %s: %w", token, err)
 			}
 			gave = true
@@ -2152,7 +2155,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 // the task back unconfirmed — or one confirmed in the turn the claim is working
 // (supervise.Delivery.StillWorked). A confirmed task on a claim not working is over: the claim's
 // next decision retires it. A start naming no phase holds none, which is what a production check's
-// look is: each look's task is delivered whatever the claim holds.
+// look is: each look's task is delivered whatever the claim holds. Nor is a task of news alone
+// (supervise.Delivery.NewsOnly) the phase's task: a retry of a failed claim that holds only that is
+// given its own task, which waits behind the news task until a turn has taken it.
 func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool {
 	pending := held.Pending
 	return pending != nil && payload.Phase != "" && pending.StillWorked(payload.Generation, payload.Phase, held.State)

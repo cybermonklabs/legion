@@ -38,6 +38,10 @@ var _ supervise.Store = (*Store)(nil)
 // what lets the daemon's minute sweep see what a quiet worker's own session says it is waiting
 // on (supervise.Claim's ActivityAt and the three beside it, internal/daemon's
 // tellSilentPhaseWorkers).
+//
+// Whether the delivery is a task of news alone (supervise.Delivery.NewsOnly) is read from the
+// news_only member of the news it carries (record.DeliveryNews.NewsOnly), which the start writes:
+// the mark has no column of its own, so no write of a delivery can leave two copies of it unequal.
 const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
 	c.session_file, c.locator, c.state, c.failure, c.failure_cause, c.failed_at, c.pending_cause, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
@@ -56,7 +60,8 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.check_look, d.check_opened_at,
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
-	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.design_news
+	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.design_news,
+	coalesce((d.design_news ->> 'news_only')::boolean, false)
 	from claims c left join pending_task_deliveries d on d.claim_token = c.token`
 
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
@@ -777,6 +782,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		updateOpened, updateTasked  *time.Time
 		updateSignalled, updateTold *time.Time
 		kept, news                  []byte
+		newsOnly                    bool
 		retries                     *int64
 		note                        *string
 		stepAt, turnStarted         *time.Time
@@ -801,7 +807,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
 		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry, &deliveryCheckLook, &deliveryCheckOpened,
 		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &prompted, &outOfMemory,
-		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &news)
+		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &news, &newsOnly)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Claim{}, err
 	}
@@ -888,6 +894,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			LastSendError:        *lastSendError,
 			Kept:                 keptDecisions(kept),
 			News:                 designNews(news),
+			NewsOnly:             newsOnly,
 			ProviderErrorRetries: int(orZeroInt(retries)),
 			ProviderErrorNote:    *note,
 		}

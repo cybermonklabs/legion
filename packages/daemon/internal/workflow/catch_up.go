@@ -139,7 +139,9 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // start of the phase that will still act, which carries the phase's task itself, or a stop that
 // will still act, which is about to end the claim this ready came from. Both are StartFor's rule
 // about queued rows, read without its question about the claim's own liveness: this claim is
-// live, which is precisely why it is being given its task.
+// live, which is precisely why it is being given its task. A start queued for news alone carries
+// no task of the phase (startsWork), so it covers nothing, and the worker is given its task beside
+// it.
 func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase) bool {
 	var lastStart int64
 	if run.Claim != nil {
@@ -155,7 +157,7 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 		return true
 	}
 	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" && queued.Request.Phase == current {
+		if startsWork(queued.Request) && queued.Request.Phase == current {
 			return true
 		}
 	}
@@ -183,7 +185,10 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // delivery's place while no prompt of it waits on a result, or waits for its turn to end
 // (supervise's queue), and carries the sentence in front of itself while the record is untold.
 // A worker that came back holding only that delivery — its ready found it holding one from an
-// earlier launch its agent never read — would otherwise be given no phase task at all.
+// earlier launch its agent never read — would otherwise be given no phase task at all. A task of
+// news of the approved design alone is no work of the phase either (supervise.HoldsWork): it tells
+// the worker what changed and nothing of what to do, so a claim that holds only that is given its
+// phase's task too, which waits behind the news task until a turn has taken it.
 //
 // What such a claim is sent is decided by the entry its role's phases row names
 // (record.PhaseRow.Entry), read here as admission reads it for the same decision (admit's
@@ -241,8 +246,9 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil {
 		return err
 	}
-	// A claim holding only the daemon's own delivery of a relaunch's record holds no task (above).
-	if held := run.Claim; held == nil || supervise.HoldsTask(held.Pending) {
+	// A claim holding only the daemon's own delivery of a relaunch's record, or only a task of news
+	// alone, holds no work (above).
+	if held := run.Claim; held == nil || supervise.HoldsWork(held.Pending) {
 		return nil
 	}
 	if queuedRowCovers(run, *root, issue.Phase) {

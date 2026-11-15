@@ -16,6 +16,19 @@ body: |-
   message of what a relaunch ended is not a task the worker has not taken: a task with news takes
   its place and starts with its sentence.
 
+  A task with news alone never takes the place of a worker's phase task. While the worker is in a
+  turn on its phase task, or owes that task again after a provider error, the news task waits, and
+  a provider error in that turn still sends the phase task again. A task with news alone is not the
+  phase's task either: a worker that holds only a news task is still given its phase task when it
+  comes back ready, when its held phase is retried, and by the repair of a silent worker. A start
+  queued for news alone is not counted as the phase's start, and it does not keep an idle pod from
+  its release. A news task tells a member only while the claim it is held for holds that member's
+  phase: an architect's task does not tell a member that the architect signed off while the task
+  waited, and the member's next holder is told instead. If the gate closes and opens again while a
+  holder's news task waits, that task carries the opening, so the holder gets the opening once.
+  After a restart, a news task that the daemon never sent is sent, and a turn the agent started by
+  itself does not count as that task's turn.
+
   The daemon reads the change set from Dispatch (`GET /api/v1/artifacts/{id}/changes`). Against a
   Dispatch without that route, the task names the two versions and says why it lists no change.
   Where the record does not know the version a worker last took, the daemon reads it from the

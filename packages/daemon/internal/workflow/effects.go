@@ -122,14 +122,31 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 
 // queuedStartActs is whether a queued start for current with an id above stop, the newest stop
 // that still acts (actingStop), will reach the claim. StartFor and SilentPhaseWorker both read
-// it, so they answer that term alike.
+// it, so they answer that term alike. A start queued for news alone is no such start (startsWork).
 func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" && queued.Request.Phase == current && queued.ID > stop {
+		if startsWork(queued.Request) && queued.Request.Phase == current && queued.ID > stop {
 			return true
 		}
 	}
 	return false
+}
+
+// startsWork says whether a queued supervise row is a start that brings its role the work it
+// names: every start but one queued for news of the approved design alone
+// (record.SuperviseRequest.News). Such a start names the member's phase only so that it finishes
+// once the member has left that phase. It carries no task of the phase. It reaches only a claim
+// that was already given the phase's current entry, and it finishes without acting at a claim
+// that failed, retired or an operator suspended (the daemon's newsOnlyRefusal), and wherever the
+// record owes nothing when it runs. So every rule that asks whether a queued start will bring a
+// role its phase's work reads the role's queued rows through this: the ready worker's task
+// (queuedRowCovers), a promotion's start and the report of the claims nothing will wake
+// (StartFor), the silence repair (unpromptedPhaseWorker), the root's wait on its architect's work
+// (owed), and the cutover's start of a stopped merger (oweCutoverMerger). Counted as a start,
+// such a row would turn each of them off for as long as it waits, and a merger's waits for the
+// whole time its design gate stays closed.
+func startsWork(request record.SuperviseRequest) bool {
+	return request.Op == "start" && !request.News
 }
 
 // PastBound is whether at is more than bound before now. A zero at is no recorded moment, and a

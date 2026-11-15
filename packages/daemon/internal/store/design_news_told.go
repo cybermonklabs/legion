@@ -22,6 +22,17 @@ import (
 // delivery's own write, in the caller's transaction, so no ordering of queues, confirmations,
 // take-backs, retirements and restarts can leave a version raised that no started turn carried.
 //
+// The confirmation is the machine's, and a turn the agent started by itself confirms a task that
+// carries news only where a prompt of that task went out (supervise.Delivery.Prompted): after a
+// restart, the question whether the agent's turn is the task's is never asked of a task no prompt
+// carried (supervise's askFirstNeverTakes), so an Envoy message's turn records no news the agent
+// never read. A task sent twice, its prompt lost to a crash before Prompted was written, is the
+// fault left, and it loses nothing.
+//
+// Whether the delivery is a task of news alone is not a column: it is the news_only member of this
+// same value (record.DeliveryNews.NewsOnly), which the claim store's restore and a role run's read
+// back as supervise.Delivery.NewsOnly (claimSelect, record's readRoleClaims).
+//
 // The payload is read here in SQL, by its JSON names, as the kept decisions are read beside it
 // (kept_decisions.go): this package imports no record, whose own tests read the claim store, so
 // the shape is the one record.DeliveryNews writes and its doc names these readers.

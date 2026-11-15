@@ -546,6 +546,14 @@ type RequestDeliver struct {
 	// persisted with it, since the delivery's confirmation is what raises it as taken
 	// (Delivery.News). Empty for a task that carries none.
 	News []byte
+	// NewsOnly marks a task queued for news of the approved design alone (the daemon's news-only
+	// start, record.SuperviseRequest.News). Such a task holds no work of the claim's: it asks the
+	// worker to read what changed and to answer it. So it takes the place of no task that holds
+	// work (HoldsTask), where any other newer task takes the place of a confirmed task or of one a
+	// provider error took back (queue): it is refused (ErrDeliveryPending), and its start waits on
+	// its row's backoff until the claim holds no such task. It still takes the place of the
+	// daemon's own delivery of a relaunch's record, which holds no work either.
+	NewsOnly bool
 }
 
 // RequestExit is the agent reporting its own end.
@@ -1710,12 +1718,15 @@ func (m *Machine) recordBusyTurn(ctx context.Context) error {
 // carried a delivery for it to confirm: a wake for a notice or a phase-ended message carries
 // none, and its resume would otherwise never be measured (R5).
 //
-// The question a restart left (askFirst) counts as in flight for every delivery but one: a root
+// The question a restart left (askFirst) counts as in flight for every delivery but two. A root
 // architect's task of a run (asksRoot) may be a task nobody has ever sent, held on the claim while
 // its root had no architect to hear it, so a turn of the agent's own is not that task's. Confirmed
 // by it, the task would tell the person's decisions it names — the confirmation is their telling —
-// to an architect nobody prompted, and be retired unsent when that turn ended. Only a send of this
-// machine's own or a prompt it waits for a turn on makes such a turn that task's.
+// to an architect nobody prompted, and be retired unsent when that turn ended. A task carrying
+// news of the approved design that no prompt carried (unsentNews) is the other: its confirmation
+// records the news as taken, so a turn the agent started by itself, an Envoy message's while the
+// daemon was down, would record news nobody read. Only a send of this machine's own or a prompt it
+// waits for a turn on makes such a turn that task's.
 //
 // A prompt of the task acknowledged and still outstanding (Machine.outstanding) makes the turn the
 // task's however late it starts, past the wait for it (noTurn) and past any busy answer to a
@@ -1746,7 +1757,7 @@ func (m *Machine) beginTurn(ctx context.Context, start StreamTurnStart, logStart
 	m.claim.LastTurnStart = m.deps.Clock.Now()
 	p := m.claim.Pending
 	_, awaiting := m.timers[TimerTurn]
-	inFlight := m.send != nil || awaiting || m.awaitsResult() || (m.askFirst && (p == nil || !m.asksRoot(*p)))
+	inFlight := m.send != nil || awaiting || m.awaitsResult() || (m.askFirst && (p == nil || !m.askFirstNeverTakes(*p)))
 	own := p != nil && p.ConfirmedAt.IsZero() && (start.DeliveryID == p.ID || (start.DeliveryID == "" && inFlight))
 	// The write is the confirmation where this start is the pending delivery's turn, and the
 	// claim alone where it is a foreign one; the delivery is named in the start's line for the

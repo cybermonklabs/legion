@@ -23,7 +23,10 @@ type DeliveryNews struct {
 	// alone.
 	Task string `json:"task"`
 	// NewsOnly says the start was queued for the news alone (record.SuperviseRequest.News): left
-	// with nothing to say at its send, it is retired rather than sent.
+	// with nothing to say at its send, it is retired rather than sent. It is also the one stored
+	// copy of the delivery's own mark (supervise.Delivery.NewsOnly), which both stores read back
+	// from it in SQL by this name (the claim store's claimSelect, readRoleClaims), so no reader of
+	// a claim's pending task takes a task of news alone for its phase's task.
 	NewsOnly bool `json:"news_only,omitempty"`
 	// Items is each step's approved version the delivery tells, each to one audience of one issue.
 	Items []DeliveryNewsItem `json:"items,omitempty"`

@@ -217,7 +217,9 @@ func releaseOvertaken(ctx context.Context, tx pgx.Tx, project, issue string, mar
 //     queue itself. One below the release's own rows was queued by a transaction already in
 //     flight when the mark was written; one above them was queued once the mark stood, while
 //     every role still ran. Either way the pod is the one that must answer it, so the release
-//     goes rather than the pod.
+//     goes rather than the pod. A start queued for news alone is not such a row (idleWaitingRow),
+//     as it holds no pod: it wakes the claim the release suspends, and the role comes back with
+//     its news.
 //
 // The mark stands through a cancel decided here: the caller carries the cancel out whole
 // (CancelIssueRelease), and a cancel that did not finish — a resume refused, the daemon stopped
@@ -245,7 +247,7 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 		}
 		if !overtaken && row == mark.boundary {
 			if err := tx.QueryRow(ctx, `select exists (
-				select 1 from outbox where issue = $1 and kind = any($2) and (id < $3 or id > $4))`,
+				select 1 from outbox where issue = $1 and `+idleWaitingRow+` and (id < $3 or id > $4))`,
 				issue, idleWaitingKinds, mark.first, mark.last).Scan(&overtaken); err != nil {
 				return err
 			}

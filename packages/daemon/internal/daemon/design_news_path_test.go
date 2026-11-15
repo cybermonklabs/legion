@@ -470,6 +470,22 @@ func (r *newsPathRig) startTurn(machine *supervise.Machine) {
 	}
 }
 
+// ownTurn is the agent of machine, holding no task, beginning a turn of its own — an Envoy
+// message's, a person's steer — which no prompt of the daemon's started: the claim is put in
+// working, and a task queued meanwhile waits for that turn's end.
+func ownTurn(ctx context.Context, t *testing.T, machine *supervise.Machine, token claim.Token) {
+	t.Helper()
+	if held := machine.Claim(); held.Pending != nil {
+		t.Fatalf("%s holds %+v, want nothing before a turn of the agent's own: the case's own premise", token, held.Pending)
+	}
+	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
+		t.Fatalf("start a turn of %s's own: %v", token, err)
+	}
+	if state := machine.Claim().State; state != supervise.StateWorking {
+		t.Fatalf("%s is %s after a turn of its own began, want working", token, state)
+	}
+}
+
 // promptsAfter is each prompt conn carried after its first skip, in order.
 func promptsAfter(conn *fake.Conn, skip int) []fake.Prompt {
 	return conn.Prompts()[skip:]
@@ -487,14 +503,15 @@ func (r *newsPathRig) publishedTo(token claim.Token) []string {
 }
 
 // A5, the whole of it. A tester is in the turn its phase task started when an approved new version
-// of the spec lands, and the news task the reconcile queues for it waits behind that turn: the
-// machine retires the phase task the turn took and holds the news unsent, since nothing is sent
-// into a running turn. The tester completes in that same turn, through the handoff route, and the
-// issue moves to reviewing. The turn's end is the news task's first chance to go, and its phase is
-// over, so phaseHolds drops it: it was never sent and never confirmed, and the record says so —
-// the issue's holder still took version 4 and is still owed the opening. The reviewer's phase start
-// carries that news, and the told version rises, and the opening is cleared, only in the write that
-// confirms the reviewer's task.
+// of the spec lands, and the news-only start the reconcile queues for it waits behind that turn:
+// the machine refuses a task of news alone while the claim holds the task its turn is working, so
+// the start waits on its backoff and nothing is sent into the running turn. The tester completes
+// in that same turn, through the handoff route, and the issue moves to reviewing. The turn's end
+// retires the phase task, and the start's next run finds the phase over and finishes without
+// acting: the news was never sent and never confirmed, and the record says so — the issue's holder
+// still took version 4 and is still owed the opening. The reviewer's phase start carries that
+// news, and the told version rises, and the opening is cleared, only in the write that confirms
+// the reviewer's task.
 func TestATesterThatCompletesInTheTurnItsNewsWaitsBehindLeavesThatNewsToTheReviewersStart(t *testing.T) {
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Implementing})
 	r.told(pathRoot, record.AudienceHolder, 4)
@@ -518,18 +535,16 @@ func TestATesterThatCompletesInTheTurnItsNewsWaitsBehindLeavesThatNewsToTheRevie
 	if got := r.run(ofKind(record.OutboxKindDesignChanges)); len(got) != 1 {
 		t.Fatalf("design_changes rows after the approval = %d, want the one the opening queued", len(got))
 	}
-	if got := r.run(startOf(pathRoot, claim.RoleTester, true)); len(got) != 1 {
-		t.Fatalf("the tester's news-only starts = %d, want the one the reconcile queued", len(got))
+	newsStarts := r.run(startOf(pathRoot, claim.RoleTester, true))
+	if len(newsStarts) != 1 {
+		t.Fatalf("the tester's news-only starts = %d, want the one the reconcile queued", len(newsStarts))
 	}
-	queued := tester.Claim()
-	if queued.State != supervise.StateWorking || queued.Pending == nil || queued.Pending.ID == phaseTask.ID ||
-		!queued.Pending.DeliveredAt.IsZero() || len(queued.Pending.News) == 0 {
-		t.Fatalf("the tester after its news-only start = %s holding %+v, want it still in its turn, holding the news task unsent", queued.State, queued.Pending)
+	if still, attempts := r.still(newsStarts[0]); !still || attempts != 1 {
+		t.Fatalf("the tester's news-only start after its run is held %t on %d attempts, want it waiting on its backoff behind the turn", still, attempts)
 	}
-	for _, want := range []string{"The design gate of LEGION-800 opened: a person approved version 5", "version 5, since version 4, which your phase last took"} {
-		if !strings.Contains(queued.Pending.Task, want) {
-			t.Fatalf("the tester's news task = %q, want it to say %q", queued.Pending.Task, want)
-		}
+	held := tester.Claim()
+	if held.State != supervise.StateWorking || held.Pending == nil || held.Pending.ID != phaseTask.ID || held.Pending.ConfirmedAt.IsZero() {
+		t.Fatalf("the tester after its news-only start = %s holding %+v, want it still in its turn on its phase task: a task of news alone takes no task's place", held.State, held.Pending)
 	}
 	if sent := testerConn.Prompts(); len(sent) != 1 || sent[0].DeliveryID != phaseTask.ID {
 		t.Fatalf("the tester's prompts = %+v, want its phase task alone: no task goes into a running turn", sent)
@@ -543,15 +558,24 @@ func TestATesterThatCompletesInTheTurnItsNewsWaitsBehindLeavesThatNewsToTheRevie
 		t.Fatalf("%s stands in %s after the tester's completion, want reviewing", pathRoot, issue.Phase)
 	}
 
-	// The turn ends, and the news task's phase is over: it is dropped, never sent, never confirmed.
+	// The turn ends and its task is retired. The news-only start's next run finds the tester's
+	// phase over, so it finishes without acting: the news was never sent, never confirmed.
 	endTurn(r.ctx, t, tester, testerToken)
 	if pending := tester.Claim().Pending; pending != nil {
-		t.Fatalf("the tester holds %+v after its turn ended, want the news task dropped: its phase is over", pending)
+		t.Fatalf("the tester holds %+v after its turn ended, want its phase task retired", pending)
+	}
+	r.later(time.Minute)
+	r.run(startOf(pathRoot, claim.RoleTester, true))
+	if still, _ := r.still(newsStarts[0]); still {
+		t.Fatal("the tester's news-only start is still queued after the tester's phase ended, want it finished without acting")
+	}
+	if pending := tester.Claim().Pending; pending != nil {
+		t.Fatalf("the tester holds %+v after its news-only start ran again, want nothing: its phase is over", pending)
 	}
 	if sent := testerConn.Prompts(); len(sent) != 1 || sent[0].DeliveryID != phaseTask.ID {
-		t.Fatalf("the tester's prompts = %+v, want its phase task alone: the news task was never sent", sent)
+		t.Fatalf("the tester's prompts = %+v, want its phase task alone: the news was never sent", sent)
 	}
-	r.wantTold("after the tester's news task was dropped", pathRoot, record.AudienceHolder, 4, true)
+	r.wantTold("after the tester's news-only start finished", pathRoot, record.AudienceHolder, 4, true)
 
 	// The reconcile the move queued finds no claim to tell yet; the reviewer's phase start carries
 	// the news.
@@ -587,13 +611,14 @@ func TestATesterThatCompletesInTheTurnItsNewsWaitsBehindLeavesThatNewsToTheRevie
 	r.wantTold("after the reviewer's turn confirmed its task", pathRoot, record.AudienceHolder, 5, false)
 }
 
-// INFRA-3522's condition 3. A reviewer is in a turn when a person approves version 5, so the news
-// task the reconcile queues for it is composed while the gate stands open, and says opened. A
-// writer then saves version 6, which closes the gate again, before the turn ends. The turn's end is
-// when the task is sent, and the send renders it again from the record: the sentence says the gate
-// closed and names version 6, with its reviewer, and says nothing of an opening that no longer
-// stands. The approval of version 5 still stands below version 6, so its item is still told, and
-// the confirmation raises it.
+// INFRA-3522's condition 3. A reviewer that has finished the turn of its phase task is in a turn
+// of its own, an Envoy message's, when a person approves version 5, so the news task the reconcile
+// queues for it is composed while the gate stands open, and says opened; it holds no task, so the
+// task waits for that turn's end. A writer then saves version 6, which closes the gate again,
+// before the turn ends. The turn's end is when the task is sent, and the send renders it again
+// from the record: the sentence says the gate closed and names version 6, with its reviewer, and
+// says nothing of an opening that no longer stands. The approval of version 5 still stands below
+// version 6, so its item is still told, and the confirmation raises it.
 func TestANewsTaskComposedWhileTheGateStoodOpenAndSentAfterALaterVersionClosedItSaysClosed(t *testing.T) {
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 4)
@@ -605,6 +630,8 @@ func TestANewsTaskComposedWhileTheGateStoodOpenAndSentAfterALaterVersionClosedIt
 	reviewer, conn := r.connect(pathRoot, claim.RoleReviewer)
 	r.delivered(reviewer)
 	r.startTurn(reviewer)
+	endTurn(r.ctx, t, reviewer, token)
+	ownTurn(r.ctx, t, reviewer, token)
 
 	r.dispatchEvent(intake.DispatchArtifactVersion, 5)
 	r.dispatchEvent(intake.DispatchArtifactApproved, 5)

@@ -635,6 +635,13 @@ func newsStartQueued(run record.RoleRun) bool {
 // Should the start meet a prompt of it still waiting on its result, the machine refuses the start
 // as it refuses one behind any untaken task, and the start retries on its backoff until that
 // prompt's turn has taken the delivery.
+//
+// A claim whose turn is working a task it took (a confirmed delivery) is queued its news-only
+// start, which does not take that task's place: the machine refuses a task of news alone behind
+// any task that holds work (supervise.RequestDeliver.NewsOnly), since retiring the task of a
+// running turn would lose it to that turn's provider error, which sends the task again only while
+// it is pending. The start waits on its backoff until the turn has ended, and its task is sent
+// then. The summary says a task tells such a member now, which is the task that start sends.
 func holdsUntakenTask(held *record.RoleClaim) bool {
 	return held != nil && supervise.HoldsTask(held.Pending) && held.Pending.ConfirmedAt.IsZero()
 }
@@ -721,7 +728,7 @@ func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload r
 		if carried.Empty() {
 			return nil
 		}
-		sent, err = readNewsAtSend(ctx, tx, r.records, r.gatedSteps, carried, r.now)
+		sent, err = readNewsAtSend(ctx, tx, r.records, r.gatedSteps, token, carried, r.now)
 		return err
 	}); err != nil {
 		return startNews{}, fmt.Errorf("read the news the start of %s's %s carries: %w", issue.Key, payload.Role, err)
