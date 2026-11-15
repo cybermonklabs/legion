@@ -427,16 +427,15 @@ describe("readCorpus and the reserve", () => {
   const open = caseRow("open", NOT_PICKED, LATER);
   const claim = "dispatch://INFRA-2897/comment/claim-run";
 
-  test("holds every case of a reserved tree out of the rows and the ids, and says so", async () => {
+  test("refuses a file that holds any case of a reserved tree, since its build counted the other cases' confounds with it", async () => {
     delete process.env[RESERVE_VARIABLE];
-    const directory = await corpusOnDisk([reserved, sameIssueQuestion, child, open]);
-    const { corpus, printed } = await read(directory);
-    expect(corpus.rows.map((row) => row.caseId)).toEqual(["open"]);
-    for (const caseId of ["reserved", "question", "child"]) {
-      expect(corpus.byCaseId.has(caseId)).toBe(false);
+    for (const held of [reserved, sameIssueQuestion, child]) {
+      const directory = await corpusOnDisk([open, held]);
+      await expect(readCorpus(directory)).rejects.toThrow(
+        `case ${held.caseId} is one the reserve holds, and while the reserve holds a read takes ` +
+          "only a corpus whose build left every such case out"
+      );
     }
-    expect(corpus.reserve).toEqual({ cases: 3, issues: 2, readUnder: null });
-    expect(printed).toContain("held out 3 cases on 2 issues");
   });
 
   test("reads them under a reference registered for this run, from a corpus built under it", async () => {
@@ -609,7 +608,7 @@ describe("what a build writes of the reserve", () => {
     expect(printed).toContain("left out of corpus.jsonl");
   });
 
-  test("under a read claim.ts registers, writes them, and a read that holds the reserve still leaves them out", async () => {
+  test("under a read claim.ts registers, writes them, and a read that holds the reserve refuses that corpus", async () => {
     delete process.env[RESERVE_VARIABLE];
     const { directory, ids, reserve } = await built([reserved, open], {
       kind: "read",
@@ -617,9 +616,10 @@ describe("what a build writes of the reserve", () => {
     });
     expect(ids).toEqual(["reserved", "open"]);
     expect(reserve).toEqual({ leftOut: false, cases: 1, issues: 1, readUnder: claim });
-    const { corpus, printed } = await read(directory);
-    expect(corpus.rows.map((row) => row.caseId)).toEqual(["open"]);
-    expect(printed).toContain("held out 1 case on 1 issue");
+    await expect(readCorpus(directory)).rejects.toThrow(
+      "case reserved is one the reserve holds, and while the reserve holds a read takes only a " +
+        "corpus whose build left every such case out"
+    );
   });
 
   test("once the reserve ended, writes every case and holds none", async () => {
@@ -688,12 +688,12 @@ describe("what a command prints from a file an earlier run wrote", () => {
     expect(counts.approvalByVerdict).toEqual({ approve: 1, request_changes: 0, other: 0 });
   });
 
-  /** The ids a read of a corpus holding one reserved and one open case leaves readable. */
+  /** The ids readable from a corpus whose build left its one reserved case out and kept one open. */
   async function readable(): Promise<Map<string, CaseRow>> {
     delete process.env[RESERVE_VARIABLE];
-    const reserved = caseRow("reserved", PICKED, LATER);
     const open = caseRow("open", NOT_PICKED, LATER);
-    return (await read(await corpusOnDisk([reserved, open]))).corpus.byCaseId;
+    const leftOut: SnapshotReserve = { leftOut: true, cases: 1, issues: 1, readUnder: null };
+    return (await read(await corpusOnDisk([open], leftOut))).corpus.byCaseId;
   }
 
   test("fresh-agent refuses a kept report over a reserved case or one the corpus never had", async () => {

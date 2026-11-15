@@ -249,8 +249,13 @@ export async function outDirectory(out: string): Promise<string> {
  * a reading of the same rows, and this reader never opens it.
  *
  * Every command reads its corpus here, so this is where the reserve of INFRA-2897's next final
- * test is held (`reserve.ts`): a case the reserve holds is left out of the corpus, and the
- * count left out is printed, unless `APPROVAL_EVAL_RESERVE` is `read:<reference>` and the
+ * test is held (`reserve.ts`): while it holds, a read takes only a corpus whose build left every
+ * case the reserve holds out of `corpus.jsonl` (`writeCorpus` in `build-corpus.ts`), and prints
+ * the count its `snapshot.json` records. A file that holds such a case is refused, whatever its
+ * snapshot says: it holds the case's answer, and its build counted the other cases' confounds
+ * (changes already requested on a document, the cases before them there, the answers that day
+ * before them) with it, so leaving its row out here would still tell that answer. That holds
+ * unless `APPROVAL_EVAL_RESERVE` is `read:<reference>` and the
  * registration (`claim.ts` unless `options.registration` names another) lists that reference with
  * this run's digest. `options.inputs` is what a command adds to the digest for what it runs from
  * outside the repository, and `options.root` the root the bundle is read under (this checkout's
@@ -308,16 +313,20 @@ export async function readCorpus(
       );
     }
     if (reserve === "held") {
-      if (leftOut !== null) {
+      if (leftOut !== null || readUnder === null) {
         throw new CorpusError(
           `${join(directory, "corpus.jsonl")} line ${index + 1}: case ${row.caseId} is one the ` +
-            "reserve holds, and snapshot.json says this corpus's build left every such case out " +
-            "of the file: build it again"
+            "reserve holds, " +
+            (leftOut !== null
+              ? "and snapshot.json says this corpus's build left every such case out of the file"
+              : "and while the reserve holds a read takes only a corpus whose build left every " +
+                "such case out: this file holds its answer, and its build counted the other " +
+                "cases' confounds with it") +
+            ": build it again"
         );
       }
       reservedCases += 1;
       if (row.issueKey !== null) reservedIssues.add(row.issueKey);
-      if (readUnder === null) continue;
     }
     rows.push(row);
     byCaseId.set(row.caseId, row);
@@ -329,9 +338,7 @@ export async function readCorpus(
       leftOut !== null
         ? `reserve: held out ${what} for INFRA-2897's next final test, which its build left out ` +
             "of corpus.jsonl (reserve.ts)"
-        : readUnder === null
-          ? `reserve: held out ${what} for INFRA-2897's next final test (reserve.ts)`
-          : `reserve: read ${what} of INFRA-2897's next final test, under ${readUnder}`
+        : `reserve: read ${what} of INFRA-2897's next final test, under ${readUnder}`
     );
   }
   if (rows.length === 0) {

@@ -30,8 +30,8 @@ import type { DispatchEvent } from "./dispatch-read";
  *
  * `build-corpus.ts` writes no reserved case to the `corpus.jsonl` it builds, only their count to
  * its `snapshot.json`, so the file itself holds none for any reader to meet, and `readCorpus`
- * (`corpus-io.ts`) holds the reserved cases out of every corpus it reads, an older build's
- * included, so every command here skips them; each does so unless `APPROVAL_EVAL_RESERVE` is
+ * (`corpus-io.ts`) refuses every file that holds one, an older build's or the claim run's
+ * included, so no command here reads them; each does so unless `APPROVAL_EVAL_RESERVE` is
  * `read:<reference>` and `claim.ts` registers that reference for this run's digest
  * (`reserveAccessOf`), the claim run's build among its commands. Once `claim.ts` records that the
  * reserve ended, no case is held.
