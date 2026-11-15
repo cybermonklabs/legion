@@ -1916,7 +1916,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 150: INFRA-2543 -- the GitHub App installation, and no longer the project's Dispatch repository
+// 152: INFRA-2543 -- the GitHub App installation, and no longer the project's Dispatch repository
 // mapping, decides which repositories a project works in, so the `repositories` block of
 // `GET /legion/v1/state` stops being that mapping. `mapped` is every repository the daemon
 // serves, the ones the mapping names and the ones the project's own records name, and each entry
@@ -1989,11 +1989,12 @@ package api
 // and 135 (#3659), with nothing above, so 136 is the lowest number above 132 that no open head
 // declares. Read main's own number and every open pull request's again at the next forward
 // merge rather than from this line.)
-// (The forward merges of 2026-11-15 take this entry to 150. A census of const DaemonAPIVersion
+// (The forward merges of 2026-11-15 take this entry to 152. A census of const DaemonAPIVersion
 // at refs/pull/<n>/head over every open pull request of this repository, taken at the push at
-// 2026-11-15T21:53:46Z, reads main at 144 and, above it: 145 (#3659, which takes it at its own
-// merge), 146 (#3711), 147 (#4017), 148 (#3519, #4049) and 149 (#2731), with nothing above, so
-// 150 is the lowest number above every one of them that no open head declares. This entry stood
-// at 143 until main passed it. Read main's own number and every open pull request's again at the
-// next forward merge rather than from this line.)
-const DaemonAPIVersion = 150
+// 2026-11-15T23:55:22Z, reads main at 144 and above it 145 (#3659), 146 (#3711), 147 (#4017),
+// 148 (#3519), 149 (#2731), 150 (#4049, which took this entry's own number while it stood there)
+// and 151 (#4106), with nothing above, so 152 is the lowest number above main's that no open
+// head declares. This entry stood at 143 until main passed it, and at 150 until #4049 took that.
+// Read main's own number and every open pull request's again at the next forward merge rather
+// than from this line.)
+const DaemonAPIVersion = 152
