@@ -1246,30 +1246,39 @@ describe("a document write that superseded a person's approval", () => {
     expect(result.text).not.toContain("superseding version");
   });
 
-  // A plan is approved by its plan review, never by a person: Dispatch refuses an approval request
-  // on a plan with 409 PLAN_APPROVED_BY_REVIEW, and `dispatch plan-approve` records the plan
-  // review's approval of the new version. So a write that made a plan's approval stale names
-  // `dispatch plan-approve` as the way to approve it again, and never `dispatch request-approval`.
-  // Each answer below says the document is a plan in every way Dispatch can: the plan's role
-  // `plan` and slug `plan-md`, which Dispatch answers today, and a `superseded_approval` whose
-  // approver is the plan review's session and whose `kind` is `plan_review`, the field the
-  // architect's ruling (dispatch://INFRA-3327/comment/f75075ad-fb17-4d08-8cdc-8cbe0cb2dc87)
-  // recommends the server add. A fix may read either; the line it prints is what this pins.
+  // Dispatch refuses an approval request on a plan with 409 PLAN_APPROVED_BY_REVIEW, whoever
+  // approved it: it refuses by the document, not by the review. So a write that made a plan's
+  // approval stale names `dispatch plan-approve` as the way to approve it again, and never
+  // `dispatch request-approval`, for a plan review's approval and for a person's approval of a
+  // plan alike (a person approves a plan from its document header: the reviews route has no plan
+  // check). Each answer below says the document is a plan as Dispatch answers it, role `plan` and
+  // slug `plan-md`, which is what the architect's ruling keys on
+  // (dispatch://INFRA-3327/comment/d19c71f5-6186-44f0-9017-858947155b75); the `kind` of the
+  // superseded review rides beside it and decides nothing.
+  const planUpload = { issue: "DSP-42", name: "plan.md", content: "# Plan\n\nTwo.\n", force: true };
+  const planEdit = {
+    issue: "DSP-42",
+    artifact: "plan.md",
+    ops: [{ op: "replace", find: "One.", with: "Two." }],
+  };
   test.each([
     [
       "dispatch_artifact",
-      { issue: "DSP-42", name: "plan.md", content: "# Plan\n\nTwo.\n", force: true },
+      "a plan review",
+      planUpload,
+      "01a1b464-9df7-7298-a78f-4ff4f8284ce7",
+      "plan_review",
     ],
     [
       "dispatch_doc_edit",
-      {
-        issue: "DSP-42",
-        artifact: "plan.md",
-        ops: [{ op: "replace", find: "One.", with: "Two." }],
-      },
+      "a plan review",
+      planEdit,
+      "01a1b464-9df7-7298-a78f-4ff4f8284ce7",
+      "plan_review",
     ],
-  ])("%s on a plan names dispatch plan-approve, not dispatch request-approval", async (tool, args) => {
-    const session = "01a1b464-9df7-7298-a78f-4ff4f8284ce7";
+    ["dispatch_artifact", "a person", planUpload, "alice", "person"],
+    ["dispatch_doc_edit", "a person", planEdit, "alice", "person"],
+  ])("%s on a plan %s approved names dispatch plan-approve, not dispatch request-approval", async (tool, _approver, args, approvedBy, kind) => {
     const plan = {
       id: "artifact-43",
       issue_key: "DSP-42",
@@ -1279,13 +1288,7 @@ describe("a document write that superseded a person's approval", () => {
       role: "plan",
       primary: false,
     };
-    // A variable, not a literal in the call: `kind` is a field the contract does not declare yet.
-    const superseded = {
-      approved_version: 1,
-      version: 2,
-      approved_by: session,
-      kind: "plan_review",
-    };
+    const superseded = { approved_version: 1, version: 2, approved_by: approvedBy, kind };
     const staled = advice({ superseded_approval: superseded });
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const target = new URL(String(url));
@@ -1348,7 +1351,7 @@ describe("a document write that superseded a person's approval", () => {
     });
 
     expect(result.text).toContain(
-      `Stored version 2, superseding version 1, which ${session} approved.`
+      `Stored version 2, superseding version 1, which ${approvedBy} approved.`
     );
     expect(result.text).toContain("dispatch plan-approve");
     expect(result.text).not.toContain("dispatch request-approval");

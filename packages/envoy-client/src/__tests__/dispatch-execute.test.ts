@@ -9076,6 +9076,77 @@ describe("executeDispatchTool", () => {
     }
   });
 
+  // Dispatch refuses an approval request on every plan (409 PLAN_APPROVED_BY_REVIEW), a plan a
+  // person approved from its document header included: the reviews route has no plan check. So a
+  // stale approval of a plan never tells the agent to request approval again, whoever gave it; it
+  // names `dispatch plan-approve`, in `dispatch read` and in the trailer of `dispatch doc-read`
+  // alike. The document is a plan as Dispatch answers it, role `plan` and slug `plan-md`, which is
+  // what the architect's ruling keys on
+  // (dispatch://INFRA-3327/comment/d19c71f5-6186-44f0-9017-858947155b75).
+  test("a stale approval a person gave a plan names dispatch plan-approve, not a request", async () => {
+    const hash = "cd".repeat(32);
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          title: "Native workspace",
+          status: "in_progress",
+          primary_artifact_id: "artifact-42",
+          open_asks: [],
+          artifacts: [
+            { id: "artifact-42", slug: "spec", name: "spec.md", primary: true, project: "DSP" },
+            {
+              id: "artifact-43",
+              slug: "plan-md",
+              name: "plan.md",
+              role: "plan",
+              primary: false,
+              project: "DSP",
+              versions: [{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }],
+              approval: {
+                kind: "person",
+                state: "stale",
+                latest_version: 4,
+                version: 3,
+                by: { kind: "user", id: "alice" },
+                content_sha256: hash,
+                content_sha256_source: "insert",
+              },
+            },
+          ],
+        });
+      }
+      if (target.pathname === "/api/v1/artifacts/artifact-43/versions/4") {
+        return response({ markdown: "# Plan\n\nFour.", number: 4, sha256: hash });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/comments") return response([]);
+      if (target.pathname === "/api/v1/references") return response(emptyGraph("artifact"));
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+    const run = (tool: string, args: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool,
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+    for (const result of [
+      await run("dispatch_read", { issue: "DSP-42", artifact: "plan.md" }),
+      await run("dispatch_doc_read", { issue: "DSP-42", artifact: "plan.md", version: 4 }),
+    ]) {
+      const line = result.text.split("\n").find((row) => row.startsWith("Approval:")) ?? "";
+      expect(line).toStartWith("Approval: approved v3 by alice, changed since (now v4) - ");
+      expect(line).toContain("dispatch plan-approve");
+      expect(line).not.toMatch(/request[ -]approval/);
+    }
+  });
+
   test("dispatch_doc_read tells the agent when the document's approval went stale", async () => {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const target = new URL(String(url));
