@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -613,4 +614,46 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 				read.Approval, approved+1)
 		}
 	})
+}
+
+// A daemon older than holds publishes each entry with its step and its document alone, and the
+// route stores such an entry with holds null (the older daemon's row of
+// TestDesignGateRecordDecidesTheSupersededApprovalAdvice). So the contract a client is generated
+// from takes an entry with no holds, while each entry the route answers carries one: the entry of
+// the publish's body requires its step and its document and not holds, and the entry of the
+// answer requires all three.
+func TestADesignGateEntryOfAPublishMayLeaveOutHolds(t *testing.T) {
+	_, document := readOpenAPI(t)
+	schema := func(name string) map[string]any {
+		t.Helper()
+		var read map[string]any
+		if err := json.Unmarshal(document.Components.Schemas[name], &read); err != nil {
+			t.Fatalf("read schema %s: %v", name, err)
+		}
+		return read
+	}
+	// required is the names a schema requires, sorted.
+	required := func(read map[string]any) []string {
+		names, _ := read["required"].([]any)
+		listed := make([]string, len(names))
+		for index, name := range names {
+			listed[index], _ = name.(string)
+		}
+		slices.Sort(listed)
+		return listed
+	}
+	properties, _ := schema("IssueDesignGatesInput")["properties"].(map[string]any)
+	gates, _ := properties["gates"].(map[string]any)
+	items, _ := gates["items"].(map[string]any)
+	ref, _ := items["$ref"].(string)
+	entry, found := strings.CutPrefix(ref, "#/components/schemas/")
+	if !found {
+		t.Fatalf("IssueDesignGatesInput.gates holds %v, want a list of one named schema", gates)
+	}
+	if got, want := required(schema(entry)), []string{"artifact_id", "step"}; !slices.Equal(got, want) {
+		t.Fatalf("an entry of the publish (%s) requires %v, want %v: the route takes an entry with no holds and stores it as null", entry, got, want)
+	}
+	if got, want := required(schema("IssueDesignGate")), []string{"artifact_id", "holds", "step"}; !slices.Equal(got, want) {
+		t.Fatalf("an entry of the answer (IssueDesignGate) requires %v, want %v: every entry the route answers carries holds", got, want)
+	}
 }

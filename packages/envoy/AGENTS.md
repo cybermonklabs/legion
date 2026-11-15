@@ -740,13 +740,15 @@ each row's id and index and each cell's id, row, column, the opening words of th
 `pmdoc.TableRows` for a document a room holds, which builds no path), so the two routes cannot disagree and the list stays one entry per table.
 The walk lays each table out once, in document order, on the one budget of span cells a render of the document spends (`maxSpanCells`, `tableGrid`), so a cell is listed under the header `GET .../text` draws above it, a table past the budget with its spans adding nothing, and tables a browser pasted with spans filling that budget cost one request one budget, not one each.
 `GET .../text` returns the full-document Proof-state token and the document's latest version number, or `null` when it has none (the live markdown beside it and that version are two unsynchronised reads, in both directions; `token` is the concurrency primitive).
-`GET /api/v1/artifacts/{id}/changes?from=<n>&to=<m>` (`getArtifactChanges`, `api/artifacts.go`) answers what changed between two stored versions of one document, which it reads as `GET .../versions/{number}` reads them:
+`GET /api/v1/artifacts/{id}/changes?from=<n>&to=<m>` (`getArtifactChanges`, `api/artifact_changes.go`) answers what changed between two stored versions of one document, which it reads as `GET .../versions/{number}` reads them:
 `decision_only`, true when the two stored texts differ and are the same once every ask block is cut (`docs.WithoutAskBlocks`);
 `unchanged`, true when the two differ in nothing any section or block holds: the stored texts are the same, or the cut texts name nothing and are not decision-only;
 `sections`, each top-level unit whose text differs with ask blocks cut, that moved, or that one version alone holds;
 and `blocks`, each typed block other than an ask block whose text or any attribute differs, by its `#id` and type, each unit and block marked `changed`, `added` or `removed`, and a unit also `moved`.
 Exactly one of `decision_only`, `unchanged` and a non-empty `sections` or `blocks` holds, decided in one place (`compareVersions`), so a change set that names nothing always says why, and `sections` and `blocks` are empty when either flag is true.
-The units are the `##` sections, named by heading and occurrence as `decisionSums` names a decision, and each run of text outside every section: the title and what stands above the first `##`, or what follows a `#` heading up to the next `##` (`cutUnits`).
+The units are the `##` sections, named by heading and occurrence, and each run of text outside every section: the title and what stands above the first `##`, or what follows a `#` heading up to the next `##` (`cutUnits`).
+A section's heading is its text as a heading anchor reads it (`pmdoc.TextContent`): no markdown syntax, and a line break in it is a line feed.
+Each heading's level and text are read from the parsed tree, so a `#` or `##` heading that holds a line break, which is stored in setext form with no `#`, cuts the document as any heading of its level does.
 A run is named under the heading "" and occurrence 0 with its place: `place` `before_first_section`, or `after_section` with `after_heading` and `after_occurrence` naming the `##` section directly before it, in the later version for a `changed`, `added` or `moved` run and in the earlier for a `removed` one.
 Both versions hold a run when both hold its text at the same place, and then, among the runs left in each version, the n-th run of one text in each is one run in both (`keyRuns`), so adding or removing one copy of a repeated run moves no other copy's match.
 A unit is `moved` when both versions hold it with the same text and it stands outside one longest common subsequence of the two versions' orders of the units both hold (`movedUnits`);
@@ -755,6 +757,8 @@ A run the other version does not hold pairs with that version's unpaired run at 
 A section whose text differs is `changed` wherever it stands, and a block is never `moved`, since a block that moves changes the text of the units it moves within or between.
 Each list holds the later version's items in its document order, a moved unit where the later version holds it, and then what only the earlier version holds, in its order.
 It parses the two versions' stored markdown and never the block index, so it does not wait for the deferred pass over a large document's blocks (`docs.deferBlockIndexBlocks`).
+A typed block is named only under an id its own stored version writes (`cutTypedBlocks`), since the parse mints a new id for a block that repeats one.
+Each version's stored text is read once for the ids it writes, and each block's id is then looked up, so the work grows with the text and not with the text times its blocks; `TestACutReadsAVersionsBlockIDsInWorkLinearInItsSize` counts the bytes the cut reads at both document caps.
 It answers `400 INVALID_VERSION` unless both numbers are positive, at most 2147483647, and `from` is below `to`, `404 NOT_FOUND` for a version the document does not have, and `400 NOT_DOCUMENT` for an artifact that is not a document;
 `artifact_versions.number` is an `integer`, so a larger number names no version, and the route and `GET .../versions/{number}` both refuse it before they read a version (`parseVersionNumber`) rather than answer `500`;
 the Legion daemon reads it for the news it sends of an approved new version of a gated document.

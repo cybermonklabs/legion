@@ -9,7 +9,8 @@ body: |-
   that one version alone holds; and `blocks`, each typed block other than an ask block that
   differs, by its `#id` and type. Exactly one of the three holds, so a change set that is neither
   decision-only nor unchanged always names a section or a block. A unit is a `##` section, named by
-  heading and occurrence, or a run of the text outside every `##` section, such as the title or
+  its heading's text (no markdown syntax, read from the parse, so a heading stored in setext form
+  opens its section too) and its occurrence, or a run of the text outside every `##` section, such as the title or
   the text under a `#` heading, named with the heading "" and its place: `before_first_section`,
   or `after_section` with `after_heading` and `after_occurrence` naming the `##` section directly
   before it. Each unit and block is marked `changed`, `added` or `removed`, and a unit that keeps

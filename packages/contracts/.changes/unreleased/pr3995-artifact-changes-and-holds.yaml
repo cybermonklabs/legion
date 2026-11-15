@@ -4,8 +4,9 @@ custom:
 body: |-
   The generated Dispatch API types (`dispatch-api.generated.ts`) carry
   `GET /api/v1/artifacts/{id}/changes`, whose answer is `ArtifactChanges` with its
-  `ArtifactSectionChange` and `ArtifactBlockChange` entries, and `holds: null | boolean` on
-  `IssueDesignGate`, the entry `PUT /api/v1/issues/{key}/design-gates` takes and the issue read
-  returns. `ArtifactChanges.unchanged` says the two versions hold no change at all, and an
+  `ArtifactSectionChange` and `ArtifactBlockChange` entries, and `holds` on the design-gate
+  entries: `IssueDesignGateInput`, the entry `PUT /api/v1/issues/{key}/design-gates` takes, has an
+  optional `holds?: null | boolean`, and `IssueDesignGate`, the entry it and the issue read return,
+  always carries `holds: null | boolean`. `ArtifactChanges.unchanged` says the two versions hold no change at all, and an
   `ArtifactSectionChange` of the text outside every section carries its `place`
   (`before_first_section` or `after_section`, with `after_heading` and `after_occurrence`).

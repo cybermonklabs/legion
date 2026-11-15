@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
@@ -67,14 +68,14 @@ type artifactChanges struct {
 }
 
 // artifactSectionChange is one top-level unit of a document that changed. A `##` section is
-// named as decisionSums names a decision: by its heading's text, and by how many sections before
-// it carry that heading, 0 for the first; a `##` heading with no words is counted from occurrence
-// 1. The heading "" with occurrence 0 is one run of the text outside every `##` section, and
-// Place says which: before_first_section, or after_section with AfterHeading and AfterOccurrence
-// naming the `##` section that stands directly before the run. The place is the run's in the
-// later version for a changed, added or moved run, and in the earlier version for a removed one.
-// A `##` section carries none of the three. Change is changed, added, removed or moved
-// (changeChanged and the three beside it).
+// named by its heading's text as a heading anchor reads it (cutUnits: pmdoc.TextContent, a line
+// break in it a line feed), and by how many sections before it carry that text, 0 for the first;
+// a `##` heading with no words is counted from occurrence 1. The heading "" with occurrence 0 is
+// one run of the text outside every `##` section, and Place says which: before_first_section, or
+// after_section with AfterHeading and AfterOccurrence naming the `##` section that stands directly
+// before the run. The place is the run's in the later version for a changed, added or moved run,
+// and in the earlier version for a removed one. A `##` section carries none of the three. Change
+// is changed, added, removed or moved (changeChanged and the three beside it).
 type artifactSectionChange struct {
 	Heading         string  `json:"heading"`
 	Occurrence      int     `json:"occurrence"`
@@ -349,16 +350,24 @@ func readCutVersion(markdown string) (cutVersion, error) {
 }
 
 // cutUnits cuts a version's cut text into its top-level units, in document order: its `##`
-// sections, cut by the rule decisionSums cuts a decision by and names one by, and the runs of the
-// text no `##` section holds. A top-level `##` heading opens a section, the next top-level heading
-// of its level or higher closes it - `#` included, which opens none - and a deeper heading is text
-// of the section it stands in. A section is keyed by its heading and by how many sections before
-// it carry that heading, and its text runs from its heading to where it closes, with the blank
-// lines at its end removed. Only a top-level heading cuts, since one inside a quote, a list or a
-// callout is text of the block that holds it. decisionSums' `## Replaced` rule is no part of this
-// one: that is how a decisions document files a decision, while a section here is any document's
-// own `##` heading. A `##` heading with no words is keyed from occurrence 1, so no section takes
-// the zero key.
+// sections, cut by the rule decisionSums cuts a decision by, and the runs of the text no `##`
+// section holds. A top-level `##` heading opens a section, the next top-level heading of its level
+// or higher closes it - `#` included, which opens none - and a deeper heading is text of the
+// section it stands in. A section is keyed by its heading's text and by how many sections before
+// it carry that text, and its text runs from its heading to where it closes, with the blank lines
+// at its end removed. Only a top-level heading cuts, since one inside a quote, a list or a callout
+// is text of the block that holds it. decisionSums' `## Replaced` rule is no part of this one:
+// that is how a decisions document files a decision, while a section here is any document's own
+// `##` heading. A `##` heading with no words is keyed from occurrence 1, so no section takes the
+// zero key.
+//
+// Each heading's level and text are read off its node and never off the cut text, since a heading
+// is not always written with `#`s: the renderer writes a `#` or `##` heading that holds a line
+// break as its lines and an underline (renderer.heading's setext form), as the browser editor
+// writes it. The text is the heading's as a heading anchor reads it (pmdoc.TextContent, which
+// FindHeading matches a title against): its words without markdown's syntax, a line break in it a
+// line feed, so a reader handed a section's heading can find the section by it. The parse writes
+// a heading's level as an int.
 //
 // A run is all the text between two sections, or above the first, or below the last: the title
 // and the text above the first `##`, or the text from a `#` heading that closes a section to the
@@ -367,11 +376,11 @@ func readCutVersion(markdown string) (cutVersion, error) {
 // A run stands after the section that closed where it starts, or above the first section
 // (cutUnit's after), and is keyed by its text alone: keyRuns keys it across the two versions.
 func cutUnits(doc *pmdoc.Node, text string, offsets []pmdoc.BlockOffset) []cutUnit {
-	headings := map[string]struct{}{}
+	headings := map[string]*pmdoc.Node{}
 	for _, child := range doc.Children {
 		if child.Type == "heading" {
 			id, _ := child.Attrs[pmdoc.BlockIDAttr].(string)
-			headings[id] = struct{}{}
+			headings[id] = child
 		}
 	}
 	var units []cutUnit
@@ -394,16 +403,18 @@ func cutUnits(doc *pmdoc.Node, text string, offsets []pmdoc.BlockOffset) []cutUn
 		}
 	}
 	for _, offset := range offsets {
-		if _, top := headings[offset.ID]; !top {
+		node, top := headings[offset.ID]
+		if !top {
 			continue
 		}
-		level, heading := markdownHeading(strings.TrimRight(sliceMarkdown(text, offset.From, offset.To), "\n"))
-		if level == 0 || level > 2 {
+		level, _ := node.Attrs["level"].(int)
+		if level < 1 || level > 2 {
 			continue
 		}
 		closeAt(offset.From)
 		if level == 2 {
 			keepOutside(offset.From)
+			heading := pmdoc.TextContent(node)
 			key = sectionKey{heading: heading, occurrence: seen[heading]}
 			seen[heading]++
 			start = offset.From
@@ -427,18 +438,123 @@ func cutUnits(doc *pmdoc.Node, text string, offsets []pmdoc.BlockOffset) []cutUn
 // is left out. The check is made on the stored text itself: a stored version is a rendering, so
 // it names each id the way the renderer writes a typed block's id (pmdoc.TypedBlockIDAttribute),
 // and an id the parse minted, a fresh random one, is in no stored text.
+//
+// The stored text is read once, at the first typed block, and each block's id is then looked up
+// in what that read found (writtenIDs), with the answer a search of the whole text for it would
+// give. A search for each block read the text once for each block, so the work grew with the
+// text's size times its blocks: one version of a mebibyte holding 11,396 requirements took 1.45 s
+// of one CPU, and every request reads two versions.
 func cutTypedBlocks(doc *pmdoc.Node, stored string) []cutBlock {
+	var written *writtenIDs
 	var blocks []cutBlock
 	pmdoc.Walk(doc, func(node *pmdoc.Node) bool {
 		if !pmdoc.IsTypedBlock(node.Type) {
 			return true
 		}
-		if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); strings.Contains(stored, pmdoc.TypedBlockIDAttribute(id)) {
+		if written == nil {
+			written = writtenIDsIn(stored)
+		}
+		if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); written.names(id) {
 			blocks = append(blocks, cutBlock{id: id, node: node})
 		}
 		return true
 	})
 	return blocks
+}
+
+// writtenIDs is what one stored text holds where a typed block's opening line could write an id.
+// pmdoc.TypedBlockIDAttribute writes an id one of two ways: `#` and the id, for an id holding none
+// of the characters a written `#id` cannot hold, `#` among them, or `id="…"`, the id's `"` written
+// as a character reference. shortcuts is the text after each `#` of the stored text up to its next
+// `#` or its end, sorted, and quoted is the text between each `id="` and the first `"` after it.
+type writtenIDs struct {
+	shortcuts []string
+	quoted    map[string]struct{}
+}
+
+// writtenIDsIn reads stored once, from its first byte to its last, for its `#`s and its `"`s
+// (writtenIDs). A `"` closes the value of the `id="` before it, and is itself the end of an `id="`
+// that opens the next value when `id=` stands before it: `id="aid="b"` holds both `id="aid="` and
+// `id="b"`. A text after a `#` that is empty holds no id, since every id written after a `#` has a
+// character, and is not kept.
+func writtenIDsIn(stored string) *writtenIDs {
+	written := &writtenIDs{quoted: map[string]struct{}{}}
+	// hash is where the last `#` stands and value where the open `id="` value starts, -1 for none.
+	hash, value := -1, -1
+	shortcut := func(end int) {
+		if hash >= 0 && end > hash+1 {
+			written.shortcuts = append(written.shortcuts, stored[hash+1:end])
+		}
+	}
+	for at := 0; at < len(stored); at++ {
+		next := strings.IndexAny(stored[at:], `#"`)
+		if next < 0 {
+			break
+		}
+		at += next
+		if stored[at] == '#' {
+			shortcut(at)
+			hash = at
+			continue
+		}
+		if value >= 0 {
+			written.quoted[stored[value:at]] = struct{}{}
+			value = -1
+		}
+		if strings.HasSuffix(stored[:at], "id=") {
+			value = at + 1
+		}
+	}
+	shortcut(len(stored))
+	readOf(len(stored))
+	slices.SortFunc(written.shortcuts, compareWritten)
+	return written
+}
+
+// names reports whether the stored text holds the id as pmdoc.TypedBlockIDAttribute writes it,
+// which is what strings.Contains answers for the text and the written id. Written `id="…"`, the
+// value holds no `"`, so the text holds it exactly where one of its `id="`s is followed by the
+// value and then its first `"`: where the value is one of quoted. Written `#` and the id, the id
+// holds no `#`, so the text holds it exactly where the id begins the text after one of its `#`s:
+// where it begins one of shortcuts. Of the sorted shortcuts, one begins with the id exactly when
+// the first that is not below the id does, since every text between the id and a text that
+// begins with it begins with it too.
+func (written *writtenIDs) names(id string) bool {
+	spelled := pmdoc.TypedBlockIDAttribute(id)
+	if shortcut, ok := strings.CutPrefix(spelled, "#"); ok {
+		at, _ := slices.BinarySearchFunc(written.shortcuts, shortcut, compareWritten)
+		if at == len(written.shortcuts) {
+			return false
+		}
+		readOf(len(shortcut))
+		return strings.HasPrefix(written.shortcuts[at], shortcut)
+	}
+	quoted := strings.TrimSuffix(strings.TrimPrefix(spelled, `id="`), `"`)
+	readOf(len(quoted))
+	_, held := written.quoted[quoted]
+	return held
+}
+
+// compareWritten is strings.Compare, which reads at most the shorter of the two texts, and tells
+// writtenIDReads so.
+func compareWritten(a, b string) int {
+	readOf(min(len(a), len(b)))
+	return strings.Compare(a, b)
+}
+
+// writtenIDReads, while a test sets it, is told how many bytes each step of a typed-block cut
+// reads at most: the scan of the stored text (writtenIDsIn), each comparison of two texts
+// (compareWritten), and each look up of a written id (writtenIDs.names). A test bounds that work by
+// the size of the text, counting what the cut does rather than timing it on a machine another
+// process may load, as pmdoc's tests bound a parse's and a render's (pmdoc/linear_sizes.go). The
+// server leaves it nil.
+var writtenIDReads func(bytes int)
+
+// readOf tells writtenIDReads, when a test has set it, of a read of bytes bytes.
+func readOf(bytes int) {
+	if writtenIDReads != nil {
+		writtenIDReads(bytes)
+	}
 }
 
 // movedUnits is the keys of the units both versions hold whose place among the document's

@@ -32,8 +32,9 @@ import (
 
 // issueDesignGate is one step of an issue's gate: the step word, the document that step records,
 // and Holds, whether the deployment's gate holds the issue's tree on that step. The step is one
-// of model.GatedStepsKnown, which design_gates' own check repeats. The route takes and answers
-// the same shape, since what the daemon publishes is what Dispatch stores.
+// of model.GatedStepsKnown, which design_gates' own check repeats. The route answers this shape,
+// and the issue read carries it; the route takes issueDesignGateInput, the same fields read as a
+// request.
 //
 // Holds is the daemon's answer and not Dispatch's: which steps a tree is gated on is the daemon's
 // rule, and it is not the project's list alone, since a root's architect may register its
@@ -55,14 +56,26 @@ type issueDesignGates struct {
 	Gates []issueDesignGate `json:"gates"`
 }
 
+// issueDesignGateInput is one entry of the body PUT /api/v1/issues/{key}/design-gates takes: an
+// issueDesignGate as the daemon publishes it. It is a type of its own because a request body
+// requires what its handler refuses the lack of, and a response the fields Go's marshaller always
+// writes (openAPIRequestBodyTypes), and the two differ here: the route refuses an entry with no
+// step or no document, and takes one with no holds, which every daemon older than the field
+// publishes, and stores it as null.
+type issueDesignGateInput struct {
+	Step       string `json:"step" enum:"decisions,criteria,spec" required:"true"`
+	ArtifactID string `json:"artifact_id" required:"true"`
+	Holds      *bool  `json:"holds"`
+}
+
 // issueDesignGatesInput is the body PUT /api/v1/issues/{key}/design-gates takes. Gates is
 // required, and a pointer for projectGatedStepsInput.Steps' reason: a body that names no list is
 // refused (400 INVALID_ISSUE, putIssueDesignGates below) rather than read as the empty one, so a
 // malformed publish cannot clear an issue's record, while an explicit `[]` is the publish that
 // clears it.
 type issueDesignGatesInput struct {
-	Gates *[]issueDesignGate `json:"gates" required:"true"`
-	Actor *model.Actor       `json:"actor"`
+	Gates *[]issueDesignGateInput `json:"gates" required:"true"`
+	Actor *model.Actor            `json:"actor"`
 }
 
 // putIssueDesignGates publishes the documents an issue's design-gate steps record. The daemon
@@ -91,14 +104,15 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 			strings.Join(model.GatedStepsKnown, ", ")))
 		return
 	}
-	gates := *input.Gates
-	for index, gate := range gates {
+	gates := make([]issueDesignGate, 0, len(*input.Gates))
+	for _, entry := range *input.Gates {
+		gate := issueDesignGate(entry)
 		if !slices.Contains(model.GatedStepsKnown, gate.Step) {
 			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, fmt.Sprintf(
 				"%q is not a design-gate step: gates names %s", gate.Step, strings.Join(model.GatedStepsKnown, ", ")))
 			return
 		}
-		if slices.ContainsFunc(gates[:index], func(earlier issueDesignGate) bool { return earlier.Step == gate.Step }) {
+		if slices.ContainsFunc(gates, func(earlier issueDesignGate) bool { return earlier.Step == gate.Step }) {
 			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, fmt.Sprintf(
 				"%q is named twice: gates names each design-gate step once, with the one document that step records", gate.Step))
 			return
@@ -108,6 +122,7 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 				"%q names no document: artifact_id is the document that step's gate recorded", gate.Step))
 			return
 		}
+		gates = append(gates, gate)
 	}
 	// The order a reader gets the set back in is model.GatedStepsKnown's, whatever order the
 	// publish named the steps in: the rows are a set keyed by step, so the answer is sorted

@@ -345,6 +345,45 @@ func TestTheChangeSetNamesAReorderBesideAnAddedSection(t *testing.T) {
 // section, one run of it, standing wherever the heading stands among the sections.
 const appendixRun = "# Appendix\n\nBackground.\n"
 
+// setextScopeSection is a `##` section holding words, whose heading holds a line break. The
+// renderer writes such a heading in setext form, its two lines and a `---` underline, as the
+// browser editor writes it (renderer.heading), so the stored text writes no `#` for it.
+func setextScopeSection(words string) string {
+	return "Scope\\\nwide\n---\n\n" + words + "\n"
+}
+
+// setextAppendixRun is a top-level `#` heading holding a line break, with words under it: the
+// setext form underlines it `===`. What it opens is text outside every `##` section, as what
+// appendixRun's heading opens is.
+func setextAppendixRun(words string) string {
+	return "Appendix\\\nnotes\n===\n\n" + words + "\n"
+}
+
+// A heading that holds a line break cuts the document as every heading of its level does, though
+// the store writes it in setext form, with no `#`. A `##` one opens a section, named by its
+// heading's text with the line break a line feed, so a change under it is named under it and not
+// under the section before it. A `#` one closes the section before it, so a change under it is the
+// run of text after that section, and that section, left as it was, is not named. The first read
+// holds the test to the setext form: a store that wrote these headings with `#`s would test
+// nothing here.
+func TestAChangeUnderASetextHeadingIsNamedUnderThatHeading(t *testing.T) {
+	handler := newTestHandler(t)
+	artifactID := uploadVersions(t, handler, "plan.md",
+		sectionedPlan(goalSection, setextScopeSection("Two regions."), risksSection, setextAppendixRun("Background.")),
+		sectionedPlan(goalSection, setextScopeSection("Three regions."), risksSection, setextAppendixRun("Background.")),
+		sectionedPlan(goalSection, setextScopeSection("Three regions."), risksSection, setextAppendixRun("Background and history.")),
+	)
+	stored := versionMarkdown(t, handler, artifactID, 1)
+	if !strings.Contains(stored, "\nScope\\\nwide\n---\n") || !strings.Contains(stored, "\nAppendix\\\nnotes\n===\n") {
+		t.Fatalf("version 1 is stored as %q, want both headings in setext form", stored)
+	}
+
+	requireChanges(t, readChanges(t, handler, artifactID, 1, 2),
+		[]servedSection{{Heading: "Scope\nwide", Occurrence: 0, Change: "changed"}}, []servedBlockRef{})
+	requireChanges(t, readChanges(t, handler, artifactID, 2, 3),
+		[]servedSection{runAfterSection("Risks", 0, "changed")}, []servedBlockRef{})
+}
+
 // A section's place is among every top-level unit of the document: the `##` sections and each run
 // of text outside every section, which a `#` heading opens. Each run is named on its own, at the
 // place it stands. So a `# Appendix` run lifted above a section, its words the same, is that run
@@ -574,6 +613,18 @@ func TestTheChangeSetEitherNamesWhatChangedOrReportsNoChange(t *testing.T) {
 			name:   "a second copy of a `#` heading added",
 			before: sectionedPlan(goalSection, scopeSection, appendixRun, risksSection),
 			after:  sectionedPlan(goalSection, appendixRun, scopeSection, appendixRun, risksSection),
+			want:   named,
+		},
+		{
+			name:   "a section under a setext `##` heading reworded",
+			before: sectionedPlan(goalSection, setextScopeSection("Two regions."), risksSection),
+			after:  sectionedPlan(goalSection, setextScopeSection("Three regions."), risksSection),
+			want:   named,
+		},
+		{
+			name:   "the text under a setext `#` heading reworded",
+			before: sectionedPlan(goalSection, scopeSection, setextAppendixRun("Background."), risksSection),
+			after:  sectionedPlan(goalSection, scopeSection, setextAppendixRun("Background and history."), risksSection),
 			want:   named,
 		},
 	}
