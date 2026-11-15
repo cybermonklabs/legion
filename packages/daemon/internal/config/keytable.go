@@ -603,6 +603,8 @@ var nestedKeys = []memberGroup{
 			Description: "Whether every issue pod's roles container serves its own PostgreSQL for the tests that need one."},
 		{Name: "idle_release", Default: "a pod quiet for ten minutes is released, and an open phase's worker is woken an hour after that", RequiredBy: "no",
 			Description: "How long an issue's pod may be quiet before the daemon releases it, and how long after that release a worker whose phase is open is brought back whatever else wakes it."},
+		{Name: "memory_guard", Default: "the guard runs in every issue pod at the defaults of `memory_guard.issue_pods`", RequiredBy: "no",
+			Description: "The memory guard in each issue pod's launcher, which near the container's memory limit ends with SIGKILL the largest process that is neither Legion's own nor an agent's own, and tells that process's role, so the pod's other roles keep their turns."},
 	}},
 	{Path: kubernetesKey + ".scheduling", Members: []member{
 		{Name: "node_selector", Default: "a pod selects the Legion pool alone", RequiredBy: "no",
@@ -795,6 +797,22 @@ var nestedKeys = []memberGroup{
 			Description: "How long an issue's pod may be quiet before the daemon releases it, suspending every claim of the released pod with the source `released`; `0` is the one zero the block accepts and releases no pod at all."},
 		{Name: "backstop_minutes", Default: "`60`", RequiredBy: "no",
 			Description: "How long after the release a released worker is brought back whatever else wakes it; a backstop below `idle_minutes` is refused, since it would wake a pod the daemon has only just released."},
+	}},
+	{Path: kubernetesKey + ".memory_guard", Members: []member{
+		{Name: "issue_pods", Default: "the guard on, at the defaults of each of its members", RequiredBy: "no",
+			Description: "The guard's settings for issue pods, the one pod kind it runs in; a launcher reads them on the daemon's answer to each hello, so a change reaches running pods with no pod replaced."},
+	}},
+	{Path: kubernetesKey + ".memory_guard.issue_pods", Members: []member{
+		{Name: "enabled", Default: "`true`", RequiredBy: "no",
+			Description: "Whether the guard runs in issue pods; `false` turns it off at each launcher's next hello, and until that answer a launcher runs it at the settings it last took, or at the defaults where it has taken none."},
+		{Name: "act_percent", Default: "`85`", RequiredBy: "no",
+			Description: "The share of the container's memory limit, from 50 to 95, at which the pod's anonymous memory makes the guard end the largest process it may end."},
+		{Name: "floor_percent", Default: "`10`", RequiredBy: "no",
+			Description: "The share of the limit, from 1 to 50, that the processes the guard may end must hold between them before it ends one; below it the guard ends nothing and logs that it stopped."},
+		{Name: "wait_seconds", Default: "`5`", RequiredBy: "no",
+			Description: "How long, from 1 to 60 seconds, the guard waits after a kill for the reading to fall before it stops for a rise that kill did not lower."},
+		{Name: "interval_milliseconds", Default: "`100`", RequiredBy: "no",
+			Description: "How often, from 50 to 5000 milliseconds, the guard reads the pod's anonymous memory and the container's limit."},
 	}},
 }
 

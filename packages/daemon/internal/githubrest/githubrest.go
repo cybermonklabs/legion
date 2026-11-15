@@ -78,12 +78,15 @@ func RetryAfter(err error) (time.Duration, Budget) {
 	return 0, ""
 }
 
-// spent is the budget a rate limit whose answer carries headers spent: GitHub's secondary limit when
-// it asks for a Retry-After or reports no primary budget spent (primary false), and otherwise the
-// primary budget x-ratelimit-resource names, or the core budget, the REST API's own, when it names
-// none.
-func spent(headers http.Header, primary bool) Budget {
-	if headers.Get("Retry-After") != "" || !primary {
+// spent is the budget a rate limit spent, read from its answer's headers and its body, body.
+// GitHub's secondary limit when the body names it (NamesSecondaryLimit), whatever
+// x-ratelimit-remaining says: octokit's throttling plugin, GitHub's own client, reads a message
+// saying "secondary rate" before that header, and this package reads the limit's older name,
+// "abuse detection mechanism", the same way. Else the secondary limit when the answer asks for a
+// Retry-After or leaves requests (no x-ratelimit-remaining: 0); and otherwise the primary budget
+// x-ratelimit-resource names, or the core budget, the REST API's own, when it names none.
+func spent(headers http.Header, body []byte) Budget {
+	if NamesSecondaryLimit(string(body)) || headers.Get("Retry-After") != "" || headers.Get("X-RateLimit-Remaining") != "0" {
 		return BudgetSecondary
 	}
 	if resource := headers.Get("X-RateLimit-Resource"); resource != "" {
@@ -195,7 +198,7 @@ func (c Client) refusal(method string, target *url.URL, response *http.Response,
 	refused := &Answer{Method: method, Path: c.answerPath(target), Status: response.StatusCode, Body: strings.TrimSpace(string(body)),
 		RateLimited: limited, RetryAfter: retryAfter(response, body, time.Now()), Limit: limitHeaders(response.Header)}
 	if refused.RateLimited {
-		refused.Budget = spent(response.Header, response.Header.Get("X-RateLimit-Remaining") == "0")
+		refused.Budget = spent(response.Header, body)
 	}
 	return refused
 }
@@ -214,8 +217,11 @@ func (c Client) answerPath(target *url.URL) string {
 
 // secondaryLimitMessages are what GitHub's secondary rate limit says in the body of the 403 it can
 // answer with instead of a 429: "You have exceeded a secondary rate limit", with the older wording
-// of the same limit, "You have triggered an abuse detection mechanism", beside it.
-var secondaryLimitMessages = []string{"secondary rate limit", "abuse detection mechanism"}
+// of the same limit, "You have triggered an abuse detection mechanism", beside it. The hyphenated
+// "secondary rate-limit" stands for no GitHub answer this repository holds: the leak guard matched
+// it from #4011 until #4052 moved the guard's reading here without it, and it is kept so that the
+// guard reads no answer as a limit less often than before.
+var secondaryLimitMessages = []string{"secondary rate limit", "secondary rate-limit", "abuse detection mechanism"}
 
 // RateLimited says whether response, whose body is body, is GitHub's rate limit: a 429, or a 403
 // carrying x-ratelimit-remaining: 0 or a retry-after, or one whose body says it is the secondary
@@ -250,7 +256,7 @@ func Limit(response *http.Response, body []byte) (bool, Budget) {
 	if !RateLimited(response, body) {
 		return false, ""
 	}
-	return true, spent(response.Header, response.Header.Get("X-RateLimit-Remaining") == "0")
+	return true, spent(response.Header, body)
 }
 
 // NamesSecondaryLimit says whether text, a GitHub answer's body or error message, says it is
