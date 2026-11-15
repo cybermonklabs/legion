@@ -599,6 +599,7 @@ const (
 	byOtherReview = "a review that is not the reviewer's answer"
 	byPush        = "a push"
 	byMergeState  = "GitHub's merge state for the head"
+	byMerge       = "the pull request's merge"
 )
 
 // roundOutcome is what a review round comes to after a fact (reviewRound).
@@ -607,12 +608,14 @@ type roundOutcome int
 const (
 	// roundOpen is a round still owed its reviewer's completion or its decision, or waiting on the
 	// head a push is bringing; or an issue not in reviewing, since one held
-	// from reviewing ends only once the retry restores it.
+	// from reviewing ends only once the retry restores it; or an approval that stands on the head
+	// of a pull request closed without merging, which the architect decides (reviewRound).
 	roundOpen roundOutcome = iota
 	// roundApproved ends the round: its reviewer completed, and its approval approves the head's code
 	// (classify.ApprovalStands), which GitHub answers for with a merge state the issue may advance
-	// on. No CI verdict is read: the reviewer reads the head's checks on GitHub before it approves,
-	// and a settlement moves no issue (dispatch://INFRA-714/spec R1).
+	// on, or which the pull request has already merged at. No CI verdict is read: the reviewer reads
+	// the head's checks on GitHub before it approves, and a settlement moves no issue
+	// (dispatch://INFRA-714/spec R1).
 	roundApproved
 	// roundRejected ends the round: its reviewer completed, and it requested changes.
 	roundRejected
@@ -704,7 +707,13 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // reviewer has completed, and the completion that follows is recorded on the reviewer's own row
 // (engine's leftItsPhase). An approval ends it once it approves the head's code
 // (classify.ApprovalStands) and GitHub reports that head one the issue may advance on
-// (record.MergeState.Mergeable). An approval that stands with any other answer waits on GitHub's
+// (record.MergeState.Mergeable), or once the pull request has merged at that head: a merged pull
+// request has nothing left to merge, GitHub answers `unknown` for it for good, and the daemon
+// never reads its state again (askMergeStateFor), so nothing it could wait on would ever come.
+// An approval that stands on the head of a pull request closed without merging keeps the round
+// open: the architect has the pr-closed-unmerged notice and decides what comes next, and a
+// reopen asks GitHub for the head's merge state again (the opened handler, then askMergeState).
+// An approval that stands on an open pull request's head with any other answer waits on GitHub's
 // next answer about that head, which is classify.RoundWaitsOnMergeState - the rule the state
 // build reads too, so the two never drift. An approval with no merge state on record for its
 // head - no read of the head on record, or a read whose answer carried no state
@@ -748,18 +757,24 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 	}
 	switch {
 	case decided == "approved" && classify.ApprovalStands(*pr, row.Decision.Head):
+		// A closed pull request merges nothing until a reopen, and the architect decides what
+		// comes of it (the pr-closed-unmerged notice), so its approval ends no round. A merged one
+		// is one the rule never waits on, so its approval ends the round below.
+		if pr.State == record.PullRequestClosed {
+			return round{}
+		}
 		if !classify.RoundWaitsOnMergeState(issue, row, pr) {
 			return round{outcome: roundApproved}
 		}
-		// The approval stands on the head and GitHub's answer for that head is not one the issue
-		// may advance on, so the round waits on GitHub's answer for it: the unread state and
-		// `unknown` because GitHub has given none yet, every other because the one it gave can
-		// change under the head, and a head GitHub has reported no concluded check run on
-		// because a check still running there is what the state is waiting for. The daemon reads
-		// for each (settleRound), and the settlement that ends the last check is itself a fact
-		// that asks for a read. Which approval waits is the rule the state build reads too
-		// (classify.RoundWaitsOnMergeState), so the view carries a mergeWait for exactly this
-		// round.
+		// The approval stands on the head of an open pull request and GitHub's answer for that
+		// head is not one the issue may advance on, so the round waits on GitHub's answer for it:
+		// the unread state and `unknown` because GitHub has given none yet, every other because
+		// the one it gave can change under the head, and a head GitHub has reported no concluded
+		// check run on because a check still running there is what the state is waiting for. The
+		// daemon reads for each (settleRound), and the settlement that ends the last check is
+		// itself a fact that asks for a read. Which approval waits is the rule the state build
+		// reads too (classify.RoundWaitsOnMergeState), so the view carries a mergeWait for
+		// exactly this round.
 		if pr.MergeState == record.MergeStateUnread || pr.MergeState == record.MergeStateUnknown || !classify.ChecksConcludedOnHead(*pr) {
 			return round{waitsOnMergeState: true}
 		}
@@ -962,7 +977,9 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 
 // askMergeStateFor queues the read for one pull request whose round waits on GitHub's answer. The
 // guard on a daemon with no reader is here as well as in askMergeState, because a base push
-// reaches this from its handler's walk rather than through that switch (basePush).
+// reaches this from its handler's walk rather than through that switch (basePush). A pull request
+// that is not open waits on no answer (classify.RoundWaitsOnMergeState holds only for an open
+// one), so the test of its state here only saves the store reads below.
 func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.PullRequest) error {
 	if e.cfg.ReadMergeState == nil || pr.State != record.PullRequestOpen {
 		return nil

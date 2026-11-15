@@ -334,11 +334,21 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // ends that phase. A merge before merging is the architect's to act on, as the shipped daemon
 // routes it: it is told, and the merge closes the issue once it reaches merging (transition). A
 // redelivered merge changes nothing.
+//
+// In reviewing, after that notice, the merge settles the review round (settleRound): an approval
+// that stands on the head the pull request merged at ends the round and moves the issue to
+// accepting, since a merged pull request leaves the round nothing to wait on (reviewRound).
+// Without this, an approval that came before the merge would hold the issue in reviewing: no read
+// of the merged pull request ever comes (askMergeStateFor), and once the reviewer has completed no
+// other fact settles the round. The round as the pull request stood before the merge is the
+// before a stuck round is deduped against (stuckAs), so a round the merge finds stuck is not told
+// again.
 func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMerged) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil || pr.State == record.PullRequestMerged {
 		return intake.Result{}, err
 	}
+	prior := *pr
 	pr.State, pr.MergeSHA = record.PullRequestMerged, fact.MergeSHA
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
@@ -350,8 +360,19 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	if issue.Phase == phase.Merging {
 		return intake.Result{}, e.closeMergedTelling(ctx, tx, *issue, pr)
 	}
-	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-merged", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("pull request #%d merged while %s was in %s, not merging", pr.Number, issue.Key, issue.Phase)})
+	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-merged", Role: claim.RoleArchitect,
+		Reason: fmt.Sprintf("pull request #%d merged while %s was in %s, not merging", pr.Number, issue.Key, issue.Phase)}); err != nil {
+		return intake.Result{}, err
+	}
+	if issue.Phase != phase.Reviewing {
+		return intake.Result{}, nil
+	}
+	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	_, err = e.settleRound(ctx, tx, *issue, reviewer, pr, e.reviewRound(*issue, reviewer, &prior), byMerge)
+	return intake.Result{}, err
 }
 
 // waitingForTree is what a root's architect is told when the merge of its pull request finds the

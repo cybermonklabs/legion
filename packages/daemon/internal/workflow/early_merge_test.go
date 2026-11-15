@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +47,80 @@ func TestAPullRequestFinishingOutsideMergingTellsTheArchitectOnce(t *testing.T) 
 			got := architectNotices(t, pool)
 			if len(got) != 1 || got[0].Kind != tc.kind || got[0].Role != claim.RoleArchitect || !strings.HasPrefix(got[0].Reason, tc.reason) {
 				t.Fatalf("notices = %+v, want one %s to the architect beginning %q", got, tc.kind, tc.reason)
+			}
+		})
+	}
+}
+
+// A reviewer's approval that stands on the head of a pull request that has already merged ends the
+// review round and moves the issue to accepting, in either order of the approval and the merge
+// (dispatch://INFRA-3738 R7). A merged pull request leaves the round nothing to wait on: GitHub
+// answers `unknown` for it for good, and the daemon never reads its state after the merge. So
+// each of those rows holds the merge state the record held before the merge, `blocked`, with no
+// check run on the head concluded, on which an open pull request's round would wait: only the
+// merge moves the issue. An approval after the merge moves it on the review. A merge after the
+// approval moves it on the merge itself, after the one pr-merged notice the merge sends.
+//
+// An approval that stands on the head of a pull request closed without merging ends no round,
+// even on a merge state GitHub would merge from and on a fact that settles the round (the
+// reviewer's completion): the architect has the one pr-closed-unmerged notice and decides.
+func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testing.T) {
+	reviewer := record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim"}
+	approved := reviewer
+	approved.Decision = &record.ReviewDecision{State: "approved", Head: headOne}
+	approvedAndCompleted := approved
+	approvedAndCompleted.HandoffRecord, approvedAndCompleted.HandoffVersion, approvedAndCompleted.Summary = "review-1", 1, "reviewed"
+	approval := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
+		HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)}
+	merge := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"}
+	closeUnmerged := intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 42, HeadSHA: headOne}
+	completion := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim",
+		Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}
+	for _, tc := range []struct {
+		name       string
+		state      record.PullRequestState
+		mergeState record.MergeState
+		reviewer   record.PhaseRow
+		facts      []intake.Fact
+		want       phase.Phase
+		notices    []record.NoticeKind
+	}{
+		{name: "the approval after the merge", state: record.PullRequestMerged, mergeState: record.MergeStateBlocked,
+			reviewer: reviewer, facts: []intake.Fact{approval},
+			want: phase.Accepting, notices: []record.NoticeKind{"phase-finished"}},
+		{name: "the merge after the approval", state: record.PullRequestOpen, mergeState: record.MergeStateBlocked,
+			reviewer: approvedAndCompleted, facts: []intake.Fact{merge},
+			want: phase.Accepting, notices: []record.NoticeKind{"pr-merged", "phase-finished"}},
+		{name: "a close without merging after the approval", state: record.PullRequestOpen, mergeState: record.MergeStateClean,
+			reviewer: approved, facts: []intake.Fact{closeUnmerged, completion},
+			want: phase.Reviewing, notices: []record.NoticeKind{"pr-closed-unmerged"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
+				Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
+			pr := record.PullRequest{State: tc.state, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", Base: "main",
+				HeadSHA: headOne, Failing: []string{}, Cancelled: []string{}, CheckRuns: []record.AttemptRun{},
+				Mergeability: record.MergeabilityMergeable, MergeState: tc.mergeState}
+			if tc.state == record.PullRequestMerged {
+				pr.MergeSHA = "merge"
+			}
+			seedPR(t, pool, pr)
+			seedPhase(t, pool, tc.reviewer)
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
+			seedClaimSession(t, pool, "review-claim", "")
+
+			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+			for i, fact := range tc.facts {
+				if result := apply(fmt.Sprintf("fact-%d", i), fact); result.Refusal != nil {
+					t.Fatalf("fact %d (%T) was refused: %+v", i, fact, result.Refusal)
+				}
+			}
+			if got := issuePhase(t, pool); got != tc.want {
+				t.Fatalf("the issue is in %s, want %s", got, tc.want)
+			}
+			if got := noticeKinds(t, pool, "LEGION-208"); !slices.Equal(got, tc.notices) {
+				t.Fatalf("notices %v, want %v", got, tc.notices)
 			}
 		})
 	}

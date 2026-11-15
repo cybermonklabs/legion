@@ -1111,11 +1111,11 @@ func CodeOnItsWay(pr record.PullRequest) bool {
 }
 
 // RoundWaitsOnMergeState says whether a review round waits on GitHub's answer about merging the
-// pull request's head: the issue is in reviewing, its reviewer's review approved the head the
-// pull request now stands at (ApprovalStands, which is the whole of that test: a review of
-// another head approves nothing, and a push on its way takes an approval of this head back), and
-// the merge state the record holds for that head is not one the issue may advance on
-// (record.MergeState.Mergeable), the unread state among them.
+// pull request's head: the issue is in reviewing, its pull request is open, its reviewer's review
+// approved the head the pull request now stands at (ApprovalStands, which is the whole of that
+// test: a review of another head approves nothing, and a push on its way takes an approval of this
+// head back), and the merge state the record holds for that head is not one the issue may advance
+// on (record.MergeState.Mergeable), the unread state among them.
 //
 // Two readers ask it, and they must answer alike, which is the whole reason the rule is here
 // rather than in either of them: the engine asks it to decide whether this round is one the
@@ -1133,14 +1133,19 @@ func CodeOnItsWay(pr record.PullRequest) bool {
 // only thing that would ever say so. What tells those apart is read by the caller that needs them
 // apart (ChecksConcludedOnHead), never here.
 //
-// It makes no test of the pull request being open: reviewRound makes none, the read the engine
-// asks for has its own (workflow's askMergeStateFor), and a caller that needs one makes it itself
-// (projection's mergeWaitView, over record.PullRequestOpen).
+// It holds only for an open pull request. A merged one has nothing left to merge. GitHub answers
+// `unknown` for it for good, and the daemon never reads its state after the merge: workflow's
+// askMergeStateFor refuses a pull request that is not open, so the state the record holds is the
+// one it held before the merge. A closed one merges nothing until a reopen, and a reopen asks for
+// a read of the head again (the opened handler, then Apply's askMergeState). Both readers rely on
+// this test and make none of their own: workflow's reviewRound ends the round on an approval that
+// stands on a merged pull request's head, since this rule leaves it nothing to wait on, and
+// projection's mergeWaitView shows no wait for a pull request that is not open.
 func RoundWaitsOnMergeState(issue record.Issue, reviewer record.PhaseRow, pr *record.PullRequest) bool {
 	if issue.Phase != phase.Reviewing || pr == nil || reviewer.Decision == nil {
 		return false
 	}
-	return reviewer.Decision.State == "approved" &&
+	return pr.State == record.PullRequestOpen && reviewer.Decision.State == "approved" &&
 		ApprovalStands(*pr, reviewer.Decision.Head) && !pr.MergeState.Mergeable()
 }
 
