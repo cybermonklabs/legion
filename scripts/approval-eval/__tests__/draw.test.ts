@@ -302,9 +302,17 @@ describe("drawSlices", () => {
 describe("drawSlices under a read of the reserve", () => {
   const holds = (row: CaseRow): boolean => row.caseId.startsWith("r-");
 
-  function source(cases: readonly DrawCase[], beforeCut: readonly string[] = []): FinalTestSource {
+  /**
+   * The source over `cases`: the issues in `beforeCut` had an ask before the cut, and the cases in
+   * `leftOut` are the ones the command left out before rendering, as it does for such a tree.
+   */
+  function source(
+    cases: readonly DrawCase[],
+    beforeCut: readonly string[] = [],
+    leftOut: readonly DrawCase[] = []
+  ): FinalTestSource {
     const outcomes = new Map<string, TreeOutcome>();
-    for (const one of cases) {
+    for (const one of [...cases, ...leftOut]) {
       const key = `tree:${one.row.issueKey}`;
       if (beforeCut.includes(one.row.issueKey ?? "")) outcomes.set(key, "ask-before-cut");
       else if (!holds(one.row)) outcomes.set(key, "not-held-at-opening");
@@ -314,6 +322,7 @@ describe("drawSlices under a read of the reserve", () => {
       reference: "claim:test",
       holds,
       grouping: { groupOf: (row) => `tree:${row.issueKey}`, outcomes, groups: new Map() },
+      beforeCut: leftOut.map((one) => one.row),
     };
   }
 
@@ -375,8 +384,12 @@ describe("drawSlices under a read of the reserve", () => {
   });
 
   test("a tree with an ask before the cut gives no case to any slice", () => {
-    const cases = [...corpus(), ...reserved(10)];
-    const draw = drawSlices(cases, 7, source(cases, ["RES-2", "ISSUE-a-0"]));
+    const held = reserved(10);
+    // RES-2's cases were left out before rendering; ISSUE-a-0's reach the draw and are left out
+    // there.
+    const leftOut = held.filter((one) => one.row.issueKey === "RES-2");
+    const cases = [...corpus(), ...held.filter((one) => one.row.issueKey !== "RES-2")];
+    const draw = drawSlices(cases, 7, source(cases, ["RES-2", "ISSUE-a-0"], leftOut));
     const where = placement(draw);
     for (const caseId of ["r-2-0", "r-2-1", "r-2-2", "a-0-0", "a-0-1", "a-0-2"]) {
       expect(where.has(caseId)).toBe(false);

@@ -310,13 +310,16 @@ export interface Draw {
 
 /**
  * What a draw under a registered read of the reserve is given: the read's reference, which cases
- * the reserve holds, and the trees item 6 groups the cases by, each with its outcome. Only an
- * eligible group may go into report.
+ * the reserve holds, the trees item 6 groups the cases by, each with its outcome, and the
+ * post-cut cases the command left out before rendering because their tree had an ask before the
+ * cut (item 6 a), so no model or document read touched them. Only an eligible group may go into
+ * report.
  */
 export interface FinalTestSource {
   reference: string;
   holds: (row: CaseRow) => boolean;
   grouping: TreeGrouping;
+  beforeCut: readonly CaseRow[];
 }
 
 /** One group of cases, which goes into one slice whole. */
@@ -413,7 +416,10 @@ export function drawSlices(
   const drawable: DrawCase[] = [];
   const outcomeOf = (key: string): TreeOutcome =>
     finalTest?.grouping.outcomes.get(key) ?? "not-held-at-opening";
-  const beforeCut: string[] = [];
+  // Item 6 (a): the cases the command left out before rendering, and below any given case whose
+  // tree had an ask before the cut, go to no slice.
+  const beforeCut: string[] =
+    finalTest === null ? [] : finalTest.beforeCut.map((row) => row.caseId);
   const leaveOut = (row: CaseRow, undrawableKind: UndrawableKind, reason: string): void => {
     draw.undrawable.push({ caseId: row.caseId, kind: row.kind, reason, undrawableKind });
     draw.undrawableByKind[undrawableKind] += 1;
@@ -538,7 +544,8 @@ export function drawSlices(
       number
     >;
     const parentChanges: FinalTestDraw["parentChanges"] = [];
-    const keys = [...new Set(cases.map((drawCase) => groupKeyOf(drawCase.row, finalTest)))].sort();
+    const rows = [...cases.map((drawCase) => drawCase.row), ...finalTest.beforeCut];
+    const keys = [...new Set(rows.map((row) => groupKeyOf(row, finalTest)))].sort();
     for (const key of keys) {
       const outcome = outcomeOf(key);
       outcomes[outcome] += 1;
@@ -822,8 +829,11 @@ async function draw(flags: Flags): Promise<number> {
   // Only a registered read opens the reserve (`readCorpus`), so a corpus read under one is the
   // claim's: it groups by tree, and its report slice is the final test item 6 allows. The trees
   // and the scorers' and round's records are read before any case is rendered, so a corpus or a
-  // file the claim cannot check stops the draw before it spends a model call.
+  // file the claim cannot check stops the draw before it spends a model call, and the cases of a
+  // tree with an ask before the cut (item 6 a) are left out before any document or model reads
+  // them: their held cases stay held until the reserve ends.
   let finalTest: FinalTestSource | null = null;
+  let toRender = post;
   if (corpus.reserve.readUnder !== null) {
     const trees = await readTrees(corpus.directory);
     if (trees.throughEventId !== corpus.snapshot.throughEventId) {
@@ -833,17 +843,19 @@ async function draw(flags: Flags): Promise<number> {
       );
     }
     const holds = (row: CaseRow): boolean => reserveOf(row) === "held";
-    finalTest = {
-      reference: corpus.reserve.readUnder,
+    const grouping = treeGroupingOf(corpus.rows, trees, {
       holds,
-      grouping: treeGroupingOf(corpus.rows, trees, {
-        holds,
-        readAskIds: await idsInFiles(flags.scorerRecords),
-        roundSessions: await idsInFiles(
-          flags.roundSessions === undefined ? [] : [flags.roundSessions]
-        ),
-      }),
-    };
+      readAskIds: await idsInFiles(flags.scorerRecords),
+      roundSessions: await idsInFiles(
+        flags.roundSessions === undefined ? [] : [flags.roundSessions]
+      ),
+    });
+    const beforeCut = post.filter(
+      (row) => grouping.outcomes.get(grouping.groupOf(row)) === "ask-before-cut"
+    );
+    const left = new Set(beforeCut.map((row) => row.caseId));
+    toRender = post.filter((row) => !left.has(row.caseId));
+    finalTest = { reference: corpus.reserve.readUnder, holds, grouping, beforeCut };
   }
   console.log(`corpus            ${corpus.directory}`);
   console.log(`cut               ${new Date(cut).toISOString()}`);
@@ -870,7 +882,7 @@ async function draw(flags: Flags): Promise<number> {
   console.log(
     `cache             ${flags.cache ?? "none, so every case is asked of the model again"}`
   );
-  const rendered = await drawCasesOf(post, issues, config, ruleOptions);
+  const rendered = await drawCasesOf(toRender, issues, config, ruleOptions);
   const drawn = drawSlices(rendered.cases, seed, finalTest);
   console.log("");
   console.log(countsTable(drawn));

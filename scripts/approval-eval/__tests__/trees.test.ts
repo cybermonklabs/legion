@@ -31,11 +31,13 @@ const ASK_ONE = "0b1d5a9e-3f4c-4d2a-9b8e-1c2d3e4f5a6b";
 const ASK_TWO = "7c8d9e0f-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
 const ROUND_SESSION = "01a1e000-0000-7000-8000-000000000001";
 
+/** One event of the log; it is made at second `id` of the cut's minute unless `at` is given. */
 function event(
   id: number,
   type: string,
   payload: Record<string, unknown>,
-  actor: string | null = null
+  actor: string | null = null,
+  at = `2026-11-16T00:00:0${id}Z`
 ): DispatchEvent {
   return {
     id,
@@ -44,7 +46,7 @@ function event(
     seq: id,
     type,
     actor: actor === null ? null : { kind: "session", id: actor },
-    created_at: `2026-11-16T00:00:0${id}Z`,
+    created_at: at,
     payload,
   };
 }
@@ -101,7 +103,13 @@ function treeOf(asks: TreeGroup["asks"]): TreeGroup {
   return { key: PICKED, issues: [PICKED], asks, parentChanges: [] };
 }
 
-const AFTER = { askId: ASK_ONE, issueKey: PICKED, openedAt: "2026-11-16T01:00:00Z", actor: "s-0" };
+const AFTER = {
+  askId: ASK_ONE,
+  issueKey: PICKED,
+  eventId: 10,
+  openedAt: "2026-11-16T01:00:00Z",
+  actors: ["s-0"],
+};
 
 describe("TreeLog", () => {
   test("keeps an issue in its group after it moves to another tree", () => {
@@ -128,7 +136,14 @@ describe("TreeLog", () => {
     ]);
   });
 
-  test("records each ask's first opening, with the actor that opened it", () => {
+  test("names an issue that appears only as another issue's parent", () => {
+    const log = logOf([event(1, "issue.created", { key: "INFRA-5", parent: "INFRA-4" })]);
+    expect(log.groupsOf(["INFRA-5"]).map((group) => [group.key, group.issues])).toEqual([
+      ["INFRA-4", ["INFRA-4", "INFRA-5"]],
+    ]);
+  });
+
+  test("records each ask's first opening, and every actor that opened it", () => {
     const log = logOf([
       event(1, "issue.created", { key: "INFRA-1", parent: null }),
       event(
@@ -141,17 +156,24 @@ describe("TreeLog", () => {
       event(4, "ask.opened", { id: ASK_TWO }, "s-3"),
     ]);
     expect(log.groupsOf(["INFRA-1"])[0]?.asks).toEqual([
-      { askId: ASK_ONE, issueKey: "INFRA-1", openedAt: "2026-11-15T23:00:00Z", actor: "s-1" },
+      {
+        askId: ASK_ONE,
+        issueKey: "INFRA-1",
+        eventId: 2,
+        openedAt: "2026-11-15T23:00:00Z",
+        actors: ["s-1", "s-2"],
+      },
     ]);
   });
 
-  test("lists only the parent changes made after the tree's first ask opened", () => {
+  test("lists the parent changes the log recorded after the tree's first ask opened", () => {
+    // The opening and the late change share a time: the log's order, not the clock, decides.
     const log = logOf([
       event(1, "issue.created", { key: "INFRA-1", parent: null }),
       event(2, "issue.created", { key: "INFRA-2", parent: null }),
       event(3, "issue.updated", { key: "INFRA-2", parent: "INFRA-1" }, "s-early"),
-      event(4, "ask.opened", { id: ASK_ONE, issue_key: "INFRA-1" }, "s-1"),
-      event(5, "issue.updated", { key: "INFRA-2", parent: null }, "s-late"),
+      event(4, "ask.opened", { id: ASK_ONE, issue_key: "INFRA-1" }, "s-1", "2026-11-16T00:00:04Z"),
+      event(5, "issue.updated", { key: "INFRA-2", parent: null }, "s-late", "2026-11-16T00:00:04Z"),
     ]);
     const [group] = log.groupsOf(["INFRA-2"]);
     expect(
@@ -187,12 +209,17 @@ describe("treeOutcomeOf, item 6", () => {
     );
   });
 
-  test("(d) an ask a session of the claim's round opened sends the tree to development", () => {
+  test("(d) an ask a session of the claim's round opened, even only reopened, sends the tree to development", () => {
+    const log = logOf([
+      event(1, "issue.created", { key: PICKED, parent: null }),
+      event(2, "ask.opened", { id: ASK_ONE, issue_key: PICKED }, "s-0"),
+      event(3, "ask.opened", { id: ASK_ONE, issue_key: PICKED }, ROUND_SESSION.toUpperCase()),
+    ]);
+    const [tree] = log.groupsOf([PICKED]);
     const checks = { ...NONE, roundSessions: new Set([ROUND_SESSION]) };
-    const ours = { ...AFTER, actor: ROUND_SESSION };
-    expect(treeOutcomeOf(treeOf([ours]), [caseRow(ASK_ONE, PICKED, PICKED)], checks)).toBe(
-      "asked-by-round"
-    );
+    expect(
+      tree === undefined ? null : treeOutcomeOf(tree, [caseRow(ASK_ONE, PICKED, PICKED)], checks)
+    ).toBe("asked-by-round");
   });
 
   test("a tree that passes every check is eligible", () => {

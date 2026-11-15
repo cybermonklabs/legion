@@ -26,13 +26,18 @@ export const TREES_FILE = "trees.json";
 /** The shape `trees.json` is written in; a reader refuses another. */
 export const TREES_VERSION = 1;
 
-/** One ask's first opening, which item 6 (a) and (d) read. */
+/** One ask: its first opening, which item 6 (a) reads, and every actor that opened it, for (d). */
 export interface TreeAsk {
   askId: string;
   issueKey: string;
+  /** The id of the event of its first opening, which a parent change is ordered against. */
+  eventId: number;
   openedAt: string;
-  /** The id of the actor of the `ask.opened` event: a session id, a login, or null for none. */
-  actor: string | null;
+  /**
+   * The ids of the actors of every `ask.opened` event of this ask, the first opening's first: a
+   * session id or a login. An opening with no actor adds none.
+   */
+  actors: string[];
 }
 
 /** One change of an issue's parent, as two whole-issue events of the log recorded it. */
@@ -101,7 +106,14 @@ export class TreeLog {
 
   private noteAsk(event: DispatchEvent): void {
     const askId = event.payload.id;
-    if (typeof askId !== "string" || this.asks.has(askId)) return;
+    if (typeof askId !== "string") return;
+    const actor = event.actor?.id ?? null;
+    const known = this.asks.get(askId);
+    if (known !== undefined) {
+      // A reopening keeps the first opening's time and issue, and adds its actor for item 6 (d).
+      if (actor !== null && !known.actors.includes(actor)) known.actors.push(actor);
+      return;
+    }
     const own = event.payload.issue_key;
     const issueKey = typeof own === "string" ? own : event.issue_key;
     // An ask on no issue is in no tree: the reserve never holds it, so no group needs it.
@@ -110,8 +122,9 @@ export class TreeLog {
     this.asks.set(askId, {
       askId,
       issueKey,
+      eventId: event.id,
       openedAt: typeof opened === "string" ? opened : event.created_at,
-      actor: event.actor?.id ?? null,
+      actors: actor === null ? [] : [actor],
     });
   }
 
@@ -156,7 +169,11 @@ export class TreeLog {
       }
       return group;
     };
-    const issues = new Set<string>([...this.links.keys(), ...issueKeys]);
+    const issues = new Set<string>(issueKeys);
+    for (const [child, parents] of this.links) {
+      issues.add(child);
+      for (const parent of parents) issues.add(parent);
+    }
     for (const ask of this.asks.values()) issues.add(ask.issueKey);
     for (const issue of issues) groupOf(issue)?.issues.push(issue);
     for (const ask of this.asks.values()) groupOf(ask.issueKey)?.asks.push(ask);
@@ -164,15 +181,7 @@ export class TreeLog {
     const ordered = [...groups.values()].sort((one, other) => (one.key < other.key ? -1 : 1));
     for (const group of ordered) {
       group.issues.sort();
-      group.asks.sort((one, other) =>
-        one.openedAt === other.openedAt
-          ? one.askId < other.askId
-            ? -1
-            : 1
-          : one.openedAt < other.openedAt
-            ? -1
-            : 1
-      );
+      group.asks.sort((one, other) => one.eventId - other.eventId);
       group.parentChanges.sort((one, other) => one.eventId - other.eventId);
     }
     return ordered;
@@ -238,8 +247,8 @@ export function treeOutcomeOf(
     return "read-by-scorer";
   }
   if (
-    group.asks.some(
-      (ask) => ask.actor !== null && checks.roundSessions.has(ask.actor.toLowerCase())
+    group.asks.some((ask) =>
+      ask.actors.some((actor) => checks.roundSessions.has(actor.toLowerCase()))
     )
   ) {
     return "asked-by-round";
@@ -248,14 +257,14 @@ export function treeOutcomeOf(
 }
 
 /**
- * The parent changes item 6 asks the claim to list: those made after the first ask of the group
- * opened, since a change before any ask could not follow an answer.
+ * The parent changes item 6 asks the claim to list: those the log recorded after the first ask of
+ * the group opened, in the log's own order, since a change before any ask could not follow an
+ * answer.
  */
 export function changesAfterAskOf(group: TreeGroup): ParentChange[] {
-  const first = group.asks[0];
-  if (first === undefined) return [];
-  const opened = Date.parse(first.openedAt);
-  return group.parentChanges.filter((change) => Date.parse(change.at) > opened);
+  if (group.asks.length === 0) return [];
+  const opened = group.asks.reduce((least, ask) => Math.min(least, ask.eventId), Infinity);
+  return group.parentChanges.filter((change) => change.eventId > opened);
 }
 
 /** How the claim's draw groups the cases, and each group's outcome under item 6. */
@@ -344,9 +353,13 @@ function treeAskOf(value: unknown): TreeAsk | null {
   const record = recordOf(value);
   const askId = stringOf(record?.askId);
   const issueKey = stringOf(record?.issueKey);
+  const eventId = numberOf(record?.eventId);
   const openedAt = stringOf(record?.openedAt);
-  if (askId === null || issueKey === null || openedAt === null) return null;
-  return { askId, issueKey, openedAt, actor: stringOf(record?.actor) };
+  const actors = listOf(record?.actors).map(stringOf);
+  if (askId === null || issueKey === null || eventId === null || openedAt === null) return null;
+  // An actor that is no string would be an opening (d) cannot check: the ask is unreadable.
+  if (!Array.isArray(record?.actors) || actors.some((actor) => actor === null)) return null;
+  return { askId, issueKey, eventId, openedAt, actors: actors as string[] };
 }
 
 function changeOf(value: unknown): ParentChange | null {
