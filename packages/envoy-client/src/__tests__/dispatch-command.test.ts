@@ -382,3 +382,189 @@ describe("the dispatch command surface", () => {
     });
   });
 });
+
+// `--run -` would send the one character "-" to a caller who meant stdin, which only `--run-file -`
+// reads. So every text flag refuses a bare `-`, but `dispatch artifact --path`, whose value names
+// a local file. Every other value passes as given.
+describe("a bare - given to a text flag", () => {
+  const commit = "1111111111111111111111111111111111111111";
+  /** A result call with every required field, then `rest`. */
+  const result = (...rest: string[]): string[] => [
+    "result",
+    "--issue",
+    "DSP-1",
+    "--check",
+    "k1",
+    "--role",
+    "implementer",
+    "--verdict",
+    "pass",
+    "--commit",
+    commit,
+    ...rest,
+  ];
+  const resultArgs = {
+    issue: "DSP-1",
+    check: "k1",
+    role: "implementer",
+    verdict: "pass",
+    commit,
+  };
+  /** The problem a bare `-` given to `flag` is refused with. */
+  const bareDash = (flag: string): string =>
+    `${flag} - sends the one character "-". ${flag}-file <path> reads ${flag} from a file, and ${flag}-file - reads it from stdin. One flag of a call may read stdin.`;
+
+  test("is refused once per flag, in command-line order, listing no flags", () => {
+    expect(
+      parseCommand(result("--run", "-", "--observed", "-", "--negative-control", "-"), noFiles)
+    ).toEqual({
+      kind: "refused",
+      tool: "dispatch_result",
+      problems: [bareDash("--run"), bareDash("--observed"), bareDash("--negative-control")],
+      aboutAFlag: false,
+    });
+  });
+
+  test("--run=- reads as --run -", () => {
+    expect(parseCommand(result("--run=-"), noFiles)).toEqual({
+      kind: "refused",
+      tool: "dispatch_result",
+      problems: [bareDash("--run")],
+      aboutAFlag: false,
+    });
+    expect(parseCommand(result("--run=-"), noFiles)).toEqual(
+      parseCommand(result("--run", "-"), noFiles)
+    );
+  });
+
+  test("an enum flag is a text flag", () => {
+    expect(
+      parseCommand(
+        [
+          "result",
+          "--issue",
+          "DSP-1",
+          "--check",
+          "k1",
+          "--role",
+          "implementer",
+          "--verdict",
+          "-",
+          "--commit",
+          commit,
+        ],
+        noFiles
+      )
+    ).toEqual({
+      kind: "refused",
+      tool: "dispatch_result",
+      problems: [bareDash("--verdict")],
+      aboutAFlag: false,
+    });
+  });
+
+  test("dispatch artifact --path - names a local file and passes", () => {
+    expect(
+      parseCommand(["artifact", "--issue", "DSP-1", "--name", "a.txt", "--path", "-"], noFiles)
+    ).toEqual({
+      kind: "call",
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-1", name: "a.txt", path: "-" },
+      dryRun: false,
+    });
+  });
+
+  test("a list flag sends it, and a number or JSON flag refuses it as before, listing the flags", () => {
+    expect(
+      parseCommand(["issue", "--project", "DSP", "--title", "T", "--label", "-"], noFiles)
+    ).toEqual({
+      kind: "call",
+      tool: "dispatch_issue",
+      args: { project: "DSP", title: "T", labels: ["-"] },
+      dryRun: false,
+    });
+    expect(
+      parseCommand(["issue-update", "--issue", "DSP-1", "--priority", "-"], noFiles)
+    ).toStrictEqual({
+      kind: "refused",
+      tool: "dispatch_issue_update",
+      problems: ['--priority must be a number, not "-"'],
+    });
+    expect(
+      parseCommand(["doc-edit", "--issue", "DSP-1", "--ops-json", "-"], noFiles)
+    ).toStrictEqual({
+      kind: "refused",
+      tool: "dispatch_doc_edit",
+      problems: [expect.stringMatching(/^--ops-json is not JSON: ./)],
+    });
+  });
+
+  test("a - that --<field>-file read from a file or stdin passes", () => {
+    const dashes = {
+      readText: (path: string): string => {
+        if (path === "f" || path === "-") return "-";
+        throw new Error(`unexpected read ${path}`);
+      },
+    };
+    expect(parseCommand(result("--run-file", "f", "--observed-file", "-"), dashes)).toEqual({
+      kind: "call",
+      tool: "dispatch_result",
+      args: { ...resultArgs, run: "-", observed: "-" },
+      dryRun: false,
+    });
+  });
+
+  test("a longer value that starts with -, or holds - or | among other characters, passes as given", () => {
+    expect(
+      parseCommand(
+        result(
+          "--run",
+          "-run 'A|B'",
+          "--observed=--- PASS: X",
+          "--negative-control",
+          "go test -run 'A|B' | tee out"
+        ),
+        noFiles
+      )
+    ).toEqual({
+      kind: "call",
+      tool: "dispatch_result",
+      args: {
+        ...resultArgs,
+        run: "-run 'A|B'",
+        observed: "--- PASS: X",
+        negative_control: "go test -run 'A|B' | tee out",
+      },
+      dryRun: false,
+    });
+  });
+
+  test("beside any other problem, the refusal keeps both, in command-line order, and lists the flags", () => {
+    const file = {
+      readText: (path: string): string => {
+        if (path === "f") return "x";
+        throw new Error(`unexpected read ${path}`);
+      },
+    };
+    expect(parseCommand(result("--run", "-", "--run", "-"), noFiles)).toStrictEqual({
+      kind: "refused",
+      tool: "dispatch_result",
+      problems: [bareDash("--run"), "--run is given twice"],
+    });
+    expect(parseCommand(result("--run", "-", "--run-file", "f"), file)).toStrictEqual({
+      kind: "refused",
+      tool: "dispatch_result",
+      problems: [bareDash("--run"), "--run and --run-file both set run"],
+    });
+    expect(parseCommand(["read", "--issue", "-", "ACME-12"], noFiles)).toStrictEqual({
+      kind: "refused",
+      tool: "dispatch_read",
+      problems: [bareDash("--issue"), "unexpected argument ACME-12: --issue is already -"],
+    });
+    expect(parseCommand(result("--run", "-", "--runn", "x"), noFiles)).toStrictEqual({
+      kind: "refused",
+      tool: "dispatch_result",
+      problems: [bareDash("--run"), "unknown flag --runn"],
+    });
+  });
+});

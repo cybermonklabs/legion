@@ -64,6 +64,7 @@ Each item below names a variable, then its purpose.
   `POST /api/v1/agents/{session_id}/stream/_test/publish` (needs the `person` scope) feeds the in-memory agent relay, with `as=drop` ending agent views as `dropped`;
   `POST /api/v1/artifacts/_test/quiesce` closes every live document and waits for settlements;
   `POST /api/v1/artifacts/{id}/_test/outside-schema` writes the crafted malformed document e2e uses;
+  `POST /api/v1/artifacts/{id}/_test/newer-content` appends an element no build knows, so the document holds newer content;
   and `POST /api/v1/writes/_test/slow` `{method, path, delay_ms}` makes every keyed run of that method and exact path wait `delay_ms` once its key is claimed.
   The first four act on every process serving the database, whichever one the call reached (Running more than one process, below), and the flag costs each process one more Postgres connection outside the shared pool, the one those hooks listen on.
   Leave unset in every real deployment.
@@ -112,6 +113,8 @@ Each item below names a variable, then its purpose.
 
   An image whose Dispatch does not know `gs://` reads the value as an S3 bucket's name and fails every call, so a deployment sets a `gs://` value only on an image that carries it.
   An upload writes its object before its row and before any lock or connection is taken, within 30 seconds, so a store that refuses answers 502 `FILE_STORE_UNAVAILABLE` and writes no version.
+  While a live server process has no bucket (one without the setting, or one of a build that writes a `server_processes` row with no `file_store`), an upload's row keeps its bytes as well as the bucket, so that process serves it.
+  A process of a build that writes no `server_processes` row is not counted, so set this no sooner than the release after the first one that carries that rule ("Two builds at once", below).
   The version route serves a row still holding bytes from the row and any other from the bucket:
   it opens the object within 30 seconds, sends its headers and `Content-Length` only then, and streams the body at the client's pace, checking it against the row's hash as it goes;
   a bucket that does not answer is 502, a row whose object the bucket does not hold is 500 `FILE_MISSING` (a restore from the bucket's versioning, not a retry), a cleared row on a server with the setting unset is 503, and a body that fails or hashes wrong mid-stream is cut off rather than ended as if whole.
@@ -122,7 +125,9 @@ Each item below names a variable, then its purpose.
 - `DISPATCH_EMBEDDER`, `DISPATCH_AZURE_EMBED_*`, `DISPATCH_AZURE_TENANT_ID`, `DISPATCH_AZURE_CLIENT_ID`, `DISPATCH_AZURE_FEDERATED_TOKEN_FILE`
 
   Where meaning search embeds, and with what credential.
-  Every process of one deployment takes the same values, and a model change on Azure takes a new deployment name, since each vector records an identity that names the deployment and not the model behind it (Search, below).
+  The processes may take different values during a release that changes them:
+  one embedder identity is active at a time, and only the processes configured with it embed (Search, below).
+  A model change on Azure takes a new deployment name, since each vector records an identity that names the deployment and not the model behind it.
   A model service or Entra that is down refuses no boot: search answers by keyword and says so, and the queue retries.
 
 - `DISPATCH_ANSWERER`, `DISPATCH_AZURE_CHAT_*`, `DISPATCH_CHAT_*`, and the same `DISPATCH_AZURE_TENANT_ID`, `DISPATCH_AZURE_CLIENT_ID` and `DISPATCH_AZURE_FEDERATED_TOKEN_FILE`
@@ -439,13 +444,21 @@ Two writing passes at once (`backfill-files` and `--restore`, in any pairing) ar
 lock`).
 `--verify-only` reads back every cleared row against its hash, moves nothing, takes no lock (it runs beside either pass, reading only what that pass has finished), and exits 1 naming each row whose object is missing or wrong.
 
+While a live server process has no bucket (a process without `DISPATCH_FILE_STORE_BUCKET`, or one of a build that writes a `server_processes` row with no `file_store`), that process serves a file only from its row.
+So an upload to a process with a bucket keeps its bytes in its row as well as in the bucket, and the move refuses before it touches a row, with exit 1 and a line that names each such process by its instance id, its build and when it started.
+`--verify-only` and `--restore` take no bytes out of a row and run beside such a process.
+A release that rolls the bucket out, or that runs beside a build before it that writes a `server_processes` row, therefore serves every upload from every process;
+run `backfill-files` once every process has the bucket.
+A build that writes no `server_processes` row (every release before migration `0135_server_processes`) is not seen by either check, so set the bucket no sooner than the release after the first one that carries this rule, and only after every process of the earlier release is gone ("Two builds at once", below).
+
 `--restore` is the rollback, at any point before or after the clear:
 it reads every cleared row's object back, verified against the row's hash, and writes the bytes into the row again, so a server with the setting unset, or an image from before the store existed, serves every file from its row.
 The objects stay in the bucket, and a later `backfill-files` moves the rows out once more.
-Unsetting the setting without a restore is not a rollback:
+Turning the store off takes a restore before the release that unsets the setting:
 a server without it serves a row still holding bytes and answers `503 FILE_STORE_UNAVAILABLE` for every row written while the bucket was set, an upload's as much as a cleared one's;
 and an image from before the store serves a cleared row as an empty `200` under the file's own `ETag`, which a browser then caches.
-Restore first, then roll back.
+While that release rolls, the processes that still have the bucket keep each new upload's bytes in its row too, since each new process registers that it has none.
+Restore first, then roll the release out.
 
 ```bash
 envoy-dispatch backfill-files                 # move every row still holding bytes; prints each one and a total; exit 1 if any failed
@@ -783,9 +796,19 @@ Each step of a rotation (Identity, above) passes the check beside processes stil
 A process whose heartbeat lapsed (frozen, or cut from the database, for longer than the live window) or whose row was pruned drops out of the registry while it runs, so a process started meanwhile is checked without it;
 the first one checks its keys again before it counts as live once more, and beside a live process whose keys it does not share it logs `msg="dispatch: this server process no longer shares its signing keys with a live server process"` at ERROR, stops serving as a SIGTERM stops it (the listener closes at once, the requests in flight are answered, its row is deleted), and exits 1.
 
-**Every migration leaves the release before it able to read and write the schema** (Database migrations, below):
-a rolling update runs the old build and the new build against one database at once.
-A change that cannot be written that way is a stop-the-world migration, deployed with no server of the earlier release running, and that is an exception named in the pull request.
+**Every release keeps the build before it working** (Two builds at once, below):
+a rolling update runs the old build and the new build against one database and one NATS at once, and the page and the `dispatch` command of either build reach either process.
+A release is an exception to it only where this document says so, and each exception is named here or in the section that owns it.
+Each crossing before this rule is named where it happened rather than counted here:
+the migrations the Database migrations section below marks as deployed with no server of the earlier release running, which a deployment still on a release before them crosses with Dispatch stopped;
+the release that introduced the process registry (`server.started`, below), deployed with no process of the release before it serving beside it;
+and the release that moves live updates to `/ws/live` and keys every write (INFRA-258, immediately below), which deploys with no server of the earlier release running because of its API.
+An exception still to come rather than past is named where it belongs too: an upgrade of ygo that changes its update encoding (Two builds at once, Stored documents, below), which no build can roll through because the build that cannot read the new encoding is already serving when it arrives.
+
+**A build keeps the earlier build's requests answerable while both serve** (Two builds at once, below, states this surface by surface).
+A route either build serves answers a body either build sends: a member one build does not declare is ignored rather than refused, so a request still does what it asks for, and a member whose loss would change what a request does ships as a route of its own instead.
+A route is added freely and removed only in the release after the one that stops calling it, and a page or command that reaches a build without a route it wants is answered `404 NOT_FOUND` with `no route for <METHOD> <path>`, which it retries so that the next attempt can reach the other build.
+So the two surfaces a client crosses a roll on, the body it sends and the route it sends it to, are the earlier build's as much as this one's for the length of the roll.
 
 **The release that moves live updates to `/ws/live` and keys every write (INFRA-258) deploys with no server of the earlier release running**, because of its API rather than its schema.
 An earlier server ignores the `Idempotency-Key` header and keeps no key, so while both serve one database a write can run twice:
@@ -802,7 +825,7 @@ Fix forward instead; if you must roll back, stop this release first, knowing a w
 Once `0141_drop_broadcast_idempotency_keys` has applied, a rollback past this release also loses broadcasts:
 the earlier build's broadcast send reads and writes the table `0141` drops, so every broadcast send fails while the rest of that build keeps working.
 A tab opened before the deploy needs a reload:
-`GET /api/v1/events` is gone, so it shows `Live updates unavailable`, and its broadcast body still carries `idempotency_key`, which this release refuses as an unknown field (`400 INVALID_JSON`).
+`GET /api/v1/events` is gone, so it shows `Live updates unavailable`, and its broadcast body still carries `idempotency_key`, which this release refuses by name (`400 INVALID_JSON`, "idempotency_key is the Idempotency-Key header, not a body member"), so that tab sends no broadcast until it reloads.
 
 What the two processes share, and what each keeps to itself:
 
@@ -835,8 +858,15 @@ What the two processes share, and what each keeps to itself:
 - A reader's events subscription on its live socket carries the other process's events.
   It is re-sourced from Postgres through a per-process relay on `listen dispatch_events` (migration `0107_events_notify`), so an event committed on either process reaches every open subscription with no reconnect.
 
-- The two delivery durables keep their shape.
-  One process binds each: it subscribes under the durable's own Postgres consumer lease and keeps that lease until the server reports the durable bound, so the second process finds it bound and stands by, asking every two seconds, and takes the durable over within seconds of the holder dying.
+- The two delivery durables keep their shape, and each delivers to one process at a time:
+  the process that holds that durable's hold (`duty.Hold`, migration `20261101143201_duty_holds`, a row with a 15-second lease on the database's clock, renewed every five seconds).
+  The other processes stand by and try for the hold every two seconds.
+  A process that stops hands back every message it was delivered and did not handle and releases the hold, so another process takes the durable over at once and is redelivered those messages within seconds;
+  a process that dies is replaced within the hold's 15 seconds and one try.
+  A take-over recreates the durable at its ack floor on a fresh deliver subject, which fences the old holder off:
+  a subscription its client sends again after a reconnect gets nothing.
+  It runs whole under that durable's own Postgres consumer lease, which the reconciliation of the build before holds takes too, so no two processes change one durable at once.
+  A durable bound by a build before holds, which binds by lookup and holds nothing, is left to that build until it lets go (`delivery/held_durable.go`, `heldDurable`).
 
 - A delivery a process left behind is sent by another.
   A direct message's first attempt is written in the transaction that stores it, and a request's own send outlives a cut connection.
@@ -870,10 +900,11 @@ What the two processes share, and what each keeps to itself:
 
 - No leased background loop runs a pass beside another process's pass of the same loop.
   Each pass takes a named session-level advisory lease for its length (`duty.Exclusive`), so a process whose attempt lands inside another's pass finds it held and logs a skip.
-  The twelve timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the hourly display tree fill (lease `text-tree-fill`, first tick at start, whose first pass of a display-parser version runs until every stored text has a tree at it), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption and the prune of the registry of live server processes
-  — also record each pass in `duty_passes` (migration `0115`) with the loop's own period, so a process whose tick lands between another's passes
+  The twelve timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption, the prune of the registry of live server processes and the display tree fill (`texttreefill`, lease `text-tree-fill`)
+  — also record each pass in `duty_passes` (migration `0115`), in a row per lease and period, so a process whose tick lands between another's passes
   — the ordinary case, since each ticker draws its phase at boot and a rolling update starts the second process minutes after the first
   — finds the period already served and logs the same skip: each runs once per period across the processes.
+  A row per lease and period is what keeps two builds whose interval for one loop differs from each running on every tick after the other's pass: the processes at one period make one pass per period between them, whatever the processes at another period do.
   The two leased woken loops, the reference excerpts and the edit notices, take their lease with no period:
   a process that finds it held tries again until a pass of its own runs, since the other process's pass may have read before the change that woke this one.
   The suggestion outcome sweep takes no lease at all:
@@ -881,9 +912,9 @@ What the two processes share, and what each keeps to itself:
   The settlement resumption is leased because a settlement reads the store under the document's lock whichever process runs it, so one process per minute arms every owed settlement.
   The embeddings `project_key` fill (lease `embeddings-project-key-fill`, `api.RunEmbeddingProjectKeyFill`) is leased and is no loop of a cadence: it is one pass of one to two hours that labels the rows stored before migration `20261109120000`, started once at boot, and it takes its lease with no period because the cursor row of `20261109120100` says when there is nothing left to do, so the process of a roll that finds the lease held logs the skip and fills nothing.
   That process then tries for the lease again every five minutes until that cursor row reads done, so a holder killed mid-pass costs the labelling one wait rather than lasting until something next boots, and each process's goroutine and its lease-pool connection go back for good once the rows are labelled.
-  Seventeen names are leased in all: those fourteen loops — the twelve timer loops above and the two woken ones — the CI reconcile among them, one per delivery durable for the consumers' reconciliation, and the fill, which is why the lease pool holds seventeen connections (`const LeasePoolSize = 17` in `internal/dispatch/store/pool.go`, whose comment lists the names, and `TestTheLeasePoolHoldsAConnectionForEveryLeasedCaller` counts this process's leased callers against it: the fifteen this package wires — `cmd/dispatch/main.go`, with the registry prune reached through `joinRegistry` in `registry.go` — and the two delivery intakes, one per durable).
+  Seventeen names are leased in all: those fourteen loops, the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers and for each of the four callers of the two intakes' holds, twenty-one (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
   The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, and the outbox publishes under its hold (above);
-  the embedding queue's coverage pass runs in every process with no lease, each of its steps safe beside another process's, and drops every vector its own embedder did not make, so every process takes the same embedder settings (Search, below);
+  the embedding queue's coverage pass runs in every process with no lease, each of its steps safe beside another process's, and only the processes whose embedder has the one active identity embed or drop a vector (Search, below);
   `cmd/dispatch/main.go` says at the call site which loop is which and why.
 
 - The delivery live hub, the event-stream relay and the events outbox run in every process, each on a `LISTEN` connection of its own (`api/delivery_live_hub.go`, `api/event_stream_relay.go`, `outbox/lease.go`), and the document rooms' room sync shares the process's listener hub with the woken background loops (`docs/room_sync.go`, Background loops, above).
@@ -1064,12 +1095,12 @@ During the roll that releases this behaviour, processes of the earlier build beh
 Every change this build writes still notifies `dispatch_doc_changed`, which the earlier build reads, and an issue that the earlier build closes still closes this build's rooms through the trigger.
 
 **Each process holds its own connections, so a second process doubles them.**
-Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 17 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 108 connections to Postgres (`store.ConnectionsPerProcess`, which adds those eleven constants):
+Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 21 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 112 connections to Postgres (`store.ConnectionsPerProcess`):
 
 | Pool | Connections | What takes them |
 | --- | --- | --- |
 | Shared (`sharedPoolSize`) | 64 | Requests, settlements, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions). |
-| Leases (`store.LeasePoolSize`) | 17 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`), one per caller that can be inside a lease at once, the display tree fill's pass among them, and the embeddings `project_key` fill's one pass. |
+| Leases (`store.LeasePoolSize`) | 21 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the embeddings `project_key` fill and the display tree fill among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
 | Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
 | Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
 | Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
@@ -1080,7 +1111,7 @@ Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a se
 | Registry (`registryPoolSize`) | 1 | Held for the life of the process: the heartbeat that stamps its row in the registry of live server processes every 5 seconds (`processes.Register`). |
 | Listeners (`listenerConnections`) | 5 | What the process may hold at once, each on a connection of its own: the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each held for the life of the process, and the delivery hub's and the event stream relay's, each held only while something subscribes to them. |
 
-Two processes at their ceiling hold 216, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
+Two processes at their ceiling hold 224, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.
@@ -1089,6 +1120,155 @@ a closed connection makes the client open a new one, which kube-proxy spreads ac
 Shutdown needs none of this: once `Server.Shutdown` begins, Go's server already writes every response with `Connection: close` and closes the connection after it.
 One race remains: a client can write a request onto an idle pooled connection at the instant the server closes it.
 Clients retry an idempotent request on a new connection, but a proxied `POST` can come back as a `502`.
+
+### Two builds at once
+
+A release rolls: while build N serves, build N+1 starts beside it on the same Postgres and NATS, and a page or a `dispatch` command of either build can reach a process of either build.
+So for each surface the two builds share, this is what build N+1 may change while build N serves:
+
+- **Request bodies.**
+  A new member is additive and ignorable.
+  A route decodes a body into the members it declares and ignores every other one (`api/server.go`, `decodeJSON`;
+  the JSON upload, `jsonArtifactUpload`), and logs the ignored top-level names at debug with the route.
+  So a member whose loss changes what a request does (a precondition, a guard, a member that makes the request do something else) ships as a new route, never as a new member:
+  build N would ignore it and do the request without it.
+  A member a route stops taking stays declared and is refused by name, so a page or command that still sends it is told rather than silently served without it:
+  `primary` on the JSON upload, `idempotency_key` on a broadcast, whose key is the `Idempotency-Key` header.
+  A test hook (`/_test/…`, mounted only under `DISPATCH_TEST_HOOKS`) refuses every member it does not declare (`decodeJSONTestHook`): no client of another build calls one.
+
+- **Routes.**
+  A route is added freely.
+  Build N answers a route that only build N+1 serves with the JSON `404 NOT_FOUND` `no route for <METHOD> <path>`, and it answers a known path asked with a method it does not serve the same way (Routes, below).
+  The page (`web/src/api/client.ts`) and the `dispatch` command (`packages/envoy-client/src/dispatch-http.ts`) send that request again, with the same body, after 1, 2 and 4 seconds, each wait jittered by a quarter:
+  no handler ran, and the next attempt can reach the other build.
+  After the last attempt they say that the action is not offered yet because a release is in progress.
+  A route is removed only in the release after the one that stops calling it, so no page or command still serving calls a route that is gone.
+
+- **Query values and opaque tokens** (a cursor, a `kind`, an enum value in a query): reader-first.
+  The release that reads a new value or token shape ships before the release that sends or mints it.
+  A reader that meets a value it does not know answers without it where it can:
+  `GET /api/v1/references?kind=` answers no edges of a kind this build does not emit and lists that kind in `unknown_kinds`.
+
+- **Socket frames.**
+  A new member is additive: the delivery socket (`/ws/delivery`) ignores a member a frame does not declare (`decodeSocketClientFrame`).
+  A new frame type or view kind degrades on build N, which answers it `INVALID_FRAME`:
+  the page then closes the socket and reconnects with the backoff of a lost socket (`web/src/api/delivery-live.ts`), until it reaches a process that serves the frame.
+  A subscribe frame's `resume` is the exception to the ignoring:
+  it is the point the view restarts from, so a member the view's resume does not take is refused by name (`decodeLiveResume`) rather than dropped, which would restart the view somewhere else.
+
+- **Response members.**
+  A new member is optional to every reader: a page or command of build N+1 works when build N answers without it.
+  A member is removed only once no page or command still serving reads it.
+
+- **Stored documents.**
+  Reader-first, by the schema manifest (`internal/dispatch/pmdoc/schema/blocks.json`).
+  Every node, mark, typed block, attribute and enum value carries `since`, the schema version from which a build reads it, and `creatable_since`, the version from which a build creates it;
+  both are 1 where the manifest names neither.
+  A new element is readable one release before it is creatable, unless the page admission below gates it: `legion-envoy-v29.1.0` first declares `requirement`, `plan_task` and `check`, at manifest version 3, and this build gives them `since` 3 and `creatable_since` 3 (Generations and holds, below).
+  A server-side write (an agent's edit, a settlement, an import) is bound by this build's manifest alone, so one can still add such an element during a roll; a build of this manifest at an earlier version then answers `409 DOC_NEWER_CONTENT` for that document (the release before the manifest: Generations and holds, below).
+  Every write path refuses an element this build reads but may not create yet (`pmdoc`, `refuseUncreatable`), unless the document already holds it, and the editor offers only the elements it may create.
+  An element stays readable while stored documents may hold it: no release removes a readable element from the manifest.
+  A build that still meets an element it does not know answers `409 DOC_NEWER_CONTENT` for that document, and its document socket closes with `4425` (Document errors, below).
+  No route repairs, replaces or rebuilds such a document, since each of those would delete the element;
+  settlement writes no version of it and leaves an approval to carry over to a build that reads it; and the excerpt reconciliation leaves its mentions owed.
+  A renderer change (the markdown a tree renders as) and a reference-grammar change (what a body's references parse as) are reader-first too:
+  a build whose renderer writes an unchanged document differently writes no new version of it, and a rewrite of a body keeps the reference edges to node kinds this build does not know.
+  A page's document socket is writable by the whole fleet's numbers (`internal/dispatch/docs/socket_admission.go`, `authorize`):
+  each process registers V, the schema version it reads, and R, the highest `since` among the elements it may create, in `server_processes` (migration `20261101030537_server_processes_schema`).
+  A page presents its own V and R as `schema_version` and `schema_creatable`, and is writable on an open issue when its R is at most every live process's V and at most the highest R among the live processes, and its V is at least every live process's R and the highest `since` among the elements the document holds; otherwise it is read-only.
+  The bound on the highest R makes a page of a newer build read-only after a rollback: no live process creates what that page creates.
+  A page that sends no `schema_creatable` predates the manifest, so its R is 1, and a process of a build that predates the fleet columns counts as reading version 0, which no page's R is at or under.
+  Every 15 seconds (the registry's live window) each process checks its open document sockets again and closes each writable one the fleet no longer admits with `4412` (reason `DOC_ADMISSION_REVOKED`; `DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE` and `DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON` in `packages/contracts`);
+  the close frame goes out once the message the server has in flight on that socket is out, which it waits at most a second for, so a peer too slow to take it in that second gets no close frame at all and reads the end as `1006`;
+  the provider reconnects on either, the new socket is admitted again, and the reconnect's sync restores what was in flight, so the second is a bound on the close code a page reads and on nothing else.
+  A change of ygo's own update encoding is the one stored-document change no build can answer and no test here proves: a build that meets history written with an encoding it does not know cannot decode it, and the build that cannot is already serving when the new encoding arrives, so the reader-first rule above has nothing to act on.
+  An upgrade of that dependency that changes the encoding is therefore a release deployed with no server of the earlier release running, like the migrations that took that exception, rather than a roll.
+  What this build does answer is an element it does not know (`DOC_NEWER_CONTENT`, above) and the encodings two deployed builds already speak, which the two-build documents test drives; neither is the upgrade.
+  This is the one statement of that rule; the other documents point here for it.
+
+- **NATS.**
+  The settings of the stream `ENVOY_NOTIFICATIONS` and of the delivery durables carry a generation in their metadata (`dispatch.stream-generation`, `dispatch.consumer-generation`).
+  A change to the stream's `MaxAge`, `Duplicates` or subjects, or to a durable's config, takes a new generation (`streamConfigGeneration` in `internal/bus/stream.go`, `consumerConfigGeneration` in `internal/dispatch/delivery/intake.go`, each pinned by a test row).
+  A build that finds a higher generation deployed leaves the stream as it is and recreates a durable with the deployed config, so build N never reverts what build N+1 set.
+  Dispatch keeps the stream's deployed replica count, and keeps its deployed consumer cap where that is higher than its own (`streamMaxConsumers`): the cap, like the replica count and the byte limit, is only ever raised, so it takes no generation and the two builds never lower each other's.
+  Every ensure keeps a deployed subject it does not know, unless it overlaps a subject of its own, and each client publishes a topic on the transport the deployed stream's subjects call for (`bus.Client.UsesCoreTransport`), so build N publishes a topic under a subject only build N+1 adds to the stream too, with its message id.
+  No subject is retired while a running build publishes to it: retiring one is an operator step (`internal/bus/stream.go`, `streamReconciliation`).
+  Each delivery durable has one intake holder at a time, the process that holds its `duty.Hold` (above).
+
+- **Messages.**
+  Envelope and payload members are additive:
+  the members of the Dispatch events the outbox publishes (`internal/dispatch/outbox/publisher.go`, `envelope`), of `server.started` (`internal/dispatch/startup`) and of the GitHub envelopes the delivery intakes read (`internal/contracts/normalize.go`).
+  Every consumer ignores a member it does not know.
+  The listener decodes an envelope into the members it declares and hands the payload on unread (`cmd/listener/delivery.go`, `listenerDeliveryHandler`).
+  The session plugins parse the envelope and the Dispatch event with schemas that drop or carry through every other member (`packages/envoy-client/src/delivery.ts`, `renderInbound`;
+  `DispatchEventSchema` in `packages/contracts/src/dispatch-api.ts`).
+  The Legion daemon decodes each envelope and payload into the members it declares (`packages/daemon/internal/intake/decode.go`, `decodeMessage`).
+  The intakes decode an envelope into the members it declares, read a payload's string members and skip every other member (`internal/dispatch/delivery/intake.go`, `flatPayload`; `jobs.go`, `receive`).
+  A consumer ignores an event type or `kind` it does not know, and acks it:
+  the daemon decodes it to no fact and acks it (`decodeDispatchEvent`, `decodeDispatchProjectFact`, `decodeGitHubFact`;
+  `consume.go`, `consumeMessage`), and the intakes ack it with no write and no GitHub call (`route`, `receive`).
+  The session plugins refuse no type either: they show an event of a type they do not know with its type and payload as they came (`dispatchPayload`).
+  So a member whose loss changes what a message means ships as a new type or kind, never as a new member:
+  a consumer that does not know the member would act on the message without it.
+  A member or a kind is removed only after no running build reads it.
+  A new envelope `source`, `urgency` or `expects_reply` value is reader-first:
+  the listener drops an envelope that holds a value it does not know and delivers it to no session (`internal/contracts/generated.go`, `Envelope.Validate`).
+
+- **Settings.**
+  A loop interval may change: a periodic loop records its passes per lease and period (`duty_passes`, the row `<lease>/<period_ns>`;
+  `duty/exclusive.go`), so two builds with different intervals for one loop each run it once per their own period, and two builds at one interval share it as one build does.
+  The embedder is coordinated by the code:
+  one identity is active at a time (`embedder_active`, migration `20261101030538_embedder_active`), it stays active while a live process carries it, and only the processes configured with it embed, drop or reserve tokens (Search, below), so two builds with different embedders do not drop each other's vectors.
+  So is the file store: while a live process has no bucket (`file_store` false or unset), an upload keeps its bytes in its row as well as in the bucket, and `backfill-files` refuses;
+  turning the store off takes `backfill-files --restore` before the release that unsets it (Moving uploaded files to the bucket, above).
+  Both decisions read only the live rows of `server_processes` (`internal/dispatch/processes`, `Live`).
+  A build that writes a row but predates the fleet columns (migration `20261101030537_server_processes_schema`) registers no embedder identity and no `file_store`, so it counts as carrying no identity and as having no bucket.
+  A build that writes no `server_processes` row at all (every release before migration `0135_server_processes`, such as `legion-envoy-v19.0.0`, which stops at migration `0134`) is invisible to both decisions:
+  while it serves, every process that has a row can have a bucket, so an upload keeps no bytes in its row and `backfill-files` does not refuse, and a process of that build with no bucket then answers `503 FILE_STORE_UNAVAILABLE` for an upload whose bytes are only in the bucket.
+  Every build before this rule drops the vectors of every identity but its own, whatever the active one is.
+  So turn on the file store, or change the embedder, no sooner than the release after the first one that carries the rule, and only after every process of the earlier release is gone.
+
+- **SQL.**
+  Expand-then-contract across two releases (Database migrations, below), unchanged.
+
+The two-build test checks this rule (`cmd/dispatch/twobuild_*_test.go`, `go test -tags twobuild
+./cmd/dispatch`, CI job `dispatch-two-builds`).
+`packages/envoy/scripts/build-dispatch-build.sh` builds the previous release from its commit, and the test runs it beside this tree on one Postgres, cloned at this tree's schema, and one NATS.
+It drives each build's `dispatch` command against the other build's server, reads and edits each build's stored documents and opens their document socket on the other build, and passes messages both ways while it checks that the stream and consumer settings stay as they are.
+
+Generations and holds protect from the release after the first one that carries them.
+The build before them compares stream and consumer settings with no generation, binds its delivery durable by lookup with no hold, and refuses a request member it does not declare.
+So each protection binds from the release after the one that introduces it, and that release would ideally change no request member, stream or consumer setting, or loop interval.
+This one changes no stream setting from the release before it.
+The stream's subjects in the release before this one already carry a team's own topic `notifications.team.>` and its exception lane `notifications.envoy.exceptions.notifications.team.>` (both since `legion-envoy-v30.8.0`) and the listener's own lanes `notifications.envoy.kept.>` and `notifications.envoy.resume.>`, at the same `MaxAge`, `Duplicates` and `Discard`, so the two builds of a roll compile one set of settings between them.
+What this release adds is the stamp: generations 1 to 4 exist on this change alone, and generation 4 is the pinned row of the settings it ships (`internal/bus/stream_config_test.go`, `streamGenerations`), which is generation 3's subjects with the team topic and its exception lane added.
+So the next build that changes a setting takes generation 5, and a build of this release leaves a stream of that generation alone (`keepStream`).
+A build before the stamp keeps a deployed subject that overlaps none of its own (`reconcileSubjects`), so it leaves those subjects in place whatever the stamp says.
+The document elements of version 3 are already out: the three typed blocks `requirement`, `plan_task` and `check` ship from `legion-envoy-v29.1.0`, the first release carrying the commit that added them.
+Every release from that one on, `legion-envoy-v29.2.0` and this one included, reads and creates them at manifest version 3, and reads a document holding them as a document of its own schema.
+A release before it, such as `legion-envoy-v29.0.0` at manifest version 2, declares none of the three and has no newer-content answer at all, so it reads a document holding one as outside the schema, and while it serves, a repair or a rebuild asked of it would rewrite that document without them.
+Until every process of such a build is gone, leave such a document to a process of a build at version 3.
+Version 4 adds one element, the `check` block's `ci_check` attribute (main's #3972), and it ships the same way: from `legion-envoy-v30.12.0`, the first release carrying it, every release reads and creates it at manifest version 4.
+A release before it, such as `legion-envoy-v30.11.0` at version 3, does not declare it and has no newer-content answer either, so it reads a check carrying `ci_check` as outside the schema, and a repair or a rebuild asked of it would drop the attribute.
+Until every process of such a build is gone, leave such a document to a process of a build at version 4.
+This release's own document change is the page admission over the fleet (Stored documents, above), and it binds the same way.
+A server of any build before this one knows no fleet: it compares the page's `schema_version` with its own manifest version exactly (`schemaReadOnly` in that build) and holds a page of any other version read-only, which is what `legion-envoy-v29.0.0` at version 2 does with every page of version 3, and what `legion-envoy-v29.2.0` at version 3 does with a page of any other version.
+A process of such a build registers no schema numbers either, so while one is live this build reads the fleet's lowest version as 0 and holds every page it serves read-only, whichever build's page it is.
+So during the first rollout onto this release every page is read-only on this build's processes, and a page is writable on a process of the older build only where its version is that build's own.
+That lasts until every process of the older build is gone: a process stopped as a deploy stops it deletes its row at the end of its HTTP drain and leaves the fleet then, and one killed without deregistering leaves it up to 15 seconds after its last heartbeat, the registry's live window.
+Each page is writable again on the socket it opens after that, which is the socket a reload opens: a socket already admitted read-only stays open and read-only, since the re-check closes writable sockets alone.
+In that first overlap, a take-over (`delivery/held_durable.go`, `heldDurable.takeOver`) deletes a durable and creates it again at its ack floor, all under the durable's consumer lease, and tries a failed create again for up to 10 seconds while it holds its hold.
+The build before holds reconciles the durable under that same lease every 30 seconds and does not read the start the take-over recorded.
+So one case is left: a process of the new build killed between the delete and the create (or one that loses its hold, or fails every try, first) gives up the lease with the durable absent.
+A process of the build before holds that takes the lease next creates the durable with its own config:
+the events durable then delivers from the stream's first message, which replays up to 72 hours of GitHub events, and the jobs durable from the next new message, which skips every job the old durable had not acknowledged.
+A take-over of the new build that takes the lease first creates the durable at the recorded start instead.
+A body's reference edges bind from that release too:
+a build before the guard rewrites a body by deleting every edge its source holds, so it drops the edges to the node kinds it does not know
+— a comment's and a message's blocks among them — until a build that knows those kinds rewrites the body.
+The file store and the embedder also bind only from the release after their rule:
+a build before the rule writes no embedder identity and no `file_store`, or no `server_processes` row at all, and drops the vectors of every identity but its own.
+So turn on the file store, or change the embedder, no sooner than the release after the first one that carries the rule, and only after every process of the earlier release is gone.
 
 ## Background loops
 
@@ -1105,13 +1285,14 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   Scans start at least 5 s apart.
   After each scan it reads when the earliest pending row falls due (a failed row's retry, or another process's claim lapsing after its two minutes) and arms one timer for it, never sooner than 5 s away.
   A throttled batch waits 5 s plus its backoff before the next.
-  It takes no lease: its claim keeps two processes' scans off each other's rows.
+  It takes no lease: its claim keeps two processes' scans off each other's rows, and only a process whose embedder has the one active identity claims or embeds anything (Search, below).
 
 - The reference excerpt reconciliation (`docs.Service.RunReferenceExcerptReconciliation`, lease `reference-excerpts`) is woken by a row trigger on `refs` (`0153`) that notifies `dispatch_excerpts_owed` for each document mention left owed an excerpt, whichever build or command wrote it (`rebuild-refs` included).
   Batches of 20 documents start at least 2 s apart, the next as soon as that allows while a full batch leaves documents it can still record.
   A document it cannot read or record is deferred in `reference_excerpt_backoff` (`0152`), keyed by the version that failed:
   one minute after the first failure, doubling to at most six hours, plus up to a fifth again of jitter;
   a success deletes the row, and a newer version starts again from one.
+  A document holding an element this build cannot read (`DOC_NEWER_CONTENT`), which a newer build wrote while two builds serve one database, is deferred the same way, its mentions left owed for a build that reads it.
   A deferred document stays out of the batches until it falls due, so documents that keep failing neither hold the loop at 2 s nor keep the ones sorting after them waiting, and the earliest due time is the loop's only timer.
   Each process's first pass also marks owed the excerpts a pre-`0092` build left stale (`refs.MarkStaleExcerpts`), once.
 
@@ -1154,6 +1335,8 @@ A process that finds it held tries again
 - The embedding coverage pass (`embedqueue.Cover`, Search below) runs once, with no lease.
   After it only its identity steps run again:
   at once when this process's queue first embeds successfully after the pass skipped them for a canary the embedder did not answer, and every `identityRecheckInterval` (10 minutes, plus up to a tenth again) while a run still finds rows of another identity, so a vector an old-configuration process commits during a roll is dropped.
+  Only the process whose embedder has the active identity drops or re-admits anything;
+  a process whose identity is not active sends no canary and looks again on the timer, since the identity it is configured with becomes active once no live process carries the one before it.
   Once a run finds none, the loop holds no timer.
 
 - The task progress reconciliation (`docs.Service.RunTaskProgressReconciliation`) counts every issue whose stored task count is not its latest version's.
@@ -1201,30 +1384,32 @@ A wanted message runs under its key: a pull request under its repository and num
 Messages of one key run in delivery order, each after the one before has finished, since each fetches its pull request's or run's current state from GitHub and writes it, and run at once an older fetch could be written over a newer one;
 messages of different keys run at once, at most 4, the durable's `MaxAckPending`.
 Its durable's `AckWait`, `MaxAckPending` and filter subject are unchanged.
-`Intake.StopDelivering` hands the durable over, and `Run` calls it from two places: when the process stops, and on a connection event of its bus client.
+Every envelope is acknowledged once its handler has run, whatever the handler made of it, with one exception:
+a `pull_request` envelope whose pull request's head row could not be stored at all is handed back to NATS instead, after `delivery.headWriteRedeliverAfter` (10 s), for as many as `delivery.headWriteMaxDeliveries` (30) deliveries of it, and acknowledged with an error at the last of them.
+No reconcile pass repairs a head row that was never written, since the passes read the rows that exist.
+That hand-back is the process's own answer to the durable rather than the stop's, so it is made only while the process still holds the durable's hold and the hold records the deliver subject the envelope arrived on:
+a process whose hold has lapsed publishes nothing, and the next holder's take-over, which recreates the durable at its ack floor, hands it that envelope once.
+The count the cap is measured against is the consumer's own (`NumDelivered`), so a take-over starts it afresh and the cap bounds the in-flight slots of one consumer rather than the deliveries of all time.
+`Intake.StopDelivering` hands the durable over, and the intake's run loop calls it when the process stops, when its hold is lost, and when a check finds the durable delivering elsewhere.
 It ends the subscription the bus client holds for it
 — after the client has replaced its connection, the one the client bound on the new connection
 — and gives up that subscription's registration on the client, so no reconnect binds it again and a later subscribe starts afresh (`bus.Client.DrainSubscription`).
 On a live link it ends it by draining it, so the server delivers it nothing more while nats.go hands the callback what the client had already buffered;
-with the link down it unsubscribes it instead, and nats.go then drops what that subscription had buffered without calling the callback at all, so those messages are not handed back and there is no drain to wait for — the server redelivers them to the next holder when their ack wait expires.
+with the link down it unsubscribes it instead, and nats.go then drops what that subscription had buffered without calling the callback at all, so those messages are not handed back and there is no drain to wait for — the take-over that follows recreates the durable at its ack floor, so the next holder is handed them at once (`takeOverConfig`).
 Either way it holds every message waiting behind its key, and every message the callback is handed meanwhile, until no handler is running.
 The messages in their handlers get until the stop's deadline
-— `intakeStopBudget`, 15 s, counted by each stop from its own start
-— to finish; one whose handler finishes by then has its message acknowledged where the handler finished, and held for the stop only where the bus refused that acknowledgement, and the handlers still running then are given up, their GitHub calls cancelled, and their messages held for the hand-back the rest are in.
-Only once no handler is running, and the client has a connection to answer over, does it answer what it holds, each message by its own kind: an acknowledgement for one whose handler finished and whose own acknowledgement was refused, and a negative acknowledgement for the rest, which NATS redelivers at once to the next holder, which can then not start a pull request's or run's next message while this process still works on the one before it.
-An acknowledgement, negative or not, is a publish, and the client buffers none while it reconnects, so a stop that begins with the link down waits for one:
-a wait the stop's deadline ends logs that the messages it holds will wait out the five-minute ack wait in the next holder's four-slot window instead, a handler's finished work among them.
-Last it waits for a drain it began to end, cut short by that deadline; where it unsubscribed there is nothing to wait for.
-A connection event is what takes the durable away from a process that was cut off
-— nats.go re-sends a subscription inside its own reconnect, and the client binds its registration again on a connection it dialled to replace a closed one, neither of them asking whether the durable is still this process's to deliver —
-so the intake gives its subscription up at the event, which for an outage is the disconnect, before nats.go can re-send it.
-That stop runs under a budget of its own, 15 s from the event rather than from `Run`'s context, so one stuck handler cannot keep the intake out of its poll;
-the intake then returns to the bind poll, which runs only while the client has a connection and takes the durable again only while it is free.
-A bind under way when the context ends — a standby's poll
+— `intakeStopBudget`, 15 s after `Run`'s context ends, armed when it ends
+— to finish and be acknowledged; the handlers still running then are given up, their GitHub calls cancelled, and their messages negatively acknowledged.
+Only then does it negatively acknowledge the held messages, so NATS redelivers them at once to the next holder, which can then not start a pull request's or run's next message while this process still works on the one before it.
+Every one of those answers, a given-up handler's and a held message's alike, is withheld once the hold's loss deadline has passed (`intakeDelivery.handBack`), as the head-write hand-back above is:
+from that moment the durable the answer names may be one a take-over has recreated, where it would move the new holder's pending entry for that message and have it delivered a second time.
+A holder whose stop runs on past the lapse — one frozen and resumed, one whose handler was given up a margin after the deadline — therefore publishes nothing, and the take-over's recreate at the ack floor hands those messages to the new holder once.
+Last it waits for the drain to end, cut short by that deadline, and the run loop releases the durable's hold, so a standby takes it over at once rather than at the hold's lapse.
+A take-over under way when the context ends — a standby's poll
 — spends the same deadline rather than starting one of its own:
-its reconciliation's JetStream calls end with it, no subscribe starts once the context has ended, and the subscription of a subscribe already under way is stopped under that deadline.
+its own bounds (`takeOverFinishWithin`, 10 s, and the hold's deadline) end it inside that budget, and no attempt starts once the context has ended.
 The server's shutdown waits for that stop, which begins at the signal and whose 15 s from the signal is its only deadline, before it deregisters the process and closes the database pool:
-a handler waiting on GitHub holds no connection, so nothing else would keep the pool open for its writes.
+a handler waiting on GitHub holds no connection, so nothing else would keep the pool open for its writes, and a hold released through a closed pool is a hold left in place for its TTL.
 
 ## Database migrations
 
@@ -1249,8 +1434,10 @@ the contracting migration — one that drops, renames or narrows — ships no ea
 - A narrowing — a type made smaller, a nullable column made `not null`, a check added
   — ships behind a release that writes only the values the narrower shape admits, and narrows in the release after it.
 
-A migration that cannot be written that way is a stop-the-world migration:
-it is deployed with no server of the earlier release running, and that is an exception named in the pull request, not a default (`0113`, `0117` and `20261111210103` below are the three).
+No migration is an exception to that rule: a change that cannot be written that way is split into releases that can, so no release stops every server process.
+`0113`, `0117` and `20261111210103` below were each deployed with no server of the earlier release running, under an exception this rule no longer has (`20261111210103` ships in `legion-envoy-v30.11.0`), and a deployment still on a release before one of them crosses it once that way, before it runs more than one replica.
+So a release from a build below `20261111210103` onto this one or any later one is stop-the-world: stop every server process of the old release, then start the new one.
+The two-build guarantee does not cover that release, and it is an outage for as long as the migration and the new release's start take; it covers every release after it.
 The pre-deploy census ("Pre-deploy census" below) is unchanged by that rule and still applies to every migration:
 it is taken before any migration of the release applies, and a census that refuses fails the deploy before the service moves.
 The rule in brief is `internal/dispatch/store/README.md`, beside the migrations directory rather than in it, since the loader below refuses a set holding a file named anything else.
@@ -1313,6 +1500,48 @@ That query can come back empty: a prepared transaction's locks carry no pid, so 
 A migration that needs another bound sets its own `SET LOCAL lock_timeout`, which each attempt sets again.
 The secrets broker's runner applies every migration in one transaction, so it does not try again:
 rolling one attempt back would roll back the migrations before it too.
+
+The runner also applies each migration with `standard_conforming_strings` on, `backslash_quote` at `safe_encoding` and `client_encoding` at `UTF8` (`textSettings` in `internal/pgmigrate/lock.go`), set in the statement that sets `lock_timeout`: transaction-local in `pgmigrate.Exec`, or session-local and restored on return in `pgmigrate.ExecNonTransactional`.
+So Postgres reads a migration's text as the census reads it ("Pre-deploy census" below), whatever a session setting, a connection option or a database default says.
+A `set` without `local` in a migration stays on its connection after the migration's transaction ends, until the runner resets the connection's session (below).
+So no later migration meets the setting.
+With `standard_conforming_strings` off, a backslash before a quote in a plain literal escapes that quote, so a text that the census reads as one statement can hold a second statement for Postgres.
+With `client_encoding` at `SJIS`, the last byte of a UTF-8 character and a backslash after it can be one character, so that backslash escapes nothing.
+With `backslash_quote` off, Postgres refuses a `\'` in an `E'…'` literal, which the census reads as an escaped quote.
+The runner needs a database whose encoding holds every character of the migrations it applies: `UTF8`, or `SQL_ASCII`.
+With `client_encoding` at `UTF8`, Postgres converts the text of each migration to the database's encoding, and it stops at the first character that this encoding does not have.
+On PostgreSQL 18.6, `select 1 -- em dash —` fails on a `LATIN1` database with `character with byte sequence 0xe2 0x80 0x94 in encoding "UTF8" has no equivalent in encoding "LATIN1"`, and it runs on a `SQL_ASCII` database.
+
+At the start of each migration the runner also gives `session_authorization`, `role` and `search_path`, in that order, the values that `reset` gives them (`resetSettings` in `internal/pgmigrate/lock.go`): transaction-local in `pgmigrate.Exec`, or session-local and restored on return in `pgmigrate.ExecNonTransactional`.
+Postgres resolves a name that a migration writes without its schema by these three settings.
+`search_path` lists the schemas that a lookup searches, and its default starts with `"$user"`, the schema named for the session user, which `session_authorization` sets.
+`role` sets the current user, whose privileges decide which of those schemas a lookup can use.
+`session_authorization` comes first, because a change of it ends a `set role` and changes the user that `role` and `"$user"` depend on.
+A migration can change each of the three for the session, with a `set` or through stored code that calls `set_config`, such as a column default, a check constraint, or a domain's check or default.
+The change stays on the connection after the migration's transaction ends, until the runner resets the connection's session (below), so no later migration meets it.
+The runner still gives the three these values at the start of each migration, whatever session the pooled connection brings.
+Without either reset, on PostgreSQL 18.6, an insert ran a column default that put another schema first in the `search_path`.
+The next migration on that connection added a column of type `mood`, which then named that schema's domain `mood` in place of the enum that the census read, and Postgres rewrote the table.
+The census reads with the same three values ("Pre-deploy census" below), so a migration resolves its names as the census did, whatever an earlier migration did to the session.
+The value that `reset` gives comes from a connection option, the role's default or the database's default, and never from a session `set`.
+So the census and the runner must connect as the same login with the same connection options, which gives both the same values.
+In a deployment, both take `DATABASE_URL` from the same Secret.
+The runner gives the three these values for its own check and record of a migration's version too: before the check, and again after the migration's statements (`pgmigrate.Pin`), since stored code that a migration runs can change them for the rest of its transaction.
+Without the second reset, stored code that put another schema with its own `schema_migrations` first in the `search_path` made the runner record the version in that table.
+The runner does not give the three these values between two statements of one migration, so stored code that one statement runs can change what the names of a later statement of the same migration resolve to.
+In a migration that the census exempts, only an added column's default runs code.
+The census holds that default to a constant, a cast of a constant, an SQL value function or a stable or immutable `pg_catalog` function with no argument.
+So such a change reaches a later statement of an exempt migration only through a cast whose function is user-written and not volatile.
+Only an earlier release can have created such a cast, because a pending `create cast` stops the census's catalog reads ("Pre-deploy census" below).
+
+After each migration's transaction ends, the runner gives its advisory key back and then resets the connection's session, before the connection goes back to the pool (`pgmigrate.ResetSession`).
+The reset runs `discard all`, which gives every setting its `reset` value, ends a `set role`, and drops the temporary tables and prepared statements that the migration left.
+It then runs pgx's `DeallocateAll`, because the pool runs in cache-statement mode, and pgx would otherwise name prepared statements that the server dropped (SQLSTATE `26000`).
+The reset runs after the unlock, because `discard all` also releases the session's advisory locks.
+A connection whose reset fails is closed, not given back.
+The non-transactional path closes its connection, so it needs no reset.
+The secrets broker's runner resets its connection the same way, after the one transaction in which it applies its whole set.
+Without the reset, a migration's `set statement_timeout = 0` without `local` stayed on the pooled connection for the service's next queries.
 
 The notes below describe some of the migrations, numbered and timestamped alike; not every migration has one.
 A new migration describes itself in the header comment of its own `.up.sql`, as `0129_document_edit_notices.up.sql` does, and adds nothing here, so two pull requests that each add a migration do not edit this section.
@@ -1481,7 +1710,10 @@ Only direct SQL writes such a component: the importer writes components under th
 A census that refuses on it is repaired on the release still serving, before the deploy, by deleting them:
 `delete from components c where not exists (select 1 from architecture_sources s where s.project_key = c.project_key)`; then take the census again.
 
-**`0117` is a stop-the-world migration: deploy it with no server of the earlier release running, and never start a release older than `0117` over it again.**
+**`0117` was deployed with no server of the earlier release running:
+deploy it that way, and never start a release older than `0117` over it again.**
+A deployment still on a release before it crosses it once with Dispatch stopped, before it runs more than one replica.
+The last such migration is `20261111210103` (below), and every release after it rolls.
 Stop the earlier release, or scale it to zero, before the new release boots and migrates:
 a Kubernetes Deployment's `strategy: Recreate`, which `envoy-infra:gcp:Dispatch` uses at its default one replica (`packages/envoy/infra/README.md`);
 a deployment running more than one replica, which rolls, is scaled to zero first.
@@ -1753,10 +1985,22 @@ The release before it neither reads nor writes the table: a document only that r
 It refuses and rewrites no existing row; its census answers `0`.
 
 Migration `20261101143201_duty_holds` creates `duty_holds (name, holder, token, expires_at)`, one row per name a process holds by renewing it (`duty.Hold`):
-the events outbox's publisher holds `dispatch-outbox` there (Running more than one process, above).
-`expires_at` is always the database's `now()` plus the hold's TTL, so a lapse is judged on the database's clock and never on two hosts' wall clocks, and `token` is free text the holder records, the outbox's host and process id.
+the events outbox's publisher holds `dispatch-outbox` there, and each delivery intake holds one name per durable (Running more than one process, above).
+`expires_at` is always the database's `now()` plus the hold's TTL, so a lapse is judged on the database's clock and never on two hosts' wall clocks.
+`token` is free text the holder records: the outbox's host and process id, and an intake's deliver subject, or `<subject> start=<seq>` while a take-over is pending, from just before the take-over deletes the durable until it has created it again at stream sequence `<seq>` (`delivery/held_durable.go`, `intakeHoldToken`).
 A release deletes the row and notifies `dispatch_duty_holds` with the name in one statement, which wakes a standby at once.
 It creates a table and touches no row, and the release before it neither reads nor writes it; its census answers `0`.
+Its identifier is the UTC moment it was created, as every migration added since the numbered series closed is (Database migrations, above).
+
+Migration `20261101030537_server_processes_schema` adds four columns to `server_processes`:
+`schema_version` and `schema_creatable`, the document schema numbers each process reads and creates, which the document socket's admission reads (Two builds at once, above);
+`embedder_identity`, the identity of the process's embedder; and `file_store`, whether it stores files in a bucket.
+Their defaults are constants (`0`, `0`, `''` and null), so Postgres rewrites no row, and a row at the defaults is a process of the release before it, which names its columns in every statement on the table and so neither reads nor writes these.
+Nothing else is read, locked or rewritten, and its census answers `0`.
+
+Migration `20261101030538_embedder_active` creates `embedder_active (one, identity, since)`, at most one row (`one` is the primary key and can only be true):
+the embedder identity whose processes embed and drop vectors (Search, below).
+It is a new table: nothing existing is read, locked or rewritten, the release before it neither reads nor writes it, and its census answers `0`.
 
 Migration `20261101143203_outbox_claim` gives the outbox's batch read three partial indexes and drops the two the per-row claim read.
 `events_outbox_fresh` on `(id)` holds the unpublished events never tried, `events_outbox_retry` on `(next_attempt_at, id)` those waiting on a back-off, and `events_outbox_owner` on `(coalesce(issue_key, artifact_id::text, project_key), id)` each owner's unpublished events;
@@ -1835,7 +2079,8 @@ Search's document arm, the related-item check's and the related-terms probe's ea
 `0010` left it out, since an index over every version would also find a word only an old version holds, and `artifact_versions` is 5.2 GiB, above the size the pre-deploy census lets a migration touch.
 One row per document is an index over exactly the versions search reads.
 The table declares no foreign key to `artifacts` or to `artifact_versions`:
-a `references` makes the census size the table it points at, so a key to `artifact_versions` would refuse every deploy carrying this migration.
+a `references` makes the census size the table it points at, and when this migration was written the census did not admit a `create table`, so a key to `artifact_versions` would have refused every deploy carrying this migration.
+Today the census still sizes the table a `references` points at, and it holds that table to the limit unless the migration is exempt ("Pre-deploy census" below), which needs the census to admit every statement of the migration.
 Nothing is lost by leaving it out, because every reader joins `artifacts` on `a.kind = 'doc'`, so a row whose document no longer exists cannot surface;
 there is no delete path and no trigger for one, since no production code path deletes an artifact or a version.
 Both statements lock only the table this same migration creates, which no other session can reach before the commit, so the transaction holds nothing of `artifacts` or `artifact_versions` and takes milliseconds.
@@ -1880,7 +2125,9 @@ Each row names the kind of item, the item
 — and the issue or the artifact whose project it takes, all copied from the row the trigger was handed, so a pass finds the project of an item that has since been deleted.
 It carries the vector the item held before the change, which is what a pass subtracts, and the `pg_current_xact_id()` of the transaction that wrote it, which is what tells a change a pass's own snapshot sees from one committed after it.
 The table declares no foreign key, to any table:
-a `references` makes the census size the table it points at, and a key to an item would refuse the very row a delete queues.
+a `references` makes the census size the table it points at, and when this migration was written the census did not admit a `create table`, so it would have held that table to the size limit.
+A key to an item would also refuse the very row a delete queues.
+Today the census still sizes the table a `references` points at, and it holds that table to the limit unless the migration is exempt ("Pre-deploy census" below), which needs the census to admit every statement of the migration.
 Both statements lock only the table this migration creates, which no other session can reach before the commit, so it takes milliseconds.
 Its census answers `0`: the table is new and the migration reads no other.
 No operator follow-up — the queue starts empty, and the first pass of this release counts every project in full, so nothing is owed for the writes made before it.
@@ -2159,7 +2406,8 @@ Each of those is split across two releases: the first makes the schema accept bo
 
 The census below does not cover this.
 It reports locks, sizes and counts — what a migration would wait behind and how much it would rewrite
-— not whether the previous build's queries still answer against the new schema; that one-release gap is the author's to reason about.
+— not whether the previous build's queries still answer against the new schema;
+that one-release gap is the author's to reason about, and the two-build test (Two builds at once, above) boots the previous release on this tree's schema and drives it.
 The five-second `pgmigrate.LockTimeout` also bites harder under a rolling update than under `Recreate`, which stops the previous pods before the new one boots:
 while a deployment rolls, the old build's connections are still open and still holding locks on the tables the migration wants, so a migration that applies cleanly against an idle database can fail the new pod's boot.
 
@@ -2180,6 +2428,7 @@ For each it prints the tables the migration locks above ACCESS SHARE (`pgmigrate
 the transactions open longer than a minute anywhere in the database, and those whose age it cannot see (another role's without `pg_read_all_stats`, any with `track_activities` off, or a WAL sender's), which it tells from a session in no transaction by the virtual transaction id every transaction locks;
 and the count the migration's own census answers.
 Postgres reads `pg_stat_activity` once per transaction and serves that copy until the transaction ends, while `pg_locks` is read anew each time, so before each read of lock holders and of long transactions the census discards that copy (`pg_stat_clear_snapshot()`), and it measures a transaction's age at that read (`clock_timestamp()`), not at its own start.
+The transaction gives `session_authorization`, `role` and `search_path` the values that `reset` gives them, as the runner does for each migration ("Database migrations" above), so a name resolves for the census as it resolves for the runner.
 Those tables are:
 
 - the ones its statements name (`pgmigrate.TouchedTables`:
@@ -2210,17 +2459,230 @@ It refuses:
 
 - a table a migration names above 1 GiB (`pgmigrate.CensusTableLimit`, table, indexes and TOAST), whose rows it then does not count:
   a migration that locks a table that size needs another shape (`CONCURRENTLY`, batches).
-  A migration whose every statement is a `create function` (or procedure) in `plpgsql` or `sql`, a `create trigger`, a `drop trigger`, a `drop function` or a `drop index` with `restrict`, which is the default, or a `set` or `reset` of a run-time parameter, as Postgres's own parser reads them (libpg_query, run in pure Go by `github.com/wasilibs/go-pgquery`), is exempt:
-  each does its work in the catalog or in the session's settings and reads no row of the table, so the time it holds its lock does not grow with the table, and a migration that bounds its own lock wait with `set local lock_timeout` keeps the exemption its other statements earn.
-  Metadata-only `alter table` forms are exempt too: drop a constraint without `cascade`, add a `check … not valid`, or add a nullable `text` or `text[]` column without a default or constraints (`catalogOnlyAlterTable`).
-  Those `alter table` forms still take ACCESS EXCLUSIVE briefly under the runner's `lock_timeout`; the exception removes a size refusal, not the lock bound.
+  A migration is exempt when the census admits every one of its statements, as Postgres's own parser reads them (libpg_query, run in pure Go by `github.com/wasilibs/go-pgquery`).
+  The census admits a statement of the kinds below (`catalogOnlyStatements` in `internal/pgmigrate/exempt.go`), under the rules of its item:
+  each changes only the catalog or the transaction's own settings, or takes a lock, and reads no existing row of the table, so the time it holds its lock does not grow with the table.
+
+  - `create function` (or procedure) in `plpgsql` or `sql`, or with an SQL-standard body (`begin atomic`, `return`), which is `sql`:
+    Postgres writes `pg_proc`, and the language's validator checks the body without reading a row.
+    The census does not admit a function in another language, since creating a C function loads its library, which can run any code.
+
+  - `create trigger`, of any form:
+    Postgres writes `pg_trigger`, and the trigger runs only on later writes, never on the rows already there.
+
+  - `drop trigger`, `drop function`, `drop index` and `drop table`, with `restrict`, which is the default:
+    Postgres deletes the catalog rows of the object, and the files of a dropped index or table, and it reads no row.
+    The census does not admit a drop with `cascade`, since what it drops besides the object it names is not in the statement the census reads.
+    It does not admit a drop of anything else (a view, a schema, a procedure) either.
+
+  - `set` and `reset` of a run-time parameter, local or session, `set role` included:
+    a setting takes no lock, reads no row and names no table, so a migration that bounds its own lock wait with `set local lock_timeout` keeps the exemption its other statements earn.
+    Only a `set` or `reset` of `lock_timeout` or `statement_timeout` keeps the catalog reads on.
+    Every other `set` or `reset`, and a `reset all`, stops them (below): a `set local` for its own migration alone, and any other for its own migration and every later one.
+
+  - `alter table`, of a table, when the census admits each of its subcommands (`catalogOnlyAlterTable`):
+    `drop constraint` and `drop column` without `cascade`, `add constraint … check … not valid`, `add constraint … foreign key … not valid`, `add column` under the rules of the next item, `alter column … set default` of any expression, `alter column … drop default`, `alter column … drop not null` and `alter column … drop expression`.
+    None of them reads an existing row.
+    Postgres deletes the catalog rows of a dropped constraint, and its index with them.
+    It marks a dropped column as dropped in `pg_attribute`, and each row keeps the column's bytes until the next write of that row.
+    It tests a `not valid` constraint on no existing row, of the table or of the table a foreign key references.
+    `set default` and `drop default` change only what later inserts write, `drop not null` checks no row, and `drop expression` keeps the values a stored generated column holds.
+    The census admits no other subcommand: `set not null` scans the table for nulls, `alter column … type` rewrites it, and `validate constraint` and a validated `add constraint` scan it.
+    It does not admit `alter view`, `alter materialized view`, `alter index`, `alter sequence`, `alter foreign table` or `alter type … add attribute`, which Postgres parses as an `alter table` too.
+    Each admitted subcommand still takes ACCESS EXCLUSIVE briefly under the runner's `lock_timeout`: the exemption removes a size refusal, not the lock bound.
+
+  - `add column`, in such an `alter table`, of a column whose types and default the census admits (`catalogOnlyColumn`):
+    Postgres then writes only the catalog, whatever the type, and stores a non-null default as the value every existing row reads.
+    The column may carry `collate`, `storage` and `compression`, since each changes only what the catalog says of the column.
+    The census judges every type the statement names, the column's type and the type its default casts to, by the rules below (`admittedType`).
+    It admits a base type, an enum, a range, a composite type made with `create type … as`, and an array of one of these.
+
+    - The type name must have one or two parts, and the type must resolve in the database the census reads.
+      The census reads the catalog before any pending migration applies, so a type or a function that an `add column` uses must ship in an earlier release than the column.
+      The census does not find one that an earlier pending migration creates, and then it does not admit the column.
+
+    - A type name of one part must not be one of the six serial names (`smallserial`, `serial2`, `serial`, `serial4`, `bigserial`, `serial8`), in the column or in a cast, whatever type of that name exists.
+      Postgres gives a column of such a name a sequence and a `nextval` default, which rewrites the table.
+      Postgres resolves the name in a cast as it resolves any other type name, so the rule refuses more casts than it must, and no default a migration ships casts to one.
+      The census also refuses an array of one of these names, in the column or in a cast.
+
+    - The type must not be a domain, with constraints or without.
+      Postgres rewrites the table for a domain with constraints, and the census reads only the type's kind (`typtype`) to refuse every domain.
+
+    - The type must not be the row type of a table, a view or another relation.
+      A pending `drop table` or `drop view` does not stop the catalog reads, and after it the same name can resolve to a type in a later schema of the `search_path`, which the census did not read.
+      That type can be a domain with a constraint, or a type whose cast from the default calls a volatile function.
+
+    - When the type is an array, its element type must not be a domain or the row type of a relation either.
+      The drop can change what the element type resolves to in the same way, and the census refuses an array of a domain as it refuses the domain.
+
+    A default, when the column has one, must be one of these four kinds:
+
+    - a constant (a number, a string, a bit string, a boolean or `null`), or an `array[…]` of constants that holds no other array.
+
+    - a cast of one of those to a type that the census admits by the rules above, such as `'x'::text` or `'x'::varchar(5)`.
+
+    - a SQL value function, such as `current_timestamp`, `current_date` or `current_user`.
+
+    - a call with no argument, written `f()` or `pg_catalog.f()`, of a `pg_catalog` function that is no aggregate, no window function and no set-returning function, and that the catalog marks stable or immutable, such as `now()` (`admittedCall`).
+      The census judges `pg_catalog.f()` by the function in `pg_catalog` alone, since Postgres searches only that schema for a qualified name.
+      It admits `f()` only when `pg_catalog` is the first schema of the census's `search_path` other than the temporary schema, and no function outside `pg_catalog` has the name, in any schema.
+      Postgres's call resolution also takes a function whose arguments all have defaults, and of two candidates in different schemas the one in the earlier schema of the `search_path` wins.
+      So `s1.now(a int default 0)` takes the call `now()` when `s1` comes before `pg_catalog`, and a pending `create function` can create such a function, which the census does not see.
+      With `pg_catalog` first, the function of `pg_catalog` wins over the function of every other schema, a function that a pending migration creates included.
+      Postgres never searches the temporary schema for a function.
+      The rule about the name also covers a runner whose `search_path` is not the census's, for every function that exists when the census runs.
+
+    The census admits no other default.
+    A volatile function (`gen_random_uuid()`, `clock_timestamp()`) makes Postgres rewrite the table to give each row a value of its own, and a function of another schema can read any table while Postgres holds ACCESS EXCLUSIVE.
+    The census does not admit an operator (`1 + 1`), a column reference, a subquery, or a cast of a cast or of a function either.
+    Postgres can put a cast of its own between the default and the column (`int8(int4)` puts `0` into a `bigint`), and a volatile cast function makes it rewrite the table.
+    So the census does not admit a column with a default when a cast to the column's type, to the default's cast type or to the element type of either calls a volatile function, which no cast of a stock PostgreSQL 18 does.
+    The census admits `not null` only beside an admitted default that is not a null constant, cast or not, since Postgres scans the table for nulls when the default gives the column no value.
+    A `pg_catalog` function that returns null at run time (`inet_client_addr()`) passes the census, and Postgres then fails on the first row and the migration rolls back: a failed deploy, not a long lock.
+    The census admits `references`, with its `deferrable` and `initially` clauses, only on a column with no `default` clause at all, not even `default null`, since Postgres checks the key against every row when the column has one.
+    The census admits no other column constraint and no explicit `null`: `check` scans the table, `unique` and `primary key` build an index over its rows, and an identity or a stored generated column rewrites it.
+
+  - `rename column` (`alter table … rename column`), of a table:
+    Postgres rewrites the column's `pg_attribute` row, and no row of the table holds a column's name.
+    The census admits no other rename, a table, an index or a constraint rename among them.
+    It reads every pending migration against the database as it stands before any of them applies, and it finds a table or an index by its name.
+    So when a later pending migration names a renamed table or index, the census finds nothing under the new name and reads neither its size nor its lock holders: the later migration escapes the census.
+    A constraint rename counts, because Postgres renames the index of a primary key, a unique constraint or an exclusion constraint with it.
+
+  - `create table`, without `inherits`, `partition of` or `as`:
+    the new table holds no row, so Postgres reads no existing row to create it with its columns, its constraints, its `like` clauses and its references to existing tables.
+    Postgres checks no foreign key of the new table, and it locks the table a key references without reading it.
+    `inherits` and `partition of` join the new table to an existing one, so the census does not admit them.
+    `create table … as`, `select … into` and `create materialized view` fill a table with the rows their query reads, and the census does not admit them either.
+
+  - `create index`, on a table that an earlier `create table` of the same migration creates without `if not exists`, named exactly as that `create table` names it, when that name resolves to no relation in the database the census reads:
+    the build reads the rows of that table, and the new table has none.
+    The name must resolve to no relation before the migration, so that it can resolve to nothing but the new table.
+    The census does not admit an index on any other table, nor one on the table of a `create table if not exists`, since the build reads the rows of a table that already exists.
+    `create index concurrently` has an exception of its own (below).
+
+  - `create view` and `create or replace view`:
+    Postgres writes the view's catalog rows and analyzes its query, which reads no row of the tables it names.
+    The query runs only when a session reads the view.
+
+  - `lock table`, in any mode:
+    it takes a lock and reads no row.
+    The lock lasts to the end of the migration, and the census must admit every other statement of the migration too, so the time the migration holds the lock does not grow with the table either.
+    The runner's `lock_timeout` bounds its wait, as it bounds the wait of every statement.
+
+  The census reads the catalog of the database it judges, in its read-only transaction, for an added column's type, for the cast and the function of its default, and for whether the table of a created index is new.
+  No other kind needs a catalog read to be admitted.
+  The census reads no catalog to admit a statement of the migrations below, so it admits none of their added columns, `text` included, and none of their created indexes:
+
+  - a migration that sets or resets any setting other than `lock_timeout` and `statement_timeout`, `set local` included, or runs `reset all`.
+    A setting can make the migration's names resolve to other objects than the census's names do, as `search_path`, `role` and `session_authorization` can, since the default `search_path` starts with `"$user"`.
+    A setting can also change how Postgres reads a migration's text, as `standard_conforming_strings` can.
+    The runner sets that setting and two others for each migration, and it gives `search_path`, `role` and `session_authorization` their `reset` values ("Database migrations" above), but the census cannot list every setting of either kind.
+    So the census lists the two settings that it knows to do neither: `lock_timeout` and `statement_timeout`, which bound how long a statement waits or runs.
+    The census compares the setting's name without regard to case, as Postgres does, so `set "Search_Path" = public` stops the reads and `set "Lock_Timeout" = '1s'` does not.
+
+  - every migration after a pending migration that sets or resets such a setting for the session, without `local`, or runs `reset all`.
+    Such a setting stays on the runner's connection after its migration's transaction ends, until the runner resets the connection's session before the connection goes back to its pool ("Database migrations" above).
+    So no later migration meets the setting.
+    The census still turns off the catalog reads of the later migrations, which only refuses more.
+    At the start of each migration the runner sets `lock_timeout`, the three text settings and the three settings that resolve names, and no other setting.
+    The census tells `lock_timeout` and `statement_timeout` from the other settings, because those two keep the reads on.
+    It tells none of the other six settings that the runner sets from the rest, which only refuses more.
+    A `set local` ends with its migration's transaction, so the later migrations still read the catalog.
+
+  - a migration that holds a statement that is not on the list below, and every migration after it.
+    The census reads the catalog as it stands before any pending migration applies.
+    So the catalog that a later migration meets is the catalog the census reads only while each earlier statement leaves type and function names as they are.
+    The list holds the statements that this repository's migrations write and that are known to leave these names as they are:
+
+    - `insert`, `update`, `delete` and `select`, with a `with` or without, but not `select … into`, which creates a table and fills it as `create table … as` does.
+
+    - `lock table`, `create trigger` and `create index`.
+
+    - `create table` and `create view`, with or without `or replace`, when `pg_catalog` holds no type of the same name.
+      The new row type can hide a type of the same name in a later schema of the `search_path`.
+      But no cast targets the new row type, and it is not a domain, so Postgres adds a column of that type in the catalog alone.
+      A `create table int4` stops the reads all the same: the census reads a later column of type `int4` as the `pg_catalog` type, and under a `search_path` that lists `pg_catalog` after the new table's schema, Postgres reads it as the new row type.
+
+    - `alter table` of a table, and `alter index` other than a rename, when no subcommand has `cascade`.
+      A `drop column … cascade` or a `drop constraint … cascade` can drop objects that the statement does not name.
+
+    - `rename column` of a table, which renames no type.
+
+    - `drop index`, `drop trigger`, `drop function`, `drop table` and `drop view`, with `restrict`, which is the default.
+      Without `cascade`, Postgres does not drop a function that a cast calls, or a table or a view whose row type a cast or a function names.
+
+    - `create function` and `create procedure` in `plpgsql` or `sql`, with or without `or replace`, when `pg_catalog` holds no function of the same name and no cast calls a function of that name.
+      The census matches the name in any schema.
+      The census admits a default that calls a `pg_catalog` function such as `now()`, and it reads that function in the catalog as the catalog is before the pending migrations.
+      A function of the same name that a pending migration creates in another schema can take the call.
+      A `create or replace function pg_catalog.now()` can make `now()` volatile, and on PostgreSQL 18.6 Postgres then rewrote the table for a later added column whose default calls `now()`.
+      A volatile cast function makes Postgres rewrite the table for an added column with a default.
+
+    - `set` and `reset` of `lock_timeout` and `statement_timeout`.
+      A `set` or `reset` of any other setting stops the reads as the two items above say, so a `set local` stops them for its own migration alone.
+
+    A statement on the list stops the reads all the same when it names a relation of `pg_catalog`, or a relation whose rules read one, or when it calls `set_config`.
+    The census reads the whole statement for these: a `from`, a `join` or a `with`, the table that an `insert`, `update`, `delete` or `merge` writes, the table of a `lock`, a `create index` or a `create trigger`, a `references`, a `like` or an `inherits`, an expression such as a column's default, and an SQL-standard function body.
+    The census counts a view over a `pg_catalog` relation, such as a view over `pg_proc` or a view of `information_schema`, and a table with a rule that reads one, as a relation of `pg_catalog`, through views over views to any depth.
+    A write to `pg_proc` or `pg_cast`, by a superuser or through such a view, can make a cast's function volatile or add a cast, and an update of `pg_settings` changes a setting.
+    The census reads the catalog as it was before the write, and it does not tell a read of such a relation from a write.
+    A statement that names such a relation also takes the exemption from every later migration (below).
+    A call of `set_config` changes a setting as a `set` does, `search_path` included.
+    A view's query or a rule that calls `set_config`, of a relation that the statement names, stops the reads too, through views over views to any depth.
+    A `select` of a view runs the view's query, and an `insert`, `update` or `delete` runs the rules of its table.
+    The census counts every rule of such a relation, whatever the statement does, which only refuses more.
+
+    Every other statement stops the reads, for its own migration and for every later one, and it also takes the exemption from every later migration (below).
+    A `do` block, a `call`, an `alter function`, an `alter role … set` and an `alter database … set` stop them.
+    So do `create table … as`, `select … into`, `create materialized view`, a drop with `cascade` and a function in another language.
+    So do `create event trigger` and `alter event trigger`.
+    So does every statement that creates, alters, renames or drops a type, a domain, a cast, a schema, an extension or a role.
+    A rename of a table, a view, a materialized view or a foreign table stops the reads for every later migration, because the relation's row type keeps the casts that target it under its new name.
+    After such a rename, a later migration's type name can resolve to that row type in an earlier schema of the `search_path`, through a cast that the census did not read.
+    `create table`, `create view`, `drop table` and `drop view` do not stop the reads, because they are on the list.
+    The census lists the statements that keep the reads on, and not the statements that stop them.
+    A statement that a list of the second kind misses admits a column that Postgres rewrites the table for.
+    A statement that this list misses only costs the later migrations their catalog reads and their exemption, which is a refusal.
+
+  - every migration after a pending migration that does not parse in the census's Postgres 17 grammar, since the census cannot see what such a migration changes.
+    A migration can parse on the PostgreSQL 18 server and not in the census (a `virtual` generated column).
+    Such a migration is not exempt itself either, and no later migration is exempt (below).
+
+  The census reads every statement that a pending migration's text shows, whoever may run it, a superuser included.
+  It also reads the query of every view and every rule of a relation that a statement names, for a relation of `pg_catalog` and for a call of `set_config`.
+  It does not read the body of a function, whether a statement, a view's query or a rule calls it, and it does not read a trigger's body.
+  Nor does it read the code of a column default, a check or a domain, which changes no later migration's names, and a later statement's only through a cast function ("Database migrations" above).
+  The limit is the rest of what stored code does, such as create a type or enable an event trigger.
+
   A marked single non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` has a separate size exception: its scans do not hold off ordinary writes, not because the build is catalog-only.
   The census still reports its table size, skips counting rows above the limit, and checks its holders and census as usual.
-  A function in another language is not exempt, since creating a C function loads its library, which can run any code;
-  a drop with `cascade` is not exempt either, since what it drops besides the object it names is not in the statement the census reads, and neither is a drop of anything else (a table, a view, a schema, a procedure);
-  and neither exception applies while an enabled event trigger on `ddl_command_start`, `ddl_command_end` or `sql_drop`, which every drop fires, carries no command tags or tags naming `CREATE FUNCTION`, `CREATE PROCEDURE`, `CREATE TRIGGER`, `DROP FUNCTION`, `DROP TRIGGER`, `DROP INDEX`, `ALTER TABLE` or `CREATE INDEX`, since it runs code of its own, and the size refusal then names it.
-  A trigger whose tags name none of those commands counts for nothing, one tagged `DROP TABLE` among them.
+  Neither exception applies while an enabled event trigger on `ddl_command_start`, `ddl_command_end` or `sql_drop`, which every drop fires, carries no command tags or tags naming `CREATE FUNCTION`, `CREATE PROCEDURE`, `CREATE TRIGGER`, `DROP FUNCTION`, `DROP TRIGGER`, `DROP INDEX`, `ALTER TABLE`, `CREATE INDEX`, `CREATE TABLE`, `CREATE VIEW` or `DROP TABLE`, since it runs code of its own, and the size refusal then names it.
+  A `rename column` fires its event triggers under the tag `ALTER TABLE`, and `lock table`, `set` and `reset` fire no event trigger.
+  A trigger whose tags name none of those commands counts for nothing.
   The census reads those event triggers once for the whole database, so an enabled one that counts takes the exemption from every migration, a migration holding no drop included, which is the side that refuses rather than the side that applies.
+  A pending migration takes both exceptions from every later pending migration, and the size refusal names that migration and says why, when it holds a statement that can create or enable an event trigger that the census does not see, or when it does not parse:
+
+  - `create event trigger` and `alter event trigger`, whatever the trigger's tags.
+
+  - a statement that names a relation of `pg_catalog`, or a relation whose rules read one, as the list of statements that keep the catalog reads on counts them (above), whether the statement is on that list or not.
+    An `update pg_catalog.pg_event_trigger set evtenabled = 'O'` enables a disabled event trigger, as `alter event trigger … enable` does, and an `update` of a view over `pg_event_trigger` does the same.
+    For each relation name that a statement gives, the census reads every relation of that name in every schema, whatever schema the name gives and whatever the `search_path` is.
+    It makes this read in its own transaction, whether or not it reads the catalog for the migration.
+    A pending `set` of `search_path`, a `drop table`, a `drop view`, a rename or a `set schema` can change which relation the name finds, and the census reads the catalog before any of them applies.
+    So a statement that names a table counts when a view over a `pg_catalog` relation in another schema has the table's name, as the view `information_schema.columns` has the name `columns`.
+    A name that no relation has does not count, because the statement that creates the relation is judged itself.
+    A statement on the list that stops the reads only because it creates a function, a table or a view whose name `pg_catalog` holds, or because it calls `set_config` itself or through a view or a rule, takes no exception away.
+    A function that such a statement creates or replaces runs only when a statement calls it.
+
+  - every statement of a kind that is not on the list of statements that keep the catalog reads on, such as a `do` block, a `call`, a `create extension`, an `alter extension` or a `create table … as`.
+    A `do` block and a `call` run code that the census does not read.
+    The script of an extension can create an event trigger, as the scripts of pg_graphql and Citus do.
+    A `set` or a `reset` of any setting takes no exception away: a setting creates and enables no event trigger, and the census counts every event trigger that is not disabled.
+
+  - a migration that does not parse, since the census cannot see whether it creates an event trigger.
+
   The report still prints the table's size beside the limit and says why the migration is exempt, and its lock holders refuse it as they refuse any other.
   A trigger named only in a comment, a string literal or a function body exempts nothing, and one statement of any other kind beside it ends the exemption;
 
@@ -2296,7 +2758,7 @@ It runs as the service's own database role.
 The read-only transaction stops every write, and the census's statement is sent through the extended protocol whatever the connection string asks for, so it cannot carry a second statement (a `commit` of its own, then a write).
 Read-only does not stop `pg_terminate_backend` (which, as that role, ends the service's own sessions), `pg_cancel_backend`, advisory locks (`pg_try_advisory_*` included) or `pg_sleep`, nor a function that runs a query given as text (`query_to_xml` and its kin, `ts_stat`, `ts_rewrite`):
 `pgmigrate.Load` refuses a census naming any of them, bare or quoted and in any case, anywhere outside its comments and string literals, and refuses a Unicode escape (`U&"…"`, `U&'…'`) outright, since one can spell any name and no census needs it.
-`Load` finds the comments and literals as Postgres 18's lexer does (nested comments, `E'…'` escapes, continued and dollar-quoted literals), and the census runs with `standard_conforming_strings` on, so Postgres reads its literals the same way.
+`Load` finds the comments and literals as Postgres 18's lexer does (nested comments, `E'…'` escapes, continued and dollar-quoted literals), and the census runs with `standard_conforming_strings` on, `backslash_quote` at `safe_encoding` and `client_encoding` at `UTF8`, the settings the runner applies each migration with, so Postgres reads its literals the same way.
 Review is the control past that, since any non-zero integer a census answers is printed.
 
 **What the report prints:** counts, sizes (in KiB, MiB and GiB, or in bytes where a size above the limit would round to the limit's figure), versions, file names and session metadata (pid, role, application name, state, transaction age as Postgres measured it, to the microsecond, the figure the minute's bound is compared with;
@@ -2507,9 +2969,19 @@ The same report names, under `not_indexed`, every kind of node neither leg of se
 A kind nothing indexes is named rather than left out, so a reader cannot read it as a kind that is covered with nothing left to embed; it carries no current, lacking or failed count, and it is in no total.
 The `backfill-embeddings` subcommand, which did the pass's first job by hand, is gone, with its checkpoint table (0119).
 
-Every process of one deployment runs the same embedder configuration, since each one's pass drops the vectors any other identity made.
-Moving a deployment to another place or Azure deployment makes every stored vector another identity's:
-search finds by meaning only what the new identity has embedded, and the coverage route counts the rest as lacking, until the pass and the queue have re-embedded it at the place's background pace;
+One embedder identity is active at a time, the one row of `embedder_active` (migration `20261101030538_embedder_active`, `internal/dispatch/embedqueue/active.go`).
+Each process registers its embedder's identity in `server_processes` (`embedder_identity`), and the active identity stays active while any live process carries it, so a restart or a roll of the processes that carry it keeps it.
+When no live process carries it, the identity of the earliest-started live process that carries one becomes active (a compare-and-set, logged at INFO with both identities);
+with none, the identity of the process that looks, and with no row yet, the first process to look records its own.
+Only a process whose identity is active drops other identities' vectors, re-admits rows dead under another identity, embeds queue rows and reserves tokens;
+any other process leaves every row as it is, and its coverage pass logs `identityStepsSkipped=true` with the `activeIdentity`.
+Its meaning search embeds the query with its own identity and finds no vector of it, so it answers with its text matches only, not degraded and not an error, and its coverage route counts for its own identity.
+Two processes reserving with different token ceilings take no more than one process with the larger ceiling would.
+
+Moving a deployment to another place or Azure deployment is a release like any other.
+While both builds serve, the processes of the old identity keep it active and embed, and the processes of the new one answer meaning search by text alone.
+Once the last process of the old identity has left the registry, the new identity becomes active:
+its pass drops every vector the old identity made, and search finds by meaning only what the new identity has embedded, and the coverage route counts the rest as lacking, until the pass and the queue have re-embedded it at the place's background pace;
 a new place that cannot embed leaves the old vectors in the database, unused by search, until it can.
 A model change on Azure takes a new deployment name, since the identity names the deployment, not the model behind it.
 
@@ -2974,6 +3446,10 @@ Each item below names a path with its method and identity, then its purpose.
 
   Write the crafted malformed tree e2e uses; not mounted otherwise.
 
+- `/api/v1/artifacts/{id}/_test/newer-content` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  Append an element no build knows, so the document holds newer content (the cross-build browser test); not mounted otherwise.
+
 - `/api/v1/artifacts/{id}/_test/room-counters` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
 
   What this process did with the document since the process started, and what its room holds now:
@@ -3094,7 +3570,7 @@ Each item below names a path with its method and identity, then its purpose.
   A dismissal that names `threads` carries `seen_replies` beside them, one object per row it names and keyed by that same row id: what the page drew in that row, as `GET /api/v1/me/replies` answered it.
   A `reply:` row's object is `{version}`, the row's own `user_threads.version`; an `agent:` row has no `user_threads` row and so no version, and its object is `{newest_reply, unread_replies}`, the row's `reply.id` and its `unread_reply_ids` (which may be empty).
   The route writes a row's mark only while the row still holds what the page drew, so a dismissal buries no write nobody has read: a row's version moves on every write by somebody else, and why no comparison of this request's mark with the row's own times can stand in for that check is written on migration `20261105093501`'s increment.
-  Seven more `400 INVALID_QUERY`: a row `threads` names that `seen_replies` leaves out, a key naming a row `threads` does not, a `reply:` entry that is not that row's one `version` (of the wrong type, missing it, or carrying an Agent field), an `agent:` entry that is not the `newest_reply` and `unread_replies` the page drew (the same three), an id that is not a uuid, `seen_replies` on a `restore` (which draws the rows back and checks nothing), and `seen_replies` with the narrowing, where the server draws the rows itself.
+  Seven more `400 INVALID_QUERY`: a row `threads` names that `seen_replies` leaves out, a key naming a row `threads` does not, a `reply:` entry that is not that row's one `version` (of the wrong type, or missing it, as an Agent entry in its place does; a member this build does not declare is ignored there, as it is in a body), an `agent:` entry that is not the `newest_reply` and `unread_replies` the page drew (the same three), an id that is not a uuid, `seen_replies` on a `restore` (which draws the rows back and checks nothing), and `seen_replies` with the narrowing, where the server draws the rows itself.
   A dismissal marks the thread read as well, so a dismissed thread counts as unread nowhere;
   a later write by somebody else brings it back unread, and the caller's own reply leaves it dismissed.
   An Ask row's id, a row id of neither shape and an id that is not a uuid are each `400 INVALID_QUERY`.
@@ -3247,14 +3723,15 @@ Each item below names a path with its method and identity, then its purpose.
   `route_status` (`live`, `no_holder` or `unknown`;
   anything else is `400 INVALID_ROUTE_STATUS`) keeps the open issues whose route is in that state, whatever their priority;
   `live` or `no_holder` is `503 ENVOY_REFILLING` with the listener's `Retry-After` while the listener refuses its list as refilling, and `503 ENVOY_UNAVAILABLE` when it does not answer.
-  Summaries contain `key`, `title`, `status`, `priority`, `parent`, `assignee`, `route`, `route_status`, `route_holder`, `route_status_reason`, `updated_at`, `closed_at` (when the issue was closed, null while it is open), `last_seq`, and `open_asks`.
-  Every issue read (this list, `?pinned=true`, and `GET /api/v1/issues/{key}`) resolves `route_status` against the process's one copy of the listener's `GET /v1/sessions`, stored in no table:
-  that copy is at most 5 s old, one listener call refreshes it for every read that asks while it runs, and a listener that fails or does not answer within 2 s is asked again only after 5 s, every read in that window reading `unknown` at once.
-  The status is `live` (a live session holds the role, or the session is live;
-  `route_holder` names it), `no_holder` (nobody live holds the role, or the session is not live), `unknown` (the listener gave no list), or null with no route.
-  `route_status_reason` says why a route is `unknown`:
-  `refilling` (the listener refused its list as refilling, so the holder may well be running) or `unreachable` (the listener is not configured, did not answer in time, or failed otherwise); it is null with every other status.
-  A refilling list never makes a route `no_holder`.
+
+  - Summaries contain `key`, `title`, `status`, `priority`, `parent`, `assignee`, `route`, `route_status`, `route_holder`, `route_status_reason`, `updated_at`, `closed_at` (when the issue was closed, null while it is open), `last_seq`, and `open_asks`.
+    Every issue read (this list, `?pinned=true`, and `GET /api/v1/issues/{key}`) resolves `route_status` against the process's one copy of the listener's `GET /v1/sessions`, stored in no table:
+    that copy is at most 5 s old, one listener call refreshes it for every read that asks while it runs, and a listener that fails or does not answer within 2 s is asked again only after 5 s, every read in that window reading `unknown` at once.
+    The status is `live` (a live session holds the role, or the session is live;
+    `route_holder` names it), `no_holder` (nobody live holds the role, or the session is not live), `unknown` (the listener gave no list), or null with no route.
+    `route_status_reason` says why a route is `unknown`:
+    `refilling` (the listener refused its list as refilling, so the holder may well be running) or `unreachable` (the listener is not configured, did not answer in time, or failed otherwise); it is null with every other status.
+    A refilling list never makes a route `no_holder`.
 
 - `/api/v1/search?q=&project=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
@@ -3343,7 +3820,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Edges of one node in the reference graph, newest first and cross-project:
   exactly one of `to` (backlinks) or `from` (links), each a `dispatch://` reference, read whatever its length (`text.ParseRef`);
-  `kind` filters a csv of edge kinds, the structural ones and the name of each `block[]` attribute the block schema declares;
+  `kind` filters a csv of edge kinds, the structural ones and the name of each `block[]` attribute the block schema declares, and a kind this build does not emit (a newer build's, during a release) has no edges and is listed in the top-level `unknown_kinds`;
   `since=<events.id>` keeps mentions introduced after it (structural edges excluded).
   The answer is `{node, edges}`, the node read and its edges.
   Each edge carries the other `node`, an `excerpt` (the containing block for a document mention), `created_at`, and `source_seq`.
@@ -3358,7 +3835,7 @@ Each item below names a path with its method and identity, then its purpose.
   - A block reference (`#b-<id>`) names a `block` node carrying its whole current `text`;
     pinned to a version (`#b-<id>@v<N>`; for a comment's block, a revision of the comment, and for an ask's part, a revision of the ask's parts) it also carries `pin` (`version`, `ref`, the block's `text` at that version, `state` `unchanged`, `changed` or `removed`, and `removed_version`), and a removed block answers no edges.
 
-  - `400 INVALID_REFERENCE` / `INVALID_KIND` / `INVALID_SINCE`, `INVALID_REFERENCE` too for a message block pinned with `@v<N>` (a message never changes);
+  - `400 INVALID_REFERENCE` / `INVALID_SINCE`, `INVALID_REFERENCE` too for a message block pinned with `@v<N>` (a message never changes);
     `404` for a node that does not exist, a block no current version or revision holds (unpinned; an ask's part is called a part, `no part "<part>" in ask <id>`, where a comment's and a message's is called a block) or whose id is past 256 bytes (no node), or a pinned version the document lacks, has no record of the blocks of, or did not hold the block at, or a revision past the comment's or the ask's current one or that did not hold the block.
 
   - A `since` read stops at the event log's safe horizon, and first waits up to 1 s for the horizon to pass every event committed before the read, so it answers every mention committed before it, the caller's own included;
@@ -3750,7 +4227,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Read a live document's markdown.
   `{id}` must be a UUID.
-  A stored tree outside the Proof schema is `409 DOC_SCHEMA`, and a stored history that cannot load `409 DOCUMENT_UNLOADABLE` (Document errors).
+  A stored tree outside the Proof schema is `409 DOC_SCHEMA`, a stored tree holding an element this build cannot read `409 DOC_NEWER_CONTENT`, and a stored history that cannot load `409 DOCUMENT_UNLOADABLE` (Document errors).
 
 - `/api/v1/artifacts/{id}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
@@ -4119,29 +4596,49 @@ Each item below names a status and code, then its meaning.
   A stored tree is outside the Proof schema, such as one holding a node more than 1,000 levels below the document, a node attribute value nesting more than 100 arrays and objects, or a mark attribute value nesting more than 99;
   settlement writes no version of such a tree.
   Every route that starts from that tree answers it alike, with one message - reading its text or blocks (`/text`, `/blocks`), editing it (`POST /edits`) and naming a version (`POST /versions`) - and a schema refusal of a tree the request itself produced is a `500`.
-  Replace it by uploading markdown under the same document name;
+  The message names the repair, a replacement from markdown, says that it discards every part of the document's current content that the markdown leaves out, and says that a person decides whether to replace the document.
+  The replacement is an upload of markdown under the same document name;
   an upload preserves every open ask block, and is refused `400 INVALID_ASK_BLOCK` for an ask block that breaks the ask content rule, as a new document is.
   The document websocket admits no connection to such a room:
   it completes the upgrade and closes with code `4409` (reason `DOC_SCHEMA`, `DOCUMENT_SCHEMA_CLOSE_CODE` and `DOCUMENT_SCHEMA_CLOSE_REASON` in `packages/contracts`, generated into Go) before any sync, so a browser editor never receives a tree it would normalize and write back.
 
+- `409 DOC_NEWER_CONTENT`
+
+  A stored tree holds an element this Dispatch process's build does not know:
+  a node, mark or typed block its schema manifest does not name, an attribute a typed block does not declare, or a value an enum attribute does not list.
+  Two builds serve one database during a release, so a newer build can have written it;
+  a tree that also holds a known element in a broken shape is this code, not `DOC_SCHEMA`.
+  Every route that starts from that tree answers it alike, with one message that names the element, says to try again in one minute, and says that a replacement deletes the element.
+  No route repairs it: an upload or replacement over it is refused with this code and leaves the document unchanged, and settlement writes no version of it.
+  The document websocket admits no connection to such a room:
+  it completes the upgrade and closes with code `4425` (reason `DOC_NEWER_CONTENT`, `DOCUMENT_NEWER_CONTENT_CLOSE_CODE` and `DOCUMENT_NEWER_CONTENT_CLOSE_REASON` in `packages/contracts`, generated into Go) before any sync.
+  The Hocuspocus provider reconnects on that code with its backoff, so a later connection can reach a build that reads the document.
+
 - `409 DOCUMENT_UNLOADABLE`
 
   A document's stored history does not decode, so nothing can read or open it.
-  Rebuild it from its latest saved version (`POST /api/v1/artifacts/{id}/rebuild`); the dashboard offers that rebuild for this code alone.
+  A rebuild from its latest saved version (`POST /api/v1/artifacts/{id}/rebuild`) discards every edit made after that version, and a person decides whether to do it;
+  the dashboard offers that rebuild for this code alone.
   A room or store that could not serve the document stays `503 DOC_SERVICE_UNAVAILABLE`, which is retried, not rebuilt.
 
 - `409 DOCUMENT_LIVE`
 
-  A rebuild found the document resident in this server or in another server process on the database (it asks every member, and waits 500 ms at most for the answers):
+  A rebuild found the document resident in this server or in another Dispatch process on the database (it asks every member, and waits 500 ms at most for the answers):
   open in an editor, or left by its last editor less than 90 seconds ago (a room stays resident a minute after its last peer leaves, and the sweep that evicts it runs every 30 seconds).
-  Close its editors and retry two minutes later, or repair a schema-invalid tree by replacing it from markdown.
-  A rebuild also answers this code when the document's head moved while it ran, because of another rebuild or an edit:
-  read the document again before you rebuild it.
+  Nothing was deleted.
+  The message says whether this process or another one holds the document, names the latest saved version N a rebuild from it would discard every later edit back to, and tells the caller to stop and ask a person whether to rebuild the document after two minutes;
+  it offers no other repair.
+  A rebuild also answers this code when the document's head moved while it ran, because of another rebuild or an edit;
+  that message names the same saved version and says that another rebuild may already have repaired the document, so the caller reads it again and asks a person only if it still does not load.
+  One `DOCUMENT_LIVE` names no version and no discard: `document <id> is already being rebuilt`, while a rebuild of it runs in this process, which says only that and offers no repair.
+  One builder makes every other one (`liveRebuildRefusal`, `docs/rebuild.go`).
 
 - `409 DOCUMENT_LOADS`
 
   A rebuild found that the document's durable history loads.
-  Nothing was deleted; replace a schema-invalid document from markdown instead.
+  Nothing was deleted.
+  The message names the latest saved version, says that Dispatch rebuilds only a document whose stored history cannot load, and tells the caller to stop and ask a person what to do with the document;
+  it offers no repair.
 
 ## Comment errors
 

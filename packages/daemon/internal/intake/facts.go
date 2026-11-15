@@ -430,17 +430,21 @@ func (p DispatchConsumerPosition) Reached(target int64) bool {
 	return p.AckFloorStream >= target || p.Idle
 }
 
-// IssueStatus is one issue of the daemon's project as Dispatch shows it now: its key, its status,
-// the keys it says it is blocked by, its Dispatch parent, and the Dispatch sequence that view
-// stands at. The periodic turn's re-read carries them on its ControllerTick, and blockers.Mirror
-// writes each through the same sequence-fenced write an event's own row takes, so a view older
-// than an event already applied changes nothing — except the parent, which record.PutDispatchIssue
-// also writes for a view at the row's own sequence, the listing that is the only thing to carry
-// the parent of an issue the daemon has never recorded. ClaimedBy and
+// IssueStatus is one issue as Dispatch shows it now: its key, the project that key names, its
+// status, the keys it says it is blocked by, its Dispatch parent, and the Dispatch sequence that
+// view stands at. The periodic turn's re-read carries them on its ControllerTick, and
+// blockers.Mirror writes each through the same sequence-fenced write an event's own row takes, so
+// a view older than an event already applied changes nothing — except the parent, which
+// record.PutDispatchIssue also writes for a view at the row's own sequence, the listing that is
+// the only thing to carry the parent of an issue the daemon has never recorded. ClaimedBy and
 // ClaimKnown are DispatchIssue's: the issue read behind this view shows the claim unless it names
 // no actor.
 type IssueStatus struct {
-	Key        string
+	Key string
+	// Project is the Dispatch project of Key, as the read that saw the issue reports it, since a
+	// turn re-reads blockers of other projects too (workflowRuntime.readObserved) and the mirror
+	// row of such a key is that project's rather than the daemon's (blockers.Mirror.put).
+	Project    string
 	Status     string
 	Blockers   []string
 	Seq        int64
@@ -731,6 +735,16 @@ func (PullRequestChecks) isFact() {}
 // read fills it, and the engine records the answer only while the record still stands at that
 // head (workflow's mergeability): a read is one round trip to GitHub, a push can land during it,
 // and a verdict about another head's tree says nothing about this one.
+//
+// ReadAt is the moment the reader had GitHub's answer in hand, taken from the reader's own clock
+// rather than from the clock of whoever applies the fact: the engine takes no clock of its own, so
+// what it records is the time of the read rather than the time of the apply, and its tests stay
+// deterministic because every time they record is one their own fact named. It is what
+// record.PullRequest.StateReadAt is written from, and a confirming read moves it exactly as a read
+// that changes something does, since it is the age of the knowledge and not the age of the last
+// change to it. A fact minted by anything that did not read GitHub - every test that states a
+// verdict rather than reading one - leaves it zero, and the engine then writes no stamp and erases
+// none.
 type PullRequestMergeability struct {
 	Repo       string
 	Number     int
@@ -738,6 +752,7 @@ type PullRequestMergeability struct {
 	HeadSHA    string
 	Mergeable  record.Mergeability
 	MergeState record.MergeState
+	ReadAt     time.Time
 }
 
 func (PullRequestMergeability) isFact() {}
@@ -853,9 +868,10 @@ type HandoffComplete struct {
 	Generation uint64
 	Summary    string
 	Verdict    string
-	// Commit is the commit the completion reports: the implementer's pushed tip for an implementing
-	// round, and the commit retro and merging stand on; none for the planner, the tester or the
-	// reviewer.
+	// Commit is the commit the completion reports: for the planner, the implementer's implementing
+	// round, the tester and the reviewer the head their handoff record names, empty where a
+	// planner's, a tester's or a reviewer's record names none; and the commit retro and merging
+	// stand on.
 	Commit string
 	// HandoffRecord and HandoffVersion name the Dispatch handoff record the completion of a phase
 	// with a handoff ends with (phase.Handoff): the route read it back from Dispatch and held it to
@@ -1327,6 +1343,16 @@ func ChildInOtherTree(key, tree, want string) *Refusal {
 // children both answer it.
 func ChildNotAdoptable(key, tree, reason string) *Refusal {
 	return &Refusal{Status: 409, Code: "CHILD_NOT_ADOPTABLE", Message: fmt.Sprintf("%s cannot join the tree of %s: %s", key, tree, reason)}
+}
+
+// NotCurrentPhase is the 409 HANDOFF_NOT_CURRENT_PHASE refusal of a completion from role, which
+// does not work p, the phase issue stands in: the code every phase worker's prompt names for a
+// completion of a phase it no longer works (prompts/go/worker-common.md). The workflow's handoff
+// answers it for such a completion it does not record (its leftItsPhase), and the completion
+// route's entry fence for one whose entry differs from the role's phases row, before the fact
+// (api's handoffComplete), so a worker reads the same words from either.
+func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
+	return &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("the %s does not run phase %s of %s; this completion changed nothing", role, p, issue)}
 }
 
 // Pool is the Postgres connection pool the intake applies its facts on, keeps its consumers'

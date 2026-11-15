@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,14 +12,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // daemonTools are the binaries Legion itself runs on the host, or hands a pane: the git and jj of
 // workspace provisioning and removal (internal/workspace), and the real gh every pane's `legion gh`
 // runs, which a pane is told as LEGION_GH_PATH. Boot resolves each once, so no Legion-owned child is
-// a PATH lookup that whatever wrapper heads the operator's PATH could answer. A pane's git and jj
-// are whatever its PATH, the daemon's, gives, and its gh is the launcher directory's `legion gh`.
+// a PATH lookup that whatever wrapper heads the operator's PATH could answer. A pane's jj is the
+// first jj on its PATH, the daemon's. Its gh is the launcher directory's `legion gh`, and its git
+// is the launcher directory's `legion git --after` wrapper where workerbin.Install writes one. A
+// daemon started from a pane's shell can resolve that git wrapper here, and workspace jj then runs
+// it as its git.executable-path. That does no harm: the wrapper reaches a real git one exec later,
+// and provisioning makes no commit.
 var daemonTools = []string{"git", "jj", "gh"}
 
 // toolEnv is the daemon's own override for a tool at boot, LEGION_<TOOL>_PATH. A pane is told
@@ -89,17 +93,11 @@ func resolveTool(lookupEnv func(string) (string, bool), tool string) (string, er
 // LEGION_GH_PATH override is the operator's own word and is taken as it is; this check reads only
 // what PATH found. `legion controller start` makes the same check on the operator's PATH.
 func RefuseScriptGH(gh string) error {
-	file, err := os.Open(gh)
+	script, _, err := lookpath.Kind(gh)
 	if err != nil {
 		return fmt.Errorf("read %s, the first gh on PATH: %w", gh, err)
 	}
-	defer file.Close()
-	head := make([]byte, 2)
-	n, err := io.ReadFull(file, head)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("read %s, the first gh on PATH: %w", gh, err)
-	}
-	if string(head[:n]) == "#!" {
+	if script {
 		return fmt.Errorf("the first gh on PATH, %s, is a script, not the real gh: a gh wrapper would answer in place of the GitHub App token `legion gh` gives it; set LEGION_GH_PATH to the real gh's install path (`mise which gh` or `asdf which gh` prints it; a version manager's shims directory is no install path)", gh)
 	}
 	return nil

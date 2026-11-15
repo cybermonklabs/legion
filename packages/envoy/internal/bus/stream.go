@@ -367,6 +367,51 @@ func StreamCaptures(topic string) bool {
 	return false
 }
 
+// subjectsCapture reports whether a stream carrying subjects retains a publish to topic: some
+// subject matches it, token by token, a `*` matching one token and a trailing `>` one or more. It
+// takes any subject shape, since the subjects it is given are the deployed stream's, which a newer
+// build may have shaped otherwise than StreamCaptures assumes. A topic is read literally, as
+// StreamCaptures reads it.
+func subjectsCapture(subjects []string, topic string) bool {
+	topicTokens := strings.Split(topic, ".")
+	return slices.ContainsFunc(subjects, func(subject string) bool {
+		subjectTokens := strings.Split(subject, ".")
+		for index, token := range subjectTokens {
+			if token == ">" {
+				return len(topicTokens) > index
+			}
+			if index >= len(topicTokens) || (token != "*" && token != topicTokens[index]) {
+				return false
+			}
+		}
+		return len(subjectTokens) == len(topicTokens)
+	})
+}
+
+// readStreamSubjects reads the subjects the deployed stream carries, which may hold subjects this
+// build does not compile: a newer build adds its own, and reconciliation keeps them.
+func readStreamSubjects(js nats.JetStreamContext) ([]string, error) {
+	info, err := js.StreamInfo(Stream)
+	if err != nil {
+		return nil, err
+	}
+	return info.Config.Subjects, nil
+}
+
+// streamConfigGeneration is the generation of streamCfg's settings, stamped on the stream as its
+// streamGenerationKey metadata. Every change to streamCfg's MaxAge, Duplicates, Discard or
+// Subjects takes a new generation and a new row in
+// TestTheStreamConfigEqualsItsGenerationsPinnedRow. A build that finds a higher generation
+// deployed leaves the stream as it is, at the start (ensureStreamWithConfig) and in the keeper
+// (keepStream), so while two builds run, the older one never reverts what the newer one set.
+// The consumer cap (streamMaxConsumers) takes none: like the copies and the byte limit it is
+// only ever raised, so two builds that compile different caps never lower each other's.
+const streamConfigGeneration = 4
+
+// streamGenerationKey is the stream metadata key that holds the generation of its settings. A
+// stream without it was last set by a build before generations: generation 0.
+const streamGenerationKey = "dispatch.stream-generation"
+
 // streamMaxConsumers is the consumer cap this binary compiles into the stream (streamCfg), the one
 // setting that bounds how many sessions can hold a session consumer of their own. What a stream
 // with no cap means to the server changed in nats-server 2.15. From that release the server caps
@@ -597,17 +642,21 @@ func subjectsOverlap(a, b string) bool {
 	return len(aTokens) == len(bTokens)
 }
 
-// streamReconciliation is the subject list the stream carries once this binary has started, and
-// what that did to the deployed list: the list is the deployed one, then each of this binary's
-// subjects the deployed list lacks. Every bus.ConnectOwningStream caller ensures this one stream
-// (the deployed listener and Dispatch's server, wherever they run), and they deploy separately,
-// so a deployed subject this binary does not know may be one another live deployment still
-// needs; start-up keeps it and names it in foreign. Two kinds of deployed subject go:
+// streamReconciliation is the subject list the stream carries once this build has ensured it, and
+// what that did to the deployed list: the list is the deployed one, then each of this build's
+// subjects the deployed list lacks. Every process of the listener and of Dispatch's server ensures
+// this one stream (bus.ConnectOwningStream), on each connect, and they deploy separately: during a
+// release two builds of each run at once. So a deployed subject this build does not know may be one
+// another live process still needs; the ensure keeps it and names it in foreign. Two kinds of
+// deployed subject go:
 //   - one that captures the role lanes, which travel over core NATS and must never be retained
 //     (migrateRoleLanesOffStream);
-//   - one that overlaps a subject of this binary's (a widened, narrowed or split subject), because
-//     JetStream refuses both in one stream and the start would fail. This binary's shape wins
-//     (replaced), and the next start of a binary with the other shape puts that one back.
+//   - one that overlaps a subject of this build's (a widened, narrowed or split subject), because
+//     JetStream refuses both in one stream and the ensure would fail. This build's shape wins
+//     (replaced), and the next ensure of a build with the other shape puts that one back.
+//
+// Reconciliation runs only on a stream stamped with this build's generation or an older one: a
+// stream a newer build stamped keeps its subjects as they are (ensureStreamWithConfig).
 //
 // Retiring any other subject is an operator step, taken once no deployment compiled with it can
 // start again: `nats stream edit ENVOY_NOTIFICATIONS --subjects=... -f`.
@@ -617,7 +666,7 @@ type streamReconciliation struct {
 	foreign  []string
 }
 
-// subjectReplacement is a deployed subject a start dropped and every one of its own subjects that
+// subjectReplacement is a deployed subject an ensure dropped and every one of its own subjects that
 // overlapped it.
 type subjectReplacement struct {
 	dropped string
@@ -664,12 +713,18 @@ func (r streamReconciliation) log() {
 }
 
 // ensureStreamWithConfig creates the stream with cfg, under a fresh StreamIDMetadataKey, or
-// reconciles the deployed one towards cfg. cfg's Replicas is the deployment's replica count and its
-// MaxBytes the deployment's byte limit, 0 when it sets none. defaultsAnUnsetCap is what the
-// connected server is, read from the version it answers (serverDefaultsAnUnsetCap): whether a
-// deployed stream with no consumer cap is one the server caps at a default of its own.
+// reconciles the deployed one towards cfg, and returns the subjects the stream carries afterwards.
+// cfg's Replicas is the deployment's replica count and its MaxBytes the deployment's byte limit, 0
+// when it sets none. defaultsAnUnsetCap is what the connected server is, read from the version it
+// answers (serverDefaultsAnUnsetCap): whether a deployed stream with no consumer cap is one the
+// server caps at a default of its own.
 //
-// The update starts from the deployed configuration and sets only what this binary owns:
+// A deployed stream stamped with a generation higher than streamConfigGeneration was set by a
+// newer build, which owns its settings: it is left exactly as it is, so while two builds run the
+// older one never reverts what the newer one set.
+//
+// Any other is reconciled. The update starts from the deployed configuration and sets only what
+// this binary owns:
 //   - the subjects (reconcileSubjects);
 //   - the age and the duplicate window, cfg's, and discard, cfg's DiscardNew, so a full stream
 //     refuses a new message and keeps every stored one (a deployed DiscardOld stream is switched);
@@ -687,18 +742,19 @@ func (r streamReconciliation) log() {
 //     of 1000: a start never writes a lower cap than it read, so an operator's raise stands, and
 //     lowering one is an operator step that needs every program's binary lowered first;
 //   - the metadata, the deployed metadata kept as it is, its StreamIDMetadataKey included; a stream
-//     without that key gets one (identifiedMetadata).
+//     without that key gets one (identifiedMetadata), and this build's generation is stamped on it
+//     (stampGeneration).
 //
 // Every other deployed setting (storage, placement, compression, the message count and size
 // limits, direct get and the rest) stays as it is. A stream that already holds all of that gets no
-// update, and one that lacks only the key gets its own configuration back with the key added.
-// A refused create or update names the settings it carried (refusedSettings). A create carries the
-// consumer cap on every nats-server, but a server before streamMaxConsumersFloor refuses an update
-// that changes the cap of a stream that already exists, so on such a server a start against a
-// deployed stream whose cap is positive and below cfg's is refused. A stream with no cap is sent
-// no cap change at all on a server before 2.15, where an unset cap is no limit rather than the
-// default of 1000, so such a server is handed no update it refuses for a stream that has nothing
-// this cap fixes.
+// update, and one that lacks only the key or the generation gets its own configuration back with
+// them added. A refused create or update names the settings it carried (refusedSettings). A
+// create carries the consumer cap on every nats-server, but a server before
+// streamMaxConsumersFloor refuses an update that changes the cap of a stream that already exists,
+// so on such a server a start against a deployed stream whose cap is positive and below cfg's is
+// refused. A stream with no cap is sent no cap change at all on a server before 2.15, where an
+// unset cap is no limit rather than the default of 1000, so such a server is handed no update it
+// refuses for a stream that has nothing this cap fixes.
 //
 // Every bus.ConnectOwningStream caller runs this on the one stream, and JetStream's stream update
 // has no compare-and-swap, so two starts can each read the stream before either writes, and the
@@ -721,15 +777,12 @@ func (r streamReconciliation) log() {
 // id write the same one, derived from what both read. A third race is settled here: a server that
 // leaves one of two starts' stream reads or creates unanswered, which each request below is sent
 // again for (sentAgain), since a start that returns such an error ends the program.
-func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) error {
+func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
 	readStream := func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) }
 	info, err := sentAgain("STREAM.INFO", readStream)
 	if errors.Is(err, nats.ErrStreamNotFound) {
 		created := *cfg
-		created.Metadata = maps.Clone(cfg.Metadata)
-		if created.Metadata == nil {
-			created.Metadata = map[string]string{}
-		}
+		created.Metadata = stampGeneration(cfg.Metadata)
 		created.Metadata[StreamIDMetadataKey] = id.New()
 		// A create whose answer was lost is made again with the same configuration and the same
 		// id, drawn once above. A server that applied the lost create reads the second send as an
@@ -738,34 +791,81 @@ func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, de
 		// another start's create, which carries another id, draws ErrStreamNameAlreadyInUse, which
 		// this branch reads as such and follows with the read below.
 		_, err = sentAgain("STREAM.CREATE", func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
+		if err == nil {
+			return created.Subjects, nil
+		}
 		if !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
-			return refusedSettings(err, nil, &created)
+			return nil, refusedSettings(err, nil, &created)
 		}
 		info, err = sentAgain("STREAM.INFO", readStream)
 	}
 	if err != nil {
-		return err
+		return nil, err
+	}
+	deployedGeneration := MetadataGeneration(info.Config.Metadata, streamGenerationKey)
+	if deployedGeneration > streamConfigGeneration {
+		slog.Info("envoy nats stream settings belong to a newer build, so this build leaves them as they are",
+			slog.Int("deployed_generation", deployedGeneration), slog.Int("own_generation", streamConfigGeneration))
+		return info.Config.Subjects, nil
 	}
 	desired, reconciliation := reconciledStream(info, cfg, defaultsAnUnsetCap)
 	if reflect.DeepEqual(desired, info.Config) {
 		reconciliation.log()
-		return nil
+		return info.Config.Subjects, nil
 	}
 	migratingRoleLanes := streamCapturesRoleLanes(info.Config.Subjects) && !streamCapturesRoleLanes(desired.Subjects)
 	if err := migrateRoleLanesOffStream(js, &info.Config, &desired); err != nil {
-		return err
+		return nil, err
 	}
 	if err := updateStream(js, &desired, func(again *nats.StreamInfo) bool {
 		reconciled, _ := reconciledStream(again, cfg, defaultsAnUnsetCap)
 		return reflect.DeepEqual(reconciled, again.Config)
 	}); err != nil {
-		return refusedSettings(err, &info.Config, &desired)
+		return nil, refusedSettings(err, &info.Config, &desired)
 	}
 	reconciliation.log()
 	if migratingRoleLanes {
-		return purgeLegacyRoleMessages(js)
+		if err := purgeLegacyRoleMessages(js); err != nil {
+			return nil, err
+		}
 	}
-	return nil
+	return desired.Subjects, nil
+}
+
+// MetadataGeneration is the generation metadata holds under key, as a stream or a durable consumer
+// carries it: 0 when it holds none, as one a build before generations last set does, or holds one
+// that is not a number.
+func MetadataGeneration(metadata map[string]string, key string) int {
+	generation, err := strconv.Atoi(metadata[key])
+	if err != nil {
+		return 0
+	}
+	return generation
+}
+
+// OwnMetadata is a copy of deployed without the keys nats-server sets itself (the `_nats.` prefix),
+// which the server sets again on every create and update, with room for extra more keys. The copy
+// is never nil, so a caller can add keys to it.
+func OwnMetadata(deployed map[string]string, extra int) map[string]string {
+	metadata := make(map[string]string, len(deployed)+extra)
+	for key, value := range deployed {
+		if !strings.HasPrefix(key, "_nats.") {
+			metadata[key] = value
+		}
+	}
+	return metadata
+}
+
+// stampGeneration is metadata with this build's generation stamped on it. The copy keeps every
+// other key, the ones nats-server sets itself included, so a configuration it goes into equals the
+// deployed one when nothing else changed. It is never nil, so a caller can add keys to it.
+func stampGeneration(metadata map[string]string) map[string]string {
+	stamped := maps.Clone(metadata)
+	if stamped == nil {
+		stamped = map[string]string{}
+	}
+	stamped[streamGenerationKey] = strconv.Itoa(streamConfigGeneration)
+	return stamped
 }
 
 // reconciledStream is the configuration ensureStreamWithConfig writes over the deployed stream info
@@ -795,14 +895,13 @@ func keptStream(info *nats.StreamInfo, cfg *nats.StreamConfig, defaultsAnUnsetCa
 // deployed limit or cfg's when that is more, cfg's on a stream with none and the deployed one when
 // cfg sets none; the consumer cap, the deployed cap or cfg's when that is more, and cfg's on a
 // stream whose cap is unset where defaultsAnUnsetCap holds; the age, the duplicate window and
-// discard, cfg's; and the metadata with a StreamIDMetadataKey (identifiedMetadata). Neither the
-// copies nor the byte limit nor the cap is ever lowered, so an operator's raise of any of them
-// stands; lowering one is an operator step once every program's setting is lowered. The age, the
-// window and discard are compiled into the binary, not deployment settings (streamCfg), and every
-// release that runs a keeper compiles the same three (72 hours, 72 hours, DiscardNew), so the
-// keeper writing them puts back only what an operator changed. A release that changed one would
-// have its keeper and an older release's each put their own value back every period while both
-// run.
+// discard, cfg's; and the metadata with a StreamIDMetadataKey (identifiedMetadata) and this
+// build's generation (stampGeneration). Neither the copies nor the byte limit nor the cap is ever
+// lowered, so an operator's raise of any of them stands; lowering one is an operator step once
+// every program's setting is lowered. The age, the window and discard are compiled into the
+// binary, not deployment settings (streamCfg), and a release that changed one of them takes a new
+// streamConfigGeneration, which an older release's keeper leaves alone (keepStream), so the two
+// never put their own value back in turn while both run.
 //
 // A deployed cap of -1 or 0 is a stream that sets no cap. What that means is the connected
 // server's, which defaultsAnUnsetCap carries here (serverDefaultsAnUnsetCap): from nats-server
@@ -825,7 +924,7 @@ func ownedStream(info *nats.StreamInfo, cfg *nats.StreamConfig, defaultsAnUnsetC
 	owned.MaxAge = cfg.MaxAge
 	owned.Duplicates = cfg.Duplicates
 	owned.Discard = cfg.Discard
-	owned.Metadata = identifiedMetadata(info)
+	owned.Metadata = stampGeneration(identifiedMetadata(info))
 	return owned
 }
 
