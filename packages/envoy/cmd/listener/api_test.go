@@ -1090,7 +1090,13 @@ func swapSessionBucket(t *testing.T, sessions *session.SessionRegistry, wrap fun
 	old := watcher.Interface().(*kvwatch.Watcher).KV()
 	swapped := bus.NewKeyValue(wrap(old.Legacy()), old.WatchHandle(), old.Streams())
 	replacement := reflect.ValueOf(kvwatch.New("session registry", swapped, discardingCache{}))
-	mu := (*sync.RWMutex)(unsafe.Pointer(registry.FieldByName("mu").UnsafeAddr()))
+	// The cast below trusts the field's type, so the type is checked first: a sync.Mutex there
+	// would compile, and RWMutex.Lock would write past it into the next field.
+	muField := registry.FieldByName("mu")
+	if muField.Type() != reflect.TypeOf(sync.RWMutex{}) {
+		t.Fatalf("session.SessionRegistry.mu is %s, want sync.RWMutex: swapSessionBucket locks it as one", muField.Type())
+	}
+	mu := (*sync.RWMutex)(unsafe.Pointer(muField.UnsafeAddr()))
 	mu.Lock()
 	watcher.Set(replacement)
 	mu.Unlock()
