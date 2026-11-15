@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { BlockSchema, LiveClientFrame, LiveServerFrame } from "../web/src/api/types";
-import { schemaCreatable } from "../web/src/features/doc/schema";
+import { schemaCreatable } from "../web/src/features/doc/schema-creatable";
 import {
   baseUrl,
   createAsk,
