@@ -40,6 +40,27 @@ const (
 	reasonNothingToEnd = "nothing to end"
 )
 
+// The guest watch's lines (Guest). Each starts with guestPrefix and carries `key=value` fields as
+// the guard's do, each figure the watch cannot read written `-`; a process the guest kernel killed
+// has the guard's own endedLine, so a reader finds a process stopped for memory by one line,
+// whichever stopped it. The start line names the cgroup's version, its directory, v2's
+// memory.oom.group and the starting score; a watch with no readable kill counter has its
+// guestKillsUnnamedLine once, and one with no readable /proc its guestOffLine once. A rise of the
+// counter that no process is named for has one guestKilledUnnamedLine, with the count left over
+// and the counter's total, and a process whose score write failed its guestScoreFailedLine once,
+// with the score the write would have set.
+const (
+	guestPrefix            = "launcher: guest memory: "
+	guestStartLine         = guestPrefix + "start cgroup=%s dir=%s oom_group=%s score=%s"
+	guestOffLine           = guestPrefix + "off reason=%s"
+	guestKillsUnnamedLine  = guestPrefix + "kills unnamed reason=%v"
+	guestKilledUnnamedLine = guestPrefix + "killed unnamed count=%d oom_kill=%d"
+	guestScoreFailedLine   = guestPrefix + "score failed pid=%d start_time=%d score=%d reason=%v"
+	guestHourLine          = guestPrefix + "hour start=%s end=%s current=%s current_high=%s current_high_at=%s" +
+		" working_set=%s working_set_high=%s working_set_high_at=%s anon=%s file=%s inactive_file=%s shmem=%s limit=%s" +
+		" oom_kills=%s unnamed=%s raised=%s unraised=%s"
+)
+
 // ellipsis marks where escaped cut its text.
 const ellipsis = "…"
 

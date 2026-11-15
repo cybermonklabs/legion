@@ -19,6 +19,12 @@ import (
 // it.
 var newMemoryGuard = memoryguard.New
 
+// newGuest builds a microVM pod's guest watch from the classifier, the sink and the log the
+// launcher gives it (serveMemoryGuard). It is memoryguard.NewGuest, held in a package variable as
+// newMemoryGuard is, so that a test can point the watch the launcher built at a fake /proc, cgroup
+// directory and clock.
+var newGuest = memoryguard.NewGuest
+
 // containerInit is whether this launcher is its container's first process, PID 1 of the
 // container's PID namespace, the one rule that also starts the orphan reaper (Run). The pod's
 // classifier holds only there: PID 1 sees every process of the container and owns each one no
@@ -36,21 +42,28 @@ var containerInit = func() bool { return os.Getpid() == 1 }
 // report would have told the role.
 const maxWaitingMemoryKills = 32
 
-// serveMemoryGuard runs the issue pod's one memory guard (INFRA-3557) and each role's sender of
-// that guard's kill reports until ctx ends, and answers a channel closed once all of them have
-// returned, so Run can wait for it as it waits for the test database's ticker (serveTestPG). The
-// controller's pod runs none: Run's single-role branch returns before this is reached.
+// serveMemoryGuard runs the issue pod's one memory watch and each role's sender of that watch's
+// kill reports until ctx ends, and answers a channel closed once all of them have returned, so Run
+// can wait for it as it waits for the test database's ticker (serveTestPG). The controller's pod
+// runs none: Run's single-role branch returns before this is reached.
 //
-// The guard runs only where the launcher is the container's first process (containerInit). Any
+// The watch runs only where the launcher is the container's first process (containerInit). Any
 // other launcher logs one line and runs none: no manager then holds a guard, so serve hands no
 // settings on and no report is ever queued.
 //
-// The guard runs at memoryguard's defaults from the start, before any role connects, so the pod is
-// guarded while the daemon is away, and each role's acknowledgement then hands it the daemon's
-// settings (serve). Its lines are the launcher's own, behind no role's prefix (roleLog.linef),
-// because it watches every role's processes and the launcher's together. A kill of a process in a
-// role is reported to that role's manager, which sends it on that role's connection
-// (queueMemoryKill); a kill of a process in no role has the guard's own line and nothing else.
+// Under gVisor the watch is the memory guard (INFRA-3557), which ends a process before the host
+// kernel ends the whole sandbox. It runs at memoryguard's defaults from the start, before any role
+// connects, so the pod is guarded while the daemon is away, and each role's acknowledgement then
+// hands it the daemon's settings (serve). In a microVM (Config.MicroVM, the pod as built) the
+// pod's own kernel stops one process, so the guard is never built and no acknowledgement's
+// settings reach one: the launcher logs one off line and runs the guest watch
+// (memoryguard.Guest, INFRA-3729), which steers that kernel to the processes the guard would end,
+// by the same classifier, and reports each process it stopped through the same sink, each report
+// carrying the kernel's cause. Either watch's lines are the launcher's own, behind no role's
+// prefix (roleLog.linef), because it watches every role's processes and the launcher's together.
+// A kill of a process in a role is reported to that role's manager, which sends it on that role's
+// connection (queueMemoryKill); a kill of a process in no role has the watch's own line and
+// nothing else.
 func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids *pidGuard) <-chan struct{} {
 	done := make(chan struct{})
 	if !containerInit() {
@@ -63,18 +76,25 @@ func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids
 	for _, m := range managers {
 		byRole[m.role] = m
 	}
-	guard := newMemoryGuard(memoryguard.Config{
-		Classify: newPodClassifier(cfg.RolesDir, managers, pids).classify,
-		Sink: func(k memoryguard.Kill) {
-			if m := byRole[k.Role]; m != nil {
-				m.queueMemoryKill(k.LauncherMemoryKill)
-			}
-		},
-		Logf: managers[0].log.linef,
-	})
+	classify := newPodClassifier(cfg.RolesDir, managers, pids).classify
+	sink := func(k memoryguard.Kill) {
+		if m := byRole[k.Role]; m != nil {
+			m.queueMemoryKill(k.LauncherMemoryKill)
+		}
+	}
+	var watch func(context.Context)
+	if cfg.MicroVM {
+		managers[0].log.linef("launcher: memory guard: off reason=the pod runs in a microVM, whose own kernel stops one process")
+		watch = newGuest(memoryguard.GuestConfig{Classify: classify, Sink: sink, Logf: managers[0].log.linef}).Run
+	} else {
+		guard := newMemoryGuard(memoryguard.Config{Classify: classify, Sink: sink, Logf: managers[0].log.linef})
+		for _, m := range managers {
+			m.memoryGuard = guard
+		}
+		watch = guard.Run
+	}
 	var running sync.WaitGroup
 	for _, m := range managers {
-		m.memoryGuard = guard
 		m.memoryWake = make(chan struct{}, 1)
 		running.Add(1)
 		go func() {
@@ -85,7 +105,7 @@ func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids
 	running.Add(1)
 	go func() {
 		defer running.Done()
-		guard.Run(ctx)
+		watch(ctx)
 	}()
 	go func() {
 		running.Wait()

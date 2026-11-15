@@ -301,7 +301,8 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	// The guard runs by the newest acknowledgement of any role, and an acknowledgement that
 	// carries no settings turns it off: that is how a daemon built before the guard answers, and
 	// how a deployment that turned the guard off does. A connection that merely drops keeps the
-	// settings in force.
+	// settings in force. A microVM pod's launcher holds no guard (serveMemoryGuard), so no
+	// acknowledgement's settings reach anything there.
 	if m.memoryGuard != nil {
 		m.memoryGuard.Apply(ack.MemoryGuard)
 	}
@@ -557,8 +558,9 @@ type manager struct {
 	metadata string
 	// memoryGuard is the pod's one memory guard, which every role manager of an issue pod's
 	// container shares: each connection's acknowledgement hands it the daemon's settings
-	// (serve). It is nil in the controller's pod and in a launcher that is not its container's
-	// first process, which run none (serveMemoryGuard).
+	// (serve). It is nil in the controller's pod, in a launcher that is not its container's
+	// first process, which run none, and in a microVM pod's launcher, which runs the guest watch
+	// instead (serveMemoryGuard).
 	memoryGuard *memoryguard.Guard
 	// memoryKills are the reports of this role's processes stopped for memory that no connection
 	// has carried yet, oldest first, at most maxWaitingMemoryKills (queueMemoryKill). reportWriter
