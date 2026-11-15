@@ -406,14 +406,18 @@ func TestTheWalksBudgetCutsTheListingOfItsTargets(t *testing.T) {
 // one child, /legion/scratch above all, and a listing that asked only before each child read
 // every one of them past the walk's minute. The case lists a volume root of three children, go,
 // scratch and uv, where scratch holds two thousand directories, eight batches of names, through
-// a context that answers live to its first three asks — the one the walk makes after the one
-// batch of the root's own names, and the ones before it lists go and before it lists scratch —
-// and cancelled to every ask after, the first of which the walk makes once it has read the first
-// batch of scratch's names. The listing is partial, answers no target to measure, and names
-// three directories as unmeasured: go/build, the target it had listed, scratch whole, and uv,
-// which it never listed. The negative control is readChild reading a child's names whole, as it
-// did at ba4e3d98, beside the root's listing as it stands here: the listing named scratch's two
-// thousand directories as targets and was cut only before uv, 2,002 directories in all.
+// a context that answers live to its first four asks — the one the walk makes after the one
+// batch of the root's own names, the one before it lists go, the one after go's one batch (a
+// listing of fewer names than a batch answers them with no error, and the read after them
+// answers the end), and the one before it lists scratch — and cancelled to every ask after, the
+// first of which the walk makes once it has read the first batch of scratch's names. The
+// listing is partial, answers no target to measure, and names three directories as unmeasured:
+// go/build, the target it had listed, scratch whole, and uv, which it never listed. With three
+// live asks the walk is cut before it opens scratch and reads none of scratch's batches, so the
+// cut between a child's batches is the fourth ask's to reach. The negative control is readChild
+// reading a child's names whole, as it did at ba4e3d98, beside the root's listing as it stands
+// here: the walk asks nothing inside go or scratch, its four live asks run out at none of its
+// children, and the listing is not partial, with 2,002 targets to measure.
 func TestTheWalksBudgetCutsTheListingOfOneChildBetweenItsBatches(t *testing.T) {
 	const names = 2000
 	root := t.TempDir()
@@ -427,7 +431,7 @@ func TestTheWalksBudgetCutsTheListingOfOneChildBetweenItsBatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = held.Close() })
-	ctx := &liveFor{Context: context.Background(), asks: 3}
+	ctx := &liveFor{Context: context.Background(), asks: 4}
 
 	targets, result := sizeWalk{root: root}.targets(ctx, held)
 
