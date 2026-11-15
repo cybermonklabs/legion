@@ -1232,6 +1232,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
+              # internal/contracts mints an envelope's ids through it (message_envelope.go).
+              - 'packages/envoy/internal/id/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
@@ -1638,6 +1640,8 @@ jobs:
               - 'packages/envoy/internal/githubappjwt/*'
               # room_recovery_test.go reads the goroutine dump through it.
               - 'packages/envoy/internal/goroutinetest/*'
+              # internal/contracts mints an envelope's ids through it (message_envelope.go).
+              - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/*'
               - 'packages/envoy/internal/pglisten/*'
