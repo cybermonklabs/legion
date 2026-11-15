@@ -82,6 +82,7 @@ type Runtime struct {
 	probeRun                       string
 	volumeSize                     resource.Quantity
 	scheduling                     Scheduling
+	sandboxConfig                  SandboxConfig
 	resources                      PodResources
 	streamURL, daemonURL, envoyURL string
 	dispatchURL, dispatchToken     string
@@ -276,6 +277,11 @@ func configureProber(opts Options) (*Runtime, error) {
 		return refuse("image %q is not pinned by digest (…@sha256:…)", opts.Image)
 	case opts.StorageClass == "":
 		return refuse("no storage class for the issue volume (the cluster has no default class to fall back on)")
+	case opts.Sandbox.AnyMicroVM() && (opts.Sandbox.MicroVM == nil || opts.Sandbox.MicroVM.ComputeClass == ""):
+		return refuse("no compute class for the issue pods that run in a microVM (sandbox type %q, canary issues %v): the ComputeClass whose nodes run them",
+			opts.Sandbox.Type, opts.Sandbox.CanaryIssues)
+	case opts.Sandbox.AnyMicroVM() && opts.Sandbox.MicroVM.StorageClass == "":
+		return refuse("no storage class for the disks of the issue pods that run in a microVM (the cluster has no default class to fall back on)")
 	case opts.IssueVolume.Sign() <= 0:
 		return refuse("no issue volume size: %s is not a positive quantity", opts.IssueVolume.String())
 	// An issue pod's disk is the pod's own ephemeral volume, created with the pod and deleted with
@@ -356,7 +362,7 @@ func configureProber(opts Options) (*Runtime, error) {
 	}
 	r := &Runtime{
 		namespace: opts.Namespace, project: opts.Project, image: opts.Image, storageClass: opts.StorageClass,
-		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, resources: opts.Resources,
+		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, sandboxConfig: opts.Sandbox, resources: opts.Resources,
 		streamURL: opts.StreamURL, daemonURL: opts.DaemonURL, envoyURL: opts.EnvoyURL, dispatchURL: opts.DispatchURL,
 		dispatchToken: opts.DispatchToken, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
 		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, memoryConfigFiles: opts.MemoryConfigFiles,
