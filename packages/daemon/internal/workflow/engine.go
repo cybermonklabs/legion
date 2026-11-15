@@ -649,10 +649,12 @@ func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, root record.Issue, 
 	return e.drawExperiments(ctx, tx, fact.Key)
 }
 
-// HearRepository tells the daemon of the repository an issue has just been recorded on, inside
-// the transaction that writes the record (Config.HearRepository): GitHub intake hears it and the
-// runtime keeps a repository cache of it from the commit onward. Admission calls it for the roots
-// and orphans it records; a deployment that configures none is told nothing.
+// HearRepository QUEUES the repository an issue has just been recorded on, inside the transaction
+// that writes the record (Config.HearRepository). It makes no stream call under the lock and
+// cannot fail the transaction: hearRecorded publishes once the transaction has returned, and only
+// then does GitHub intake hear the repository and the runtime keep a repository cache of it.
+// Admission calls it for the roots and orphans it records; a deployment that configures none is
+// told nothing.
 func (e *Engine) HearRepository(ctx context.Context, repo string) {
 	if hear := e.cfg.HearRepository; hear != nil {
 		hear(ctx, repo)
