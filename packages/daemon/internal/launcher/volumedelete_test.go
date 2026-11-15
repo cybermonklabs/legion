@@ -938,10 +938,11 @@ func (r *dyingRemover) close() { *r.closed++ }
 // grace, and a deleter left behind would hold the listing's descriptors on directories nobody is
 // deleting out of, in the process that is PID 1 of the roles container (volumedelete.go).
 //
-// This case counts the closes of a remover of its own on three of the four ways out — the sweep
-// that ran out of entries, the settings that stopped the trimmer mid-sweep, and the container's
-// stop — and the fourth, the deleter that died under it, is the case above. That a close ends
-// the child, and kills one that outlives its grace, is
+// This case counts the closes of a remover of its own on three of the sweep's ways out — the
+// sweep that ran out of entries, the settings that stopped the trimmer mid-sweep, and the
+// container's stop — and a fourth, the deleter that died under it, is the case above; every
+// other way out after the deleter starts leaves through the same deferred close (sweep). That a
+// close ends the child, and kills one that outlives its grace, is
 // TestADeleterThatIgnoresTheEndOfItsRequestsIsKilledAtTheGrace: the two together are what keep a
 // child of a sweep's from outliving the sweep. The two stops are staged after the first
 // deletion, because a stop that arrived during the listing ends the sweep before any deleter is

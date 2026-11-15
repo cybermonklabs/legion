@@ -75,14 +75,15 @@ type walkResult struct {
 	// numbers.
 	At time.Time
 	// Partial is a walk its budget or the container's stop cut before it reached every target,
-	// which is the one way a walk ends early: Missing then holds every target it had not
-	// measured, and, where the cut came while it listed its targets, every immediate child of the
-	// volume root it had not listed yet (targets). A target the walk could read nothing of, and
-	// one it could read only in part (LauncherVolumeSize.Refused), end nothing, so a walk that met
-	// only those reached its end and is not partial.
+	// which is the one way a walk ends early: Missing then holds, up to the report's cap, every
+	// target it had not measured, and, where the cut came while it listed its targets, every
+	// immediate child of the volume root it had not listed yet (targets), and MissingOmitted
+	// counts the rest (cut). A target the walk could read nothing of, and one it could read only
+	// in part (LauncherVolumeSize.Refused), end nothing, so a walk that met only those reached its
+	// end and is not partial.
 	Partial bool
-	// Missing is what the walk did not measure: a target it could read nothing of — a directory
-	// it could not open or list, or a file whose lstat was refused — with the read the kernel
+	// Missing is what the walk did not measure: a target it kept no reading of — a directory it
+	// could not open or list, or a file whose lstat was refused — with the read the kernel
 	// refused (LauncherVolumeMissing.Reason), and everything it had not reached when the budget
 	// or the container's stop cut it. It holds at most shimwire.VolumeReportSizesMissing of them,
 	// the most a report names, and MissingOmitted counts the rest (miss), for the reason Sizes is
@@ -142,9 +143,10 @@ type measured struct {
 	// number is not the whole of the directory, so the walk reports it as missing rather than
 	// as a size a reader would take for the directory's own.
 	cut bool
-	// unread is why the walk read nothing of the target: the kernel refused its own lstat, or a
-	// directory's open or listing (unreadReason). Nothing of it was measured, so the walk names
-	// it as missing with that reason rather than as a size of no bytes (run).
+	// unread is why the walk left the target unmeasured: the kernel refused its own lstat, or a
+	// directory's open or listing (unreadReason), the listing perhaps after a first batch of it
+	// was read. What was read of it is dropped, so the walk names it as missing with that reason
+	// rather than as a size of no bytes or of part of the target (run).
 	unread string
 	// refused is how many reads beneath the directory the walk did not make — each the kernel
 	// refused, and each directory deeper than the walk descends (volumeWalkDepth) — and
@@ -292,9 +294,9 @@ func (w sizeWalk) run(ctx context.Context) walkResult {
 			return result
 		}
 		if one.unread != "" {
-			// Nothing of the target was read, so it is no size at all, not even a lower bound
-			// of nothing: it is named as unmeasured with the read the kernel refused, and the
-			// walk goes on (measured.unread).
+			// What was read of the target, if anything, is dropped, so it is no size at all, not
+			// even a lower bound: it is named as unmeasured with the read the kernel refused, and
+			// the walk goes on (measured.unread).
 			result.miss(w.pathOf(target), one.unread)
 			continue
 		}
@@ -346,7 +348,7 @@ func (w sizeWalk) cut(result *walkResult, targets []walkTarget) {
 	}
 }
 
-// unreadReason is why the walk read nothing of a directory, as its entry in Missing carries it:
+// unreadReason is why the walk left a directory unmeasured, as its entry in Missing carries it:
 // the read the kernel refused and its answer, `openat: permission denied`, with no path, since
 // the entry names the directory already. An error that carries no answer of the kernel's is
 // written whole.
@@ -389,8 +391,8 @@ func unreadReason(err error) string {
 //
 // ctx is the walk's, which its budget and the container's stop end, and it is asked before each
 // child is listed: a cut listing makes the walk partial, with every target it had listed and
-// every child it had not named as unmeasured (cut), and nothing is measured. The root's own
-// listing is one read and is not cut.
+// every child it had not named as unmeasured up to the report's cap and counted past it (cut),
+// and nothing is measured. The root's own listing is one read and is not cut.
 func (w sizeWalk) targets(ctx context.Context, handle *dirHandle) ([]walkTarget, walkResult) {
 	result := walkResult{}
 	children, err := handle.ReadDir()
@@ -479,9 +481,10 @@ func (w sizeWalk) readChild(handle *dirHandle, name string) ([]os.DirEntry, erro
 // the tree frees none of it, and a sparse file counts at its apparent size. A read the kernel
 // refuses below the target makes the reading a lower bound, counted and the first of them named
 // (refuse), and ends nothing; one it refuses of the target itself — its lstat, its open or its
-// listing — leaves nothing of it read, and the reading carries why (unread). A file that is gone
-// by the time it is stat'ed is nothing at all: the sweep that made this report was deleting in
-// these very directories moments ago.
+// listing, at its first batch or a later one — leaves the target unmeasured, whatever was read
+// of it, and the reading carries why (unread). A file that is gone by the time it is stat'ed is
+// nothing at all: the sweep that made this report was deleting in these very directories
+// moments ago.
 func measureTree(ctx context.Context, dir *dirHandle, name string, at time.Time) measured {
 	out := measured{}
 	hour, day := at.Add(-volumeSizeHour), at.Add(-volumeSizeDay)
@@ -602,9 +605,9 @@ const volumeWalkDepth = 64
 var errWalkTooDeep = errors.New("deeper than the walk descends")
 
 // fail is a read of the directory being read, name, that the kernel refused: of the target
-// itself, which leaves nothing of it read and names why (unread), or of a directory below it,
-// which is a refusal (refuse). A name that is gone by the time it is read is neither, for the
-// reason a file that is gone is nothing at all (measureTree).
+// itself, which leaves the target unmeasured, whatever was read of it, and names why (unread),
+// or of a directory below it, which is a refusal (refuse). A name that is gone by the time it is
+// read is neither, for the reason a file that is gone is nothing at all (measureTree).
 func (out *measured) fail(err error, name string) {
 	switch {
 	case errors.Is(err, fs.ErrNotExist):

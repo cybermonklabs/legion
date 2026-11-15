@@ -2655,7 +2655,8 @@ A sweep whose child will not start deletes nothing and says why in the pod's log
 `runtime.kubernetes.volume_trim` sets all five values, and `enabled: false` hands the pod's launcher no settings, on which its trimmer reads and deletes nothing.
 A change to them reaches a running pod at its next connection to the daemon, which every daemon restart gives it, and no pod is replaced for it: a pod told `enabled: false` stops sweeping and keeps its trimmer, which takes up an answer that carries settings again within ten seconds, its poll of the settings in force, and reads the volume one `interval_seconds` after that — the same for a daemon rolled back to a release that does not know this work and the roll-forward after it.
 
-The loader refuses the file, naming the key, on any of these (`readVolumeTrim`, `packages/daemon/internal/config/kubernetes.go`):
+The loader takes a null value, of the block or of any member, as unset, so the default stands: an `enabled:` left blank is `true`, not `false` (`members`, `packages/daemon/internal/config/config.go`).
+It refuses the file, naming the key, on any of these (`readVolumeTrim`, `packages/daemon/internal/config/kubernetes.go`):
 
 - a mark that is not an integer from 1 to 99, or a `low_percent` that is not below `high_percent`;
 
