@@ -1,0 +1,5 @@
+kind: Fixed
+body: |-
+  The reviewer's role prompt takes the forward-merge fingerprint at the head its last submitted
+  review's Legion footer names, never at that review's `commit_id`, which GitHub can move onto a
+  later head; it said "the commit of your last submitted review" before.

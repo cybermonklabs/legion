@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  After a forward merge, the reviewer takes the unchanged-diff fingerprint at the head its last
+  submitted review read, which that review's Legion footer names, and no longer at the review's
+  `commit_id`, which GitHub can move onto a later head: on cybermonklabs/legion#3516 an approval
+  of `e9a820cf` came to read `commit_id` `6019bdc9`, the forward merge above it, so the two
+  fingerprints were of one head and always equal. The merge-gate reference gives the `gh api` read
+  that prints each of the reviewer's reviews with its footer's head, and takes the SHA a review's
+  body names where its footer names none. The unchanged-diff check and the architect's acceptance
+  read say the same.
