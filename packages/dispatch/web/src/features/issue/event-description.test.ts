@@ -411,3 +411,36 @@ test("the issue log keeps the session an unsubscribe or a follower names", () =>
   expect(eventDescription(sessionEvent("subscription.removed"))).toEqual(["Unsubscribed ", agent]);
   expect(eventDescription(sessionEvent("ask.follower_added"))).toEqual([agent, " follows an ask"]);
 });
+
+// A queued attempt waits for a session that is not running, so the line says queued even when the
+// stream already held the message: "already delivered" would say the session has it.
+test("the issue log reads a queued delivery receipt as queued, a queued repeat included", () => {
+  const receipt = (
+    type: "message.delivery" | "comment.delivery",
+    state: "sent" | "queued",
+    duplicate: boolean
+  ) =>
+    ({
+      actor: { id: "system", kind: "system" },
+      created_at: "2026-11-02T09:15:00Z",
+      id: 11,
+      issue_key: "CORE-1",
+      notify: false,
+      payload: { delivery: "aside", duplicate, state, target: "session:planner" },
+      seq: 11,
+      type,
+    }) as DispatchEvent;
+
+  expect(eventDescription(receipt("message.delivery", "queued", true))).toEqual([
+    "Message queued: Aside",
+  ]);
+  expect(eventDescription(receipt("message.delivery", "sent", true))).toEqual([
+    "Message already delivered: Aside",
+  ]);
+  expect(eventDescription(receipt("comment.delivery", "queued", true))).toEqual([
+    "Comment queued: Aside",
+  ]);
+  expect(eventDescription(receipt("comment.delivery", "sent", true))).toEqual([
+    "Comment already delivered: Aside",
+  ]);
+});

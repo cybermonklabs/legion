@@ -551,14 +551,20 @@ What each part is for:
   `postgres`, whose `session_dsn_secret` names the key of the providers Secret
   ([below](#secrets-and-files)) holding that database's `postgres://…` URL, which every pod, the
   controller's and the image probe's included, mounts read-only; and `cloudsql-iam`, whose
-  `session_database` (`instance`, `name` and `user`, all three required) names a Cloud SQL
-  database each pod signs in to as itself, with no URL held anywhere. No deployment runs
-  `cloudsql-iam` yet; the repository's `docs/kubernetes.md` ("Selecting the store") says what it
-  needs. Each kind refuses the other's key. An omitted `session_store` and `pvc`, the file store
-  of earlier releases, are refused with the same line and its reason: an issue pod's disk is
-  deleted with the pod, so a conversation kept as a file on it dies with the pod and the next
-  launch's resume fails on the missing file, retiring the claim after three failures. Name the
-  store and its key, and have the database reachable from the pods, before the daemon boots.
+  `session_database` names a Cloud SQL database each pod signs in to over IAM, with no URL held
+  anywhere. Its `instance`, `name` and `user` are required. Its optional member
+  `impersonate_service_account` names a Google service account that each pod's proxy impersonates
+  with the pod's own credentials and signs in as. `user` must then be that account's IAM login:
+  its email without `.gserviceaccount.com`. A pod under Workload Identity Federation for GKE
+  needs this member, because its identity has no email address and so no Cloud SQL login. The
+  paragraph "What a pod signs in as, and what a deployment grants for it" in
+  [Selecting the store](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#selecting-the-store)
+  says when to set the member and lists what it needs. Each kind refuses the other's key. An
+  omitted `session_store` and `pvc`, the file store of earlier releases, are refused with the same
+  line and its reason: an issue pod's disk is deleted with the pod, so a conversation kept as a
+  file on it dies with the pod and the next launch's resume fails on the missing file, retiring the
+  claim after three failures. Name the store and its key, and have the database reachable from the
+  pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
 - **`runtime.kubernetes.agent_secrets`** (optional) enrolls every pod with the
@@ -963,9 +969,10 @@ Closing the terminal leaves the project without one, and the daemon logs
 
    **After the first upgrade to the release where an issue's disk dies with its pod,** the
    `runtime.kubernetes` block must name a `session_store` that keeps sessions in a database, with
-   that store's key — for a deployment today `session_store: postgres` and `session_dsn_secret`,
-   with the providers Secret holding that key — before the daemon boots: the loader refuses the
-   file otherwise ([legion.yaml](#legionyaml)). Before rolling that change, follow
+   that store's key — `session_store: postgres` with `session_dsn_secret` and the providers Secret
+   holding that key, or `session_store: cloudsql-iam` with `session_database` — before the daemon
+   boots: the loader refuses the file otherwise ([legion.yaml](#legionyaml)). Before rolling that
+   change, follow
    [Copying file sessions before turning it on](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#copying-file-sessions-before-turning-it-on).
    A later reaping of an older Sandbox-owned volume reads the retiring Sandbox's pod template.
    The providers volume's `OMP_SESSION_SQL_DSN` item under `postgres`, or the launcher's three

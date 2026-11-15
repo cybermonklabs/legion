@@ -1664,7 +1664,12 @@ test("a mode no selected agent advertises leaves Send dead, and Send says so and
   }
 });
 
-test("with one of two selected agents gone from the registry, Send reaches the live one and names the one left out", async ({
+// INFRA-626. A selected session that leaves the listener's live list is still a recipient: Envoy
+// may know it and it may simply be stopped, in which case the send is stored for it and reaches
+// it when it runs again. Only the listener can tell that session from one it has never heard of,
+// so the composer leaves the judgment to the server, which names on the broadcast whatever it
+// excluded.
+test("a selected agent gone from the registry stays in the send, with no reason on its chip", async ({
   browser,
 }) => {
   // The page learns of a departure only on its 15 s agent poll, which the page clock fires: the
@@ -1685,19 +1690,18 @@ test("with one of two selected agents gone from the registry, Send reaches the l
     await expect(composer.getByRole("button", { name: "Send to 2" })).toBeEnabled();
 
     // Bravo leaves; the page learns of it on its next agent poll, and names it by its ID since
-    // the registry no longer holds its title, with its state - not running - before the name.
+    // the registry no longer holds its title.
     await setSessionLive(bravo.session_id, false);
     await page.clock.fastForward(15_000);
     // TanStack's notifyManager batches its delivery on a zero-delay page timer.
     await page.clock.runFor(1);
-    const send = composer.getByRole("button", { name: "Send to 1" });
-    await expect(send).toBeEnabled();
-    await expect(send).toHaveAccessibleDescription(
-      "Excluded: Not running session:bravo-se… (no live session). Nothing is sent to them, and no other mode is substituted."
-    );
     await expect(
-      composer.getByRole("button", { name: /^session:bravo-se… · no live session/ })
+      composer.getByRole("button", { exact: true, name: "session:bravo-se… ✕" })
     ).toBeVisible();
+    const send = composer.getByRole("button", { name: "Send to 2" });
+    await expect(send).toBeEnabled();
+    await expect(send).not.toHaveAccessibleDescription(/Excluded/);
+    await expect(composer.getByText(/^Excluded:/)).toHaveCount(0);
   } finally {
     await alice.close();
   }

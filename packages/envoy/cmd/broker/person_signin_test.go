@@ -65,12 +65,11 @@ func TestTheBinaryTakesAPersonsSignInOnAMachine(t *testing.T) {
 	plain := newPlainBroker(broker.Addr)
 
 	t.Run("the real binary boots with the device-flow audience its sign-in settings make", func(t *testing.T) {
-		boot := broker.Await(t, "google person sign-in")
-		t.Logf("the broker's own boot lines:\n%s", boot)
+		record := broker.AwaitRecord(t, "google person sign-in", nil)
+		t.Logf("the broker's own boot lines:\n%s", broker.Log())
 		requireHealthy(t, broker.Addr)
-		want := "google person sign-in issuer=" + google.URL() + " audience=" + deviceAudience + " domain=" + signInDomain
-		if !strings.Contains(boot, want) {
-			t.Fatalf("the boot log carries no %q; the binary must report the device-flow audience and the domain it signs people in from:\n%s", want, boot)
+		if want := (map[string]any{"issuer": google.URL(), "audience": deviceAudience, "domain": signInDomain}); !carries(record, want) {
+			t.Fatalf("the %q line %v does not carry %v; the binary must report the device-flow audience and the domain it signs people in from", "google person sign-in", record, want)
 		}
 	})
 

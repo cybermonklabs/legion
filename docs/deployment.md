@@ -70,11 +70,12 @@ With no key, the daemon reads each App's bot login from GraphQL's `viewer` under
 tokens, refuses a token whose `GET /apps/<slug>` names an id other than `app_id`, and reads whether
 the App is installed on a repository from that owner's installation's repository list.
 A read-only token holds what the command's read-only release gives: the broker's holds
-`contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`, the same set a
-configured key asks for, and the first three alone where the App's installation has not been
-granted Actions.
-A configured key reads what the installation is granted before each mint and asks for the set
-cut down to it, so the two end at the same place by different routes.
+`contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`, and the first three
+alone where the App's installation has not been granted Actions.
+A configured key asks for that set and `issues: read` besides, so a role reads an issue through a
+key-minted read-only token and not through the broker's.
+A configured key reads what the installation is granted before each mint and asks for its set
+cut down to it.
 The daemon passes the command's stderr through as it runs, with every GitHub token in it redacted,
 so `agent-secrets`' line naming the pending request appears in the daemon's log while the review
 App waits for its grant.
@@ -104,11 +105,11 @@ daemon writes gh's own `hosts.yml` (an App installation token, user `x-access-to
 pane — in two directories, the issue's recorded owner's and the one named for the owner whose
 installation serves that repository now, which are one directory unless a rename moved the issue's
 repository, the role's App token for the issue's repository and no other, and in every
-other directory that App's token narrowed to reading contents, pull requests, Actions and metadata
+other directory that App's token narrowed to reading contents, pull requests, issues, Actions and metadata
 over the repositories that directory names, an `<owner>/<repo>` directory's over the one repository
 its own name resolves to (each token asks for what the App's installation on
-that owner is granted of the set, and a permission it is granted none of is left out, named on
-the daemon's stderr) — names the issue owner's directory as `GH_CONFIG_DIR`
+that owner is granted of the set, and a permission it is granted none of is left out, named in
+a warn record of the daemon's log) — names the issue owner's directory as `GH_CONFIG_DIR`
 and the bundle's root as `LEGION_GH_OWNERS_DIR`, with `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` set
 empty so nothing outranks the files, and rewrites each directory's `hosts.yml` in place every
 minute from its cached leases (the log lines `tmux runtime: github credential written` and `github
