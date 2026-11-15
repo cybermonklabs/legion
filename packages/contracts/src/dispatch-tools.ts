@@ -2226,3 +2226,4 @@ export const dispatchToolSpecs = [
     strict: true,
   },
 ] as const satisfies readonly DispatchToolSpec[];
+// selection probe, never merged
