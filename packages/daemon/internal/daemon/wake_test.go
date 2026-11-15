@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/intake"
 
@@ -24,7 +23,7 @@ import (
 
 // wakeRuntime is the smallest workflowRuntime the wake pass and the release gate read: the
 // project, the store and a log a test can read back.
-func wakeRuntime(t *testing.T) (*workflowRuntime, *pgxpool.Pool, *bytes.Buffer) {
+func wakeRuntime(t *testing.T) (*workflowRuntime, *store.Pool, *bytes.Buffer) {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	st := outboxTreeStore(t, pool, "LEGION-208")
@@ -52,7 +51,7 @@ func recordPodWake(t *testing.T, st *store.Store, res store.PodResume) int64 {
 }
 
 // recordListenerReady stamps the listener's liveness report at at, as the wake fact does.
-func recordListenerReady(t *testing.T, pool *pgxpool.Pool, at time.Time) {
+func recordListenerReady(t *testing.T, pool *store.Pool, at time.Time) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `insert into listener_reports (project, ready_at) values ('legion', $1)
 		on conflict (project) do update set ready_at = excluded.ready_at`, at); err != nil {
@@ -142,7 +141,7 @@ func TestAStuckResumeIsWarnedAboutOnceAtTenMinutes(t *testing.T) {
 	}
 }
 
-func stuckMark(t *testing.T, pool *pgxpool.Pool, id int64) bool {
+func stuckMark(t *testing.T, pool *store.Pool, id int64) bool {
 	t.Helper()
 	var stuck bool
 	if err := pool.QueryRow(context.Background(), `select stuck from pod_resumes where id = $1`, id).Scan(&stuck); err != nil {
@@ -276,7 +275,7 @@ func TestTheDaemonsOneDurableStateCallbackCarriesTheFactsAndTheResumeStamps(t *t
 
 // awaitResume waits for the resume's column to be stamped: the stamps are written off the
 // machine's goroutine, so the callback returns before the write lands.
-func awaitResume(t *testing.T, pool *pgxpool.Pool, id int64, column string) {
+func awaitResume(t *testing.T, pool *store.Pool, id int64, column string) {
 	t.Helper()
 	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
 		var stamped bool

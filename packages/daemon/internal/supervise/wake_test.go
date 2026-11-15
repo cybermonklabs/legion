@@ -734,8 +734,15 @@ func TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStart
 
 	h.relaunched()
 
-	if got := h.wantPrompts(sent + 1)[sent]; got.Message != next {
-		t.Fatalf("the prompt after the relaunch is %+v, want the task %q, to the process the launch started", got, next)
+	// The stale process left no report the daemon took (a stale plugin's report is refused), so
+	// its let-go at the launch's turn recorded its background work as unknown, and the task
+	// carries that sentence in front of it (dispatch://INFRA-3276 R3).
+	ended := h.claim().EndedWork
+	if ended.Cause != endStalePlugin || !ended.Tells() {
+		t.Fatalf("the launch's turn recorded %+v, want an untold end of the stale plugin's process", ended)
+	}
+	if got, want := h.wantPrompts(sent + 1)[sent], relaunchSentence(ended, true)+"\n\n"+next; got.Message != want {
+		t.Fatalf("the prompt after the relaunch is %+v, want the task %q, to the process the launch started", got, want)
 	}
 }
 
@@ -801,9 +808,9 @@ func TestATurnTheReplacedProcessConfirmedIsTakenBackAtTheLaunchsTurn(t *testing.
 // settlement runs with the very decision the write failed in (Handle, settle): the task would
 // go while its worker was still on it, on the process this turn did not replace.
 //
-// The negative control is that ordering reverted (interrupted's awaitingResult, cleared above
-// the write): the settlement that follows the turn then retires the task, which this test reads
-// where it asks the claim for it.
+// The negative control is that ordering reverted (interrupted's emptying of Machine.outstanding,
+// moved above the write): the settlement that follows the turn then retires the task, which this
+// test reads where it asks the claim for it.
 func TestATakeBackTheStoreRefusesAtTheTurnRetiresNoTask(t *testing.T) {
 	const task = "implement the plan"
 	h := pacedHarness(t, wakeRate)
@@ -1355,16 +1362,17 @@ func workingOverTheProcessItsRefusedRelaunchKept(t *testing.T) (*harness, runtim
 	return h, dead
 }
 
-// The claim a refused relaunch leaves working over a dead process is told from a claim in a
-// turn by what the runtime last reported of the process it records, and by nothing else: its
-// state, the compaction it is not in, the suspension nothing holds over it and the wake it no
-// longer has all read as a claim in a turn reads (api's refuseState, freshSession). The record
-// is the verdict that raised the relaunch, kept where every verdict is judged
-// (reportedProcess), so the refusal writes nothing for it.
+// The claim a refused relaunch leaves working over a dead process reads, in everything but one
+// record, exactly as a claim in a turn reads: its state, the compaction it is not in, the
+// suspension nothing holds over it and the wake it no longer has. The one record is what the
+// runtime last reported of the process it records, kept where every verdict is judged
+// (reportedProcess), so the refusal writes nothing for it. That record is the machine's own:
+// a suspension reaching such a claim lands where it arrives on it (holdSuspension), while a
+// recovery door, which a restart would leave with nothing, reads the process itself at the
+// moment of the request (ReadProcess).
 //
-// The negative control is the record reverted (reportedProcess's gone verdict dropped): both
-// recovery doors then answer such a claim "is in a turn", which it is not, in the one window
-// those recoveries exist for.
+// The negative control is the record reverted (reportedProcess's gone verdict dropped): a
+// suspension of such a claim is then held for a turn that will never end.
 func TestARelaunchRefusedAtItsTurnLeavesTheClaimRecordingWhatBecameOfItsProcess(t *testing.T) {
 	h, dead := workingOverTheProcessItsRefusedRelaunchKept(t)
 
@@ -1443,12 +1451,14 @@ func TestWhatTheRuntimeLastReportedOfTheKeptProcessGoesWithEveryPathThatChangesI
 // and not the other (judge, reportedProcess). The window that turns on it is a park a stale
 // address raised — that verdict found the process alive, so it cleared the record — over a
 // process that then dies. If the park's own turn is refused, the claim is left stored working
-// over a dead process, and this record is the whole of what tells it from a claim in a turn
-// (Claim.ProcessGone, api's refuseState and freshSession).
+// over a dead process, and this record is what the machine's own side tells it from a claim in
+// a turn by: a suspension reaching it lands where it arrives rather than being held for a turn
+// that will never end (Claim.ProcessGone, holdSuspension). The recovery doors read the process
+// itself at the request (ReadProcess), so they do not turn on this record.
 //
 // The negative control is the record put back behind the guard (judge's launchWaits): the
-// claim then reports its process running after a death the park dropped, and both recovery
-// doors answer it "in a turn" until the next sweep.
+// claim then reports its process running after a death the park dropped, and a suspension of
+// it is held for a turn nothing is running until the next sweep reports the death again.
 func TestADeathReportedWhileALaunchWaitsItsTurnIsRecordedForTheClaimItMayLeave(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateWorking)
@@ -1888,6 +1898,9 @@ func TestAnOperatorsDeliveryReplacingTheLaddersTaskRunsTheParkedLaunchNow(t *tes
 	replaced := h.locator()
 
 	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	// The session reports at the turn's end that nothing of its own runs, as Oh My Pi's does, so
+	// the replacement below ends no work and the operator's task goes as it was given (recordEnd).
+	h.reportActivity()
 	owed := h.pending()
 	if !h.m.replaceable(&owed) {
 		t.Fatalf("the task the provider error took back is %+v, want one a newer task replaces: this test needs the ladder's wait", owed)

@@ -32,6 +32,7 @@ import {
   resultsCommand,
   searchCommand,
 } from "./issues";
+import { prioritiesCommand } from "./priorities";
 import { architectureSyncCommand, projectCommand, projectsCommand } from "./projects";
 import { readCommand } from "./read";
 import { answersCommand, inboxCommand, limitsCommand, whoamiCommand } from "./session";
@@ -75,6 +76,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_search: acting(searchCommand),
   dispatch_project: acting(projectCommand),
   dispatch_projects: acting(projectsCommand),
+  dispatch_priorities: acting(prioritiesCommand),
   dispatch_architecture_sync: acting(architectureSyncCommand),
   dispatch_ask: acting(askCommand),
   dispatch_edit_ask: acting(editAskCommand),

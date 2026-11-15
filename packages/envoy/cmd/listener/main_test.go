@@ -343,10 +343,13 @@ func setupPublishTestClient(t *testing.T, options ...bus.ConnectOption) *bus.Cli
 // setupSessionConsumers is the session-consumer connection main's listener always holds, for a
 // test that drives the registration route: a listener without one refuses every registration
 // (consumer_error), as a session receives only what its own consumer holds. Its relay records
-// what it is told and relays nothing, since no test here reads a frame.
-func setupSessionConsumers(t *testing.T) *sessionDelivery {
+// what it is told and relays nothing, since no test here reads a frame. client is the rig's
+// listener client, whose read of the deployed stream's subjects both the registration's stored
+// topics and its consumer filter are judged on (sessionDelivery.stream), as main's listener
+// judges them.
+func setupSessionConsumers(t *testing.T, client *bus.Client) *sessionDelivery {
 	t.Helper()
-	delivery, err := connectSessionDelivery([]string{testnats.URL(t)}, bus.SessionConsumerInactiveThreshold, logging.NewWithWriter("test", io.Discard))
+	delivery, err := connectSessionDelivery([]string{testnats.URL(t)}, bus.SessionConsumerInactiveThreshold, client, logging.NewWithWriter("test", io.Discard))
 	if err != nil {
 		t.Fatalf("open the session-consumer connection: %v", err)
 	}
@@ -1779,27 +1782,6 @@ func claimRoles(t *testing.T, registry *store.Registry, sessionID string, roles 
 	}
 }
 
-// awaitRoles waits until the registry's role claim view names sessionID as the holder of each
-// role, which is the view every route reads (store.Registry.RolesHeldBy): claimRoles writes the
-// claims, and the view follows the bucket's watch a moment later. A test whose route reads a
-// session's roles - a registration naming a Legion controller notice lane - waits here after
-// claiming.
-func awaitRoles(t *testing.T, registry *store.Registry, sessionID string, roles ...string) {
-	t.Helper()
-	waitFor(t, 10*time.Second, "the role claim view to name "+sessionID+" as the holder of "+strings.Join(roles, ", "), func() bool {
-		held, err := registry.RolesHeldBy(sessionID)
-		if err != nil {
-			return false
-		}
-		for _, role := range roles {
-			if !slices.Contains(held, role) {
-				return false
-			}
-		}
-		return true
-	})
-}
-
 // waitForRegistry runs over a test's registry the gate the listener's own start runs
 // (store.Registry.WaitForCacheReady): the interest cache is waited for as ready, and the role
 // claim view as complete, not merely ready. After it returns, Match sees every existing
@@ -1963,7 +1945,7 @@ func TestSubscribeHandler_RejectsEmptySessionID(t *testing.T) {
 func TestSubscribeHandler_StoresSelfSubscribedSessionWithoutPort(t *testing.T) {
 	// Given
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	state := &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}
+	state := &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}
 	handler := subscribeHandler(state, "test-machine", logging.New("test"))
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(

@@ -1,4 +1,5 @@
 import type { Actor, DispatchEvent } from "../../api/types";
+import { blockInvalidDescription } from "../issue/event-description";
 import { type AgentPart, askResolutionParts } from "../refs/AgentName";
 
 export function dateKey(iso: string): string {
@@ -11,7 +12,10 @@ function localDate(key: string): Date {
   return new Date(year ?? 1970, (month ?? 1) - 1, day ?? 1);
 }
 
-function dayLabel(date: string, today: string): string {
+/** The heading a day falls under, in the reader's own words: Today, Yesterday, or the day
+ *  written out. Both arguments are `dateKey` days, and `today` is read once for a whole list,
+ *  so a reading that crosses midnight heads two entries of the same day alike. */
+export function dayLabel(date: string, today: string): string {
   if (date === today) return "Today";
 
   const yesterday = localDate(today);
@@ -73,6 +77,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return "read a thread";
     case "decision.kept":
       return "kept a decision";
+    case "priority.updated":
+      return `${event.payload.change} priority ${event.payload.id}`;
     case "issue.created":
       return "created the issue";
     case "issue.updated":
@@ -210,7 +216,7 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
     case "block.repaired":
       return `repaired server-owned state on block ${event.payload.block_id}`;
     case "block.invalid":
-      return `marked decision ${event.payload.block_id} malformed: ${event.payload.reason}`;
+      return blockInvalidDescription(event.payload);
     case "result.recorded":
       return `recorded ${event.payload.verdict} for check ${event.payload.check_block_id} at ${event.payload.commit_sha} as ${event.payload.role}`;
     case "result.retracted":

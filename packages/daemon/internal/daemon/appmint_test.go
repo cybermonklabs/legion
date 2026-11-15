@@ -86,9 +86,9 @@ func appTokens(t *testing.T, discover func(w http.ResponseWriter, r *http.Reques
 		case strings.HasSuffix(r.URL.Path, "/installation"):
 			fmt.Fprint(w, `{"id":77}`)
 		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
-			// A mint names the repositories its token may reach and the permissions it holds,
-			// and refuses an answer wider than it asked for (appauth), so the stand-in answers
-			// with both as the request named them, as GitHub does for a narrowed token.
+			// A mint names the permissions its token holds, and refuses an answer wider than it
+			// asked for (appauth), so the stand-in answers with them as the request named them,
+			// as GitHub does.
 			repositories, permissions := exchangeBody(t, r)
 			mintedToken(w, "installation-token", repositories, permissions)
 		case strings.HasPrefix(r.URL.Path, "/app/installations/"):
@@ -130,6 +130,12 @@ func bootsOrExits(t *testing.T, cfg config.Config, tokens appauth.Tokens, within
 // bootsOrExitsLogging is bootsOrExits with the daemon logging to log.
 func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Tokens, within time.Duration, log *slog.Logger) error {
 	t.Helper()
+	return bootsOrExitsOn(t, cfg, tokens, repositoriesGitHub(t), within, log)
+}
+
+// bootsOrExitsOn is bootsOrExitsLogging with the daemon reading GitHub's REST API at githubAPI.
+func bootsOrExitsOn(t *testing.T, cfg config.Config, tokens appauth.Tokens, githubAPI string, within time.Duration, log *slog.Logger) error {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
@@ -138,7 +144,7 @@ func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Tokens,
 			runtime:        fakeRuntime(fake.NewRuntime(), &built{}).runtime,
 			clock:          stillClock{},
 			workflowTokens: tokens,
-			githubAPI:      repositoriesGitHub(t),
+			githubAPI:      githubAPI,
 		})
 	}()
 	stopped := false
@@ -206,15 +212,16 @@ func TestABootWaitsOutAGitHubRequestThatNeverAnswers(t *testing.T) {
 	}
 }
 
-// A definitive answer (the App's key refused) is refused at once, naming it: no retry changes it.
+// A definitive answer (the App's key refused) is refused at once, naming it and the repository the
+// boot minted for (workflowConfig's mapping, acme/widgets): no retry changes it.
 func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
 	quickAppMints(t)
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, _ string, _ int) {
 		http.Error(w, `{"message":"A JSON web token could not be decoded"}`, http.StatusUnauthorized)
 	})
 	err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second)
-	if err == nil || !strings.Contains(err.Error(), "mint implement GitHub App token at boot") || !strings.Contains(err.Error(), "(401)") {
-		t.Fatalf("boot = %v, want the refusal naming the implement mint and GitHub's 401", err)
+	if err == nil || !strings.Contains(err.Error(), "mint implement GitHub App token at boot for acme/widgets: ") || !strings.Contains(err.Error(), "(401)") {
+		t.Fatalf("boot = %v, want the refusal naming the implement mint, the repository acme/widgets and GitHub's 401", err)
 	}
 	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 1}) {
 		t.Errorf("installation discoveries by App = %v, want the implement App's one: a 401 is not asked again", got)

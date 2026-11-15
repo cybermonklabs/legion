@@ -69,6 +69,7 @@ func TestQuietSeparatesAnAgentsActivityFromBookkeeping(t *testing.T) {
 		{name: "a message receipt", event: model.Event{Type: "message.delivery", Actor: person}, quiet: true},
 		{name: "an anchor refresh", event: model.Event{Type: "comment.anchor_refreshed", Actor: person}, quiet: true},
 		{name: "per-viewer bookkeeping", event: model.Event{Type: "user_state.updated", Actor: person}, quiet: true},
+		{name: "a priority's write", event: model.Event{Type: "priority.updated", Actor: person, Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityChanged}}, quiet: true},
 		{
 			name: "a targeted message its session already had",
 			event: model.Event{Type: "message.created", Actor: person, Payload: model.MessageEventPayload{
@@ -243,6 +244,24 @@ func TestAppendRejectsEventsWithoutAValidOwnerOrAgentTarget(t *testing.T) {
 			event: model.Event{Type: "comment.created", Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: map[string]any{}},
 			want:  "ownerless event requires session target",
 		},
+		// The priority path is told by its payload, so a priority.updated whose payload is any
+		// other shape is every other ownerless event, and a priority payload is held to its type
+		// and to naming its priority.
+		{
+			name:  "priority type without the priority payload",
+			event: model.Event{Type: "priority.updated", Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: map[string]any{"id": "ship-the-daemon"}},
+			want:  "ownerless event requires session target",
+		},
+		{
+			name:  "priority payload under another type",
+			event: model.Event{Type: "comment.created", Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityChanged}},
+			want:  "ownerless priority event requires type priority.updated and a priority id",
+		},
+		{
+			name:  "priority payload naming no priority",
+			event: model.Event{Type: "priority.updated", Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: model.PriorityEventPayload{Change: model.PriorityChanged}},
+			want:  "ownerless priority event requires type priority.updated and a priority id",
+		},
 		{
 			name: "both owners",
 			event: model.Event{
@@ -276,6 +295,61 @@ func TestAppendRejectsEventsWithoutAValidOwnerOrAgentTarget(t *testing.T) {
 				t.Fatalf("append error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+// A priority belongs to no project, issue or document, so its write's event is ownerless: the row
+// names no owner, takes sequence 0, locks no owner row and advances no last_seq, and is quiet, so
+// a person's write of one wakes nobody.
+func TestAppendWritesAPriorityEventWithNoOwnerAndNoWake(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	log := &statementLog{}
+	traced := storetest.TracedStore(t, database, log).Pool
+	broker := NewBroker()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+
+	tx, err := traced.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	since := log.mark()
+	appended, err := broker.AppendAll(ctx, tx, []model.Event{
+		{Type: "priority.updated", Actor: alice, Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityCreated}},
+		{Type: "priority.updated", Actor: alice, Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityChanged}},
+		{Type: "priority.updated", Actor: alice, Payload: model.PriorityEventPayload{ID: "fix-the-rail", Change: model.PriorityDeleted}},
+	})
+	if err != nil {
+		t.Fatalf("append priority events: %v", err)
+	}
+	if locks := log.count(since, "for no key update"); locks != 0 {
+		t.Errorf("AppendAll of priority events sent %d owner locks, want none", locks)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	for index, event := range appended {
+		if event.Seq != 0 || event.Notify || event.Project != "" {
+			t.Errorf("priority event %d = seq %d notify %t project %q, want seq 0, no wake and no project",
+				index, event.Seq, event.Notify, event.Project)
+		}
+		var issueKey, artifactID, projectKey *string
+		var seq int
+		var notify bool
+		var payload model.PriorityEventPayload
+		if err := database.Pool.QueryRow(ctx, `
+			select issue_key, artifact_id::text, project_key, seq, notify, payload from events where id = $1
+		`, event.ID).Scan(&issueKey, &artifactID, &projectKey, &seq, &notify, &payload); err != nil {
+			t.Fatalf("read priority event %d's row: %v", index, err)
+		}
+		if issueKey != nil || artifactID != nil || projectKey != nil || seq != 0 || notify {
+			t.Errorf("priority event %d's row = issue %v artifact %v project %v seq %d notify %t, want no owner, seq 0 and notify false",
+				index, issueKey, artifactID, projectKey, seq, notify)
+		}
+		if payload != event.Payload {
+			t.Errorf("priority event %d's row carries %+v, want %+v", index, payload, event.Payload)
+		}
 	}
 }
 

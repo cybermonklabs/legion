@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -483,7 +482,7 @@ func (v *issueVolume) advanceRemote(t *testing.T) string {
 	} {
 		// The clone creates work, so every command in the run names its parent as the directory
 		// it runs in rather than inheriting the test process's.
-		fixturegit.Isolated(t, t.TempDir()).Run(scratch, append([]string{v.env["WINIT_REAL_GIT"]}, argv...)...)
+		v.runner(t).Run(scratch, append([]string{v.env["WINIT_REAL_GIT"]}, argv...)...)
 	}
 	return v.git(t, "--git-dir="+v.env["WINIT_REMOTE"], "rev-parse", "main")
 }
@@ -499,7 +498,7 @@ func (v *issueVolume) cacheTarServer(t *testing.T) (string, int) {
 	// The clone creates the cache, so it runs in the scratch directory holding it rather than in
 	// the directory the test process happens to have.
 	clone := []string{v.env["WINIT_REAL_GIT"], "clone", "--bare", "--quiet", "--no-local", v.env["WINIT_REMOTE"], cache}
-	if output, err := fixturegit.Isolated(t, t.TempDir()).Try(scratch, clone...); err != nil {
+	if output, err := v.runner(t).Try(scratch, clone...); err != nil {
 		t.Fatalf("clone the cache: %v\n%s", err, output)
 	}
 	var stream bytes.Buffer

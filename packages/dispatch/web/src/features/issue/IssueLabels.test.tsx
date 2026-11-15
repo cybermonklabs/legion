@@ -9,6 +9,8 @@ import { IssueLabels } from "./IssueLabels";
 
 function summary(key: string, labels: string[]): IssueSummary {
   return {
+    advances: [],
+    advances_revision: 0,
     route: null,
     repo: null,
     resolved_repo: null,

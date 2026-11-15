@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -50,11 +49,14 @@ const (
 // embedded migration but phaseEntryMigration, each applied as Store.Migrate applies one — the
 // migration's SQL, the widening of schema_version for a timestamped version, and the version row
 // — and that migration itself withheld, for the test's own Store.Migrate to run. The migrations
-// above it are the fixture's too, because the release before this one records them: the one
-// standing there, 20261112180548_claim_leak_check_cause, is the contract 87 release's own, so a
-// database that release migrated holds its row and its claims.leak_check_cause before the phase
-// entry runs, and Store.Migrate, which decides each migration on its own row, then applies the
-// phase entry alone. That column is one no statement of the phase entry reads or writes.
+// above it are the fixture's too. Two stand there. 20261112180548_claim_leak_check_cause is the
+// contract 87 release's own, so a database that release migrated holds its row and its
+// claims.leak_check_cause before the phase entry runs. 20261112070503_pull_request_state_read_at
+// (dispatch://INFRA-3027) is applied first as well, because the fixture applies every embedded
+// migration but the phase entry; that is harmless here, since it adds pull_requests.state_read_at
+// and the phase entry touches no pull_requests column. Store.Migrate, which decides each migration
+// on its own row, then applies the phase entry alone. Neither column is one any statement of the
+// phase entry reads or writes.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as
@@ -467,15 +469,20 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	// under its own name. Three more sweeps are driven by hand with the ticker stopped, because
 	// every role that pass sent work now carries that entry and the gate applies no further fact
 	// on its own period: they are what reads a later sweep as adding nothing.
+	// The sweep loop runs on one hold mark, as workflowRuntime.run starts it
+	// (store.ForConcurrentWorker(running)), and every sweep the loop applies reuses that mark, so the
+	// pool's guard sees each sweep as it does in production rather than refusing nothing on an
+	// unmarked context (INFRA-3169). The three driven by hand take a fresh mark each, which the guard
+	// reads the same way, since a sweep gives back every connection it took before it returns.
 	sweeping, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
-	go func() { w.tickEntrySweep(sweeping); close(done) }()
+	go func() { w.tickEntrySweep(store.ForConcurrentWorker(sweeping)); close(done) }()
 	testwait.Eventually(t, "the entry sweep's fact applied", func() bool { return swept() >= 1 })
 	stop()
 	<-done
 	sweeps := swept()
 	for i := range 3 {
-		w.applyEntrySweep(ctx, time.Now().Add(time.Duration(i+1)*time.Second))
+		w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(time.Duration(i+1)*time.Second))
 	}
 
 	for i, shape := range shapes {
@@ -543,7 +550,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	// still behind is the block above's to say; what is read here is the one role whose start ran.
 	upgradeOwedStartGivesItsEntry(t, st, issues["UPGRADE-807"], held[tokens["UPGRADE-807"]], owedRows["UPGRADE-807"], false)
 	for i := range 2 {
-		w.applyEntrySweep(ctx, time.Now().Add(time.Duration(i+5)*time.Second))
+		w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(time.Duration(i+5)*time.Second))
 	}
 	if starts := sweptStarts(t, pool, "UPGRADE-807"); len(starts) != 1 || starts[0].id != owedRows["UPGRADE-807"] {
 		t.Fatalf("the start rows of UPGRADE-807 once the row it owed had run = %+v, want that one row %d: its claim was given that entry, so the sweep sends no second task",
@@ -588,7 +595,7 @@ func claimsByToken(t *testing.T, st *store.Store) map[claim.Token]supervise.Clai
 // stampOf is what the fill stamped into a supervise start's payload: the entry the row carries
 // and whether it is marked a resend of that entry (record.SuperviseRequest.Entry and
 // ResendEntry), both read off the row as it stands.
-func stampOf(t *testing.T, pool *pgxpool.Pool, row int64) (int64, bool) {
+func stampOf(t *testing.T, pool *store.Pool, row int64) (int64, bool) {
 	t.Helper()
 	var entry int64
 	var resend bool

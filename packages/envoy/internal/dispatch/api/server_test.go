@@ -832,6 +832,7 @@ func TestEventNotifyRules(t *testing.T) {
 		{name: "user state", event: model.Event{Type: "user_state.updated", Actor: user}, want: false},
 		{name: "user thread state", event: model.Event{Type: "user_thread_state.updated", Actor: user}, want: false},
 		{name: "user decision kept", event: model.Event{Type: "decision.kept", Actor: user}, want: false},
+		{name: "user priority write", event: model.Event{Type: "priority.updated", Actor: user, Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityChanged}}, want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := broker.Notify(test.event); got != test.want {

@@ -20,10 +20,12 @@ import (
 // and holds the whole of the tree's work (dispatch://INFRA-980, "Which issue needs a slot",
 // line 65).
 //
-// A root whose gate has opened waits for its children instead, and it keeps its row through
-// that wait as through every other (record.KeepsSlot), so the row alone cannot tell the two
-// apart: rule 0 reads the row to say the daemon has started this root at all, and AtWork is
-// what says its architect still has work of its own to hand over. Sending such a root into
+// A root whose gate has opened waits for its children instead. While it holds its row, the row
+// alone cannot tell the two apart: rule 0 reads the row to say the daemon has started this root
+// at all, and AtWork is what says its architect still has work of its own to hand over. (Such a
+// root gives its row back while an open child holds its first phase, as any started issue that
+// waits on another issue does, blockers.waitsOf; this test reads the decision with the row held.)
+// Sending such a root into
 // awaiting_person takes every first-phase member of its tree out of the waiting line
 // (record.Waiting drops the members of a root waiting on a person), so the children it is
 // waiting for can never start; the controller is told of a wait the root has no work for; and
@@ -52,10 +54,29 @@ func TestARootWhoseGateHasOpenedEntersNoWaitOnAPerson(t *testing.T) {
 }
 
 // neverStarted is rule 0's answer for a root the daemon has not started, word for word as
-// workflow's decideAwait writes it (awaiting_reconcile.go). The row the rule reads says the
-// daemon started the issue rather than that a worker of it has work, since an issue keeps its
-// row while it waits as well (record.KeepsSlot).
+// workflow's decideAwait writes it (awaiting_reconcile.go). Two facts say the daemon started a
+// root: the row it holds, and the mark of a row a pass took back for a wait on another issue
+// (record.Issue.ReleasedForWaitAt, blockers.waitsOf). The row says the daemon started the issue
+// rather than that a worker of it has work, since an issue keeps its row while it waits on a
+// person as well, and while it waits on its review (record.KeepsSlot).
 const neverStarted = "the daemon has not started it, so it holds no admission slot"
+
+// A root that gave its row back to wait on its open child was started, though it holds no row:
+// rule 0 keeps it out of a wait on a person because its gate has opened, and says so, never
+// that the daemon has not started it. The debug log of ReconcileAwaiting prints this reason.
+func TestARootReleasedForAWaitIsNotReadAsNeverStarted(t *testing.T) {
+	view := awaitRootView()
+	released := time.Date(2026, 9, 22, 22, 0, 0, 0, time.UTC)
+	view.Root.Phase, view.Root.ReleasedForWaitAt = phase.Admitted, &released
+	view.Slotted = false
+	view.Gates = specGates(record.DesignGate{Issue: view.Root.Key, Step: record.DesignStepSpec, ArtifactID: "spec",
+		LatestVersion: 1, ApprovedVersion: new(1), EverOpened: true})
+	decision := decideAwait(view)
+	const opened = "it is not an admitted root of a tree in the workflow whose spec its architect is still writing"
+	if decision.Act != actStay || decision.Why != opened {
+		t.Fatalf("the decision for a root released for a wait on its child = %+v, want it left where it stands for %q: the daemon started it", decision, opened)
+	}
+}
 
 // A root re-admitted and still waiting in line for its row holds none, so it enters no wait on
 // a person however its hand-back stands. Re-admission clears the mark (record.Store.StartHandout),

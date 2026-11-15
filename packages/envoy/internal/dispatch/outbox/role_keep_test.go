@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // keptCopies is every copy the stream holds on role's kept lane, in the order the drain walks
@@ -442,19 +443,25 @@ func (r *roleRig) claimUnder(role, holder string, entry session.SessionEntry) er
 	return nil
 }
 
-// handedNow is the forward the holder has already taken, read without waiting: a forward the
-// outbox made inside a scan is on this channel by the time that scan returned, since the holder
-// records it before it answers the receipt and the send waits for that receipt. So a scan that
-// forwarded nothing fails here at once rather than on a timeout.
+// handedNow is the forward a scan that has returned handed the holder, waited for with the
+// shared bound (testwait.Eventually). The forward's send returns on the stream's acknowledgement
+// (roleForward.forward, a request whose reply is the stream's PubAck), and the holder's own
+// subscription is handed the same message on its own connection, which can arrive just after
+// that acknowledgement on a busy machine. No listener runs in the tests that read it, so nothing
+// but the scan's own forward can reach the holder, and the wait proves no more than that the
+// scan sent it.
 func handedNow(t *testing.T, recv *receiver, what string) contracts.Envelope {
 	t.Helper()
-	select {
-	case forward := <-recv.arrived:
-		return forward
-	default:
-		t.Fatalf("%s: the holder had taken no forward by the time the scan returned", what)
-		return contracts.Envelope{}
-	}
+	var forward contracts.Envelope
+	testwait.Eventually(t, what+": the holder takes the forward the scan sent", func() bool {
+		select {
+		case forward = <-recv.arrived:
+			return true
+		default:
+			return false
+		}
+	})
+	return forward
 }
 
 // A role claimed while the keep was in flight is handed the kept copy by the keep itself, in the

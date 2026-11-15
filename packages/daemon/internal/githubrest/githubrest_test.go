@@ -247,3 +247,29 @@ func TestARateLimitsResetFarInTheFutureWaitsNoLongerThanAnHour(t *testing.T) {
 		t.Fatalf("a reset six hours out = rate limited %v, retry after %s; want true and an hour's cap", answer.RateLimited, answer.RetryAfter)
 	}
 }
+
+// Every answer other than 2xx carries its rate-limit headers as GitHub sent them, which decide
+// nothing: a 403 naming the primary limit in its body alone, with calls left in its headers, is no
+// rate limit to this client, as before, and still carries what GitHub said for its caller's log.
+func TestAnAnswerCarriesTheRateLimitHeadersGitHubSent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Limit", "15000")
+		w.Header().Set("X-RateLimit-Remaining", "14671")
+		w.Header().Set("X-RateLimit-Reset", "1700000000")
+		w.Header().Set("X-RateLimit-Resource", "core")
+		http.Error(w, `{"message":"API rate limit exceeded for installation ID 7."}`, http.StatusForbidden)
+	}))
+	defer server.Close()
+	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
+
+	var answer *Answer
+	if err := client.Get(context.Background(), "", nil); !errors.As(err, &answer) {
+		t.Fatalf("Get = %v, want an *Answer", err)
+	}
+	if answer.RateLimited || answer.RetryAfter != 0 || answer.Budget != "" {
+		t.Fatalf("the answer = rate limited %v, retry after %s, budget %q; want no limit", answer.RateLimited, answer.RetryAfter, answer.Budget)
+	}
+	if want := (LimitHeaders{Limit: "15000", Remaining: "14671", Reset: "1700000000", Resource: "core"}); answer.Limit != want {
+		t.Fatalf("the answer's rate-limit headers = %+v, want %+v as GitHub sent them", answer.Limit, want)
+	}
+}

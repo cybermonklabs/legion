@@ -68,13 +68,15 @@ type Config struct {
 	// of an issue pod's container is given it whole, since they stop together.
 	StopGrace time.Duration
 	// SessionDatabase is the Cloud SQL database every generation keeps its Oh My Pi session in,
-	// which the launcher proxies to over the pod's own cloud identity (internal/sessionproxy). The
-	// zero value is every other session store: no proxy, and the child's session storage is
-	// whatever its environment names.
+	// which the launcher proxies to (internal/sessionproxy) as the pod itself, or as the service
+	// account the database names (ImpersonateServiceAccount), which the pod impersonates with its
+	// own credentials. The zero value is every other session store: no proxy, and the child's
+	// session storage is whatever its environment names.
 	SessionDatabase ompsessions.Database
-	// SessionDialer builds that proxy's upstream dialer. Nil is the Cloud SQL connector's, which
-	// is the only one a pod uses; a test passes a fake.
-	SessionDialer func(ctx context.Context) (sessionproxy.Dialer, error)
+	// SessionDialer builds that proxy's upstream dialer for account, the service account
+	// SessionDatabase names, or "" for the pod itself (sessionproxy.Config.NewDialer). Nil is the
+	// Cloud SQL connector's, which is the only one a pod uses; a test passes a fake.
+	SessionDialer func(ctx context.Context, account string) (sessionproxy.Dialer, error)
 	// LeakCheckDir is where the launcher installs the shared public leak check the daemon serves
 	// it; "" is leakguard.InstallDir, the one directory every role's shim reads it from. A test
 	// names a temporary one.
@@ -105,7 +107,10 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	managers, err := newManagers(cfg)
+	// The guard comes before the managers: the pod's put-back of a released workspace starts its
+	// jj and git through it (newManagers), as the test database's script starts through it below.
+	guard := &pidGuard{}
+	managers, err := newManagers(cfg, guard)
 	if err != nil {
 		return err
 	}
@@ -114,7 +119,6 @@ func Run(ctx context.Context, cfg Config) error {
 	// of their own, whose init reaps theirs, but anything else started in the container (a
 	// `kubectl exec` and what it leaves behind) is this process's. The reaper never waits on a
 	// generation's own process, whose exit its manager reads.
-	guard := &pidGuard{}
 	if os.Getpid() == 1 {
 		exits := make(chan os.Signal, 1)
 		signal.Notify(exits, syscall.SIGCHLD)
@@ -124,6 +128,16 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.RolesDir == "" {
 		return managers[0].serveUntil(ctx, address)
 	}
+	// The clone's stale git locks, swept for the life of the pod (gitLockSweep). This is an
+	// issue pod's roles container: the single-role form returned above is the project
+	// controller's pod, whose working directory is no jj workspace and whose generations carry
+	// no workspace at all. The first pass is this call's, before serveTestPG, which starts a
+	// PostgreSQL: the first pass's rule is that no process of the container holds a lock yet.
+	sweep := newGitLockSweep(managers[0].log.linef)
+	for _, m := range managers {
+		m.gitLocks = sweep
+	}
+	locks := sweep.serve(ctx)
 	// The pod's own test database, before any role starts: a role that starts at once finds the
 	// server serving its DSN (serveTestPG). Its ticker is waited on with the roles below, so Run
 	// returns with nothing of the launcher's still running.
@@ -143,16 +157,20 @@ func Run(ctx context.Context, cfg Config) error {
 	if testPG != nil {
 		<-testPG
 	}
+	<-locks
 	return ctx.Err()
 }
 
 // newManagers is one manager per role the launcher serves, each with its own token, private
 // directory, launcher id and, in an issue pod's container, its own prefix in the container's log.
-func newManagers(cfg Config) ([]*manager, error) {
+// guard holds the launcher's own children out of PID 1's reaper (pidGuard).
+func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 	// One restore per pod: the daemon sends the released workspace's bundle to whichever role's
 	// connection it reaches, and the first role to start applies it for the pod, with every other
-	// role's start waiting on that one restore.
-	restore := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}}
+	// role's start waiting on that one restore. Its jj and git start through the guard: they are
+	// this process's children, and the reaper would otherwise take an exit before the restore's
+	// own wait read it, which then fails with `waitid: no child processes` and puts nothing back.
+	restore := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}, start: guard.starter()}
 	// One install of the shared public leak check per launcher process, for the pin of its own
 	// environment: the daemon pushes it to whichever role's connection it starts first, and
 	// every other role's connection finds it installed.
@@ -333,8 +351,14 @@ func (c Config) validate() error {
 
 // validateSessionDatabase refuses a session database named only in part: the instance, the database
 // in it and the login together are what opens it, so a generation started without one of them would
-// proxy to nothing. Naming none of them is the other stores, which need no proxy.
+// proxy to nothing. A service account to impersonate names a database too, so with it each of the
+// three is required: startSession, which skips only the zero value, would otherwise hand the proxy
+// an account and no instance, and every generation would fail. Naming none of the four is the
+// other stores, which need no proxy.
 func (c Config) validateSessionDatabase() error {
+	if c.SessionDatabase == (ompsessions.Database{}) {
+		return nil
+	}
 	var missing []string
 	for _, named := range []struct{ flag, value string }{
 		{"--session-instance", c.SessionDatabase.Instance},
@@ -345,7 +369,7 @@ func (c Config) validateSessionDatabase() error {
 			missing = append(missing, named.flag)
 		}
 	}
-	if len(missing) == 0 || len(missing) == 3 {
+	if len(missing) == 0 {
 		return nil
 	}
 	return fmt.Errorf("launcher: the session database is named in part: no %s", strings.Join(missing, ", no "))
@@ -432,6 +456,10 @@ type manager struct {
 	// container shares: the bundle a released pod's work was saved as arrives on one role's
 	// connection and is applied once, before the first role of the pod starts.
 	restore *bundleRestore
+	// gitLocks is the pod's one sweep of the clone's stale git locks, which every role manager
+	// of the container shares: the first role start that carries a workspace tells it which
+	// clone to sweep, when the container's working directory did not (gitLockSweep.learn).
+	gitLocks *gitLockSweep
 	// check is the launcher process's one install of the shared public leak check, which every
 	// role manager of the container shares as it shares restore.
 	check *checkInstall
@@ -554,6 +582,10 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	if err := keeper.open(ctx, sessions); err != nil {
 		return abandon(err)
 	}
+	// The clone's stale git locks: this start names the workspace the sweep works, and a sweep
+	// that had none sweeps it here, before the restore below runs real git and jj against that
+	// clone, where a stale lock would fail it (gitLockSweep.learn).
+	m.gitLocks.learn(ctx, envValue(env, "LEGION_WORKSPACE"))
 	// The pod's one workspace-bundle restore, if a release saved one: after writeFiles, which
 	// clears the role's private directory, and before any role of the pod runs, so no role works
 	// a workspace that is half restored. Every other role's start waits here for this one. A
@@ -936,7 +968,8 @@ func (m *manager) startSession(ctx context.Context, generation uint64, dir strin
 		return nil, "", fmt.Errorf("write the session database URL for generation %d: %v", generation, err)
 	}
 	proxy, err := sessionproxy.Start(ctx, sessionproxy.Config{
-		Socket: local.Socket(), Instance: m.cfg.SessionDatabase.Instance, NewDialer: m.cfg.SessionDialer,
+		Socket: local.Socket(), Instance: m.cfg.SessionDatabase.Instance,
+		ImpersonateServiceAccount: m.cfg.SessionDatabase.ImpersonateServiceAccount, NewDialer: m.cfg.SessionDialer,
 		ProofTimeout: m.proofTimeout(), Drain: sessionDrain, Log: m.stderr,
 	})
 	if err != nil {

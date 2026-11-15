@@ -156,9 +156,9 @@ function nodeLine(node: GraphNode): string[] {
  * A block read's head, from the node its reference names and, for a block of a document, the
  * live block `GET /api/v1/artifacts/{id}/blocks` lists under its id (`typedBlockOf`). A
  * document's block: the block, its type, the document it is in (`ref.document`, the reference
- * before the `#b-`), every attribute it carries — a `check`'s `serves`, `surface`, `run`, `when`
- * and `negative_control`, a `plan_task`'s `serves` and `needs` — the version its text last
- * changed in and that text, the claim a `check` makes among it. A comment's or message's block:
+ * before the `#b-`), every attribute it carries — a `check`'s `serves`, `surface`, `run`, `when`,
+ * `negative_control` and `ci_check`, a `plan_task`'s `serves` and `needs` — the version its text
+ * last changed in and that text, the claim a `check` makes among it. A comment's or message's block:
  * one line naming the block, its item and the comment revision its text last changed in (`Block
  * b2 of comment <id> (changed in revision 1):`), then its text; neither has a type or attributes.
  * A part of an ask reads the same way, under the name `noun` gives it (`Option b2 of ask <id>

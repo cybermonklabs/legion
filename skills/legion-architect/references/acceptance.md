@@ -84,8 +84,8 @@ until this round, where its head must meet it.
 Then, in one turn:
 
 1. `envoy_publish` to the tester's role topic: "The next round of <KEY> is its last round: a full
-   test round of every check of the issue, not the forward-merge re-check." The backward move's
-   reason reaches only the implementer.
+   test round of every check of the issue with no `ci_check`, not the forward-merge re-check." The
+   backward move's reason reaches only the implementer.
 2. `request_backward_move` to `implementing`, with the reason "Last round: merge the default
    branch your addressing line names into the branch, push, end your forward-merge comment with
    `parent's last round: full test round`, and complete." Never use a hard-coded `main`. The move
@@ -102,8 +102,9 @@ A criterion proven on a deployed system is proven after that child's deploy, as 
 deploy skill says.
 
 If the pull request merged before its last round, it can carry no new head, so move nothing back.
-Once they have closed, have a fresh `task` subagent run each check on the default branch,
-record each result, post them in the acceptance comment, then `sign_off`.
+Once they have closed, have a fresh `task` subagent run each check with no `ci_check` on the
+default branch and record each result. Read each `ci_check` check's derived result in
+`dispatch results`, which no role records. Post them in the acceptance comment, then `sign_off`.
 
 ## The order after your acceptance
 
@@ -186,7 +187,7 @@ from its own read of the issue — and writes `done`. An issue that reaches `mer
 request GitHub has already merged closes at once.
 
 - A root whose merge lands while another issue of its tree is still in the workflow stays in
-  `merging`, its workers kept and live and its admission slot kept with them, until the last of
+  `merging`, its workers kept and live, until the last of
   them is done or parked. One
   `pr-merged` notice names what it waits for and none follows as they depart, so read the pull
   request on GitHub.
@@ -243,9 +244,9 @@ If you are that child's architect:
 
 This is for a root of your own standing at `admitted`, the only phase from which a root waits on a person.
 A registration that leaves the approval request with the person moves your root to `awaiting_person`, and what brings the root back is the answer, not the registration.
-Your root keeps its admission slot throughout: it holds the slot the daemon gave it at its start until it is done or leaves the workflow.
+Your root keeps its admission slot throughout: a root in `awaiting_person` is one of the roots that keep their slot through a wait ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)).
 So your resume takes no slot and comes however full the cap is, whether or not the gate has ever opened in this generation.
-The first phase that resume starts needs no slot of its own either, since the root holds one: it waits in the line among the issues whose work came back, oldest first, placed by the moment your gate opened, so it stands behind every issue of that part whose work came back before it.
+The first phase that resume starts waits in the line among the issues whose work came back, oldest first; whether it needs a slot again depends on whether your root waits on another issue, an open child under it or a `blocked_by` link to an issue that is not `done` ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)).
 A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so it holds the tree's work until a new approval.
 While your answered root stands in the line, your record carries `waitingLine`: your place in the line and its length, your `part` (`returned`) and `kind` (`answered`), your `partPlace` of `partLength` among the issues whose work came back, `holdsSlot` true because your root has held its slot since its start, `since`, the moment your work came back, and `reason`, the daemon's own sentence for that place.
 An issue that has not started carries `rootRank`, `ownRank` and `rootKey` in place of `since`, the two Dispatch ranks that placed it and the key of its tree root.

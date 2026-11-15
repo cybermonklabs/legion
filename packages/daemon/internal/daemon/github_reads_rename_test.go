@@ -10,12 +10,12 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // A record keeps the repository's name for its whole life, and GitHub, after a transfer, holds
@@ -153,7 +153,7 @@ func (g *readRenameGitHub) assertAddressed(t *testing.T, repo, branch string) {
 
 // seedRenamedCapture records the issue and its pull request under the name the record was written
 // with, which is the name GitHub no longer serves.
-func seedRenamedCapture(t *testing.T, pool *pgxpool.Pool, pr record.PullRequest) {
+func seedRenamedCapture(t *testing.T, pool *store.Pool, pr record.PullRequest) {
 	t.Helper()
 	records := record.NewStore()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {

@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -56,10 +57,11 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 	}
 	architectTopic, controllerTopic := notify.RoleTopicPrefix+string(architect), notify.ControllerTopic(token)
 	listener.refuseFirst(controllerTopic, 2)
-	pool, err := pgxpool.New(context.Background(), cfg.PostgresDSN)
+	raw, err := pgxpool.New(context.Background(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the daemon's database: %v", err)
 	}
+	pool := store.NewPool(raw)
 	t.Cleanup(pool.Close)
 	// The issue's tree is admitted, as every tree the workflow runs is: its record, the slot its
 	// work holds and its open lifecycle are written in one transaction, as promotion writes them.

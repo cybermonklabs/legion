@@ -26,22 +26,31 @@
 # turns in a row in a provider error tell the project's controller, and a compaction that ran puts
 # that count back to zero so six more tell it a second time; a suspended, a stopped, a failed and
 # a Claude Code worker, a worker in a turn and role `controller` are each refused in their own
-# words through both doors; and a fresh session starts the phase worker on its issue's current
-# phase task and the root architect on its catch-up
+# words through both doors; a fresh session starts the phase worker on its issue's current
+# phase task and the root architect on its catch-up; and a fresh session asked for a claim whose
+# pane's process group was killed out from under a daemon that took no report of that death
+# starts that worker again in a session of its own, holding the task its dead turn held — the
+# planner through the operator's command and the root architect through the controller's door,
+# which is the one recovery a project's controller has for a dead architect — where the same
+# request against the same pane while its process is alive and in a turn is refused
 # (packages/daemon/internal/daemon/claim_compaction_live_test.go, which this script builds with
 # `-tags e2e`, and packages/daemon/internal/daemon/localruntime_live_test.go, the runtime that
-# starts a pane with no tmux). Each check prints `== <name>`, what it observed and `ok <name>`; the
+# starts a pane with no tmux, kills one's process group and holds its own reports back while a
+# step does). Each check prints `== <name>`, what it observed and `ok <name>`; the
 # first that fails ends the run non-zero, naming it.
 #
-# The whole run took 186 s measured in a Legion worker pod (omp/18.16.0) with a warm Go build
-# cache, the driver 138 s of it; a cold cache adds the driver's own build. Four panes each start
-# Oh My Pi once, and each of the three phase workers answers the task its phase's start left
+# The whole run took 176 s measured in a Legion worker pod (omp/18.16.0) with a warm Go build
+# cache, the driver 152 s of it; a cold cache adds the driver's own build. Four panes start Oh My
+# Pi once each and the five fresh sessions of steps 7 and 8 start one more each, and each of the
+# three phase workers answers the task its phase's start left
 # pending on its claim — which is what keeps admission's repair of a slotted worker off these
 # claims, as the driver's seed says —
 # and the one wait is the held summary: Oh My Pi writes a split turn's summary in two passes and
 # the stand-in holds each for 35 s, so that compaction answers after about 70 s. Nothing else
-# waits on a clock: the ladder's own gaps are provider-error-retry.sh's subject and this proof
-# never waits one out, since a newer task takes the place of the one a wait stands for.
+# waits on a clock bar step 8, which releases each of its two holds just after a pass of the
+# runtime's own two-second observation sweep: the ladder's own gaps are provider-error-retry.sh's
+# subject and this proof never waits one out, since a newer task takes the place of the one a
+# wait stands for.
 #
 # Run it from a checkout on a Linux host with go, awk, bash, tar, bun and python3, as
 #   LEGION_OMP_PATH=/opt/omp/bin/omp \

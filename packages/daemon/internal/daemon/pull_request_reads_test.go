@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
@@ -25,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -66,7 +66,7 @@ func pullRequestStandIn(t *testing.T, head string, updated time.Time, listed *at
 // reads of the same head are two moves to apply, while a push the read rebuilds names only the
 // two commits it moved between, so that the same push rebuilt by a later read is one fact
 // (readEventID). Matching the boot would see the first kind and never the second.
-func headReads(t *testing.T, pool *pgxpool.Pool, kind string) int {
+func headReads(t *testing.T, pool *store.Pool, kind string) int {
 	t.Helper()
 	var n int
 	if err := pool.QueryRow(context.Background(),
@@ -206,7 +206,7 @@ func TestAnOpenedTheWorkflowDoesNotRecordIsAppliedAgainByEveryRead(t *testing.T)
 // seedDeclinedOpened records CAPTURE-1 in implementing with its implementer's handoff and its pull
 // request 86 closed at a clock an hour after opened, so an opened of 86 at opened is late and the
 // workflow declines it.
-func seedDeclinedOpened(t *testing.T, pool *pgxpool.Pool, opened time.Time) {
+func seedDeclinedOpened(t *testing.T, pool *store.Pool, opened time.Time) {
 	t.Helper()
 	seedUnrecorded(t, pool, "handoff")
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
@@ -279,7 +279,7 @@ func TestFollowHeadKeepsARecordMovedSinceTheListByWhatItReadNoLater(t *testing.T
 
 // seedUnrecorded records CAPTURE-1 in implementing with no pull request, its implementer's
 // handoff the commit handoff ("" for none).
-func seedUnrecorded(t *testing.T, pool *pgxpool.Pool, handoff string) {
+func seedUnrecorded(t *testing.T, pool *store.Pool, handoff string) {
 	t.Helper()
 	records := record.NewStore()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
@@ -389,7 +389,7 @@ func (r *pathReads) counts() map[string]int {
 }
 
 // tablesSnapshot is every row of tables as JSON.
-func tablesSnapshot(t *testing.T, pool *pgxpool.Pool, tables ...string) string {
+func tablesSnapshot(t *testing.T, pool *store.Pool, tables ...string) string {
 	t.Helper()
 	var texts []string
 	for _, table := range tables {
@@ -407,7 +407,7 @@ func tablesSnapshot(t *testing.T, pool *pgxpool.Pool, tables ...string) string {
 // production checks, the outbox, or the pull request's judgement, pushes or head run. The record's
 // moves may change: the copy is kept as its move's push or a repeat of it (classify.ApplyPush),
 // which only a head's next arrival by that move reads.
-func lateWebhookPushDecidesNothing(t *testing.T, pool *pgxpool.Pool, w *workflowRuntime, push intake.Push) {
+func lateWebhookPushDecidesNothing(t *testing.T, pool *store.Pool, w *workflowRuntime, push intake.Push) {
 	t.Helper()
 	others := []string{"issues", "phases", "production_checks", "outbox"}
 	before := tablesSnapshot(t, pool, others...)
@@ -521,7 +521,7 @@ func (g *activityGitHub) serve(t *testing.T) *httptest.Server {
 
 // reviewAppRuntime is readRuntime whose workflow knows the review App by reviewAppLogin, as a
 // workflow boot always does.
-func reviewAppRuntime(pool *pgxpool.Pool, api string, log *slog.Logger) *workflowRuntime {
+func reviewAppRuntime(pool *store.Pool, api string, log *slog.Logger) *workflowRuntime {
 	w := readRuntime(pool, api, log)
 	w.engine = workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
 		ReviewAppLogin: reviewAppLogin, ProductionCheckRole: claim.RoleTester, ReadMergeState: w.queueMergeState}, log)

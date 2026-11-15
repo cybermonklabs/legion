@@ -1,0 +1,17 @@
+kind: Changed
+body: |-
+  A project controller can bring back a role whose process is gone. `fresh_session`, the
+  controller's door and the operator's `legion claims retry --fresh-session` alike, now reaches a
+  claim stored working that no process stands behind: the daemon reads that claim's process when
+  the request arrives, rather than trusting its memory of an older report, suspends the claim
+  where it stands, and starts it again in a new session with the task its dead turn held. Before,
+  both recoveries refused such a claim `CLAIM_IN_A_TURN`, which left a dead architect with no
+  recovery at all. The compaction refuses that claim `CLAIM_NOT_RUNNING` and names
+  `fresh_session`, or, for the project's own controller claim, `legion claims suspend` and then
+  `legion claims resume`. `CLAIM_IN_A_TURN` now means a process the read finds running, or a
+  session being compacted. A claim whose process the runtime would not answer for, one that
+  records no process to read, and one that moved under the request are refused
+  `CLAIM_UNSETTLED`, each left exactly as the request found it. A fresh session that stopped the
+  claim and then had the forget of its session or its start refused answers 200 with that refusal
+  and the state it left the claim in, in `phaseNotRestarted`. The daemon declares API contract
+  104 for it.

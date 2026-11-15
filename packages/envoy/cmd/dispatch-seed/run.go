@@ -63,9 +63,11 @@ const (
 )
 
 // do writes the whole data set and reports it. The order is the order the foreign keys demand:
-// projects, then their architecture and issues, then the documents the issues own, then the asks,
-// comments and messages over both, then the events, and last the state a server would otherwise
-// have to settle for itself.
+// projects, then their architecture and issues, then the priorities the issues of every project
+// advance, then the documents the issues own, then the asks, comments and messages over both,
+// then the events, and last the state a server would otherwise have to settle for itself. The
+// priorities answer to no foreign key — a priority belongs to no project — and are written after
+// the issues because the relations they take are stated on issue keys.
 func (r *seedRun) do(ctx context.Context) error {
 	r.bands = map[string]int{}
 	r.random = rand.New(rand.NewPCG(randomSeed+1, randomSeed^0x5851f42d4c957f2d))
@@ -89,6 +91,7 @@ func (r *seedRun) do(ctx context.Context) error {
 		{"issues", r.writeIssues},
 		{"issue links", r.writeIssueLinks},
 		{"issue components", r.writeIssueComponents},
+		{"priorities", r.writePriorities},
 		{"documents", r.writeDocuments},
 		{"asks", r.writeAsks},
 		{"comments", r.writeComments},

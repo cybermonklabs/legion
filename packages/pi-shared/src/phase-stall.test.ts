@@ -110,11 +110,11 @@ test("a record's last message reads back no longer than the notice quotes", () =
   });
 });
 
-// INFRA-484: the worker has answered the daemon's update task (`ready_for_update`), so it is to
+// INFRA-484: the worker has answered the daemon's update message (`ready_for_update`), so it is to
 // start nothing until the daemon comes back to it. A reminder here would continue the answering
 // turn in the same run: the work that continuation did would go with the pod, and the daemon
 // would see no turn end.
-test("a worker that answered the update task stands in awaiting-update, where a settle earns no reminder", () => {
+test("a worker that answered the update message stands in awaiting-update, where a settle earns no reminder", () => {
   const answered = stepPhaseStall({ state: "open", count: 2 }, { kind: "update-answered" });
   expect(answered).toEqual({ state: { state: "awaiting-update", count: 0 } });
   expect(
@@ -159,7 +159,7 @@ test("awaiting-update is recorded as the waiting it is a kind of", () => {
 
 // Answering is not completing, and a phase that is closed is not reopened by one: a worker
 // between phases that answers is told nothing, and `handoff_complete` would refuse it anyway.
-test("the update task's answer closes no phase, and reopens none", () => {
+test("the update message's answer closes no phase, and reopens none", () => {
   expect(stepPhaseStall({ state: "closed", count: 0 }, { kind: "update-answered" })).toEqual({
     state: { state: "closed", count: 0 },
   });

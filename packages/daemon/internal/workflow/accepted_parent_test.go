@@ -87,9 +87,9 @@ func leave(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, status 
 // dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104.
 func TestAChildHeldUnderAnAcceptedAncestorDoesNotRefuseThatAncestorsSignOff(t *testing.T) {
 	pool := migratedPool(t)
-	// The root's own pull request has merged and it waits in awaiting_merge; LEGION-209 is in
-	// accepting beneath it, and LEGION-300, a person's todo under LEGION-209, stands at admitted
-	// held by the root above it.
+	// The root's own pull request has merged, and the root stands in merging, waiting for the
+	// rest of its tree. LEGION-209 is in accepting beneath it, and LEGION-300, a person's todo
+	// under LEGION-209, stands at admitted held by the root above it.
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 1, Status: "needs_review", Rank: "U"})
 	seedBeneath(t, pool, "LEGION-209", "LEGION-208", "LEGION-208", phase.Accepting, "needs_review")

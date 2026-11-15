@@ -151,6 +151,29 @@ test("eventDescription labels a malformed decision", () => {
   ]);
 });
 
+test("eventDescription reads a refused ci_check as the check's refusal", () => {
+  const event: Extract<DispatchEvent, { type: "block.invalid" }> = {
+    actor: { id: "session-1", kind: "session" },
+    created_at: "2026-09-13T17:01:00Z",
+    id: 4,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      block_id: "k1",
+      version: 4,
+      reason: "a check proved by CI carries no run",
+      disturbed_by: { id: "session-1", kind: "session" },
+      block_type: "check",
+    },
+    seq: 4,
+    type: "block.invalid",
+  };
+
+  expect(eventDescription(event)).toEqual([
+    "refused check k1: a check proved by CI carries no run",
+  ]);
+});
+
 test("eventDescription names an added artifact", () => {
   const event: Extract<DispatchEvent, { type: "artifact.created" }> = {
     actor: { id: "session-1", kind: "session" },

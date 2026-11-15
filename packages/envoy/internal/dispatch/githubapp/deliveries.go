@@ -143,6 +143,12 @@ func (e *RateLimitError) Error() string {
 	return fmt.Sprintf("rate-limited by GitHub (status %d), next request in %s: %s", e.Status, e.Wait, e.Body)
 }
 
+// Message is the `message` of Body, the JSON GitHub answers a refused request with, and "" for a
+// body that is not JSON or names none, as a held error's empty body does (responseMessage).
+func (e *RateLimitError) Message() string {
+	return responseMessage([]byte(e.Body))
+}
+
 // AsRateLimit is errors.As(err, &limited) collapsed to one line: delivery's reconcile.go,
 // github_prs.go and intake.go each repeated the same three-line var/errors.As idiom at every
 // point a *RateLimitError must be told apart from every other per-item failure.
@@ -320,11 +326,28 @@ func rateLimitWait(header http.Header, exhausted bool) time.Duration {
 	return time.Minute
 }
 
+// StatusError is GitHub answering a request with a status other than 200 that is no rate limit
+// (CheckResponse): the status, and the whole body GitHub answered. Its text is `status <n>: <body>`.
+type StatusError struct {
+	Status int
+	Body   string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("status %d: %s", e.Status, e.Body)
+}
+
+// Message is the `message` of Body, the JSON GitHub answers a refused request with, and "" for a
+// body that is not JSON or names none (responseMessage).
+func (e *StatusError) Message() string {
+	return responseMessage([]byte(e.Body))
+}
+
 // CheckResponse turns a response's status/header/body into an error only when status is not 200:
-// RateLimit's own *RateLimitError when the response is a GitHub rate limit, else a generic
-// "status %d: %s" error carrying the raw body. Factors the identical "check rate limit, then
-// check status" three lines delivery's GitHub fetchers (github_prs.go, github_runs.go,
-// client.go's own ListInstallationRepositoriesByID) all repeated at every call site.
+// RateLimit's own *RateLimitError when the response is a GitHub rate limit, else a *StatusError
+// carrying the status and the raw body. Factors the identical "check rate limit, then check
+// status" three lines delivery's GitHub fetchers (github_prs.go, github_runs.go, client.go's own
+// ListInstallationRepositoriesByID) all repeated at every call site.
 func CheckResponse(status int, header http.Header, body []byte) error {
 	if status == http.StatusOK {
 		return nil
@@ -332,7 +355,7 @@ func CheckResponse(status int, header http.Header, body []byte) error {
 	if limited := RateLimit(status, header, body); limited != nil {
 		return limited
 	}
-	return fmt.Errorf("status %d: %s", status, body)
+	return &StatusError{Status: status, Body: string(body)}
 }
 
 // nextLink returns the rel="next" target of an RFC 8288 Link header, refusing one outside the

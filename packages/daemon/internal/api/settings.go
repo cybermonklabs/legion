@@ -75,18 +75,23 @@ type Settings struct {
 	// file takes them, decimal numbers of hours.
 	LingerHours          float64 `json:"linger_hours"`
 	ProductionCheckHours float64 `json:"production_check_hours"`
-	// PodUpdateRetaskHours and PodUpdateNoticeHours are `pod_update_retask_hours` and
-	// `pod_update_notice_hours`, decimal numbers of hours as the two above are: how long an open
-	// update round waits before it asks a worker again, and how long after the round opened the
-	// controller is told it is stalled. They are decimals so a live proof and the production
-	// check can drive each bound inside one run.
-	PodUpdateRetaskHours float64 `json:"pod_update_retask_hours"`
-	PodUpdateNoticeHours float64 `json:"pod_update_notice_hours"`
+	// PodUpdateGraceMinutes is `pod_update_grace_minutes`, a decimal number of minutes: how long
+	// a pod's update round waits for its roles after it opens. An answer from every role ends the
+	// round before it, and no answer holds the round past it. It is a decimal so a live proof can
+	// drive the bound inside one run.
+	PodUpdateGraceMinutes float64 `json:"pod_update_grace_minutes"`
+	// StalledTreeNoticeHours is `stalled_tree_notice_hours`, a decimal number of hours as the two
+	// hour keys above are: how long a tree this daemon runs may be quiet before the daemon tells the
+	// project's controller once for that tree; which quiet trees are told is admit's
+	// tellStalledTrees (dispatch://INFRA-2560 R5). No value turns that notice off, since the
+	// loader refuses zero for every key in hours; a deployment that wants fewer notices raises the
+	// number.
+	StalledTreeNoticeHours float64 `json:"stalled_tree_notice_hours"`
 	// WorkerSilenceMinutes is `worker_silence_minutes`, a decimal number of minutes: how long a
 	// phase worker's last recorded step may be in the past before the daemon reads that worker as
 	// one nothing will prompt and sends it its phase's task again. It is in minutes, where the
-	// four above are in hours, because the bound is tens of minutes and the file takes it that
-	// way (config's readMinutes).
+	// three hour keys above are in hours, because the bound is tens of minutes and the file takes
+	// it that way (config's readMinutes).
 	WorkerSilenceMinutes float64 `json:"worker_silence_minutes"`
 	// WorkerBackgroundHours is `worker_background_hours`, a decimal number of hours: how long
 	// the background work a phase worker's own session reports may stand before the daemon names
@@ -146,8 +151,8 @@ type TmuxSettings struct {
 
 // KubernetesSettings is the settled `runtime.kubernetes` block without its credential file
 // (`kubeconfig`, `context`), the session store's own fields (`session_dsn_secret`, the credential
-// source, and `session_database`, the instance and login behind it) and the operator's `pod`
-// pieces, which every pod reads from its own spec.
+// source, and `session_database`, the instance, login and service account behind it) and the
+// operator's `pod` pieces, which every pod reads from its own spec.
 type KubernetesSettings struct {
 	Namespace    string               `json:"namespace"`
 	Image        string               `json:"image"`
@@ -379,8 +384,8 @@ func SettingsOf(cfg config.Config) Settings {
 		Gates:                                   GatesSettings{Design: append([]record.DesignStep{}, cfg.Gates.Steps()...)},
 		LingerHours:                             cfg.Linger.Hours(),
 		ProductionCheckHours:                    cfg.ProductionCheckBound.Hours(),
-		PodUpdateRetaskHours:                    cfg.PodUpdateRetask.Hours(),
-		PodUpdateNoticeHours:                    cfg.PodUpdateNotice.Hours(),
+		PodUpdateGraceMinutes:                   cfg.PodUpdateGrace.Minutes(),
+		StalledTreeNoticeHours:                  cfg.StalledTreeNotice.Hours(),
 		WorkerSilenceMinutes:                    cfg.WorkerSilence.Minutes(),
 		WorkerBackgroundHours:                   cfg.WorkerBackground.Hours(),
 		PodUpdateMaxOpenRounds:                  cfg.PodUpdateMaxOpenRounds,

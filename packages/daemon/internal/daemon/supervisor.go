@@ -115,7 +115,11 @@ func (s *supervisor) claimInTurn(issue string, except claim.Token) (claim.Token,
 // has recorded that end: a claim holding a task it would not adopt the shared working copy for
 // can send it now (supervise's IssueTurnEnded). It is posted after the machine's decision rather
 // than beside it, because a claim woken before that decision published its end would read the
-// turn as still running and hold the task until the next sweep.
+// turn as still running and hold the task until the next sweep. The end is the agent's own
+// agent_end, or its answer to the sweep's question that it is in no prompt, which ends a turn a
+// busy answer recorded or a restored claim's turn an earlier daemon saw start (supervise's
+// askTurnOver): the feed (add) posts this for every decision that recorded an end, which the
+// machine counts (supervise.Machine.TurnsEnded).
 func (s *supervisor) wakeIssue(token claim.Token) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -249,6 +253,12 @@ func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 	all := append(slices.Clip(s.supervised()), m)
 	s.all.Store(&all)
 	s.feeding.Add(1)
+	// One claim's events are handled one at a time on this goroutine, beside every other
+	// machine's, and each decision writes the claim through the store, so the machine works under
+	// a hold mark of its own (store.ForConcurrentWorker): on the supervisor's one context the
+	// first machine inside a transaction would have the pool refuse every other machine its first
+	// connection.
+	working := store.ForConcurrentWorker(s.ctx)
 	go func() {
 		defer s.feeding.Done()
 		for {
@@ -256,12 +266,16 @@ func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 			if !ok {
 				return
 			}
-			if err := m.Handle(s.ctx, ev); err != nil {
+			ended := m.TurnsEnded()
+			if err := m.Handle(working, ev); err != nil {
 				s.decisionFailed(token, fmt.Sprintf("%T", ev), err, "supervise: an event failed")
 			}
 			// The turn is over and this machine has recorded that, so a claim of the same issue
-			// holding a task it would not adopt their shared working copy for may send it now.
-			if _, ended := ev.(supervise.StreamTurnEnd); ended {
+			// holding a task it would not adopt their shared working copy for may send it now. The
+			// agent's own end of a turn wakes the issue whatever the machine made of it, as it
+			// always has; an end the sweep's question found (askTurnOver) arrives on an
+			// observation or a hello, and is told by the count the decision moved.
+			if _, end := ev.(supervise.StreamTurnEnd); end || m.TurnsEnded() != ended {
 				s.wakeIssue(token)
 			}
 		}
@@ -379,7 +393,9 @@ func (s *supervisor) wait() {
 // shim to redial (stream.HelloResolver).
 func (s *supervisor) helloResolver(tokens *api.BootTokens, timeout time.Duration) stream.HelloResolver {
 	resolve := func(bootToken string) (api.BootToken, bool, error) {
-		ctx, cancel := context.WithTimeout(s.ctx, timeout)
+		// Every hello is resolved on its own connection's goroutine, beside every other, so each
+		// read takes a hold mark of its own (store.ForConcurrentWorker).
+		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(s.ctx), timeout)
 		defer cancel()
 		return tokens.Resolve(ctx, bootToken)
 	}

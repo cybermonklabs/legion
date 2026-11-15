@@ -283,11 +283,12 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 		t.Errorf("with every input set the App is %v, want the inputs", got)
 	}
 	// The token command is what the daemon runs, so it must ask the broker for the input's secret,
-	// narrowed to the owner, to its repositories and to read-only exactly when the daemon's
-	// environment asks for each (appauth.TokenCommandOwner, appauth.TokenCommandRepos,
-	// appauth.TokenCommandReadOnly), and print the release as the broker hands it over. A stand-in
-	// `agent-secrets` records its arguments and puts a release in the command's environment as the
-	// real one does.
+	// narrowed to the owner and to read-only exactly when the daemon's environment asks for each
+	// (appauth.TokenCommandOwner, appauth.TokenCommandReadOnly), and print the release as the
+	// broker hands it over. The rows that set a repository list test the live harness command's
+	// own mapping of LEGION_GITHUB_REPOS to --github-repo, which the daemon no longer feeds: it
+	// tells a token command no repository (INFRA-2543). A stand-in `agent-secrets` records its
+	// arguments and puts a release in the command's environment as the real one does.
 	stub := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stub, "agent-secrets"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >\"$STUB_ARGS\"\nname=$1\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexport \"$name=$STUB_VALUE\"\nexec \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -299,6 +300,68 @@ func TestHeadStoredAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
 	if err != nil || elsewhere {
 		t.Fatalf("HeadStoredAt(acme/gadgets) = %v, %v; want false: another repository's commit is not this one's",
 			elsewhere, err)
+	}
+}
+
+// NewestPullRequestHead answers the head of an issue's open pull request of the highest number,
+// and only where none is open the head of its merged pull request of the highest number. An open
+// pull request of a lower number wins over a merged one of a higher, a closed-unmerged pull
+// request is no head whatever its number, another issue's pull request answers for nothing, and
+// an issue holding no pull request has no head.
+func TestNewestPullRequestHeadTakesTheOpenOneElseTheMergedOne(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	issue := seedHeadIssue(t, ctx, pool, 90)
+	other := seedHeadIssue(t, ctx, pool, 91)
+	none := seedHeadIssue(t, ctx, pool, 92)
+	writeHead := func(number int, sha, state, issueKey string) {
+		t.Helper()
+		attributed := issueKey
+		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+			Repo: "acme/widgets", Number: number, HeadSHA: sha, HeadRef: "legion/work", BaseRef: "main",
+			State: state, IssueKey: &attributed, AttributionSource: "title", AttributionComplete: true,
+			Title: issueKey + " the work", URL: fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),
+		}); err != nil {
+			t.Fatalf("store #%d: %v", number, err)
+		}
+	}
+	newest := func(issueKey string) (NewestHead, bool) {
+		t.Helper()
+		head, found, err := NewestPullRequestHead(ctx, pool, issueKey)
+		if err != nil {
+			t.Fatalf("NewestPullRequestHead(%s): %v", issueKey, err)
+		}
+		return head, found
+	}
+
+	if head, found := newest(none); found {
+		t.Fatalf("NewestPullRequestHead(%s) = %+v, want no head: the issue holds no pull request", none, head)
+	}
+
+	const (
+		olderMerged = "9010000000000000000000000000000000000000"
+		newerMerged = "9020000000000000000000000000000000000000"
+		olderOpen   = "9030000000000000000000000000000000000000"
+		newerOpen   = "9040000000000000000000000000000000000000"
+		closed      = "9050000000000000000000000000000000000000"
+		othersOpen  = "9060000000000000000000000000000000000000"
+	)
+	writeHead(905, olderMerged, "merged", issue)
+	writeHead(909, newerMerged, "merged", issue)
+	writeHead(912, closed, "closed", issue)
+	writeHead(920, othersOpen, "open", other)
+	if head, found := newest(issue); !found || head != (NewestHead{Repo: "acme/widgets", Number: 909, HeadSHA: newerMerged}) {
+		t.Fatalf("NewestPullRequestHead(%s) with no open pull request = %+v, %v; want the merged #909 at %s",
+			issue, head, found, newerMerged)
+	}
+
+	writeHead(903, olderOpen, "open", issue)
+	writeHead(907, newerOpen, "open", issue)
+	if head, found := newest(issue); !found || head != (NewestHead{Repo: "acme/widgets", Number: 907, HeadSHA: newerOpen}) {
+		t.Fatalf("NewestPullRequestHead(%s) = %+v, %v; want the open #907 at %s over the merged #909 and the closed #912",
+			issue, head, found, newerOpen)
+	}
+	if head, found := newest(other); !found || head.Number != 920 {
+		t.Fatalf("NewestPullRequestHead(%s) = %+v, %v; want its own open #920", other, head, found)
 	}
 }
 
@@ -1336,7 +1399,9 @@ func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *tes
 }
 
 // withoutBranchCommits drops branch_commits for the length of one test, so a write of it fails
-// the way a write fails, and puts it back afterwards.
+// the way a write fails, and puts it back afterwards. It answers that repair, for the row that
+// needs the table back while it still runs; the cleanup makes it for every other row, and the
+// two are one call, so a row that repairs the table itself does not repair it twice.
 //
 // The run ending does not contain the drop. The database DISPATCH_TEST_DATABASE_URL names is
 // the server's own and outlives the run (deliveryTestPool), and a test binary `go test
@@ -1350,12 +1415,12 @@ func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *tes
 // It is the harness's own repair that it runs, rather than a second copy of it: the repair
 // forgets the migration's recorded version, and the Migrate here makes the table again from
 // that migration.
-func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) {
+func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) (restore func()) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, "drop table branch_commits"); err != nil {
 		t.Fatalf("drop branch_commits: %v", err)
 	}
-	t.Cleanup(func() {
+	restore = sync.OnceFunc(func() {
 		// The test's own context is cancelled before its cleanups run, so the repair takes one
 		// that is not (context.WithoutCancel).
 		repair := context.WithoutCancel(ctx)
@@ -1364,6 +1429,8 @@ func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) {
 			t.Fatalf("put branch_commits back: %v", err)
 		}
 	})
+	t.Cleanup(restore)
+	return restore
 }
 
 // A merge whose branch seed cannot be written stores no head row and says so. The seed is the

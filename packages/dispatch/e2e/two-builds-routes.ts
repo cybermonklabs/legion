@@ -25,6 +25,8 @@ export const walkRoutes = [
   { page: "MachinesPage", path: "/machines" },
   { page: "MachinePage", path: "/machines/:machine" },
   { page: "IssuePage", path: "/issues/:key/*" },
+  { page: "PrioritiesPage", path: "/priorities" },
+  { page: "PriorityPage", path: "/priorities/:id" },
   { page: "ProjectPage", path: "/projects/:key" },
   { page: "ProjectPage", path: "/projects/:key/architecture" },
   { page: "ProjectPage", path: "/projects/:key/issues" },

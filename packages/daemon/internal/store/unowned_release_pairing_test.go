@@ -89,7 +89,7 @@ func TestAReleaseThatSuspendsNoRoleEndsNoWake(t *testing.T) {
 			Generation: 1, At: at.Add(30 * time.Minute)}); err != nil {
 			t.Fatalf("record the release of the pod no claim owns: %v", err)
 		}
-		unfinished, err := st.UnfinishedPodResumes(ctx, "legion", time.Now().UTC())
+		unfinished, err := unfinishedResumes(ctx, st, "legion", time.Now().UTC())
 		if err != nil || len(unfinished) != 1 || unfinished[0].Release != idle {
 			t.Fatalf("unfinished wakes = %+v, %v; want the architect's wake of release %d, which no later release ended",
 				unfinished, err, idle)

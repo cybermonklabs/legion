@@ -31,14 +31,15 @@ function groupAlive(pgid: number): boolean {
   }
 }
 
-/** The pid a real child process writes to `path`. A write another process makes raises no event
- *  here, so the file is read until it holds one. */
+/** The pid a real child process writes to `path` as one whole line, as `echo` writes it: a file
+ *  not yet ending in its newline is not read as a pid. A write another process makes raises no
+ *  event here, so the file is read until it holds one. */
 async function pidFrom(path: string): Promise<number> {
   const read = () =>
     Bun.file(path)
       .text()
       .catch(() => "");
-  await eventually(`a pid in ${path}`, async () => /^\d+\s*$/.test(await read()));
+  await eventually(`a pid in ${path}`, async () => /^\d+\n$/u.test(await read()));
   return Number(await read());
 }
 
@@ -296,14 +297,12 @@ describe("Supervisor.stop", () => {
         pid = await pidFrom(pidFile);
         made.interrupt();
         await expect(step).rejects.toBeInstanceOf(Interrupted);
-        // The force-kill fires at half the short bound, inside the wait below: a stop that leaves
-        // the step to it rather than to SIGTERM returns in time and fails on `forced`.
+        // The force-kill fires after the short bound, past the wait below, as in the row above.
+        // So a stop that waits for that delay, and a stop whose SIGTERM does not end the step,
+        // both fail at that wait, by name: neither returns before the force-kill.
         const group = pid;
-        const stop = underway(made.stop(bounds.short / 2), () => groupAlive(group));
+        const stop = underway(made.stop(2 * bounds.short), () => groupAlive(group));
         await eventually(`the stop of the interrupted step ${pid} to return`, stop.returned);
-        expect(stop.forced(), "the stop's force-kill ran: SIGTERM did not end the step").toBe(
-          false
-        );
         expect(stop.atReturn(), "the interrupted step's group outlived the stop").toBe(false);
       } finally {
         if (pid !== undefined) killLeft(-pid);

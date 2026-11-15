@@ -5,13 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -114,7 +113,7 @@ func TestAHookPromptForAReleasedPodWakesItAndWaits(t *testing.T) {
 // hookRunner is an outbox runner over an isolated database holding LEGION-208 in implementing,
 // the phase a move back to implementing leaves it in, with the admission slot its work holds. It
 // drains on the caller's goroutine (RunOnce), as the red's runner does.
-func hookRunner(t *testing.T, publisher notify.Publisher) (*outbox, *supervisor, *pgxpool.Pool) {
+func hookRunner(t *testing.T, publisher notify.Publisher) (*outbox, *supervisor, *store.Pool) {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

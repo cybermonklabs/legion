@@ -12,11 +12,14 @@
  *    writes an `end` line. The first `open` line and the `end` line read one clock, so the `end`
  *    line's `at` less the first `open` line's `at` is the watch's length and never less than
  *    `--minutes`. A reconnect's open does not count it again.
- *  - Between reconnects, the delay `reconnectDelayMs` draws: none after Dispatch's rotation
- *    (4001), up to `RECONNECT_SPREAD_MS` (2 s) after Dispatch's restart close (1012), and up to
- *    30 s with backoff after any other close. `--minutes` ends the watch during that delay as
- *    well. Each close line carries the delay chosen as `retry_ms`: 0 for a dial at once, null when
- *    none follows.
+ *  - Between reconnects, the wait `reconnectWaitMs` computes: none after Dispatch's rotation
+ *    (4001), which the probe answers at once. Any other close waits on the page's backoff, which
+ *    Dispatch's restart close (1012) and every frame received start over: the first attempt
+ *    draws from its spread, up to `RECONNECT_SPREAD_MS` (2 s) or what `--reconnect-spread-ms`
+ *    sets, and each later attempt backs off, up to 30 s. `--minutes` ends the watch during that
+ *    wait as well. Each close line carries that wait as `wait_ms`, and null on a close the probe
+ *    answers with no timer: the rotation, a silent socket's replacement, and a refused first
+ *    connection, which ends the watch.
  *  - A silent socket, after the first open: one that has carried no frame for more than
  *    `LIVE_SOCKET_SILENT_MS`, a reconnect's dial that never opens included, is replaced by a new
  *    dial at the next check, which runs each second, and `--minutes` still ends the watch.
@@ -50,7 +53,11 @@ import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
 
 import { REQUEST_DEADLINE_MS } from "../web/src/api/client";
-import { LIVE_SOCKET_SILENT_MS, reconnectDelayMs } from "../web/src/api/live-socket";
+import {
+  LIVE_SOCKET_SILENT_MS,
+  RECONNECT_SPREAD_MS,
+  reconnectDelayMs,
+} from "../web/src/api/live-socket";
 import type {
   DeliveryLiveBody,
   DeliveryLiveCounts,
@@ -112,15 +119,16 @@ export interface ProbeOpenLine {
   readonly resume: string | null;
 }
 
-/** A connection closing, by Dispatch or by the probe replacing a silent socket, and the delay in
- *  milliseconds the probe chose before its next dial: 0 for a dial at once, null when it dials no
- *  more. */
+/** A connection closing, by Dispatch or by the probe replacing a silent socket. `wait_ms` is the
+ *  wait the probe computed before it reopens, null on a close it answers with no timer: the
+ *  rotation it reopens at once after, a silent socket's replacement, and the refused first
+ *  connection, which ends the watch. */
 export interface ProbeCloseLine {
   readonly at: string;
   readonly type: "close";
   readonly code: number;
   readonly reason: string;
-  readonly retry_ms: number | null;
+  readonly wait_ms: number | null;
 }
 
 /** The watch's end once `--minutes` has passed since the first open, by the clock that open's
@@ -168,10 +176,16 @@ export interface ProbeHeld {
 }
 
 const USAGE =
-  "usage: bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> --view <json> --minutes <n> [--open-within <seconds>] [--read-within <seconds>] [--compare] [--body-file <file>]";
+  "usage: bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> --view <json> --minutes <n> [--open-within <seconds>] [--read-within <seconds>] [--compare] [--body-file <file>] [--reconnect-spread-ms <n>]";
 
 /** The probe's one subscription. */
 const SUB = "probe";
+/** The largest delay `setTimeout` keeps, 2^31-1 ms: a longer one does not fit its 32-bit signed
+ *  field, and Bun sets it to 1 ms instead. So the probe refuses a duration flag (`--minutes`,
+ *  `--open-within`, `--read-within`) longer than this, whose wait would then end at once, and a
+ *  `--reconnect-spread-ms` above it, whose draws could pass it and make the probe reopen at once:
+ *  the option honoured as its own opposite. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 /** Dispatch closes every socket with this code when it shuts down; the page reconnects within the
  *  first attempt's spread (`reconnectDelayMs(0)`). */
 const SERVICE_RESTART = 1012;
@@ -181,10 +195,6 @@ const REPLACED = 4000;
  *  either answer, so the watch ends; any other code (DELIVERY_NOT_CONFIGURED) is answered again
  *  once Dispatch can, and the watch goes on. */
 const REFUSALS: Readonly<Record<string, true>> = { INVALID_FRAME: true, INVALID_QUERY: true };
-
-/** The largest delay `setTimeout` keeps, 2^31-1 ms: a longer one does not fit its 32-bit signed
- *  field, and bun sets it to 1 ms instead, so a watch of more `--minutes` would end at once. */
-const LONGEST_TIMER_MS = 2_147_483_647;
 
 const MAPS = [
   "issue_titles",
@@ -247,6 +257,8 @@ interface Options {
   readonly readWithinMs: number;
   readonly compare: boolean;
   readonly bodyFile: string | undefined;
+  /** The window the first reconnect attempt's wait is drawn from, the page's own by default. */
+  readonly reconnectSpreadMs: number;
 }
 
 type Sections = Pick<ProbeFrameLine, "prs" | "runs" | "session_groups" | "maps" | "counts" | "set">;
@@ -277,6 +289,26 @@ function mapValues<V, W>(
   return Object.fromEntries(Object.entries(record).map(([key, value]) => [key, fn(value)]));
 }
 
+/** The wait before reconnect attempt `attempt`, with the first attempt's spread set to
+ *  `spreadMs`: `reconnectDelayMs` draws that attempt's wait as `random() × RECONNECT_SPREAD_MS`,
+ *  so dividing the draw by that window makes the first attempt's spread `spreadMs` without this
+ *  file restating the backoff's arithmetic. It is the first attempt's spread alone, as
+ *  `--reconnect-spread-ms` says: a later attempt takes the function's own source, so its backoff
+ *  and jitter stay the page's whatever the option is set to.
+ *
+ *  It enforces no bound of its own. `parseOptions` is what refuses a `spreadMs` above
+ *  `MAX_TIMER_DELAY_MS`, because a `setTimeout` delay above that is clamped to 1 ms and the probe
+ *  would reopen at once, the option honoured as its opposite; a caller that reaches this function
+ *  another way gets that defect back with nothing between it and the timer. */
+export function reconnectWaitMs(
+  attempt: number,
+  spreadMs: number,
+  random: () => number = Math.random
+): number {
+  if (attempt !== 0) return reconnectDelayMs(attempt, random);
+  return reconnectDelayMs(0, () => random() * (spreadMs / RECONNECT_SPREAD_MS));
+}
+
 function readArgs(argv: readonly string[]) {
   try {
     return parseArgs({
@@ -288,6 +320,7 @@ function readArgs(argv: readonly string[]) {
         minutes: { type: "string" },
         "open-within": { type: "string" },
         "read-within": { type: "string" },
+        "reconnect-spread-ms": { type: "string" },
         "token-file": { type: "string" },
         url: { type: "string" },
         view: { type: "string" },
@@ -304,16 +337,16 @@ function required(value: string | undefined, flag: string): string {
   return value;
 }
 
-/** `raw`, a number of `unit`, in milliseconds: above 0 and no longer than `LONGEST_TIMER_MS`. */
+/** `raw`, a number of `unit`, in milliseconds: above 0 and no longer than `MAX_TIMER_DELAY_MS`. */
 function duration(flag: string, raw: string, unit: "minutes" | "seconds"): number {
   const unitMs = unit === "minutes" ? 60_000 : 1_000;
   const ms = Number(raw) * unitMs;
   if (!Number.isFinite(ms) || ms <= 0) {
     throw new UsageError(`${flag} is a number of ${unit} above 0, not ${raw}`);
   }
-  if (ms > LONGEST_TIMER_MS) {
+  if (ms > MAX_TIMER_DELAY_MS) {
     // Rounded down to six decimals, so the value named is one the flag takes.
-    const largest = Math.floor((LONGEST_TIMER_MS / unitMs) * 1e6) / 1e6;
+    const largest = Math.floor((MAX_TIMER_DELAY_MS / unitMs) * 1e6) / 1e6;
     throw new UsageError(
       `${flag} is at most ${largest} ${unit}, the longest delay a timer keeps, not ${raw}`
     );
@@ -373,6 +406,19 @@ function parseOptions(argv: readonly string[]): Options {
   }
   const rawOpenWithin = values["open-within"];
   const rawReadWithin = values["read-within"];
+  const rawSpread = values["reconnect-spread-ms"];
+  const reconnectSpreadMs = rawSpread === undefined ? RECONNECT_SPREAD_MS : Number(rawSpread);
+  if (
+    rawSpread?.trim() === "" ||
+    !Number.isFinite(reconnectSpreadMs) ||
+    reconnectSpreadMs < 0 ||
+    reconnectSpreadMs > MAX_TIMER_DELAY_MS
+  ) {
+    throw new UsageError(
+      "--reconnect-spread-ms is a number of milliseconds from 0 to " +
+        `${MAX_TIMER_DELAY_MS}, not ${rawSpread}`
+    );
+  }
   return {
     bodyFile: values["body-file"],
     compare: values.compare === true,
@@ -385,6 +431,7 @@ function parseOptions(argv: readonly string[]): Options {
       rawReadWithin === undefined
         ? REQUEST_DEADLINE_MS
         : duration("--read-within", rawReadWithin, "seconds"),
+    reconnectSpreadMs,
     tokenFile: required(values["token-file"], "--token-file"),
     url,
     view: parseView(required(values.view, "--view")),
@@ -599,25 +646,28 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
 
   const lost = (code: number, reason: string) => {
     socket = null;
+    // The close line carries the wait the probe computed before it would open again, so a reader
+    // sees what `--reconnect-spread-ms` and the backoff came to; a close answered with no timer
+    // reports none.
+    const closed = (waitMs: number | null) =>
+      write({ at: now(), code, reason, type: "close", wait_ms: waitMs });
     if (!opened) {
-      write({ at: now(), code, reason, retry_ms: null, type: "close" });
+      closed(null);
       fail(`Dispatch refused the connection to ${liveUrl.href}: ${reason || `close ${code}`}`);
       return;
     }
-    // As the page does: Dispatch's rotation is answered by a dial at once, and its restart close
-    // starts the backoff over, so the next attempt waits within the first attempt's spread.
-    let delay = 0;
-    if (code !== LIVE_SOCKET_MAX_AGE_CLOSE) {
-      if (code === SERVICE_RESTART) attempt = 0;
-      delay = reconnectDelayMs(attempt);
-      attempt += 1;
-    }
-    write({ at: now(), code, reason, retry_ms: delay, type: "close" });
-    if (delay === 0) {
+    if (code === LIVE_SOCKET_MAX_AGE_CLOSE) {
+      closed(null);
       open();
       return;
     }
-    const handle = setTimeout(open, delay);
+    // As the page does: Dispatch's restart close starts the backoff over, so the next attempt
+    // waits within the first attempt's spread, which `--reconnect-spread-ms` sets.
+    if (code === SERVICE_RESTART) attempt = 0;
+    const delayMs = reconnectWaitMs(attempt, options.reconnectSpreadMs);
+    closed(delayMs);
+    const handle = setTimeout(open, delayMs);
+    attempt += 1;
     cancelReconnect = () => clearTimeout(handle);
   };
 
@@ -630,7 +680,7 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
     const silent = socket;
     socket = null;
     const reason = `no frame for ${LIVE_SOCKET_SILENT_MS / 1000} s`;
-    write({ at: now(), code: REPLACED, reason, retry_ms: 0, type: "close" });
+    write({ at: now(), code: REPLACED, reason, type: "close", wait_ms: null });
     silent.close(REPLACED, reason);
     open();
   }, 1_000);
@@ -878,4 +928,8 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-process.exit(await main(Bun.argv.slice(2)));
+// The test imports `reconnectWaitMs` from this file: the command line runs only when bun runs
+// the probe itself.
+if (import.meta.main) {
+  process.exit(await main(Bun.argv.slice(2)));
+}

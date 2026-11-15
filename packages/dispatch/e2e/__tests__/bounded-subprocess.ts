@@ -7,14 +7,15 @@
  *  the short bound ends.
  *
  * A process a row or hook drives rather than waits for starts outside it by design, since a bound
- * would kill a process its row is still using: the probe the six driven rows of
+ * would kill a process its row is still using: the probe the seven driven rows of
  * `delivery-live-probe.test.ts` read line by line and stop, the runner the interrupted-runner row
  * of `bounded-subprocess.test.ts` interrupts, the proxies the hooks of `round-robin-proxy.test.ts`
  * and `plain-http-proxy.test.ts` start, the fake Envoy of `fake-envoy.test.ts`, and the processes
  * `local-instance-support.test.ts` starts through its `Supervisor`. Two subprocesses a row can
  * wait for run outside it, as stated edges. One is the psql of `e2e/psql.ts` (the rows and hooks
- * of `psql-session.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts` and `e2e/local-instance.ts`
- * call too, so bounding that psql would reach past `e2e/__tests__/`. The other is the `ps` that
+ * of `psql-session.test.ts`, and the scratch databases of `replace-blocks-guard.test.ts`), whose
+ * `sqlAt` `e2e/harness-postgres.ts` and `e2e/local-instance.ts` call too, so bounding that psql
+ * would reach past `e2e/__tests__/`. The other is the `ps` that
  * reads the process table on a machine with no `/proc`, here (`processTable`) and in
  * `bounded-subprocess.test.ts`, which runs with no bound. Linux lists its processes under `/proc`
  * and never runs that `ps`.
@@ -40,7 +41,8 @@
  * - `short`, against 8.78 s: what the row of `playwright-argv.test.ts`, which runs one
  *   `playwright test --help`, cost under the whole lane. The other short commands, the two
  *   compare-recordings runs, the two `bun --eval` probes, and the harness and import children,
- *   read 2.5 s or less.
+ *   read 2.5 s or less; so do the driver of `replace-blocks-guard.test.ts` and its psql and
+ *   tail, at most 1.2 s, 0.48 s and 0.02 s under six busy loops on three CPUs.
  * - `listing`, against 84.85 s for a whole file of listings run alone, and against 78.4 s for the
  *   first listing in a fresh checkout.
  * - `generation`, 30 s above the listings inside it. The `row-map` generation starts two listings
@@ -487,12 +489,12 @@ async function drain(
  *  and never into the text this answers with: rows of this directory read a child's stderr as
  *  exactly empty.
  *
- *  This never throws for an exit status. Five files of this directory run children that are
+ *  This never throws for an exit status. Six files of this directory run children that are
  *  meant to exit non-zero and read the code - `compare-recordings-refusal.test.ts`,
- *  `delivery-live-probe.test.ts`, `harness-signin.test.ts`, `harness-stacks.test.ts` and
- *  `round-robin-proxy.test.ts` - so a helper that always threw would fail every row of theirs
- *  that reads a refusal. A caller that does refuse a non-zero exit builds its message from
- *  `named`.
+ *  `delivery-live-probe.test.ts`, `harness-signin.test.ts`, `harness-stacks.test.ts`,
+ *  `replace-blocks-guard.test.ts` and `round-robin-proxy.test.ts` - so a helper that always threw
+ *  would fail every row of theirs that reads a refusal. A caller that does refuse a non-zero exit
+ *  builds its message from `named`.
  *
  *  The bound covers the whole wait: the child's exit and the end of both pipes, so a process the
  *  child left holding a pipe is stuck as the child itself would be. It holds at any depth, since

@@ -1,10 +1,10 @@
-// A deregistration releases the role claims its session holds from two sources: the role topics
-// of the session's own interest record (releaseRoleClaims), and the role claim view
-// (releaseAllRoleClaims), which reads the roles the session holds from the watcher's copy of the
-// bucket and makes no bucket call to find them. The scan of the role bucket that the view
-// replaced is still there as the fallback a view that cannot be served runs
-// (releaseAllRoleClaimsByScan), and it is no longer what answered the route 503 this change was
-// filed on: it is one streamed scan carrying every record's value and revision, and past that
+// A deregistration releases the role claims its session holds from one set drawn from two
+// sources, each role once (releaseAllRoleClaims): the role topics of the session's own interest
+// record, read from the bucket, and the role claim view, which reads the roles the session holds
+// from the watcher's copy of the bucket and makes no bucket call to find them. The scan of the
+// role bucket that the view replaced is still there as the fallback a view that cannot be served
+// runs (releaseAllRoleClaimsByScan), and it is no longer what answered the route 503 this change
+// was filed on: it is one streamed scan carrying every record's value and revision, and past that
 // scan the fallback sends nothing but the deletes it owes, where it once paid a round trip per
 // key of the bucket.
 //
@@ -335,13 +335,12 @@ func assertBucketKeptOnlyTheOtherClaims(t *testing.T, reg *Registry, released []
 // sessions hold, whatever order they run in.
 //
 // The first case's interest record carries no role topic, which is the point of it: Remove
-// releases from the record's role topics first (releaseRoleClaims) and from the view second
-// (releaseAllRoleClaims), so a session whose record names its roles has them released by the
-// first pass, and a case written that way would pass with no view sweep at all. With no role
-// topic on the record, only the view sweep can release these two claims. The second case is the
-// production shape, where the record does name them: every release the record pass makes leaves
-// the view (forgetRoleHolder), so the sweep that follows finds nothing left to do and the counts
-// are the same two Gets and two Deletes.
+// releases the record's roles and the view's together (releaseAllRoleClaims), so a session whose
+// record names its roles has them released from the record, and a case written that way would
+// pass with no view at all. With no role topic on the record, only the view can name these two
+// claims. The second case is the production shape, where the record does name them: the two
+// sources name the same two roles, each is read and released once, and the counts are the same
+// two Gets and two Deletes.
 func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBucket(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -416,9 +415,9 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 		if err != nil {
 			t.Fatalf("Remove(%s) under %s over %d stored claims: %v", session, sweepDeadline, otherRoleClaims+len(roles), err)
 		}
-		// The record pass released both, so each role's single Get and Delete is that pass's;
-		// the view sweep behind it found the view no longer naming the session any role, which
-		// is how the counts stay at two rather than doubling.
+		// The record and the view name the same two roles, and each is weighed once, so each
+		// role's single Get and Delete is the one release of it, which is how the counts stay
+		// at two rather than doubling.
 		assertRoleBucketCalls(t, counting, roles)
 		assertBucketKeptOnlyTheOtherClaims(t, reg, roles)
 		assertInterestMissing(t, reg, session)

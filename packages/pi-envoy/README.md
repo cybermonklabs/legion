@@ -383,10 +383,11 @@ a path that reaches a file descriptor of whichever process opens it (`/dev/stdin
 `/proc/self/fd/N`, `/proc/thread-self/fd/N`, `/proc/<n>/fd/N`, and any link to one): AskGate
 would open it in Oh My Pi's process and the command in its shell. For text from standard input,
 use `--<field>-file -` with a quoted here-document. For an upload, that is `--content-file -`:
-the CLI reads `--path -` as a file named `-`. The gate cuts all arguments at 64 KiB as one JSON
-block, so it reviews only part of a long document. It judges an upload against content failure
-10 alone: a plan or a report is long by nature. An upload of any other file is not reviewed. A
-`task` subagent is not reviewed.
+the CLI reads `--path -` as a file named `-`. Only one flag of a call may read standard input.
+The CLI refuses `--<field> -` for each text flag except an upload's `--path`. The gate cuts all
+arguments at 64 KiB as one JSON block, so it reviews only part of a long document. It judges an
+upload against content failure 10 alone: a plan or a report is long by nature. An upload of any
+other file is not reviewed. A `task` subagent is not reviewed.
 
 **A file a call of the same message writes.** Oh My Pi runs the gate for every call of a message
 before any call of that message runs. So the gate reads a file before an earlier call of the same
@@ -495,12 +496,12 @@ gated write only when it consumes one, so a write sent any other way is refused 
   help only: the gate refuses nothing for it.
 - **The unmarked write that carries an ask.** The `unmarked` entry reaches only this machine's
   disk. Where such a write carries at least one ask for a person, the CLI counts those asks from
-  the write's own text (`newAsks` in `@legion/envoy-client/askgate-new-asks`) and writes the count
-  into the session's ledger as `asksCarried`, and pi-envoy publishes one decision record for it on
-  Dispatch (below), with the tool, the mode and that count and no ask text. The count is of the
-  asks the write carries, so a re-upload of ask blocks the stored version already holds counts
-  them as carried: in `warn` mode the write has already posted when the ledger is read, so a read
-  of the stored version would see the new text and count nothing.
+  the write's own text (`newAskCount` in `@legion/envoy-client/askgate-new-asks`) and writes the
+  count into the session's ledger as `asksCarried`, and pi-envoy publishes one decision record
+  for it on Dispatch (below), with the tool, the mode and that count and no ask text.
+  The count is of the asks the write carries, so a re-upload of ask blocks the stored version
+  already holds counts them as carried: in `warn` mode the write has already posted when the
+  ledger is read, so a read of the stored version would see the new text and count nothing.
 
 The gated writes are the same list for the gate and the CLI (`gatedWrite` in
 `@legion/envoy-client/askgate-marker`): the six commands above, an `issue` with a spec and an
@@ -838,9 +839,16 @@ documents and prints the day's refusals by rule, the refusals the agent overrode
 judged on part of their asks and those that judged none, the unmarked writes by mode with the asks
 they carried, and the rules-call error rate, each split by `source`, with the documents and lines
 it could not read, and the records it read twice, counted beside them. An unmarked write is in no
-rules-call count and in no override count: no check judged it. Its `asksCarried` counts every ask
-and ask block the write carries, so a re-upload of blocks a stored version already holds counts
-them as carried. The same script's `--sessions <dir>` mode still reports the entries on disk, the
+rules-call count and in no override count: no check judged it.
+Its `asksCarried` counts each ask and ask block the write carries as one, and groups none of them
+by id or by text, so two ask blocks that open with the same words count two.
+`newAskCount` reads a `doc-edit` `replace`'s `with` as every string the server might parse it as,
+and the server parses one of them, so a `replace` counts as the most asks any one of those
+readings opens.
+The count is taken before the write goes out, so it cannot know which reading the server takes,
+and the largest can only over-count.
+A re-upload of blocks a stored version already holds counts them as carried.
+The same script's `--sessions <dir>` mode still reports the entries on disk, the
 decision records not confirmed among them. Each flag is given once: the
 script refuses a flag given twice by name, rather than reading only its last value.
 

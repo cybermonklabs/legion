@@ -88,7 +88,7 @@ func (s projectionStore) GatesOf(_ context.Context, _ pgx.Tx, issue string) (map
 func (s projectionStore) OpenProductionChecks(context.Context, pgx.Tx) ([]record.ProductionCheck, error) {
 	return s.checks, nil
 }
-func (s projectionStore) DispatchIssuesOf(_ context.Context, _ pgx.Tx, _ string, keys []string) ([]record.DispatchIssueRow, error) {
+func (s projectionStore) DispatchIssuesOf(_ context.Context, _ pgx.Tx, keys []string) ([]record.DispatchIssueRow, error) {
 	wanted := make(map[string]bool, len(keys))
 	for _, key := range keys {
 		wanted[key] = true
@@ -474,9 +474,9 @@ func TestProjectShowsTheHeldLifecycleRowsWithTheirWaits(t *testing.T) {
 	}
 }
 
-// The state names every issue Legion is waiting to start behind a Dispatch issue nobody has
-// finished, judged from the project's mirror in the same transaction the rest of the state is
-// read in: the waiting root admission skips and the child the workflow holds at `admitted`, in
+// The state names every issue Legion waits on a Dispatch issue nobody has finished for, judged
+// from the project's mirror in the same transaction the rest of the state is read in: here the
+// waiting root admission skips and the child the workflow holds at `admitted`, in
 // one list sorted by issue key. A root carrying a run is never judged, whatever its links say,
 // and a state with nothing blocked carries an empty list rather than none.
 func TestProjectNamesWhatEveryBlockedRootAndChildWaitsOn(t *testing.T) {
@@ -550,7 +550,7 @@ func TestProjectShowsTheWaitingLineInTheLinesOwnOrder(t *testing.T) {
 		issues: []record.Issue{
 			lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.Admitted, "M"),
 			lineIssue("LEGION-11", "LEGION-10", "todo", phase.Admitted, "N"),
-			lineIssue("LEGION-12", "LEGION-10", "retro", phase.Merging, "O"),
+			lineIssue("LEGION-12", "LEGION-10", "in_progress", phase.Implementing, "O"),
 			lineIssue("LEGION-20", "LEGION-20", "todo", phase.Admitted, "A"),
 			lineIssue("LEGION-30", "LEGION-30", "todo", phase.Admitted, "Z"),
 			lineIssue("LEGION-50", "LEGION-50", "todo", phase.Accepting, "B"),
@@ -795,11 +795,13 @@ func TestTheWaitingLinePlaceIsOnEachListedIssue(t *testing.T) {
 	}
 }
 
-// admission.active is every issue holding one of the cap's rows, which an issue now keeps from
-// the moment the daemon starts it until it is done or Dispatch takes it out of the workflow
-// (record.KeepsSlot). So a root waiting on a person, an issue in accepting and one in merging are
-// all named there, though no worker of any of them is running this second, and an issue whose
-// phase has left the workflow stands in neither list.
+// admission.active is every issue the slots table holds a row for: the projection names the row
+// holders it finds and reads no phase of its own. An issue holds one of the cap's rows from the
+// moment the daemon starts it until its work is past its review (record.KeepsSlot), except while
+// it waits on another issue before then, when it gives the row back and is not named here
+// (admit's releaseSlotsForWaits), so a root waiting on a person is named there though no worker
+// of it is running this second. An issue with no row of its own waits for nothing here: it
+// stands in neither list.
 func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 	waiting := lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.AwaitingPerson, "A")
 	waiting.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5, At: projectedAt.Add(-time.Hour)}}
@@ -824,7 +826,7 @@ func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 	}
 
 	if want := []string{"LEGION-10", "LEGION-11", "LEGION-12"}; !reflect.DeepEqual(got.Admission.Active, want) {
-		t.Fatalf("admission.active = %#v, want %#v: the root waiting on a person, the issue in accepting and the one in merging each hold a row",
+		t.Fatalf("admission.active = %#v, want %#v: each of the three the fixture gives a row holds one, the root waiting on a person among them",
 			got.Admission.Active, want)
 	}
 	if len(got.Admission.Waiting) != 0 {
@@ -869,6 +871,64 @@ func TestProjectShowsEachWorkerItsIssuesBackwardMoveCounts(t *testing.T) {
 	if len(workers[claim.RoleTester].BackwardMoves) != 0 {
 		t.Fatalf("the tester's view counts %v, want none: the counts are kept on the implementer's row alone",
 			workers[claim.RoleTester].BackwardMoves)
+	}
+}
+
+// Every issue of a live tree is served that tree's quiet time (contract 111): `treeMovedAt`, the
+// newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long the tree
+// has been still at the instant the state is measured at. The pair is the tree's, so the root
+// and a child of it past its own review carry the same two values, though that child holds no
+// admission slot and the root holds one: what has stopped is the tree, and an issue past its
+// review is measured like every other member of it. The child's own record is the newest
+// movement here, which is what makes the two values the tree's rather than each issue's.
+//
+// An issue whose tree has left the workflow carries neither key: it is the root of no live tree,
+// there is nothing of the deployment's left waiting on it, and a quiet time for it would be the
+// age of a finished piece of work rather than a measure of anything that stopped.
+func TestTheStateReportsEachTreesQuietTime(t *testing.T) {
+	root := lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.Implementing, "A")
+	root.MovedAt = projectedAt.Add(-3 * time.Hour)
+	child := lineIssue("LEGION-11", "LEGION-10", "retro", phase.Retro, "B")
+	child.MovedAt = projectedAt.Add(-90 * time.Minute)
+	left := lineIssue("LEGION-20", "LEGION-20", "done", phase.Done, "C")
+	left.MovedAt = projectedAt.Add(-10 * time.Minute)
+	store := projectionStore{
+		issues: []record.Issue{root, child, left},
+		// The one tree whose lifecycle stands open under the workflow, which is what makes it
+		// live; LEGION-20's closed with its issue, so no root of it is among the live ones.
+		lifecycles: []string{"LEGION-10"},
+		slots:      []record.Slot{{Issue: "LEGION-10", Index: 0, AdmittedAt: projectedAt.Add(-4 * time.Hour)}},
+	}
+
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	if trees := got.Admission.Trees; !slices.Equal(trees, []string{"LEGION-10"}) {
+		t.Fatalf("admission.trees = %v, want LEGION-10 alone: the tree that left the workflow must be no live root, or this test proves nothing", trees)
+	}
+	if got.Issues["LEGION-10"].Slot == nil || got.Issues["LEGION-11"].Slot != nil {
+		t.Fatalf("the root holds slot %+v and the child past its review holds %+v, want a row on the root and none on the child; this test proves nothing",
+			got.Issues["LEGION-10"].Slot, got.Issues["LEGION-11"].Slot)
+	}
+	for _, key := range []string{"LEGION-10", "LEGION-11"} {
+		view := got.Issues[key]
+		if view.TreeMovedAt == nil || view.QuietHours == nil {
+			t.Fatalf("%s is served movement %v and quiet hours %v, want its tree's measure on both",
+				key, view.TreeMovedAt, view.QuietHours)
+		}
+		if !view.TreeMovedAt.Equal(child.MovedAt) {
+			t.Errorf("%s's movement = %s, want %s, the newest movement of its tree, which is the child's",
+				key, view.TreeMovedAt, child.MovedAt)
+		}
+		if *view.QuietHours != 1.5 {
+			t.Errorf("%s's quiet hours = %v, want 1.5, the hours between its tree's newest movement and this read",
+				key, *view.QuietHours)
+		}
+	}
+	if view := got.Issues["LEGION-20"]; view.TreeMovedAt != nil || view.QuietHours != nil {
+		t.Errorf("the issue whose tree left the workflow is served movement %v and quiet hours %v, want neither",
+			view.TreeMovedAt, view.QuietHours)
 	}
 }
 
@@ -953,5 +1013,114 @@ func TestProjectShowsTheFailureRecordAndTheHeldPhase(t *testing.T) {
 	if view := lingered.Workers[claim.RoleImplementer].Claim.Failure; !reflect.DeepEqual(view, api.FailureViewOf(retired)) {
 		t.Errorf("the retired implementer carries %+v, want the record its failure wrote, %+v",
 			view, api.FailureViewOf(retired))
+	}
+}
+
+// An issue's view carries a mergeWait object for exactly the review rounds that wait on GitHub's
+// answer about merging the head (classify.RoundWaitsOnMergeState over a pull request the record
+// holds open), and for no other: an approval standing on a head GitHub has answered nothing for
+// yet (LEGION-208) and one standing on a head GitHub will not merge from, whose architect and
+// reviewer have been told (LEGION-209, which carries the told marks the first does not). A round
+// whose issue is not reviewing (LEGION-210), one no approval decided (LEGION-211), one whose
+// head GitHub reports mergeable (LEGION-212) and one whose pull request the record no longer
+// holds open (LEGION-213) carry none.
+//
+// checkRuns counts the fence's runs stamped with the current head alone: LEGION-209 counts the
+// two reported on its own head and not the third, of a name reported on the head before it, and
+// LEGION-208 counts none at all, which is the true account of a head whose push started CI that
+// has reported nothing yet. stateReadAt is absent for LEGION-208, whose pull request no read has
+// ever answered for: the zero instant is no time a read happened at. It is absent for LEGION-214
+// for a reason of its own: that row was written before the migration that added the stamp, so
+// the record holds a merge state GitHub gave — `blocked` — beside a zero moment, which is the
+// row `api.MergeWaitView.StateReadAt` and the schema's `stateReadAt` both describe. Such a view
+// carries the state and no `stateReadAt` at all, so a reader is never handed a read at the zero
+// instant for a state that was truly read.
+func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
+	read := projectedAt.Add(-20 * time.Minute)
+	updated := projectedAt.Add(-3 * time.Hour)
+	issue := func(key string, at phase.Phase) record.Issue {
+		return record.Issue{Key: key, Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main",
+			GitHubRepo: "acme/widgets", Tree: key, Status: "needs_review", Phase: at}
+	}
+	reviewer := func(key string, decision *record.ReviewDecision) []record.PhaseRow {
+		return []record.PhaseRow{{Issue: key, Role: claim.RoleReviewer, Claim: "gone-reviewer", Decision: decision}}
+	}
+	approved := func() *record.ReviewDecision {
+		return &record.ReviewDecision{State: "approved", Body: "ship it", Head: "h2"}
+	}
+	blocked := func(key string, number int) *record.PullRequest {
+		return &record.PullRequest{Issue: key, Repo: "acme/widgets", Number: number, HeadSHA: "h2",
+			State: record.PullRequestOpen, MergeState: record.MergeStateBlocked, StateReadAt: read, HeadUpdatedAt: updated,
+			CheckRuns: []record.AttemptRun{{Name: "unit", ID: 11, Head: "h2"}, {Name: "lint", ID: 12, Head: "h2"},
+				{Name: "e2e", ID: 13, Head: "h1"}}}
+	}
+	told := approved()
+	told.ToldStuckHead, told.ToldStuckState = "h2", record.MergeStateBlocked
+	merged := blocked("LEGION-213", 47)
+	merged.State = record.PullRequestMerged
+	mergeable := blocked("LEGION-212", 46)
+	mergeable.MergeState = record.MergeStateClean
+	// The row a daemon wrote before the migration that added the read stamp: GitHub's answer is
+	// recorded and the moment of the read is not, which no row written since can be.
+	premigration := blocked("LEGION-214", 48)
+	premigration.StateReadAt = time.Time{}
+	store := projectionStore{
+		issues: []record.Issue{
+			issue("LEGION-208", phase.Reviewing), issue("LEGION-209", phase.Reviewing), issue("LEGION-210", phase.Testing),
+			issue("LEGION-211", phase.Reviewing), issue("LEGION-212", phase.Reviewing), issue("LEGION-213", phase.Reviewing),
+			issue("LEGION-214", phase.Reviewing),
+		},
+		phases: map[string][]record.PhaseRow{
+			"LEGION-208": reviewer("LEGION-208", approved()),
+			"LEGION-209": reviewer("LEGION-209", told),
+			"LEGION-210": reviewer("LEGION-210", approved()),
+			"LEGION-211": reviewer("LEGION-211", &record.ReviewDecision{State: "changes_requested", Body: "rename it", Head: "h2"}),
+			"LEGION-212": reviewer("LEGION-212", approved()),
+			"LEGION-213": reviewer("LEGION-213", approved()),
+			"LEGION-214": reviewer("LEGION-214", approved()),
+		},
+		pullRequests: map[string]*record.PullRequest{
+			// The head a push has just moved to: GitHub has answered nothing for it, and the
+			// fence still holds the run of the head before it.
+			"LEGION-208": {Issue: "LEGION-208", Repo: "acme/widgets", Number: 42, HeadSHA: "h2",
+				State: record.PullRequestOpen, MergeState: record.MergeStateUnread, HeadUpdatedAt: updated,
+				CheckRuns: []record.AttemptRun{{Name: "unit", ID: 9, Head: "h1"}}},
+			"LEGION-209": blocked("LEGION-209", 43),
+			"LEGION-210": blocked("LEGION-210", 44),
+			"LEGION-211": blocked("LEGION-211", 45),
+			"LEGION-212": mergeable,
+			"LEGION-213": merged,
+			"LEGION-214": premigration,
+		},
+	}
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{}, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	waiting := &api.MergeWaitView{WaitsOn: "h2", HeadUpdatedAt: &updated}
+	if wait := got.Issues["LEGION-208"].MergeWait; !reflect.DeepEqual(wait, waiting) {
+		t.Fatalf("LEGION-208's mergeWait = %+v, want %+v: the round waits for GitHub's first answer about the head, which no read has given and no CI settlement has brought a run for",
+			wait, waiting)
+	}
+	stuck := &api.MergeWaitView{WaitsOn: "h2", MergeState: "blocked", StateReadAt: &read, HeadUpdatedAt: &updated,
+		CheckRuns: 2, ToldHead: "h2", ToldState: "blocked"}
+	if wait := got.Issues["LEGION-209"].MergeWait; !reflect.DeepEqual(wait, stuck) {
+		t.Fatalf("LEGION-209's mergeWait = %+v, want %+v: the stuck round carries the state read, when it was read, the head's own two check runs and the marks it was told by",
+			wait, stuck)
+	}
+	unstamped := &api.MergeWaitView{WaitsOn: "h2", MergeState: "blocked", HeadUpdatedAt: &updated, CheckRuns: 2}
+	if wait := got.Issues["LEGION-214"].MergeWait; !reflect.DeepEqual(wait, unstamped) {
+		t.Fatalf("LEGION-214's mergeWait = %+v, want %+v: a row written before the migration holds the state GitHub gave with no moment of the read, and the view carries that state without a stateReadAt",
+			wait, unstamped)
+	}
+	for _, tc := range []struct{ key, why string }{
+		{"LEGION-210", "the issue is not reviewing"},
+		{"LEGION-211", "no approval decided the round"},
+		{"LEGION-212", "GitHub reports the head one the issue may advance on"},
+		{"LEGION-213", "the record no longer holds the pull request open"},
+	} {
+		if wait := got.Issues[tc.key].MergeWait; wait != nil {
+			t.Fatalf("%s's mergeWait = %+v, want none: %s", tc.key, wait, tc.why)
+		}
 	}
 }

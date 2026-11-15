@@ -407,6 +407,65 @@ test("an error frame rejects the query with an ApiError carrying the code", asyn
   }
 });
 
+// While a release rolls out, the socket can reach a process of an older build that refuses a frame
+// this page sends. The page closes that socket and reconnects with the lost socket's backoff, as
+// each reconnect may reach another process, and the new socket subscribes again.
+test("an INVALID_FRAME for a subscription the page holds opens a new socket", async () => {
+  jest.useFakeTimers();
+  // Each reconnect waits a draw of its delay (`reconnectDelayMs`); pinned at 0.625, the first
+  // waits 1,250 ms of the 2 s spread and the second 1,625 ms of its 1 to 2 s.
+  const random = spyOn(Math, "random").mockReturnValue(0.625);
+  const { observer, unsubscribe } = observe();
+  try {
+    const { socket, sub } = await opened();
+    socket.receive(snapshot(sub));
+    await settle();
+
+    socket.receive({
+      type: "error",
+      sub,
+      code: "INVALID_FRAME",
+      message: "type must be subscribe or unsubscribe",
+    });
+    expect(socket.closedWith).toBe(4000);
+    expect(live.state().state).toBe("reconnecting");
+    // The page keeps the data it holds while it reconnects.
+    expect(queryClient.getQueryData<DeliveryTimelineWithMeasures>(key)).toEqual(body);
+    expect(sockets.sockets).toHaveLength(1);
+    jest.advanceTimersByTime(1_249);
+    expect(sockets.sockets).toHaveLength(1);
+    jest.advanceTimersByTime(1);
+    expect(sockets.sockets).toHaveLength(2);
+
+    const again = sockets.latest();
+    again.open();
+    expect(again.subscribed("timeline")).toMatchObject({ sub });
+    // A second refusal waits twice as long: the refusal did not reset the backoff.
+    again.receive({
+      type: "error",
+      sub,
+      code: "INVALID_FRAME",
+      message: "type must be subscribe or unsubscribe",
+    });
+    expect(again.closedWith).toBe(4000);
+    jest.advanceTimersByTime(1_624);
+    expect(sockets.sockets).toHaveLength(2);
+    jest.advanceTimersByTime(1);
+    expect(sockets.sockets).toHaveLength(3);
+
+    // The process the third socket reaches serves the subscription.
+    const served = sockets.latest();
+    served.open();
+    served.receive(snapshot(served.subscribed("timeline").sub, "42"));
+    await settle();
+    expect(live.state().state).toBe("open");
+    expect(observer.getCurrentResult().data).toEqual(body);
+  } finally {
+    random.mockRestore();
+    unsubscribe();
+  }
+});
+
 test("the last observer leaving unsubscribes", async () => {
   const first = observe();
   const second = observe();
@@ -625,6 +684,34 @@ test("the first reconnect is spread over [0, 2 s); later ones back off within [d
     expect(reconnectDelayMs(attempt, () => 0)).toBe(d / 2);
     expect(reconnectDelayMs(attempt, () => 0.999)).toBeCloseTo(d / 2 + 0.999 * (d / 2));
     expect(reconnectDelayMs(attempt, () => 0.999)).toBeLessThan(d);
+  }
+});
+
+test("the first reconnect's wait is its draw times the window, so a scaled draw scales the wait", () => {
+  // What this holds up: the delivery probe sets its own first-attempt spread by scaling this
+  // function's random source instead of restating the arithmetic. `reconnectWaitMs(0, spreadMs,
+  // random)` in `packages/dispatch/e2e/delivery-live-probe.ts` calls `reconnectDelayMs(0, () =>
+  // random() * (spreadMs / RECONNECT_SPREAD_MS))`, so `--reconnect-spread-ms <n>` draws from
+  // [0, n) only while attempt 0's wait is the draw times the window. A `Math.min`, a floor or a
+  // clamp added to attempt 0 can keep the three points the row above pins and still change what
+  // that option means, with nothing red: a clamp at 1,999 ms passes that row and fails this one.
+  // So this row asserts the property across the window rather than at a value.
+  //
+  // Exact rather than to a tolerance: each side runs the same multiplication of the same doubles
+  // that the function runs, so both round the same way, and halving or doubling scales a double
+  // by a power of two, which IEEE arithmetic does without rounding.
+  for (const draw of [0, 0.001, 0.1, 0.25, 0.5, 0.75, 0.9999]) {
+    expect(reconnectDelayMs(0, () => draw)).toBe(draw * RECONNECT_SPREAD_MS);
+    expect(reconnectDelayMs(0, () => draw)).toBe(reconnectDelayMs(0, () => draw / 2) * 2);
+  }
+  // A factor that is not a power of two rounds twice, once in the draw and once in the wait, so
+  // this one is held to the tolerance the rows above use.
+  for (const factor of [0.3, 0.7]) {
+    for (const draw of [0.1, 0.25, 0.9]) {
+      expect(reconnectDelayMs(0, () => draw * factor)).toBeCloseTo(
+        reconnectDelayMs(0, () => draw) * factor
+      );
+    }
   }
 });
 
