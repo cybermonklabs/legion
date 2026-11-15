@@ -61,6 +61,16 @@ func TestAPullRequestFinishingOutsideMergingTellsTheArchitectOnce(t *testing.T) 
 // merge moves the issue. An approval after the merge moves it on the review. A merge after the
 // approval moves it on the merge itself, after the one pr-merged notice the merge sends.
 //
+// Each of those rows also carries GitHub's deletion of the merged branch, which a repository that
+// deletes a merged pull request's branch sends as a push from the head to no commit
+// (intake.NoCommit). The deletion names no head, so it takes no approval back, whether it arrives
+// after the merge, before the approval, or while the pull request is still open.
+//
+// A merge at a head the record does not hold ends no round: GitHub merged a head whose
+// synchronize and push the record has not applied, and the reviewer approved the head before it.
+// The record moves to the head the merge names, and the completed round is stuck on other code:
+// the architect is told once, by the merge.
+//
 // An approval that stands on the head of a pull request closed without merging ends no round,
 // even on a merge state GitHub would merge from and on a fact that settles the round (the
 // reviewer's completion): the architect has the one pr-closed-unmerged notice and decides.
@@ -72,7 +82,9 @@ func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testin
 	approvedAndCompleted.HandoffRecord, approvedAndCompleted.HandoffVersion, approvedAndCompleted.Summary = "review-1", 1, "reviewed"
 	approval := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
 		HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)}
-	merge := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"}
+	merge := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge", HeadSHA: headOne}
+	mergeOfAnotherHead := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge", HeadSHA: headTwo}
+	deletion := intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: intake.NoCommit, Pusher: "author", Sender: "author"}
 	closeUnmerged := intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 42, HeadSHA: headOne}
 	completion := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim",
 		Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}
@@ -84,13 +96,22 @@ func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testin
 		facts      []intake.Fact
 		want       phase.Phase
 		notices    []record.NoticeKind
+		// head is the head the record ends at, and stuckBy the summary of its one review-stuck
+		// notice; each is checked only where it is set.
+		head, stuckBy string
 	}{
 		{name: "the approval after the merge", state: record.PullRequestMerged, mergeState: record.MergeStateBlocked,
-			reviewer: reviewer, facts: []intake.Fact{approval},
+			reviewer: reviewer, facts: []intake.Fact{deletion, approval},
 			want: phase.Accepting, notices: []record.NoticeKind{"phase-finished"}},
 		{name: "the merge after the approval", state: record.PullRequestOpen, mergeState: record.MergeStateBlocked,
-			reviewer: approvedAndCompleted, facts: []intake.Fact{merge},
+			reviewer: approvedAndCompleted, facts: []intake.Fact{deletion, merge},
 			want: phase.Accepting, notices: []record.NoticeKind{"pr-merged", "phase-finished"}},
+		{name: "the approval, the branch's deletion, then the merge", state: record.PullRequestOpen, mergeState: record.MergeStateBlocked,
+			reviewer: reviewer, facts: []intake.Fact{approval, deletion, merge},
+			want: phase.Accepting, notices: []record.NoticeKind{"pr-merged", "phase-finished"}},
+		{name: "a merge at a head the record does not hold", state: record.PullRequestOpen, mergeState: record.MergeStateBlocked,
+			reviewer: approvedAndCompleted, facts: []intake.Fact{mergeOfAnotherHead},
+			want: phase.Reviewing, notices: []record.NoticeKind{"pr-merged", "review-stuck"}, head: headTwo, stuckBy: byMerge},
 		{name: "a close without merging after the approval", state: record.PullRequestOpen, mergeState: record.MergeStateClean,
 			reviewer: approved, facts: []intake.Fact{closeUnmerged, completion},
 			want: phase.Reviewing, notices: []record.NoticeKind{"pr-closed-unmerged"}},
@@ -121,6 +142,12 @@ func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testin
 			}
 			if got := noticeKinds(t, pool, "LEGION-208"); !slices.Equal(got, tc.notices) {
 				t.Fatalf("notices %v, want %v", got, tc.notices)
+			}
+			if got := recordedPR(t, pool, "LEGION-208"); tc.head != "" && got.HeadSHA != tc.head {
+				t.Fatalf("the record ends at head %s, want %s", got.HeadSHA, tc.head)
+			}
+			if got := reviewStuckNotices(t, pool); tc.stuckBy != "" && (len(got) != 1 || got[0].Summary != tc.stuckBy) {
+				t.Fatalf("review-stuck notices %+v, want one written by %q", got, tc.stuckBy)
 			}
 		})
 	}

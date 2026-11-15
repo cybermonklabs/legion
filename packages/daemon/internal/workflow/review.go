@@ -166,9 +166,6 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 		reason := fmt.Sprintf("the head conflicts with %s: GitHub runs no checks on it; merge %s forward", base, base)
 		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerConflict, "", record.PhaseRow{}, pr, reason)
 	}
-	if issue.Phase != phase.Reviewing {
-		return intake.Result{}, nil
-	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMergeState)
 }
 
@@ -606,13 +603,13 @@ const (
 	// from reviewing ends only once the retry restores it; or an approval that stands on the head
 	// of a pull request closed without merging, which the architect decides (reviewRound).
 	roundOpen roundOutcome = iota
-	// roundApproved ends the round: its reviewer completed, and its approval approves the head's code
-	// (classify.ApprovalStands), which GitHub answers for with a merge state the issue may advance
-	// on, or which the pull request has already merged at. No CI verdict is read: the reviewer reads
-	// the head's checks on GitHub before it approves, and a settlement moves no issue
-	// (dispatch://INFRA-714/spec R1).
+	// roundApproved ends the round: its approval approves the head's code (classify.ApprovalStands),
+	// which GitHub answers for with a merge state the issue may advance on, or which the pull
+	// request has already merged at. No CI verdict is read: the reviewer reads the head's checks on
+	// GitHub before it approves, and a settlement moves no issue (dispatch://INFRA-714/spec R1).
 	roundApproved
-	// roundRejected ends the round: its reviewer completed, and it requested changes.
+	// roundRejected ends the round: its reviewer requested changes, whether or not it has
+	// completed (reviewRound).
 	roundRejected
 	// roundStuck is a round that nothing on its way will end (stuckCause): one its reviewer
 	// completed without a decision of the head, or one whose approval GitHub will not merge from.
@@ -752,12 +749,17 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 	}
 	switch {
 	case decided == "approved" && classify.ApprovalStands(*pr, row.Decision.Head):
-		// A closed pull request merges nothing until a reopen, and the architect decides what
-		// comes of it (the pr-closed-unmerged notice), so its approval ends no round. A merged one
-		// is one the rule never waits on, so its approval ends the round below.
-		if pr.State == record.PullRequestClosed {
+		switch pr.State {
+		case record.PullRequestClosed:
+			// A closed pull request merges nothing until a reopen, and the architect decides what
+			// comes of it (the pr-closed-unmerged notice), so its approval ends no round.
 			return round{}
+		case record.PullRequestMerged:
+			// A merged pull request has nothing left to merge, and nothing the round could wait
+			// on ever comes, so its approval ends the round.
+			return round{outcome: roundApproved}
 		}
+		// Only an open pull request is left, and only its round can wait on GitHub's answer.
 		if !classify.RoundWaitsOnMergeState(issue, row, pr) {
 			return round{outcome: roundApproved}
 		}

@@ -695,7 +695,7 @@ func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMess
 		merged, _ := rawString(raw, "merged")
 		if merged == "true" {
 			mergeSHA, _ := rawString(raw, "merge_commit_sha")
-			return PullRequestMerged{Repo: repo, Number: number, MergeSHA: mergeSHA}, nil
+			return PullRequestMerged{Repo: repo, Number: number, MergeSHA: mergeSHA, HeadSHA: sha}, nil
 		}
 		return PullRequestClosed{Repo: repo, Number: number, HeadSHA: sha, UpdatedAt: updatedAt}, nil
 	case "dequeued":
@@ -758,6 +758,15 @@ func decodeReview(repository ghrepo.Repository, raw map[string]json.RawMessage) 
 //
 // A push to anything but a branch - a tag - is no fact, and neither is one that names no branch or
 // no commit it left.
+//
+// A push to an issue's branch whose after is NoCommit is no fact either. It is GitHub deleting the
+// branch, which a repository that deletes a merged pull request's branch (delete_branch_on_merge)
+// does right after every merge. The deletion names no head. Recorded as a push from the head, it
+// would be a push on its way from that head (classify.CodeOnItsWay), and that takes back the
+// approval standing on the head the pull request merged at. A push to a base with that after is
+// still a BasePush: the commit it records (record.PullRequest.BaseMoved) is only a mark that the
+// merge state on record may be stale. It is compared for equality and cleared by the next read,
+// and nothing reads it as a commit.
 func decodePush(repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
 	ref, _ := rawString(raw, "ref")
 	branch, isHead := strings.CutPrefix(ref, "refs/heads/")
@@ -770,6 +779,9 @@ func decodePush(repository ghrepo.Repository, raw map[string]json.RawMessage) (F
 	}
 	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch {
 		return BasePush{Repo: repository.String(), Branch: branch, After: after}, nil
+	}
+	if after == NoCommit {
+		return nil, nil
 	}
 	pusher, _ := rawString(raw, "pusher")
 	before, _ := rawString(raw, "before")

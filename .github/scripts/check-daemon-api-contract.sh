@@ -217,7 +217,7 @@ def number_in(text: str, what: str, advice: Callable[[], str] | None = None) -> 
 
 
 def held_in(site: str) -> dict[str, int]:
-    """The number site, a file of SITES after version.go, holds at each of its FIELDS. A file
+    """The number site, a file of FIELDS, holds at each of the fields FIELDS names for it. A file
     that is missing, is not JSON, lacks a field or holds anything but an integer there is refused
     by name, as a read that failed: a check that passes when it cannot read proves nothing."""
     what = f"{site} in this checkout"
@@ -401,9 +401,7 @@ tree_number, line = number_in(
 )
 
 # The agreement rule of the header: it runs before the pass for a number above the base's.
-for site in SITES:
-    if site == DECLARATION:
-        continue
+for site in FIELDS:
     held = held_in(site)
     if any(number != tree_number for number in held.values()):
         holds = " and ".join(f"{number} at {field}" for field, number in held.items())
@@ -412,8 +410,8 @@ for site in SITES:
             f"{site} holds daemon API contract {holds}, and {DECLARATION} declares {tree_number}. "
             f"The {len(SITES)} files that hold the number must agree on it: {', '.join(SITES)}. "
             f"`go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' "
-            f"-update`, run in packages/daemon, writes the two fixtures, and the two manifests "
-            f"take the number in legion.daemonApiVersion.",
+            f"-update`, run in packages/daemon, writes the fixtures, and the manifests take the "
+            f"number in legion.daemonApiVersion.",
         )
 
 if tree_number > base_number:

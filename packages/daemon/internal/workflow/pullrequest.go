@@ -272,7 +272,16 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 	return intake.Result{}, nil
 }
 
+// push records a push to the pull request's branch (classify.ApplyPushDropping) and re-asks the
+// review round (reaskRound). A push whose After is intake.NoCommit is GitHub's deletion of the
+// branch, and it records nothing. The deletion names no head. Recorded as a push from the head, it
+// would be a push on its way from that head (classify.CodeOnItsWay), and that takes back the
+// approval standing on the head the pull request merged at. intake's decodePush makes no fact of
+// a deletion; this test holds for a Push from any other source too.
 func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.Result, error) {
+	if fact.After == intake.NoCommit {
+		return intake.Result{}, nil
+	}
 	pr, err := e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil || pr == nil {
 		return intake.Result{}, err
@@ -310,9 +319,6 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	if issue.Phase != phase.Reviewing {
-		return intake.Result{}, nil
-	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byPush)
 }
 
@@ -321,8 +327,11 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 // fact's summary. pr is the pull request as the fact left it, and prior is the pull request as
 // the fact found it. The round as prior had it is the before a round stuck the same way is
 // deduped against (stuckAs), so a fact at the head the round was already told stuck at tells
-// nothing again.
+// nothing again. An issue outside reviewing has no round to re-ask, and nothing is read for it.
 func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, prior record.PullRequest, by string) error {
+	if issue.Phase != phase.Reviewing {
+		return nil
+	}
 	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {
 		return err
@@ -337,18 +346,28 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // routes it: it is told, and the merge closes the issue once it reaches merging (transition). A
 // redelivered merge changes nothing.
 //
-// In reviewing, after that notice, the merge settles the review round (settleRound): an approval
-// that stands on the head the pull request merged at ends the round and moves the issue to
-// accepting, since a merged pull request leaves the round nothing to wait on (reviewRound).
-// Without this, an approval that came before the merge would hold the issue in reviewing: no read
-// of the merged pull request ever comes (askMergeStateFor), and once the reviewer has completed no
-// other fact settles the round.
+// It records the head the merge names, as a close does (closed). A synchronize or a push of that
+// head can be lost or wait behind a backlog, and after the merge nothing else moves the record's
+// head: the synchronize handler drops a merged record, and the daemon's reads follow only an open
+// pull request's head (daemon's followHead). A merge that names no head leaves the recorded one.
+//
+// In reviewing, after the architect's notice, the merge settles the review round (settleRound):
+// an approval that stands on the head the pull request merged at ends the round and moves the
+// issue to accepting, since a merged pull request leaves the round nothing to wait on
+// (reviewRound). Without this, an approval that came before the merge would hold the issue in
+// reviewing: no read of the merged pull request ever comes (askMergeStateFor), and once the
+// reviewer has completed no other fact settles the round. An approval of a head other than the
+// one the merge names ends no round: once its reviewer has completed, the round is stuck on other
+// code (stuckApprovedOtherCode), and the architect is told once.
 func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMerged) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil || pr.State == record.PullRequestMerged {
 		return intake.Result{}, err
 	}
 	prior := *pr
+	if fact.HeadSHA != "" && fact.HeadSHA != pr.HeadSHA {
+		*pr = classify.AdvancePullRequestHead(*pr, classify.Arrival{}, fact.HeadSHA)
+	}
 	pr.State, pr.MergeSHA = record.PullRequestMerged, fact.MergeSHA
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
@@ -363,9 +382,6 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-merged", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("pull request #%d merged while %s was in %s, not merging", pr.Number, issue.Key, issue.Phase)}); err != nil {
 		return intake.Result{}, err
-	}
-	if issue.Phase != phase.Reviewing {
-		return intake.Result{}, nil
 	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMerge)
 }

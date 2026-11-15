@@ -199,10 +199,10 @@ run_check() {
 
 all_five_files="packages/daemon/internal/api/version.go$(printf ', %s' "${other_sites[@]}")"
 
-# How a refusal for files that disagree says to write the number: the golden tests write the two
-# fixtures, and the two manifests take it by hand. A pattern for contains, so `.` stands for the
+# How a refusal for files that disagree says to write the number: the golden tests write the
+# fixtures, and the manifests take it by hand. A pattern for contains, so `.` stands for the
 # backquote.
-update_command="go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)\$' -update., run in packages/daemon, writes the two fixtures, and the two manifests take the number in legion.daemonApiVersion"
+update_command="go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)\$' -update., run in packages/daemon, writes the fixtures, and the manifests take the number in legion.daemonApiVersion"
 
 echo "case: a tree equal to its base that touches the declaration"
 root=$(fixture equal)
