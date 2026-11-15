@@ -32,6 +32,12 @@ const testMainEnv = "LEGION_CMD_TEST_MAIN"
 
 func TestMain(m *testing.M) {
 	if os.Getenv(testMainEnv) == "1" {
+		// A test's stand-in shared check is no copy of the pinned one, so the test names the
+		// public_leak_check.py its stand-in carries as the one the read rule was proven against
+		// (ghCheckAt). Only this test binary reads the variable; the legion binary has none.
+		if proven := os.Getenv(testProvenCheckEnv); proven != "" {
+			ghReadsProvenCheck.sha256 = proven
+		}
 		main()
 	}
 	// environment_test.go reads these variables again once every test before it has run, so the
