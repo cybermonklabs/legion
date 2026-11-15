@@ -84,10 +84,12 @@ func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 // moveApprovalAsk is MoveApprovalAsk with keptEditor, the editor a settlement on the document's
 // closed issue kept, set by a settlement's version that adds none of that editor's text and so
 // names SettlementActor as mover (versionWrite.keptEditor). A request that names a version before
-// the one this version follows was moved by none of the versions between, each written while the
-// issue was closed (versionWrite.closedIssue), which hold that editor's text: its move names
-// keptEditor, as the reopen's move to such a version does (FollowClosedIssueVersions). A request
-// that names the version this one follows moves over this version's text alone, in mover's name.
+// the one this version follows was moved by none of the versions between, so each was written
+// while the issue was closed (versionWrite.closedIssue), and its move names keptEditor, as the
+// reopen's move to such a version does (FollowClosedIssueVersions). The rule takes those versions
+// to hold that editor's text; no stored version says whose text each added, so a version the close
+// alone produced, or one a settlement wrote for another edit, is read the same way. A request that
+// names the version this one follows moves over this version's text alone, in mover's name.
 func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, keptEditor *model.Actor, bySettlement bool, serverURL string) ([]model.Event, error) {
 	ask, err := OpenApprovalAsk(ctx, tx, artifactID)
 	if err != nil {

@@ -46,8 +46,9 @@ type versionWrite struct {
 	// the document's closed issue kept (settlementVersionCredit.kept), to that editor; the
 	// version's own actor is then SettlementActor. A request such a version moves from a version
 	// before the latest one spans the versions written while the issue was closed, whose move the
-	// reopen left to this settlement (FollowClosedIssueVersions) and which hold that editor's
-	// text, so that move names that editor, as the reopen's own move does (moveApprovalAsk).
+	// reopen left to this settlement (FollowClosedIssueVersions), so that move names that editor,
+	// as the reopen's own move does (moveApprovalAsk, which takes those versions to hold that
+	// editor's text, since no stored version says whose text each added).
 	keptEditor *model.Actor
 }
 

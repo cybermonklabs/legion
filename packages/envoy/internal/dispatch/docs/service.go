@@ -1628,10 +1628,11 @@ func stampBlockIDs(doc *crdt.Doc, origin any) (*pmdoc.Node, int, []stampedAsk, e
 }
 
 // settlementVersionCredit is whom a settlement's version credits, taken before the tree it records:
-// capture, its authors in order, and actor, whom its derived events name. kept says actor is only
-// the editor a settlement on the document's closed issue kept (settlementAuthors): that editor's
-// text is in an earlier version, so the version itself names SettlementActor (versionActor) while
-// the ask events that text causes, and the move of an approval request over it, still name them.
+// capture, its authors in order, and actor, whom its derived events name on an open issue. kept
+// says actor is only the editor a settlement on the document's closed issue kept
+// (settlementAuthors): that editor's text is in an earlier version, so the version itself names
+// SettlementActor (versionActor), while on an open issue the ask events that text causes, and the
+// move of an approval request from a version before the closed issue's versions, still name them.
 // state is the room the capture was taken from (consumeAskAuthors). askSources, copied once the
 // settlement holds the tree it reconciles, names who introduced each new ask block in it.
 type settlementVersionCredit struct {
@@ -1741,9 +1742,11 @@ func settlementCredit(ctx context.Context, tx pgx.Tx, state *roomState, room str
 // inserted (settlementPendingStatement). Where no in-flight credit names a newer source and the
 // version lists no one, that editor is the actor only because of that write: their text is in the
 // version the closed issue's settlement wrote, and this version adds none of it. The credit is then
-// kept (settlementVersionCredit.kept): its derived events still name that editor, since what they
-// reconcile is the text that editor wrote, and so does the move of an approval request over the
-// closed issue's versions (versionWrite.keptEditor); the version itself names SettlementActor.
+// kept (settlementVersionCredit.kept): on an open issue its derived events still name that editor,
+// since what they reconcile is the text that editor wrote, and so does the move of an approval
+// request from a version before the closed issue's versions (versionWrite.keptEditor); on a
+// closed issue every derived event names SettlementActor (planRepairs); the version itself names
+// SettlementActor.
 func settlementAuthors(state *roomState, owed map[string]model.Actor, recorded *model.Actor, recordedKept bool, durableLatest *model.Actor, through uint64) settlementVersionCredit {
 	capture := captureAuthors(state, owed, durableLatest, nil, nil, through)
 	credit := settlementVersionCredit{capture: capture, state: state, authors: actorSlice(capture.authors)}

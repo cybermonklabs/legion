@@ -541,7 +541,7 @@ It writes `state="resolved"` into an ask block that has no ask row, and records 
 To wake nobody, a settlement on a closed issue records no edit notice, and when it writes a version it deletes the document's `document_edit_notices` row.
 It moves no approval request and carries no approval (`versionWrite.closedIssue`).
 Its `block.repaired` and `block.invalid` events carry `SettlementActor`, so they notify nobody.
-Its version still lists the people whose edits it saves, and its `artifact.version` event keeps the actor of its credit:
+Its version still lists the people whose edits it saves, and its `artifact.version` event names the version's actor (`versionActor`): the actor of its credit, or `SettlementActor` where that credit is only the kept editor (below);
 the event of an unnamed version is quiet whoever its actor is (`events.Quiet`).
 It sweeps no marks, because `allowInject` refuses the unmark on a closed issue;
 the document's next settlement on the open issue sweeps them, and at the reopen one runs only for a document that the reopen writes or marks owed.
@@ -550,7 +550,7 @@ A write that names no edit source of its own and finds no pending row inserts on
 The kept editor is credited with the text that editor wrote, and with no version that adds none of it.
 A settlement whose version lists no one, and whose latest edit source is only that kept editor (`readSettlementEditSource`, `settlementVersionCredit.kept`), writes its version in the name of `SettlementActor`, on its `artifact.version` event and as the version's actor, since that editor's text is in the version the closed issue's settlement wrote:
 the version after the reopen that holds only the reopen's ask-state write, and a closed issue's version of an ask repair's sweep, a rebuild or a copy marked owed, are such versions.
-Its derived events still name the kept editor, and so does its move of an approval request that names a version from before the versions written while the issue was closed (`versionWrite.keptEditor`), since that move spans that editor's text; a request that names the version before this one moves in the name of `SettlementActor`.
+On an open issue its derived events still name the kept editor (on a closed issue `planRepairs` gives every derived event `SettlementActor`), and so does its move of an approval request that names a version from before the versions written while the issue was closed (`versionWrite.keptEditor`), since that move spans those versions, which the rule takes to hold that editor's text because no stored version says whose text each added; a request that names the version before this one moves in the name of `SettlementActor`.
 A closed issue's settlement of such a write keeps that same editor in `doc_closed_edit_sources`, so the reopen still finds the editor of the text the closed issue's versions hold.
 The latest person sender (`last_person`) is not kept: no edit notice after the reopen reports those edits.
 The reopen then moves the approval request and carries the approval for the latest version of each document of the issue whose stored updates that version holds (`docs.Service.FollowClosedIssueVersions`), and deletes the kept editor of each document of the issue that owes no settlement.
@@ -2805,8 +2805,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Every writer passes `MoveApprovalAsk` the actor whose edit moved the request:
   a route passes its own actor, settlement its latest known browser editor, and ambiguous browser content `SettlementActor`, `{kind: "system", id: "document-settlement"}`;
   an issue's reopen, for a version that a settlement wrote while the issue was closed (`docs.Service.FollowClosedIssueVersions`), passes the editor that settlement credited and kept (`doc_closed_edit_sources`), or `SettlementActor` where it kept none, since the reopener did not make that edit;
-  a settlement whose version lists no one and whose latest edit source is only that kept editor (`settlementVersionCredit.kept`) passes `SettlementActor`, but the kept editor where the request names a version from before the versions written while the issue was closed (`docs.moveApprovalAsk`'s `keptEditor`), since that move spans that editor's text;
-  how many authors the version credits does not choose the mover.
+  a settlement whose version lists no one and whose latest edit source is only that kept editor (`settlementVersionCredit.kept`) passes `SettlementActor`, but the kept editor where the request names a version from before the versions written while the issue was closed (`docs.moveApprovalAsk`'s `keptEditor`), since that move spans those versions, which the rule takes to hold that editor's text;
+  apart from that case, where a version that lists no one is what names `SettlementActor`, how many authors the version credits does not choose the mover.
   What resolving an ask stores is written in one place, `docs.WriteAskResolution`, which settlement's retraction of a removed ask block, an issue's close, the resolve route and the decline route all call.
   A request while the latest version is approved returns the approval and opens nothing.
 

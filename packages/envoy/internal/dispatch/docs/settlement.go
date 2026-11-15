@@ -765,17 +765,20 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event) er
 // no edit notice and deletes the one the document holds (document_edit_notices), moves no
 // approval request and carries no approval (versionWrite.closedIssue), and the settlement sweeps
 // no marks after it commits. The version still lists the people whose edits it saves, and its
-// artifact.version event keeps the actor its credit names, since an unnamed version is quiet
-// whoever its actor is (events.Quiet). That actor outlives the pending row the commit deletes, for
-// the settlement after the reopen to name, which wakes whom the edit's own settlement would have
-// woken on the open issue (clearSettlementPending).
+// artifact.version event names the version's actor (versionActor): the actor its credit names, or
+// SettlementActor where that credit is only the kept editor (below); an unnamed version is quiet
+// whoever its actor is (events.Quiet). The credited actor outlives the pending row the commit
+// deletes, for the settlement after the reopen to name, which wakes whom the edit's own settlement
+// would have woken on the open issue (clearSettlementPending).
 //
 // The editor so kept is credited with the text that editor wrote and with no version that adds
 // none of it. A version whose credit is only that editor (settlementVersionCredit.kept) - one of
 // the reopen's ask-state write, an ask repair's sweep, a rebuild or a copy marked owed, each
 // naming no editor of its own - names SettlementActor on its artifact.version event and as its
-// write's actor (versionActor), while its derived events and the move of an approval request over
-// the closed issue's versions still name that editor (versionWrite.keptEditor).
+// write's actor (versionActor). On an open issue its derived events, and the move of an approval
+// request that names a version from before the closed issue's versions, still name that editor
+// (versionWrite.keptEditor); on a closed issue every derived event names SettlementActor
+// (planRepairs).
 func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutcome) {
 	s, room, state, tx, ledger := st.service, st.room, st.state, st.tx, st.ledger
 	// read is the settlement's private copy of the document (readSettlementTree), and nothing but
