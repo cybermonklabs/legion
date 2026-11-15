@@ -2,6 +2,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import type { AskOption, CaseRow, CaseVerdict } from "./build-corpus";
 import {
+  CLAIM_RUN_VARIABLE,
   REGISTRATION,
   REPOSITORY_ROOT,
   RESERVE_VARIABLE,
@@ -54,13 +55,15 @@ export class CorpusError extends CannotRunError {
  * What a build did with the reserve of INFRA-2897's next final test (`writeCorpus` in
  * `build-corpus.ts`): whether it left the reserved cases out of `corpus.jsonl` because the
  * reserve held, how many cases the reserve holds and on how many issues, and the read `claim.ts`
- * registers that the build wrote them under, null where it wrote them under none.
+ * registers that the build wrote them under, null where it wrote them under none, with the claim
+ * run that build was (the reply that started it, `claimRunOf` in `reserve.ts`).
  */
 export interface SnapshotReserve {
   leftOut: boolean;
   cases: number;
   issues: number;
   readUnder: string | null;
+  claimRun?: string;
 }
 
 /** What a build read, as `snapshot.json` holds it. */
@@ -264,10 +267,12 @@ export async function outDirectory(out: string): Promise<string> {
  * build recorded what the reserve reads of a case, holding a case the reserve could hold, is
  * refused: only a new build can say whether that case is reserved. A read of the reserve takes
  * only a corpus whose `snapshot.json` says its build wrote the reserve under that same read (the
- * claim run's own build, `writeCorpus` in `build-corpus.ts`). A corpus whose build held the
- * reserve has none of its cases in `corpus.jsonl`, only their count in `snapshot.json`, so a read
- * of it once the reserve ended is refused too: the cases are not there, and only a new build
- * writes them.
+ * claim run's own build, `writeCorpus` in `build-corpus.ts`), as the claim run that
+ * `APPROVAL_EVAL_CLAIM_RUN` names: the one claim run's build asked Dispatch which reply started it
+ * (`claimRunOf` in `reserve.ts`), so a later start cannot read its corpus. A corpus whose build
+ * held the reserve has none of its cases in `corpus.jsonl`, only their count in `snapshot.json`,
+ * so a read of it once the reserve ended is refused too: the cases are not there, and only a new
+ * build writes them.
  */
 export async function readCorpus(
   corpus: string,
@@ -287,6 +292,15 @@ export async function readCorpus(
   const leftOut = snapshot.reserve?.leftOut === true ? snapshot.reserve : null;
   if (access.kind === "read" && snapshot.reserve?.readUnder !== access.reference) {
     throw new CorpusError(`${directory} ${notBuiltUnder(snapshot.reserve, access.reference)}`);
+  }
+  const claimRun = process.env[CLAIM_RUN_VARIABLE]?.trim() ?? "";
+  if (access.kind === "read" && snapshot.reserve?.claimRun !== claimRun) {
+    throw new CorpusError(
+      `${directory} was built by the claim run ${snapshot.reserve?.claimRun ?? "of no record"} ` +
+        `under ${access.reference}, and ${CLAIM_RUN_VARIABLE} ` +
+        `${claimRun === "" ? "is not set" : `names ${claimRun}`}: a read of the reserve takes ` +
+        "only the corpus its own claim run built, so a second claim run cannot read the first's"
+    );
   }
   if (leftOut !== null && leftOut.cases > 0 && access.kind === "ended") {
     const what = `${counted(leftOut.cases, "case")} on ${counted(leftOut.issues, "issue")}`;
@@ -538,7 +552,8 @@ function snapshotOf(directory: string, text: string): CorpusSnapshot {
 /**
  * What `snapshot.json` records of the reserve, as `writeCorpus` writes it. Any other shape is
  * refused: a reader that guessed could take a file that left the reserved cases out for one that
- * holds them, or the other way round.
+ * holds them, or the other way round. A claim run is recorded only beside a read; a read built
+ * before builds recorded the claim run has none, and no read of the reserve takes it.
  */
 function snapshotReserveOf(path: string, value: unknown): SnapshotReserve {
   const record = recordOf(value);
@@ -546,6 +561,7 @@ function snapshotReserveOf(path: string, value: unknown): SnapshotReserve {
   const cases = numberOf(record?.cases);
   const issues = numberOf(record?.issues);
   const readUnder = record?.readUnder === null ? null : stringOf(record?.readUnder);
+  const claimRun = record?.claimRun === undefined ? undefined : stringOf(record.claimRun);
   if (
     typeof leftOut !== "boolean" ||
     cases === null ||
@@ -555,11 +571,14 @@ function snapshotReserveOf(path: string, value: unknown): SnapshotReserve {
     !Number.isSafeInteger(issues) ||
     issues < 0 ||
     (readUnder === null && record?.readUnder !== null) ||
-    (leftOut && readUnder !== null)
+    (leftOut && readUnder !== null) ||
+    claimRun === null ||
+    claimRun === "" ||
+    (claimRun !== undefined && readUnder === null)
   ) {
     throw new CorpusError(`${path} records the reserve in a shape no build writes`);
   }
-  return { leftOut, cases, issues, readUnder };
+  return { leftOut, cases, issues, readUnder, ...(claimRun === undefined ? {} : { claimRun }) };
 }
 
 /** One line of a corpus's `corpus.jsonl` read back, which a build wrote. */

@@ -4,10 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CaseRow, countsOf, type Snapshot, writeCorpus } from "../build-corpus";
 import { type Corpus, CorpusError, readCorpus, type SnapshotReserve } from "../corpus-io";
-import type { DispatchEvent } from "../dispatch-read";
+import type { CommentReply, DispatchEvent } from "../dispatch-read";
 import { FreshError, type FreshReport, refuseReportsOutside } from "../fresh-agent";
 import { PoolError, type RunOutcomes, refuseRunsOutside } from "../pool-runs";
 import {
+  CLAIM_RUN_START,
+  CLAIM_RUN_VARIABLE,
+  claimRunOf,
   DigestError,
   type IssueParents,
   noteAskRoot,
@@ -16,7 +19,9 @@ import {
   RESERVE_TREE_CUT,
   RESERVE_VARIABLE,
   type Registration,
+  type RepliesOf,
   readReferenceOf,
+  registrationCommentOf,
   reserveOf,
   runDigestOf,
   treeRootOf,
@@ -236,11 +241,14 @@ describe("an ask's tree, from the walk of the log", () => {
 /** The directories this file made, each removed by its own exact path. */
 const made: string[] = [];
 const variableBefore = process.env[RESERVE_VARIABLE];
+const claimRunBefore = process.env[CLAIM_RUN_VARIABLE];
 
 afterEach(async () => {
   for (const directory of made.splice(0)) await rm(directory, { recursive: true, force: true });
   if (variableBefore === undefined) delete process.env[RESERVE_VARIABLE];
   else process.env[RESERVE_VARIABLE] = variableBefore;
+  if (claimRunBefore === undefined) delete process.env[CLAIM_RUN_VARIABLE];
+  else process.env[CLAIM_RUN_VARIABLE] = claimRunBefore;
 });
 
 /**
@@ -440,10 +448,17 @@ describe("readCorpus and the reserve", () => {
 
   test("reads them under a reference registered for this run, from a corpus built under it", async () => {
     process.env[RESERVE_VARIABLE] = `read:${claim}`;
+    process.env[CLAIM_RUN_VARIABLE] = "start-1";
     const root = await bundleRoot();
     const run = await runDigestOf({ argv: process.argv, env: process.env }, root);
     const registration = { reads: [{ reference: claim, run }], ended: null };
-    const builtUnder = { leftOut: false, cases: 1, issues: 1, readUnder: claim };
+    const builtUnder = {
+      leftOut: false,
+      cases: 1,
+      issues: 1,
+      readUnder: claim,
+      claimRun: "start-1",
+    };
     const directory = await corpusOnDisk([reserved, open], builtUnder);
     const { corpus, printed } = await read(directory, registration, root);
     expect(corpus.rows.map((row) => row.caseId)).toEqual(["reserved", "open"]);
@@ -453,6 +468,7 @@ describe("readCorpus and the reserve", () => {
 
   test("refuses a read of the reserve over a corpus no build under that read wrote", async () => {
     process.env[RESERVE_VARIABLE] = `read:${claim}`;
+    process.env[CLAIM_RUN_VARIABLE] = "start-1";
     const root = await bundleRoot();
     const run = await runDigestOf({ argv: process.argv, env: process.env }, root);
     const registration = { reads: [{ reference: claim, run }], ended: null };
@@ -520,6 +536,119 @@ describe("readCorpus and the reserve", () => {
   });
 });
 
+describe("the one claim run", () => {
+  const claim = "dispatch://INFRA/artifact/infra-2897-final-test-reserve-md/comment/registration";
+  const reply = (id: string, body: string, createdAt: string): CommentReply => ({
+    id,
+    body,
+    created_at: createdAt,
+    edited_at: null,
+  });
+  const first = reply("start-1", `${CLAIM_RUN_START} at the freeze`, "2026-11-22T10:00:00.000001Z");
+  const second = reply("start-2", `  ${CLAIM_RUN_START} again`, "2026-11-22T12:00:00Z");
+  const question = reply("question", "Which event pins the build?", "2026-11-22T09:00:00Z");
+  const repliesOf =
+    (...replies: CommentReply[]): RepliesOf =>
+    async (commentId) => {
+      expect(commentId).toBe("registration");
+      return replies;
+    };
+
+  test("admits only the run the first start reply names, a resumed one included", async () => {
+    const replies = repliesOf(second, question, first);
+    const admitted = { kind: "claim", id: "start-1" };
+    expect(await claimRunOf(claim, "start-1", replies)).toEqual(admitted);
+    expect(await claimRunOf(claim, " start-1 ", replies)).toEqual(admitted);
+  });
+
+  test("orders two starts in one millisecond by the microseconds Dispatch recorded", async () => {
+    const later = reply("a-later", CLAIM_RUN_START, "2026-11-22T10:00:00.00012Z");
+    const earlier = reply("z-earlier", CLAIM_RUN_START, "2026-11-22T10:00:00.000101Z");
+    const replies = repliesOf(later, earlier);
+    expect(await claimRunOf(claim, "z-earlier", replies)).toEqual({
+      kind: "claim",
+      id: "z-earlier",
+    });
+    expect((await claimRunOf(claim, "a-later", replies)).kind).toBe("refused");
+    const untimed = reply("untimed", CLAIM_RUN_START, "not a time");
+    const refused = await claimRunOf(claim, "z-earlier", repliesOf(earlier, untimed));
+    expect(refused.kind).toBe("refused");
+  });
+
+  test("refuses a second claim run and any run that names no start, naming the first", async () => {
+    const replies = repliesOf(first, question, second);
+    for (const [named, why] of [
+      ["start-2", "names start-2, a later start, at 2026-11-22T12:00:00Z"],
+      ["question", "names question, which is no start reply to it"],
+      [undefined, "APPROVAL_EVAL_CLAIM_RUN is not set"],
+    ] as const) {
+      const refused = await claimRunOf(claim, named, replies);
+      expect(refused.kind).toBe("refused");
+      if (refused.kind !== "refused") continue;
+      expect(refused.reason).toContain(
+        `the claim run under ${claim} is reply start-1, started at 2026-11-22T10:00:00.000001Z`
+      );
+      expect(refused.reason).toContain(why);
+    }
+  });
+
+  test("refuses every run while no reply has started the claim run", async () => {
+    const refused = await claimRunOf(claim, "question", repliesOf(question));
+    expect(refused).toEqual({
+      kind: "refused",
+      reason:
+        `no claim run has started under ${claim}: reply to it with a body that starts ` +
+        `"${CLAIM_RUN_START}", then set ${CLAIM_RUN_VARIABLE} to that reply's id`,
+    });
+  });
+
+  test("refuses every run once any reply to the registration was edited", async () => {
+    const edited = { ...question, edited_at: "2026-11-22T13:00:00Z" };
+    const refused = await claimRunOf(claim, "start-1", repliesOf(first, edited));
+    expect(refused.kind).toBe("refused");
+    if (refused.kind === "refused") expect(refused.reason).toContain("reply question");
+  });
+
+  test("refuses a reference that names no comment, and a thread Dispatch does not serve", async () => {
+    expect(registrationCommentOf(claim)).toBe("registration");
+    expect(registrationCommentOf("dispatch://INFRA-2897/comment/x#b-1")).toBeNull();
+    expect(registrationCommentOf("dispatch://INFRA-2897")).toBeNull();
+    const notComment = await claimRunOf("dispatch://INFRA-2897", "start-1", repliesOf(first));
+    expect(notComment.kind).toBe("refused");
+    const gone = await claimRunOf(claim, "start-1", async () => {
+      throw new Error("GET /api/v1/comments/registration: 404 not found");
+    });
+    expect(gone.kind).toBe("refused");
+    if (gone.kind === "refused") expect(gone.reason).toContain("404 not found");
+  });
+
+  test("a read of the reserve takes only the corpus its own claim run built", async () => {
+    process.env[RESERVE_VARIABLE] = `read:${claim}`;
+    const root = await bundleRoot();
+    process.env[CLAIM_RUN_VARIABLE] = "start-1";
+    const run = await runDigestOf({ argv: process.argv, env: process.env }, root);
+    process.env[CLAIM_RUN_VARIABLE] = "start-2";
+    expect(await runDigestOf({ argv: process.argv, env: process.env }, root)).toBe(run);
+    const registration: Registration = { reads: [{ reference: claim, run }], ended: null };
+    const reserved = caseRow("reserved", PICKED, LATER);
+    const byFirst = { leftOut: false, cases: 1, issues: 1, readUnder: claim, claimRun: "start-1" };
+    const directory = await corpusOnDisk([reserved], byFirst);
+    await expect(readCorpus(directory, { registration, root })).rejects.toThrow(
+      "was built by the claim run start-1 under"
+    );
+    delete process.env[CLAIM_RUN_VARIABLE];
+    await expect(readCorpus(directory, { registration, root })).rejects.toThrow(
+      "APPROVAL_EVAL_CLAIM_RUN is not set"
+    );
+    const { claimRun: _, ...beforeClaimRuns } = byFirst;
+    const before = await corpusOnDisk([reserved], beforeClaimRuns);
+    process.env[CLAIM_RUN_VARIABLE] = "start-1";
+    await expect(readCorpus(before, { registration, root })).rejects.toThrow("of no record");
+    const { corpus } = await read(directory, registration, root);
+    expect(corpus.rows.map((row) => row.caseId)).toEqual(["reserved"]);
+  });
+});
+
 describe("what a build writes of the reserve", () => {
   const reserved: CaseRow = {
     ...caseRow("reserved", PICKED, LATER),
@@ -584,7 +713,11 @@ describe("what a build writes of the reserve", () => {
       priorCasesOnDocument: 0,
       answersThatDayBefore: 0,
     });
-    const claimBuild = await built([first, kept], { kind: "read", reference: claim });
+    const claimBuild = await built([first, kept], {
+      kind: "read",
+      reference: claim,
+      claimRun: "start-1",
+    });
     expect(claimBuild.ids).toEqual(["first", "kept"]);
     expect(claimBuild.written[1]?.confounds).toMatchObject({
       changesAlreadyRequested: true,
@@ -613,9 +746,16 @@ describe("what a build writes of the reserve", () => {
     const { directory, ids, reserve } = await built([reserved, open], {
       kind: "read",
       reference: claim,
+      claimRun: "start-1",
     });
     expect(ids).toEqual(["reserved", "open"]);
-    expect(reserve).toEqual({ leftOut: false, cases: 1, issues: 1, readUnder: claim });
+    expect(reserve).toEqual({
+      leftOut: false,
+      cases: 1,
+      issues: 1,
+      readUnder: claim,
+      claimRun: "start-1",
+    });
     await expect(readCorpus(directory)).rejects.toThrow(
       "case reserved is one the reserve holds, and while the reserve holds a read takes only a " +
         "corpus whose build left every such case out"
@@ -631,6 +771,7 @@ describe("what a build writes of the reserve", () => {
   test("refuses a read of the reserve over a corpus built while it held, and any read once it ended", async () => {
     const { directory } = await built([reserved, open], { kind: "held" });
     process.env[RESERVE_VARIABLE] = `read:${claim}`;
+    process.env[CLAIM_RUN_VARIABLE] = "start-1";
     const root = await bundleRoot();
     const run = await runDigestOf({ argv: process.argv, env: process.env }, root);
     const registered: Registration = { reads: [{ reference: claim, run }], ended: null };
@@ -668,6 +809,9 @@ describe("what a build writes of the reserve", () => {
       { leftOut: true, cases: 1, issues: 1, readUnder: claim },
       { leftOut: false, cases: -1, issues: 0, readUnder: null },
       { leftOut: false, cases: 0, issues: 0 },
+      { leftOut: false, cases: 0, issues: 0, readUnder: null, claimRun: "start-1" },
+      { leftOut: false, cases: 1, issues: 1, readUnder: claim, claimRun: "" },
+      { leftOut: false, cases: 1, issues: 1, readUnder: claim, claimRun: 7 },
     ]) {
       await writeFile(
         join(directory, "snapshot.json"),

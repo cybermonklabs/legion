@@ -13,8 +13,10 @@ import {
   UsageError,
   verdictOf,
 } from "./corpus-io";
-import { type DispatchEvent, pageEventLog } from "./dispatch-read";
+import { type DispatchEvent, dispatchRepliesOf, pageEventLog } from "./dispatch-read";
 import {
+  CLAIM_RUN_VARIABLE,
+  claimRunOf,
   type IssueParents,
   noteAskRoot,
   noteIssueParent,
@@ -376,6 +378,11 @@ export function countsOf(rows: readonly CaseSeed[]): Counts {
   return counts;
 }
 
+/** What a build may do with the reserve: a read carries the claim run it is (`claimRunOf`). */
+export type BuildAccess =
+  | Exclude<ReserveAccess, { kind: "refused" | "read" }>
+  | { kind: "read"; reference: string; claimRun: string };
+
 /**
  * Writes `corpus.jsonl` and `snapshot.json` into `directory`, by what this build may do with the
  * reserve of INFRA-2897's next final test (`reserveAccessOf`). While the reserve holds, no case it
@@ -384,14 +391,15 @@ export function countsOf(rows: readonly CaseSeed[]): Counts {
  * file itself meets no reserved case and no answer to one. The confounds are counted over the
  * cases written, so a kept case's (changes already requested on its document, the cases before
  * it there, the answers that day before it) tell nothing of a case left out either. A build under
- * a read `claim.ts` registers writes every case and records that read; once the reserve ended,
- * every case is written and none is held. Returns what `snapshot.json` records of the reserve.
+ * a read `claim.ts` registers writes every case and records that read and the claim run it is,
+ * which every later read of the file must name (`readCorpus`); once the reserve ended, every case
+ * is written and none is held. Returns what `snapshot.json` records of the reserve.
  */
 export async function writeCorpus(
   directory: string,
   seeds: readonly CaseSeed[],
   snapshot: Snapshot,
-  access: Exclude<ReserveAccess, { kind: "refused" }>
+  access: BuildAccess
 ): Promise<SnapshotReserve> {
   const ended = access.kind === "ended" ? access.record : null;
   const held = new Set(seeds.filter((seed) => reserveOf(seed, ended) === "held"));
@@ -400,6 +408,7 @@ export async function writeCorpus(
     cases: held.size,
     issues: new Set([...held].map((seed) => seed.issueKey)).size,
     readUnder: access.kind === "read" ? access.reference : null,
+    ...(access.kind === "read" ? { claimRun: access.claimRun } : {}),
   };
   const rows = withConfounds(reserve.leftOut ? seeds.filter((seed) => !held.has(seed)) : seeds);
   await mkdir(directory, { recursive: true });
@@ -421,7 +430,10 @@ function reserveLine(reserve: SnapshotReserve): string {
     return `${reserve.cases}, left out of corpus.jsonl, so no command and no reader meets them (reserve.ts)`;
   }
   if (reserve.readUnder !== null) {
-    return `${reserve.cases}, written to corpus.jsonl under ${reserve.readUnder}, a read claim.ts registers`;
+    return (
+      `${reserve.cases}, written to corpus.jsonl under ${reserve.readUnder}, a read claim.ts ` +
+      `registers, by the claim run ${reserve.claimRun}`
+    );
   }
   return "none: the reserve ended (claim.ts), and every case is written";
 }
@@ -461,6 +473,22 @@ async function build(flags: Flags): Promise<number> {
   if (access.kind === "refused") {
     console.error(access.reason);
     return 2;
+  }
+  let built: BuildAccess;
+  if (access.kind === "read") {
+    // The one claim run, asked of Dispatch before the walk, as the reserve's access is.
+    const claimRun = await claimRunOf(
+      access.reference,
+      process.env[CLAIM_RUN_VARIABLE],
+      dispatchRepliesOf
+    );
+    if (claimRun.kind === "refused") {
+      console.error(claimRun.reason);
+      return 2;
+    }
+    built = { ...access, claimRun: claimRun.id };
+  } else {
+    built = access;
   }
   const readStartedAt = new Date().toISOString();
   let through = flags.through;
@@ -508,7 +536,7 @@ async function build(flags: Flags): Promise<number> {
     readStartedAt,
     readFinishedAt,
   };
-  const reserve = await writeCorpus(directory, seeded, snapshot, access);
+  const reserve = await writeCorpus(directory, seeded, snapshot, built);
   await writeFile(join(directory, "counts.json"), `${JSON.stringify(counts, null, 2)}\n`);
   const treesFile: TreesFile = {
     version: TREES_VERSION,
