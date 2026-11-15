@@ -2,6 +2,7 @@ package pgmigrate
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"reflect"
@@ -288,5 +289,261 @@ func TestDiagnoseHoldersReturnsWhenTheCleanupCannotFinish(t *testing.T) {
 		}
 	case <-time.After(bound):
 		t.Fatalf("diagnoseHolders has not returned in %v: its cleanup is waiting on a transport that passes nothing", bound)
+	}
+}
+
+// Exec reads a migration as the census read it, whatever the runner's connection carries, because
+// it sets the text settings (textSettings) transaction-local before the migration runs. Each row
+// gives the runner's connection one setting at a value the census does not read under: a session
+// SET, which an earlier migration can leave on a pooled connection, a connection option, or a
+// database default. The row's migration is one insert of one string constant to the census's
+// parser, and under that setting Postgres reads it as two inserts, or refuses it. Each row applies
+// the migration through Exec in a transaction and commits, then reads the table on a connection of
+// its own in UTF-8: it must hold one row, the constant the census's parser read. A connection left
+// in SJIS cannot read Á back, so the runner's connection does not read the table. The runner's
+// connection must still carry the row's setting after the commit, since Exec's settings end with
+// its transaction.
+func TestExecReadsAMigrationAsTheCensusReadsIt(t *testing.T) {
+	ctx := context.Background()
+	// The census's parser reads each text below as one insert of the one constant after it. Under
+	// standard_conforming_strings off, \' escapes the quote after it: 'a\'' is a', and the rest of
+	// the text is a second insert and a comment.
+	const backslashBeforeQuote = `insert into r values ('a\'');insert into r values ($$x$$);--')`
+	const backslashBeforeQuoteValue = `a\');insert into r values ($$x$$);--`
+	// Under client_encoding SJIS, the second byte of Á (C3 81 in UTF-8) and the backslash after it
+	// are one character, so the backslash escapes nothing and the quote after it ends the literal.
+	const backslashAfterNonASCII = `insert into r values (E'Á\');insert into r values ($$x$$);--')`
+	const backslashAfterNonASCIIValue = `Á');insert into r values ($$x$$);--`
+	// Under backslash_quote off, Postgres refuses the \' (SQLSTATE 22P06).
+	const escapedQuote = `insert into r values (E'a\'')`
+	const escapedQuoteValue = `a'`
+	// sessionSet connects to url and runs set on the connection, for the session.
+	sessionSet := func(set string) func(*testing.T, string) *pgx.Conn {
+		return func(t *testing.T, url string) *pgx.Conn {
+			conn := connect(t, ctx, url)
+			if _, err := conn.Exec(ctx, set); err != nil {
+				t.Fatalf("%s: %v", set, err)
+			}
+			return conn
+		}
+	}
+	for _, row := range []struct {
+		name string
+		// runner connects to the row's database, which url names, and gives the connection the
+		// row's setting.
+		runner func(t *testing.T, url string) *pgx.Conn
+		// setting is the setting the row changes, and value its value on the runner's connection.
+		setting, value string
+		// want is the one constant the census's parser reads in sql.
+		sql, want string
+	}{
+		{"a session set of standard_conforming_strings off", sessionSet("set standard_conforming_strings = off"), "standard_conforming_strings", "off", backslashBeforeQuote, backslashBeforeQuoteValue},
+		{"a connection option of standard_conforming_strings off", func(t *testing.T, url string) *pgx.Conn {
+			config, err := pgx.ParseConfig(url)
+			if err != nil {
+				t.Fatalf("parse the test database's URL: %v", err)
+			}
+			config.RuntimeParams["options"] = "-c standard_conforming_strings=off"
+			conn, err := pgx.ConnectConfig(ctx, config)
+			if err != nil {
+				t.Fatalf("connect with standard_conforming_strings off: %v", err)
+			}
+			t.Cleanup(func() { conn.Close(context.Background()) })
+			return conn
+		}, "standard_conforming_strings", "off", backslashBeforeQuote, backslashBeforeQuoteValue},
+		{"a database default of standard_conforming_strings off", func(t *testing.T, url string) *pgx.Conn {
+			config, err := pgx.ParseConfig(url)
+			if err != nil {
+				t.Fatalf("parse the test database's URL: %v", err)
+			}
+			if _, err := connect(t, ctx, url).Exec(ctx, "alter database "+pgx.Identifier{config.Database}.Sanitize()+" set standard_conforming_strings = off"); err != nil {
+				t.Fatalf("set the database's default: %v", err)
+			}
+			return connect(t, ctx, url)
+		}, "standard_conforming_strings", "off", backslashBeforeQuote, backslashBeforeQuoteValue},
+		{"a session set of client_encoding SJIS", sessionSet("set client_encoding = 'SJIS'"), "client_encoding", "SJIS", backslashAfterNonASCII, backslashAfterNonASCIIValue},
+		{"a session set of backslash_quote off", sessionSet("set backslash_quote = off"), "backslash_quote", "off", escapedQuote, escapedQuoteValue},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			statements, ok := parseStatements(row.sql)
+			if !ok || len(statements) != 1 {
+				t.Fatalf("the census's parser read %d statements (ok %v), want one", len(statements), ok)
+			}
+			var tree any
+			if err := json.Unmarshal(statements[0].body, &tree); err != nil {
+				t.Fatalf("read the parse tree: %v", err)
+			}
+			var census []string
+			stringConstants(tree, &census)
+			if !reflect.DeepEqual(census, []string{row.want}) {
+				t.Fatalf("the census's parser read the string constants %q, want %q", census, row.want)
+			}
+
+			url := testpg.URL(t)
+			readerConfig, err := pgx.ParseConfig(url)
+			if err != nil {
+				t.Fatalf("parse the test database's URL: %v", err)
+			}
+			readerConfig.RuntimeParams["client_encoding"] = "UTF8"
+			reader, err := pgx.ConnectConfig(ctx, readerConfig)
+			if err != nil {
+				t.Fatalf("connect the reader: %v", err)
+			}
+			t.Cleanup(func() { reader.Close(context.Background()) })
+			if _, err := reader.Exec(ctx, "create table r (v text)"); err != nil {
+				t.Fatal(err)
+			}
+
+			runner := row.runner(t, url)
+			carries := func(when string) {
+				t.Helper()
+				var value string
+				if err := runner.QueryRow(ctx, "select current_setting($1)", row.setting).Scan(&value); err != nil || value != row.value {
+					t.Fatalf("%s, the runner's connection has %s = %q, %v; want %q", when, row.setting, value, err, row.value)
+				}
+			}
+			carries("before Exec")
+			tx, err := runner.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := Exec(ctx, tx, Migration{Version: 1, Name: "0001_r.up.sql", SQL: row.sql}, nil); err != nil {
+				t.Fatalf("Exec: %v", err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatalf("commit: %v", err)
+			}
+			carries("after the commit")
+
+			rows, err := reader.Query(ctx, "select v from r")
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(stored, census) {
+				t.Fatalf("r holds %q, want %q, the one constant the census's parser read", stored, census)
+			}
+		})
+	}
+}
+
+// Exec resolves a migration's names under the values that RESET gives session_authorization,
+// role and search_path (resetSettings), as the census resolves them, whatever the runner's
+// connection carries. An earlier migration can leave each of them changed on a pooled connection,
+// by a session SET or through stored code that calls set_config, and a name can then resolve to
+// another object than the census read: search_path lists the schemas a lookup searches, "$user"
+// in it names the schema of the session user, and the current user's privileges decide which
+// schemas a lookup can use. Each row changes one or all three for the session of the runner's
+// connection: a SET of search_path, a SET ROLE, and a superuser's SET SESSION AUTHORIZATION to
+// another role. The last row signs in as a login that is no superuser and makes the first two,
+// as a deployment's login can. The row's migration writes the search_path, current_user and
+// session_user it runs under into public.seen, and seen must hold the values that the connection
+// read when it was new, before the row's SETs: the values that RESET gives. The connection must
+// still carry the row's settings after the commit, since Exec's settings end with its
+// transaction.
+func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
+	ctx := context.Background()
+	url := testpg.URL(t)
+	config, err := pgx.ParseConfig(url)
+	if err != nil {
+		t.Fatalf("parse the test database's URL: %v", err)
+	}
+	admin := connect(t, ctx, url)
+	// A role spans the cluster that every test shares, so each role takes the name of the test's
+	// own database, which is random. other and login are members of group. login signs in with a
+	// password, as a deployment's login does.
+	group, other, login := config.Database+"_group", config.Database+"_other", config.Database+"_login"
+	if _, err := admin.Exec(ctx, "create role "+group+"; create role "+other+" in role "+group+"; create role "+login+" login password 'exec-test' in role "+group+"; "+
+		"create schema x; create table seen (search_path text, current_user_name text, session_user_name text); grant insert on seen to public"); err != nil {
+		t.Fatal(err)
+	}
+	// Registered before any runner connects, so every runner's connection closes first.
+	t.Cleanup(func() {
+		if _, err := admin.Exec(context.Background(), "drop role "+other+", "+login+", "+group); err != nil {
+			t.Errorf("drop the test's roles: %v", err)
+		}
+	})
+	type names struct{ searchPath, currentUser, sessionUser string }
+	read := func(t *testing.T, conn *pgx.Conn) names {
+		t.Helper()
+		var got names
+		if err := conn.QueryRow(ctx, "select current_setting('search_path'), current_user::text, session_user::text").Scan(&got.searchPath, &got.currentUser, &got.sessionUser); err != nil {
+			t.Fatalf("read search_path, current_user and session_user: %v", err)
+		}
+		return got
+	}
+	for _, row := range []struct {
+		name string
+		// user is the login the runner's connection signs in as, "" for the test database's own.
+		user string
+		set  string
+	}{
+		{"a session set of search_path", "", "set search_path = x"},
+		{"a set role", "", "set role " + group},
+		{"a set session authorization", "", "set session authorization " + other},
+		{"all three", "", "set session authorization " + other + "; set role " + group + "; set search_path = x"},
+		{"a set role and a set of search_path on a login that is no superuser", login, "set role " + group + "; set search_path = x"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			runnerConfig := config.Copy()
+			if row.user != "" {
+				runnerConfig.User, runnerConfig.Password = row.user, "exec-test"
+			}
+			runner, err := pgx.ConnectConfig(ctx, runnerConfig)
+			if err != nil {
+				t.Fatalf("connect the runner: %v", err)
+			}
+			t.Cleanup(func() { runner.Close(context.Background()) })
+			reset := read(t, runner)
+			if _, err := runner.Exec(ctx, row.set); err != nil {
+				t.Fatalf("%s: %v", row.set, err)
+			}
+			changed := read(t, runner)
+			if changed == reset {
+				t.Fatalf("%s changed none of search_path, current_user and session_user (%+v), so the row proves nothing", row.set, changed)
+			}
+			tx, err := runner.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := Exec(ctx, tx, Migration{Version: 1, Name: "0001_seen.up.sql", SQL: "insert into public.seen select current_setting('search_path'), current_user, session_user"}, nil); err != nil {
+				t.Fatalf("Exec: %v", err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatalf("commit: %v", err)
+			}
+			if after := read(t, runner); after != changed {
+				t.Fatalf("after the commit the runner's connection has %+v, want %+v, as the row set it", after, changed)
+			}
+			var seen names
+			if err := admin.QueryRow(ctx, "delete from seen returning search_path, current_user_name, session_user_name").Scan(&seen.searchPath, &seen.currentUser, &seen.sessionUser); err != nil {
+				t.Fatalf("read what the migration ran under: %v", err)
+			}
+			if seen != reset {
+				t.Errorf("the migration ran under %+v, want %+v, the values that RESET gives", seen, reset)
+			}
+		})
+	}
+}
+
+// stringConstants appends to found every string constant of a parse tree, read from libpg_query's
+// JSON: an A_Const writes one as {"sval": {"sval": "…"}}.
+func stringConstants(node any, found *[]string) {
+	switch node := node.(type) {
+	case map[string]any:
+		for key, value := range node {
+			if s, ok := value.(string); ok && key == "sval" {
+				*found = append(*found, s)
+				continue
+			}
+			stringConstants(value, found)
+		}
+	case []any:
+		for _, value := range node {
+			stringConstants(value, found)
+		}
 	}
 }

@@ -329,7 +329,9 @@ func (k mentionKind) fallbackColumn() string {
 type mentionState int
 
 const (
-	// mentionSent: an attempt reached the session, so the mention delivered the comment.
+	// mentionSent: the listener took an attempt - handed it to the running session, or queued
+	// it for one that is not running, which reads it when it runs again
+	// (model.DeliveryTakenStatesSQL) - so the mention delivered the comment.
 	mentionSent mentionState = iota
 	// mentionResending: an attempt past the lease the outbox waits a send out for
 	// (model.MentionResumedSQL): the delivery sweep's to resend, or a queued send's to make, or
@@ -1184,7 +1186,7 @@ func (c mentionComment) settleAbandoned(kind mentionKind, key string) (state men
 		}
 		var sent, resending, pending bool
 		if err := tx.QueryRow(ctx, `
-		select coalesce(bool_or(state = 'sent'), false),
+		select coalesce(bool_or(state in `+model.DeliveryTakenStatesSQL+`), false),
 		       coalesce(bool_or(state = 'pending' and `+model.MentionResumedSQL("comment_deliveries")+`), false),
 		       coalesce(bool_or(state = 'pending'), false)
 		from comment_deliveries

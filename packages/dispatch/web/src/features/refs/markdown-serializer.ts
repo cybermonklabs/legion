@@ -2,7 +2,6 @@ import { documentFromJSON } from "@legion/proof-editor/document-json";
 import type { HeadlessProofEditor } from "@legion/proof-editor/headless";
 import { DOMSerializer, Schema } from "prosemirror-model";
 
-import type { BlockSchema } from "../../api/types";
 import type { MarkdownEngine, RenderSpecWithAttrs } from "./markdown-engine";
 import type { DocumentJSON } from "./markdown-parse.worker";
 import { buildDispatchReference, buildReferencePath, pictureReference } from "./routes";
@@ -86,10 +85,9 @@ function displaySchemaOf(schema: Schema): Schema {
   });
 }
 
-export function buildEngine(proof: HeadlessProofEditor, blockSchema: BlockSchema): MarkdownEngine {
+export function buildEngine(proof: HeadlessProofEditor): MarkdownEngine {
   const displaySchema = displaySchemaOf(proof.schema);
   return {
-    blockSchema,
     displaySchema,
     schema: proof.schema,
     renderSpec: DOMSerializer.renderSpec as RenderSpecWithAttrs,

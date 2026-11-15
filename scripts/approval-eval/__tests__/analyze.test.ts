@@ -202,6 +202,7 @@ function corpusOf(rows: readonly CaseRow[]): Corpus {
     },
     rows: [...rows],
     byCaseId: new Map(rows.map((row) => [row.caseId, row])),
+    reserve: { cases: 0, issues: 0, readUnder: null },
   };
 }
 

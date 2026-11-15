@@ -1,5 +1,5 @@
 import {
-  DELIVERY_DUPLICATE_WINDOW_MS,
+  DELIVERY_DUPLICATE_WINDOW_HOURS,
   type Envelope,
   EnvelopeSchema,
   type ExpectsReply,
@@ -35,11 +35,11 @@ export type SessionState = z.infer<typeof SessionStateSchema>;
  * (`tool-contract.ts`), the send confirmation, the publish confirmation of a message kept for an
  * unresponsive role holder, and the refusal that an unresponsive holder's role lookup, or a
  * publish with `keep: false` to its role, gets. Each is read at the moment an agent decides
- * whether its peer is alive. A publish to a topic names no recipient at all, so its confirmation
- * says nothing of the kind. The minutes are counted from the holder's last registration
- * (`last_seen`) and are `ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS` itself, the sum the Dispatch server
- * refuses another agent's take by, so a change of that constant changes this sentence with it
- * rather than leaving it saying a number nothing enforces.
+ * whether its peer is alive. A publish to a topic counts its recipients and names none, so its
+ * confirmation says nothing of the kind. The minutes are counted from the holder's last
+ * registration (`last_seen`) and are `ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS` itself, the sum the
+ * Dispatch server refuses another agent's take by, so a change of that constant changes this
+ * sentence with it rather than leaving it saying a number nothing enforces.
  */
 export const UNRESPONSIVE_RULE =
   "An unresponsive session is not dead: it keeps its role claims and its issue claims, and a " +
@@ -172,25 +172,46 @@ const ErrorWireSchema = z.object({
 
 /**
  * What a send or a publish answers: the envelope, and the fields the listener adds beside it.
- * `duplicate` is a send's: the listener already stored a send under this target and idempotency
- * key, so this one stored nothing new. Absent reads as false, as an older listener's answer does.
+ * `.extend` drops anything not declared here, so a field the listener sends and this schema does
+ * not know never reaches a caller.
+ *
+ * `recipient`, `recipient_state`, `state`, `last_seen` and `duplicate` are a send's
+ * (`cmd/listener/api.go`'s `sendResponse`). `recipient_state` is the target's registry state and
+ * stays the strict three-value enum every deployed plugin parses. `state` is what the listener's
+ * connection check found: `connected`, or `stopped` when no plugin of the target holds its relay
+ * subject, so the message waits on the session's topic. It is read as a string rather than a
+ * closed pair, as this file reads a delivery answer's `reason`, so a word a later listener adds
+ * still parses: only `stopped` is stopped, and anything else is the connected reading every
+ * release gave before the state existed. `duplicate` says the listener already stored a send
+ * under this target and idempotency key, so this one stored nothing new; absent reads as false,
+ * as an older listener's answer does.
+ *
  * `holder` and `holder_state` are a role publish's, under the two names every role answer uses
- * (`cmd/listener/api.go`'s `publishResponse`). A publish to a topic the stream captures is
- * answered with the envelope alone: the stream stores that one copy and each subscribed
- * session's own consumer delivers it, so there is no per-recipient send to report. Each field
- * is omitted when there is none, and absent from a listener predating it.
+ * (`publishResponse`). A publish to a topic the stream captures stores one copy that each
+ * subscribed session's own consumer delivers, so there is no per-recipient send to report; its
+ * answer counts instead: `recipients` is every session other than the sender the topic is for,
+ * and `recipients_connected` how many of those are running now. Both are absent from a role
+ * topic's answer and from a listener whose copy of the known-session or interest bucket cannot be
+ * served (its first read not complete, or past its stale bound; the known-session bucket also when
+ * the listener cannot read it at all), and `recipients_connected` alone from one whose copy of the
+ * session registry cannot be served; a count of zero is sent. Each field is omitted when there is
+ * none, and absent from a listener predating it.
  */
 const EnvelopeResponseSchema = EnvelopeSchema.extend({
   recipient: z.string().optional(),
   holder: z.string().optional(),
   holder_state: SessionStateSchema.optional(),
   recipient_state: SessionStateSchema.optional(),
+  state: z.string().optional(),
   // The last registration (epoch ms) of a send's recipient, which the listener sends with an
-  // unresponsive recipient's state so the sender can say how long it has been stalled, or of a
-  // role publish's holder, which a 202 kept for a holder that is not live names beside its
-  // state; omitted when the listener knows none, and absent from a listener predating the field.
+  // unresponsive or a stopped recipient's state so the sender can say how long it has been
+  // silent, or of a role publish's holder, which a 202 kept for a holder that is not live names
+  // beside its state; omitted when the listener knows none, and absent from a listener predating
+  // the field.
   last_seen: z.number().int().optional(),
   duplicate: z.boolean().optional(),
+  recipients: z.number().int().nonnegative().optional(),
+  recipients_connected: z.number().int().nonnegative().optional(),
 });
 
 /**
@@ -588,6 +609,15 @@ export type ListSessionsInput = {
   readonly include?: "unresponsive";
 };
 
+/**
+ * What the listener's connection check found for a send's target: `connected`, a plugin of that
+ * session holds its relay subject now; `stopped`, none does, so the message waits on the
+ * session's topic. Beside the registry state (`SessionState`) rather than a fourth value of it:
+ * a session stays live or unresponsive by the age of its last registration whatever this says,
+ * and keeps its claims.
+ */
+export type ConnectionState = "connected" | "stopped";
+
 export type SendResult = {
   readonly envelope: Envelope;
   readonly recipient: string;
@@ -595,9 +625,16 @@ export type SendResult = {
   /** The recipient's state as the listener resolved it; `live` from a listener that names none.
    *  A message to an unresponsive recipient is stored and reaches it when it answers again. */
   readonly recipientState: SessionState;
+  /**
+   * What the target was when the listener stored the message. `stopped` means the message waits
+   * on the session's topic for the stream's 72 hours and reaches it if it runs again in that
+   * time. A listener that answers no state reads as `connected`, which is what every release
+   * meant before the state existed.
+   */
+  readonly state: ConnectionState;
   /** The recipient's last registration in epoch milliseconds, which the listener sends beside an
-   *  unresponsive recipient's state so the sender can say since when it has been silent. Absent
-   *  when the listener knows none, and from a listener predating the field. */
+   *  unresponsive or a stopped recipient's state so the sender can say since when it has been
+   *  silent. Absent when the listener knows none, and from a listener predating the field. */
   readonly lastSeen?: number;
   /** The listener already held a send under this target and idempotency key: delivered once. */
   readonly duplicate: boolean;
@@ -614,6 +651,15 @@ export type PublishResult = {
    *  holder that is not live on a 202 kept for it. Absent when the listener knows none, and from
    *  a listener predating the field. */
   readonly lastSeen?: number;
+  /**
+   * How many sessions other than the sender get this message, counted just before it was
+   * published; a stopped session Envoy still knows is one of them. Absent for a role topic, whose
+   * answer names its holder instead, and for a listener whose NATS user cannot read the
+   * known-session bucket; zero is a count, not an absence.
+   */
+  readonly recipients?: number;
+  /** How many of {@link PublishResult.recipients} are running now; absent whenever that is. */
+  readonly recipientsConnected?: number;
   /**
    * True on the listener's 202: no live session holds the role, so the listener kept the message
    * on the role's kept lane and hands it to the next session that holds the role live before
@@ -746,7 +792,7 @@ export class EnvoySendUnconfirmedError extends Error {
     const resendSafe = mintedDedupeKey.test(`agent.${targetSessionID.trim()}.${idempotencyKey}`);
     const resend = resendSafe
       ? `Sending it again with idempotency_key ${idempotencyKey} within ` +
-        `${DELIVERY_DUPLICATE_WINDOW_MS / 3_600_000} hours is the safe resend: Envoy drops it as ` +
+        `${DELIVERY_DUPLICATE_WINDOW_HOURS} hours is the safe resend: Envoy drops it as ` +
         "a repeat if the first copy arrived (a recipient that restarted in between can rarely " +
         "see it twice)."
       : `Envoy cannot recognise a resend under idempotency_key ${idempotencyKey} as a repeat ` +
@@ -1054,6 +1100,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         recipient: response.recipient ?? input.targetSessionID,
         confirmed: response.recipient !== undefined,
         recipientState: response.recipient_state ?? "live",
+        // Only `stopped` is stopped: an answer with no state is an older listener's, and a word
+        // this build does not know says nothing about the target that is worth acting on.
+        state: response.state === "stopped" ? "stopped" : "connected",
         ...lastSeenOf(response.last_seen),
         duplicate: response.duplicate === true,
       };
@@ -1086,6 +1135,10 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         ...(response.holder === undefined ? {} : { holder: response.holder }),
         ...(response.holder_state === undefined ? {} : { holderState: response.holder_state }),
         ...lastSeenOf(response.last_seen),
+        ...(response.recipients === undefined ? {} : { recipients: response.recipients }),
+        ...(response.recipients_connected === undefined
+          ? {}
+          : { recipientsConnected: response.recipients_connected }),
         ...(response.kept === undefined ? {} : { kept: response.kept }),
         ...(response.kept_reason === undefined ? {} : { keptReason: response.kept_reason }),
         ...(response.kept_until === undefined ? {} : { keptUntil: response.kept_until }),

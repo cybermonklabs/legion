@@ -73,9 +73,11 @@ type Kubernetes struct {
 	// SessionStore is `runtime.kubernetes.session_store`, settled: where every pod's Oh My Pi keeps
 	// its sessions. The database whose whole postgres:// URL the providers Secret key
 	// `session_dsn_secret` holds under `postgres`; the Cloud SQL database `session_database` names,
-	// which each pod signs in to as itself and no password reaches, under `cloudsql-iam`. The key is
-	// required under `runtime: kubernetes` and `pvc` is refused (readSessionStore), so the settled
-	// store always keeps sessions in a database (InDatabase): no issue disk holds a session.
+	// which no password reaches, under `cloudsql-iam`: each pod signs in to it as itself, or, when
+	// the block's optional `impersonate_service_account` names a Google service account, as that
+	// account, which the pod impersonates. The key is required under `runtime: kubernetes` and `pvc`
+	// is refused (readSessionStore), so the settled store always keeps sessions in a database
+	// (InDatabase): no issue disk holds a session.
 	SessionStore ompsessions.Store
 	// Plugins is `runtime.kubernetes.plugins`: the exact pi-legion/pi-envoy pair a stale-plugin
 	// relaunch installs into a kept pod, when the file names one. Nil when the file sets none and
@@ -1348,10 +1350,11 @@ const (
 
 // readSessionStore reads `session_store` with the one key its kind carries: `session_dsn_secret`,
 // the providers Secret's key holding the session database's whole URL, under `postgres`;
-// `session_database`, the Cloud SQL instance, database and IAM login each pod signs in as, under
-// `cloudsql-iam`. Each kind names its own key and refuses the other's: an inert key is refused,
-// never ignored. The store is required, and must keep sessions in a database: `pvc`, which an
-// omitted `session_store` also settles to, is refused rather than taken as a silent default
+// `session_database`, the Cloud SQL instance, database and IAM login each pod signs in as, and
+// the Google service account, if the block names one, that the pod impersonates to sign in as that
+// login, under `cloudsql-iam`. Each kind names its own key and refuses the other's: an inert key is
+// refused, never ignored. The store is required, and must keep sessions in a database: `pvc`,
+// which an omitted `session_store` also settles to, is refused rather than taken as a silent default
 // (INFRA-80). It kept each session as a file on the issue's disk, and that disk is now the pod's
 // own generic ephemeral volume, deleted with it: the file would die with the pod, the next
 // launch's resume would fail on the missing file (internal/launcher's sessionWritten), and three
@@ -1409,8 +1412,13 @@ func inertSessionKey(key string, kind ompsessions.StoreKind) error {
 // readSessionDatabase reads `session_database` under `cloudsql-iam`: the instance's connection
 // name, project:region:instance or domain:project:region:instance, which the pod's proxy dials
 // (internal/sessionproxy) and which must pass ompsessions.ValidInstance, the connector's own rule;
-// the database in it; and the IAM login the pod signs in as. All three are required, since no pod
-// can reach the database without them.
+// the database in it; the IAM login the pod signs in as; and `impersonate_service_account`, the
+// Google service account the pod's proxy impersonates with the pod's own credentials and signs in
+// as. The first three are required, since no pod can reach the database without them; the fourth
+// is optional, and without it each pod signs in as itself. A named account must be a service
+// account's email by ompsessions.ServiceAccountLogin, the rule the proxy holds to as well, and
+// `user` must then be that account's login: the proxy signs in as the account it impersonates, so
+// any other login, let through here, would fail every generation's first dial instead.
 func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 	if value == nil {
 		return ompsessions.Database{}, errors.New(sessionDatabaseKey +
@@ -1419,7 +1427,7 @@ func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 	if value.Kind != yaml.MappingNode {
 		return ompsessions.Database{}, errors.New(sessionDatabaseKey + " must be a mapping")
 	}
-	fields, err := members(value, sessionDatabaseKey, "instance", "name", "user")
+	fields, err := members(value, sessionDatabaseKey, "instance", "name", "user", "impersonate_service_account")
 	if err != nil {
 		return ompsessions.Database{}, err
 	}
@@ -1436,8 +1444,22 @@ func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 		": the IAM login each pod signs in as"); err != nil {
 		return ompsessions.Database{}, err
 	}
+	if database.ImpersonateServiceAccount, err = optionalString(fields["impersonate_service_account"],
+		sessionDatabaseKey+".impersonate_service_account"); err != nil {
+		return ompsessions.Database{}, err
+	}
 	if !ompsessions.ValidInstance(database.Instance) {
 		return ompsessions.Database{}, fmt.Errorf("%s.instance %q must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project", sessionDatabaseKey, database.Instance)
+	}
+	if database.ImpersonateServiceAccount == "" {
+		return database, nil
+	}
+	login, ok := ompsessions.ServiceAccountLogin(database.ImpersonateServiceAccount)
+	if !ok {
+		return ompsessions.Database{}, fmt.Errorf("%s.impersonate_service_account %q must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com", sessionDatabaseKey, database.ImpersonateServiceAccount)
+	}
+	if database.User != login {
+		return ompsessions.Database{}, fmt.Errorf("%s.user %q must be %q: Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com", sessionDatabaseKey, database.User, login)
 	}
 	return database, nil
 }

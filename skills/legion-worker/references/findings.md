@@ -76,15 +76,17 @@ next look of its own.
 
 The controller topic is a live wake: a message published while no controller runs reaches nobody
 at the time. `envoy_publish`'s own answer tells you whether one took it. A publish to a role
-answers with its live `holder`. When no live session holds `legion-<project>-controller`, because
+answers with its live `holder`, and with no count of recipients: the listener forwards a role
+message to its holder alone. When no live session holds `legion-<project>-controller`, because
 nobody claims it or its holder has not registered within the live window, the answer says Envoy
 kept the message for one hour, and its `kept_until` is the time that hour ends. The next session
 to hold the role live in that hour is handed it once. A keep is not a delivery: a controller can
-stay away for the whole hour, and Envoy then drops the message unread and sends your session a
-message that names it, so a kept finding can reach nobody. For a holder that is not live, the
-answer also names that holder, its `holder_state` and its `last_seen`: an `unresponsive`
-controller is not a stopped one, so release nothing, take nothing from it, and publish no second
-copy.
+stay away for the whole hour, and Envoy then drops the message unread, so a kept finding can
+reach nobody. When your publish named your session, Envoy also sends your session a message that
+names the dropped one, unless it dropped it more than an hour late. For a holder that is not
+live, the answer also names that holder, its `holder_state` and its `last_seen`: an
+`unresponsive` controller is not a stopped one, so release nothing, take nothing from it, and
+publish no second copy.
 Treat a kept answer as a controller not taking it. The finding has not been taken yet,
 so make it an ask, as
 [What the ask says](#what-the-ask-says) spells it, on the first

@@ -715,10 +715,16 @@ func volumeFillName(volumes []corev1.Volume, name string) string {
 // would carry, so no pod outlives a change of store; ok is whether they differ. A generation
 // started under a database store names a URL file no pod created under another store has: the
 // providers volume's projection of the Secret key under postgres, the proxy the pod's launcher
-// serves under cloudsql-iam. A pod created under another store or key is replaced by its relaunch
-// rather than start a generation whose Oh My Pi would refuse the URL file it cannot read. Each side
-// is named from what a pod spec holds, the kubelet escaping included (kubeletLiteral), as
-// movedStream names the stream.
+// serves under cloudsql-iam. A pod created under another store or key is drift (driftedInPod): an
+// issue pod is replaced by its update round, and a launch into it before that keeps the pod and
+// tells its generation the store the pod itself carries (keptPod), so no generation starts against
+// a URL file its Oh My Pi cannot read; the controller's pod, which no round covers (roundCovers),
+// is replaced at the next launch into it. Under
+// cloudsql-iam the instance, the database, the login and the service account the launcher
+// impersonates are all compared — an account named where the pod has none, none where it has one,
+// or another one — since the pod's launcher was told them once, at its creation, and signs in to
+// Cloud SQL as that identity for the pod's life. Each side is named from what a pod spec holds, the
+// kubelet escaping included (kubeletLiteral), as movedStream names the stream.
 func (r *Runtime) movedSessionStore(pod *corev1.Pod) (movedAddress, bool) {
 	proxy := r.sessionProxyFlags()
 	for i, value := range proxy {
@@ -741,9 +747,12 @@ func sessionStoreInPod(spec *corev1.PodSpec) string {
 
 // heldSessionStore is the session store the pod spec was created under, and the one field that
 // kind carries in a pod: the providers volume's session item under postgres (providers), the
-// session proxy's flags a launcher container carries under cloudsql-iam (sessionProxyFlags), and
+// session proxy's flags a launcher container carries under cloudsql-iam (sessionProxyFlagsIn), and
 // neither under the volume store, which is what a pod created before any store was configured
-// reads as.
+// reads as. Under cloudsql-iam the kind comes from the three required flags alone, so a pod whose
+// launcher impersonates a service account is a cloudsql-iam pod as one that signs in as itself is;
+// the flags it answers name the account too where the pod carries it, so the two still name
+// different stores (sessionStoreName).
 //
 // It is asked of a running pod's spec and of a Sandbox's stored pod template alike, as
 // movedRoleOverlays is: the template is the pod's own build, which is what a launch that keeps
@@ -768,16 +777,22 @@ func heldSessionStore(pod corev1.PodSpec) (ompsessions.StoreKind, string, []stri
 }
 
 // sessionProxyFlagsIn are the session proxy's flags command carries, in the order sessionProxyFlags
-// writes them, nil unless it carries all three of them with a value each: a pod created under any
-// other store, and the containers of every pod that run no launcher, carry none.
+// writes them, nil unless it carries all three of sessionProxyFlagNames with a value each: a pod
+// created under any other store, and the containers of every pod that run no launcher, carry none.
+// The service account the launcher impersonates (sessionProxyAccountFlag) follows the three when
+// command carries it with a value, and is left out when it does not: it is optional, so it never
+// decides the kind, and a command that carries it without the three is no cloudsql-iam launcher.
 func sessionProxyFlagsIn(command []string) []string {
-	proxy := make([]string, 0, 2*len(sessionProxyFlagNames))
+	proxy := make([]string, 0, 2*len(sessionProxyFlagNames)+2)
 	for _, flag := range sessionProxyFlagNames {
 		value, ok := flagValue(command, flag)
 		if !ok {
 			return nil
 		}
 		proxy = append(proxy, flag, value)
+	}
+	if account, ok := flagValue(command, sessionProxyAccountFlag); ok {
+		proxy = append(proxy, sessionProxyAccountFlag, account)
 	}
 	return proxy
 }

@@ -1845,6 +1845,8 @@ export async function executeEnvoyTool(
         recipient: result.recipient,
         recipient_state: result.recipientState,
         confirmed: result.confirmed,
+        state: result.state,
+        ...(result.lastSeen === undefined ? {} : { last_seen: result.lastSeen }),
       }
     }
     case EnvoyToolOperation.publish: {
@@ -1856,11 +1858,11 @@ export async function executeEnvoyTool(
         message: args.message,
         ...toMessageMetadata(args),
       })
-      // The answer the model reads, its line first. A publish to a topic the stream captures is
-      // answered with the envelope alone; a kept answer is a success of its own, which the line
-      // says in the words the Oh My Pi plugin uses (`publishConfirmationText`). This server
-      // always names its own session as the source, so the listener sends that session a message
-      // for a kept copy no session took, and the line says so.
+      // The answer the model reads, its line first: the counts of a stored topic's answer, a role
+      // holder, or a kept answer, which is a success of its own, all in the words the Oh My Pi
+      // plugin uses (`publishConfirmationText`). This server always names its own session as the
+      // source, so the listener sends that session a message for a kept copy no session took, and
+      // the line says so.
       return {
         message: publishConfirmationText(result, { senderNamed: true }),
         event_id: result.envelope.event_id,
@@ -2261,7 +2263,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
         )
         return active === null
           ? undefined
-          : new DispatchClient(active.url, active.credential, fetch, AbortSignal.timeout(ms))
+          : new DispatchClient(active.url, active.credential, fetch, {
+              signal: AbortSignal.timeout(ms),
+            })
       },
       effortPicked: (effort) => agentStream?.pickedEffort(effort),
       refreshSettings: () => agentStream?.refresh(),

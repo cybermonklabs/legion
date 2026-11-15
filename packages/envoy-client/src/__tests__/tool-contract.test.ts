@@ -172,6 +172,20 @@ describe("envoyToolSpecs", () => {
     expect(publish?.description).not.toContain("nothing waits for it");
     expect(publish?.description).not.toContain("in the hour that follows");
   });
+
+  test("says what the recipient counts and the stopped state mean", () => {
+    const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
+
+    for (const name of ["envoy_sessions", "envoy_role_get", "envoy_send", "envoy_publish"]) {
+      expect(envoyToolSpecs.find((spec) => spec.name === name)?.description).toContain(
+        "A send answered with state stopped means that session is not running: the message is stored for it and reaches it if it runs again within 72 hours, and nothing of its claims changes."
+      );
+    }
+    expect(publish?.description).toContain(
+      "recipients is every session other than you that the message goes to, one that is stopped and gets it when it runs again within 72 hours included, and recipients_connected is how many of those are running now"
+    );
+    expect(publish?.description).toContain("a role topic names its holder instead");
+  });
 });
 
 describe("publishConfirmationText", () => {
@@ -298,12 +312,18 @@ describe("publishConfirmationText", () => {
   test("names the holder a delivered role message reached, and nothing else for a plain topic", () => {
     expect(
       publishConfirmationText(
-        { envelope: { event_id: "event-held" }, holder: "ses_architect" },
+        {
+          envelope: { event_id: "event-held", topic: "notifications.role.architect" },
+          holder: "ses_architect",
+        },
         { senderNamed: true }
       )
     ).toBe("published event-held. Its role holder is ses_architect.");
     expect(
-      publishConfirmationText({ envelope: { event_id: "event-team" } }, { senderNamed: true })
+      publishConfirmationText(
+        { envelope: { event_id: "event-team", topic: "notifications.team.deploy-squad.all" } },
+        { senderNamed: true }
+      )
     ).toBe("published event-team.");
   });
 
@@ -335,10 +355,12 @@ describe("publishConfirmationText", () => {
 
 describe("sendConfirmationText", () => {
   const envelope = { event_id: "evt_1" };
+  const connected = { state: "connected" } as const;
 
   test("names the recipient's state, and tells the sender an unresponsive one is not a failure", () => {
     expect(
       sendConfirmationText({
+        ...connected,
         envelope,
         recipient: "ses_peer",
         recipientState: "live",
@@ -348,6 +370,7 @@ describe("sendConfirmationText", () => {
     ).toBe("sent evt_1 to ses_peer (live)");
     expect(
       sendConfirmationText({
+        ...connected,
         envelope,
         recipient: "ses_peer",
         recipientState: "unresponsive",
@@ -366,6 +389,7 @@ describe("sendConfirmationText", () => {
   test("says since when an unresponsive recipient has been silent, from the listener's last_seen", () => {
     expect(
       sendConfirmationText({
+        ...connected,
         envelope,
         recipient: "ses_peer",
         recipientState: "unresponsive",
@@ -378,7 +402,7 @@ describe("sendConfirmationText", () => {
 });
 
 describe("publishConfirmationText", () => {
-  const envelope = { event_id: "evt_1" };
+  const envelope = { event_id: "evt_1", topic: "notifications.role.reviewer" };
 
   test("names a role publish's holder and the state the listener resolved it in", () => {
     expect(
@@ -393,10 +417,15 @@ describe("publishConfirmationText", () => {
     );
   });
 
-  // A publish to a topic the stream captures is answered with the envelope alone, so the line
-  // names the event and nothing else.
+  // A topic publish from a listener that sends no count (one that cannot read the known-session
+  // bucket) is answered with the envelope alone, so the line names the event and nothing else.
   test("says only that a topic publish was published", () => {
-    expect(publishConfirmationText({ envelope }, { senderNamed: true })).toBe("published evt_1.");
+    expect(
+      publishConfirmationText(
+        { envelope: { event_id: "evt_1", topic: "notifications.team.deploy-squad.all" } },
+        { senderNamed: true }
+      )
+    ).toBe("published evt_1.");
   });
 });
 
@@ -419,26 +448,39 @@ describe("envoy_send resend", () => {
 
   test("says a resend the listener already held stored no second copy", () => {
     const envelope = { event_id: "event-2" };
-    expect(
-      sendConfirmationText({
-        envelope,
-        recipient: "ses_b",
-        recipientState: "live",
-        confirmed: true,
-        duplicate: true,
-      })
-    ).toBe(
+    const sent = {
+      envelope,
+      recipient: "ses_b",
+      recipientState: "live",
+      confirmed: true,
+      state: "connected",
+    } as const;
+    expect(sendConfirmationText({ ...sent, duplicate: true })).toBe(
       "sent to ses_b once: an earlier attempt under the same idempotency_key was already stored, so this one stored no second copy"
     );
-    expect(
-      sendConfirmationText({
-        envelope,
-        recipient: "ses_b",
-        recipientState: "live",
-        confirmed: true,
-        duplicate: false,
-      })
-    ).toBe("sent event-2 to ses_b (live)");
+    expect(sendConfirmationText({ ...sent, duplicate: false })).toBe(
+      "sent event-2 to ses_b (live)"
+    );
+  });
+
+  test("a resend for a stopped target is queued once, and never says sent", () => {
+    const text = sendConfirmationText({
+      envelope: { event_id: "event-2" },
+      recipient: "ses_b",
+      recipientState: "live",
+      confirmed: true,
+      state: "stopped",
+      lastSeen: Date.UTC(2026, 10, 2, 9, 15),
+      duplicate: true,
+    });
+
+    expect(text).toBe(
+      "queued once for ses_b: an earlier attempt under the same idempotency_key was already stored, so this one stored no second copy; the session is stopped (last seen 2026-11-02T09:15:00Z); if it runs again within 72 hours, it gets the message"
+    );
+    // The one stored copy waits on a session that is not running, so the line says queued and
+    // leaves out the event id of the copy this resend did not store.
+    expect(text).not.toContain("sent");
+    expect(text).not.toContain("event-2");
   });
 });
 
@@ -582,5 +624,91 @@ describe("sessionsOnMachine", () => {
 
     expect(sessionsOnMachine([hostless], "devbox")).toEqual([hostless]);
     expect(sessionsOnMachine([hostless], "gke-node-7")).toEqual([]);
+  });
+});
+
+describe("sendConfirmationText for a state", () => {
+  const connected = {
+    envelope: { event_id: "evt_01" },
+    recipient: "ses_target",
+    recipientState: "live",
+    confirmed: true,
+    state: "connected",
+    duplicate: false,
+  } as const;
+  // 2026-11-02T09:15:00Z, as the listener sends it: unix milliseconds.
+  const lastSeen = Date.UTC(2026, 10, 2, 9, 15);
+
+  test("a connected target is sent to with its registry state, as before the state existed", () => {
+    expect(sendConfirmationText(connected)).toBe("sent evt_01 to ses_target (live)");
+    expect(sendConfirmationText({ ...connected, confirmed: false })).toBe(
+      "sent evt_01 to ses_target (live) (recipient unconfirmed by listener)"
+    );
+  });
+
+  test("a stopped target is queued, with when it was last seen as a UTC instant", () => {
+    const text = sendConfirmationText({ ...connected, state: "stopped", lastSeen });
+
+    expect(text).toBe(
+      "queued evt_01 for ses_target: the session is stopped (last seen 2026-11-02T09:15:00Z); if it runs again within 72 hours, it gets the message"
+    );
+    // A model that reads "sent" waits for an answer from a session that is not running, so the
+    // queued line says nothing of the kind.
+    expect(text).not.toContain("sent");
+  });
+
+  // The probe wins over the registry's age: an entry whose plugin is gone answers stopped with
+  // `recipient_state` still live or unresponsive, and one past the gone horizon with a record
+  // answers gone. Either way the line is the queued one.
+  test("a stopped target is queued whatever its registry state", () => {
+    for (const recipientState of ["live", "unresponsive", "gone"] as const) {
+      const text = sendConfirmationText({
+        ...connected,
+        recipientState,
+        state: "stopped",
+        lastSeen,
+      });
+
+      expect(text).toMatch(/^queued \S+ for /);
+      expect(text).not.toContain("sent");
+      expect(text).not.toContain(recipientState);
+    }
+  });
+
+  test("a stopped target the listener gives no last seen for is still queued", () => {
+    const text = sendConfirmationText({ ...connected, state: "stopped" });
+
+    expect(text).toBe(
+      "queued evt_01 for ses_target: the session is stopped; if it runs again within 72 hours, it gets the message"
+    );
+    expect(text).not.toContain("sent");
+  });
+});
+
+describe("publishConfirmationText counts", () => {
+  const envelope = { event_id: "evt_02", topic: "notifications.team.deploy-squad.all" };
+  const named = { senderNamed: true };
+
+  test("counts the other sessions that get the message, and how many run now", () => {
+    const text = publishConfirmationText({ envelope, recipients: 3, recipientsConnected: 2 }, named);
+
+    expect(text).toBe("published evt_02 to 3 other sessions (2 running now)");
+  });
+
+  test("one other session takes the singular", () => {
+    expect(publishConfirmationText({ envelope, recipients: 1, recipientsConnected: 1 }, named)).toBe(
+      "published evt_02 to 1 other session (1 running now)"
+    );
+    expect(publishConfirmationText({ envelope, recipients: 1, recipientsConnected: 0 }, named)).toBe(
+      "published evt_02 to 1 other session (0 running now)"
+    );
+  });
+
+  test("a count of none says the message reached nobody, and names the topic", () => {
+    const text = publishConfirmationText({ envelope, recipients: 0, recipientsConnected: 0 }, named);
+
+    expect(text).toBe(
+      "published evt_02; no other session subscribes to notifications.team.deploy-squad.all, so no other session gets it"
+    );
   });
 });

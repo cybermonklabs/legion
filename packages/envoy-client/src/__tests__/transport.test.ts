@@ -536,6 +536,114 @@ describe("EnvoyClient", () => {
     });
   });
 
+  test("a send reads the target's state", async () => {
+    const envelope = {
+      event_id: "event-stopped",
+      source: "agent",
+      source_event_id: "agent.ses_sender.event-stopped",
+      source_session: "ses_sender",
+      topic: "notifications.agent.ses_target",
+      dedupe_key: "agent.ses_target.event-stopped",
+      issued_at: 1,
+      payload_summary: "hello",
+      trace_id: "trace-stopped",
+      recipient: "ses_target",
+    };
+    const recorded = recordFetch([
+      // A session with no entry but a record: `recipient_state` keeps the registry's three
+      // values, and `state` beside it says the target is stopped.
+      jsonResponse({
+        ...envelope,
+        recipient_state: "gone",
+        state: "stopped",
+        last_seen: 1_762_075_200_000,
+      }),
+      jsonResponse({ ...envelope, recipient_state: "live", state: "connected" }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const stopped = await client.send({
+      sourceSessionID: "ses_sender",
+      targetSessionID: "ses_target",
+      message: "hello",
+    });
+    const connected = await client.send({
+      sourceSessionID: "ses_sender",
+      targetSessionID: "ses_target",
+      message: "hello",
+    });
+
+    expect(stopped).toMatchObject({
+      recipientState: "gone",
+      state: "stopped",
+      lastSeen: 1_762_075_200_000,
+    });
+    expect(connected.recipientState).toBe("live");
+    expect(connected.state).toBe("connected");
+    expect(connected.lastSeen).toBeUndefined();
+  });
+
+  test("a send a listener of an earlier release answers no state for reads as connected", async () => {
+    const recorded = recordFetch([
+      jsonResponse({
+        event_id: "event-stateless",
+        source: "agent",
+        source_event_id: "agent.ses_sender.event-stateless",
+        source_session: "ses_sender",
+        topic: "notifications.agent.ses_target",
+        dedupe_key: "agent.ses_target.event-stateless",
+        issued_at: 1,
+        payload_summary: "hello",
+        trace_id: "trace-stateless",
+        recipient: "ses_target",
+      }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const result = await client.send({
+      sourceSessionID: "ses_sender",
+      targetSessionID: "ses_target",
+      message: "hello",
+    });
+
+    expect(result.state).toBe("connected");
+    expect(result.lastSeen).toBeUndefined();
+  });
+
+  test("a publish carries the listener's recipient counts, a count of none included", async () => {
+    const envelope = {
+      event_id: "event-counted",
+      source: "agent",
+      source_event_id: "agent.ses_sender.event-counted",
+      source_session: "ses_sender",
+      topic: "notifications.team.deploy-squad.all",
+      dedupe_key: "agent.team.event-counted",
+      issued_at: 2,
+      payload_summary: "broadcast",
+      trace_id: "trace-counted",
+    };
+    const recorded = recordFetch([
+      jsonResponse({ ...envelope, recipients: 3, recipients_connected: 2 }),
+      jsonResponse({ ...envelope, recipients: 0, recipients_connected: 0 }),
+      jsonResponse(envelope),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+    const publish = () =>
+      client.publish({
+        sourceSessionID: "ses_sender",
+        topic: "notifications.team.deploy-squad.all",
+        message: "broadcast",
+      });
+
+    expect(await publish()).toMatchObject({ recipients: 3, recipientsConnected: 2 });
+    // Zero is a count the listener sends, not an absence: it is the answer that says the message
+    // reached nobody.
+    expect(await publish()).toMatchObject({ recipients: 0, recipientsConnected: 0 });
+    const uncounted = await publish();
+    expect(uncounted.recipients).toBeUndefined();
+    expect(uncounted.recipientsConnected).toBeUndefined();
+  });
+
   test("sends a human direct message without a source session", async () => {
     const recorded = recordFetch([
       jsonResponse({

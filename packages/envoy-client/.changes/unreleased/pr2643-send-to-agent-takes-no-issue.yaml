@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  `dispatch send-to-agent` runs without an issue: every call was refused before it was sent,
+  `issue is required` with `LEGION_ISSUE` unset and `unknown flag --issue` with it set, although
+  the message goes to a session's own conversation and names no issue.
+custom:
+    Issue: pr2643
