@@ -2121,11 +2121,12 @@ error rather than a red run. A row or hook that drives a process rather than
 waiting for one states `rowLimit` too where every wait it makes ends at a bound:
 the interrupted-runner row of `e2e/__tests__/bounded-subprocess.test.ts` drives a
 `bun test` runner and states `rowLimit("short", "short", "short")` for its three
-polls, and the rows of `e2e/__tests__/local-instance-support.test.ts` that wait
-for its `Supervisor`'s processes state one for each `eventually`. Otherwise it
-keeps a number, with the reason it is that long on the line directly above it:
-the seven rows of `e2e/__tests__/delivery-live-probe.test.ts` that read the
-probe's lines and stop it with SIGINT, and the two hooks of
+polls, the rows of `e2e/__tests__/local-instance-support.test.ts` that wait
+for its `Supervisor`'s processes state one for each `eventually`, and the seven
+rows of `e2e/__tests__/delivery-live-probe.test.ts` that read the probe's lines
+and stop it with SIGINT state `rowLimit("short", "short")`, one for the wait for
+a line and one for the wait for the exit. Otherwise it keeps a number, with the
+reason it is that long on the line directly above it: the two hooks of
 `e2e/__tests__/psql-session.test.ts`.
 `e2e/row-limits.ts`, which
 `e2e/__tests__/row-limits.test.ts` runs over every file under that directory, at
@@ -2863,19 +2864,18 @@ It also checks that the probe reopens after a 4001 and after a 1012 and resumes 
 change and revisions it holds.
 Each of those two rows reads the `wait_ms` its close line carries, and the two catch different
 things.
-Each also reads `performance.now()` at its start, for one deadline: `lineBy` fails the row, naming
-the second subscribe it waits for, at `lineWithin` (3 500 ms) from that start for the 4001 row and
-at `reconnectWithin` (2 900 ms) for the 1012 row.
-`lineWithin` is three times the largest time a correct probe took to write the line one of its six
-rows waits for, and `reconnectWithin` three times the largest it took to reach the 1012 row's second
-subscribe, each rounded up to the next 100 ms, in the readings its comment names.
+Each waits for that second subscribe through `lineBy` and then for the probe's exit after SIGINT
+through `exitAfter`, as every row that drives the probe waits for its line and its exit: each of
+those waits reads its state as `whether` of `e2e/__tests__/bounded-subprocess.ts` does and, once
+the short bound has passed, fails naming what it waited for, so the row states
+`rowLimit("short", "short")`.
 The 4001 row sends a rotation, which the probe answers at once, so the close line's `wait_ms` is
 null; a probe that answered it on the reconnect timer and reports that wait fails the row's line
-assertion whenever it reopens before that deadline.
-The row also pins `--reconnect-spread-ms` a day, far above its deadline, so a probe that reports
-null but still reopens on a timer drawn from that spread fails at the deadline, naming the second
-subscribe, on all but at most about one draw in 25 000; that rate is that probe's alone, and one
-that reports its wait fails on every draw.
+assertion whenever it reopens inside the short bound.
+The row also pins `--reconnect-spread-ms` at 2147483647 ms, the largest spread the probe takes and
+far above the short bound, so a probe that reports null but still reopens on a timer drawn from
+that spread fails at the bound, naming the second subscribe, on all but at most about one draw in
+35 800; that rate is that probe's alone, and one that reports its wait fails on every draw.
 The 1012 row pins `--reconnect-spread-ms` 50 ms, so the probe's own wait is a draw from [0, 50 ms),
 and the row holds that the close line's `wait_ms` is a number in that window: a reopen at once,
 which writes null, or on a later attempt's backoff, at least a second, fails it on every run.
@@ -2884,7 +2884,7 @@ resume's content and order by the row's own assertions.
 A third row reads the wait each close line reports (`wait_ms`): at `--reconnect-spread-ms 0`, two
 1012 closes report 0 ms each only while the parsed option reaches the probe's `reconnectWaitMs`
 and a restart close sets the attempt counter back to 0.
-It waits for its second close line through `lineBy` too, at `lineWithin`.
+It waits for its second close line through `lineBy` too.
 `e2e/__tests__/silence-read.test.ts` (`bun run test`) holds the read's deadline on Bun's fake
 timers, which it moves with `jest.advanceTimersByTime`: the deadline starts over on the headers and
 on each piece of the body, and a read whose headers never come, or whose body falls silent, fails

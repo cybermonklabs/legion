@@ -32,7 +32,15 @@ import {
   type ProbeOpenLine,
   reconnectWaitMs,
 } from "../delivery-live-probe";
-import { beforeDeadline, pastDeadline, rowLimit, runBounded } from "./bounded-subprocess";
+import {
+  beforeDeadline,
+  bounds,
+  named,
+  pastDeadline,
+  rowLimit,
+  runBounded,
+  whether,
+} from "./bounded-subprocess";
 
 // The probe runs as an agent runs it, a process of its own, against a stand-in for Dispatch that
 // replays the frames Dispatch's own diff writes (packages/contracts/fixtures/live): a
@@ -62,12 +70,15 @@ interface Script {
 }
 
 interface Run {
+  /** What a failure calls the probe: this file, its command with its arguments, and its
+   *  environment, as `named` writes a bounded child. */
+  readonly named: string;
   readonly lines: readonly ProbeLine[];
   readonly stderr: readonly string[];
+  /** Whether the probe has exited and both its output streams are read to their end. */
+  readonly ended: boolean;
   /** Sends the probe `signal`, as a Ctrl-C does. */
   kill(signal: NodeJS.Signals): void;
-  /** Resolves once `ready` holds; rejects if the probe exits first. */
-  until(ready: () => boolean): Promise<void>;
   /** The exit code, once both output streams are read to their end. */
   exited(): Promise<number>;
 }
@@ -75,15 +86,8 @@ interface Run {
 const servers: FakeDispatchServer<LiveClientFrame>[] = [];
 const kills: (() => void)[] = [];
 const scratchDirs: string[] = [];
-/** Woken whenever something a test waits on happens: a line from the probe, a frame the probe
- *  sent, or the probe's output ending. Each test waits on that event, never on a guessed time. */
-const waiters = new Set<() => void>();
-const wake = () => {
-  for (const waiter of [...waiters]) waiter();
-};
 
 afterEach(() => {
-  waiters.clear();
   for (const kill of kills.splice(0)) kill();
   for (const server of servers.splice(0)) server.stop();
   for (const dir of scratchDirs.splice(0)) rmSync(dir, { force: true, recursive: true });
@@ -105,7 +109,6 @@ function probeDispatch(script: Script): FakeDispatchServer<LiveClientFrame> {
     live: (socket, frame, nth) => {
       if (frame.type === "subscribe") script.onSubscribe(socket, frame.sub, nth);
     },
-    onFrame: wake,
     routes: script.routes,
     token: TOKEN,
   });
@@ -130,13 +133,13 @@ async function readLines(
 }
 
 /** The probe as the seven rows that drive it start it: a process of its own, which the row reads
- *  line by line, waits on with `until` and signals itself, so no bound stands at it, since a bound
- *  would kill a process the row still uses. Each of those rows waits for the line it needs through
- *  `lineBy`, so where that line never comes the row fails naming it at a deadline from the row's
- *  start, well inside the row's limit, and where the probe exits first the wait fails as "the
- *  probe ended first". `afterEach` kills the probe after every row. */
+ *  line by line and signals itself, so it is no bounded child, since a bound would kill a process
+ *  the row still uses. Each of those rows waits for the line it needs through `lineBy` and for the
+ *  probe's exit through `exitAfter`, and each of those waits ends at the short bound, failing with
+ *  the name of what it waited for. `afterEach` kills the probe after every row. */
 function runProbe(args: readonly string[]): Run {
-  const child = Bun.spawn([process.execPath, probe, ...args], {
+  const argv = [process.execPath, probe, ...args];
+  const child = Bun.spawn(argv, {
     cwd: dispatchPackage,
     stderr: "pipe",
     stdin: "ignore",
@@ -145,70 +148,58 @@ function runProbe(args: readonly string[]): Run {
   kills.push(() => child.kill("SIGKILL"));
   const lines: ProbeLine[] = [];
   const stderr: string[] = [];
-  let finished = false;
-  const reading = Promise.all([
+  const exit = Promise.all([
     // The probe writes one JSON object per line; the assertions read each as the line it names.
-    readLines(child.stdout, (line) => {
-      lines.push(JSON.parse(line) as ProbeLine);
-      wake();
-    }),
+    readLines(child.stdout, (line) => lines.push(JSON.parse(line) as ProbeLine)),
     readLines(child.stderr, (line) => stderr.push(line)),
-  ]).then(() => {
-    finished = true;
-    wake();
-  });
+  ]).then(() => child.exited);
+  let ended = false;
+  const end = () => {
+    ended = true;
+  };
+  exit.then(end, end);
   return {
-    async exited() {
-      await reading;
-      return child.exited;
+    get ended() {
+      return ended;
     },
+    exited: () => exit,
     kill: (signal) => child.kill(signal),
     lines,
+    named: named({ argv, from: import.meta.url }),
     stderr,
-    until(ready) {
-      const { promise, reject, resolve } = Promise.withResolvers<void>();
-      const check = () => {
-        if (ready()) {
-          waiters.delete(check);
-          resolve();
-        } else if (finished) {
-          waiters.delete(check);
-          reject(new Error(`the probe ended first: ${JSON.stringify(lines)} ${stderr.join("\n")}`));
-        }
-      };
-      waiters.add(check);
-      check();
-      return promise;
-    },
   };
 }
 
-/** How long a driven row waits for the probe's line, counted from the row's start: `underMs`,
- *  three times `largestMs` rounded up to the next 100 ms, where `largestMs` is the largest time a
- *  correct probe took to write that line in the readings the constant's comment names. */
-interface LineDeadline {
-  readonly underMs: number;
-  readonly largestMs: number;
-}
-
-/** Waits until `holds` answers true for `run`, and fails naming `what` where it has not by
- *  `within.underMs` after `started`, the `performance.now()` of the row's start. A probe that
- *  exits first fails the wait as "the probe ended first", which `until` answers. */
-async function lineBy(
-  run: Run,
-  started: number,
-  what: string,
-  holds: () => boolean,
-  within: LineDeadline
-): Promise<void> {
-  const seen = await beforeDeadline(run.until(holds), started + within.underMs);
-  if (seen === pastDeadline) {
+/** Waits, as `whether` does, until `holds` answers true for `run`. Where the probe ends first, or
+ *  the short bound passes first, it fails naming `what`, the line the row waits for, beside the
+ *  lines the probe wrote so far. */
+async function lineBy(run: Run, what: string, holds: () => boolean): Promise<void> {
+  if (await whether(holds, () => run.ended)) return;
+  const wrote = `${JSON.stringify(run.lines)} ${run.stderr.join("\n")}`;
+  if (run.ended) {
     throw new Error(
-      `the probe wrote no ${what} within ${within.underMs} ms of the row's start, more than ` +
-        `three times the largest time, ${within.largestMs} ms, a correct probe took to write ` +
-        `it: ${JSON.stringify(run.lines)} ${run.stderr.join("\n")}`
+      `the probe ended first, with exit ${await run.exited()}, before its ${what}: ${wrote}`
     );
   }
+  throw new Error(
+    `waited the short bound of ${bounds.short} ms for the probe's ${what}, and it never came: ` +
+      wrote
+  );
+}
+
+/** Sends the probe `signal`, as a Ctrl-C does, and answers its exit code once it has exited and
+ *  both its output streams have ended. It waits for that as `whether` does, and where the short
+ *  bound passes first it fails naming the probe, its argv, the signal it was sent and the bound,
+ *  beside the lines the probe wrote so far. */
+async function exitAfter(run: Run, signal: NodeJS.Signals): Promise<number> {
+  run.kill(signal);
+  if (!(await whether(() => run.ended))) {
+    throw new Error(
+      `the probe ${run.named} did not exit inside the short bound of ${bounds.short} ms after ` +
+        `${signal}: ${JSON.stringify(run.lines)} ${run.stderr.join("\n")}`
+    );
+  }
+  return run.exited();
 }
 
 /** The probe as the eleven rows that wait for its exit alone start it, eight written out and three
@@ -242,7 +233,16 @@ function endsOf(stdout: string): ProbeEndLine[] {
   return linesOf(stdout).filter((line): line is ProbeEndLine => line.type === "end");
 }
 
-function args(dispatch: { readonly url: string }, token = TOKEN, minutes = "1"): string[] {
+/** An hour: longer than any row of this file lasts, so the watch of a probe a row drives ends only
+ *  on the SIGINT the row sends, and a probe that ignores it fails the row's wait for its exit by
+ *  name at the short bound rather than ending its watch on its own at `--minutes`. */
+const WATCH_MINUTES = "60";
+
+function args(
+  dispatch: { readonly url: string },
+  token = TOKEN,
+  minutes = WATCH_MINUTES
+): string[] {
   const tokenFile = join(scratch(), "token");
   writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
   return [
@@ -281,28 +281,9 @@ const nothing = {
   set: null,
 };
 
-// The deadline `lineBy` gives the six driven rows whose line follows the probe's start with no
-// reconnect wait above 0 ms: the error line, the delta line, the second subscribe after a
-// rotation close, the second close line of the zero-spread row, and the snapshot line of the two
-// `--compare` read rows. It is three times the largest time from a row's start to its line,
-// rounded up to the next 100 ms. The largest of 180 readings, 10 runs of each of the six rows
-// alone and 20 under nine busy loops, three per CPU, on a pod of 3 CPUs on 2026-11-15, was
-// 1142.6 ms, from the delta-line row under load; three times that is 3 427.8 ms. The 3 500 ms is
-// below each of those rows' limits, the least of which is 30 s.
-const lineWithin: LineDeadline = { largestMs: 1142.6, underMs: 3_500 };
-
-// The deadline `lineBy` gives the row that waits for the second subscribe after a restart close,
-// which comes after a reconnect delay the probe draws from the 50 ms spread the row pins with
-// `--reconnect-spread-ms`. It is three times the largest time from the row's start to that
-// subscribe, rounded up to the next 100 ms. The largest of 30 readings, 10 runs alone and 20
-// under nine busy loops, three per CPU, on a pod of 3 CPUs on 2026-11-15, was 936.4 ms, under
-// load; three times that is 2 809.2 ms. The 2 900 ms is below the row's 30 s limit.
-const reconnectWithin: LineDeadline = { largestMs: 936.4, underMs: 2_900 };
-
 test(
   "the probe writes one line per frame and holds what the page would after them",
   async () => {
-    const started = performance.now();
     const sent: string[] = [];
     const dispatch = probeDispatch({
       onSubscribe(socket, sub) {
@@ -323,15 +304,8 @@ test(
     });
     const bodyFile = join(scratch(), "body.json");
     const run = runProbe([...args(dispatch), "--compare", "--body-file", bodyFile]);
-    await lineBy(
-      run,
-      started,
-      "error line",
-      () => run.lines.some((line) => line.type === "error"),
-      lineWithin
-    );
-    run.kill("SIGINT");
-    expect(await run.exited()).toBe(0);
+    await lineBy(run, "error line", () => run.lines.some((line) => line.type === "error"));
+    expect(await exitAfter(run, "SIGINT")).toBe(0);
 
     expect(dispatch.upgrades).toEqual([`Bearer ${TOKEN}`]);
     expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view }]);
@@ -443,19 +417,13 @@ test(
       },
     ]);
   },
-  {
-    // This row drives the probe: it waits for the error line, sends SIGINT, and then reads the
-    // body file the probe wrote. 30 s is enough because the fake Dispatch sends every frame at
-    // the subscribe, so the row waits for the probe's start, one loopback watch and two loopback
-    // reads; the wait for the error line ends by name at `lineWithin` from the row's start.
-    timeout: 30_000,
-  }
+  // The wait for the error line, then the wait for the exit after SIGINT.
+  rowLimit("short", "short")
 );
 
 test(
   "--compare names each pull request, run and measure a GET answer differs in, and exits 1",
   async () => {
-    const started = performance.now();
     const [firstPR] = nextBody.prs ?? [];
     const [firstRun] = nextBody.runs ?? [];
     if (firstPR === undefined || firstRun === undefined) {
@@ -480,15 +448,8 @@ test(
       },
     });
     const run = runProbe([...args(dispatch), "--compare"]);
-    await lineBy(
-      run,
-      started,
-      "delta line",
-      () => run.lines.some((line) => line.type === "delta"),
-      lineWithin
-    );
-    run.kill("SIGINT");
-    expect(await run.exited()).toBe(1);
+    await lineBy(run, "delta line", () => run.lines.some((line) => line.type === "delta"));
+    expect(await exitAfter(run, "SIGINT")).toBe(1);
 
     expect(
       comparisons(run.lines).map(({ equal, measures, prs, runs }) => ({
@@ -507,19 +468,15 @@ test(
       { equal: true, measures: { differ: [], equal: true }, prs: null, runs: null },
     ]);
   },
-  {
-    // This row drives the probe through --compare: it waits for the delta line and then sends
-    // SIGINT. 30 s is enough because the fake Dispatch sends both frames at the subscribe, so the
-    // row waits for the probe's start, one loopback watch and two loopback reads; the wait for
-    // the delta line ends by name at `lineWithin` from the row's start.
-    timeout: 30_000,
-  }
+  // The wait for the delta line, then the wait for the exit after SIGINT.
+  rowLimit("short", "short")
 );
 
-/** A day: far above the rotation row's deadline, `lineWithin`'s 3 500 ms from the row's start, so
- *  a reopen on a timer drawn from it reaches that row's second subscribe before the deadline on at
- *  most about one draw in 25 000 (3.5 s over 24 h). */
-const NO_TIMER_SPREAD_MS = 24 * 3_600_000;
+/** The longest wait a timer keeps, 2^31-1 ms or about 24.8 days, which is the largest spread the
+ *  probe takes: far above the rotation row's wait for its second subscribe, which ends at the
+ *  short bound, so a reopen on a timer drawn from it reaches that subscribe inside the bound on at
+ *  most about one draw in 35 800 (60 s over 24.8 days). */
+const NO_TIMER_SPREAD_MS = 2 ** 31 - 1;
 
 // Once the first connection has opened, Dispatch's rotation (4001) is the one close the probe
 // answers by opening again at once: its restart (1012) waits within the first attempt's spread,
@@ -530,17 +487,16 @@ const NO_TIMER_SPREAD_MS = 24 * 3_600_000;
 // Two checks tell a rotation answered at once from one answered on the reconnect timer. The close
 // line's `wait_ms`: the probe's timer path (`lost` in `delivery-live-probe.ts`) writes the wait it
 // computed and the rotation branch writes null, so a probe that took the timer and reports it fails
-// the line assertion whenever it reopens before the row's deadline. And the spread,
+// the line assertion whenever it reopens inside the short bound. And the spread,
 // `NO_TIMER_SPREAD_MS`: a probe that writes null but still reopens on a timer drawn from it fails
-// at `lineWithin`, naming the second subscribe, on all but at most about one draw in 25 000. That
-// rate is that probe's alone: one that reports the wait it drew fails on every draw, at the
-// deadline or on its line. A probe that is right arms no reconnect timer, so the spread costs it
+// at the short bound, naming the second subscribe, on all but at most about one draw in 35 800.
+// That rate is that probe's alone: one that reports the wait it drew fails on every draw, at the
+// bound or on its line. A probe that is right arms no reconnect timer, so the spread costs it
 // nothing, and the second subscribe is the fact that the reconnect happened.
 for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
   test(
     `after a ${what} close the probe reconnects at once and resumes with the change and revisions it holds`,
     async () => {
-      const started = performance.now();
       const dispatch = probeDispatch({
         onSubscribe(socket, sub, count) {
           if (count > 1) return;
@@ -554,15 +510,8 @@ for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
         "--reconnect-spread-ms",
         String(NO_TIMER_SPREAD_MS),
       ]);
-      await lineBy(
-        run,
-        started,
-        "second subscribe",
-        () => dispatch.received.length === 2,
-        lineWithin
-      );
-      run.kill("SIGINT");
-      expect(await run.exited()).toBe(0);
+      await lineBy(run, "second subscribe", () => dispatch.received.length === 2);
+      expect(await exitAfter(run, "SIGINT")).toBe(0);
 
       expect(dispatch.received).toEqual([
         { sub: "probe", type: "subscribe", view },
@@ -582,20 +531,14 @@ for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
         `open ${change.seq}`,
       ]);
     },
-    {
-      // This row drives the probe across a rotation close: it waits for the second subscribe
-      // and then sends SIGINT. 30 s is enough because the probe dials again at once after a
-      // rotation, so the row waits for the probe's start and two loopback watches; the wait for
-      // the second subscribe ends by name at `lineWithin` from the row's start.
-      timeout: 30_000,
-    }
+    // The wait for the second subscribe, then the wait for the exit after SIGINT.
+    rowLimit("short", "short")
   );
 }
 
 test(
   "after a restart close the probe reconnects within the spread and resumes with the change and revisions it holds",
   async () => {
-    const started = performance.now();
     const dispatch = probeDispatch({
       onSubscribe(socket, sub, count) {
         if (count > 1) return;
@@ -613,15 +556,8 @@ test(
     // 30 s", web/src/api/live-socket.test.ts), and the resume's content and order by the
     // assertions here.
     const run = runProbe([...args(dispatch), "--reconnect-spread-ms", "50"]);
-    await lineBy(
-      run,
-      started,
-      "second subscribe",
-      () => dispatch.received.length === 2,
-      reconnectWithin
-    );
-    run.kill("SIGINT");
-    expect(await run.exited()).toBe(0);
+    await lineBy(run, "second subscribe", () => dispatch.received.length === 2);
+    expect(await exitAfter(run, "SIGINT")).toBe(0);
 
     expect(dispatch.received).toEqual([
       { sub: "probe", type: "subscribe", view },
@@ -636,13 +572,8 @@ test(
     ).toEqual(["open null", "snapshot", "delta", "close 1012", `open ${change.seq}`]);
     expect(closes(run.lines)[0].wait_ms).toBeWithin(0, 50);
   },
-  {
-    // This row drives the probe across a restart close: it waits for the second subscribe,
-    // sends SIGINT, and reads the close line. 30 s is enough because the row waits for the
-    // probe's start, two loopback watches and a reconnect delay under the 50 ms spread it pins;
-    // the wait for the second subscribe ends by name at `reconnectWithin` from the row's start.
-    timeout: 30_000,
-  }
+  // The wait for the second subscribe, then the wait for the exit after SIGINT.
+  rowLimit("short", "short")
 );
 
 // The two steps that decide a reconnect's wait, which this row holds on every run: the
@@ -657,35 +588,22 @@ test(
 test(
   "each close line reports the wait, which --reconnect-spread-ms 0 makes zero after a restart",
   async () => {
-    const started = performance.now();
     const dispatch = probeDispatch({
       onSubscribe(socket, _sub, count) {
         if (count <= 2) socket.close(1012, "service restart");
       },
     });
     const run = runProbe([...args(dispatch), "--reconnect-spread-ms", "0"]);
-    await lineBy(
-      run,
-      started,
-      "second close line",
-      () => closes(run.lines).length === 2,
-      lineWithin
-    );
-    run.kill("SIGINT");
-    expect(await run.exited()).toBe(0);
+    await lineBy(run, "second close line", () => closes(run.lines).length === 2);
+    expect(await exitAfter(run, "SIGINT")).toBe(0);
 
     expect(closes(run.lines).map((line) => ({ code: line.code, wait_ms: line.wait_ms }))).toEqual([
       { code: 1012, wait_ms: 0 },
       { code: 1012, wait_ms: 0 },
     ]);
   },
-  {
-    // This row drives the probe across two restart closes: it waits for the second close line
-    // and then sends SIGINT. 30 s is enough because the spread of 0 makes each reconnect's wait
-    // 0 ms, so the row waits for the probe's start and two loopback watches; the wait for the
-    // second close line ends by name at `lineWithin` from the row's start.
-    timeout: 30_000,
-  }
+  // The wait for the second close line, then the wait for the exit after SIGINT.
+  rowLimit("short", "short")
 );
 
 test(
@@ -955,57 +873,27 @@ function compareArgs(url: string, readWithin: string): string[] {
   return [...args({ url }), "--compare", "--read-within", readWithin];
 }
 
-// A `--compare` read that receives nothing for `--read-within` fails the probe, naming its route,
-// where without that bound the probe waits on the read for good. The read starts once SIGINT
-// ends the watch, so the time from SIGINT to the probe's exit is the read's 1 s of silence give
-// or take scheduling, and the row holds it to at least half that 1 s and under `exitUnderMs`:
-// three times the largest such time a correct probe took, 1 170.4 ms in 20 runs under nine busy
-// loops, three per CPU, on a pod of 3 CPUs on 2026-11-15, rounded up to the next 100 ms. So a
-// read timer set well short or several times too long fails here by name, and not on this row's
-// own clock; one set between about 0.5 s and about 3.6 s does not, and `silence-read.test.ts`
-// holds the timer to its value on Bun's fake clock.
-const exitUnderMs = 3_600;
-
+// A `--compare` read that receives nothing for `--read-within` fails the probe, naming its route
+// and the time it ran out of, where without that bound the probe waits on the read for good. The
+// read starts once SIGINT ends the watch, so the probe exits by itself after SIGINT only where the
+// read gives up, and its stderr names the route and the 1 s the read was given. A probe whose read
+// never gives up fails the row's wait for its exit by name, at the short bound. The timer's own
+// value against `--read-within` is `silence-read.test.ts`'s, on Bun's fake clock.
 test(
-  "a --compare read that receives nothing fails the probe with exit 1, naming the route",
+  "a --compare read that receives nothing ends the probe by itself after SIGINT with exit 1, naming the route",
   async () => {
-    const started = performance.now();
     // Takes every GET and never answers it.
     const dispatch = slowDispatch(() => new Promise<Response>(() => {}));
     const run = runProbe(compareArgs(dispatch.url, "1"));
-    await lineBy(
-      run,
-      started,
-      "snapshot line",
-      () => run.lines.some((line) => line.type === "snapshot"),
-      lineWithin
-    );
-    const stopped = performance.now();
-    run.kill("SIGINT");
-    const code = await beforeDeadline(run.exited(), stopped + exitUnderMs);
-    const took = performance.now() - stopped;
-    expect(
-      code,
-      `the probe had not exited ${exitUnderMs} ms after SIGINT, more than three times the largest ` +
-        "time, 1 170.4 ms, a correct probe took to fail a read that --read-within 1 gave 1 s of silence"
-    ).not.toBe(pastDeadline);
-    expect(
-      took,
-      "the probe exited before 500 ms had passed since SIGINT, half the 1 s --read-within gave its read"
-    ).toBeGreaterThanOrEqual(500);
-    expect(code).toBe(1);
+    await lineBy(run, "snapshot line", () => run.lines.some((line) => line.type === "snapshot"));
+    expect(await exitAfter(run, "SIGINT")).toBe(1);
     expect(dispatch.reads).toEqual(["/api/v1/delivery/timeline"]);
     const stderr = run.stderr.join("\n");
     expect(stderr).toContain("the read of /api/v1/delivery/timeline?");
     expect(stderr).toContain("received nothing for 1 s (--read-within)");
   },
-  {
-    // This row drives the probe: it waits for the snapshot line and sends SIGINT, and the read
-    // runs after that. 30 s is enough because the row waits for the probe's start, one loopback
-    // watch and the read; the wait for the snapshot line ends by name at `lineWithin` from the
-    // row's start, and the wait for the exit at `exitUnderMs` after SIGINT.
-    timeout: 30_000,
-  }
+  // The wait for the snapshot line, then the wait for the exit after SIGINT.
+  rowLimit("short", "short")
 );
 
 // A body that arrives in 16 pieces, 0.25 s apart, is read whole and compared. The read gets the
@@ -1015,7 +903,6 @@ test(
 test(
   "a --compare read whose body keeps arriving is read whole, however long it takes",
   async () => {
-    const started = performance.now();
     const text = JSON.stringify(heldBody);
     const count = 16;
     const pieces = Array.from({ length: count }, (_, index) =>
@@ -1038,29 +925,18 @@ test(
       return new Response(body, { headers: { "content-type": "application/json" } });
     });
     const run = runProbe(compareArgs(dispatch.url, String(REQUEST_DEADLINE_MS / 1000)));
-    await lineBy(
-      run,
-      started,
-      "snapshot line",
-      () => run.lines.some((line) => line.type === "snapshot"),
-      lineWithin
-    );
-    run.kill("SIGINT");
-    expect(await run.exited(), run.stderr.join("\n")).toBe(0);
+    await lineBy(run, "snapshot line", () => run.lines.some((line) => line.type === "snapshot"));
+    expect(await exitAfter(run, "SIGINT"), run.stderr.join("\n")).toBe(0);
     expect(dispatch.reads).toEqual(["/api/v1/delivery/timeline", "/api/v1/delivery/measures"]);
     expect(comparisons(run.lines).map((line) => [line.route.split("?")[0], line.equal])).toEqual([
       ["/api/v1/delivery/timeline", true],
       ["/api/v1/delivery/measures", true],
     ]);
   },
-  {
-    // This row drives the probe: it waits for the snapshot line and sends SIGINT, and the read
-    // runs after that. The 60 s, two `REQUEST_DEADLINE_MS`, covers the wait for the snapshot,
-    // which the Dispatch here sends at the subscribe and whose wait ends by name at `lineWithin`
-    // from the row's start, and a read of about 4 s of pieces, in which any silence fails the
-    // probe by name at 30 s, half this limit.
-    timeout: 2 * REQUEST_DEADLINE_MS,
-  }
+  // The wait for the snapshot line, then the wait for the exit after SIGINT, which covers the
+  // read: about 4 s of pieces, in which any silence fails the probe by name at its 30 s
+  // `--read-within`, inside the short bound.
+  rowLimit("short", "short")
 );
 
 // A delay longer than 2^31-1 ms does not fit `setTimeout`'s 32-bit field, and bun sets it to

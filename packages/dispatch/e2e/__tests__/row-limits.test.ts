@@ -31,10 +31,11 @@ function planted(line: number): WallClockLimit {
 }
 
 // A scan that found nothing would satisfy the rule below without reading a limit, so this is
-// asserted once here rather than again in each test that reads `realLimits`. Each of the three
-// shapes the directory writes is read on a real file: a `rowLimit` call, a `timeout` option, and
-// a hook's second argument; and so is a row that waits for a bounded child, which states its
-// limit as a `rowLimit` call.
+// asserted once here rather than again in each test that reads `realLimits`. Each of the two
+// shapes the directory writes is read on a real file: a `rowLimit` call, and a hook's second
+// argument under a reason; and so is a row that waits for a bounded child, which states its
+// limit as a `rowLimit` call. No real row writes a `timeout` option or a reason, so those are
+// read on the planted rows below.
 test("the scan reads files and limits of the real directory", () => {
   expect(scannedFiles.length).toBeGreaterThan(0);
   expect(realLimits.length).toBeGreaterThan(0);
@@ -43,7 +44,7 @@ test("the scan reads files and limits of the real directory", () => {
   expect(
     realLimits.some(
       (limit) =>
-        limit.kind === "row" && limit.stated?.fromBounds === false && limit.stated.reason !== ""
+        limit.kind === "hook" && limit.stated?.fromBounds === false && limit.stated.reason !== ""
     )
   ).toBe(true);
   expect(realLimits.some((limit) => limit.waitsFor.length > 0 && limit.stated?.fromBounds)).toBe(
