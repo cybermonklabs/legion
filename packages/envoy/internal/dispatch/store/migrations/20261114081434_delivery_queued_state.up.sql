@@ -24,8 +24,9 @@
 -- so a refused switch is refused again and nothing is stored for it. It is persisted because a
 -- later send of an attempt is made by someone else - the delivery sweep, or a repeat under the
 -- request's key - which never saw the request. The switch rule itself is no row's: every send of a
--- person's Send or Aside on no issue, no broadcast's copy, whose body is one /model or /effort line
--- asks for a running session, judged from the message and the mode that attempt is sent in
+-- person's own Send or Aside (not one an agent wrote for them) on no issue, no broadcast's copy,
+-- whose body is one /model or /effort line asks for a running session, judged from the message and
+-- the mode that attempt is sent in
 -- (api/messages.go, isSessionSwitch; api/message_delivery.go, deliverMessageResuming), so a switch
 -- whose rows carry no flag is still never stored for a stopped session to apply at an unknown
 -- later time, and every other message, a BTW or an issue message among them, is queued. A nullable

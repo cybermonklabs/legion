@@ -1517,10 +1517,10 @@ a role resolves through `Role` alone, since a stopped session holds no role, and
 A message whose sends ask for a session that is running now (`connected_only`) is the one exception:
 the listener refuses its stopped target with `409` instead of storing for it, and the attempt records that refusal as its failure, `the session is stopped`.
 A model or thinking switch the session would run as its own turn asks it, whatever its request says:
-a person's Send or Aside on no issue, no broadcast's copy, whose whole body, trimmed, is one `/model <value>` or `/effort <value>` line, its value holding no whitespace (`isSessionSwitch`, `api/messages.go`).
+a person's own Send or Aside on no issue, no broadcast's copy, written by the person and not by an agent acting for them (an author with no `act`), whose whole body, trimmed, is one `/model <value>` or `/effort <value>` line, its value holding no whitespace (`isSessionSwitch`, `api/messages.go`).
 That is the one shape a session runs as its own turn (`isUserTurnCandidate`, `packages/pi-shared/src/accept-user-turn.ts`), and such a line stored for a session that is not running would change that session's model at an unknown later time.
 Every other message reaches the session as a card and changes no model, so it is queued for a stopped session whatever its body says:
-an issue message, a mention, a broadcast copy, a BTW and a session's message included.
+an issue message, a mention, a broadcast copy, a BTW, a session's message and a message an agent wrote for its person (which the accept refuses as `ACCEPT_WRITTEN_BY_AGENT`) included.
 That rule decides a switch, not the request, because a tab loaded before the field existed sends the switch without it;
 a send to a session (`POST /api/v1/agents/{session_id}/messages`) may still set `connected_only` itself, as Dispatch's live view's switch does, and any other send that sets it is refused the same way, while an issue message takes no such field.
 The request's flag is the message's, not one send's:
