@@ -3749,6 +3749,11 @@ export interface components {
       commit_stands?: components["schemas"]["ResultCommitStands"];
       /** Format: date-time */
       created_at: string;
+      /**
+       * @description A compatibility field for dispatch clients older than pi-envoy 17.1.0, which print it beside each result and read none of commit_stands, check_words_moved and retracted; read those instead. current: commit_stands is at_basis, check_words_moved is false and no retraction stands. older: commit_stands is other_commit, or it is at_basis and check_words_moved is true. Left out otherwise (commit_stands unknown, a retracted result at its basis under the check's words now), and on every result of a read that names ?at=. It is removed once no client older than pi-envoy 17.1.0 is in use.
+       * @enum {string}
+       */
+      currency?: "current" | "older";
       event_seq?: number;
       excluded: number;
       failed: number;

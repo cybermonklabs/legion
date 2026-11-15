@@ -4085,6 +4085,11 @@ Each item below names a path with its method and identity, then its purpose.
     `unknown` where the repository is unreadable, for a check CI proves whose check runs GitHub could not be read (`ci.state` `unread`), or where such a pass is held up only by a commit Dispatch could not place;
     `no` otherwise, which a check compared with nothing for `no_pull_request_or_branch` answers, since there is nothing for a pass to stand at.
 
+  - `currency` is a compatibility field for `dispatch` clients older than pi-envoy 17.1.0, which print it beside each result and read none of the fields above (`api/results_currency.go`).
+    It is `current` where `commit_stands` is `at_basis`, `check_words_moved` is false and no retraction stands, and `older` where `commit_stands` is `other_commit` or it is `at_basis` and `check_words_moved` is true.
+    It is left out everywhere else, where those clients print "unknown": a commit Dispatch cannot place, a retracted result at its basis under the check's words now, and every result of a read that names `?at=`.
+    It is derived from those fields alone, with no read of its own, and it is removed once no client older than pi-envoy 17.1.0 is in use.
+
   Where the App can read that repository, a `before_merge` result whose commit heads no such pull request is read through GitHub itself before the answer is given, which is what makes a result recorded before its own pull request opened stand at that head once the pull request opens at its commit:
 
   - One `GET /repos/{owner}/{repo}/commits/{sha}/pulls`, and every head GitHub names is written (`delivery.ReadThroughCommitPulls`).

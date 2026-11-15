@@ -342,7 +342,7 @@ Each item below names a task and where its code is, then notes on it.
   A write is keyed: a repeat under the same `Idempotency-Key` is answered the first call's `201` and records no second version.
   Shapes: `Handoff`, `HandoffSummary`, `HandoffRecordedPayload` in `packages/contracts/src/dispatch-api.ts`
 
-- **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
+- **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
 
   `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
   `GET` lists each check of the issue's Verification document with every result recorded against it.
@@ -371,6 +371,10 @@ Each item below names a task and where its code is, then notes on it.
     The check carries `ci`, `{run, state, case, detail, line}` (`model.CheckCI`), and for a pass or a fail one derived result, `ci-run:<run id>` by role `ci` and actor kind `github_app`, which `comparisonReader` judges as it judges a recorded result.
     `?at=` leaves that read in place, so a derived result stands at the named commit only where that commit is the head.
     A check carrying a `ci_check` that breaks a rule, or one that holds a recorded result, reads as an ordinary check.
+
+  - each result of a read that names no commit also answers `currency`, a compatibility field for `dispatch` clients older than pi-envoy 17.1.0, which print it and read none of the fields above (`results_currency.go`, `compatibilityCurrency`):
+    `current` at a basis under the check's words now with no retraction, `older` at another commit or at a basis under words that moved, and left out otherwise, so those clients print "unknown".
+    It is derived from `commit_stands`, `check_words_moved` and `retracted` after the comparison answered them, with no read of its own, and is removed once no client older than pi-envoy 17.1.0 is in use.
 
   A pull request is attributed to the first issue its five ranked sources name that resolves to the pull request's own repository, not to the first key they name (`attributionCandidates`, `attributionHeld` in `delivery/attribution.go`):
   a title naming another repository's issue first therefore does not cost the pull request its own, and a pull request no candidate of which resolves to its repository is attributed to nobody, as is one whose head branch is in another repository (`headInOwnRepository`).
