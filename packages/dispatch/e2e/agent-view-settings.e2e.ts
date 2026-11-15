@@ -686,8 +686,8 @@ test("a person's own token sends a switch recorded as them with the agent beside
 // A4: a session that stopped running never answers. Thirty seconds after Dispatch took the
 // switch the page says no answer came, keeps the values the session last reported, and gives the
 // pickers back; an answer that still comes replaces the line. A switch whose send already failed
-// (no live session took it) says so as soon as Dispatch answers with the failed attempt, without
-// waiting for that deadline.
+// (the listener did not take it) says so as soon as Dispatch answers with the failed attempt,
+// without waiting for that deadline.
 // SLOW(>=2s): two switches, each a round trip of its own: the answered one waits out the page's
 // once-a-second read of the thread (MIN_REFETCH_INTERVAL_MS, web/src/api/query-refresh.ts), and
 // the failed one waits out the listener take-over window Dispatch answers after, as the comment
@@ -732,11 +732,12 @@ test("a switch the session never answers says so after 30 seconds and keeps the 
     await expect(status).toHaveText("The session answered: Model set to anthropic/model-b.");
 
     // The send itself fails: Dispatch answers with a failed attempt, and the page says so with no
-    // wait for the deadline. Dispatch answers only once the listener take-over window has passed:
-    // half a second under the harness's DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW
-    // (e2e/run-server.sh), of the twelve seconds a deployment runs, in real time the page's
-    // installed clock does not hold back.
-    await setSessionSendStatus(id, 404);
+    // wait for the deadline. The listener answers every send 503, so Dispatch answers only once
+    // the listener take-over window has passed: half a second under the harness's
+    // DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW (e2e/run-server.sh), of the twelve seconds a
+    // deployment runs, in real time the page's installed clock does not hold back. A 404 would
+    // not fail it: Dispatch keeps a message for a session the listener holds no record of.
+    await setSessionSendStatus(id, 503);
     await model.selectOption("openai/model-c");
     await expect(status).toHaveText(/^No answer came from the session: \S/);
     await expect(status).not.toHaveText(NO_ANSWER);

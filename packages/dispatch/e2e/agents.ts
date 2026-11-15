@@ -56,7 +56,14 @@ export async function setLiveSessions(rows: FakeSession[], port?: number): Promi
   await fixtureRequest("/__fixture/sessions", "PUT", rows, port);
 }
 
-export async function setSessionSendStatus(sessionID: string, status: 200 | 404): Promise<void> {
+/** How the fake listener answers a send to a seeded session until a reseed: `200` takes it; `404`
+ *  is "no live session", and Dispatch then keeps the message for the session; `503` is a listener
+ *  behind its starting gate, and Dispatch records the attempt failed once its take-over window
+ *  has passed. A row that reads a failed attempt and its Retry stages `503`. */
+export async function setSessionSendStatus(
+  sessionID: string,
+  status: 200 | 404 | 503
+): Promise<void> {
   await fixtureRequest(`/__fixture/sessions/${encodeURIComponent(sessionID)}`, "PATCH", {
     send_status: status,
   });

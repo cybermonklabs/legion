@@ -14,6 +14,7 @@ import {
   refuseBroadcasts,
   setLiveSessions,
   setSessionLive,
+  setSessionRecord,
   shownAgentRows,
   toggleAgentGroup,
 } from "./agents";
@@ -27,6 +28,7 @@ import {
   disconnectLiveSockets,
   getAgentStates,
   listAgentMessages,
+  listKeptMessages,
   putAgentState,
   replyToMessageDelivery,
 } from "./api";
@@ -343,6 +345,84 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     await chip.click();
     await expect(page).toHaveURL(new RegExp(`/\\?${selected}assignee=everyone$`, "u"));
     await expect(inbox.getByRole("link", { name: "Clear agent filter" })).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// A person's message to an agent the listener holds no record of - its session ended after the
+// page listed it - is kept on that session's own agent subject rather than failed, and the agent
+// reads it when it comes back (dispatch://INFRA-3740, R5). The card says so and offers neither a
+// Retry nor a mode change, since either would put a second copy in front of the agent then. The
+// harness runs Dispatch with NATS disabled, so the row reads what the server kept from its test
+// hook rather than from a stream.
+// SLOW(>=2s): the Agents page's load and an opened card, then a send Dispatch answers only after
+// it has tried the ended session again within the harness's half-second take-over window.
+test("a message to an agent whose session ended after the page loaded is kept for it, and its card says so and offers nothing to send again", async ({
+  browser,
+}) => {
+  // This Planner takes Send, so a plain message to it goes as Send; the one above takes only
+  // Aside and BTW, and a plain message to it would go as Aside.
+  await setLiveSessions([{ ...planner, capabilities: ["aside", "btw", "steer"] }]);
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/agents");
+    const card = agentRow(page, planner.session_id);
+    await card.getByRole("button", { exact: true, name: "Planner" }).click();
+    const composer = card.getByRole("textbox", { name: "Comment" });
+    await expect(composer).toBeVisible();
+    // The server keeps what it kept for the life of its process, which the rows before this one
+    // share, so the row reads only what its own send adds.
+    const keptBefore = (await listKeptMessages()).kept?.length ?? 0;
+    // The session ends after the page listed it, so the page still offers it Send, and the
+    // registry read Dispatch makes before it sends answers 404 `no live session`.
+    await setSessionRecord(planner.session_id, "absent");
+
+    const body = "Pick up the release notes when you are back.";
+    const sent = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith(`/api/v1/agents/${planner.session_id}/messages`)
+    );
+    await composer.fill(body);
+    await composer.press("Control+Enter");
+    const response = await sent;
+    expect(response.status()).toBe(201);
+    expect(keyedWrite(response.request())).toEqual({
+      input: { body, delivery: "steer" },
+      key: expect.any(String),
+    });
+    const message = (await response.json()) as { id: string };
+
+    const conversation = card.getByRole("list", { name: "Conversation with Planner" });
+    await expect(conversation).toContainText(body);
+    await expect(
+      conversation.getByText(
+        /^Kept for Planner: it is delivered when the agent comes back \(Send\)$/
+      )
+    ).toBeVisible();
+    await expect(conversation).not.toContainText("Failed");
+    await expect(card.getByRole("button", { name: "Retry" })).toHaveCount(0);
+    await expect(card.getByRole("button", { name: /^Use .+ instead$/ })).toHaveCount(0);
+    expect(
+      (await getSentMessages()).filter((send) => send.target_session === planner.session_id)
+    ).toEqual([]);
+
+    // What Dispatch kept is the envelope the listener's send would have stored: on the session's
+    // own subject, under the send's dedupe key, carrying the delivery frame.
+    const kept = ((await listKeptMessages()).kept ?? []).slice(keptBefore);
+    expect(kept).toEqual([
+      expect.objectContaining({
+        dedupe_key: `agent.${planner.session_id}.${message.id}:steer`,
+        source: "dispatch",
+        subject: `notifications.agent.${planner.session_id}`,
+      }),
+    ]);
+    expect(JSON.parse(kept[0]?.payload ?? "null")).toMatchObject({
+      delivery: { attempt: 1, mode: "steer" },
+      event: { payload: { id: message.id }, type: "message.created" },
+    });
   } finally {
     await alice.close();
   }

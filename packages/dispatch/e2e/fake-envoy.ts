@@ -56,6 +56,15 @@ type SessionState = "live" | "unresponsive";
 
 const SESSION_STATES: readonly SessionState[] = ["live", "unresponsive"];
 
+/** How the listener answers a send to a session. `200` takes it. `404` is its "no live session"
+ *  refusal, after which Dispatch keeps the message for the session on its agent subject. `503` is
+ *  the listener behind its starting gate (`service starting`, packages/envoy/cmd/listener/main.go
+ *  startingGate): Dispatch tries it again through its take-over window and then records the
+ *  attempt failed, which is the failure a row stages to read a failed card and its Retry. */
+type SendStatus = 200 | 404 | 503;
+
+const SEND_STATUSES: readonly SendStatus[] = [200, 404, 503];
+
 /** How the listener answers its two list reads, `GET /v1/sessions` and `GET /v1/interests/`.
  *  `ok` answers them from the fixture. `refilling` is the real listener's answer while its copy
  *  of a bucket cannot be served (packages/envoy/cmd/listener writeListRefilling): 503,
@@ -145,7 +154,7 @@ interface FakeEnvoyState {
   /** The state the listener's record puts each session in; an id named by no entry here is
    *  `live`, the state a seeded session starts in. */
   readonly states: Map<string, SessionState>;
-  readonly sendStatuses: Map<string, 200 | 404>;
+  readonly sendStatuses: Map<string, SendStatus>;
   /** How long a send to a session is held before it is answered, in milliseconds, as a listener
    *  slow to take it would hold it; an id named by no entry here is answered at once. */
   readonly sendDelays: Map<string, number>;
@@ -425,6 +434,10 @@ const server = Bun.serve({
       const delay = state.sendDelays.get(message.target_session) ?? 0;
       if (delay > 0) await Bun.sleep(delay);
       const sendStatus = state.sendStatuses.get(message.target_session);
+      // A listener behind its starting gate answers every send so, whatever the session.
+      if (sendStatus === 503) {
+        return Response.json({ error: "service starting" }, { status: 503 });
+      }
       if (
         sendStatus === 404 ||
         !isLive(message.target_session) ||
@@ -507,7 +520,7 @@ const server = Bun.serve({
         live?: boolean;
         record?: SessionRecord;
         send_delay_ms?: number;
-        send_status?: 200 | 404;
+        send_status?: SendStatus;
         state?: SessionState;
         last_seen?: number;
       };
@@ -519,8 +532,8 @@ const server = Bun.serve({
         else state.liveSessions.delete(sessionID);
       }
       if (body.send_status !== undefined) {
-        if (body.send_status !== 200 && body.send_status !== 404) {
-          return Response.json({ error: "send_status must be 200 or 404" }, { status: 400 });
+        if (!SEND_STATUSES.includes(body.send_status)) {
+          return Response.json({ error: "send_status must be 200, 404 or 503" }, { status: 400 });
         }
         state.sendStatuses.set(sessionID, body.send_status);
       }
