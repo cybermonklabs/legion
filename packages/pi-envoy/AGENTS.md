@@ -1076,14 +1076,15 @@ read that fails but gives the cached list is a list: with the same items it keep
 bytes, so the request does not say that this read failed. A read that gives no text leaves a
 placed list where it is rather than taking it out, and takes a placed failure line out together
 with its place, since that read did not fail. A read whose window holds no item still gives its
-`words` (`carriedAnswers`, which `sessionAnswersText` and the tests share): when they show an item
-of the placed list gone inside the window, as when a person retracts the only answer the window
-held, the list leaves the request together with its place, and a list whose items only aged out
-stays. A read with no words (a Dispatch with no answers route and nothing cached, Dispatch off)
-compares nothing and keeps the list. So a placed list can name a read older than the request
-carrying it, and can hold an item that has since aged out of the window, until a read shows
-something new or gives the failure line, and the list or the failure line goes after the last
-message, or a read with no text shows an item of it retracted, and the list leaves. A move empties
+`words` (`carriedAnswers`, which `sessionAnswersText` and `src/session-answers-read.test.ts`
+call): when they show an item of the placed list gone inside the window, as when a person
+retracts the only answer the window held, the list leaves the request together with its place,
+and a list whose items only aged out stays. A read with no words (a Dispatch with no answers
+route and nothing cached, Dispatch off) compares nothing and keeps the list. So a placed list can
+name a read older than the request carrying it, and can hold an item that has since aged out of
+the window, until a read shows something new or gives the failure line, and the list or the
+failure line goes after the last message, or a read with no text shows an item of it retracted,
+and the list leaves. A move empties
 the old place, so the request first differs there. A session with no list
 placed yet in this process, or whose list's message is no longer in the request (a compaction
 summarized it, the branch moved), gets it after the last message again. Each session's place and

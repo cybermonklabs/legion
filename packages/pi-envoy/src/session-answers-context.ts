@@ -219,8 +219,9 @@ type ShownAnswers = CarriedAnswers & { readonly text: string };
  * whenever it gave them (a read that answered, or that gave the cached list), with its text or
  * without, since a read whose window holds no item still tells which items of a placed list left
  * it (`keptWithoutText`). Undefined when it gave neither: Dispatch is off, or has no answers route
- * and no list was read from it before. The extension's `sessionAnswersText` and the tests that
- * read through `readSessionAnswers` both call it, so the tests check the extension's own mapping.
+ * and no list was read from it before. The extension's `sessionAnswersText` and the placement
+ * cases of `session-answers-read.test.ts` both call it, so those cases check the extension's own
+ * mapping.
  */
 export function carriedAnswers(read: SessionAnswersRead): CarriedAnswers | undefined {
   if (read.text === undefined && read.words === undefined) return undefined;
@@ -324,14 +325,14 @@ function keepPlaced(messages: readonly unknown[], placed: Placement): unknown[] 
  * inside the read's window (`sessionAnswersChanged`), as when a person retracts the only answer
  * the window held: kept, the list would go on showing withdrawn words as current. A list whose
  * items only aged out of the window stays. A list an older copy of this extension placed has no
- * words that tell its aged-out items from retracted ones, so a read with words takes it out, as
- * `showsNew` re-renders such a list on any difference. A read with no words (no answers route,
- * Dispatch off) compares nothing and keeps the list. A placed failure line is not kept: a read
- * that gave no text did not fail, so the line no longer says what is true, and it leaves with its
- * place, so the next failure line goes after the last message. Undefined, so the request carries
- * no list, when nothing is placed, when a failure line was, when the list leaves, when its place
- * left the conversation, and while a compaction may be converting the conversation
- * (`compacting`), where a list before the cut would push a message out.
+ * words that tell its aged-out items from retracted ones, so a read with no text that gives words
+ * takes it out, as `showsNew` re-renders such a list on any difference but its read line. A read
+ * with no words (no answers route, Dispatch off) compares nothing and keeps the list. A placed
+ * failure line is not kept: a read that gave no text did not fail, so the line no longer says what
+ * is true, and it leaves with its place, so the next failure line goes after the last message.
+ * Undefined, so the request carries no list, when nothing is placed, when a failure line was, when
+ * the list leaves, when its place left the conversation, and while a compaction may be converting
+ * the conversation (`compacting`), where a list before the cut would push a message out.
  */
 function keptWithoutText(
   messages: readonly unknown[],
