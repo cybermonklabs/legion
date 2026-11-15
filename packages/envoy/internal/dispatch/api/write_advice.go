@@ -66,7 +66,7 @@ type writeAdvice struct {
 	// editBlocks is set by a document edit; nil omits its field.
 	*editBlocks
 	// SupersededApproval is set by a document write that stored a version replacing the one a
-	// person had approved; nil (omitted) everywhere else.
+	// person or a plan review had approved; nil (omitted) everywhere else.
 	SupersededApproval *supersededApproval `json:"superseded_approval,omitempty"`
 	// MovedApprovalRequest is set by a document write that took an open approval request back
 	// from the person it waits on; nil (omitted) everywhere else.
@@ -461,11 +461,12 @@ type decisionBlockCheck struct {
 }
 
 // supersededApproval is what a document write reports when the version it stored replaced the
-// version a person had approved: that approval is now stale, and nothing but a person's review of
-// the new version restores it. Every write that supersedes an approval is reported, whatever the
-// document is: the approval it made stale is a fact about that document and nothing else. The
-// writer is the only one who can be told in time, and only the write that superseded the approval
-// is told: a write on a document whose approval was already stale closed nothing.
+// version a person or a plan review had approved: that approval is now stale, and nothing but a
+// new approval of the new version restores it - a person's review, or for a plan a plan review
+// recorded with `dispatch plan-approve`. Every write that supersedes an approval is reported,
+// whatever the document is: the approval it made stale is a fact about that document and nothing
+// else. The writer is the only one who can be told in time, and only the write that superseded the
+// approval is told: a write on a document whose approval was already stale closed nothing.
 //
 // Whether a Legion design gate was among the things that approval held open is what DesignGates
 // answers. Dispatch keeps, issue by issue, which document each gated step records (design_gates,
@@ -474,12 +475,16 @@ type decisionBlockCheck struct {
 // list of gated steps names the row's step (supersededApprovalGates). Where nothing is left,
 // this write closed no gate anyone here knows of.
 type supersededApproval struct {
-	// ApprovedVersion is the version a person approved, the one this write superseded.
+	// ApprovedVersion is the version that approval pinned, the one this write superseded.
 	ApprovedVersion int `json:"approved_version"`
 	// Version is the version this write stored.
 	Version int `json:"version"`
 	// ApprovedBy is who gave that approval, as its review records the actor's id.
 	ApprovedBy string `json:"approved_by"`
+	// Kind is who gave that approval, its review's Kind: "person" for a person's, "plan_review"
+	// for a plan review's approval of a plan version, which no request for a person's approval can
+	// restore (requestArtifactApproval refuses a plan, PLAN_APPROVED_BY_REVIEW).
+	Kind string `json:"kind,omitempty"`
 	// DesignGates are the design gates Dispatch's record says this document is: one entry per
 	// issue and step, kept to the issues still in the workflow whose step the project gates.
 	// Omitted when empty, and empty is also what a failed gate read leaves
@@ -614,6 +619,7 @@ func newestReviewAsApproval(ctx context.Context, q docs.Queryer, artifactID stri
 		ApprovedVersion: review.Version,
 		Version:         version,
 		ApprovedBy:      review.Actor.ID,
+		Kind:            review.Kind,
 	}, nil
 }
 

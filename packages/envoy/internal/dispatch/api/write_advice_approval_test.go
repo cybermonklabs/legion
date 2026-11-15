@@ -55,14 +55,40 @@ func TestDocumentEditAdviceNamesTheApprovalItSuperseded(t *testing.T) {
 	if superseded == nil {
 		t.Fatalf("advice = %#v, want the approval the edit superseded", advice)
 	}
-	if superseded.ApprovedVersion != approved || superseded.Version != approved+1 || superseded.ApprovedBy != "alice" {
-		t.Fatalf("superseded_approval = %#v, want version %d superseding the approval of %d by alice",
+	if superseded.ApprovedVersion != approved || superseded.Version != approved+1 || superseded.ApprovedBy != "alice" ||
+		superseded.Kind != "person" {
+		t.Fatalf("superseded_approval = %#v, want version %d superseding the person's approval of %d by alice",
 			superseded, approved+1, approved)
 	}
 
 	again := editAdviceDocument(t, handler, issue.PrimaryArtifactID, "One more line.")
 	if again.SupersededApproval != nil {
 		t.Fatalf("second edit's superseded_approval = %#v, want none: the approval was already stale", again.SupersededApproval)
+	}
+}
+
+// A plan's approval is its plan review's, never a person's, so the approval a plan edit
+// supersedes names that kind beside the review's session: no request for a person's approval
+// restores it (Dispatch refuses one on a plan, PLAN_APPROVED_BY_REVIEW), and the kind is what the
+// client reads to name `dispatch plan-approve` rather than `dispatch request-approval`.
+func TestPlanEditAdviceNamesThePlanReviewsApprovalItSuperseded(t *testing.T) {
+	handler := newTestHandler(t)
+	createAdviceProject(t, handler, "PLANGATE")
+	spec := "# Transport\n\nThe design.\n"
+	issue := createAdviceIssue(t, handler, "PLANGATE", "Reviewed plan", &spec)
+	plan := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "plan.md", "# Plan\n\nThe plan, as reviewed.\n")
+	recorded := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+plan.Artifact.ID+"/plan-reviews",
+		map[string]any{"actor": adviceSessionActor("session-plan-review"), "version": 1})
+	if recorded.Code != http.StatusCreated {
+		t.Fatalf("record the plan review: status=%d body=%s", recorded.Code, recorded.Body.String())
+	}
+
+	advice := editAdviceDocument(t, handler, plan.Artifact.ID, "A step the review never read.")
+	superseded := advice.SupersededApproval
+	if superseded == nil || superseded.ApprovedVersion != 1 || superseded.Version != 2 ||
+		superseded.ApprovedBy != "session-plan-review" || superseded.Kind != "plan_review" {
+		t.Fatalf("plan edit superseded_approval = %#v, want version 2 superseding the plan review's "+
+			"approval of 1 by session-plan-review", superseded)
 	}
 }
 

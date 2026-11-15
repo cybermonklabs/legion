@@ -25233,6 +25233,9 @@
             },
             "type": "array"
           },
+          "kind": {
+            "type": "string"
+          },
           "version": {
             "type": "integer"
           }
