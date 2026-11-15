@@ -4202,6 +4202,13 @@ export default function envoyExtension(pi: PiApi): void {
           );
         },
         read: () => sessionAnswersText(context),
+        // A failed read that gave the cached list, where the placed bytes stay: the model is not
+        // told, so the log is, once per such request, with the reason the failure line would
+        // carry.
+        unshownFailure: (reason) =>
+          logger.warn(
+            `envoy: people's answers could not be read (${reason}); the request keeps the list placed before, which does not say so`
+          ),
       });
       const result = messages ?? withSkill ?? aged;
       return result === undefined ? undefined : { messages: result };

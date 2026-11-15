@@ -70,7 +70,8 @@ export const ITEM: SessionAnswer = {
   href: "/agents/ses/live",
 };
 
-/** A request of `session` (a session of its own unless given), not compacting unless told. */
+/** A request of `session` (a session of its own unless given), not compacting unless told, that
+ *  drops what `unshownFailure` is told. */
 export function requestOf(
   read: () => Promise<CarriedAnswers | undefined>,
   branch: () => readonly unknown[],
@@ -78,5 +79,12 @@ export function requestOf(
   compacting = false,
   id = "ses_a"
 ): SessionAnswersRequest {
-  return { read, branch, session, id, compacting: () => compacting };
+  return {
+    read,
+    branch,
+    session,
+    id,
+    compacting: () => compacting,
+    unshownFailure: () => undefined,
+  };
 }

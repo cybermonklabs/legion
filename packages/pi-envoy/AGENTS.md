@@ -1073,9 +1073,12 @@ message, so the model reads that the read failed rather than a list's kept bytes
 read that answered, and a list after a placed failure line goes after the last message the same
 way; a failure line after a placed one keeps that one's place and bytes, its reason included. A
 read that fails but gives the cached list is a list: with the same items it keeps the placed
-bytes, so the request does not say that this read failed. A read that gives no text leaves a
-placed list where it is rather than taking it out, and takes a placed failure line out together
-with its place, since that read did not fail. A read whose window holds no item still gives its
+bytes, so the request does not say that this read failed; the extension logs that read's reason
+with `logger.warn` instead, once per such request (`unshownFailure`), and logs no newer list, no
+retraction and no read that answers, since those reach the model. A read that gives no text
+leaves a placed list where it is rather than taking it out, and takes a placed failure line out
+together with its place, since that read did not fail. A read whose window holds no item still
+gives its
 `words` (`carriedAnswers`, which `sessionAnswersText` and `src/session-answers-read.test.ts`
 call): when they show an item of the placed list gone inside the window, as when a person
 retracts the only answer the window held, the list leaves the request together with its place,
@@ -1173,8 +1176,9 @@ two copies with an empty list making one HTTP read among them,
 `src/session-answers-read.test.ts` the placement rules on reads through the real
 `readSessionAnswers` and `carriedAnswers` (the cap, a retraction, the window),
 `extensions/envoy.test.ts` the
-handler, a subagent reading its parent's id, a Dispatch that answers no list (the failure line)
-and one with no answers route (no line, one warning for two requests), and
+handler, a subagent reading its parent's id, a Dispatch that answers no list (the failure line),
+one with no answers route (no line, one warning for two requests), and a failed read whose cached
+list keeps the placed bytes (one warning per such read, none for a read that answers), and
 `extensions/session-answers-omp.test.ts` the real binary: a new answer in the next turn, after a
 compaction and in a subagent's first request; every kind of item word for word; the cap; a route
 that never answers costing a request under one second, by the median of three readings; a route that answers 404 (no line); the cache
