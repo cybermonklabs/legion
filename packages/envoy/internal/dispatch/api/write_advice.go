@@ -573,13 +573,18 @@ func (s *server) supersededApprovalAdvice(
 // off` the registration records the spec step, approves it, and no later event ever moves it -
 // and that row holds nothing.
 //
-// A null holds is a row a daemon older than the column published, and the rule keeps it where
-// the project's list names its step (`coalesce`), which is how every row was read before the
-// daemon said, so either side may deploy first: a daemon that sends holds to a Dispatch older
-// than the column is refused and retries, and a Dispatch with the column reads an older daemon's
-// rows as it always read them. For such a row a project whose daemon has published no list gates
-// nothing, and prints no clause, which is the direction this whole change takes: a reader told
-// nothing asks the architect, where a reader told a gate that is not there stops working.
+// A null holds is a row whose publish did not say whether it holds its tree, and the rule keeps it
+// where the project's list names its step (`coalesce`), which is how every row was read before
+// the daemon said. A daemon older than the column publishes no holds, so a Dispatch with the
+// column reads that daemon's rows as it always read them. A Dispatch older than the column takes
+// a newer daemon's publish and answers 200, dropping holds, since decodeJSON ignores a member it
+// does not declare, and nothing retries the publish. Each row it took that way is null once
+// Dispatch has the column, so a `criteria` row a root registered beside a deployment that gates
+// `spec` alone is left out of this advice until the daemon publishes the set again, which every
+// daemon boot does. So the operator deploys Dispatch first, or restarts the daemon once Dispatch
+// has the column. For a null row, a project whose daemon has published no list gates nothing, and
+// prints no clause, which is the direction this whole change takes: a reader told nothing asks the
+// architect, where a reader told a gate that is not there stops working.
 //
 // The order is the issue's key and then the order a gate runs the steps in ($2,
 // model.GatedStepsKnown), the order the issue read lists an issue's own gates in.

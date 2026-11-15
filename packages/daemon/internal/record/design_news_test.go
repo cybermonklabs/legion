@@ -68,7 +68,8 @@ func criteriaNews(from *int, to int) NewsItem {
 // approved version above what the holder took or a version the record does not know, the step one
 // that concerns the member, the member in the workflow with a phase someone holds in a tree that
 // does not linger, and its pull request not merged. The root architect's row is weighed on its own
-// rule beside the members'.
+// rule beside the members'. Each member owed nothing is named with the first reason that holds
+// (UntoldReason), the hold of the gate or the linger last.
 func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 	specOnly := []DesignStep{DesignStepSpec}
 	child, sibling, third := "LEGION-101", "LEGION-102", "LEGION-103"
@@ -112,6 +113,7 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 			want: TreeNews{
 				Members:   []MemberNews{{Issue: newsRoot, Phase: phase.Implementing, Items: []NewsItem{criteriaNews(new(2), 3)}}},
 				Architect: []NewsItem{criteriaNews(new(2), 3)},
+				Untold:    map[string]UntoldReason{child: UntoldNotConcerned},
 			},
 		},
 		{
@@ -120,7 +122,7 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 				Members: []Issue{newsMember(newsRoot, phase.Implementing), newsMember(child, phase.Implementing)},
 				Told: []DesignTold{architectTook(map[DesignStep]int{DesignStepSpec: 4}), holderTook(newsRoot, map[DesignStep]int{DesignStepSpec: 4}),
 					holderTook(child, map[DesignStep]int{DesignStepSpec: 4})}},
-			want: TreeNews{},
+			want: TreeNews{Untold: map[string]UntoldReason{newsRoot: UntoldHeldBack, child: UntoldHeldBack}},
 		},
 		{
 			name: "the first of two approvals owes nothing",
@@ -129,7 +131,7 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 				Told: []DesignTold{architectTook(map[DesignStep]int{DesignStepSpec: 4, DesignStepCriteria: 2}),
 					holderTook(newsRoot, map[DesignStep]int{DesignStepSpec: 4, DesignStepCriteria: 2}),
 					holderTook(child, map[DesignStep]int{DesignStepSpec: 4})}},
-			want: TreeNews{},
+			want: TreeNews{Untold: map[string]UntoldReason{newsRoot: UntoldHeldBack, child: UntoldHeldBack}},
 		},
 		{
 			name: "the second of two approvals owes both, once",
@@ -153,7 +155,7 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 				Told: []DesignTold{architectTook(map[DesignStep]int{DesignStepSpec: 5}), holderTook(newsRoot, map[DesignStep]int{DesignStepSpec: 4}),
 					holderTook(child, map[DesignStep]int{DesignStepSpec: 4}), holderTook(sibling, map[DesignStep]int{DesignStepSpec: 4}),
 					holderTook(third, map[DesignStep]int{DesignStepSpec: 4})}},
-			want: TreeNews{},
+			want: TreeNews{Untold: map[string]UntoldReason{newsRoot: UntoldAwaitingPerson, child: UntoldAdmitted, sibling: UntoldHeld, third: UntoldDone}},
 		},
 		{
 			name: "a merged root in merging, a member held from merging and one still reviewing whose pull request merged owe nothing",
@@ -162,7 +164,7 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 				Told: []DesignTold{architectTook(map[DesignStep]int{DesignStepSpec: 5}), holderTook(newsRoot, map[DesignStep]int{DesignStepSpec: 4}),
 					holderTook(child, map[DesignStep]int{DesignStepSpec: 4}), holderTook(sibling, map[DesignStep]int{DesignStepSpec: 4})},
 				Merged: map[string]bool{newsRoot: true, child: true, sibling: true}},
-			want: TreeNews{},
+			want: TreeNews{Untold: map[string]UntoldReason{newsRoot: UntoldMerged, child: UntoldMerged, sibling: UntoldMerged}},
 		},
 		{
 			name: "a change to the checks alone on a merged root reaches its architect and nobody else",
@@ -172,7 +174,8 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 					holderTook(newsRoot, map[DesignStep]int{DesignStepSpec: 5, DesignStepCriteria: 2}),
 					holderTook(child, map[DesignStep]int{DesignStepSpec: 5})},
 				Merged: map[string]bool{newsRoot: true}},
-			want: TreeNews{Architect: []NewsItem{criteriaNews(new(2), 3)}},
+			want: TreeNews{Architect: []NewsItem{criteriaNews(new(2), 3)},
+				Untold: map[string]UntoldReason{newsRoot: UntoldMerged, child: UntoldNotConcerned}},
 		},
 		{
 			name: "a lingering tree owes nothing, its architect included",
@@ -180,7 +183,7 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 				Members: []Issue{lingering, newsMember(child, phase.Implementing)},
 				Told: []DesignTold{architectTook(map[DesignStep]int{DesignStepSpec: 4}), holderTook(newsRoot, map[DesignStep]int{DesignStepSpec: 4}),
 					holderTook(child, map[DesignStep]int{DesignStepSpec: 4})}},
-			want: TreeNews{},
+			want: TreeNews{Untold: map[string]UntoldReason{newsRoot: UntoldHeldBack, child: UntoldHeldBack}},
 		},
 		{
 			name: "an unknown baseline owes, with no version to start from",
@@ -193,6 +196,7 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 					{Issue: sibling, Phase: phase.Testing, Items: []NewsItem{specNews(nil, 5)}},
 				},
 				Architect: []NewsItem{specNews(nil, 5)},
+				Untold:    map[string]UntoldReason{newsRoot: UntoldAdmitted},
 			},
 		},
 		{
@@ -207,7 +211,7 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 			facts: NewsFacts{Steps: specOnly, Gates: newsRows(newsGate(DesignStepSpec, 5, 5)),
 				Members: []Issue{newsMember(newsRoot, phase.Admitted), newsMember(child, phase.Planning)},
 				Told:    []DesignTold{architectTook(map[DesignStep]int{DesignStepSpec: 4}), holderTook(child, map[DesignStep]int{DesignStepSpec: 5})}},
-			want: TreeNews{Architect: []NewsItem{specNews(new(4), 5)}},
+			want: TreeNews{Architect: []NewsItem{specNews(new(4), 5)}, Untold: map[string]UntoldReason{newsRoot: UntoldAdmitted, child: UntoldTaken}},
 		},
 		{
 			name: "accepting is held by the member's owning architect, the root's or a sub-architect's",
@@ -225,7 +229,7 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 			facts: NewsFacts{Gates: newsRows(newsGate(DesignStepSpec, 5, 5)),
 				Members: []Issue{newsMember(newsRoot, phase.Implementing)},
 				Told:    []DesignTold{architectTook(map[DesignStep]int{DesignStepSpec: 4}), holderTook(newsRoot, map[DesignStep]int{DesignStepSpec: 4})}},
-			want: TreeNews{},
+			want: TreeNews{Untold: map[string]UntoldReason{newsRoot: UntoldTaken}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

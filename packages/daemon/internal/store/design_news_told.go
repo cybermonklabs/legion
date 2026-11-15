@@ -67,9 +67,9 @@ func settleDesignNews(ctx context.Context, tx pgx.Tx, token claim.Token, d super
 // tellDesignNews is the confirmation's own write: the turn carrying this delivery has started, so
 // each audience it spoke to took each version it told. Each item's step on its issue's audience row
 // rises to the item's To, or stays where it stands when the row already holds a greater version,
-// and the row is written where there is none (record.Postgres.RaiseTold, the same raise); each
-// audience it carried the opening to is owed it no longer. An item of an issue the record does not
-// hold raises nothing.
+// and the row is written where there is none, by the one raise both raises call (the SQL function
+// design_news_raised, which record.Postgres.RaiseTold calls too); each audience it carried the
+// opening to is owed it no longer. An item of an issue the record does not hold raises nothing.
 func tellDesignNews(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string, news []byte, at time.Time) error {
 	if _, err := tx.Exec(ctx, `insert into design_news_told (issue, audience, versions, opening_owed, told_at)
 		select raised.issue, raised.audience, jsonb_object_agg(raised.step, raised.version), false, $2::timestamptz
@@ -80,10 +80,7 @@ func tellDesignNews(ctx context.Context, tx pgx.Tx, token claim.Token, delivery 
 			group by item.issue, item.audience, item.step) raised
 		group by raised.issue, raised.audience
 		on conflict (issue, audience) do update set
-			versions = design_news_told.versions || (
-				select jsonb_object_agg(told.key,
-					greatest(told.value::int, coalesce((design_news_told.versions ->> told.key)::int, told.value::int)))
-				from jsonb_each_text(excluded.versions) told),
+			versions = design_news_raised(design_news_told.versions, excluded.versions),
 			told_at = excluded.told_at`, news, at); err != nil {
 		return fmt.Errorf("raise what the delivery %s on %s told of the approved design: %w", delivery, token, err)
 	}
@@ -101,18 +98,23 @@ func tellDesignNews(ctx context.Context, tx pgx.Tx, token claim.Token, delivery 
 // holds exactly the item's To, and is forgotten where the item's From is unknown, which is what the
 // row held before; a row that has risen past To since was raised by something else, and keeps what
 // it holds. Each audience the delivery carried the opening to is owed it again.
+//
+// The new versions are computed from the row the update has locked, in the one statement, as every
+// other writer of a told row computes its write: the SET and the WHERE read the target row, never a
+// value read before the lock. Under READ COMMITTED a fill, a raise or another delivery's
+// confirmation of the same row that commits while this write waits for the row's lock is then
+// read, since Postgres evaluates both again on the version of the row that write committed, and
+// what that write wrote is kept.
 func untellDesignNews(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string, news []byte) error {
-	if _, err := tx.Exec(ctx, `with lowered as (
-			select told.issue, told.audience,
-				(told.versions - array_agg(item.step))
-					|| coalesce(jsonb_object_agg(item.step, item."from") filter (where item."from" is not null), '{}'::jsonb) as versions
-			from design_news_told told
-			join jsonb_to_recordset(coalesce($1::jsonb -> 'items', '[]'::jsonb))
+	if _, err := tx.Exec(ctx, `update design_news_told told set versions = (
+			select (told.versions - array_agg(item.step))
+				|| coalesce(jsonb_object_agg(item.step, item."from") filter (where item."from" is not null), '{}'::jsonb)
+			from jsonb_to_recordset(coalesce($1::jsonb -> 'items', '[]'::jsonb))
 				as item (issue text, audience text, step text, "from" int, "to" int)
-				on told.issue = item.issue and told.audience = item.audience and (told.versions ->> item.step)::int = item."to"
-			group by told.issue, told.audience, told.versions)
-		update design_news_told set versions = lowered.versions
-		from lowered where design_news_told.issue = lowered.issue and design_news_told.audience = lowered.audience`,
+			where item.issue = told.issue and item.audience = told.audience and (told.versions ->> item.step)::int = item."to")
+		where exists (select 1 from jsonb_to_recordset(coalesce($1::jsonb -> 'items', '[]'::jsonb))
+				as item (issue text, audience text, step text, "to" int)
+			where item.issue = told.issue and item.audience = told.audience and (told.versions ->> item.step)::int = item."to")`,
 		news); err != nil {
 		return fmt.Errorf("put back what the delivery %s on %s told of the approved design: %w", delivery, token, err)
 	}

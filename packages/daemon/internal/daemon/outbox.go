@@ -1779,43 +1779,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return nil
 			}
 		}
-		// A start queued for news of the approved design alone (record.SuperviseRequest.News)
-		// reaches only a claim such a start may reach as the claim stands now (newsOnlyRefusal):
-		// one that exists and was given the entry its role's phases row names, has not ended, and
-		// that no operator suspended. It never creates a claim, revives one or resumes an
-		// operator's, and one it may not reach finishes it without acting, since the start that
-		// brings that claim back carries the news. The generation, the phase, the workflow and the
-		// linger above have fenced it as they fence any start.
-		if payload.News {
-			var entry int64
-			if payload.Role != claim.RoleArchitect {
-				if entry, err = r.phaseEntry(ctx, row.Issue, payload.Role); err != nil {
-					return err
-				}
-			}
-			if why := newsOnlyRefusal(machine, found, entry); why != "" {
-				r.log.Info("outbox news-only start reaches no claim; finished without acting", "row", row.ID, "issue", issue.Key,
-					"role", payload.Role, "why", why)
-				return nil
-			}
-		}
-		if err := r.mergerWaitsForTheDesignGate(ctx, issue, payload.Role); err != nil {
+		// What the start carries of news of the approved design, or that it finishes without
+		// acting, is the one helper's answer (startNewsOf), which keeps a news-only start's refusal
+		// before the merger's wait for the design gate.
+		news, finished, err := r.startNewsOf(ctx, row, issue, payload, machine, found, token)
+		if err != nil || finished {
 			return err
-		}
-		// Every phase start (an entry's work, the held phase's retry among them) and every news-only
-		// start carries the news its role is owed, read from the record as it stands now
-		// (newsForStart), with no Dispatch read: an item whose change set is not recorded is left
-		// owed. A news-only start the record owes nothing now finishes without acting.
-		news := startNews{task: payload.Task}
-		if payload.News || payload.Entry > 0 {
-			if news, err = r.newsForStart(ctx, issue, payload, token); err != nil {
-				return err
-			}
-			if payload.News && !news.says {
-				r.log.Info("outbox news-only start finds nothing owed; finished without acting", "row", row.ID, "issue", issue.Key,
-					"role", payload.Role)
-				return nil
-			}
 		}
 		// A child carried into a tree of its own — a finished root's hand-over, or a person's label
 		// on a child its tree left mid-run — may still run a role of its old tree: one in a turn when
@@ -2744,6 +2713,55 @@ func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool
 	}
 	_, closed := classify.StandingGate(r.gatedSteps, gates)
 	return closed, nil
+}
+
+// startNewsOf is what a start carries of news of the approved design, or that the start finishes
+// without acting (finished), in the order the start executor asks it (supervise):
+//
+//  1. A start queued for news alone (record.SuperviseRequest.News) reaches only a claim such a
+//     start may reach as the claim stands now (newsOnlyRefusal): one that exists and was given the
+//     entry its role's phases row names, has not ended, and that no operator suspended. It never
+//     creates a claim, revives one or resumes an operator's, and one it may not reach finishes it,
+//     since the start that brings that claim back carries the news. The generation, the phase, the
+//     workflow and the linger have fenced it before this, as they fence any start.
+//  2. A merger's start waits while its tree's design gate is closed or its news is not recorded
+//     (mergerWaitsForTheDesignGate), after the refusal, so a news-only start that reaches no claim
+//     finishes rather than waits.
+//  3. Every phase start (an entry's work, the held phase's retry among them) and every news-only
+//     start carries the news its role is owed, read from the record as it stands now
+//     (newsForStart), with no Dispatch read: an item whose change set is not recorded is left
+//     owed. A news-only start the record owes nothing now finishes. Any other start carries its
+//     own text alone.
+func (r *outbox) startNewsOf(ctx context.Context, row record.OutboxRow, issue record.Issue, payload record.SuperviseRequest,
+	machine *supervise.Machine, found bool, token claim.Token) (news startNews, finished bool, err error) {
+	if payload.News {
+		var entry int64
+		if payload.Role != claim.RoleArchitect {
+			if entry, err = r.phaseEntry(ctx, row.Issue, payload.Role); err != nil {
+				return startNews{}, false, err
+			}
+		}
+		if why := newsOnlyRefusal(machine, found, entry); why != "" {
+			r.log.Info("outbox news-only start reaches no claim; finished without acting", "row", row.ID, "issue", issue.Key,
+				"role", payload.Role, "why", why)
+			return startNews{}, true, nil
+		}
+	}
+	if err := r.mergerWaitsForTheDesignGate(ctx, issue, payload.Role); err != nil {
+		return startNews{}, false, err
+	}
+	if !payload.News && payload.Entry == 0 {
+		return startNews{task: payload.Task}, false, nil
+	}
+	if news, err = r.newsForStart(ctx, issue, payload, token); err != nil {
+		return startNews{}, false, err
+	}
+	if payload.News && !news.says {
+		r.log.Info("outbox news-only start finds nothing owed; finished without acting", "row", row.ID, "issue", issue.Key,
+			"role", payload.Role)
+		return startNews{}, true, nil
+	}
+	return news, false, nil
 }
 
 // mergerWaitsForTheDesignGate is the one role fence a start carries: the merger merges nothing

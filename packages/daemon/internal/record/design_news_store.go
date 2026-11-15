@@ -70,7 +70,9 @@ func (s *Postgres) BaselineTold(ctx context.Context, tx pgx.Tx, issue string, au
 // RaiseTold raises each step of versions on issue's audience row to the greater of the version the
 // row holds and the one given, writing the row when there is none. A step the row does not know
 // takes the version given, and a step versions does not name keeps what the row holds, so a raise
-// never lowers a version and never forgets one. The owed opening is left as it stands.
+// never lowers a version and never forgets one: the SQL function design_news_raised states that
+// rule once, for this raise and for the confirmation's (the claim store's tellDesignNews). The
+// owed opening is left as it stands.
 func (s *Postgres) RaiseTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error {
 	if versions == nil {
 		versions = map[DesignStep]int{}
@@ -82,29 +84,22 @@ func (s *Postgres) RaiseTold(ctx context.Context, tx pgx.Tx, issue string, audie
 	if _, err := tx.Exec(ctx, `insert into design_news_told (issue, audience, versions, opening_owed, told_at)
 		values ($1, $2, $3, false, $4)
 		on conflict (issue, audience) do update set
-			versions = design_news_told.versions || (
-				select coalesce(jsonb_object_agg(raised.key,
-					greatest(raised.value::int, coalesce((design_news_told.versions->>raised.key)::int, raised.value::int))), '{}'::jsonb)
-				from jsonb_each_text(excluded.versions) raised),
+			versions = design_news_raised(design_news_told.versions, excluded.versions),
 			told_at = excluded.told_at`, issue, string(audience), encoded, at); err != nil {
 		return fmt.Errorf("raise the versions %s's %s took: %w", issue, audience, err)
 	}
 	return nil
 }
 
-// SetOpeningOwed sets or clears whether the gate's opening is owed to issue's audience. Setting it
-// on an issue with no row writes one that knows no version; clearing it where no row stands
-// writes nothing.
-func (s *Postgres) SetOpeningOwed(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, owed bool) error {
-	var err error
-	if owed {
-		_, err = tx.Exec(ctx, `insert into design_news_told (issue, audience, opening_owed) values ($1, $2, true)
-			on conflict (issue, audience) do update set opening_owed = true`, issue, string(audience))
-	} else {
-		_, err = tx.Exec(ctx, `update design_news_told set opening_owed = false where issue = $1 and audience = $2`, issue, string(audience))
-	}
-	if err != nil {
-		return fmt.Errorf("record whether the opening is owed to %s's %s: %w", issue, audience, err)
+// SetOpeningOwed records that the gate's opening is owed to issue's audience. Setting it on an
+// issue with no row writes one that knows no version. The opening is its one caller (workflow's
+// tellGateMoved). The claim store clears the opening at the confirmation of the delivery that
+// carried it and owes it again where that confirmation is taken back, in SQL, since that package
+// imports no record (the claim store's tellDesignNews and untellDesignNews).
+func (s *Postgres) SetOpeningOwed(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience) error {
+	if _, err := tx.Exec(ctx, `insert into design_news_told (issue, audience, opening_owed) values ($1, $2, true)
+		on conflict (issue, audience) do update set opening_owed = true`, issue, string(audience)); err != nil {
+		return fmt.Errorf("record that the opening is owed to %s's %s: %w", issue, audience, err)
 	}
 	return nil
 }

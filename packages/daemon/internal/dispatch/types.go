@@ -41,11 +41,12 @@ type Client interface {
 	Approval(ctx context.Context, artifactID string) (Approval, error)
 	// ArtifactChanges is what changed in a document between two of its stored versions, as
 	// Dispatch reads the two (GET /api/v1/artifacts/{id}/changes). A Dispatch that answers 404
-	// ARTIFACT_NOT_FOUND there is ErrDocumentNotFound, and any other 404 or a 405 is
-	// ErrNoChangesRoute.
+	// ARTIFACT_NOT_FOUND there is ErrDocumentNotFound, and its router's 404 `no route for …` or a
+	// 405 is ErrNoChangesRoute.
 	ArtifactChanges(ctx context.Context, artifactID string, from, to int) (ArtifactChanges, error)
 	// ApprovedVersionBefore is the highest version of the document below version that a review
-	// approved (GET /api/v1/artifacts/{id}/reviews), 0 when no review approved one.
+	// approved (GET /api/v1/artifacts/{id}/reviews), 0 when no review approved one. A Dispatch
+	// that answers 404 ARTIFACT_NOT_FOUND there is ErrDocumentNotFound.
 	ApprovedVersionBefore(ctx context.Context, artifactID string, version int) (int, error)
 	Handoff(ctx context.Context, id string) (Handoff, error)
 	ListRepoProjects(ctx context.Context) ([]RepoProject, error)
@@ -354,21 +355,23 @@ const (
 	ChangeMoved   = "moved"
 )
 
-// ErrNoChangesRoute is a Dispatch that cannot say what changed between two versions: it answered
-// GET /api/v1/artifacts/{id}/changes with a 405, or a 404 that is not ARTIFACT_NOT_FOUND
-// (ErrDocumentNotFound), which is what a release without the route answers. ArtifactChanges wraps
-// it around Dispatch's own refusal, so errors.Is finds it and the message keeps what Dispatch said.
-// A caller records the pair as unreadable at once rather than retrying it: the route arrives with
-// a Dispatch release, not with a wait.
+// ErrNoChangesRoute is a Dispatch build that cannot say what changed between two versions: it
+// answered GET /api/v1/artifacts/{id}/changes with its router's 404 `no route for <METHOD> <path>`
+// (noRoute), or with a 405, which is what a build without the route answers. ArtifactChanges wraps
+// it around Dispatch's own refusal, so errors.Is finds it and the message keeps what Dispatch
+// said. It is no reason to stop asking: while a release of Dispatch rolls out, two builds serve,
+// and the next attempt can reach the one with the route (packages/envoy/cmd/dispatch/README.md,
+// two builds at once), so a caller retries it as any failure of the read, and records the pair
+// unreadable only once its bounded attempts have all failed.
 var ErrNoChangesRoute = errors.New("dispatch has no changes route")
 
-// ErrDocumentNotFound is a Dispatch that holds no document of the id GET
-// /api/v1/artifacts/{id}/changes names: it answered 404 ARTIFACT_NOT_FOUND (ArtifactNotFound), a
-// document deleted since its gate recorded it. A release without the route answers its router's
-// own 404, whose code is not this one (IssueNotFound says how that answer reads), so the two stay
-// apart and the reason recorded says which it was. ArtifactChanges wraps it around Dispatch's own
-// refusal, as it wraps ErrNoChangesRoute, and a caller records the pair as unreadable at once in
-// the same way: a deleted document does not come back with a wait.
+// ErrDocumentNotFound is a Dispatch that holds no document of the id a read of one document
+// names, GET /api/v1/artifacts/{id}/changes or GET /api/v1/artifacts/{id}/reviews: it answered
+// 404 ARTIFACT_NOT_FOUND (ArtifactNotFound), a document deleted since its gate recorded it. A
+// build without a route answers its router's own 404, whose code is not this one (noRoute), so
+// the two stay apart and the reason recorded says which it was. ArtifactChanges and
+// ApprovedVersionBefore wrap it around Dispatch's own refusal, and a caller records what it asked
+// unreadable at once: a deleted document does not come back with a wait.
 var ErrDocumentNotFound = errors.New("dispatch holds no such document")
 
 // ArtifactNotFound is Dispatch's own spelling of the 404 its artifact routes answer for an id
@@ -376,6 +379,17 @@ var ErrDocumentNotFound = errors.New("dispatch holds no such document")
 // scanArtifactOrNotFound). No mechanism shares a value between this module and Dispatch's, so the
 // spellings change together.
 const ArtifactNotFound = "ARTIFACT_NOT_FOUND"
+
+// noRoute says whether refusal is Dispatch's router answering a path it serves no route for: 404
+// under the code NOT_FOUND, its message `no route for <METHOD> <path>`
+// (packages/envoy/internal/dispatch/routes/router.go), as the page and the dispatch command read
+// it (packages/envoy-client/src/dispatch-http.ts, isNoRoute). A route's own 404 for something it
+// does not hold can carry NOT_FOUND too, "the document has no version 5" among them, so the
+// message is what tells the router's apart. No mechanism shares a value between this module and
+// Dispatch's, so the spellings change together.
+func noRoute(refusal *Error) bool {
+	return refusal.Status == http.StatusNotFound && refusal.Code == "NOT_FOUND" && strings.HasPrefix(refusal.Message, "no route for ")
+}
 
 // Handoff is one phase handoff record Dispatch keeps on an issue, as a phase completion names it:
 // the issue carrying it, its phase word (plan, implement, test or review; phase.Handoff), its

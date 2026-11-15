@@ -69,18 +69,41 @@
 -- row. No release carries 20261113212423 and main never merged it, so no deployment's database
 -- records it. Only a database that a build of this branch migrated before the forward merge does,
 -- and such a database is a test's own: it would apply this file a second time and fail on the
--- first create table below, so make it again rather than upgrade it. design_history_unread, and
--- design_changes.unchanged with its check, were added to this file before any release carried
--- 20261114082752, so they are written here rather than in a migration of their own. A database a
--- build of this branch migrated before either was added records this version without it, and it
--- too is a test's own, to make again.
+-- first create table below, so make it again rather than upgrade it. design_history_unread,
+-- design_changes.unchanged with its check, and the function design_news_raised were added to this
+-- file before any release carried 20261114082752, so they are written here rather than in a
+-- migration of their own. A database a build of this branch migrated before one of them was added
+-- records this version without it, and it too is a test's own, to make again.
 --
--- Rolling the image back needs no restore of the schema. The release before this one names none
--- of the three tables nor the new column in any statement, its pending_task_deliveries insert
--- names its own columns and leaves design_news null, and the kind list it set is a subset of this
--- one, so every row it writes is still taken. A design_changes row this release queued sits in the
--- outbox unread under that daemon, which runs no lane of that kind, and runs once this release is
--- back.
+-- Rolling the image back to the release before this one needs no restore of the schema, but it
+-- needs three statements first. That release names none of the three tables nor the new column in
+-- any statement, and the kind list it set is a subset of this one, so every row it writes is still
+-- taken. A design_changes row this release queued sits in the outbox unread under that daemon,
+-- which runs no lane of that kind, and runs once this release is back. What it does not take is a
+-- member this release added to an outbox payload. It decodes each payload strictly
+-- (record.DecodeOutboxPayload, DisallowUnknownFields), so it refuses on every attempt a supervise
+-- row carrying `news`, a news-only start, which waits while its claim works a turn and a merger's
+-- waits while its gate is closed, and a design_gates_publish row carrying `holds`, which is every
+-- one this release queued. Its RoleRuns decodes each supervise row of the issues it reads, so each
+-- admission pass that reads such an issue fails too. And its pending_task_deliveries upsert names
+-- its own columns, and its `on conflict ... do update` leaves design_news as this release wrote it,
+-- so a delivery it writes over keeps the news of the task it replaced, which this release would
+-- raise at that delivery's confirmation after a roll forward. So stop this release's daemon, run
+-- these three statements, and then start the release before it:
+--
+--   delete from outbox where kind = 'supervise' and payload ? 'news';
+--   update outbox set payload = jsonb_set(payload, '{gates}',
+--       (select coalesce(jsonb_agg(gate - 'holds' order by position), '[]'::jsonb)
+--         from jsonb_array_elements(payload -> 'gates') with ordinality as entry (gate, position)))
+--     where kind = 'design_gates_publish' and jsonb_typeof(payload -> 'gates') = 'array';
+--   update pending_task_deliveries set design_news = null where design_news is not null;
+--
+-- The first deletes each news-only start. The news it would carry stays owed in design_news_told,
+-- so this release sends it again after the roll forward. The second takes `holds` out of each
+-- entry of a design-gates publish, and leaves the step and the document the release before sends.
+-- The third detaches the news from each task still pending. The task's text still says it, and a
+-- confirmation of a delivery that carries no news raises nothing, so this release tells that news
+-- again after the roll forward.
 --
 -- There is no down file: migrations here are forward-only.
 create table design_news_told (
@@ -90,6 +113,18 @@ create table design_news_told (
   opening_owed boolean not null default false,
   told_at timestamptz,
   primary key (issue, audience));
+
+-- design_news_raised is the one statement of how a raise writes a told row's versions, held as
+-- the row holds them and raised as the raise names them: each step raised takes the greater of the
+-- two versions, a step the row does not know takes the one raised, and a step not raised keeps
+-- what the row holds, so a raise never lowers a version and never forgets one. Both raises call it:
+-- record.Postgres.RaiseTold, and the confirmation of a delivery that carried news (the claim
+-- store's tellDesignNews), which is in a package that imports no record.
+create function design_news_raised(held jsonb, raised jsonb) returns jsonb language sql immutable as $$
+  select held || (select coalesce(jsonb_object_agg(step.key,
+      greatest(step.value::int, coalesce((held ->> step.key)::int, step.value::int))), '{}'::jsonb)
+    from jsonb_each_text(raised) step)
+$$;
 
 create table design_changes (
   artifact_id text not null,

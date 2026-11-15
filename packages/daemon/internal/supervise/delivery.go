@@ -900,15 +900,28 @@ func (m *Machine) currentRootTask(ctx context.Context) (bool, error) {
 			"delivery", p.ID, "issue", m.claim.Issue, "run", p.Generation)
 		return false, m.retirePending(ctx)
 	}
-	next := *p
-	next.Task, next.Kept = task, kept
-	if err := m.saved(m.putDelivery(ctx, next)); err != nil {
+	if err := m.rewritePending(ctx, task, kept, p.News); err != nil {
 		return false, err
 	}
-	*p = next
 	m.log.Info("supervise: a decision this held task named is owed to another tree now; the task is sent without it",
 		"delivery", p.ID, "issue", m.claim.Issue, "run", p.Generation)
 	return true, nil
+}
+
+// rewritePending writes the pending delivery back with task as its text, and kept and news as the
+// decisions and the news it carries, then holds that delivery in memory: the one persist-and-swap
+// of a held task read again at its send (currentRootTask, currentNews), each of which keeps its
+// own rule for when to rewrite and when to retire. The id is kept, so it is this delivery with
+// less in it. The write comes first, so a restart reads the task the send that follows carries,
+// and a failed write leaves memory as the record holds it.
+func (m *Machine) rewritePending(ctx context.Context, task string, kept, news []byte) error {
+	next := *m.claim.Pending
+	next.Task, next.Kept, next.News = task, kept, news
+	if err := m.saved(m.putDelivery(ctx, next)); err != nil {
+		return err
+	}
+	*m.claim.Pending = next
+	return nil
 }
 
 // currentNews writes a task that carries news of the approved design back to what it says now
@@ -944,12 +957,9 @@ func (m *Machine) currentNews(ctx context.Context) (bool, error) {
 	if task == p.Task && bytes.Equal(news, p.News) {
 		return true, nil
 	}
-	next := *p
-	next.Task, next.News = task, news
-	if err := m.saved(m.putDelivery(ctx, next)); err != nil {
+	if err := m.rewritePending(ctx, task, p.Kept, news); err != nil {
 		return false, err
 	}
-	*p = next
 	m.log.Info("supervise: the news this task carries was read again from the record; the task is sent as it reads now",
 		"delivery", p.ID, "issue", m.claim.Issue)
 	return true, nil

@@ -1668,8 +1668,8 @@ type Store interface {
 	// row holds and the version given, writing the row when there is none; a step versions does
 	// not name keeps what the row holds.
 	RaiseTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error
-	// SetOpeningOwed sets or clears whether the gate's opening is owed to issue's audience.
-	SetOpeningOwed(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, owed bool) error
+	// SetOpeningOwed records that the gate's opening is owed to issue's audience.
+	SetOpeningOwed(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience) error
 	// FillTold writes each step of versions on issue's audience row where the row knows no
 	// version of that step, and leaves every step it knows as it stands (Postgres.FillTold).
 	FillTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error

@@ -73,7 +73,7 @@ func newNewsRig(t *testing.T) *newsRig {
 				return err
 			}
 		}
-		if err := records.SetOpeningOwed(r.ctx, tx, newsRoot, record.AudienceHolder, true); err != nil {
+		if err := records.SetOpeningOwed(r.ctx, tx, newsRoot, record.AudienceHolder); err != nil {
 			return err
 		}
 		// What changed in the spec from version 3 to 5 is recorded; from 4 to 5 is not yet.
@@ -410,7 +410,7 @@ func summaryOfAMemberOwedNoWork(t *testing.T, changes record.DesignChanges) {
 	}
 
 	r.inTx(func(tx pgx.Tx) error {
-		return r.records.SetOpeningOwed(r.ctx, tx, newsTested, record.AudienceHolder, true)
+		return r.records.SetOpeningOwed(r.ctx, tx, newsTested, record.AudienceHolder)
 	})
 	task, _ = r.send(newsRoot, claim.RoleArchitect, rootSummary())
 	if got, want := line(task), tested+"owed version 5 of the spec document, since version 4, which its phase last took; "+

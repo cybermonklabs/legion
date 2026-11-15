@@ -1040,9 +1040,9 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 		if role, _ := to.token.Role(); role == claim.RoleArchitect {
 			audience = record.AudienceArchitect
 		}
-		way := openingDelivery(owed, facts.Told, root.Tree, to.issue, audience, opened, step, version)
+		way := openingDelivery(owed, facts.Told, to.issue, audience, opened, step, version)
 		if way.byNews {
-			if err := e.store.SetOpeningOwed(ctx, tx, to.issue, audience, true); err != nil {
+			if err := e.store.SetOpeningOwed(ctx, tx, to.issue, audience); err != nil {
 				return err
 			}
 			byNews++
@@ -1083,12 +1083,14 @@ type openingWay struct {
 // reaches it. Every other holder is sent the opened role message (opened, gateOpenedSentence) with
 // one clause more: that nothing its issue holds changed since the version of step's document its
 // phase took (nothingChangedSince), or, for the architect, that nothing the tree holds changed
-// since the version it took. The clause is said only where the record shows it: the told row knows
-// a version of the step at or above the one approved now (version), or, for a member that is not
-// the tree root, knows one of criteria, whose checks are the root's alone (record.StepConcerns). A
-// holder the record shows no such thing of — its pull request merged, its status out of the
-// workflow, the version it took unknown to the record — is sent the opened message alone.
-func openingDelivery(owed record.TreeNews, told []record.DesignTold, tree, issue string, audience record.DesignAudience,
+// since the version it took. The clause is said only where the record shows it. For a member, that
+// is the reason OwedNews gives for owing it nothing (owed.Untold): its holder took every approved
+// version that concerns it (record.UntoldTaken), or every one it has not taken is of criteria,
+// whose checks are the root's alone (record.UntoldNotConcerned), and its told row knows a version
+// of step to name. For the architect, its row knows a version of step at or above the one approved
+// now (version). A holder the record shows no such thing of — its pull request merged, its status
+// out of the workflow, the version it took unknown to the record — is sent the opened message alone.
+func openingDelivery(owed record.TreeNews, told []record.DesignTold, issue string, audience record.DesignAudience,
 	opened string, step record.DesignStep, version int) openingWay {
 	took, known := record.ToldRow(told, issue, audience).Took(step)
 	if audience == record.AudienceArchitect {
@@ -1100,12 +1102,10 @@ func openingDelivery(owed record.TreeNews, told []record.DesignTold, tree, issue
 		}
 		return openingWay{message: opened}
 	}
-	for _, member := range owed.Members {
-		if member.Issue == issue {
-			return openingWay{byNews: true}
-		}
+	if _, owes := owed.Member(issue); owes {
+		return openingWay{byNews: true}
 	}
-	if known && (took >= version || !record.StepConcerns(step, issue, tree)) {
+	if reason := owed.Untold[issue]; known && (reason == record.UntoldTaken || reason == record.UntoldNotConcerned) {
 		return openingWay{message: opened + " " + nothingChangedSince(took)}
 	}
 	return openingWay{message: opened}

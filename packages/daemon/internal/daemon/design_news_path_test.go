@@ -762,18 +762,20 @@ func TestAnOwedMemberMovedIntoAcceptingIsToldByATaskToItsOwningArchitect(t *test
 // while its member is owed news whose change set is not recorded. The retro's completion moves the
 // issue into merging and queues both the merger's start and the reconcile of the tree's news; the
 // start runs first and waits, launching nothing. The reconcile records the pair, read from Dispatch,
-// or — under a Dispatch without the changes route, which answers 404 — unavailable with Dispatch's
-// refusal as its reason. Either releases the start once its backoff runs out: the merger is launched
-// with its task carrying the news, and its told version rises at that task's confirmation.
+// or — under a Dispatch without the changes route, which answers 404 on every attempt of the
+// reconcile's row — unavailable with Dispatch's refusal as its reason, on the row's last attempt.
+// Either releases the start once its backoff runs out: the merger is launched with its task
+// carrying the news, and its told version rises at that task's confirmation.
 func TestTheMergersStartIsHeldUntilTheChangeSetOfItsNewsIsRecorded(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		answer func(record.VersionPair) (dispatch.ArtifactChanges, error)
-		state  record.DesignChangesState
-		says   []string
+		name     string
+		answer   func(record.VersionPair) (dispatch.ArtifactChanges, error)
+		attempts int
+		state    record.DesignChangesState
+		says     []string
 	}{
-		{name: "recorded read", state: record.DesignChangesRead, says: []string{`"Design" changed`, "r2 changed"}},
-		{name: "recorded unavailable by a Dispatch without the route", state: record.DesignChangesUnavailable,
+		{name: "recorded read", attempts: 1, state: record.DesignChangesRead, says: []string{`"Design" changed`, "r2 changed"}},
+		{name: "recorded unavailable by a Dispatch without the route", attempts: designChangesAttempts, state: record.DesignChangesUnavailable,
 			answer: func(pair record.VersionPair) (dispatch.ArtifactChanges, error) {
 				return dispatch.ArtifactChanges{}, fmt.Errorf("%w: GET /api/v1/artifacts/%s/changes: 404 NOT_FOUND", dispatch.ErrNoChangesRoute, pair.ArtifactID)
 			},
@@ -801,8 +803,13 @@ func TestTheMergersStartIsHeldUntilTheChangeSetOfItsNewsIsRecorded(t *testing.T)
 				t.Fatalf("the merger's held start made a claim (%t) and %d spawns, want neither", found, len(r.rt.CallsOf("Spawn")))
 			}
 
-			if got := r.run(ofKind(record.OutboxKindDesignChanges)); len(got) != 1 {
-				t.Fatalf("design_changes rows = %d, want the one the move queued", len(got))
+			for attempt := range tc.attempts {
+				if attempt > 0 {
+					r.later(time.Minute)
+				}
+				if got := r.run(ofKind(record.OutboxKindDesignChanges)); len(got) != 1 {
+					t.Fatalf("design_changes rows at attempt %d = %d, want the one the move queued", attempt+1, len(got))
+				}
 			}
 			pair := record.VersionPair{ArtifactID: pathDoc, From: 4, To: 5}
 			var recorded map[record.VersionPair]record.DesignChanges

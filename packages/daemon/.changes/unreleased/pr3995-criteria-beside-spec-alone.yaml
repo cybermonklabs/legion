@@ -13,5 +13,7 @@ body: |-
   `Design gate steps:` line says that a root that registers it is held on it too.
 
   The daemon's design-gate publish to Dispatch now carries `holds` for each row. Deploy Dispatch
-  first: a Dispatch without the field refuses each publish with `400 INVALID_JSON`, and the daemon
-  retries the publish on its backoff until Dispatch carries the field.
+  first, or restart the daemon once Dispatch has the field. A Dispatch without the field answers
+  the publish with `200` and drops `holds`, and the daemon does not send it again. Dispatch then
+  leaves a registered `criteria` row out of its advice about a superseded approval until the
+  daemon publishes the gates again, which each daemon start does.

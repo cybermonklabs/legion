@@ -93,7 +93,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Download one version of an agent's conversation's file or image, as the issue form serves it (Cache-Control: private, max-age=31536000, immutable). */
+    /** @description Download one version of an agent's conversation's file or image, as the issue form serves it (Cache-Control: private, max-age=31536000, immutable). {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION. */
     get: operations["getApiV1AgentsBySessionIdArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;
@@ -577,7 +577,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One named or settled document version. */
+    /** @description One named or settled document version. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION. */
     get: operations["getApiV1ArtifactsByIdVersionsByNumber"];
     put?: never;
     post?: never;
@@ -1469,7 +1469,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of an issue document, by slug or unambiguous filename. */
+    /** @description One version of an issue document, by slug or unambiguous filename. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION. */
     get: operations["getApiV1IssuesByKeyArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;
@@ -2520,7 +2520,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of a project document, by slug or unambiguous filename. */
+    /** @description One version of a project document, by slug or unambiguous filename. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;

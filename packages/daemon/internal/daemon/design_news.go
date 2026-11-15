@@ -76,20 +76,22 @@ func owedNewsItems(news record.TreeNews, root string) []owedNewsItem {
 //  3. In one write transaction, it records each change set it read (record.Store.PutDesignChanges),
 //     each version the review history answered (record.Store.FillTold), clearing what the record
 //     held of that history as unread (record.Store.ClearDesignHistoryUnread), and each history it
-//     gave up on (record.Store.PutDesignHistoryUnread). A Dispatch without the changes route, which
-//     answers 404 or 405 (dispatch.ErrNoChangesRoute), and a document Dispatch no longer holds,
-//     which it answers 404 ARTIFACT_NOT_FOUND (dispatch.ErrDocumentNotFound), each have their pair
-//     recorded unavailable at once, with Dispatch's refusal as the reason; any other failed read
-//     returns its error, so the row retries on its backoff, and the attempt that is the row's
-//     designChangesAttempts-th records the pair unavailable with the last error instead. A failed
-//     read of the review history is bounded the same way: until that attempt it is retried, and on
-//     it the question is recorded unread with the last error, and the told row is left knowing no
-//     version. A read that failed says nothing about the document, so it is never written as
-//     version 0, which says no version was approved before: the news says the version could not
-//     be read, and why (workflow.RenderNews), and the next reconcile asks the history again,
-//     nothing being told from the unread row while that one is pending (readNewsRecorded). So
-//     every read this row makes ends within its bounded attempts, and a merger held for the news
-//     is released then (mergerWaitsForTheDesignGate).
+//     gave up on (record.Store.PutDesignHistoryUnread). A document Dispatch no longer holds, which
+//     it answers 404 ARTIFACT_NOT_FOUND (dispatch.ErrDocumentNotFound), has its pair recorded
+//     unavailable, and its review history recorded unread, at once, with Dispatch's refusal as the
+//     reason: a deleted document does not come back with a wait. Any other failed read returns its
+//     error, so the row retries on its backoff, and the attempt that is the row's
+//     designChangesAttempts-th records the pair unavailable, or the question unread, with the last
+//     error instead. A Dispatch build without the changes route (dispatch.ErrNoChangesRoute) is
+//     one such failure: while Dispatch rolls out, the next attempt can reach the build that has
+//     the route, so its pair is recorded unavailable only when every attempt has failed. The told
+//     row of a question recorded unread is left knowing no version. A read that failed says
+//     nothing about the document, so it is never written as version 0, which says no version was
+//     approved before: the news says the version could not be read, and why
+//     (workflow.RenderNews), and the next reconcile asks the history again, nothing being told
+//     from the unread row while that one is pending (readNewsRecorded). So every read this row
+//     makes ends within its bounded attempts, and a merger held for the news is released then
+//     (mergerWaitsForTheDesignGate).
 //  4. In one transaction under the fact lock (intake.SerializeFacts), it settles each owed member
 //     (settleNews).
 //  5. In that same transaction, it settles the tree root's architect row, and queues the root
@@ -185,10 +187,12 @@ type resolvedBaselines struct {
 // before its To, once for each document and version, and at every reconcile, whatever an earlier
 // one recorded of that question; and it names every pair of versions the items name once those
 // are known. A read that answered fills the step, with 0 where no version was approved before. An
-// item whose read failed names no pair and fills nothing, and the failure is returned beside what
-// was read, until the row's designChangesAttempts-th attempt: there its question is recorded
-// unread with the reason instead, since nothing else can end a read Dispatch keeps failing, and a
-// failure is never written as a version.
+// item whose read failed names no pair and fills nothing. A document Dispatch no longer holds
+// (dispatch.ErrDocumentNotFound) has its question recorded unread at once, with Dispatch's
+// refusal as the reason, since the document does not come back with a wait. Any other failure is
+// returned beside what was read, until the row's designChangesAttempts-th attempt: there its
+// question is recorded unread with the reason instead, since nothing else can end a read Dispatch
+// keeps failing, and a failure is never written as a version.
 func (r *outbox) resolveBaselines(ctx context.Context, row record.OutboxRow, items []owedNewsItem) (resolvedBaselines, error) {
 	type answer struct {
 		version int
@@ -210,6 +214,9 @@ func (r *outbox) resolveBaselines(ctx context.Context, row record.OutboxRow, ite
 				switch {
 				case got.err == nil:
 					resolved.answered = append(resolved.answered, question)
+				case errors.Is(got.err, dispatch.ErrDocumentNotFound):
+					resolved.unread = append(resolved.unread, record.DesignHistoryUnread{DesignHistoryQuestion: question, ReadAt: at,
+						Reason: got.err.Error()})
 				case row.Attempts+1 >= designChangesAttempts:
 					resolved.unread = append(resolved.unread, record.DesignHistoryUnread{DesignHistoryQuestion: question, ReadAt: at,
 						Reason: fmt.Sprintf("Dispatch failed %d reads of the document's review history, the last with: %v", row.Attempts+1, got.err)})
@@ -236,10 +243,11 @@ func (r *outbox) resolveBaselines(ctx context.Context, row record.OutboxRow, ite
 // readChangeSets is the second step's second half (designChanges): the change set of each of
 // pairs that recorded does not hold, as it is to be recorded. A pair from version 0, which only a
 // told row or a review history that answered names, is recorded read with nothing listed, and
-// Dispatch is not asked. A Dispatch without the changes route, and a document Dispatch no longer
-// holds, have the pair recorded unavailable at once; any other failure is returned, beside every
-// set that was read, until the row's designChangesAttempts-th attempt, which records the pair
-// unavailable with that failure as its reason.
+// Dispatch is not asked. A document Dispatch no longer holds has the pair recorded unavailable at
+// once. Any other failure is returned, beside every set that was read, until the row's
+// designChangesAttempts-th attempt, which records the pair unavailable with that failure as its
+// reason: a Dispatch build without the changes route among them (dispatch.ErrNoChangesRoute),
+// since while Dispatch rolls out the next attempt can reach the build that has it.
 func (r *outbox) readChangeSets(ctx context.Context, row record.OutboxRow, pairs []record.VersionPair,
 	recorded map[record.VersionPair]record.DesignChanges) ([]record.DesignChanges, error) {
 	at := r.now().UTC()
@@ -257,7 +265,7 @@ func (r *outbox) readChangeSets(ctx context.Context, row record.OutboxRow, pairs
 		switch {
 		case err == nil:
 			read = append(read, changesFromDispatch(pair, answer, at))
-		case errors.Is(err, dispatch.ErrNoChangesRoute), errors.Is(err, dispatch.ErrDocumentNotFound):
+		case errors.Is(err, dispatch.ErrDocumentNotFound):
 			read = append(read, record.DesignChanges{VersionPair: pair, State: record.DesignChangesUnavailable, Reason: err.Error(), ReadAt: at})
 		case row.Attempts+1 >= designChangesAttempts:
 			read = append(read, record.DesignChanges{VersionPair: pair, State: record.DesignChangesUnavailable, ReadAt: at,
@@ -434,12 +442,190 @@ func (n newsRecorded) change(item record.NewsItem) (workflow.NewsChange, bool) {
 	return workflow.NewsChange{Step: item.Step, HistoryUnread: &unread}, true
 }
 
-// newsHolderStart is one news-only start the reconcile may queue: the member whose news it tells
-// (for a holder) or whose issue the architect works (for an architect), and the claim it reaches.
-type newsHolderStart struct {
+// newsHolder is the claim that holds one member's phase now, as the reconcile, the start, the send
+// and the root architect's summary all name it (newsClaims.holderOf): the claim of the role the
+// member's phase names, or, for a member in accepting, the architect that owns it. issue is the
+// issue whose role that claim holds, the member itself or the issue the owning architect's token
+// names, and role and token are the claim's.
+type newsHolder struct {
 	issue record.Issue
 	role  claim.Role
 	token claim.Token
+}
+
+// phaseHolder is the holder of member's phase where a phase worker holds it: the claim, in the
+// project whose token is project, of the role the phase names. A phase no role holds, accepting,
+// which the owning architect holds (newsClaims.holderOf), and a token that cannot be built name
+// none.
+func phaseHolder(project string, member record.Issue) (newsHolder, bool) {
+	role := phase.RoleFor(member.Phase)
+	if role == "" || role == claim.RoleArchitect {
+		return newsHolder{}, false
+	}
+	token, err := claim.NewToken(project, member.Key, role)
+	if err != nil {
+		return newsHolder{}, false
+	}
+	return newsHolder{issue: member, role: role, token: token}, true
+}
+
+// newsClaims names the holder of each member of one tree (holderOf). project is the tree's project
+// token, read from its root's record as notice routing reads it (readNoticeRoute), "" where that
+// project names none. members is the tree's issues by key, as the caller read them, or nil for
+// holderOf to read the first time an owner is asked. architects is the architect claim of each
+// member as the record holds it, and architectOf the member each token names, since a token
+// carries the issue's key lowercased (claim.NewToken): both are read the first time an owner is
+// asked, and nil until then.
+type newsClaims struct {
+	project     string
+	root        record.Issue
+	members     map[string]record.Issue
+	architects  map[claim.Token]*record.RoleClaim
+	architectOf map[claim.Token]record.Issue
+}
+
+// newNewsClaims names the holders of root's tree, whose issues are members, or nil for holderOf to
+// read them where an owner is asked.
+func newNewsClaims(root record.Issue, members []record.Issue) *newsClaims {
+	claims := &newsClaims{root: root}
+	claims.project, _ = claim.ProjectToken(root.Project)
+	if members != nil {
+		claims.members = make(map[string]record.Issue, len(members))
+		for _, member := range members {
+			claims.members[member.Key] = member
+		}
+	}
+	return claims
+}
+
+// holderOf is the one answer to which claim holds member's phase now, and whether one does: for a
+// member in accepting, the architect that owns it (owningArchitect: a running sub-architect, else
+// the tree root's, over the architect claims the record holds, recordedClaimRuns); for a member in
+// any other phase, the claim of the role that phase names (phaseHolder). The reconcile hands a
+// member's news to it (settleNews), a start carries the news of the members it holds
+// (owedToClaim), a send tells a member only while the claim it is held for is it
+// (readNewsAtSend), and the root architect's summary says how it is told (readMemberClaims).
+//
+// A member it names no holder of is held by no claim, in every one of those readers alike: a phase
+// no role holds, a token that cannot be built, and an owner owningArchitect cannot name, which it
+// cannot only where a token cannot be built either. No news-only start is queued for such a
+// member, no start attaches its news, a send drops it, and the summary says that the next start
+// of its phase tells it (workflow.NewsAtNextStart), as it says of a member whose holder has no
+// claim. The architect claims are read in the caller's transaction, once.
+func (c *newsClaims) holderOf(ctx context.Context, tx pgx.Tx, records record.Store, member record.Issue) (newsHolder, bool, error) {
+	switch {
+	case c.project == "":
+		return newsHolder{}, false, nil
+	case member.Phase != phase.Accepting:
+		holder, held := phaseHolder(c.project, member)
+		return holder, held, nil
+	}
+	if err := c.readArchitects(ctx, tx, records); err != nil {
+		return newsHolder{}, false, err
+	}
+	owner, err := owningArchitect(c.project, c.members, member, "", func(token claim.Token) bool { return recordedClaimRuns(c.architects[token]) })
+	if err != nil {
+		return newsHolder{}, false, nil
+	}
+	issue, named := c.architectOf[owner]
+	return newsHolder{issue: issue, role: claim.RoleArchitect, token: owner}, named, nil
+}
+
+// readArchitects reads, once, the tree's issues where the caller gave none and the architect claim
+// of each, which an owner is named over (holderOf).
+func (c *newsClaims) readArchitects(ctx context.Context, tx pgx.Tx, records record.Store) error {
+	if c.architects != nil {
+		return nil
+	}
+	if c.members == nil {
+		issues, err := records.TreeIssues(ctx, tx, c.root.Tree)
+		if err != nil {
+			return err
+		}
+		c.members = make(map[string]record.Issue, len(issues))
+		for _, issue := range issues {
+			c.members[issue.Key] = issue
+		}
+	}
+	tokens := make([]claim.Token, 0, len(c.members))
+	c.architectOf = make(map[claim.Token]record.Issue, len(c.members))
+	for _, member := range c.members {
+		if token, err := claim.NewToken(c.project, member.Key, claim.RoleArchitect); err == nil {
+			tokens = append(tokens, token)
+			c.architectOf[token] = member
+		}
+	}
+	held, err := records.RoleClaims(ctx, tx, tokens)
+	if err != nil {
+		return err
+	}
+	c.architects = held
+	return nil
+}
+
+// rootArchitect is the holder of the tree root's architect row: the root's architect claim, which
+// works no phase entry. A root whose project or key names no token has none.
+func (c *newsClaims) rootArchitect() (newsHolder, bool) {
+	if c.project == "" {
+		return newsHolder{}, false
+	}
+	token, err := claim.NewToken(c.project, c.root.Key, claim.RoleArchitect)
+	if err != nil {
+		return newsHolder{}, false
+	}
+	return newsHolder{issue: c.root, role: claim.RoleArchitect, token: token}, true
+}
+
+// owedHolder is the holder of one told row news owes (newsHolder), with what the record holds of
+// its claim: the entry its role's phases row names, 0 for an architect, which works no entry, and
+// its run (record.RoleRun: its queued starts and its claim).
+type owedHolder struct {
+	newsHolder
+	entry int64
+	run   record.RoleRun
+}
+
+// readOwedHolders is the one read of who is told what owed says (record.OwedNews over the tree
+// claims names): the holder of each owed member's row (newsClaims.holderOf), and of the tree root's
+// architect row while that row is owed (newsClaims.rootArchitect), each with its entry and run, by
+// told row. A row whose holder cannot be named is absent. The reconcile queues each news-only start
+// from it (settleNews), and the root architect's summary says from it how each member is told
+// (readMemberClaims). claims was built over the tree's members, as owed was read.
+func readOwedHolders(ctx context.Context, tx pgx.Tx, records record.Store, claims *newsClaims, owed record.TreeNews) (map[toldKey]owedHolder, error) {
+	holders := make(map[toldKey]owedHolder, len(owed.Members)+1)
+	for _, news := range owed.Members {
+		holder, held, err := claims.holderOf(ctx, tx, records, claims.members[news.Issue])
+		if err != nil {
+			return nil, err
+		}
+		if held {
+			holders[toldKey{news.Issue, record.AudienceHolder}] = owedHolder{newsHolder: holder}
+		}
+	}
+	if holder, held := claims.rootArchitect(); held && len(owed.Architect) > 0 {
+		holders[toldKey{claims.root.Key, record.AudienceArchitect}] = owedHolder{newsHolder: holder}
+	}
+	keys := make([]record.RoleRunKey, 0, len(holders))
+	for key, holder := range holders {
+		if holder.role != claim.RoleArchitect {
+			rows, err := records.Phases(ctx, tx, holder.issue.Key)
+			if err != nil {
+				return nil, err
+			}
+			holder.entry = record.PhaseRowOf(rows, holder.role).Entry
+			holders[key] = holder
+		}
+		keys = append(keys, record.RoleRunKey{Token: holder.token, Issue: holder.issue.Key, Role: holder.role, Generation: holder.issue.Generation})
+	}
+	runs, err := records.RoleRuns(ctx, tx, keys)
+	if err != nil {
+		return nil, err
+	}
+	for key, holder := range holders {
+		holder.run = runs[holder.token]
+		holders[key] = holder
+	}
+	return holders, nil
 }
 
 // settleNews is the reconcile's fourth and fifth steps (designChanges): in one transaction under
@@ -458,6 +644,8 @@ type newsHolderStart struct {
 //   - a member in accepting is held by the architect that owns it (owningArchitect: a running
 //     sub-architect, else the tree root's), and its news goes to that architect's claim, in the
 //     holder form, by that claim's one news-only start;
+//   - a member no claim can be named for (newsClaims.holderOf) is logged and told at its next
+//     start;
 //   - the tree root's architect row is settled the same way, and its news goes by the root
 //     architect's news-only start, which also carries the holder form of each member in accepting
 //     the root architect owns.
@@ -468,7 +656,7 @@ type newsHolderStart struct {
 // newsForStart and newsOnlyRefusal), since the record can move before then.
 func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree string) error {
 	now := r.now().UTC()
-	var queued []newsHolderStart
+	var queued []owedHolder
 	raised := 0
 	if err := r.settleUnderFacts(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		queued, raised = nil, 0
@@ -489,27 +677,25 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 		if err != nil {
 			return err
 		}
-		members := make(map[string]record.Issue, len(facts.Members))
-		architects := make([]claim.Token, 0, len(facts.Members))
-		// architectOf is the member whose issue each architect token names: a token carries the
-		// issue's key lowercased (claim.NewToken), so the issue is read back from here.
-		architectOf := make(map[claim.Token]record.Issue, len(facts.Members))
-		for _, member := range facts.Members {
-			members[member.Key] = member
-			if token, err := claim.NewToken(r.project, member.Key, claim.RoleArchitect); err == nil {
-				architects = append(architects, token)
-				architectOf[token] = member
-			}
-		}
-		held, err := r.records.RoleClaims(ctx, tx, architects)
+		holders, err := readOwedHolders(ctx, tx, r.records, newNewsClaims(*root, facts.Members), owed)
 		if err != nil {
 			return err
 		}
-		runs := func(token claim.Token) bool { return recordedClaimRuns(held[token]) }
-		var starts []newsHolderStart
-		owners := map[claim.Token]bool{}
+		var starts []owedHolder
+		owners := map[claim.Token]owedHolder{}
+		send := func(key toldKey) {
+			holder, held := holders[key]
+			switch {
+			case !held:
+				r.log.Warn("outbox design_changes cannot name the claim that holds a told row owed news; it is told at its next start",
+					"row", row.ID, "issue", key.issue, "audience", key.audience)
+			case holder.role == claim.RoleArchitect:
+				owners[holder.token] = holder
+			default:
+				starts = append(starts, holder)
+			}
+		}
 		for _, news := range owed.Members {
-			member := members[news.Issue]
 			settlement, versions := settlementOf(news.Items, recorded, record.ToldRow(facts.Told, news.Issue, record.AudienceHolder).OpeningOwed)
 			switch settlement {
 			case settleLater:
@@ -521,28 +707,7 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 				raised++
 				continue
 			}
-			if !news.HeldByArchitect() {
-				role := phase.RoleFor(member.Phase)
-				token, err := claim.NewToken(r.project, member.Key, role)
-				if err != nil {
-					r.log.Warn("outbox design_changes cannot name the holder of a member owed news; it is told at its next start",
-						"row", row.ID, "issue", member.Key, "role", role, "error", err)
-					continue
-				}
-				starts = append(starts, newsHolderStart{issue: member, role: role, token: token})
-				continue
-			}
-			owner, err := owningArchitect(r.project, members, member, "", runs)
-			if err != nil {
-				r.log.Warn("outbox design_changes cannot name the architect that owns a member owed news in accepting",
-					"row", row.ID, "issue", member.Key, "error", err)
-				continue
-			}
-			owners[owner] = true
-		}
-		rootArchitect, err := claim.NewToken(r.project, root.Key, claim.RoleArchitect)
-		if err != nil {
-			return err
+			send(toldKey{news.Issue, record.AudienceHolder})
 		}
 		if len(owed.Architect) > 0 {
 			settlement, versions := settlementOf(owed.Architect, recorded, record.ToldRow(facts.Told, root.Key, record.AudienceArchitect).OpeningOwed)
@@ -553,38 +718,19 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 				}
 				raised++
 			case settleSend:
-				owners[rootArchitect] = true
+				send(toldKey{root.Key, record.AudienceArchitect})
 			}
 		}
 		for _, owner := range slices.Sorted(maps.Keys(owners)) {
-			if member, ok := architectOf[owner]; ok {
-				starts = append(starts, newsHolderStart{issue: member, role: claim.RoleArchitect, token: owner})
-			}
-		}
-		keys := make([]record.RoleRunKey, 0, len(starts))
-		for _, start := range starts {
-			keys = append(keys, record.RoleRunKey{Token: start.token, Issue: start.issue.Key, Role: start.role, Generation: start.issue.Generation})
-		}
-		roleRuns, err := r.records.RoleRuns(ctx, tx, keys)
-		if err != nil {
-			return err
+			starts = append(starts, owners[owner])
 		}
 		for _, start := range starts {
-			run := roleRuns[start.token]
-			if newsStartQueued(run) || holdsUntakenTask(run.Claim) {
+			if newsStartQueued(start.run) || holdsUntakenTask(start.run.Claim) || !recordedClaimTakesNews(start.run.Claim, start.entry) {
 				continue
 			}
-			var entry int64
 			request := record.SuperviseRequest{Op: "start", Tree: start.issue.Tree, Role: start.role, Generation: start.issue.Generation, News: true}
 			if start.role != claim.RoleArchitect {
-				rows, err := r.records.Phases(ctx, tx, start.issue.Key)
-				if err != nil {
-					return err
-				}
-				entry, request.Phase = record.PhaseRowOf(rows, start.role).Entry, start.issue.Phase
-			}
-			if !recordedClaimTakesNews(run.Claim, entry) {
-				continue
+				request.Phase = start.issue.Phase
 			}
 			queue, err := record.NewOutboxRow(start.issue.Key, request, now)
 			if err != nil {
@@ -744,12 +890,13 @@ func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload r
 }
 
 // owedToClaim is what facts owe the claim token, of role on issue, speaks for, as a delivery
-// carries it: for a phase worker, the items its member's holder row is owed while the role is the
-// one the member's phase names; for an architect, its own summary when issue is the tree root and
-// its row is owed, and the holder form of each member in accepting it owns (owningArchitect, over
-// the architect claims the record holds). Each told row it speaks for carries the opening too, where
-// the row owes it and the standing gate is open. An architect is never handed a worker's news, and
-// a worker never an architect's.
+// carries it: each told row owed news whose holder is that claim (newsClaims.holderOf, and
+// rootArchitect for the tree root's architect row). For a phase worker that is its member's holder
+// row while the role is the one the member's phase names; for an architect, its own summary when
+// issue is the tree root and its row is owed, and the holder form of each member in accepting it
+// owns. Each told row it speaks for carries the opening too, where the row owes it and the
+// standing gate is open. An architect is never handed a worker's news, and a worker never an
+// architect's.
 func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFacts, issue record.Issue, role claim.Role,
 	token claim.Token) ([]record.DeliveryNewsItem, []record.DeliveryOpening, error) {
 	owed := record.OwedNews(facts)
@@ -765,36 +912,28 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 			openings = append(openings, record.DeliveryOpening{Issue: key, Audience: audience})
 		}
 	}
-	if role != claim.RoleArchitect {
-		for _, member := range owed.Members {
-			if member.Issue == issue.Key && !member.HeldByArchitect() && phase.RoleFor(member.Phase) == role {
-				tell(member.Issue, record.AudienceHolder, member.Items)
-			}
-		}
-		return items, openings, nil
-	}
-	if claim.IsTreeRoot(issue.Key, issue.Tree) && len(owed.Architect) > 0 {
-		tell(issue.Key, record.AudienceArchitect, owed.Architect)
-	}
-	members := make(map[string]record.Issue, len(facts.Members))
-	architects := make([]claim.Token, 0, len(facts.Members))
+	root := record.Issue{Key: issue.Tree, Tree: issue.Tree, Project: issue.Project}
 	for _, member := range facts.Members {
-		members[member.Key] = member
-		if architect, err := claim.NewToken(r.project, member.Key, claim.RoleArchitect); err == nil {
-			architects = append(architects, architect)
+		if claim.IsTreeRoot(member.Key, member.Tree) {
+			root = member
 		}
 	}
-	held, err := r.records.RoleClaims(ctx, tx, architects)
-	if err != nil {
-		return nil, nil, err
+	claims := newNewsClaims(root, facts.Members)
+	if holder, held := claims.rootArchitect(); held && holder.token == token && len(owed.Architect) > 0 {
+		tell(root.Key, record.AudienceArchitect, owed.Architect)
 	}
-	runs := func(architect claim.Token) bool { return recordedClaimRuns(held[architect]) }
-	for _, member := range owed.Members {
-		if !member.HeldByArchitect() {
+	for _, news := range owed.Members {
+		// A worker's claim holds its own issue's phase alone, so no other member's holder is read
+		// for it.
+		if role != claim.RoleArchitect && news.Issue != issue.Key {
 			continue
 		}
-		if owner, err := owningArchitect(r.project, members, members[member.Issue], "", runs); err == nil && owner == token {
-			tell(member.Issue, record.AudienceHolder, member.Items)
+		holder, held, err := claims.holderOf(ctx, tx, r.records, claims.members[news.Issue])
+		if err != nil {
+			return nil, nil, err
+		}
+		if held && holder.token == token {
+			tell(news.Issue, record.AudienceHolder, news.Items)
 		}
 	}
 	return items, openings, nil
@@ -816,10 +955,7 @@ func (r *outbox) mergerNewsUnrecorded(ctx context.Context, issue record.Issue) (
 		if err != nil {
 			return err
 		}
-		for _, member := range record.OwedNews(facts).Members {
-			if member.Issue != issue.Key {
-				continue
-			}
+		if member, owes := record.OwedNews(facts).Member(issue.Key); owes {
 			var asks newsAsks
 			asks.add(issue.Tree, member.Items...)
 			recorded, err := readNewsRecorded(ctx, tx, r.records, asks, r.now)

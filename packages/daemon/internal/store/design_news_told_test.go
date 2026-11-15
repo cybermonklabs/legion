@@ -250,6 +250,63 @@ func TestATakenBackConfirmationKeepsAVersionRaisedPastWhatItTold(t *testing.T) {
 		map[record.DesignStep]int{record.DesignStepSpec: 6}, true)
 }
 
+// What a taken-back confirmation puts back is computed from the told row its write locks, never
+// from a read before that lock: a write of the same row by another transaction — here the fill of
+// the Verification document's version, as the reconcile writes one (record.Postgres.FillTold) —
+// that commits while the take-back waits for the row's lock is kept, and the take-back still puts
+// the spec back to the version the row held before its confirmation. The take-back is started
+// while the other transaction holds the row, and that transaction commits only once Postgres shows
+// the take-back waiting on it, so the two always meet in this order.
+func TestATakenBackConfirmationKeepsAWriteOfTheSameRowThatCommitsWhileItWaits(t *testing.T) {
+	r := newToldRig(t)
+	r.seedTold()
+	task := r.newsTask("outbox:7")
+	confirmed := task
+	confirmed.ConfirmedAt = r.at.Add(time.Minute)
+	for _, write := range []supervise.Delivery{task, confirmed} {
+		if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, write); err != nil {
+			t.Fatalf("write the task: %v", err)
+		}
+	}
+	r.wantTold("after the confirmation", toldChild, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 5}, false)
+
+	fill, err := r.store.Pool().Begin(r.ctx)
+	if err != nil {
+		t.Fatalf("begin the fill: %v", err)
+	}
+	defer func() { _ = fill.Rollback(r.ctx) }()
+	var fillPID int
+	if err := fill.QueryRow(r.ctx, `select pg_backend_pid()`).Scan(&fillPID); err != nil {
+		t.Fatalf("read the fill's backend: %v", err)
+	}
+	if _, err := fill.Exec(r.ctx, `insert into design_news_told (issue, audience, versions, opening_owed, told_at)
+		values ($1, 'holder', '{"criteria": 2}', false, $2)
+		on conflict (issue, audience) do update set versions = excluded.versions || design_news_told.versions`, toldChild, r.at); err != nil {
+		t.Fatalf("fill the child's holder row: %v", err)
+	}
+
+	takenBack := make(chan error, 1)
+	go func() { takenBack <- r.store.PutDelivery(r.ctx, r.reviewer.Token, task) }()
+	waitedOn := false
+	for deadline := time.Now().Add(30 * time.Second); !waitedOn && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if err := r.store.Pool().QueryRow(r.ctx, `select exists (select 1 from pg_stat_activity where $1::int = any(pg_blocking_pids(pid)))`,
+			fillPID).Scan(&waitedOn); err != nil {
+			t.Fatalf("read whether the take-back waits on the fill: %v", err)
+		}
+	}
+	if !waitedOn {
+		t.Fatal("the take-back never waited on the fill's lock of the child's holder row, so the two did not meet")
+	}
+	if err := fill.Commit(r.ctx); err != nil {
+		t.Fatalf("commit the fill: %v", err)
+	}
+	if err := <-takenBack; err != nil {
+		t.Fatalf("take the confirmation back: %v", err)
+	}
+	r.wantTold("after a take-back that waited on a fill of the same row", toldChild, record.AudienceHolder,
+		map[record.DesignStep]int{record.DesignStepSpec: 3, record.DesignStepCriteria: 2}, true)
+}
+
 // A delivery retired without a confirmation — its phase moved on, it was replaced, or it was left
 // with nothing to say — was never read, so it raises nothing and clears no opening: the news stays
 // owed, and the next start or the reconcile tells it.

@@ -1459,10 +1459,8 @@ func (e *Engine) queueMovedNews(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if err != nil {
 		return err
 	}
-	for _, member := range record.OwedNews(facts).Members {
-		if member.Issue == issue.Key {
-			return record.QueueDesignNews(ctx, e.store, tx, issue.Tree, e.now())
-		}
+	if _, owes := record.OwedNews(facts).Member(issue.Key); owes {
+		return record.QueueDesignNews(ctx, e.store, tx, issue.Tree, e.now())
 	}
 	return nil
 }

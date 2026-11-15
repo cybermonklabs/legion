@@ -160,7 +160,7 @@ func (r *newsReconcileRig) told(issue string, audience record.DesignAudience, ve
 // owesOpening records that the opening is owed to issue's audience.
 func (r *newsReconcileRig) owesOpening(issue string, audience record.DesignAudience) {
 	r.t.Helper()
-	r.inTx(func(tx pgx.Tx) error { return r.records.SetOpeningOwed(r.ctx, tx, issue, audience, true) })
+	r.inTx(func(tx pgx.Tx) error { return r.records.SetOpeningOwed(r.ctx, tx, issue, audience) })
 }
 
 // holder records role as the holder of issue's phase at entry 1, and its claim as the record holds
@@ -347,31 +347,68 @@ func TestAChangeSetIsReadOnceAndReusedByTwoMembers(t *testing.T) {
 	}
 }
 
-// A Dispatch without the changes route answers 404 or 405 (dispatch.ErrNoChangesRoute): the route
-// comes with a release, not with a wait, so the pair is recorded unavailable at once, with
-// Dispatch's refusal as its reason, and the news goes, naming the versions and why the change list
-// could not be read. The row finishes without a retry.
-func TestAPairADispatchWithoutTheChangesRouteCannotReadIsRecordedUnavailableWithNoRetry(t *testing.T) {
-	r := newNewsReconcileRig(t)
-	r.member(reconcileRoot, "", phase.Reviewing)
-	r.told(reconcileRoot, record.AudienceHolder, 4)
-	r.holder(reconcileRoot, claim.RoleReviewer, supervise.StateIdle, "", 1)
-	r.client.answer = func(record.VersionPair) (dispatch.ArtifactChanges, error) {
-		return dispatch.ArtifactChanges{}, fmt.Errorf("%w: GET /api/v1/artifacts/%s/changes: 404 NOT_FOUND", dispatch.ErrNoChangesRoute, reconcileDoc)
-	}
+// A Dispatch build without the changes route answers its router's 404 `no route for …`
+// (dispatch.ErrNoChangesRoute). While Dispatch rolls out, two builds serve, and the next attempt
+// can reach the build that has the route, so that answer is ridden out on the row's backoff as any
+// failed read is: the attempt returns it for the outbox to retry and records nothing. A later
+// attempt that reaches the newer build records the pair read and sends the news; a pair every
+// attempt was refused that way is recorded unavailable on the row's last attempt, with Dispatch's
+// refusal in its reason, and the news goes, naming the versions and why the change list could not
+// be read.
+func TestAPairADispatchWithoutTheChangesRouteRefusesIsRetriedWithinTheRowsAttempts(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		refused int
+		state   record.DesignChangesState
+	}{
+		{name: "the second attempt reaches the build with the route", refused: 1, state: record.DesignChangesRead},
+		{name: "every attempt answers no route", refused: designChangesAttempts, state: record.DesignChangesUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newNewsReconcileRig(t)
+			r.member(reconcileRoot, "", phase.Reviewing)
+			r.told(reconcileRoot, record.AudienceHolder, 4)
+			r.holder(reconcileRoot, claim.RoleReviewer, supervise.StateIdle, "", 1)
+			// The build with the route answers from the attempt after the refused ones; each call
+			// is counted in changes before it is answered.
+			r.client.answer = func(pair record.VersionPair) (dispatch.ArtifactChanges, error) {
+				if len(r.client.changes) > tc.refused {
+					return dispatch.ArtifactChanges{ArtifactID: pair.ArtifactID, From: pair.From, To: pair.To,
+						Sections: []dispatch.SectionChange{{Heading: "Design", Change: dispatch.ChangeChanged}}}, nil
+				}
+				return dispatch.ArtifactChanges{}, fmt.Errorf("%w: NOT_FOUND: no route for GET /api/v1/artifacts/%s/changes", dispatch.ErrNoChangesRoute, reconcileDoc)
+			}
 
-	if err := r.reconcile(0); err != nil {
-		t.Fatalf("reconcile under a Dispatch without the route = %v, want the row finished: no retry brings the route", err)
-	}
-	changes, held := r.recorded(reconcilePair)
-	if !held || changes.State != record.DesignChangesUnavailable || !strings.Contains(changes.Reason, "dispatch has no changes route") {
-		t.Fatalf("the recorded change set = %+v (held %t), want it unavailable with Dispatch's refusal as the reason", changes, held)
-	}
-	if len(r.client.changes) != 1 {
-		t.Fatalf("Dispatch was asked %d times, want once", len(r.client.changes))
-	}
-	if got := startsTo(r.newsStarts()); !reflect.DeepEqual(got, []string{reconcileRoot + "/reviewer@reviewing"}) {
-		t.Fatalf("the news-only starts = %v, want the reviewer's: an unavailable pair is told with its reason", got)
+			attempts := min(tc.refused+1, designChangesAttempts)
+			for attempt := range attempts - 1 {
+				if err := r.reconcile(attempt); err == nil || !strings.Contains(err.Error(), "dispatch has no changes route") {
+					t.Fatalf("attempt %d under a Dispatch build without the route = %v, want the refusal returned for the outbox to retry", attempt+1, err)
+				}
+				if changes, held := r.recorded(reconcilePair); held {
+					t.Fatalf("attempt %d recorded the pair %+v, want nothing recorded before the last attempt", attempt+1, changes)
+				}
+				if starts := r.newsStarts(); len(starts) != 0 {
+					t.Fatalf("attempt %d queued %v, want no news before its change set is recorded", attempt+1, startsTo(starts))
+				}
+			}
+			if err := r.reconcile(attempts - 1); err != nil {
+				t.Fatalf("attempt %d = %v, want the pair recorded and the row finished", attempts, err)
+			}
+			changes, held := r.recorded(reconcilePair)
+			if !held || changes.State != tc.state {
+				t.Fatalf("the recorded change set = %+v (held %t), want it recorded %s", changes, held, tc.state)
+			}
+			if tc.state == record.DesignChangesUnavailable && (!strings.Contains(changes.Reason, "failed 3 reads") ||
+				!strings.Contains(changes.Reason, "dispatch has no changes route")) {
+				t.Fatalf("the recorded change set = %+v, want its reason to count the reads and keep Dispatch's refusal", changes)
+			}
+			if len(r.client.changes) != attempts {
+				t.Fatalf("Dispatch was asked %d times, want once an attempt, %d", len(r.client.changes), attempts)
+			}
+			if got := startsTo(r.newsStarts()); !reflect.DeepEqual(got, []string{reconcileRoot + "/reviewer@reviewing"}) {
+				t.Fatalf("the news-only starts = %v, want the reviewer's", got)
+			}
+		})
 	}
 }
 
@@ -403,6 +440,39 @@ func TestAPairOfADocumentDispatchNoLongerHoldsIsRecordedUnavailableWithNoRetry(t
 	}
 	if got := startsTo(r.newsStarts()); !reflect.DeepEqual(got, []string{reconcileRoot + "/reviewer@reviewing"}) {
 		t.Fatalf("the news-only starts = %v, want the reviewer's: an unavailable pair is told with its reason", got)
+	}
+}
+
+// A document Dispatch no longer holds answers its review history 404 ARTIFACT_NOT_FOUND
+// (dispatch.ErrDocumentNotFound) as it answers the changes route: a deleted document does not
+// come back with a wait, so the question is recorded unread at once, with a reason that says the
+// document is gone, and the told row still knows no version. The row finishes on its first attempt
+// with no retry, and the news goes, saying that the version the holder last took could not be read.
+func TestAReviewHistoryOfADocumentDispatchNoLongerHoldsIsRecordedUnreadWithNoRetry(t *testing.T) {
+	r := newNewsReconcileRig(t)
+	r.member(reconcileRoot, "", phase.Reviewing)
+	r.told(reconcileRoot, record.AudienceHolder, -1)
+	r.holder(reconcileRoot, claim.RoleReviewer, supervise.StateIdle, "", 1)
+	r.client.before = func(string, int) (int, error) {
+		return 0, fmt.Errorf("%w: ARTIFACT_NOT_FOUND: artifact not found", dispatch.ErrDocumentNotFound)
+	}
+	question := record.DesignHistoryQuestion{ArtifactID: reconcileDoc, To: 5}
+
+	if err := r.reconcile(0); err != nil {
+		t.Fatalf("reconcile for a document Dispatch no longer holds = %v, want the row finished: no retry brings it back", err)
+	}
+	unread, held := r.historyUnread(question)
+	if !held || !strings.Contains(unread.Reason, "dispatch holds no such document") {
+		t.Fatalf("the unread history of %+v = %+v (held %t), want it recorded, its reason saying the document is gone", question, unread, held)
+	}
+	if took, known := r.toldOf(reconcileRoot, record.AudienceHolder).Took(record.DesignStepSpec); known {
+		t.Fatalf("the reviewer's told version = %d, want none written: a document that is gone names no version", took)
+	}
+	if len(r.client.history) != 1 || len(r.client.changes) != 0 {
+		t.Fatalf("Dispatch was asked the history %d times and a change set %d times, want once and none", len(r.client.history), len(r.client.changes))
+	}
+	if got := startsTo(r.newsStarts()); !reflect.DeepEqual(got, []string{reconcileRoot + "/reviewer@reviewing"}) {
+		t.Fatalf("the news-only starts = %v, want the reviewer's: an unread history is told with its reason", got)
 	}
 }
 

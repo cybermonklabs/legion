@@ -1,6 +1,7 @@
 package record
 
 import (
+	"slices"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -113,9 +114,10 @@ type DesignChangesState string
 const (
 	// DesignChangesRead is Dispatch's answer for the pair.
 	DesignChangesRead DesignChangesState = "read"
-	// DesignChangesUnavailable is a pair Dispatch could not answer: a release without the changes
-	// route (dispatch.ErrNoChangesRoute), a document Dispatch no longer holds
-	// (dispatch.ErrDocumentNotFound), or a bounded run of failed reads. Its Reason says which.
+	// DesignChangesUnavailable is a pair Dispatch could not answer: a document Dispatch no longer
+	// holds (dispatch.ErrDocumentNotFound), or a bounded run of failed reads, a Dispatch whose
+	// every answer was that it has no changes route (dispatch.ErrNoChangesRoute) among them. Its
+	// Reason says which.
 	DesignChangesUnavailable DesignChangesState = "unavailable"
 )
 
@@ -192,11 +194,61 @@ type NewsFacts struct {
 }
 
 // TreeNews is what one tree owes of its approved design: the members whose holder is owed news,
-// in the order the facts list them, and what the tree root's architect is owed for the tree.
+// in the order the facts list them, what the tree root's architect is owed for the tree, and why
+// each other member is owed nothing (Untold, by the member's key).
 type TreeNews struct {
 	Members   []MemberNews
 	Architect []NewsItem
+	Untold    map[string]UntoldReason
 }
+
+// Member is what the holder of issue's phase is owed, and whether it is owed anything: the one
+// walk over Members that every reader of one member's news takes.
+func (n TreeNews) Member(issue string) (MemberNews, bool) {
+	for _, member := range n.Members {
+		if member.Issue == issue {
+			return member, true
+		}
+	}
+	return MemberNews{}, false
+}
+
+// UntoldReason is why OwedNews owes a member nothing (TreeNews.Untold): the first of these that
+// holds, in the order they are declared. It is decided once, there, and read by each reader that
+// says why: the root architect's summary, which names it as the member's state (the daemon's
+// untoldReason), and the opened message, which adds that nothing the member's issue holds changed
+// only for a member whose holder took every approved version that concerns it (workflow's
+// openingDelivery). So a new phase with no holder, or a change to StepConcerns, is made here once.
+type UntoldReason string
+
+const (
+	// UntoldTaken is a member whose holder took every approved version of every step the tree is
+	// gated on.
+	UntoldTaken UntoldReason = "taken"
+	// UntoldNotConcerned is a member whose holder took every approved version that concerns it,
+	// and some it has not taken are of a step that does not: criteria, whose checks are the tree
+	// root's alone (StepConcerns).
+	UntoldNotConcerned UntoldReason = "not-concerned"
+	// UntoldMerged is a member whose pull request has merged, in whatever phase it stands, and
+	// merged work never moves back.
+	UntoldMerged UntoldReason = "merged"
+	// UntoldDone is a member whose work is done.
+	UntoldDone UntoldReason = "done"
+	// UntoldOutOfWorkflow is a member whose status takes it out of the workflow (InWorkflow).
+	UntoldOutOfWorkflow UntoldReason = "out-of-workflow"
+	// UntoldAdmitted is a member that has not started: its first working entry takes the version
+	// approved then as its baseline.
+	UntoldAdmitted UntoldReason = "admitted"
+	// UntoldAwaitingPerson is a member that waits on a person, whose phase no worker holds.
+	UntoldAwaitingPerson UntoldReason = "awaiting-person"
+	// UntoldHeld is a member that stands in held: the restart that moves it back into its phase
+	// carries what it is owed then.
+	UntoldHeld UntoldReason = "held"
+	// UntoldHeldBack is a member none of the reasons above explains: its holder has not taken a
+	// version that concerns it, and OwedNews holds that news back, because the tree's standing gate
+	// is not open or the tree lingers.
+	UntoldHeldBack UntoldReason = "held-back"
+)
 
 // MemberNews is what the holder of one member's phase is owed.
 type MemberNews struct {
@@ -242,9 +294,9 @@ func (i NewsItem) Question() DesignHistoryQuestion {
 
 // StepConcerns says whether step concerns issue, a member of tree: spec and decisions concern
 // every member, and criteria the tree root alone, since its checks are the root's to prove. It is
-// the one statement of that rule, read by what a member is owed (OwedNews), by the clause the
-// opened message adds (workflow's openingDelivery) and by why a member is told nothing (the
-// daemon's untoldReason), so a holder is never told that nothing changed while it is owed news.
+// the one statement of that rule, read by what a member is owed and by why it is owed nothing
+// (OwedNews, UntoldNotConcerned), which the opened message's clause and the root architect's
+// summary read in turn, so a holder is never told that nothing changed while it is owed news.
 func StepConcerns(step DesignStep, issue, tree string) bool {
 	return step != DesignStepCriteria || claim.IsTreeRoot(issue, tree)
 }
@@ -272,6 +324,11 @@ func StepConcerns(step DesignStep, issue, tree string) bool {
 // member released after an approval is owed nothing, because its first entry's baseline is that
 // approved version.
 //
+// Every member owed nothing is named in Untold with the reason, the first that holds of those
+// UntoldReason lists: what its holder took, then its own record, then the hold of the standing
+// gate or the tree's linger. The hold is read last, so only a member that would be owed news with
+// the gate open and the tree running is named for it (UntoldHeldBack).
+//
 // The root architect's row is owed on its own rule: while the standing gate is open and the tree
 // does not linger, each step the tree is gated on whose approved version is above the version
 // that row took, or whose version that row does not know, whatever its members are owed. So a
@@ -281,9 +338,6 @@ func StepConcerns(step DesignStep, issue, tree string) bool {
 // the store's upgrade test can call it and the daemon, the outbox and the send all read the one
 // rule.
 func OwedNews(facts NewsFacts) TreeNews {
-	if gate := (TreeGate{Steps: facts.Steps, Rows: facts.Gates}); !gate.Open() {
-		return TreeNews{}
-	}
 	tree, lingers := "", false
 	for _, member := range facts.Members {
 		tree = member.Tree
@@ -291,9 +345,10 @@ func OwedNews(facts NewsFacts) TreeNews {
 			lingers = member.Lingers()
 		}
 	}
-	if tree == "" || lingers {
+	if tree == "" {
 		return TreeNews{}
 	}
+	heldBack := lingers || !(TreeGate{Steps: facts.Steps, Rows: facts.Gates}).Open()
 	holders := make(map[string]DesignTold, len(facts.Told))
 	var architect DesignTold
 	for _, told := range facts.Told {
@@ -307,28 +362,64 @@ func OwedNews(facts NewsFacts) TreeNews {
 	steps := TreeSteps(facts.Steps, facts.Gates)
 	var news TreeNews
 	for _, member := range facts.Members {
-		if !InWorkflow(member) || phase.RoleFor(member.Phase) == "" || facts.Merged[member.Key] {
+		untaken := owedItems(steps, facts.Gates, holders[member.Key])
+		items := slices.DeleteFunc(untaken, func(item NewsItem) bool {
+			return !StepConcerns(item.Step, member.Key, member.Tree)
+		})
+		other := len(items) < len(untaken)
+		if reason := untold(member, facts.Merged[member.Key], heldBack, len(items) > 0, other); reason != "" {
+			if news.Untold == nil {
+				news.Untold = map[string]UntoldReason{}
+			}
+			news.Untold[member.Key] = reason
 			continue
 		}
-		items := owedItems(steps, facts.Gates, holders[member.Key], func(step DesignStep) bool {
-			return StepConcerns(step, member.Key, member.Tree)
-		})
-		if len(items) > 0 {
-			news.Members = append(news.Members, MemberNews{Issue: member.Key, Phase: member.Phase, Items: items})
-		}
+		news.Members = append(news.Members, MemberNews{Issue: member.Key, Phase: member.Phase, Items: items})
 	}
-	news.Architect = owedItems(steps, facts.Gates, architect, func(DesignStep) bool { return true })
+	if !heldBack {
+		news.Architect = owedItems(steps, facts.Gates, architect)
+	}
 	return news
 }
 
-// owedItems is each of steps that concerns the audience whose row is told and whose approved
-// version in gates is news to it: above the version it took, or a version it took that the
-// record does not know. A step the open gate holds no approval of names nothing.
-func owedItems(steps []DesignStep, gates map[DesignStep]DesignGate, told DesignTold, concerns func(DesignStep) bool) []NewsItem {
+// untold is why OwedNews owes member nothing, the first of the reasons that holds (UntoldReason),
+// or "" where member is owed news: owes says its holder has not taken some approved version that
+// concerns it, and other that it has not taken one that does not. Every phase no role holds is
+// named before the last case (done, admitted, awaiting_person, held), so the role check there only
+// keeps a phase the record never holds from being owed.
+func untold(member Issue, merged, heldBack, owes, other bool) UntoldReason {
+	switch {
+	case !owes && other:
+		return UntoldNotConcerned
+	case !owes:
+		return UntoldTaken
+	case merged:
+		return UntoldMerged
+	case member.Phase == phase.Done:
+		return UntoldDone
+	case !InWorkflow(member):
+		return UntoldOutOfWorkflow
+	case member.Phase == phase.Admitted:
+		return UntoldAdmitted
+	case member.Phase == phase.AwaitingPerson:
+		return UntoldAwaitingPerson
+	case member.Phase == phase.Held:
+		return UntoldHeld
+	case heldBack || phase.RoleFor(member.Phase) == "":
+		return UntoldHeldBack
+	}
+	return ""
+}
+
+// owedItems is each of steps whose approved version in gates is news to the audience whose row is
+// told: above the version it took, or a version it took that the record does not know. A step the
+// gate holds no approval of names nothing. Which of them concern a member is its caller's to weigh
+// (StepConcerns); every one concerns the root architect.
+func owedItems(steps []DesignStep, gates map[DesignStep]DesignGate, told DesignTold) []NewsItem {
 	var items []NewsItem
 	for _, step := range steps {
 		gate := gates[step]
-		if !concerns(step) || gate.ApprovedVersion == nil {
+		if gate.ApprovedVersion == nil {
 			continue
 		}
 		item := NewsItem{Step: step, ArtifactID: gate.ArtifactID, To: *gate.ApprovedVersion}

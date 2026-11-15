@@ -18,8 +18,9 @@ import (
 // versions, and a second baseline would hide the news of every version approved since. A step
 // whose row holds no approval is left out, a version the record does not know. What a holder took
 // then only rises: a raise takes the greater of each step's two versions, fills a step the row did
-// not know and keeps a step the raise does not name. The owed opening is set and cleared apart from
-// the versions, and setting it on an issue with no row writes one that knows no version.
+// not know and keeps a step the raise does not name. The owed opening is set apart from the
+// versions, and setting it on an issue with no row writes one that knows no version. What clears
+// it is a confirmation's own write in the claim store (its design_news_told tests).
 func TestToldRowsTakeOneBaselineAndOnlyRise(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -76,20 +77,14 @@ func TestToldRowsTakeOneBaselineAndOnlyRise(t *testing.T) {
 	}
 
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.SetOpeningOwed(ctx, tx, child.Key, AudienceHolder, true))
-		must(t, records.SetOpeningOwed(ctx, tx, sibling.Key, AudienceHolder, true))
+		must(t, records.SetOpeningOwed(ctx, tx, child.Key, AudienceHolder))
+		must(t, records.SetOpeningOwed(ctx, tx, sibling.Key, AudienceHolder))
 	})
 	if got := toldOf(child.Key, AudienceHolder); !got.OpeningOwed || got.Versions[DesignStepSpec] != 3 {
 		t.Fatalf("%s's row once the opening is owed = %+v, want the opening owed and its versions kept", child.Key, got)
 	}
 	if got := toldOf(sibling.Key, AudienceHolder); !got.OpeningOwed || len(got.Versions) != 0 || !got.ToldAt.IsZero() {
 		t.Fatalf("%s's row once the opening is owed = %+v, want a row that owes the opening and knows no version", sibling.Key, got)
-	}
-	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.SetOpeningOwed(ctx, tx, child.Key, AudienceHolder, false))
-	})
-	if got := toldOf(child.Key, AudienceHolder); got.OpeningOwed {
-		t.Fatalf("%s's row once the opening is told = %+v, want it owed no more", child.Key, got)
 	}
 }
 
@@ -107,7 +102,7 @@ func TestAFillWritesOnlyTheVersionsTheToldRowDoesNotKnow(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, root))
 		must(t, records.RaiseTold(ctx, tx, root.Key, AudienceHolder, map[DesignStep]int{DesignStepSpec: 4}, at))
-		must(t, records.SetOpeningOwed(ctx, tx, root.Key, AudienceHolder, true))
+		must(t, records.SetOpeningOwed(ctx, tx, root.Key, AudienceHolder))
 		must(t, records.FillTold(ctx, tx, root.Key, AudienceHolder, map[DesignStep]int{DesignStepSpec: 2, DesignStepCriteria: 1}, at.Add(time.Hour)))
 		must(t, records.FillTold(ctx, tx, root.Key, AudienceArchitect, map[DesignStep]int{DesignStepSpec: 3}, at.Add(time.Hour)))
 		var err error

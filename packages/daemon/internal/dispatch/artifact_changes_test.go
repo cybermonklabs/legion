@@ -125,13 +125,15 @@ func TestArtifactChangesReadsADecisionOnlyChange(t *testing.T) {
 	}
 }
 
-// A Dispatch whose release has no changes route answers 404 from its router, or 405 where the
-// path matches a route of another method; either is ErrNoChangesRoute, wrapped around Dispatch's
-// own refusal so the reason a caller records keeps what Dispatch said. A 404 ARTIFACT_NOT_FOUND is
-// a document Dispatch no longer holds, which is ErrDocumentNotFound and never ErrNoChangesRoute, so
-// the reason recorded says the document is gone rather than that Dispatch lacks the route. A 500 is
-// Dispatch failing the read, which a caller rides out, and is neither: read as one, an outage would
-// be recorded as a pair nobody can ever read.
+// A Dispatch build whose release has no changes route answers 404 from its router, `no route for
+// <METHOD> <path>`, or 405 where the path matches a route of another method; either is
+// ErrNoChangesRoute, wrapped around Dispatch's own refusal so the reason a caller records keeps
+// what Dispatch said. A 404 ARTIFACT_NOT_FOUND is a document Dispatch no longer holds, which is
+// ErrDocumentNotFound and never ErrNoChangesRoute, so the reason recorded says the document is
+// gone rather than that Dispatch lacks the route. A 404 NOT_FOUND the route itself answers, for a
+// version the document does not have, is neither, and nor is a 500, Dispatch failing the read:
+// read as either, an answer of a build that has the route would be recorded as one of a build
+// without it, or a pair nobody can ever read.
 func TestArtifactChangesNamesADispatchWithoutTheRoute(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -143,6 +145,7 @@ func TestArtifactChangesNamesADispatchWithoutTheRoute(t *testing.T) {
 		{name: "the router's 404", status: http.StatusNotFound, body: map[string]string{"code": "NOT_FOUND", "error": "no route for GET /api/v1/artifacts/doc-7/changes"}, noRoute: true},
 		{name: "a 405 for a path another method serves", status: http.StatusMethodNotAllowed, body: map[string]string{"error": "method not allowed"}, noRoute: true},
 		{name: "a document Dispatch no longer holds", status: http.StatusNotFound, body: map[string]string{"code": "ARTIFACT_NOT_FOUND", "error": "artifact not found"}, gone: true},
+		{name: "the route's 404 for a version the document does not have", status: http.StatusNotFound, body: map[string]string{"code": "NOT_FOUND", "error": "the document has no version 5"}},
 		{name: "a 500", status: http.StatusInternalServerError, body: map[string]string{"code": "INTERNAL", "error": "the read failed"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -227,5 +230,41 @@ func TestApprovedVersionBeforeReportsAFailedRead(t *testing.T) {
 
 	if got, err := New(server.URL, dispatchToken).ApprovedVersionBefore(context.Background(), "doc-7", 5); err == nil {
 		t.Fatalf("approved version before 5 against a 503 = %d with no error, want the failure", got)
+	}
+}
+
+// A document Dispatch no longer holds answers its review history 404 ARTIFACT_NOT_FOUND, which is
+// ErrDocumentNotFound wrapped around Dispatch's own refusal, as the changes route's answer is: a
+// caller records that history unread at once rather than reads it again on its backoff. Any other
+// failure of the read is not.
+func TestApprovedVersionBeforeNamesADocumentDispatchNoLongerHolds(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   any
+		gone   bool
+	}{
+		{name: "a document Dispatch no longer holds", status: http.StatusNotFound, body: map[string]string{"code": "ARTIFACT_NOT_FOUND", "error": "artifact not found"}, gone: true},
+		{name: "the router's 404", status: http.StatusNotFound, body: map[string]string{"code": "NOT_FOUND", "error": "no route for GET /api/v1/artifacts/doc-7/reviews"}},
+		{name: "a 503", status: http.StatusServiceUnavailable, body: map[string]string{"error": "maintenance"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeJSONStatus(t, w, tc.status, tc.body)
+			}))
+			defer server.Close()
+
+			_, err := New(server.URL, dispatchToken).ApprovedVersionBefore(context.Background(), "doc-7", 5)
+			if err == nil {
+				t.Fatalf("read the review history against a %d = no error, want one", tc.status)
+			}
+			if got := errors.Is(err, ErrDocumentNotFound); got != tc.gone {
+				t.Fatalf("errors.Is(%v, ErrDocumentNotFound) = %t, want %t", err, got, tc.gone)
+			}
+			var refusal *Error
+			if !errors.As(err, &refusal) || refusal.Status != tc.status {
+				t.Fatalf("error = %#v, want Dispatch's own %d refusal kept inside it", err, tc.status)
+			}
+		})
 	}
 }
