@@ -44,7 +44,7 @@
 # leaves version.go alone passes here — that file's own bump rule and the review say when a bump
 # is owed, and this check only keeps two changes from claiming one number.
 #
-# It does check that the five files that hold the number agree. Each of the other four must hold
+# It does check that the files that hold the number agree. Each file after version.go must hold
 # the number version.go declares, as an integer: the fixture
 # packages/contracts/fixtures/daemon-api/version.json at daemonApiVersion, the fixture
 # packages/contracts/fixtures/daemon-api/state.json at both contract.daemon and contract.caller,

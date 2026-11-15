@@ -89,7 +89,7 @@ plugin, reads. A change to any of these surfaces bumps the field and the
 daemon's `DaemonAPIVersion` (`internal/api/version.go`, whose doc comment is the contract's
 history) in the same commit: `packages/contracts/fixtures/daemon-api/version.json`, written by the
 daemon's golden test, is what `src/daemon-api-version.test.ts` pins the field to, so neither
-side bumps alone; the number is in five files, which the root `AGENTS.md` names, and it is re-read
+side bumps alone; the number is in every file the root `AGENTS.md` names, and it is re-read
 against `main` at every rebase. Contract 12 renamed the
 field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-daemon client
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is

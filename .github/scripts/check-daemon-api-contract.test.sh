@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for `check-daemon-api-contract.sh`: a change that touches the daemon API contract's
 # history or declaration declares a number above the one its base carries, the refusal names a
-# free number and every file that holds it, the five files that hold the number agree on it, an
+# free number and every file that holds it, the files that hold the number agree on it, an
 # edit of the doc comment above the history touches no contract, and a base, a tree or a file the
 # check cannot read refuses the change.
 #
@@ -43,7 +43,7 @@ declaration() {
   printf 'const DaemonAPIVersion = %s\n' "$1"
 }
 
-# The four files beside version.go that hold the contract number, in the order the check names
+# The files beside version.go that hold the contract number, in the order the check names
 # them.
 other_sites=(
   packages/contracts/fixtures/daemon-api/version.json
@@ -197,7 +197,7 @@ run_check() {
   queries=$(wc -l < "$root/stub/pr-queries" | tr -d ' ')
 }
 
-all_five_files="packages/daemon/internal/api/version.go$(printf ', %s' "${other_sites[@]}")"
+all_files="packages/daemon/internal/api/version.go$(printf ', %s' "${other_sites[@]}")"
 
 # How a refusal for files that disagree says to write the number: the golden tests write the
 # fixtures, and the manifests take it by hand. A pattern for contains, so `.` stands for the
@@ -221,7 +221,7 @@ check "names both numbers and the base it read" \
   "$(contains "$out" 'declares daemon API contract 7, which is not above the 7 the base carries (the tip of main)')"
 check "names the free number" \
   "$(contains "$out" 'Take 8, the lowest number above the base.s that no open pull request declares,')"
-check "names every file that holds the number" "$(contains "$out" "$all_five_files")"
+check "names every file that holds the number" "$(contains "$out" "$all_files")"
 check "reads the open pull requests once" "$(is "$queries" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
@@ -238,7 +238,7 @@ check "exits 1" "$(is "$status" 1)"
 check "names both numbers" \
   "$(contains "$out" 'declares daemon API contract 8, which is not above the 9 the base carries')"
 check "names the free number above the base, not above the tree" "$(contains "$out" 'Take 10,')"
-check "names every file that holds the number" "$(contains "$out" "$all_five_files")"
+check "names every file that holds the number" "$(contains "$out" "$all_files")"
 check "reads the open pull requests once" "$(is "$queries" 1)"
 
 echo "case: a tree above its base, the merge group of two entries that both picked that number"
@@ -247,7 +247,7 @@ base_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 declaration 7 > "$root/stub/refs/$base_sha"
 # The group's tree carries both entries' changes at 8: the declaration one of them bumped, and
 # the other's edit beside it. The queue tests this tree, which is the pair that ships. Every
-# file that holds the number holds 8, so the five agree.
+# file that holds the number holds 8, so they all agree.
 declaration 8 > "$root/packages/daemon/internal/api/version.go"
 sites "$root" 8
 merge_group_event "$root" "$base_sha"
@@ -423,7 +423,7 @@ check "names what it could not read" \
 check "reads no open pull request" "$(is "$queries" 0)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
-# The cases below lock the agreement of the five files and the comparison of the history alone.
+# The cases below lock the agreement of those files and the comparison of the history alone.
 # Each serves an answer to the open pull request query, so a refusal that read the open pull
 # requests would be counted rather than fail.
 
@@ -444,7 +444,7 @@ check "names state.json as the file" \
   "$(contains "$out" '^::error file=packages/contracts/fixtures/daemon-api/state.json::')"
 check "names both numbers it holds and the number version.go declares" \
   "$(contains "$out" 'packages/contracts/fixtures/daemon-api/state.json holds daemon API contract 7 at contract.daemon and 7 at contract.caller, and packages/daemon/internal/api/version.go declares 8\.')"
-check "names every file that holds the number" "$(contains "$out" "$all_five_files")"
+check "names every file that holds the number" "$(contains "$out" "$all_files")"
 check "says how to write the number" "$(contains "$out" "$update_command")"
 check "names no free number" "$(is "$(contains "$out" 'Take ')" false)"
 check "does not pass the number above the base's" "$(is "$(contains "$out" 'is above')" false)"
@@ -464,7 +464,7 @@ run_check "$root" pull_request
 check "exits 1" "$(is "$status" 1)"
 check "names state.json and both numbers it holds" \
   "$(contains "$out" '^::error file=packages/contracts/fixtures/daemon-api/state.json::packages/contracts/fixtures/daemon-api/state.json holds daemon API contract 8 at contract.daemon and 7 at contract.caller, and packages/daemon/internal/api/version.go declares 8\.')"
-check "names every file that holds the number" "$(contains "$out" "$all_five_files")"
+check "names every file that holds the number" "$(contains "$out" "$all_files")"
 check "reads no open pull request" "$(is "$queries" 0)"
 
 echo "case: each other file one number behind version.go"
@@ -482,7 +482,7 @@ for site in "${other_sites[@]}"; do
   check "$site at 7: exits 1" "$(is "$status" 1)"
   check "$site at 7: names that file, the number it holds and the number version.go declares" \
     "$(contains "$out" "^::error file=$site::$site holds daemon API contract 7 at [a-zA-Z.]*, and packages/daemon/internal/api/version.go declares 8\.")"
-  check "$site at 7: names every file that holds the number" "$(contains "$out" "$all_five_files")"
+  check "$site at 7: names every file that holds the number" "$(contains "$out" "$all_files")"
   check "$site at 7: says how to write the number" "$(contains "$out" "$update_command")"
   check "$site at 7: reads no open pull request" "$(is "$queries" 0)"
 done
@@ -564,7 +564,7 @@ check "names the declaration and its line" \
 check "names both numbers" \
   "$(contains "$out" 'declares daemon API contract 7, which is not above the 7 the base carries (the tip of main)')"
 check "names the free number" "$(contains "$out" 'Take 8, the lowest number above')"
-check "names every file that holds the number" "$(contains "$out" "$all_five_files")"
+check "names every file that holds the number" "$(contains "$out" "$all_files")"
 check "reads the open pull requests once" "$(is "$queries" 1)"
 
 summary "check-daemon-api-contract.sh"
