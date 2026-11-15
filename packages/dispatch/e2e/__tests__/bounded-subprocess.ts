@@ -397,26 +397,69 @@ interface Child {
  *  children apart and the cost line leaves them out. */
 const environmentFloor = new Set(["HOME", "PATH", "TMPDIR"]);
 
-/** One word of a command, or one value of an environment, with every line break written as an
- *  escape. `local-instance-support.test.ts` hands `bun -e` a script of several lines, and a cost
- *  line that carried those breaks would be four lines of a run's stderr rather than one, which
- *  is neither the one line R4 asks for nor what a reader greps for. */
+/** A text with every line break written as an escape. `local-instance-support.test.ts` hands
+ *  `bun -e` a script of several lines, and a cost line that carried those breaks would be four
+ *  lines of a run's stderr rather than one, which is neither the one line R4 asks for nor what a
+ *  reader greps for. `named` escapes them only after `masked` has read the text: escaped first, a
+ *  break before a `password` keyword would leave an `n` before the key, and the key would not
+ *  count. */
 function oneLine(text: string): string {
   return text.replaceAll("\r", "\\r").replaceAll("\n", "\\n");
 }
 
-/** The password of a URL inside a text, which `named` writes as `***`:
- *  `postgres://user:***@host/db`. `harness-stacks.test.ts` gives a child `LEGION_TEST_PG_DSN` as
- *  its `DATABASE_URL` and inside a stacks JSON, and a cost line or a failure that printed either
- *  whole would put that password on the run's stderr. It is a scheme, `://`, a user, `:`, the
- *  password and `@`, with no space, slash, quote or backslash among them, so a URL inside JSON or
- *  inside a shell word is read too. A password that holds an `@` runs to the last `@` before the
- *  host. */
-const urlPassword = /([a-z][a-z0-9+.-]*:\/\/[^\s:/?#@"'\\]*):[^\s/?#"'\\]*@/gi;
+/** A URL's userinfo password, which `masked` hides: a scheme, `://`, a user, `:`, then everything
+ *  up to the last `@` of the same word, a word ending at whitespace, a quote or a backslash. A URL
+ *  inside JSON or inside a shell word is read too, and a password that holds `/`, `?`, `#` or `@`
+ *  is hidden whole. A URL whose user has no `:` after it, as in `postgres://user@host/db`, or
+ *  whose word has no `@` after that `:`, as in `postgres://127.0.0.1:5433/db`, carries no
+ *  password and is left as it is. */
+const urlPassword = /([a-z][a-z0-9+.-]*:\/\/[^\s:/?#@"'\\]*):[^\s"'\\]*@/gi;
+
+/** `password` as `passwordParameter` reads a key: each letter as itself or as `%` and the hex
+ *  code of that letter, in either case, as `pass%57ord` writes its `W`. */
+const passwordKey = [..."password"]
+  .map((letter) => {
+    const [lower, upper] = [letter, letter.toUpperCase()].map((each) =>
+      each.charCodeAt(0).toString(16)
+    );
+    return `(?:${letter}|%${lower}|%${upper})`;
+  })
+  .join("");
+
+/** The value of a `password` keyword, as in `host=h password=*** dbname=d`, or of a `password`
+ *  query parameter, as in `postgres://h/?password=***&dbname=d`, which `masked` hides. The key
+ *  reads `password` percent-decoded and in any case, and stands at the start of the text or after
+ *  a character no key holds, which is anything but a letter, a digit, `_` or `%`: after
+ *  whitespace, `?` or `&` where libpq reads it, and after `=` or a quote where a variable, a flag
+ *  or JSON holds the connection string. Its value runs to the next whitespace, `&`, quote or
+ *  backslash, or, where it opens with `'`, as libpq quotes a value holding a space, to the `'`
+ *  that closes it. No other key is hidden: `dbname=mine`, `passwords=x` and `mypassword=x` stay. */
+const passwordParameter = new RegExp(
+  String.raw`(?<![\w%])(${passwordKey})=(?:'(?:[^'\\]|\\[\s\S])*'?|[^\s&"'\\]*)`,
+  "gi"
+);
+
+/** `text` with two kinds of password written as `***`: a URL's userinfo password
+ *  (`urlPassword`), and the value of a `password` keyword or query parameter, its name read
+ *  percent-decoded and in any case (`passwordParameter`). A child's environment and command can
+ *  hold a database URL: `harness-stacks.test.ts` gives a child `LEGION_TEST_PG_DSN` as its
+ *  `DATABASE_URL` and inside a stacks JSON, and `replace-blocks-guard.test.ts` gives its driver a
+ *  connection string in each of these forms. The cost line and the failure go to the run's
+ *  stderr, which CI keeps in a public log, so neither may print a password. Two forms still show:
+ *  a value not opened with `'` that holds a raw `&`, quote or backslash shows what follows that
+ *  character, and a URL password holding a quote or backslash is not matched, so it shows whole.
+ *  Hiding more than the password costs a reader part of a word; hiding a host, or a password that
+ *  is not there, would mislead one, so a URL with no password is left whole. */
+export function masked(text: string): string {
+  return text.replace(urlPassword, "$1:***@").replace(passwordParameter, "$1=***");
+}
 
 /** What the cost line and the failure call a child: the file that started it, the command with
- *  its arguments, and the environment the caller gave it, with every URL's password written as
- *  `***` wherever it stands.
+ *  its arguments, and the environment the caller gave it, with what `masked` hides written as
+ *  `***` wherever it stands: a URL's userinfo password, and the value of a `password` keyword or
+ *  query parameter, its name read percent-decoded and in any case. An entry named `PGPASSWORD`,
+ *  the variable libpq reads a password from, prints as `PGPASSWORD=***` whatever its value holds,
+ *  spaces included, and one the caller takes away still prints as `PGPASSWORD=`.
  *
  *  The environment here is read BY NAME: every entry of `env` but the three of
  *  `environmentFloor`, sorted by name, whatever this process's own value for a name is. Reading
@@ -426,7 +469,7 @@ const urlPassword = /([a-z][a-z0-9+.-]*:\/\/[^\s:/?#@"'\\]*):[^\s/?#"'\\]*@/gi;
  *  listing would carry the same file, the same command and the same environment, and a bound
  *  failure could not say which of them hung. Four callers start the same default listing with
  *  the same floor and nothing else, so the file is what tells those four apart. */
-function named({ argv, env, from }: Child): string {
+export function named({ argv, env, from }: Child): string {
   const chosen =
     env === undefined
       ? "this process's environment"
@@ -434,13 +477,12 @@ function named({ argv, env, from }: Child): string {
           .filter(([name]) => !environmentFloor.has(name))
           .sort(([one], [other]) => one.localeCompare(other))
           // A name the caller gives no value to is a name it takes away, which `NAME=` says.
-          .map(([name, value]) => `${name}=${oneLine(value ?? "")}`)
+          .map(([name, value = ""]) =>
+            name === "PGPASSWORD" && value !== "" ? `${name}=***` : `${name}=${value}`
+          )
           .join(" ") || "no variable of its own";
-  const command = argv.map(oneLine).join(" ");
-  return `${relative(dispatchPackage, fileURLToPath(from))} | ${command} | ${chosen}`.replace(
-    urlPassword,
-    "$1:***@"
-  );
+  const file = relative(dispatchPackage, fileURLToPath(from));
+  return oneLine(masked(`${file} | ${argv.join(" ")} | ${chosen}`));
 }
 
 /** What one bounded child did. `code` is its exit status and `named` what the cost line called

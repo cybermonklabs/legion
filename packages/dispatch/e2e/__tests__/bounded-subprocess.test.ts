@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
-import { bounds, rowLimit, runBounded, whether } from "./bounded-subprocess";
+import { bounds, masked, named, rowLimit, runBounded, whether } from "./bounded-subprocess";
 
 const boundedModule = fileURLToPath(new URL("./bounded-subprocess.ts", import.meta.url));
 
@@ -164,3 +164,93 @@ test.skipIf(!existsSync("/proc/self/stat"))(
   // ends.
   rowLimit("short", "short")
 );
+
+test("a child's name hides each password libpq reads and keeps the rest", () => {
+  // Each URL that carries a password is built from its parts, as replace-blocks-guard.test.ts
+  // builds its own, so this source holds no `user:password@host` literal for a credential scanner
+  // to stop on. Every password here is made up, and the forms include each one that file gives
+  // its driver.
+  const withPassword = (password: string) =>
+    `postgres://legion_test:${password}@127.0.0.1:5433/mine`;
+  const hiddenUrl = withPassword("***");
+  const forms: Record<string, readonly [text: string, shown: string]> = {
+    "a URL password holding a slash": [withPassword("abc/def+ghi"), hiddenUrl],
+    "a URL password holding a question mark": [withPassword("abc?def"), hiddenUrl],
+    "a URL password holding a hash": [withPassword("abc#def"), hiddenUrl],
+    "a URL password holding an at sign": [withPassword("ab@cd"), hiddenUrl],
+    "a URL password holding a query": [withPassword("x?a=b&dbname=mine&"), hiddenUrl],
+    "the keyword form": [
+      "host=127.0.0.1 port=5433 password=sekrit dbname=mine",
+      "host=127.0.0.1 port=5433 password=*** dbname=mine",
+    ],
+    "the keyword form with a single-quoted password": [
+      "host=127.0.0.1 password='se kr it' dbname=mine",
+      "host=127.0.0.1 password=*** dbname=mine",
+    ],
+    "the keyword form with the keyword in capitals": [
+      "host=127.0.0.1 PASSWORD=sekrit dbname=mine",
+      "host=127.0.0.1 PASSWORD=*** dbname=mine",
+    ],
+    "the keyword form across lines": [
+      "host=127.0.0.1\npassword=sekrit\ndbname=mine",
+      "host=127.0.0.1\npassword=***\ndbname=mine",
+    ],
+    "the keyword form as a variable's value": [
+      "DATABASE_URL=password=sekrit host=127.0.0.1",
+      "DATABASE_URL=password=*** host=127.0.0.1",
+    ],
+    "the keyword form inside JSON": [
+      '{"dsn":"password=sekrit","other":"dbname=mine"}',
+      '{"dsn":"password=***","other":"dbname=mine"}',
+    ],
+    "a password parameter spelled with a capital letter": [
+      "postgres://127.0.0.1:5433/?Password=sekrit&db%6Eame=mine",
+      "postgres://127.0.0.1:5433/?Password=***&db%6Eame=mine",
+    ],
+    "a password parameter whose name escapes a capital letter": [
+      "postgres://127.0.0.1:5433/?pass%57ord=sekrit&db%6Eame=mine",
+      "postgres://127.0.0.1:5433/?pass%57ord=***&db%6Eame=mine",
+    ],
+    "a URL with no password": [
+      "postgres://127.0.0.1:5433/mine?sslmode=disable",
+      "postgres://127.0.0.1:5433/mine?sslmode=disable",
+    ],
+    "a URL with a user and no password": [
+      "postgres://legion_test@127.0.0.1:5433/mine",
+      "postgres://legion_test@127.0.0.1:5433/mine",
+    ],
+    "keys that are not password": [
+      "host=127.0.0.1 passwords=x mypassword=x dbname=mine",
+      "host=127.0.0.1 passwords=x mypassword=x dbname=mine",
+    ],
+  };
+  expect(
+    Object.fromEntries(Object.entries(forms).map(([form, [text]]) => [form, masked(text)])),
+    "A child's name, which the cost line and a failure print on the run's stderr, still holds a " +
+      "password of the form named, or lost a part of the text that is no password."
+  ).toEqual(Object.fromEntries(Object.entries(forms).map(([form, [, shown]]) => [form, shown])));
+  // `named` itself, for what it does beyond `masked`: an entry named PGPASSWORD, the variable
+  // libpq reads a password from, hides its whole value, spaces and all, and one the caller takes
+  // away still says so; and a line break in a value is escaped only after `masked` has read it.
+  expect(
+    {
+      given: named({
+        argv: ["psql", "-c", "select 1"],
+        env: {
+          DATABASE_URL: "host=127.0.0.1\npassword=sekrit",
+          PGHOST: "127.0.0.1",
+          PGPASSWORD: "se kr it",
+        },
+        from: import.meta.url,
+      }),
+      takenAway: named({ argv: ["psql"], env: { PGPASSWORD: undefined }, from: import.meta.url }),
+    },
+    "A child's name printed part of PGPASSWORD or of a keyword after a line break, or lost a " +
+      "part of the environment that is no password."
+  ).toEqual({
+    given:
+      "e2e/__tests__/bounded-subprocess.test.ts | psql -c select 1 | " +
+      "DATABASE_URL=host=127.0.0.1\\npassword=*** PGHOST=127.0.0.1 PGPASSWORD=***",
+    takenAway: "e2e/__tests__/bounded-subprocess.test.ts | psql | PGPASSWORD=",
+  });
+});
