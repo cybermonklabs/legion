@@ -5,7 +5,8 @@ body: |-
   The `202` names the end of that hour as `kept_until`, and for `holder_lapsed` the holder, its
   `holder_state` and its `last_seen`. A publish with `keep: false` keeps nothing and still answers
   `404`. A repeat of a dedupe key whose copy is still kept answers with that first copy and stores
-  nothing new; a repeat after the copy ended is kept as a new copy.
+  nothing new; a repeat after the copy ended is kept as a new copy. A holder that registers again
+  after it was not live gets its kept copies at that registration, with no claim and no sweep.
   At the end of a copy's hour the listener drops it, counts it on `envoy_role_kept_expired_total`
   (labels `kept_by` and `stale`) and logs it once, whether or not any session holds the role, and
   sends the sender's session one dead letter on its agent subject when the publish named that

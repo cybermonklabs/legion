@@ -1131,6 +1131,13 @@ type deleteSessionResponse struct {
 	Reason  string `json:"reason,omitempty"`
 }
 
+// publishDedupePrefix opens every dedupe key the publish route makes for a request that chose
+// none: publish.<a new id>, or publish.<the request's idempotency_key>. Two places use it: the
+// route, which writes it (publishHandler) and refuses a dedupe key chosen for an envelope with
+// source dispatch, so every copy it keeps of a dispatch envelope carries it; and isOutboxCopy,
+// which reads it to tell such a copy from one Dispatch's outbox kept under a key of its own.
+const publishDedupePrefix = "publish."
+
 // publishHandler rejects agent-targeted topics (must use /v1/messages/send
 // instead) and the listener's own lanes, the kept one and the session resume one, and sends the
 // envelope. A role
@@ -1244,12 +1251,12 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "dedupe_key cannot be chosen for a dispatch envelope", "dedupe_key")
 			return
 		}
-		dedupeKey := "publish." + id.New()
+		dedupeKey := publishDedupePrefix + id.New()
 		switch {
 		case request.DedupeKey != "":
 			dedupeKey = request.DedupeKey
 		case request.IdempotencyKey != "":
-			dedupeKey = "publish." + request.IdempotencyKey
+			dedupeKey = publishDedupePrefix + request.IdempotencyKey
 		}
 		item := messageEnvelope(request.messageBody, request.Topic, dedupeKey, bodyExpectsReply)
 		record.item = &item

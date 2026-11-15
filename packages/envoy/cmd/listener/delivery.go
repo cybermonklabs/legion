@@ -496,10 +496,11 @@ func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleC
 // (roles.ResolveHolder, which reads the role's claim record from the role bucket), applying the
 // terminal outcome itself and reporting ok=false when there is nobody to deliver to. A resolution
 // that found no live holder keeps the message for the role's next live holder first
-// (keepRoleLaneMessage), in one decision for both give-up branches: roleKeepable says which states
-// a copy is kept for - a role nobody claims, under roleKeptUnclaimed, and a claim whose holder is
-// not live, under roleKeptLapsed with that holder named on the kept line - and a copy that was
-// kept publishes no delivery exception, since the message is not lost.
+// (keepRoleLaneMessage), in one decision for both give-up branches: roleKeptReason says which
+// states a copy is kept for and under which reason - a role nobody claims, under
+// roleKeptUnclaimed, and a claim whose holder is not live, under roleKeptLapsed with that holder
+// named on the kept line - and a copy that was kept publishes no delivery exception, since the
+// message is not lost.
 //
 // A claim read that did not answer forwards nothing and keeps the message too, under
 // roleClaimUnread: a read that failed is no evidence that the role has no holder, nor that it has
@@ -537,7 +538,7 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 		if resolved.State == roles.Live {
 			return sessionID, resolved.Entry, true
 		}
-		if roleKeepable(resolved) && keepRoleLaneMessage(cfg, role, item, roleKeepReason(resolved.State), sessionID) {
+		if reason, keepable := roleKeptReason(resolved); keepable && keepRoleLaneMessage(cfg, role, item, reason, sessionID) {
 			return "", session.SessionEntry{}, false
 		}
 		if resolved.State == roles.Unclaimed {

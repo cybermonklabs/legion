@@ -432,9 +432,10 @@ func TestAHandoverResolvesTheHolderOfAWalkAfterThePauseBeforeIt(t *testing.T) {
 }
 
 // sweepOnce makes one pass of the kept-role sweep over cfg, as the sweep's loop makes each
-// (startKeptRoleSweep), and returns once every handover the pass started has ended: it takes back
-// every slot of the pass's pool, which a handover the sweep started gives back as its last act,
-// after its walks and the wake report it raises (sweepKeptRoleLanes).
+// (startKeptRoleSweep), and returns once every handover the pass started has ended, with the wake
+// report it raises: it takes back every slot of the pass's pool, which a handover the sweep
+// started gives back as its last act, after its walks, after the role's guard it gives back
+// before the wake read, and after that wake read and the report it raises (sweepKeptRoleLanes).
 func sweepOnce(ctx context.Context, cfg listenerDeliveryHandlerConfig) {
 	slots := make(chan struct{}, roleKeepSweepHandovers)
 	sweepKeptRoleLanes(ctx, cfg, slots)

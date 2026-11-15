@@ -3464,7 +3464,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   One the stream did not acknowledge storing (`bus.ErrForwardNotStored`), and one not known to have left this process (the publish failed, the flush timed out or failed on a stalled connection, or the server denied it under the listener's grant, `bus.ErrPublishDenied`), are both `delivery_failed`, as a stale holder and an unadvertised or unreadable delivery mode are (`finishRoleForward`); `no_holder` is no claim at all.
   There is no `receipt_timeout` reason here any more.
   `bus.confirmPublished` holds how an accepted forward is told from one that is not.
-  Both of the lane's own give-up branches keep the message for the role's next live holder first (`keepRoleLaneMessage`, `resolveCoreRoleHolder`, `roleKeepable`).
+  Both of the lane's own give-up branches keep the message for the role's next live holder first (`keepRoleLaneMessage`, `resolveCoreRoleHolder`, `roleKeptReason`).
   An unclaimed role keeps it under the reason `unclaimed`, and a holder that is not live keeps it under `holder_lapsed`, with that holder named on the kept line, and its claim stands.
   A message that was kept publishes no delivery exception, because it is not lost, and it counts and logs as `kept`.
   A keep that failed leaves each branch exactly as it was: `no_holder` for an unclaimed role, and `delivery_failed` for a holder that is not live.
@@ -3477,7 +3477,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Once the copy is older, the first walk that reads it drops it with a WARN, whether or not a session holds the role, and sends the dead letter above when the copy names a sender session.
   A claim read whose keep failed is `delivery_failed`, as before.
   Every other reason emits an exception.
-  The lane reads no `keep` field, because a raw role publish carries none and the envelope has no such field:
+
+- The role lane reads no `keep` field, because a raw role publish carries none and the envelope has no such field:
   keeping is chosen on the publish route alone, and the one sender that opts out of it, the Legion daemon's notice queue, publishes through that route.
   The lane's attempt cache holds an entry only while a forward is in flight and a failure rolls it back, while the dedupe cache, which the route shares, records a forward only once the stream stored it
   — so a publish that re-uses a `dedupe_key` after a failure is forwarded again, while one after a stored forward is skipped.
