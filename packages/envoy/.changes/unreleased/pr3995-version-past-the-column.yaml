@@ -14,3 +14,6 @@ body: |-
   `attempt` of a reply on `POST /api/v1/messages/{id}/reply` and `POST /api/v1/comments/{id}/reply`
   is refused after the route reads its message or comment and before the query that reads the
   attempt's delivery, with the `404` each route already answered for it.
+  `GET /api/v1/me/replies` with an offset near the largest integer answers an empty page, as
+  `GET /api/v1/me/answers`, `GET /api/v1/issues` and `GET /api/v1/search` do, where it answered
+  `500`: the rows it reads for the page stop at the largest integer rather than wrapping.
