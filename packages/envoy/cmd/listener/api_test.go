@@ -3511,7 +3511,11 @@ func TestSessionRoutesReportEachSessionsDeliveryMode(t *testing.T) {
 // A team topic and a topic outside notifications. are stored as they always were.
 func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	handler := subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}, "test-machine", logging.New("test"))
+	// withRoleClaimDrain, because the last registration names a role lane, and a registration
+	// that makes its session live again hands it the kept lane of each role its row names
+	// (runKeptRoleDrain), claimed or not.
+	deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)})
+	handler := subscribeHandler(deps, "test-machine", logging.New("test"))
 	subscribe := func(t *testing.T, sessionID string, topics ...string) *httptest.ResponseRecorder {
 		t.Helper()
 		encoded, err := json.Marshal(map[string]any{"session_id": sessionID, "topics": topics, "self_subscribed": true, "delivery": map[string]any{"consumer": true, "epoch": "e"}})
@@ -3627,7 +3631,8 @@ const (
 // interestRig is a listener's /v1 routes over the test's own notification stream, with topics
 // already registered for interestSession. The routes carry the delivery configuration a kept-lane
 // handover runs on (withRoleClaimDrain), as main's do: a registration that makes its session live
-// again hands it the kept lane of each role whose claim it renewed (runKeptRoleDrain).
+// again hands it the kept lane of each role whose claim record it read for that session
+// (runKeptRoleDrain).
 type interestRig struct {
 	deps *listenerDeps
 	mux  *http.ServeMux

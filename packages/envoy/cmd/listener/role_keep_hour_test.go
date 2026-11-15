@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -204,14 +205,15 @@ func (r *hourRig) claim(l *hourListener, sessionID, role string, entry session.S
 // register makes sessionID register through l's POST /v1/interests/subscribe, the heartbeat a
 // running client repeats (registerThrough), on l's route given the session-consumer connection
 // main's listener holds, without which that route refuses every registration
-// (setupSessionConsumers). It states no process, as the claims these tests make name none
-// (claimRoleWith through store.Registry.SetRole, and claim, whose request states no
-// client_instance_id), so the registration renews such a claim as a client's heartbeat renews the
-// claim naming its own process (store.Registry.RenewRoleClaims).
-func (r *hourRig) register(l *hourListener, sessionID string) {
+// (setupSessionConsumers). The registration states instance as the process making it, empty for
+// none. A registration stating none renews a claim that names none, as claimRoleWith's does
+// (store.Registry.SetRole), the way a client's heartbeat renews the claim naming its own process;
+// one stating a process the claim does not name renews nothing, as a new process that resumed the
+// session renews nothing of the claim the process before it made (store.Registry.RenewRoleClaims).
+func (r *hourRig) register(l *hourListener, sessionID, instance string) {
 	r.t.Helper()
 	l.route.consumers = setupSessionConsumers(r.t, l.harness.client)
-	registerThrough(r.t, subscribeHandler(l.route, "test-machine", logging.New("test")), sessionID, "")
+	registerThrough(r.t, subscribeHandler(l.route, "test-machine", logging.New("test")), sessionID, instance)
 }
 
 // deregister deletes sessionID's record through l's DELETE /v1/sessions/<id> and waits until both
@@ -1271,7 +1273,9 @@ func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
 // claims the role once the reaper has freed it. A publish with keep false to such a claim is
 // refused 404 holder_lapsed and keeps nothing. Row (g) is R4's holder that answers again: its
 // registration through POST /v1/interests/subscribe, which renews its claim and claims nothing,
-// hands it the copy kept for it with no sweep running (subscribeHandler).
+// hands it the copy kept for it with no sweep running (subscribeHandler). Row (h) is that holder
+// resumed by a new process after a clean stop: its registration states a process its claim does
+// not name, so it renews nothing, and it is handed the copy all the same.
 func TestALapsedHolderIsKeptFor(t *testing.T) {
 	t.Run("a a publish to a role whose holder deleted its record is kept and reaches that session once it registers again", func(t *testing.T) {
 		rig := newHourRig(t)
@@ -1401,7 +1405,7 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 			t.Fatalf("the answer is %+v, want kept_reason holder_lapsed naming %s as unresponsive", answer, holder)
 		}
 
-		rig.register(rig.listeners[0], holder)
+		rig.register(rig.listeners[0], holder, "")
 		waitFor(t, 20*time.Second, "the kept copy reaching "+holder+" at its registration", func() bool {
 			return len(rig.envelopesOn(contracts.AgentSubject(holder))) > 0
 		})
@@ -1410,6 +1414,61 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 		}
 		if got := expectFrames(t, frames, 1, 100*time.Millisecond); got[0].EventID != answer.EventID {
 			t.Fatalf("%s received event %s, want the kept %s", holder, got[0].EventID, answer.EventID)
+		}
+	})
+
+	t.Run("h a holder resumed by a new process gets its kept copy at its registration with no sweep", func(t *testing.T) {
+		rig := newHourRig(t)
+		const (
+			role    = "hour-lapsed-resumed"
+			holder  = "ses_hour_resumed_holder"
+			stopped = "hour-process-that-stopped"
+			resumed = "hour-process-that-resumed"
+		)
+		frames := startStandIn(t, rig.uri, holder)
+		// The process that stopped registered, claimed the role under its own client instance, and
+		// stopped cleanly: its record is deleted and its claim stands, naming that process.
+		first := rig.listeners[0]
+		entry := liveRoleActEntry
+		entry.ClientInstanceID = stopped
+		if err := first.harness.sessions.Put(holder, entry); err != nil {
+			t.Fatalf("register %s under process %s: %v", holder, stopped, err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := first.harness.registry.SetRoleWithPrevious(ctx, store.RoleClaimRequest{
+			SessionID: holder, MachineID: "test-machine", ClientInstanceID: stopped, Role: role,
+		}); err != nil {
+			t.Fatalf("claim %s for %s under process %s: %v", role, holder, stopped, err)
+		}
+		rig.deregister(first, holder)
+		// The keep's own handover waits on its guard for the whole row, as in row (g).
+		keeper := rig.listeners[1]
+		release, taken := keeper.cfg.roleKeepDrains.hold(context.Background(), role)
+		if !taken {
+			t.Fatalf("take role %s's handover guard on the listener that keeps its copy", role)
+		}
+		defer release()
+		answer := rig.kept(keeper, roleMessage(role, "ses_hour_resumed_sender", "are you back under a new process?"))
+		if answer.KeptReason != "holder_lapsed" || answer.Holder != holder || answer.HolderState != "gone" {
+			t.Fatalf("the answer is %+v, want kept_reason holder_lapsed naming %s as gone", answer, holder)
+		}
+
+		// A new process resumes the session under the same id and registers, stating itself.
+		rig.register(first, holder, resumed)
+		waitFor(t, 20*time.Second, "the kept copy reaching "+holder+" at its resumed process's registration", func() bool {
+			return len(rig.envelopesOn(contracts.AgentSubject(holder))) > 0
+		})
+		if held := rig.envelopesOn(contracts.AgentSubject(holder)); len(held) != 1 || held[0].EventID != answer.EventID {
+			t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", holder, held, answer.EventID)
+		}
+		if got := expectFrames(t, frames, 1, 100*time.Millisecond); got[0].EventID != answer.EventID {
+			t.Fatalf("%s received event %s, want the kept %s", holder, got[0].EventID, answer.EventID)
+		}
+		// The registration renewed nothing: the claim still names the process that stopped, so
+		// the handover was started for a role the registration read and did not renew.
+		if claim := storedRoleClaim(t, first.harness.registry, role); claim.HolderSessionID != holder || claim.ClientInstanceID != stopped {
+			t.Fatalf("role %s's claim is %+v, want it still naming %s under process %s", role, claim, holder, stopped)
 		}
 	})
 }

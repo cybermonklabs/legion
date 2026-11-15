@@ -2581,10 +2581,11 @@ type registeredSession struct {
 	// cache held for it just before the registration wrote its entry read as not live -
 	// unresponsive, gone with its claims still standing, or not in the cache at all
 	// (session.SessionRegistry.Lookup). Such a holder answers again by registering and claims
-	// nothing, since its claim still names it, so the handler hands each role whose claim this
-	// registration renewed its kept lane (subscribeHandler). It is read under the session's lock,
-	// from the cache with no bucket call, whatever the delivery mode (listenerDeps.registerPass),
-	// and is false on every heartbeat of a session that was live already.
+	// nothing, since its claim still names its session, so the handler hands it the kept lane of
+	// each role whose claim record the registration's renewal read for it, renewed or not
+	// (store.RoleRenewal.Set, subscribeHandler). It is read under the session's lock, from the
+	// cache with no bucket call, whatever the delivery mode (listenerDeps.registerPass), and is
+	// false on every heartbeat of a session that was live already.
 	returning bool
 }
 
@@ -2883,19 +2884,34 @@ func (d *listenerDeps) registerPass(
 // it stands.
 //
 // A registration that makes its session live again also hands that session the kept lane of each
-// role whose claim it renewed (runKeptRoleDrain), as a claim that lands does (roleSetHandler).
-// Such a holder - one back from unresponsive, or from gone with its claim still standing - answers
-// again by registering and by nothing else: pi-envoy's and claude-envoy's reassertRole read the
-// role, find the session holding it and claim nothing. So the registration is the event that makes
-// the holder live again, and the handover starts off it rather than being left to the sweep, which
-// would hold the copies for up to roleWakeInterval and drop each one whose hour ended in that wait
-// while its holder was live (sweepKeptRoleLanes). It costs one handover per role renewed, and only
-// on a registration that returns its session (registeredSession.returning): a heartbeat of a
-// session that was live already starts none and costs nothing it did not cost before. A handover
-// reads the lane's head before it resolves the holder (readKeptLaneHead, two stream reads), so a
-// role with nothing kept for it costs those two reads, and a cache that trails the bucket and reads
-// a live session as not live costs at worst a handover that finds nothing to do. Each runs in a
-// goroutine under a context of its own, so this answer waits for none of it.
+// role whose claim record its renewal read for the session (store.RoleRenewal.Set: the role topics
+// of its stored row and the roles the role claim copy names for it), renewed or not
+// (runKeptRoleDrain), as a claim that lands does (roleSetHandler). Such a holder - one back from
+// unresponsive, or from gone with its claim still standing - answers again by registering and by
+// nothing else: pi-envoy's and claude-envoy's reassertRole read the role, find the session holding
+// it and claim nothing. So the registration is the event that makes the holder live again, and the
+// handover starts off it rather than being left to the sweep, which would hold the copies for up to
+// roleWakeInterval and drop each one whose hour ended in that wait while its holder was live
+// (sweepKeptRoleLanes).
+//
+// The set is the roles weighed and not the roles renewed because a session resumed by a new
+// process registers under a client instance its claim does not name: the claim still names the
+// process that stopped, so the renewal renews nothing (store.Registry.RenewRoleClaims), and the new
+// process's own soft claim is refused until that claim's last renewal is older than the live
+// window (roleOwnSessionVerdict), yet the role is the session's and its copies are owed to it now.
+// The handover resolves the holder itself, by session and not by process (roles.ResolveHolder):
+// the copies of a role whose claim names this session, whichever process the claim names, are
+// forwarded to this session, which reads live once this registration's entry is written; the
+// copies of a role whose claim names another live session are that holder's to take; and a role
+// whose claim names no live session has its lane walked with no holder.
+//
+// It costs one handover per role in the set, and only on a registration that returns its session
+// (registeredSession.returning): a heartbeat of a session that was live already starts none and
+// costs nothing it did not cost before. A handover reads the lane's head before it resolves the
+// holder (readKeptLaneHead, two stream reads), so a role with nothing kept for it costs those two
+// reads, and a cache that trails the bucket and reads a live session as not live costs at worst a
+// handover that finds nothing to do. Each runs in a goroutine under a context of its own, so this
+// answer waits for none of it.
 func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -3080,11 +3096,13 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 				slog.String("error", err.Error()))
 		}
 		// A registration that returns its session hands that session the kept lane of each role
-		// whose claim it renewed, since such a holder claims nothing when it answers again; a
-		// heartbeat of a session that was live already starts no handover
+		// whose claim record the renewal read for it, renewed or not: such a holder claims nothing
+		// when it answers again, and one resumed by a new process renews nothing either, since
+		// its claim names the process before it. Each handover resolves the role's holder itself.
+		// A heartbeat of a session that was live already starts no handover
 		// (registeredSession.returning).
 		if registered.returning {
-			for _, role := range renewal.Renewed {
+			for _, role := range renewal.Set {
 				go runKeptRoleDrain(*d.delivery, role)
 			}
 		}

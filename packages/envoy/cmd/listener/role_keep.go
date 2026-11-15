@@ -394,9 +394,10 @@ func (g *roleKeepGuards) tryHold(role string) (func(), bool) {
 // reaches a live holder: a released Legion session claims its role again when it comes back, and
 // every claim the role route grants starts a handover of the lane (runKeptRoleDrain); a holder
 // that answers again with its claim still standing registers and claims nothing, and the
-// registration that makes it live again starts a handover of each role whose claim it renewed
-// (subscribeHandler); the role claim reaper frees a claim whose session is gone, so the role's
-// next claim starts one; and the sweep hands the lane over to a holder that reads live again
+// registration that makes it live again starts a handover of each role whose claim record its
+// renewal read for the session, renewed or not, so a session a new process resumed is handed its
+// copies too (subscribeHandler); the role claim reaper frees a claim whose session is gone, so the
+// role's next claim starts one; and the sweep hands the lane over to a holder that reads live again
 // (sweepKeptRoleLanes). No walk forwards a copy past its hour (roleKeepWindow): a copy no live
 // holder took in that hour is dropped, and its sender is sent a dead letter (judgeKeptRoleCopy).
 // The publish route's 202 names the lapsed holder and its state (roleSend.kept), so its sender
