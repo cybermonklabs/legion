@@ -825,11 +825,14 @@ type Deps struct {
 	// one. Both are called inside the machine's decision, as TaskConfirmed is, so both return at
 	// once.
 	SessionStoreFault func(c Claim, detail string)
-	// SessionGone is told the Envoy session a claim recorded, once a probe has judged the agent
-	// process behind it gone (died), or a suspension has landed over a process a report found
-	// gone that no such judgement reached (suspendOverADeadProcess): the daemon's clean stop of
-	// that session's registration, which makes the listener read it `gone` at once rather than at
-	// the end of its live window (dispatch://INFRA-392). The claim's own session id is what it
+	// SessionGone is told the Envoy session a claim recorded once no process stands behind it: a
+	// probe has judged the agent process gone (died), or a suspension's stop has ended it — once
+	// the runtime's stop has returned (suspendNow, letProcessGoFor, a root's exit), or over a
+	// process already known gone whatever the runtime answered (letProcessGoFor's processGone). It
+	// is told once per process end. It is the daemon's clean stop of that session's registration,
+	// which makes the listener read it `gone` at once rather than at the end of its live window
+	// (dispatch://INFRA-392), so a message to a role released or suspended raises its wake rather
+	// than being stored for a session nothing reads. The claim's own session id is what it
 	// carries, read before any path that clears it (forgetSession). Nil tells no one — a daemon
 	// with no Envoy listener — and a claim that recorded no session tells nothing. It is called
 	// inside the machine's decision, so it returns at once and does the call elsewhere.
@@ -2451,18 +2454,23 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // This is the judgement that the agent behind the claim's Envoy session has ended, so it is where
 // the session's clean stop is sent (sessionGone): a connection closing is not — a daemon restart
 // closes every stream while the agents run on — and the probe that reaches here is what tells the
-// two apart. The one other place the stop is sent is the suspension that lands over a process a
+// two apart. A death while a suspension is held sends it from that suspension instead, told the
+// process is gone (endHeld, letProcessGoFor), once the take-back has landed, so the one death is
+// one stop. The other places a stop is sent are the suspensions that end a process: where the
+// runtime's stop has returned (suspendNow, letProcessGoFor, a root's exit), and over a process a
 // report found gone, for a death no judgement here reached (suspendOverADeadProcess).
 func (m *Machine) died(ctx context.Context, observation runtime.Observation) error {
 	m.log.Warn("supervise: process died", "incarnation", m.claim.Locator.Incarnation, "observed", string(observation.Kind),
 		"detail", observation.Detail, "chargedBefore", m.claim.DeathCharged)
 	m.claim.LastDeathCause = deathCause(observation)
-	m.sessionGone()
+	if m.held == nil {
+		m.sessionGone()
+	}
 	if err := m.interrupted(ctx, "the process died in the task's turn", observation.OutOfMemory); err != nil {
 		return err
 	}
 	if m.held != nil {
-		return m.endHeld(ctx)
+		return m.endHeld(ctx, true)
 	}
 	if m.claim.DeathCharged {
 		return m.relaunchAfterFailure(ctx, CauseDied)
@@ -2520,10 +2528,15 @@ type AbandonedSession struct {
 func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 
 // sessionGone tells the daemon to stop the Envoy session this claim recorded, now that no process
-// stands behind it. It reads the session id from the claim before anything clears it
-// (forgetSession), and a claim that recorded none — never registered, or already forgotten — has
-// nothing to stop. A relaunch of the claim registers the same session again, which is the state
-// the listener should then read, so the stop says what is true when it is sent.
+// stands behind it: a death a probe judged (died), or a suspension whose stop ended the process
+// (suspendNow, letProcessGoFor, exit). Each caller tells it once per process end, and only once the
+// process has ended — the runtime's stop has returned, or the process is known gone — because the
+// daemon dates the stop when it is told, and the listener keeps a registration written after that
+// moment. It reads the session id from the claim before anything clears it (forgetSession), and a
+// claim that recorded none — never registered, or already forgotten — has nothing to stop. A
+// relaunch of the claim registers the same session again — in the same decision after a death, or
+// at a later wake after a suspension — which is the state the listener should then read, so the
+// stop says what is true when it is sent.
 func (m *Machine) sessionGone() {
 	if m.deps.SessionGone == nil || m.claim.Session == "" {
 		return

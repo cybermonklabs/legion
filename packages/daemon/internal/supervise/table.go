@@ -2326,7 +2326,10 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 // it instead, so it stays resumable and known to the orphan sweep, which would otherwise take
 // whatever the runtime holds for the tree with it. The agent has ended either way, so a runtime
 // that cannot release or suspend its process is logged and the claim moves all the same: a
-// finished agent's claim never stays live, its secret still authenticating.
+// finished agent's claim never stays live, its secret still authenticating. The root's suspension
+// sends the clean stop of its Envoy session once the runtime's stop has returned, as every
+// suspension that ends a live process does (suspendNow); a stop the runtime refused leaves a
+// process that may still run, and sends none.
 func exit(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: the agent reported its exit", "reason", ev.(RequestExit).Reason)
 	if m.claim.treeRoot() {
@@ -2334,6 +2337,8 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 		if err := m.endProcess(ctx); err != nil {
 			m.log.Error("supervise: could not suspend the exited root's process; suspending its claim anyway",
 				"incarnation", incarnation, "error", err)
+		} else {
+			m.sessionGone()
 		}
 		return m.suspended(ctx, SuspendedByExit)
 	}

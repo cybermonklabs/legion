@@ -1503,29 +1503,35 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	return supervisionOf, nil
 }
 
-// cleanSessionStop is what a machine calls once a probe has judged a claim's agent process gone
-// (supervise.Deps.SessionGone): it deletes that session's registration from the Envoy listener,
-// so the listener reads the session `gone` at once instead of holding its role claim and its
-// issue claims for the whole live window (dispatch://INFRA-392). It runs on the same client the
-// daemon's notices go through (notify.New), beside controller.NewProber, on the same base URL
-// and bearer.
+// cleanSessionStop is what a machine calls once a claim's agent process has ended — a probe
+// judged it gone, or a suspension's stop returned (supervise.Deps.SessionGone): it deletes that
+// session's registration from the Envoy listener, so the listener reads the session `gone` at
+// once instead of holding its issue claims for the whole live window (dispatch://INFRA-392), and
+// a message to a released role raises the wake that brings it back rather than being stored for
+// a session nothing reads (the role claim stays until the listener's reaper frees it,
+// notify.HTTPPublisher.DeleteSession). It runs on the same client the daemon's
+// notices go through (notify.New), beside controller.NewProber, on the same base URL and bearer.
 //
 // The machine calls it inside its own decision, under its lock, so the call is made on a
 // goroutine of its own, on supervising — supervision's lifetime, not the decision's context,
 // which the machine's caller can end the moment the decision returns. goneAt, the moment the
-// stop belongs to, is read here, inside the decision and before any relaunch (Machine.died
-// calls sessionGone first), where no lock is waited on.
+// stop belongs to, is read here, inside the decision, where no lock is waited on: for a death
+// before any relaunch (Machine.died calls sessionGone first), and for a suspension once the
+// runtime's stop has returned, which both runtimes do only when the process has ended, so the
+// process's last heartbeat lands before it.
 //
-// That delete must never take the registration of the process that replaced the dead one: the
-// very decision that asks for the stop goes on to relaunch the claim under the same session id
-// (Machine.died), and the relaunch registers that id again. So the stop names the dead
-// process's own registration — its client instance id, read from the listener first (send) —
-// and carries goneAt beside it, and the listener deletes only under both. What each condition
-// is for, and why neither alone would do, is on notify.DeleteConditions.
+// That delete must never take the registration of the process that replaced the ended one. For
+// a death the very decision that asks for the stop goes on to relaunch the claim under the same
+// session id (Machine.died); for a suspension a later wake resumes it under that id, which can
+// register before the stop's read is answered. Either relaunch registers that id again. So the
+// stop names the ended process's own registration — its client instance id, read from the
+// listener first (send) — and carries goneAt beside it, and the listener deletes only under
+// both. What each condition is for, and why neither alone would do, is on
+// notify.DeleteConditions.
 //
 // The listener keeps the entry when either condition refuses it, so the id rescues no
-// registration the moment refuses: a heartbeat whose write lands after the probe, or a listener
-// clock ahead of this daemon's, is kept even where the id names the dead process, and that
+// registration the moment refuses: a heartbeat whose write lands after the moment, or a listener
+// clock ahead of this daemon's, is kept even where the id names the ended process, and that
 // session waits the gone horizon out.
 //
 // The read and the delete share one budget, cleanSessionStopBudget, so a listener that never
@@ -1553,9 +1559,10 @@ type sessionStop struct {
 	log      *slog.Logger
 }
 
-// send is the goroutine cleanSessionStop starts, with goneAt the moment the probe judged the
-// process gone. It reads what the listener holds for the session and then deletes that
-// registration by name: one read, one delete, one answer, and nothing is sent twice.
+// send is the goroutine cleanSessionStop starts, with goneAt the moment the machine told it the
+// process had ended: a probe's judgement of a death, or the return of a suspension's stop. It
+// reads what the listener holds for the session and then deletes that registration by name: one
+// read, one delete, one answer, and nothing is sent twice.
 //
 // A read the listener does not answer sends no delete at all. The moment is this daemon's own,
 // but the instance id is not: a failed read leaves unknown whether the entry names a client
@@ -1573,7 +1580,7 @@ type sessionStop struct {
 // (SessionDeleted.Reason), beside the two conditions the stop named and the registration the
 // read answered with. The registration is what the read saw, not what the delete compared, so
 // where the entry changed between the two the line cannot say whose write refused it; where it
-// did not, it tells a stop refused for a successor's registration from one refused for the dead
+// did not, it tells a stop refused for a successor's registration from one refused for the ended
 // process's own last heartbeat without asking the listener anything.
 func (s sessionStop) send(supervising context.Context, session string, goneAt time.Time) {
 	ctx, cancel := context.WithTimeout(supervising, cleanSessionStopBudget)

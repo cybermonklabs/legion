@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -244,6 +245,43 @@ func TestCleanSessionStopReportsARelaunchsRegistrationTheListenerKept(t *testing
 	}
 	if strings.Contains(logged.String(), "the Envoy session of a role whose process is gone was stopped") {
 		t.Fatalf("logged %q, want no claim that a registration the listener kept was stopped", logged.String())
+	}
+}
+
+// The race only the moment covers: a suspended claim's later wake resumed it under the same
+// session id, and the relaunch registered before the stop's read was answered, so the read hands
+// back the relaunch's own instance id and the delete names it. The id cannot tell that entry from
+// the ended process's; the moment can, since the listener stamped the relaunch's registration
+// after it. So the listener keeps the registration and the stop reports it kept, with the
+// listener's own reason, and the woken session stays reachable.
+func TestCleanSessionStopKeepsARelaunchThatRegisteredBeforeItsRead(t *testing.T) {
+	goneAt := time.Now()
+	listener := &listenerRecorder{held: storedRegistration{clientInstanceID: "inst_relaunched", lastSeen: goneAt.Add(2 * time.Second)}}
+	server := listener.server(t)
+	var logged bytes.Buffer
+	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
+
+	stop.send(context.Background(), "ses_released", goneAt)
+
+	if listener.entryRemoved {
+		t.Fatalf("the relaunch's registration was removed by the delete %q, which belonged to the process before it", listener.delete.query)
+	}
+	if listener.delete.requests != 1 {
+		t.Fatalf("the listener was asked %d deletes, want the one stop, judged there", listener.delete.requests)
+	}
+	conditions := listener.deleteConditions(t)
+	if got := conditions.Get("client_instance_id"); got != "inst_relaunched" {
+		t.Fatalf("the delete named client instance %q, want the one the read answered, inst_relaunched", got)
+	}
+	if got := conditions.Get("if_not_registered_after"); got != strconv.FormatInt(goneAt.UnixMilli(), 10) {
+		t.Fatalf("the delete named the moment %q, want the stop's own, %d", got, goneAt.UnixMilli())
+	}
+	kept := slices.IndexFunc(strings.Split(logged.String(), "\n"), func(line string) bool {
+		return strings.Contains(line, "the Envoy listener kept the registration of a dead role's session") &&
+			strings.Contains(line, "the registration was written after the moment the delete belongs to")
+	})
+	if kept < 0 {
+		t.Fatalf("logged %q, want the registration reported kept for being written after the moment", logged.String())
 	}
 }
 
