@@ -8,4 +8,9 @@ body: |-
   settlement resumption arms at most 50 documents a pass, those no pass has tried first, and
   migration `20261114100038` adds `doc_settlements_pending.tried_at` for that order. An approval
   request that waits on the person keeps its turn, quietly, when a new version of its document
-  stores byte for byte the text the request names.
+  stores byte for byte the text the request names. The settlement after a reopen names the editor
+  whose edit the closed issue's settlement saved, as the settlement after a reopen did before, and
+  migration `20261115091510` adds `doc_closed_edit_sources` to keep that editor past the closed
+  issue's settlement. An approval given after a reopen, before its settlement, is carried to the
+  version that settlement writes when that version differs from the approved one only in the
+  questions the reopen opened again.

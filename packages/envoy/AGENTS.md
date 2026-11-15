@@ -525,8 +525,12 @@ It moves no approval request and carries no approval (`versionWrite.closedIssue`
 Its `block.repaired` and `block.invalid` events carry `SettlementActor`, so they notify nobody.
 Its version still lists the people whose edits it saves, and its `artifact.version` event keeps the actor of its credit:
 the event of an unnamed version is quiet whoever its actor is (`events.Quiet`).
-It sweeps no marks, because `allowInject` refuses the unmark on a closed issue.
-The reopen then moves the approval request and carries the approval for the latest version of each document of the issue whose stored updates that version holds (`docs.Service.FollowClosedIssueVersions`).
+It sweeps no marks, because `allowInject` refuses the unmark on a closed issue;
+the document's next settlement on the open issue sweeps them, and at the reopen one runs only for a document that the reopen writes or marks owed.
+Its commit deletes the document's `doc_settlements_pending` row, as every settlement's does, and keeps the editor it credited in `doc_closed_edit_sources` (migration `20261115091510`, `clearSettlementPending`), or deletes the one kept when it credits none (`SettlementActor`).
+A write that names no edit source of its own and finds no pending row inserts one naming that kept editor (`settlementPendingStatement`): the reopen's ask-state write and its mark credit no one, so the settlement after the reopen names the editor whose edit the closed issue's settlement saved, as the settlement after a reopen did when the row stood through the closed period.
+The latest person sender (`last_person`) is not kept: no edit notice after the reopen reports those edits.
+The reopen then moves the approval request and carries the approval for the latest version of each document of the issue whose stored updates that version holds (`docs.Service.FollowClosedIssueVersions`), and deletes the kept editor of each document of the issue that owes no settlement.
 
 A settlement that meets an update that the append gate refused after the close margin saves nothing of that room (`endOnRefusedUpdate`).
 It fails no room and counts no failure, the room closes for its issue, and the resumption settles the document from the store.
@@ -2502,12 +2506,13 @@ a failed room's `503` and a database error still fail them.
 Asks already answered or resolved are left as they were, and the close records no answer, review or approval.
 A reopen opens again exactly the asks whose resolution kind is `withdrawn`, with `state: open`, no answer and no resolution and everything else kept, each with one `ask.opened` (actor the reopener) before `issue.updated`, and their blocks read `state="open"` again.
 After those events, the reopen does for each document of the issue what a settlement while the issue was closed did not do (`docs.Service.FollowClosedIssueVersions`):
-it moves the open approval request that names the document to the document's latest version (`docs.MoveApprovalAsk`, with the mover `SettlementActor`), and it carries an approval to that version (`docs.carryApproval`'s rules), as the version's own write does on an open issue.
+it moves the open approval request that names the document to the document's latest version (`docs.MoveApprovalAsk`, with the mover the editor that a settlement while the issue was closed credited and kept in `doc_closed_edit_sources`, or `SettlementActor` where none is kept), and it carries an approval to that version (`docs.carryApproval`'s rules), as the version's own write does on an open issue.
 A document whose stored updates are ahead of its latest version is left to the settlement that it owes, whose version holds the text that the reopen leaves.
 The reopen's own ask-state write is such an update, so a reopen that writes back the text the person was asked about keeps the request with the person.
 Nothing moves or carries twice: the move does nothing when the request already names the latest version, and the carry runs only while the newest review approves an earlier version.
 The close's and the reopen's block writes (`docs.Service.WriteIssueAskStates`) are no edit:
 they credit no pending author and leave each document's latest edit source as it was, so the settlement that a close or a reopen leaves owed names the person who last edited the document, never the closer or the reopener.
+Where a settlement while the issue was closed deleted the pending row that named that person, the row the reopen's write inserts names the editor that settlement kept (`doc_closed_edit_sources`), and the reopen deletes the kept editor of each document that owes no settlement once it has moved the requests.
 Only the server writes `withdrawn`: the resolve route accepts `retracted` and `resolved` alone, and an answer, resolution or retraction on a closed issue is still `409 ISSUE_CLOSED`.
 What a release older than this one closed or reopened is converged by `api.RepairIssueAsks`, at boot (bounded at 30 s) and then every `api.IssueAskRepairInterval` (10 minutes) under the lease `issue-ask-repair`, each interval pass bounded at 5 minutes.
 Per issue, under its row, a closed issue's open asks are withdrawn in the name of its latest `issue.closed` actor, an open issue's `withdrawn` asks are restored in the name of the event that reopened it, and a closed issue that has open asks, or whose documents owe a settlement marked since the last pass, gets the close's final sweep in the same write of each document, which writes block `state` attributes only.
@@ -2734,7 +2739,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The route answers 201 when it wrote anything and 200 when it wrote nothing, with the document's `approval` as the call left it.
   `docs.OpenApprovalAsk` locks that one row, `docs.rewriteApprovalAsk` is the one rewording a version move (`docs.MoveApprovalAsk`) and a new summary (`docs.RewriteApprovalAsk`) share, and `handBackApprovalAsk` (`api/reviews.go`) the one hand-back.
   Every writer passes `MoveApprovalAsk` the actor whose edit moved the request:
-  a route passes its own actor, settlement its latest known browser editor, and ambiguous browser content `SettlementActor`, `{kind: "system", id: "document-settlement"}`, as does an issue's reopen for a version that a settlement wrote while the issue was closed (`docs.Service.FollowClosedIssueVersions`), since the reopener did not make that edit;
+  a route passes its own actor, settlement its latest known browser editor, and ambiguous browser content `SettlementActor`, `{kind: "system", id: "document-settlement"}`;
+  an issue's reopen, for a version that a settlement wrote while the issue was closed (`docs.Service.FollowClosedIssueVersions`), passes the editor that settlement credited and kept (`doc_closed_edit_sources`), or `SettlementActor` where it kept none, since the reopener did not make that edit;
   how many authors the version credits does not choose the mover.
   What resolving an ask stores is written in one place, `docs.WriteAskResolution`, which settlement's retraction of a removed ask block, an issue's close, the resolve route and the decline route all call.
   A request while the latest version is approved returns the approval and opens nothing.
@@ -2777,10 +2783,18 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The row test is what the bytes cannot say: a block A showed open that someone answered since comes back in A's bytes, showing open, while its row holds that answer, which settlement writes into the next version, so it carries nothing, and an approval request open then stays open.
   Only the newest review carries so: a newest `changes_requested` leaves no approval standing, and an older approval was superseded by the newest one.
   Only a stored A of N's size is read (`octet_length`, which reads a stored text's size without decompressing it), so the write of any other text reads no document.
-  A's markdown is compared as it was stored, so a renderer change between A and N leaves N a change, as N's diff against A shows, and a version whose decision blocks differ from A's is the answer carry's alone to judge.
+  A's markdown is compared as it was stored, so a renderer change between A and N leaves N a change, as N's diff against A shows, and a version whose decision blocks differ from A's is the answer carry's to judge, or the third rule's.
   The restore writes the review, the event and the request's answer the answer carry writes, with `reason` `Carried forward from the approval of version <A>: this version's text is that version's, unchanged.`, whose opening is the daemon's `intake.CarriedApprovalReasonPrefix`, so the restored approval queues no parked root and reopens a design gate as a carried approval does;
   the write that restores supersedes no approval, so its advice carries no `superseded_approval`.
   A carried review records the `kind` of the review it carries, since it is that review's approval it follows: the newest review of a `plan.md` is the plan review that approved A, so a restored plan version reads `kind` `plan_review` and its chip still says "Approved by plan review", never a person's approval in the restoring session's name.
+
+- The carry's third rule is the reopen carry (`reopenedApproval`), which runs when the restore carries nothing:
+  a version N whose every ask block is as its row has it, that holds a block whose row is open, and that renders, with every such block shown `state="resolved"` as an issue's close writes it (`withOpenBlocksResolved`), byte for byte as the version the document's newest review approved, A, carries that approval.
+  It is the approval a person gives from the document's header after a reopen and before the settlement the reopen left owed: the review names the latest version, which a settlement while the issue was closed wrote with the close's resolved blocks, and the next version differs from it only in the blocks that the reopen wrote open.
+  Before a closed issue's document settled, such an approval named the version from before the close and the settlement after the reopen wrote no version, so it stood.
+  Every block of a version of a closed issue reads answered or resolved, and only the reopen, or a settlement after it, gives a resolved ask its open state back, so the rule carries over the questions the reopen opened again and nothing else: a block A did not hold, or held open, makes the rendering differ from A.
+  Only a stored A of N's size plus four bytes for each open block is read (`resolvedStateGrowth`, `octet_length`), and N is rendered again only once one is.
+  Its review, event and request's answer are the restore's, with `reason` `Carried forward from the approval of version <A>: this version's text is that version's, with the questions it showed resolved open again.`
 
 - Every document read carries `approval` (`draft | awaiting | approved | stale | changes_requested`, with `latest_version`, the latest review's `version/by/at/reason/ask_id` and `seq`, and `requested_by` and `waiting_on` while awaiting, the request's turn by `waitingOnExpression`, so an agent whose own revision moved its request, which sends it no event, reads that the request waits on it);
   `at` is the review's `created_at`, which its event shares, and `seq` that event's sequence on the document's owner, absent for a review recorded before migration 0120 and on every read the release before it serves during a rollout or a rollback, so a missing `seq` does not prove an older review:

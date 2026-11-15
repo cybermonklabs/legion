@@ -16,6 +16,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -321,12 +322,49 @@ func lockedHead(ctx context.Context, tx pgx.Tx, room string) (int64, error) {
 // transaction that has read every update, so it commits only with that settlement's writes. The
 // settlement holds the document's advisory lock from before it reads the update cursor until it
 // commits, so no update it has not read can be appended meanwhile.
-func clearSettlementPending(ctx context.Context, tx pgx.Tx, room string) error {
-	if _, err := tx.Exec(ctx, `delete from doc_settlements_pending where artifact_id = $1`, room); err != nil {
+//
+// The row's latest edit source goes with it, which the settlement after a reopen still names.
+// Before a closed issue's document settled, the row stood through the closed period, and the first
+// settlement after the reopen named that row's editor on its events - an ask's rewording, a
+// restored ask, a repaired block - and as the mover of an approval request. So the statement that
+// deletes the row also keeps credited, the actor this settlement names on its events
+// (settlementAuthors), as the document's closed edit source (doc_closed_edit_sources) when
+// closedIssue, the issue row this settlement locked, reads closed and credited names an editor
+// rather than SettlementActor; and it deletes the document's closed edit source otherwise: a
+// settlement on an open issue has named its editor itself, and one on a closed issue that names
+// no editor keeps none, as the settlement after the reopen, crediting the same edits, named none
+// then. A write that records no edit source of its own and finds no row writes the kept one into
+// the row it inserts (settlementPendingStatement), so the settlement the reopen leaves owed names
+// it; the reopen moves an approval request in its name (Service.FollowClosedIssueVersions) and
+// deletes the kept source of each of the issue's documents that owes no settlement, which no
+// later settlement would delete before a second close.
+func clearSettlementPending(ctx context.Context, tx pgx.Tx, room string, closedIssue bool, credited model.Actor) error {
+	var kept any
+	if closedIssue && !credited.SameAs(SettlementActor) {
+		encoded, err := encodeActor(&credited)
+		if err != nil {
+			return fmt.Errorf("encode the closed issue's document's edit source: %w", err)
+		}
+		kept = encoded
+	}
+	if _, err := tx.Exec(ctx, clearSettlementPendingStatement, room, kept); err != nil {
 		return fmt.Errorf("clear the document's pending settlement: %w", err)
 	}
 	return nil
 }
+
+// clearSettlementPendingStatement is clearSettlementPending's one statement: it deletes the pending
+// row of the document $1 and either keeps $2 as the document's closed edit source or, where $2 is
+// null, deletes the one kept.
+const clearSettlementPendingStatement = `
+	with pending as (
+		delete from doc_settlements_pending where artifact_id = $1::uuid
+	), kept as (
+		insert into doc_closed_edit_sources (artifact_id, last_actor)
+		select $1::uuid, $2::jsonb where $2::jsonb is not null
+		on conflict (artifact_id) do update set last_actor = excluded.last_actor
+	)
+	delete from doc_closed_edit_sources where artifact_id = $1::uuid and $2::jsonb is null`
 
 // settlementPending reports whether room owes a settlement. Shutdown's drain uses this to skip
 // settling a document that already has none owed, rather than spending its budget repeating work

@@ -309,7 +309,9 @@ func eventKinds(logged []loggedEvent) []string {
 // issue is closed her browser edits the spec and then undoes the edit, each settled on the closed
 // issue: version N+1 holds the edit, and version N+2 holds version N's text again. After the
 // reopen through PATCH the request names version N+2 and still waits on alice, and the reopen
-// moved it with one quiet ask.edited in the settlement's name, which notifies nobody.
+// moved it with one quiet ask.edited, which notifies nobody, in the name of alice, the editor the
+// closed issue's settlement of her undo credited (doc_closed_edit_sources), as that settlement's
+// version on an open issue would have moved it.
 func TestAReopenKeepsTheRequestWithThePersonWhenAClosedSettlementWroteBackItsText(t *testing.T) {
 	handler, database, documentService := newClosedSettlementHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A requested text written back while closed", "Context\n")
@@ -348,8 +350,9 @@ func TestAReopenKeepsTheRequestWithThePersonWhenAClosedSettlementWroteBackItsTex
 			edits = append(edits, event)
 		}
 	}
-	if len(edits) != 1 || !edits[0].quiet || edits[0].notify || !edits[0].actor.SameAs(docs.SettlementActor) {
-		t.Fatalf("the reopen's ask.edited events = %+v, want one quiet move in the name of %+v that notifies nobody", edits, docs.SettlementActor)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	if len(edits) != 1 || !edits[0].quiet || edits[0].notify || !edits[0].actor.SameAs(alice) {
+		t.Fatalf("the reopen's ask.edited events = %+v, want one quiet move in the name of %+v that notifies nobody", edits, alice)
 	}
 }
 
@@ -455,4 +458,67 @@ func artifactReviewCount(t *testing.T, database *store.Store, document string) i
 		t.Fatalf("count the reviews of %s: %v", document, err)
 	}
 	return count
+}
+
+// reopenDecisionSpec is the spec of
+// TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved: a decision the close withdraws
+// and the reopen restores.
+const reopenDecisionSpec = "Context\n\n" +
+	":::ask{#reopen-decision urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
+
+// A person's approval of a document given after its issue reopens, before the settlement the
+// reopen leaves owed has run, still stands once that settlement has written its version, as it
+// stood before a closed issue's document settled. The spec holds a decision; the close withdraws
+// it and writes its block resolved, and the settlement on the closed issue saves that as version
+// L. The reopen through PATCH restores the decision and writes its block open, which leaves the
+// spec owed, and alice approves the spec from its header before that settlement runs: there is no
+// approval request, and her review pins L, the latest version. The settlement then writes L+1,
+// which differs from L only in the block the reopen wrote open again, and the spec reads approved
+// by alice at L+1, carried from her approval of L (docs.reopenedApproval). Before a closed issue's
+// document settled, no version came of the close, alice's review pinned the version from before
+// it, and the settlement after the reopen, which rendered that version's text again, wrote none,
+// so her approval stood. The settle delay is an hour, so the test runs each settlement itself
+// (SettleIssueDocuments), and nothing settles between the reopen and alice's review.
+func TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved(t *testing.T) {
+	handler, database, documentService := settlingCarryDocuments(t, time.Hour)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "TEST", "An approval between the reopen and its settlement", reopenDecisionSpec)
+	spec := issue.PrimaryArtifactID
+	settle := func(what string) {
+		t.Helper()
+		if err := documentService.SettleIssueDocuments(ctx, issue.Key); err != nil {
+			t.Fatalf("settle %s: %v", what, err)
+		}
+		awaitSettled(t, database, spec)
+	}
+	settle("the spec")
+	awaitIndexedAskBlock(t, handler, spec, "reopen-decision", "Ship it?")
+	before := latestVersion(t, database, spec).Number
+
+	closeArtifactIssue(t, handler, issue.Key)
+	settle("the closed issue's spec")
+	closed := latestVersion(t, database, spec).Number
+	if _, written := documentTexts(t, handler, spec); closed <= before || !strings.Contains(written, `#reopen-decision urgency="med" multiple="false" state="resolved"`) {
+		t.Fatalf("the closed issue's settlement left the spec at version %d reading:\n%s\nwant a version above %d showing the withdrawn decision resolved", closed, written, before)
+	}
+
+	if reopened := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
+		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
+	}
+	if !documentOwesSettlement(t, database, spec) {
+		t.Fatal("the reopen left the spec owing no settlement: this test is for the window before that settlement")
+	}
+	if review := reviewDocument(t, handler, spec, "alice", "approved", ""); review.Version != closed {
+		t.Fatalf("alice's approval from the spec's header reviews version %d, want %d, the latest version while the reopen's settlement is owed", review.Version, closed)
+	}
+
+	settle("the reopened issue's spec")
+	reopened := latestVersion(t, database, spec).Number
+	if _, written := documentTexts(t, handler, spec); reopened != closed+1 || !strings.Contains(written, `#reopen-decision urgency="med" multiple="false" state="open"`) {
+		t.Fatalf("the reopened issue's settlement left the spec at version %d reading:\n%s\nwant version %d showing the restored decision open", reopened, written, closed+1)
+	}
+	if read := readApproval(t, handler, spec); read.Approval == nil || read.Approval.State != "approved" || read.Approval.LatestVersion != reopened ||
+		read.Approval.Version == nil || *read.Approval.Version != reopened || read.Approval.By == nil || read.Approval.By.ID != "alice" {
+		t.Fatalf("the spec's approval after the reopen's settlement = %s, want approved by alice at version %d", describeApproval(read), reopened)
+	}
 }

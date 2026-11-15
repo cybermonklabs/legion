@@ -758,7 +758,9 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event) er
 // approval request and carries no approval (versionWrite.closedIssue), and the settlement sweeps
 // no marks after it commits. The version still lists the people whose edits it saves, and its
 // artifact.version event keeps the actor its credit names, since an unnamed version is quiet
-// whoever its actor is (events.Quiet).
+// whoever its actor is (events.Quiet). That actor outlives the pending row the commit deletes, for
+// the settlement after the reopen to name, which wakes whom the edit's own settlement would have
+// woken on the open issue (clearSettlementPending).
 func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutcome) {
 	s, room, state, tx, ledger := st.service, st.room, st.state, st.tx, st.ledger
 	// read is the settlement's private copy of the document (readSettlementTree), and nothing but
@@ -829,8 +831,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// room lock, which that transaction never takes; nor does it take what this settlement goes on
 	// to lock, its events locking only this document's owner row. The pending authors stay unless
 	// this settlement's version lists them (deleted below): a settlement that writes no version
-	// lists no one.
-	if err := clearSettlementPending(ctx, tx, room); err != nil {
+	// lists no one. On a closed issue the editor this settlement credits is kept past the row, for
+	// the settlement after the reopen to name (clearSettlementPending).
+	if err := clearSettlementPending(ctx, tx, room, st.issueClosed, st.credit.actor); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	if err := st.reconciliation.nameVersion(ctx, tx, room, st.owner, settledVersion); err != nil {
@@ -927,8 +930,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		s.scheduleSettle(copy)
 	}
 	// A closed issue's settlement sweeps no marks: the unmark is an injection without the
-	// owner-verified mark, which allowInject refuses on a closed issue. The first settlement after
-	// the issue reopens sweeps them.
+	// owner-verified mark, which allowInject refuses on a closed issue. The document's next
+	// settlement on the open issue sweeps them: at the reopen, one runs only for a document the
+	// reopen writes or marks owed.
 	if !st.issueClosed {
 		s.sweepUnrecordedMarks(room, st.versioned)
 	}

@@ -666,16 +666,25 @@ func latestPersonOf(sender *model.Actor, creditsPerson bool) (person *model.Acto
 // document update, that each document of rooms owes a settlement. With setLastActor it also
 // records lastActor as the latest edit source that settlement names on its events, nil for an edit
 // no one peer can be credited with (creditContentChange); without it each row keeps the one it
-// has. With setPerson it records person as the latest person sender a version's edit notice names
-// (latestPersonOf), nil to clear it; without it each row keeps the one it has. The timer that runs
-// the settlement lives only in memory, so one a shutdown cuts short is found here by the room's
-// next load (onLoadDocument) and by the resumption (RunSettlementResumption). The settlement that
-// covers the update deletes the row in the transaction that commits its writes
-// (clearSettlementPending). A caller marking its own document holds that document's advisory lock,
-// which orders the row's writers as it orders updates; owedCopiesOf marks the copies of an ask on
-// other documents, in one statement however many there are. updateMarkedAt is true for a newly
-// appended update and for an owed copy: recording the latest edit source after a write or while
-// closing an issue must not make an old row wait another resumption age.
+// has, and a row it inserts takes the document's closed edit source (doc_closed_edit_sources), the
+// editor a settlement on the document's closed issue credited when its commit deleted the row that
+// named it (clearSettlementPending), and none where no such source is kept; lastActor is then not
+// written. Before a closed issue's document settled, that row stood through the closed period; a
+// write that names no edit source of its own - the reopen's ask-state write and its mark, which
+// credit no one (withLifecycleWrite, MarkReopenOwedAskDocuments), an uncredited update, a copy
+// marked owed - leaves the settlement it owes naming that editor, as it named it then. With
+// setPerson it records person as the latest person sender a version's edit notice names
+// (latestPersonOf), nil to clear it; without it each row keeps the one it has. No person sender is
+// kept past a closed issue's settlement: the edit notice after a reopen carries no edit that
+// settlement saved (dropEditNotice). The timer that runs the settlement lives only in memory, so
+// one a shutdown cuts short is found here by the room's next load (onLoadDocument) and by the
+// resumption (RunSettlementResumption). The settlement that covers the update deletes the row in
+// the transaction that commits its writes (clearSettlementPending). A caller marking its own
+// document holds that document's advisory lock, which orders the row's writers as it orders
+// updates; owedCopiesOf marks the copies of an ask on other documents, in one statement however
+// many there are. updateMarkedAt is true for a newly appended update and for an owed copy:
+// recording the latest edit source after a write or while closing an issue must not make an old
+// row wait another resumption age.
 func settlementPendingStatement(rooms []string, lastActor *model.Actor, setLastActor, updateMarkedAt bool, person *model.Actor, setPerson bool) (writeStatement, error) {
 	encoded, err := encodeActor(lastActor)
 	if err != nil {
@@ -688,7 +697,11 @@ func settlementPendingStatement(rooms []string, lastActor *model.Actor, setLastA
 	return writeStatement{
 		sql: `
 		insert into doc_settlements_pending (artifact_id, last_actor, last_person)
-		select unnest($1::uuid[]), $2::jsonb, $5::jsonb
+		select owed.id,
+			case when $3 then $2::jsonb
+				else (select kept.last_actor from doc_closed_edit_sources kept where kept.artifact_id = owed.id) end,
+			$5::jsonb
+		from unnest($1::uuid[]) as owed(id)
 		on conflict (artifact_id) do update set
 			last_actor = case when $3 then excluded.last_actor else doc_settlements_pending.last_actor end,
 			marked_at = case when $4 then now() else doc_settlements_pending.marked_at end,

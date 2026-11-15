@@ -148,12 +148,15 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, issueKey 
 //
 // Once those events are in, it does for each document of the issue what a settlement while the
 // issue was closed skipped (docs.Service.FollowClosedIssueVersions): it moves the open approval
-// request that names the document to the document's latest version, and carries an approval to
-// that version, as the version's own write does on an open issue. A document with stored updates
-// its latest version does not hold, this reopen's ask-state write among them, is left to the
-// settlement that saves them, whose version's own write does both. The move and the carry come
-// after the ask.opened events, so a restored request reopens before it moves or a carry answers
-// it, and they take no copy lock and write no pending row.
+// request that names the document to the document's latest version, in the name of the editor a
+// settlement while the issue was closed credited, and carries an approval to that version, as the
+// version's own write does on an open issue. A document with stored updates its latest version
+// does not hold, this reopen's ask-state write among them, is left to the settlement that saves
+// them, whose version's own write does both. The move and the carry come after the ask.opened
+// events, so a restored request reopens before it moves or a carry answers it, and they take no
+// copy lock and write no pending row. It then forgets the editor a settlement while the issue was
+// closed kept for each document that owes no settlement (doc_closed_edit_sources); a document
+// that owes one keeps it until that settlement deletes it (docs.clearSettlementPending).
 //
 // ctx is joined to tx (Docs.Join); the caller holds the issue's row and has locked every event
 // owner it appends to before calling, and commits through the ledger and publishes the returned

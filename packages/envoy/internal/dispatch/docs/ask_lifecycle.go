@@ -51,9 +51,11 @@ type lifecycleWriteContextKey struct{}
 // leaves the document's latest edit source (roomState.lastActor) as it was (applyLive). A
 // settlement then names the person who last edited the document, as the author of an ask block it
 // indexes with no author of its own and on its derived events, never the closer or the reopener,
-// however the room is released and loaded between the close and the reopen. A settlement while
-// the issue is closed indexes no ask block, and gives its derived events the settlement's own
-// actor (reconcileAskBlocks, planRepairs).
+// however the room is released and loaded between the close and the reopen: where a settlement
+// while the issue was closed deleted the pending row that named that person, the row the reopen's
+// write inserts names the editor that settlement kept (doc_closed_edit_sources,
+// settlementPendingStatement). A settlement while the issue is closed indexes no ask block, and
+// gives its derived events the settlement's own actor (reconcileAskBlocks, planRepairs).
 func withLifecycleWrite(ctx context.Context) context.Context {
 	return context.WithValue(ctx, lifecycleWriteContextKey{}, true)
 }
@@ -254,7 +256,9 @@ const reopenOwedAskDocuments = `
 // has not come back, gets a settlement that finds nothing to change and writes no version.
 //
 // The mark sets marked_at to now, which a new row takes as its default, and leaves the latest
-// edit source and the latest person sender a row names as they are (settlementPendingStatement).
+// edit source and the latest person sender a row names as they are; a row it inserts names the
+// editor a settlement while the issue was closed kept (doc_closed_edit_sources,
+// settlementPendingStatement), so the settlement the mark leaves owed names that editor.
 // It arms nothing: the room's next load, a timer or the resumption runs the settlement
 // (onLoadDocument, RunSettlementResumption).
 //

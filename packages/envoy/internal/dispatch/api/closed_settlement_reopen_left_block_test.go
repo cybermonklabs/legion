@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // leavingDecisionSpec is the spec of
@@ -136,12 +138,81 @@ const rewordedDecisionSpec = "Context\n\n" +
 // open issue, which takes the block's question into the open ask, as settlement takes the
 // rewording of any open ask's block.
 func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen(t *testing.T) {
-	const asked, reworded = "Ship it on Friday?", "Ship it on Monday instead?"
+	f := rewordWithdrawnDecisionWhileClosed(t)
+	ctx := context.Background()
+	if reopened := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+f.issue, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
+		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
+	}
+	if !documentOwesSettlement(t, f.database, f.spec) {
+		t.Fatal("the reopen left the document owing no settlement, so nothing takes the block's question into the restored ask")
+	}
+	if err := f.documents.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
+		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
+	}
+	awaitRewordedAsk(t, f)
+	version := awaitSettledVersionHolding(t, f.handler, f.database, f.spec, rewordedQuestion)
+	if open := `#rewording-decision urgency="med" multiple="false" state="open"`; !strings.Contains(version, open) || strings.Contains(version, askedQuestion) {
+		t.Fatalf("the reopened issue's newest version reads:\n%s\nwant the block open (%s) asking %q, not %q", version, open, rewordedQuestion, askedQuestion)
+	}
+}
+
+// The rewording a person gives a withdrawn ask's block inside the close margin reaches the ask
+// after the reopen in that person's name, as it did before a closed issue's document settled,
+// when the document's pending row kept its latest editor through the closed period: the closed
+// issue's settlement that saves the rewording keeps the editor it credited
+// (doc_closed_edit_sources), and the reopen's ask-state write, which credits no one, writes the
+// pending row again naming that editor (settlementPendingStatement). The closed period is
+// TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen's: alice's browser
+// rewords the decision once the close has withdrawn it, and the resumption saves the rewording on
+// the closed issue. bob reopens the issue through PATCH, so an edit credited to the reopener would
+// read bob, and the resumption settles the document on the open issue: its one ask.edited of the
+// decision is alice's, edited_by alice, and it notifies.
+func TestAMarginRewordReachesTheAskInTheEditorsNameAfterTheReopen(t *testing.T) {
+	f := rewordWithdrawnDecisionWhileClosed(t)
+	ctx := context.Background()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	seq := lastIssueSeq(t, f.database, f.issue)
+	if reopened := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+f.issue, map[string]string{"status": "todo"}, "bob"); reopened.Code != http.StatusOK {
+		t.Fatalf("reopen as bob: status=%d body=%s", reopened.Code, reopened.Body.String())
+	}
+	if err := f.documents.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
+		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
+	}
+	awaitRewordedAsk(t, f)
+	edits := askEditsAfter(t, f.database, f.issue, f.ask, seq)
+	if len(edits) != 1 || !edits[0].editedBy.SameAs(alice) || !edits[0].actor.SameAs(alice) || !edits[0].notify {
+		t.Fatalf("after the reopen ask %s has the ask.edited events %+v, want one, edited_by and in the name of alice, whose rewording it takes, and notifying",
+			f.ask, edits)
+	}
+}
+
+// askedQuestion and rewordedQuestion are the question rewordedDecisionSpec's decision asks and the
+// one alice's browser rewords it to while the issue is closed.
+const askedQuestion, rewordedQuestion = "Ship it on Friday?", "Ship it on Monday instead?"
+
+// rewordedWhileClosed is an issue whose spec holds rewordedDecisionSpec's decision, closed through
+// PATCH, whose decision block alice's browser reworded once the close had withdrawn its ask, and
+// whose document a settlement saved on the closed issue.
+type rewordedWhileClosed struct {
+	handler   http.Handler
+	database  *store.Store
+	documents *docs.Service
+	issue     string
+	spec      string
+	ask       string
+}
+
+// rewordWithdrawnDecisionWhileClosed builds rewordedWhileClosed. alice's browser, connected before
+// the close, rewords the decision's question once the close has withdrawn the ask and swept the
+// document, and the resumption settles the document on the closed issue: the version holds the
+// person's question, and the ask stays withdrawn with the question it was asked.
+func rewordWithdrawnDecisionWhileClosed(t *testing.T) rewordedWhileClosed {
+	t.Helper()
 	handler, database, documentService := newClosedSettlementHandler(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "An ask whose block is reworded while closed", rewordedDecisionSpec)
 	spec := issue.PrimaryArtifactID
-	awaitIndexedAskBlock(t, handler, spec, "rewording-decision", asked)
+	awaitIndexedAskBlock(t, handler, spec, "rewording-decision", askedQuestion)
 	ask := requireBlockAsk(t, handler, issue.Key, spec, "rewording-decision")
 	awaitSettled(t, database, spec)
 	peer := connectBrowserPeer(t, documentService, spec)
@@ -158,10 +229,10 @@ func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen
 			if id, _ := child.Attrs[pmdoc.BlockIDAttr].(string); id != "rewording-decision" {
 				continue
 			}
-			if len(child.Children) == 0 || len(child.Children[0].Children) != 1 || child.Children[0].Children[0].Text != asked {
-				return fmt.Errorf("the block's question is not the one text run %q", asked)
+			if len(child.Children) == 0 || len(child.Children[0].Children) != 1 || child.Children[0].Children[0].Text != askedQuestion {
+				return fmt.Errorf("the block's question is not the one text run %q", askedQuestion)
 			}
-			child.Children[0].Children[0].Text = reworded
+			child.Children[0].Children[0].Text = rewordedQuestion
 			return nil
 		}
 		return fmt.Errorf("the document holds no block under %q", "rewording-decision")
@@ -174,39 +245,73 @@ func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen
 	// The browser's update marked the document owed in the transaction that stored it, so the
 	// document owes nothing once a settlement after it has committed.
 	awaitSettled(t, database, spec)
-	if live, version := documentTexts(t, handler, spec); !strings.Contains(version, reworded) || strings.Contains(version, asked) ||
-		!strings.Contains(live, reworded) {
+	if live, version := documentTexts(t, handler, spec); !strings.Contains(version, rewordedQuestion) || strings.Contains(version, askedQuestion) ||
+		!strings.Contains(live, rewordedQuestion) {
 		t.Fatalf("the closed issue's settlement left the latest version:\n%s\nand the live text:\n%s\nwant both to hold the person's question %q in place of %q",
-			version, live, reworded, asked)
+			version, live, rewordedQuestion, askedQuestion)
 	}
 	requireWithdrawn(t, handler, issue.Key, ask, alice)
-	if got := readBlockAsk(t, handler, ask); got.Question != asked {
-		t.Fatalf("the withdrawn ask asks %q on the closed issue, want %q, the question it was asked", got.Question, asked)
+	if got := readBlockAsk(t, handler, ask); got.Question != askedQuestion {
+		t.Fatalf("the withdrawn ask asks %q on the closed issue, want %q, the question it was asked", got.Question, askedQuestion)
 	}
+	return rewordedWhileClosed{handler: handler, database: database, documents: documentService, issue: issue.Key, spec: spec, ask: ask}
+}
 
-	if reopened := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
-		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
-	}
-	if !documentOwesSettlement(t, database, spec) {
-		t.Fatal("the reopen left the document owing no settlement, so nothing takes the block's question into the restored ask")
-	}
-	if err := documentService.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
-		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
-	}
+// awaitRewordedAsk waits until the settlement after f's reopen has taken the block's question into
+// the restored ask: open, asking rewordedQuestion.
+func awaitRewordedAsk(t *testing.T, f rewordedWhileClosed) {
+	t.Helper()
 	var restored model.Ask
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		if restored = readBlockAsk(t, handler, ask); restored.State == "open" && restored.Question == reworded {
-			break
+		if restored = readBlockAsk(t, f.handler, f.ask); restored.State == "open" && restored.Question == rewordedQuestion {
+			return
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the reopened issue's settlement never took the block's question into ask %s (latest read %s asking %q), want open asking %q",
-				ask, restored.State, restored.Question, reworded)
+				f.ask, restored.State, restored.Question, rewordedQuestion)
 		}
 	}
-	version := awaitSettledVersionHolding(t, handler, database, spec, reworded)
-	if open := `#rewording-decision urgency="med" multiple="false" state="open"`; !strings.Contains(version, open) || strings.Contains(version, asked) {
-		t.Fatalf("the reopened issue's newest version reads:\n%s\nwant the block open (%s) asking %q, not %q", version, open, reworded, asked)
+}
+
+// askEdit is one ask.edited event of an ask as the event log stores it: its actor, whether it
+// notifies, and the editor its payload names (model.AskEditEventPayload.EditedBy).
+type askEdit struct {
+	actor    model.Actor
+	notify   bool
+	editedBy model.Actor
+}
+
+// askEditsAfter is every ask.edited event of ask on issue whose sequence is above seq, oldest
+// first.
+func askEditsAfter(t *testing.T, database *store.Store, issue, ask string, seq int) []askEdit {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select actor, notify, payload->'edited_by'
+		from events where issue_key = $1 and seq > $2 and type = 'ask.edited' and payload->>'id' = $3 order by seq
+	`, issue, seq, ask)
+	if err != nil {
+		t.Fatalf("read the ask.edited events of %s: %v", ask, err)
 	}
+	defer rows.Close()
+	var edits []askEdit
+	for rows.Next() {
+		var edit askEdit
+		var actor, editedBy []byte
+		if err := rows.Scan(&actor, &edit.notify, &editedBy); err != nil {
+			t.Fatalf("read an ask.edited event of %s: %v", ask, err)
+		}
+		if err := json.Unmarshal(actor, &edit.actor); err != nil {
+			t.Fatalf("decode an ask.edited event's actor: %v", err)
+		}
+		if err := json.Unmarshal(editedBy, &edit.editedBy); err != nil {
+			t.Fatalf("decode an ask.edited event's edited_by: %v", err)
+		}
+		edits = append(edits, edit)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the ask.edited events of %s: %v", ask, err)
+	}
+	return edits
 }
 
 // openAskLists are the open-ask lists openAskListsHolding reads: the issue's own open asks, the

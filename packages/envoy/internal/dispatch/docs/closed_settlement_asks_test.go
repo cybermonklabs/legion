@@ -361,6 +361,61 @@ func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
 // reopen marks the document owed (MarkReopenOwedAskDocuments), and one resumption pass settles
 // it on the open issue, which restores the ask as a returning block's ask is restored.
 func TestARetractedAsksBlockThatReturnsWhileClosedIsRestoredAtTheReopen(t *testing.T) {
+	service, artifactID, _ := settleReturnedAskBlockWhileClosed(t)
+	reopenTestIssue(t, service)
+	if err := service.resumeOwedSettlements(context.Background(), 0); err != nil {
+		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
+	}
+	waitForNoPendingSettlement(t, service, artifactID, "the reopened issue's document to settle")
+	if ask := blockAskOn(t, service, artifactID, "returning-ask"); ask.State != "open" || ask.Resolution != nil {
+		t.Fatalf("after the reopen and a resumption pass the ask reads %s %+v, want it open again: its block is back in the document", ask.State, ask.Resolution)
+	}
+}
+
+// The settlement after a reopen names the editor whose edit the closed issue's settlement saved,
+// as the first settlement after a reopen named that editor before a closed issue's document
+// settled: the closed issue's settlement keeps the editor it credited when its commit deletes the
+// document's pending row (clearSettlementPending, doc_closed_edit_sources), and the reopen's mark,
+// which writes the row again naming no editor of its own, takes that one
+// (settlementPendingStatement). The setup is
+// TestARetractedAsksBlockThatReturnsWhileClosedIsRestoredAtTheReopen's: alice's undo brings back
+// the block of an ask a settlement retracted, inside the close margin, and the closed issue's
+// settlement saves it. After the reopen the pending row names alice, and the settlement on the
+// open issue restores the ask with an ask.opened in her name, which notifies, as her own
+// edit's restoration of an ask does on an open issue.
+func TestTheSettlementAfterAReopenCreditsTheEditorTheClosedSettlementSaved(t *testing.T) {
+	service, artifactID, alice := settleReturnedAskBlockWhileClosed(t)
+	ctx := context.Background()
+	reopenTestIssue(t, service)
+	if owed, named, err := readOwedSettlement(ctx, service.store.Pool, artifactID); err != nil || !owed || named == nil || !named.SameAs(alice) {
+		t.Errorf("after the reopen the document's pending row owes %t naming %+v (%v), want it owed naming alice, whose edit the closed issue's settlement saved",
+			owed, named, err)
+	}
+	lastEvent := latestEventID(t, service.store)
+	if err := service.resumeOwedSettlements(ctx, 0); err != nil {
+		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
+	}
+	waitForNoPendingSettlement(t, service, artifactID, "the reopened issue's document to settle")
+	var opened []appendedEvent
+	for _, event := range eventsAfter(t, service.store, lastEvent) {
+		if event.kind == "ask.opened" {
+			opened = append(opened, event)
+		}
+	}
+	if len(opened) != 1 || !opened[0].actor.SameAs(alice) || !opened[0].notify {
+		t.Fatalf("the settlement after the reopen appended the ask.opened events %+v, want one, restoring the ask, in alice's name and notifying", opened)
+	}
+}
+
+// settleReturnedAskBlockWhileClosed is the closed period of
+// TestARetractedAsksBlockThatReturnsWhileClosedIsRestoredAtTheReopen: alice deletes the block of
+// an open ask on the open issue, which a settlement retracts; DOC-1 closes in the database alone,
+// a minute ahead, so the close margin admits her undo, which brings the block back; and the
+// resumption settles the document on the closed issue, saving the block resolved and leaving the
+// ask retracted. It answers the service, the document and alice once that settlement has
+// committed, with the document owing nothing.
+func settleReturnedAskBlockWhileClosed(t *testing.T) (*Service, string, model.Actor) {
+	t.Helper()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ctx := context.Background()
@@ -387,18 +442,11 @@ func TestARetractedAsksBlockThatReturnsWhileClosedIsRestoredAtTheReopen(t *testi
 	editAsPeer(t, service, artifactID, appendBlocks(t, block))
 	service.removeConnection(artifactID, 2)
 	waitForLandedAppends(t, service, artifactID)
-	settled := func(what string) {
-		t.Helper()
-		waitFor(t, roomWait(t), what, func() bool {
-			owed, err := settlementPending(ctx, service.store.Pool, artifactID)
-			return err == nil && !owed
-		})
-	}
 	service.settle = 20 * time.Millisecond
 	if err := service.resumeOwedSettlements(ctx, 0); err != nil {
 		t.Fatalf("resume the closed issue's owed settlement: %v", err)
 	}
-	settled("the closed issue's document to settle the returned block")
+	waitForNoPendingSettlement(t, service, artifactID, "the closed issue's document to settle the returned block")
 	const resolved = `#returning-ask urgency="med" multiple="false" state="resolved"`
 	if _, markdown, _ := latestDocumentVersion(t, service.store, artifactID); !strings.Contains(markdown, resolved) {
 		t.Fatalf("the closed issue's settlement left the latest version reading:\n%s\nwant the returned block saved resolved: %s", markdown, resolved)
@@ -406,13 +454,15 @@ func TestARetractedAsksBlockThatReturnsWhileClosedIsRestoredAtTheReopen(t *testi
 	if ask := blockAskOn(t, service, artifactID, "returning-ask"); !settlementRetracted(ask) {
 		t.Fatalf("the closed issue's settlement left the ask %s %+v, want it still retracted while DOC-1 is closed", ask.State, ask.Resolution)
 	}
+	return service, artifactID, alice
+}
 
-	reopenTestIssue(t, service)
-	if err := service.resumeOwedSettlements(ctx, 0); err != nil {
-		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
-	}
-	settled("the reopened issue's document to settle")
-	if ask := blockAskOn(t, service, artifactID, "returning-ask"); ask.State != "open" || ask.Resolution != nil {
-		t.Fatalf("after the reopen and a resumption pass the ask reads %s %+v, want it open again: its block is back in the document", ask.State, ask.Resolution)
-	}
+// waitForNoPendingSettlement waits until the document owes no settlement (settlementPending),
+// what naming what the test waits for.
+func waitForNoPendingSettlement(t *testing.T, service *Service, artifactID, what string) {
+	t.Helper()
+	waitFor(t, roomWait(t), what, func() bool {
+		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
+		return err == nil && !owed
+	})
 }
