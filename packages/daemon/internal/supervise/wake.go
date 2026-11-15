@@ -354,7 +354,7 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 			// decision (endRefreshLane).
 			return nil
 		}
-		return m.endHeld(ctx, false)
+		return m.endHeld(ctx, stopOwed)
 	}
 	return m.runWake(ctx, waiting, true)
 }

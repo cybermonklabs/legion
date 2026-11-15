@@ -2668,8 +2668,7 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 // what it ended as a suspension by its exit (endSuspended), as every suspension does; a worker's
 // retirement records nothing (noEnd, retire), since the exit is the agent's own end of its work.
 // The root's suspension sends the clean stop of its Envoy session once the runtime's stop has
-// returned, as every suspension that ends a live process does (suspendNow); a stop the runtime
-// refused leaves a process that may still run, and sends none.
+// returned, and none for a stop the runtime refused (sessionGone).
 func exit(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: the agent reported its exit", "reason", ev.(RequestExit).Reason)
 	if m.claim.treeRoot() {

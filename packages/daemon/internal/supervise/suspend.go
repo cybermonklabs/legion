@@ -279,16 +279,9 @@ func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 
 // suspendNow stops the claim's process for request and keeps its session, recording what the
 // stop ended as a suspension by request's source (endSuspended, letGo). This is the stop of
-// every suspension of a live process — the suspend row's, and every held one's (suspendHeld) — so
-// it is where such a suspension sends the clean stop of the process's Envoy session
-// (sessionGone): once the runtime's stop has returned, since both runtimes answer only when the
-// process has ended, and before the claim is written suspended. The daemon dates the stop when
-// it is told, so the process's last heartbeat lands before that moment and the listener deletes
-// the registration rather than reading the session live for the rest of its window; a message to
-// a released role then finds the session gone and raises the wake that brings it back. It is sent
-// whether or not the write that follows lands, because the process has ended either way. A stop
-// the runtime refused sends nothing: that process may still run, and deleting its registration
-// would leave a live agent unreachable until its next heartbeat wrote it again.
+// every suspension of a live process — the suspend row's, and every held one's (suspendHeld) —
+// and it sends the clean stop of the process's Envoy session once the runtime's stop has
+// returned, and none for a stop the runtime refused (sessionGone).
 func (m *Machine) suspendNow(ctx context.Context, request RequestSuspend) error {
 	if err := m.endProcess(ctx, endSuspended(request.By)); err != nil {
 		return fmt.Errorf("suspend %s: %w", m.claim.Token, err)
@@ -365,20 +358,28 @@ func (m *Machine) dropHeld() {
 // not handed (repoint), while a suspension is held. Nothing is left to hold the suspension for, so
 // the claim is suspended rather than relaunched, and nothing is charged: died asks before it charges
 // anything. The stop and the suspension are the two steps every claim with nothing left to run
-// takes, written once (letProcessGoFor). processGone is whether the process is known to have ended
-// whatever the runtime answers its stop — a death a probe judged (died) — which is what decides
-// whether the clean stop of its Envoy session is owed where that stop fails; a replacement of a
-// live process (replaceNow) and a paced launch's turn (wakeNow) know no such thing.
+// takes, written once (letProcessGoFor). cleanStopSent is whether the decision that reached here
+// has already sent the clean stop of the process's Envoy session (sessionGone): a death a probe
+// judged has (died, stopSent), and a replacement of a live process (replaceNow) and a paced
+// launch's turn (wakeNow) have not (stopOwed).
 //
 // What the stop ends is recorded as a suspension by the held request's source (endSuspended):
 // the suspension is what ends the process, rather than the relaunch it replaces. A death or a
 // displacement that reached here recorded its own end first (died, displaced), and that record
 // stands.
-func (m *Machine) endHeld(ctx context.Context, processGone bool) error {
+func (m *Machine) endHeld(ctx context.Context, cleanStopSent bool) error {
 	request := *m.held
 	m.dropHeld()
-	return m.letProcessGoFor(ctx, request, processGone)
+	return m.letProcessGoFor(ctx, request, cleanStopSent)
 }
+
+// stopSent and stopOwed are endHeld's and letProcessGoFor's cleanStopSent: the decision letting
+// the process go has already sent the clean stop of its Envoy session, or it still owes that stop
+// once the runtime's stop has returned (sessionGone).
+const (
+	stopSent = true
+	stopOwed = false
+)
 
 // suspendOverADeadProcess runs the suspension of a claim stored working that no process stands
 // behind: the daemon's last report of the process it records found it gone, and the relaunch that
@@ -398,15 +399,15 @@ func (m *Machine) endHeld(ctx context.Context, processGone bool) error {
 // finished turn.
 //
 // The clean stop of the dead process's Envoy session is sent once that write has landed, and
-// before the process is let go: letProcessGoFor sends it, told the process is gone, so it goes
-// whether or not the runtime's stop of a process already dead lands. Sent before the write, a
-// write the store refused would leave the stop sent for a claim this suspension then left
-// standing as it was. The report that found the process gone may be no death died judged: where
-// the recovery's own read is the first to find it (ReadProcess) — after a restart, or before any
-// sweep has reported it — this is the one stop that death gets, and without it the listener
-// would keep the dead session's role and issue claims while the fresh session forgets that
-// session's id. Where died did judge the death, the stop goes again for a registration already
-// ended, which tells the listener nothing new.
+// before the process is let go (sessionGone), so it goes whether or not the runtime's stop of a
+// process already dead lands; letProcessGoFor is told it went (stopSent). Sent before the write, a
+// write the store refused would leave the stop sent for a claim this suspension then left standing
+// as it was. The report that found the process gone may be no death died judged: where the
+// recovery's own read is the first to find it (ReadProcess) — after a restart, or before any sweep
+// has reported it — this is the one stop that death gets, and without it the listener would keep
+// the dead session's role and issue claims while the fresh session forgets that session's id.
+// Where died did judge the death, the stop goes again for a registration already ended, which
+// tells the listener nothing new.
 //
 // What the dead process ended is recorded as its death once the take-back has landed (recordEnd,
 // endDied, under the same goneCause): the take-back's own mark is what tells the record that the
@@ -431,7 +432,8 @@ func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSu
 		return err
 	}
 	m.recordEnd(ctx, endDied(m.goneCause))
-	return m.letProcessGoFor(ctx, request, true)
+	m.sessionGone()
+	return m.letProcessGoFor(ctx, request, stopSent)
 }
 
 // letProcessGoFor asks the runtime to let the claim's process go and suspends the claim for
@@ -444,13 +446,9 @@ func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSu
 // holding what it runs on, which is the owner of a stalled worker's to hear (the daemon's
 // stallBackstopRecord).
 //
-// Between the two it sends the clean stop of the process's Envoy session (sessionGone), the one
-// stop of that process's end: when the runtime's stop returned, since the process has then ended,
-// or when processGone says it had ended already, whatever the runtime answered. A process not
-// known gone whose stop the runtime refused may still be running, so it sends nothing then, as
-// suspendNow sends nothing: deleting a running agent's registration would leave it unreachable
-// until its next heartbeat.
-func (m *Machine) letProcessGoFor(ctx context.Context, request RequestSuspend, processGone bool) error {
+// Between the two it sends the clean stop of the process's Envoy session once the runtime's stop
+// has returned, unless cleanStopSent says this decision sent it already (sessionGone).
+func (m *Machine) letProcessGoFor(ctx context.Context, request RequestSuspend, cleanStopSent bool) error {
 	incarnation := m.claim.Locator.Incarnation
 	err := m.endProcess(ctx, endSuspended(request.By))
 	if err != nil {
@@ -458,7 +456,7 @@ func (m *Machine) letProcessGoFor(ctx context.Context, request RequestSuspend, p
 		m.log.Error("supervise: could not stop the process with the runtime; suspending its claim anyway",
 			"incarnation", incarnation, "error", err)
 	}
-	if err == nil || processGone {
+	if err == nil && !cleanStopSent {
 		m.sessionGone()
 	}
 	return m.suspendedFor(ctx, request)

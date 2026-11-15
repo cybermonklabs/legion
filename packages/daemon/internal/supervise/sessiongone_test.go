@@ -106,16 +106,18 @@ func TestADeathBeforeAnyRegistrationStopsNoSession(t *testing.T) {
 // A suspension that ends the claim's process sends the clean stop of its Envoy session, so the
 // listener reads the session gone at once rather than live for the rest of its window, and a
 // message to a released role finds it gone and raises the wake that brings it back. The stop is
-// sent once for each process end: where the runtime's stop has returned, and over a process
-// already known gone whatever the runtime answered (suspendNow, letProcessGoFor, the root's
-// exit). A death under a held suspension is one end, stopped once by that suspension and not
-// again by the death (died, endHeld). A suspension that ends no process sends nothing, and
-// neither does a stop the runtime refused over a process that may still run: deleting a running
-// agent's registration would leave it unreachable until its next heartbeat.
+// sent once for each process end: where the runtime's stop has returned (suspendNow,
+// letProcessGoFor, the root's exit), and over a process a report found gone whatever the runtime
+// answered (suspendOverADeadProcess). A death under a held suspension is one end, stopped once by
+// the death and not again by the suspension it ends (died, endHeld). A suspension that ends no
+// process sends nothing, and neither does a stop the runtime refused over a process that may still
+// run: deleting a running agent's registration would leave it unreachable until its next
+// heartbeat.
 //
-// The negative controls are the stop taken out of suspendNow, where the first five rows record
-// no stop, and died's guard on a held suspension taken out, where the death under a held release
-// records two.
+// The negative controls are the stop taken out of suspendNow, where the first five rows and the
+// release before the repeated suspension record no stop, and letProcessGoFor ignoring the
+// stop-already-sent argument (cleanStopSent), where the suspension over a process the read found
+// gone and the death under a held release each record two.
 func TestASuspensionThatEndsAProcessStopsItsSessionOnce(t *testing.T) {
 	refused := errors.New("the pod would not stop")
 	held := func(t *testing.T, h *harness, by SuspendSource) {
