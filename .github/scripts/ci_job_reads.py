@@ -541,9 +541,9 @@ def _go_test_json_script(command, report):
 s=0
 {command} > "$RUNNER_TEMP/go-test-json/{report}" || s=$?
 if [ "$s" -eq 0 ]; then
-  jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/{report}"
+  jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/{report}" || echo "::warning::the go test -json stream could not be printed"
 else
-  jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/{report}"
+  jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/{report}" || echo "::warning::the go test -json stream could not be printed"
 fi
 exit $s"""
 
