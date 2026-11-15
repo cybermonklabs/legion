@@ -295,7 +295,9 @@ export function anchor(
 /** One line describing a document's approval, or undefined for a draft nobody has asked about. An
  *  awaiting approval says whom its request waits on: the agent once a version moved it, the
  *  agent's own revision included, which sends that agent no event. A plan review's approval names
- *  the plan review, never a person, as the approver. */
+ *  the plan review, never a person, as the approver, and a stale one names a plan review of the
+ *  new version as the way to approve it again, since Dispatch refuses an approval request on a
+ *  plan (409 PLAN_APPROVED_BY_REVIEW). */
 export function approvalLine(artifact: Pick<Artifact, "approval">): string | undefined {
   const approval = artifact.approval;
   if (approval === undefined || approval.state === "draft") return undefined;
@@ -313,6 +315,9 @@ export function approvalLine(artifact: Pick<Artifact, "approval">): string | und
     case "approved":
       return `Approval: approved v${approval.version} by ${approver}${content}`;
     case "stale":
+      if (approval.kind === "plan_review") {
+        return `Approval: approved v${approval.version} by plan review (${by}), changed since (now v${approval.latest_version}) - a plan review of this version records a new approval with dispatch plan-approve${content}`;
+      }
       return `Approval: approved v${approval.version} by ${approver}, changed since (now v${approval.latest_version}) - the human's own answer to a decision block carries the approval when that answer is the whole change since v${approval.version}; for any other change, request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v${approval.version}${content}`;
     case "changes_requested":
       return `Approval: changes requested on v${approval.version} by ${by}: ${approval.reason ?? ""}${content}`;

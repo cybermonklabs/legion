@@ -8990,7 +8990,8 @@ describe("executeDispatchTool", () => {
   });
 
   // A plan is approved by its plan review, never by a person, so the approval line names the plan
-  // review where a person's approval names the person.
+  // review where a person's approval names the person, and a stale plan approval names a plan
+  // review of the new version, not a person's approval request, as the way to approve it again.
   test("doc-read names a plan review, not a person, as a plan's approver", async () => {
     const hash = "cd".repeat(32);
     const session = "01a1b464-9df7-7298-a78f-4ff4f8284ce7";
@@ -9013,7 +9014,7 @@ describe("executeDispatchTool", () => {
           version: 3,
           by: { kind: "session", id: session },
         },
-        line: `Approval: approved v3 by plan review (${session}), changed since (now v4) - the human's own answer to a decision block carries the approval when that answer is the whole change since v3; for any other change, request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v3, content sha256:${hash}`,
+        line: `Approval: approved v3 by plan review (${session}), changed since (now v4) - a plan review of this version records a new approval with dispatch plan-approve, content sha256:${hash}`,
       },
       {
         approval: {
@@ -9024,6 +9025,16 @@ describe("executeDispatchTool", () => {
           by: { kind: "user", id: "alice" },
         },
         line: `Approval: approved v2 by alice, content sha256:${hash}`,
+      },
+      {
+        approval: {
+          kind: "person",
+          state: "stale",
+          latest_version: 4,
+          version: 3,
+          by: { kind: "user", id: "alice" },
+        },
+        line: `Approval: approved v3 by alice, changed since (now v4) - the human's own answer to a decision block carries the approval when that answer is the whole change since v3; for any other change, request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v3, content sha256:${hash}`,
       },
     ];
     for (const { approval, line } of cases) {
