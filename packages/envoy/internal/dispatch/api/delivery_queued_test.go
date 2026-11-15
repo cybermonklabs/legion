@@ -435,12 +435,11 @@ func TestTheSweepLeavesAQueuedAttemptAlone(t *testing.T) {
 // sweep, which asks for a connected session if the request that stored the message did, or if the
 // resumed send is a model or thinking switch the session runs as its own turn (isSessionSwitch: a
 // person's own Send or Aside, not one an agent wrote for them, on no issue, no broadcast's copy,
-// whose body is one switch line). So the
-// switch's own attempt, resumed against a stopped target, is settled failed and nothing is stored
-// for the session - the attempt a request that asked connected_only opened, which carries the
-// flag on its row (message_deliveries.connected_only), because the sweep never saw the request,
-// and the attempt an earlier release opened, whose row carries none. An ordinary send's attempt
-// without the flag is queued.
+// whose body is one switch line). So the switch's own attempt, resumed against a stopped target,
+// is settled failed and nothing is stored for the session - the attempt a request that asked
+// connected_only opened, which carries the flag on its row (message_deliveries.connected_only),
+// because the sweep never saw the request, and the attempt an earlier release opened, whose row
+// carries none. An ordinary send's attempt without the flag is queued.
 func TestTheSweepResumesAStrandedSwitchAsConnectedOnly(t *testing.T) {
 	for _, test := range []struct {
 		name          string

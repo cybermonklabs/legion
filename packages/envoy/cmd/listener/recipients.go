@@ -43,8 +43,10 @@ func recipientCounts(d *listenerDeps, topic, sender string) (recipients, connect
 	if !d.known.Opened() || d.registry.Servable() != nil {
 		return nil, nil
 	}
-	sessionsServable := d.sessions.Servable() == nil
-	live := 0
+	// connected stays nil, and no entry is looked up, while the session copy cannot be served.
+	if d.sessions.Servable() == nil {
+		connected = new(int)
+	}
 	counted := map[string]struct{}{}
 	count := func(sessionID string) {
 		if sessionID == sender {
@@ -54,11 +56,11 @@ func recipientCounts(d *listenerDeps, topic, sender string) (recipients, connect
 			return
 		}
 		counted[sessionID] = struct{}{}
-		if !sessionsServable {
+		if connected == nil {
 			return
 		}
 		if _, state := d.sessions.Lookup(sessionID); state == session.Live {
-			live++
+			*connected++
 		}
 	}
 	d.known.MatchEach(topic, func(record session.KnownSession) { count(record.SessionID) })
@@ -66,8 +68,5 @@ func recipientCounts(d *listenerDeps, topic, sender string) (recipients, connect
 		count(interest.SessionID)
 	}
 	total := len(counted)
-	if !sessionsServable {
-		return &total, nil
-	}
-	return &total, &live
+	return &total, connected
 }

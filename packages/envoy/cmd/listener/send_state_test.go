@@ -503,11 +503,12 @@ func TestASendToAStoppedSessionIsJudgedByItsRecordsCapabilities(t *testing.T) {
 	}
 }
 
-// connected_only is the flag Dispatch's live view's model and thinking switch sets: applied at an
-// unknown later time such a switch is worse than none, so a stopped target is answered 409 and
-// nothing is stored for it, whichever way it is stopped - its entry stands and nothing holds its
-// relay subject, or it stopped cleanly and only its record is left. A connected target is the
-// ordinary 200, and a send with the flag absent stores for a stopped target.
+// connected_only is the flag Dispatch sets on every send of a model or thinking switch, and of a
+// message whose agents-route request set it: applied at an unknown later time such a switch is
+// worse than none, so a stopped target is answered 409 and nothing is stored for it, whichever way
+// it is stopped - its entry stands and nothing holds its relay subject, or it stopped cleanly and
+// only its record is left. A connected target is the ordinary 200, and a send with the flag absent
+// stores for a stopped target.
 func TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing(t *testing.T) {
 	rig := newKnownSessionRig(t)
 

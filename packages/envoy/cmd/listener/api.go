@@ -775,9 +775,10 @@ const senderStampReadTimeout = 1 * time.Second
 // days, session.KnownSessions), and on the connection probe of the session's relay subject
 // (probeSessionConnection):
 //
-//   - An entry within the gone horizon whose probe was answered or met silence, or whose entry
-//     records no consumer delivery and so is not probed: 200, state connected, recipient_state
-//     live or unresponsive by the entry's age.
+//   - An entry within the gone horizon whose probe was answered, met silence or failed any other
+//     way (probeSessionConnection counts that as connected), or whose entry records no consumer
+//     delivery and so is not probed: 200, state connected, recipient_state live or unresponsive
+//     by the entry's age.
 //   - An entry within the gone horizon whose probe met no responders: 200, state stopped,
 //     recipient_state by the entry's age and last_seen the entry's. The probe wins over age.
 //   - No entry, or one past the gone horizon, and a known-session record: 200, state stopped,
@@ -790,11 +791,11 @@ const senderStampReadTimeout = 1 * time.Second
 //     nothing stored.
 //
 // The entry is read from the session store itself and not merely from this listener's cache of
-// it: only the store's word that the key is gone can make a stopped answer or a 404, and a store
-// or a bus that did not answer earns the 503 that asks the sender to try the same route again. A
-// target with no entry within the gone horizon raises the wake report whatever the record says,
-// exactly where a 404 always raised it; one whose probe met no responders raises none, as a
-// lingering entry never did. A target that cannot take the payload's delivery mode
+// it: only the store's word that the key is gone can make a record-based stopped answer or a 404,
+// and a store or a bus that did not answer earns the 503 that asks the sender to try the same
+// route again. A target with no entry within the gone horizon raises the wake report whatever the
+// record says, exactly where a 404 always raised it; one whose probe met no responders raises
+// none, as a lingering entry never did. A target that cannot take the payload's delivery mode
 // (deliveryModeVerdict for a session with an entry, stoppedDeliveryModeVerdict for one with only a
 // record) is the 403 naming it. Every one of those answers is written through record, so this
 // route's one line per request is written with it.
@@ -816,9 +817,11 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			messageBody
 			TargetSession string `json:"target_session"`
 			// ConnectedOnly asks for a stopped target to be refused rather than written to:
-			// Dispatch's live view's model and thinking switch sets it, because a switch that
-			// applied at an unknown later time is worse for its sender than no switch at all.
-			// Absent, which is every other sender and every older client, nothing changes.
+			// Dispatch sets it on every send of a model or thinking switch (isSessionSwitch in
+			// internal/dispatch/api), because a switch that applied at an unknown later time is
+			// worse for its sender than no switch at all, and on every send of a message whose
+			// agents-route request set it. Absent, which is every other sender and every older
+			// client, nothing changes.
 			ConnectedOnly bool `json:"connected_only"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {

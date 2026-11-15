@@ -187,12 +187,12 @@ func (rig *recipientRig) watchCopiesOn(t *testing.T, clock *listenerClock) map[s
 	replaceWatcher(t, rig.harness.registry, "interest registry", unwrapped, kvwatch.WithNow(clock.Now))
 	replaceWatcher(t, rig.harness.sessions, "session registry", unwrapped, kvwatch.WithNow(clock.Now))
 	copies := map[string]countedCopy{"interest": rig.harness.registry, "session": rig.harness.sessions}
-	rig.awaitCopiesServable(t, copies, "the interest and session copies to complete their first reads")
+	awaitCopiesServable(t, copies, "the interest and session copies to complete their first reads")
 	return copies
 }
 
 // awaitCopiesServable waits until every one of copies can be served.
-func (rig *recipientRig) awaitCopiesServable(t *testing.T, copies map[string]countedCopy, what string) {
+func awaitCopiesServable(t *testing.T, copies map[string]countedCopy, what string) {
 	t.Helper()
 	waitFor(t, 10*time.Second, what, func() bool {
 		for _, cache := range copies {
@@ -378,7 +378,7 @@ func TestAPublishCountsOnlyFromCopiesThatCanBeServed(t *testing.T) {
 			if err := copies[stale].Rewatch(rig.harness.client.Conn); err != nil {
 				t.Fatalf("read the %s bucket again: %v", stale, err)
 			}
-			rig.awaitCopiesServable(t, copies, "the "+stale+" copy to be served once it read its bucket again")
+			awaitCopiesServable(t, copies, "the "+stale+" copy to be served once it read its bucket again")
 			assertCounts(t, rig.publish(t, topic, "read-again"), 2, 2)
 		})
 	}

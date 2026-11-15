@@ -358,10 +358,11 @@ export function sendConfirmationText(result: {
  * (`recipients`) and how many of those run now (`recipientsConnected`), and the line says both. A
  * count of zero is the answer that matters most — nobody subscribes, so the message reaches
  * nobody — and the line names the topic. A listener that cannot count (one whose NATS user cannot
- * read the known-session bucket, or whose copy of a bucket the count reads is not complete) sends
- * no count, which reads as the plain line every release wrote before the counts existed, and one
- * that cannot tell which sessions run now sends `recipients` alone, which the line gives without
- * the running count.
+ * read the known-session bucket, or whose copy of the known-session or interest bucket cannot be
+ * served: its first read not complete, or past its stale bound) sends no count, which reads as the
+ * plain line every release wrote before the counts existed, and one whose copy of the session
+ * registry cannot be served sends `recipients` alone, which the line gives without the running
+ * count.
  *
  * A role publish carries no count: it names its holder and the state the listener resolved the
  * holder in, and a kept answer says the message waits for the role's next holder.

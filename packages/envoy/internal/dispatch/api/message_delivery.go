@@ -290,13 +290,12 @@ type pendingMessageDelivery struct {
 	// switch the session runs as its own turn (deliverMessageResuming, isSessionSwitch): a person's
 	// own issue-less Send or Aside (not one an agent wrote for them), no broadcast's copy, whose
 	// body is one switch line. The listener then refuses a stopped target rather than storing the
-	// message for it: attempt 1's own send,
-	// the delivery sweep's resume, a Retry and a mode change alike. No row records the switch rule,
-	// which each send judges from the message and the mode it is sent in: a switch an earlier
-	// release stored has rows with no flag, which a resume claims as they stand, and the rule's
-	// verdict for a Send must not pass to a Use BTW instead, which changes no model. Every other
-	// message - an issue message, a broadcast copy, a BTW, a session's message - is queued for a
-	// stopped session.
+	// message for it: attempt 1's own send, the delivery sweep's resume, a Retry and a mode change
+	// alike. No row records the switch rule, which each send judges from the message and the mode
+	// it is sent in: a switch an earlier release stored has rows with no flag, which a resume
+	// claims as they stand, and the rule's verdict for a Send must not pass to a Use BTW instead,
+	// which changes no model. Every other message - an issue message, a broadcast copy, a BTW, a
+	// session's message - is queued for a stopped session.
 	connectedOnly bool
 	frame         []byte
 }
