@@ -1782,11 +1782,12 @@ def rule_required_files(data, filters: dict, gate_files: dict, selection: Select
     listener-server-change's soak takes its -run from and no step of envoy-go-race reads.
 
     And .github/scripts/check-ts-filters.sh does it from outside: it writes into a filter a
-    listed block (TS_LISTED below) of the files of a tree that a job's tsc program compiles, and
-    refuses a committed block that is not exactly that, in ci.yaml's lint job, since this one has
-    no Bun to run tsc with. Those files are reads of the job this check cannot compute, so the
-    patterns of such a block, one file each, are passed over here; the filter's coverage of them
-    is that check's to prove (ci_ts_programs.py, LISTED).
+    listed block (TS_LISTED below) of the files of a tree that a job's tsc programs compile or the
+    entry it runs with Bun loads, and refuses a committed block that is not exactly that, in
+    ci.yaml's lint job, since this one has no Bun to run tsc or `bun build` with. Those files are
+    reads of the job this check cannot compute, so the patterns of such a block, one file each,
+    are passed over here; the filter's coverage of them is that check's to prove
+    (ci_ts_programs.py, LISTED).
 
     This widens to nothing else. A pattern is passed over only when every file it matches is in
     this set, so one that reaches a single file outside it is judged like any other."""
@@ -1876,13 +1877,14 @@ class Marks:
 
 GENERATED = Marks(BEGIN, END, WRITE)
 # The other generated block a gate filter may hold: one pattern per file of a tree that the tsc
-# programs paired with a filter compile (.github/scripts/ci_ts_programs.py, LISTED), which
-# .github/scripts/check-ts-filters.sh writes in its own write mode and refuses when it differs,
-# since only that check, in ci.yaml's lint job, has the Bun to run tsc with. Its own two lines mark
-# it, so neither check takes the other's block for its own: rule 17 reads and rewrites only the
-# lines between BEGIN and END, a listed block's lines are items of the list to it, and rule 9's
-# second direction passes over a listed block's patterns (rule_required_files) while its BEGIN
-# line names that check, which a job of CI runs (listed_owners below).
+# programs paired with some filters compile or the bundles paired with them load
+# (.github/scripts/ci_ts_programs.py, LISTED), which .github/scripts/check-ts-filters.sh writes in
+# its own write mode and refuses when it differs, since only that check, in ci.yaml's lint job,
+# has the Bun to run tsc and `bun build` with. Its own two lines mark it, so neither check takes
+# the other's block for its own: rule 17 reads and rewrites only the lines between BEGIN and END,
+# a listed block's lines are items of the list to it, and rule 9's second direction passes over a
+# listed block's patterns (rule_required_files) while its BEGIN line names that check, which a job
+# of CI runs (listed_owners below).
 TS_LISTED = Marks("# BEGIN listed", "# END listed", ".github/scripts/check-ts-filters.sh write")
 KINDS = (GENERATED, TS_LISTED)
 

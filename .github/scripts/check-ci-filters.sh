@@ -35,7 +35,8 @@
 #   1. a file a gate reads that its filter does not match (up to 20 named per gate, with why).
 #      For a Bun gate those reads are hand-kept, and the TypeScript half of them is no longer:
 #      .github/scripts/check-ts-filters.sh lists each such job's own tsc program with
-#      `bunx tsc --listFilesOnly` and holds every file of it to that gate's filter, in ci.yaml's
+#      `bunx tsc --listFilesOnly`, and the modules each entry its job runs loads with
+#      `bun build --metafile`, and holds every such file to that gate's filter, in ci.yaml's
 #      lint job, since this one's has no Bun. Where a filter names a tree file by file, that
 #      check writes the files in a listed block (`# BEGIN listed` ... `# END listed`) and holds
 #      the block to them, and this check declares no read of them. A file a test reads by
@@ -131,7 +132,8 @@
 #      listener-server-change's soak takes its -run from and no step of envoy-go-race reads; a
 #      pattern of a listed block check-ts-filters.sh writes (rule 1 above) is exempt from the
 #      second for the same reason, since that check holds the filter to the file, which a tsc
-#      program of the job compiles and this check, with no Bun, cannot list - which is why the
+#      program of the job compiles or a bundle it runs loads, and this check, with no Bun,
+#      cannot list - which is why the
 #      exemption needs the block's `# BEGIN listed by `<script> write`` line to name a check a
 #      step of ci.yaml or of a workflow it calls runs (the lint job runs check-ts-filters.sh),
 #      and other than this one: a block naming none is refused, naming the filter and the line,

@@ -163,7 +163,8 @@ jobs:
         run: bunx biome check .
 
       # After the install, which is what gives it node_modules: it lists each Bun gate's tsc
-      # program with `bunx tsc --listFilesOnly` and holds every file of it to that gate's filter,
+      # program with `bunx tsc --listFilesOnly`, and the modules each entry a gate's job runs
+      # loads with `bun build --metafile`, and holds every such file to that gate's filter,
       # so the TypeScript half of what those filters must select is derived rather than
       # hand-kept. In this job because the ci-filters job has neither Bun nor node_modules, and
       # because this one is gated by no `changes` output, so a change anywhere can start it.

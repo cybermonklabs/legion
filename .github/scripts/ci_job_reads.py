@@ -511,13 +511,15 @@ RULES = {
     f"{ENVOY}/cmd/broker/multiprocess_test.go": reads((f"{ENVOY}/internal/broker/store/migrations/*", "cmd/broker/multiprocess_test.go:513 countMigrations globs ../../internal/broker/store/migrations/*.up.sql")),
     f"{ENVOY}/cmd/dispatch/main_test.go": reads((f"{ENVOY}/internal/dispatch/store/migrations/*", "cmd/dispatch/main_test.go:822")),
     # The two-build suite's CLI half runs this tree's dispatch command with bun (currentCLI,
-    # :42), which loads bin/dispatch.ts and its imports: envoy-client's sources, broker-client's
-    # with them, and contracts' (measured with Bun.build's metafile of that entry point).
+    # :42), which loads bin/dispatch.ts and its imports: envoy-client's sources and
+    # broker-client's with them, which are reads here, and some of contracts' modules, which are
+    # not: check-ts-filters.sh builds that entry (ci_ts_programs.py, BUNDLES), writes the
+    # contracts modules its bundle loads into the listed blocks of dispatch_two_builds_go and
+    # dispatch_two_builds and holds both blocks to them, and rule 9's second direction passes
+    # over those blocks' patterns.
     f"{ENVOY}/cmd/dispatch/twobuild_cli_test.go": reads(
         ("packages/envoy-client/bin/dispatch.ts",
          "cmd/dispatch/twobuild_cli_test.go:42 runs `bun ../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command"),
-        (CONTRACTS_SRC, "packages/envoy-client/bin/dispatch.ts, which cmd/dispatch/twobuild_cli_test.go:42 runs, "
-                        "imports @legion/contracts through its sources"),
     ) + envoy_client_dep("packages/envoy-client/bin/dispatch.ts, which cmd/dispatch/twobuild_cli_test.go:42 runs, "
                          "imports src/dispatch-cli.ts"),
     # The two-build suite's stored-document half reads this tree's side of what each build holds
@@ -1915,7 +1917,7 @@ SCRIPT_TEST_GATES = [
         ("AGENTS.md", "check-ci-filters.test.sh:2579 holds the guide's slow-suite list to the jobs the full-ci label gates"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
-        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:43)"),
+        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:47)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine it borrows the changes job's filters from, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model both import, linked in beside it"),
     ]),
@@ -2707,7 +2709,12 @@ GATES = [
     ], reads=reads(
         ("packages/dispatch/**", at(TWO_BUILDS_JOB, "Browser-test each build's page against the other build's server")),
         ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:73-87 (build:web)"),
-        (CONTRACTS_SRC, f"{at(TWO_BUILDS_JOB, 'Build contracts for dispatch e2e')}; packages/dispatch/web/vite.config.ts:63-72 aliases"),
+        # packages/contracts/src is no read of this table's either: the filter's listed block holds
+        # the modules dispatch_ui's tsc programs compile and the dispatch command the Go step runs
+        # loads, which check-ts-filters.sh writes, and ci_ts_programs.py's LISTED says why this job
+        # loads that union and no other. Its `Build contracts for dispatch e2e` step runs
+        # `build:dispatch`, whose four entries compile nothing outside it, and reads the package's
+        # manifest, which bun_job declares.
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-tables.ts:9-10"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:37 holds the server's port through it"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),

@@ -1,8 +1,9 @@
-"""The pairs check-ts-filters.sh derives the TypeScript half of each Bun gate's reads from: a
-filter of ci.yaml's changes job and the tsc project the job that filter gates typechecks. The
-script's header says what it proves, which gates it leaves out and why.
+"""The sources check-ts-filters.sh derives the TypeScript half of each Bun gate's reads from: a
+filter of ci.yaml's changes job and either the tsc project the job that filter gates typechecks
+(PROGRAMS) or the entry a step of that job runs with Bun (BUNDLES). The script's header says what
+it proves, which gates it leaves out and why.
 
-Each entry is (filter, project, why):
+Each entry of PROGRAMS is (filter, project, why):
   filter   a filter of the changes job, the gate of the job whose typecheck this program is
   project  what `bunx tsc -p` takes: the directory holding the tsconfig.json the job's typecheck
            reads, or the project file itself where the job's step names another one
@@ -51,26 +52,47 @@ PROGRAMS = [
      at("test", "Typecheck the approval-eval statistics (bunx tsc --noEmit -p scripts/approval-eval)")),
 ]
 
+# The entries a step runs with Bun rather than typechecks: what such a step loads is the entry's
+# runtime closure, which no tsc program of its job lists. check-ts-filters.sh builds each one with
+# `bun build <entry> --target bun --outdir <scratch> --metafile=<scratch>/meta.json`, whose
+# metafile's `inputs` are every module the bundler loaded, resolved under the `bun` export
+# condition `bun <entry>` resolves under, keeps the files inside the repository and outside
+# node_modules, and holds every one of them to the filter as it holds a program's files. A bundle
+# that fails to build is a refusal naming the entry, never a bundle of no files.
+#
+# Each entry is (filter, entry, why):
+#   filter  a filter of the changes job, the gate of the step that runs the entry
+#   entry   the file `bun build` takes, repository-relative
+#   why     the step that runs it and the line of that step's code that does, which every
+#           refusal carries
+BUNDLES = [
+    ("dispatch_two_builds_go", "packages/envoy-client/bin/dispatch.ts",
+     at("dispatch-two-builds", "Two-build tests of the Dispatch server (cmd/dispatch/twobuild_cli_test.go:42 runs "
+                               "`bun ../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command)")),
+]
+
 # The trees a filter names file by file rather than whole: check-ts-filters.sh writes into the
 # filter a listed block holding one pattern per file under `tree` that the programs PROGRAMS pairs
-# with filter `source` compile, in sorted order, and refuses a committed block that is not exactly
-# those files. A filter that took the whole tree would select its job for a change to a module no
-# program of it reaches; a hand-kept list of the modules would go stale the day one more is
-# imported. Derived, it moves with the imports: a new one fails the lint job on the pull request
-# that writes it until `.github/scripts/check-ts-filters.sh write` adds it, and a module no longer
-# imported is dropped by the same command rather than kept.
+# with filters `sources` compile or the bundles BUNDLES pairs with them load, in sorted order, and
+# refuses a committed block that is not exactly those files. A filter that took the whole tree
+# would select its job for a change to a module no program or bundle of it reaches; a hand-kept
+# list of the modules would go stale the day one more is imported. Derived, it moves with the
+# imports: a new one fails the lint job on the pull request that writes it until
+# `.github/scripts/check-ts-filters.sh write` adds it, and a module no longer imported is dropped
+# by the same command rather than kept.
 #
-# Each entry is (filter, tree, source, why):
-#   filter  the changes filter whose list holds the block
-#   tree    the directory the block lists files of; every other pattern of the filter that matches
-#           a file under it is refused, since which of those files the filter selects is the
-#           block's to say
-#   source  the filter whose PROGRAMS pairs give the files: the filter itself where its job runs
-#           those programs, another where the job runs none of its own and loads what that
-#           filter's programs compile
-#   why     why `source`'s programs are this job's reads of the tree, carried by every refusal
+# Each entry is (filter, tree, sources, why):
+#   filter   the changes filter whose list holds the block
+#   tree     the directory the block lists files of; every other pattern of the filter that matches
+#            a file under it is refused, since which of those files the filter selects is the
+#            block's to say
+#   sources  the filters whose PROGRAMS and BUNDLES pairs give the files, one or more, the block
+#            holding the union of theirs: the filter itself where its job runs those programs or
+#            that bundle, another where the job runs none of its own and loads what that filter's
+#            compile or load
+#   why      why `sources`' files are this job's reads of the tree, carried by every refusal
 LISTED = [
-    ("dispatch_ui", "packages/contracts/src", "dispatch_ui",
+    ("dispatch_ui", "packages/contracts/src", ("dispatch_ui",),
      "the dashboard's and the proof editor's typechecks, tests and SPA build compile the contracts modules "
      "these two programs import and what those import, and no other: packages/dispatch/web/vite.config.ts:117-126 "
      "aliases the four entries the dashboard imports to the same sources"),
@@ -83,7 +105,21 @@ LISTED = [
     # nothing outside that set: not packages/contracts/src/legion-api.ts, which Dispatch never
     # imports. A change that breaks the package's full `build` fails the contracts job's own
     # `Build contracts` step, whose filter takes the whole tree.
-    ("dispatch_browser", "packages/contracts/src", "dispatch_ui",
+    ("dispatch_browser", "packages/contracts/src", ("dispatch_ui",),
      "the browser suite runs the SPA built from packages/dispatch and the Playwright config and e2e helpers of "
      "packages/dispatch/e2e, so it loads the contracts modules dispatch_ui's programs compile and no other"),
+    # The two-build job's Go step reaches packages/contracts through the one dispatch command its
+    # twobuild_cli_test.go runs, which BUNDLES builds.
+    ("dispatch_two_builds_go", "packages/contracts/src", ("dispatch_two_builds_go",),
+     "the step's cmd/dispatch/twobuild_cli_test.go runs `bun packages/envoy-client/bin/dispatch.ts`, which loads "
+     "the contracts modules that entry's bundle loads and no other"),
+    # The two-build job runs that Go step and a browser half, which is dispatch_browser's case: it
+    # builds the SPA from packages/dispatch and runs the Playwright config and the e2e helpers of
+    # packages/dispatch/e2e (`bun run e2e:multiprocess -- cross-build.multiprocess`), and its
+    # `Build contracts for dispatch e2e` step runs `build:dispatch`, as dispatch_browser's row
+    # says. Its block is the union of the two, so it holds every file the Go step's block holds.
+    ("dispatch_two_builds", "packages/contracts/src", ("dispatch_ui", "dispatch_two_builds_go"),
+     "the job's browser half runs the SPA built from packages/dispatch and the Playwright config and e2e helpers "
+     "of packages/dispatch/e2e, which load the contracts modules dispatch_ui's programs compile, and its Go step "
+     "runs the dispatch command whose bundle dispatch_two_builds_go's row builds; no step loads any other"),
 ]
