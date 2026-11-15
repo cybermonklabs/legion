@@ -14,7 +14,6 @@ import { inPlaceBoxRules } from "../../components/InPlaceEditBox";
 import { MarginProvider } from "../margin/margin-context";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
-import { reservedPriorityWidth } from "./reserved-width";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 
 /**
@@ -177,16 +176,25 @@ test("no in-place editor of the issue header keeps a box rule of its own", () =>
   }
 });
 
-test("the issue header's priority badge reserves the width of its widest value", () => {
+test("the issue header's priority badge draws every value it can show in one cell", () => {
   const { unmount } = renderHeader();
   try {
-    // The badge drawn beside the select laid over it; outside the header the same control takes
-    // its value's own width (`PriorityControl.test.tsx`).
+    // The badge drawn beside the select laid over it; outside the header the same control draws
+    // only its value, at that value's own width (`PriorityControl.test.tsx`).
     const badge = screen.getByRole("combobox", {
       name: "Priority of CORE-1",
     }).previousElementSibling;
-    const reservation = reservedPriorityWidth.split(" ");
-    expect(reservation.filter((token) => badge?.classList.contains(token))).toEqual(reservation);
+    const labels = [...(badge?.children ?? [])];
+    expect(badge?.classList.contains("sm:inline-grid")).toBe(true);
+    expect(labels.map((label) => label.textContent)).toEqual(["Priority", "P0", "P1", "P2", "P3"]);
+    for (const label of labels) {
+      expect(label.classList.contains("col-start-1")).toBe(true);
+      expect(label.classList.contains("row-start-1")).toBe(true);
+    }
+    // The issue is unset, so `Priority` is the value shown and the rest hold the cell's width.
+    expect(
+      labels.filter((label) => !label.classList.contains("invisible")).map((l) => l.textContent)
+    ).toEqual(["Priority"]);
   } finally {
     unmount();
   }

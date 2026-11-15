@@ -4,7 +4,7 @@ import type { IssuePriority } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, priorityBadge } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "./badge-select";
-import { reservedPriorityWidth } from "./reserved-width";
+import { reservedClosedSet } from "./reserved-width";
 import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
 
 const priorityOptions: readonly { label: string; value: IssuePriority | null }[] = [
@@ -14,6 +14,11 @@ const priorityOptions: readonly { label: string; value: IssuePriority | null }[]
   { label: "P2", value: 2 },
   { label: "P3", value: 3 },
 ];
+
+/** The badge's word for `value`: the muted tag `Priority` while unset, else `P0` to `P3`. */
+function badgeLabel(value: IssuePriority | null): string {
+  return value === null ? "Priority" : `P${value}`;
+}
 
 /**
  * The priority editor for a surface that owns no write of its own - a list row, a board card,
@@ -64,13 +69,16 @@ export function PriorityControl({
  * The single priority editor: shows the issue's priority as the `P0`–`P3` badge (a muted
  * "Priority" tag when unset) and, on click, tap, Enter or Space, opens a native `<select>` to
  * pick P0–P3 or Unset — the same picker on desktop and iPhone. In the issue header (`reserve`)
- * the badge reserves the width of its widest value (`reservedPriorityWidth`), so a pick shown
- * before the server answers it moves nothing beside the control; everywhere else - a list row,
- * a board card, an Inbox row or reading column - it takes its value's own width, as it always
- * has. The select is laid invisibly over the badge so the tap target stays 44 px (32 px from
- * `md`) while the badge keeps its size, and the wrapper draws the keyboard focus ring. `write`
- * goes through `useIssuePriority`, so every surface shows the pick at once, stops showing it if
- * it is refused, and reads the lists again. The select stays
+ * the badge draws the word of every option in one cell (`reservedClosedSet`), its value's word
+ * visible and the rest invisible, so the badge is as wide as the widest of them at every value
+ * and a pick shown before the server answers it moves nothing beside the control; everywhere
+ * else - a list row, a board card, an Inbox row or reading column - it draws its value's word
+ * alone, at that word's own width, as it always has. Each word is `aria-hidden` like the badge
+ * around it, so the select's label stays the control's one name and the words never reach a
+ * screen reader. The select is laid invisibly over the badge so the tap target stays 44 px (32
+ * px from `md`) while the badge keeps its size, and the wrapper draws the keyboard focus ring.
+ * `write` goes through `useIssuePriority`, so every surface shows the pick at once, stops
+ * showing it if it is refused, and reads the lists again. The select stays
  * enabled while a save is in flight: a disabled control drops the focus it holds and leaves the
  * tab order, and a pick made meanwhile is queued behind the save rather than refused. A press on
  * the select stays on the select: a board card is a drag activator, and a held tap on the badge
@@ -97,14 +105,28 @@ export function PriorityEditor({
   write: IssuePriorityWrite;
 }): ReactNode {
   const tone = priority === null ? badgeLow : priorityBadge[priority];
+  const shown = badgeLabel(priority);
   return (
     <>
       <span className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}>
         <span
           aria-hidden="true"
-          className={`${badgeSelectBadge} ${reserve ? reservedPriorityWidth : ""} ${tone.bg} ${tone.text}`}
+          className={`${badgeSelectBadge} ${reserve ? reservedClosedSet.cell : ""} ${tone.bg} ${tone.text}`}
         >
-          {priority === null ? "Priority" : `P${priority}`}
+          {reserve
+            ? priorityOptions.map((option) => {
+                const label = badgeLabel(option.value);
+                return (
+                  <span
+                    aria-hidden="true"
+                    className={`${reservedClosedSet.value} ${label === shown ? "" : reservedClosedSet.other}`}
+                    key={label}
+                  >
+                    {label}
+                  </span>
+                );
+              })
+            : shown}
         </span>
         <select
           aria-label={`Priority of ${issueKey}`}

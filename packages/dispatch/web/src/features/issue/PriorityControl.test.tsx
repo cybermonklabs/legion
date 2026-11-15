@@ -10,7 +10,6 @@ import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { issuePriority } from "./issue-priority";
 import { PriorityControl, PriorityEditor } from "./PriorityControl";
-import { reservedPriorityWidth } from "./reserved-width";
 import { useIssueAssignee } from "./useIssueAssignee";
 import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
 
@@ -175,31 +174,56 @@ test("PriorityControl shows the issue's priority and offers Unset and P0-P3", ()
   }
 });
 
-test("the priority badge keeps its value's own width outside the issue header and reserves its widest value in it", () => {
-  const reservation = reservedPriorityWidth.split(" ");
+test("the priority badge draws only its value outside the issue header and every value in one cell in it", () => {
   // The Inbox row and reading column head, the issues table and the board draw this control
-  // as `renderControl` does: no box of the header's, so the badge is as wide as its value.
+  // as `renderControl` does: no cell of the header's, so the badge is as wide as its value.
   const outside = renderControl();
   try {
     const badge = screen.getByText("P1", { selector: "span" });
-    expect(reservation.filter((token) => badge.classList.contains(token))).toEqual([]);
+    expect(badge.children).toHaveLength(0);
+    expect(badge.classList.contains("sm:inline-grid")).toBe(false);
   } finally {
     outside.unmount();
   }
   // The issue header draws the editor with `reserve`, the one surface that holds the badge to
-  // the width of its widest value (dispatch://INFRA-299/spec#b-r5).
+  // one box at every value (dispatch://INFRA-299/spec#b-r5): whatever the value, the badge
+  // stacks the same labels in one cell, so it is as wide as the widest of them, and shows only
+  // the value's own.
   const idle: IssuePriorityWrite = {
     failed: false,
     pending: false,
     retry: () => undefined,
     submit: () => undefined,
   };
-  const header = render(<PriorityEditor issueKey="CORE-1" priority={1} reserve write={idle} />);
-  try {
-    const badge = screen.getByText("P1", { selector: "span" });
-    expect(reservation.filter((token) => badge.classList.contains(token))).toEqual(reservation);
-  } finally {
-    header.unmount();
+  const values = [null, 0, 1, 2, 3] as const;
+  for (const value of values) {
+    const header = render(
+      <PriorityEditor issueKey="CORE-1" priority={value} reserve write={idle} />
+    );
+    try {
+      const badge = screen.getByRole("combobox", {
+        name: "Priority of CORE-1",
+      }).previousElementSibling;
+      const labels = [...(badge?.children ?? [])];
+      expect(badge?.classList.contains("sm:inline-grid")).toBe(true);
+      expect(labels.map((label) => label.textContent)).toEqual([
+        "Priority",
+        "P0",
+        "P1",
+        "P2",
+        "P3",
+      ]);
+      for (const label of labels) {
+        expect(label.getAttribute("aria-hidden")).toBe("true");
+        expect(label.classList.contains("col-start-1")).toBe(true);
+        expect(label.classList.contains("row-start-1")).toBe(true);
+      }
+      expect(
+        labels.filter((label) => !label.classList.contains("invisible")).map((l) => l.textContent)
+      ).toEqual([value === null ? "Priority" : `P${value}`]);
+    } finally {
+      header.unmount();
+    }
   }
 });
 
