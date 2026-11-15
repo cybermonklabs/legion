@@ -466,10 +466,6 @@ func idleRigWakeAll(t *testing.T, rig *idleWakeRig) {
 // role whose process ended (sessionStop.send), beside the session it deleted.
 const idleRigStopLine = "the Envoy session of a role whose process is gone was stopped"
 
-// idleRigSessionGone is the holder_state the listener names a lapsed role holder by when the
-// registry holds no entry of the holder's session.
-const idleRigSessionGone = "gone"
-
 // idleRigWakeJustReleased drives the three pods whose sessions end as a released Oh My Pi's does
 // in production (idleRigPlan.ExitsAsReleasedInProduction): nothing of the process deletes its
 // registration, so the daemon's clean stop at the release is what makes the session gone, and a
@@ -481,43 +477,50 @@ const idleRigSessionGone = "gone"
 func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 	t.Helper()
 	agent, role, routed := rig.issue(idleRigJustReleasedAgent), rig.issue(idleRigJustReleasedRole), rig.issue(idleRigJustReleasedRouted)
-	agentSession, routedSession := rig.session(agent), rig.session(routed)
+	agentSession, roleSession, routedSession := rig.session(agent), rig.session(role), rig.session(routed)
 	token := string(rig.token(role))
 
 	// 1. The release's stop of each process sent the clean stop of its session, and the
 	//    listener deleted the registration. The stop runs on a goroutine of its own once the
-	//    machine's decision is made (cleanSessionStop), so the lines are waited for.
-	released := []idleRigIssue{agent, role, routed}
-	stopped := func(issue idleRigIssue) bool {
-		return rig.logged(idleRigStopLine, map[string]string{"session": rig.session(issue)}) >= 1
-	}
+	//    machine's decision is made (cleanSessionStop), so the lines are waited for. Each poll
+	//    reads the daemon's log once, collecting every session it logged that line for, and a
+	//    failure names the sessions the last read was missing.
+	released := []struct {
+		issue   idleRigIssue
+		session string
+	}{{agent, agentSession}, {role, roleSession}, {routed, routedSession}}
+	var stopped map[string]bool
 	testwait.Holds(testwait.Bounded(t, idleRigRecordWait, idleRigDeadlineMargin), idleRigPoll, func() bool {
-		for _, issue := range released {
-			if !stopped(issue) {
+		stopped = map[string]bool{}
+		for _, entry := range rig.loggedEntries(idleRigStopLine) {
+			stopped[fmt.Sprint(entry["session"])] = true
+		}
+		for _, pod := range released {
+			if !stopped[pod.session] {
 				return false
 			}
 		}
 		return true
 	})
-	for _, issue := range released {
-		if !stopped(issue) {
+	for _, pod := range released {
+		if !stopped[pod.session] {
 			t.Errorf("the daemon logged no %q for %s's session %s: the release's stop of its process did not delete its registration",
-				idleRigStopLine, issue.key, rig.session(issue))
+				idleRigStopLine, pod.issue.key, pod.session)
 		}
 	}
 
 	// 2. A direct message to the agent pod's session: the registry holds no entry of it, and the
 	//    listener's known-session store still holds its record, so the send is stored on the
 	//    session's agent subject, answered 200 stopped and gone, and reports the wake beside that
-	//    answer (idleRigStoredForGone). Before the stop, the entry still stood: the send was
+	//    answer (idleRigIsStoredForGone). Before the stop, the entry still stood: the send was
 	//    answered for a live session and no wake was reported.
 	const agentMessage, agentKey = "a direct message to a session just released", "just-released-agent-1"
 	status, body := rig.listener.send(map[string]any{
 		"target_session": agentSession, "message": agentMessage,
 		"source": "agent", "source_session": idleRigSender, "idempotency_key": agentKey,
 	})
-	if sent := idleRigSendAnswerOf(t, body); status != http.StatusOK || sent.State != idleRigSendStopped || sent.RecipientState != idleRigRecipientGone {
-		t.Errorf("the send to %s answered %d %s, want 200 stored with state %s and recipient_state %s: the release's stop deleted its registration",
+	if !idleRigIsStoredForGone(status, body) {
+		t.Errorf("the send to %s answered %d %s, want 200 stored with state %s, recipient_state %s and the record's last_seen: the release's stop deleted its registration",
 			agentSession, status, body, idleRigSendStopped, idleRigRecipientGone)
 	}
 
@@ -533,11 +536,11 @@ func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 	})
 	var answer idleRigRoleAnswer
 	decoded := json.Unmarshal([]byte(body), &answer) == nil
-	refused := status == http.StatusNotFound && answer.Reason == notify.ReasonHolderLapsed && answer.HolderState == idleRigSessionGone
+	refused := status == http.StatusNotFound && answer.Reason == notify.ReasonHolderLapsed && answer.HolderState == idleRigRecipientGone
 	kept := status == http.StatusAccepted && answer.Kept && answer.KeptReason == notify.ReasonHolderLapsed
 	if !decoded || !(refused || kept) {
 		t.Errorf("the role publish to %s answered %d %s, want 404 %s with holder_state %s, or 202 kept for %s: the role's holder is gone with its pod",
-			token, status, body, notify.ReasonHolderLapsed, idleRigSessionGone, notify.ReasonHolderLapsed)
+			token, status, body, notify.ReasonHolderLapsed, idleRigRecipientGone, notify.ReasonHolderLapsed)
 	}
 
 	// 4. A message routed to the routed pod's session as Dispatch's outbox routes a person's
@@ -658,7 +661,8 @@ func idleRigRetryPublish(t *testing.T, rig *idleWakeRig, issue idleRigIssue, mes
 // The words a send's answer gives its target (cmd/listener's sendResponse and sendHandler): state
 // stopped is a session nothing holds the relay subject of, or one the listener knows only by its
 // known-session record, and recipient_state gone is a session the registry holds no entry of
-// within the gone horizon.
+// within the gone horizon. A role publish names a lapsed holder's session by the same word, its
+// holder_state.
 const (
 	idleRigSendStopped   = "stopped"
 	idleRigRecipientGone = "gone"
@@ -681,15 +685,23 @@ func idleRigSendAnswerOf(t *testing.T, body string) idleRigSendAnswer {
 	return answer
 }
 
-// idleRigStoredForGone is the answer a send to a released session gets: the session's entry went
-// with its pod and the listener's known-session store still holds its record, so the listener
-// stores the message on the session's agent subject and answers 200, state stopped,
-// recipient_state gone and last_seen the record's. Every field is read, so neither the 404 of a
-// session no store knows nor the answer of a live one can pass for it.
+// idleRigIsStoredForGone is whether a send's answer is the one a send to a released session gets:
+// the session's entry went with its pod and the listener's known-session store still holds its
+// record, so the listener stores the message on the session's agent subject and answers 200,
+// state stopped, recipient_state gone and last_seen the record's. Every field is read, so neither
+// the 404 of a session no store knows nor the answer of a live one can pass for it. It decodes the
+// body itself and fails nothing, so a caller that carries on past a wrong answer can.
+func idleRigIsStoredForGone(status int, body string) bool {
+	var answer idleRigSendAnswer
+	return status == http.StatusOK && json.Unmarshal([]byte(body), &answer) == nil &&
+		answer.State == idleRigSendStopped && answer.RecipientState == idleRigRecipientGone && answer.LastSeen > 0
+}
+
+// idleRigStoredForGone fails the test unless the send's answer is the one a send to a released
+// session gets (idleRigIsStoredForGone).
 func idleRigStoredForGone(t *testing.T, status int, body string) {
 	t.Helper()
-	answer := idleRigSendAnswerOf(t, body)
-	if status != http.StatusOK || answer.State != idleRigSendStopped || answer.RecipientState != idleRigRecipientGone || answer.LastSeen <= 0 {
+	if !idleRigIsStoredForGone(status, body) {
 		t.Fatalf("the send answered %d %s, want 200 stored with state %s, recipient_state %s and the record's last_seen: the session is gone with its pod, and the listener still knows it",
 			status, body, idleRigSendStopped, idleRigRecipientGone)
 	}

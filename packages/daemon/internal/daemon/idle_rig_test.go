@@ -1024,15 +1024,8 @@ func (r *idleWakeRig) releaseRecords(issue idleRigIssue) api.ReleaseRecordsRespo
 // check_wake_test.go's rig reads them.
 func (r *idleWakeRig) logged(msg string, attributes map[string]string) int {
 	count := 0
-	for _, line := range strings.Split(r.logs.String(), "\n") {
-		if line == "" {
-			continue
-		}
-		var entry map[string]any
-		if json.Unmarshal([]byte(line), &entry) != nil {
-			continue
-		}
-		matches := entry["msg"] == msg
+	for _, entry := range r.loggedEntries(msg) {
+		matches := true
 		for key, want := range attributes {
 			matches = matches && fmt.Sprint(entry[key]) == want
 		}
@@ -1041,6 +1034,25 @@ func (r *idleWakeRig) logged(msg string, attributes map[string]string) int {
 		}
 	}
 	return count
+}
+
+// loggedEntries is every line of the daemon's log that says msg, decoded, read in one pass over
+// the log. A line that does not decode as JSON is skipped.
+func (r *idleWakeRig) loggedEntries(msg string) []map[string]any {
+	var entries []map[string]any
+	for _, line := range strings.Split(r.logs.String(), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if json.Unmarshal([]byte(line), &entry) != nil {
+			continue
+		}
+		if entry["msg"] == msg {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
 }
 
 // idleRigDeadlineMargin is how long before the test binary's own deadline a wait of the rig

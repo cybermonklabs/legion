@@ -5,13 +5,14 @@ import {
   BROADCAST_REFUSED,
   type FakeSession,
   getSentMessages,
+  QUEUED,
   refuseBroadcasts,
   setLiveSessions,
   setSessionRecord,
   setSessionSendState,
   setSessionStopped,
 } from "./agents";
-import { createIssue, createMessage, createProject, listQueuedMessages } from "./api";
+import { createIssue, createMessage, createProject, queuedEnvelopesOf } from "./api";
 import { sessionIds } from "./session-ids";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -19,17 +20,12 @@ import { asUser } from "./users";
 /**
  * INFRA-626. A session the Envoy listener knows and that is not running is a recipient, not
  * a refusal: the listener stores the message for it and hands it over when it runs again, and
- * Dispatch records that attempt `queued`. This spec reads that word on each of the three surfaces
- * a person sees it on - a message aimed at one session, a mention in a comment, and a broadcast
- * recipient. A session Envoy knows nothing of is still refused as `no live session` to a
- * mention, and a message aimed at it is queued by Dispatch itself (INFRA-3740), under the same
+ * Dispatch records that attempt `queued`. This spec reads that word (`QUEUED`) on each of the
+ * three surfaces a person sees it on - a message aimed at one session, a mention in a comment, and
+ * a broadcast recipient. A session Envoy knows nothing of is still refused as `no live session` to
+ * a mention, and a message aimed at it is queued by Dispatch itself (INFRA-3740), under the same
  * word.
- *
- * The sentence is spelt out here rather than imported from the SPA, so a change to the SPA's
- * wording fails a row here rather than passing with it.
  */
-const QUEUED = (name: string) =>
-  `Queued: ${name} is stopped; it gets the message if it runs again within 72 hours`;
 
 const planner: FakeSession = {
   capabilities: ["aside", "btw", "steer"],
@@ -291,11 +287,7 @@ test("a message to a session Envoy does not know is queued by Dispatch itself, w
     await expect(turn(page, body)).not.toContainText("no live session");
     await expect(turn(page, body).getByRole("button", { name: "Retry" })).toHaveCount(0);
     expect(await sentTo()).toEqual([]);
-    // The server keeps what it queued for the life of its process, which the rows before this
-    // one share, so the row reads the envelopes of its own message alone.
-    const queued = ((await listQueuedMessages()).queued ?? []).filter((envelope) =>
-      envelope.dedupe_key?.includes(message.id)
-    );
+    const queued = await queuedEnvelopesOf(message.id);
     expect(queued).toEqual([
       expect.objectContaining({
         dedupe_key: `agent.${planner.session_id}.${message.id}:steer`,

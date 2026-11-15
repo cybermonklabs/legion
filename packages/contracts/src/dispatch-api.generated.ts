@@ -2107,7 +2107,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Test hook: list the targeted messages this process queued itself for a session neither the listener's registry nor its known-session store held, each as the envelope its session's subject would hold: {queued: [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}, oldest first; 404 TEST_HOOKS_OFF on a process that publishes them to NATS. */
+    /** @description Test hook: list the targeted messages this process queued itself for a session neither the listener's registry nor its known-session store held, each as the envelope its session's subject would hold: {queued: [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}, oldest first; 404 QUEUED_ON_BUS on a process that publishes them to NATS. */
     get: operations["getApiV1MessagesTestQueued"];
     put?: never;
     post?: never;

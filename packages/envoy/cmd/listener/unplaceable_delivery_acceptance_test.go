@@ -557,15 +557,7 @@ func agentWakesFor(t *testing.T, subscription *natsgo.Subscription, sessionID st
 		if err != nil {
 			t.Fatalf("read %s: %v", bus.LegionWakeTopic, err)
 		}
-		var item contracts.Envelope
-		if err := json.Unmarshal(message.Data, &item); err != nil {
-			t.Fatalf("decode a wake report's envelope: %v", err)
-		}
-		var report wakeReport
-		if err := json.Unmarshal([]byte(item.Payload), &report); err != nil {
-			t.Fatalf("decode a wake report: %v", err)
-		}
-		if report.Kind == wakeKindAgent && report.Session == sessionID {
+		if wakeReportSession(t, message) == sessionID {
 			count++
 			wait = quiet
 		}

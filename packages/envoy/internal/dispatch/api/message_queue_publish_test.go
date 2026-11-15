@@ -429,8 +429,8 @@ func TestTheQueuedTestHookListsWhatThisProcessQueued(t *testing.T) {
 		testHooks: true, agentPublisher: failingAgentPublisher{err: errors.New("unused")},
 	})
 	if refused := dispatchRequest(t, onTheBus, http.MethodGet, "/api/v1/messages/_test/queued", nil, "alice"); refused.Code != http.StatusNotFound ||
-		responseCode(t, refused) != "TEST_HOOKS_OFF" {
-		t.Fatalf("list on a process that publishes to the bus: status=%d body=%s, want 404 TEST_HOOKS_OFF",
+		responseCode(t, refused) != "QUEUED_ON_BUS" {
+		t.Fatalf("list on a process that publishes to the bus: status=%d body=%s, want 404 QUEUED_ON_BUS",
 			refused.Code, refused.Body.String())
 	}
 	withoutHooks, _, _ := newTestServer(t, testServerOptions{})

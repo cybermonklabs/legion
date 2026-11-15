@@ -11,6 +11,7 @@ import {
   isBroadcastInput,
   pickAgentFilter,
   postedBroadcasts,
+  QUEUED,
   refuseBroadcasts,
   setLiveSessions,
   setSessionLive,
@@ -28,8 +29,8 @@ import {
   disconnectLiveSockets,
   getAgentStates,
   listAgentMessages,
-  listQueuedMessages,
   putAgentState,
+  queuedEnvelopesOf,
   replyToMessageDelivery,
 } from "./api";
 import { recordClipboard } from "./clipboard";
@@ -403,24 +404,15 @@ test("a message to an agent no store knows any more is queued for it, and its ca
 
     const conversation = card.getByRole("list", { name: "Conversation with Planner" });
     await expect(conversation).toContainText(body);
-    await expect(
-      conversation.getByText(
-        "Queued: Planner is stopped; it gets the message if it runs again within 72 hours",
-        { exact: true }
-      )
-    ).toBeVisible();
+    await expect(conversation.getByText(QUEUED("Planner"), { exact: true })).toBeVisible();
     await expect(conversation).not.toContainText("Failed");
     expect(
       (await getSentMessages()).filter((send) => send.target_session === planner.session_id)
     ).toEqual([]);
 
     // What Dispatch published is the envelope the listener's send would have stored: on the
-    // session's own subject, under the send's dedupe key, carrying the delivery frame. The server
-    // keeps what it published for the life of its process, which the rows before this one share,
-    // so the row reads the envelopes of its own message alone.
-    const queued = ((await listQueuedMessages()).queued ?? []).filter((envelope) =>
-      envelope.dedupe_key?.includes(message.id)
-    );
+    // session's own subject, under the send's dedupe key, carrying the delivery frame.
+    const queued = await queuedEnvelopesOf(message.id);
     expect(queued).toEqual([
       expect.objectContaining({
         dedupe_key: `agent.${planner.session_id}.${message.id}:steer`,

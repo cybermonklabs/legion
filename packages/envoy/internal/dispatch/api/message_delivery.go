@@ -821,7 +821,7 @@ func (s *server) deliverMessageResuming(
 	if err != nil {
 		return model.MessageDelivery{}, err
 	}
-	if held && s.queuesForUnknownSession(message, pending, connectedOnly, outcome.failure) {
+	if held && s.mayQueueForUnknownSession(message, pending, connectedOnly, outcome.failure) {
 		outcome = s.queueForUnknownSession(ctx, message, pending, key, wanted, outcome.failure)
 	}
 	return s.completeMessageDelivery(ctx, message, actor, pending, outcome)

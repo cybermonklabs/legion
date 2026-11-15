@@ -289,6 +289,13 @@ export function broadcastSends(page: Page): KeyedWrite<CreateBroadcastInput>[] {
  *  agents: `. */
 export const BROADCAST_REFUSED = "no selected session can receive this message";
 
+/** The sentence a person reads for an attempt Dispatch records `queued`, for a session named
+ *  `name`: the listener stored the message, or Dispatch queued it on the session's agent subject
+ *  itself. It is spelt out here rather than imported from the SPA, so a change to the SPA's
+ *  wording fails the rows that read it rather than passing with it. */
+export const QUEUED = (name: string) =>
+  `Queued: ${name} is stopped; it gets the message if it runs again within 72 hours`;
+
 /** Refuses every broadcast POST as Dispatch does one no selected session can receive (400
  *  `BROADCAST_EMPTY`), until `allow()`. A broadcast tries a failed fetch, a 5xx or a 429 again
  *  under its key until Dispatch answers, so a refusal is a 4xx of Dispatch's own. The selected

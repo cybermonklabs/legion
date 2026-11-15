@@ -3559,7 +3559,7 @@ Each item below names a path with its method and identity, then its purpose.
   List the targeted messages this process queued itself for a session that neither the listener's registry nor its known-session store held, oldest first, each as the envelope that session's own subject would hold:
   `{"queued": [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}`.
   A process with `DISPATCH_NATS_DISABLED=1` keeps them in its own memory, where this route reads them.
-  A process with NATS publishes them to the stream, and answers `404 TEST_HOOKS_OFF` here.
+  A process with NATS publishes them to the stream, and answers `404 QUEUED_ON_BUS` here.
   Not mounted otherwise.
 
 - `/ws/live` (GET; cookie, trusted header, or bearer)

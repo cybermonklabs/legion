@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// queuesForUnknownSession reports whether an attempt whose last try ended in failure is one
+// mayQueueForUnknownSession reports whether an attempt whose last try ended in failure is one
 // Dispatch queues itself (queueForUnknownSession): a message to a session, whose attempt names
 // that session, whose last try found no live session for it, which this process has a publisher
 // for, and which does not ask for a session that is running now.
@@ -26,7 +26,7 @@ import (
 // and a role's message does not belong on the subject of a session that held the role once. A
 // send that asks for a running session (connectedOnly, a model or thinking switch) keeps it too,
 // since a switch stored for a session that is not running would apply at an unknown later time.
-func (s *server) queuesForUnknownSession(
+func (s *server) mayQueueForUnknownSession(
 	message model.Message, pending pendingMessageDelivery, connectedOnly bool, failure string,
 ) bool {
 	if s.deps.AgentPublisher == nil || connectedOnly || pending.resolved.attemptSessionID == "" ||
@@ -84,19 +84,12 @@ func queueFailure(failure string, err error) string {
 
 // queuedEnvelope is the envelope the listener's send route stores for input: built with the
 // builder that route uses (contracts.AgentSendEnvelope), on the session's own subject under
-// AgentSendDedupeKey(session, idempotency key), from source "dispatch" as every send Dispatch
-// makes names itself (dispatchenvoy.Client.Send), with the frame as its payload. A send that did
-// reach the listener and the copy Dispatch queued are then one message under one stream id
-// (bus.ForwardMsgID), which the stream stores once.
+// AgentSendDedupeKey(session, idempotency key), from the message Client.Send writes its body from
+// (dispatchenvoy.SendInput.EnvelopeMessage). A send that did reach the listener and the copy
+// Dispatch queued are then one message under one stream id (bus.ForwardMsgID), which the stream
+// stores once.
 func queuedEnvelope(input dispatchenvoy.SendInput) contracts.Envelope {
-	payload := string(input.Payload)
-	return contracts.AgentSendEnvelope(input.TargetSession, input.IdempotencyKey, contracts.Message{
-		Source:       "dispatch",
-		Text:         input.Message,
-		Payload:      &payload,
-		Urgency:      input.Urgency,
-		ExpectsReply: input.ExpectsReply,
-	})
+	return contracts.AgentSendEnvelope(input.TargetSession, input.IdempotencyKey, input.EnvelopeMessage())
 }
 
 // AgentPublishRecorder is the AgentPublisher of a test process that has no NATS: the browser
@@ -160,14 +153,14 @@ type queuedMessage struct {
 
 // listQueuedMessages answers {"queued": [...]}: every targeted message this process queued
 // itself for a session no store of the listener's held, oldest first. It answers 404
-// TEST_HOOKS_OFF on a process that publishes them to the bus, where the stream is what holds them.
+// QUEUED_ON_BUS on a process that publishes them to the bus, where the stream is what holds them.
 func (s *server) listQueuedMessages(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	recorder, ok := s.deps.AgentPublisher.(*AgentPublishRecorder)
 	if !ok {
-		writeError(w, "TEST_HOOKS_OFF", http.StatusNotFound,
+		writeError(w, "QUEUED_ON_BUS", http.StatusNotFound,
 			"this process queues targeted messages on the bus, not in a test hook's recorder")
 		return
 	}

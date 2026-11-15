@@ -812,7 +812,7 @@ func (s *server) routes() []apiRoute {
 			routeRow{http.MethodDelete, "/api/v1/artifacts/{id}/_test/live-write-pauses/{point}", authAny, "Test hook: release the live write parked at the pause and disarm it.", s.releaseLiveWritePause},
 			routeRow{http.MethodPost, "/api/v1/writes/_test/slow", authAny, "Test hook: {method, path, delay_ms} delays every keyed run of that method and path by delay_ms after its key is claimed, on the handler's own context; 0 disarms.", s.armSlowWrite},
 			routeRow{http.MethodPost, "/api/v1/settings/new-issue/_test", authAny, "Test hook: {label, session} replaces, on the process the call lands on, the new-issue label and session GET /api/v1/settings/new-issue answers from its environment; an empty value is none.", s.setNewIssueSettings},
-			routeRow{http.MethodGet, "/api/v1/messages/_test/queued", authAny, "Test hook: list the targeted messages this process queued itself for a session neither the listener's registry nor its known-session store held, each as the envelope its session's subject would hold: {queued: [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}, oldest first; 404 TEST_HOOKS_OFF on a process that publishes them to NATS.", s.listQueuedMessages},
+			routeRow{http.MethodGet, "/api/v1/messages/_test/queued", authAny, "Test hook: list the targeted messages this process queued itself for a session neither the listener's registry nor its known-session store held, each as the envelope its session's subject would hold: {queued: [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}, oldest first; 404 QUEUED_ON_BUS on a process that publishes them to NATS.", s.listQueuedMessages},
 		)
 	}
 	routes := make([]apiRoute, len(rows))
