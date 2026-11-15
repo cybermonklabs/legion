@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -385,6 +386,13 @@ func (f *adminAPIFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && r.URL.Path == generateEphemeralCertPath:
 		var body sqladmin.GenerateEphemeralCertRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			// A body that ends early is a request the connector abandoned: it cancels a refresh
+			// it no longer needs, such as one in flight when a failed dial drops the instance
+			// from its cache, and the cancel can land between the headers and the body. That is
+			// no defect of the code under test, so the fake records nothing and answers nothing.
+			if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+				return
+			}
 			f.t.Errorf("read the body of generateEphemeralCert: %v", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
