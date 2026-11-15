@@ -293,7 +293,8 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 
 // keptBy is what the live pod of the Sandbox read as s was built with, for the role l starts in
 // it: the enrollment decision for that role in that pod (enrollsIn, which reads the broker's
-// volumes the pod carries), which of the role's own overlays and of the project's memory overlays
+// volumes the pod carries), which of the role's own overlays and of every declared variant's
+// overlays
 // its container holds (heldRoleOverlays), the skills repository its recorded pod shape names, and
 // the session store it was built under (heldSessionStore, the URL file its generation is pointed
 // at). A launch that keeps such a pod
@@ -314,7 +315,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 // the daemon then cannot tell what the pod carries, and relaunch replaces the pod.
 func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
 	spec := s.Spec.PodTemplate.Spec
-	overlays, memory, readable := r.heldRoleOverlays(spec, l.spec.Role)
+	overlays, variantFiles, readable := r.heldRoleOverlays(spec, l.spec.Role)
 	if !readable {
 		return keptPod{}, false
 	}
@@ -333,7 +334,7 @@ func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
 		}
 	}
 	kind, _, _ := heldSessionStore(spec)
-	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), overlays: overlays, memory: memory, store: kind, skills: skills}, true
+	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind, skills: skills}, true
 }
 
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,
