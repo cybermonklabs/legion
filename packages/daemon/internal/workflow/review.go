@@ -731,7 +731,8 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // head, since the decision it needs is of the head: no review decided it (stuckUndecided), or its
 // approval is of other code than the head's (stuckApprovedOtherCode). An approval of the head a
 // push is still on its way from (classify.CodeOnItsWay) keeps the round open until the push's new
-// head arrives.
+// head arrives. A merged pull request has none on its way: the head it merged at is final, so no
+// push its record holds keeps the round open.
 func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record.PullRequest) round {
 	if issue.Phase != phase.Reviewing {
 		return round{}

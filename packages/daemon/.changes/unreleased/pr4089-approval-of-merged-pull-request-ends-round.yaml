@@ -4,7 +4,9 @@ body: |-
   review round and moves the issue to `accepting`, whether the approval came before the merge or
   after it. Before, the round waited for GitHub's merge state of the head, which the daemon never
   reads for a merged pull request, so the issue stayed in `reviewing` and its reviewer was resumed
-  again and again. GitHub's deletion of the merged branch no longer takes that approval back, and a
-  merge at a head the record does not hold ends no round: the record moves to that head, so the
-  approval is of other code. An approval that stands on the head of a pull request closed without
-  merging no longer ends the round on a later fact: the architect decides what comes next.
+  again and again. A push from the head the pull request merged at no longer takes that approval
+  back: GitHub's deletion of the merged branch, whether an earlier release recorded it or it comes
+  after this release, or any later push to the branch. A merge at a head the record does not hold
+  ends no round: the record moves to that head, so the approval is of other code. An approval that
+  stands on the head of a pull request closed without merging no longer ends the round on a later
+  fact: the architect decides what comes next.

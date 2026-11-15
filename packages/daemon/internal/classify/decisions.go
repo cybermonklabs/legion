@@ -1106,8 +1106,17 @@ func ApprovalSetAside(pr record.PullRequest, reviewed string) bool {
 // (unspentPushes), so it is not on its way; the same two heads pushed again are spent as its repeat
 // (record.Move.Repeats), and look the same until their synchronize moves the head. The daemon
 // lands no merge meanwhile: the merger merges, and it merges the head its review approved.
+//
+// A merged pull request has no code on its way. The merge recorded the head the pull request
+// merged at (workflow's merged moves the record to the head the merge names), and that head is
+// final. So no push the record holds takes back an approval of that head: not GitHub's deletion
+// of the branch, which a release before the deletion guard (intake's decodePush) stored as a push
+// from the head, not a push to a branch kept after the merge, and not a push made after the merge
+// and delivered before it. Nothing would ever spend such a push on a merged record either: the
+// synchronize handler drops a merged record, and the daemon's reads follow only an open pull
+// request's head (daemon's followHead).
 func CodeOnItsWay(pr record.PullRequest) bool {
-	return len(pathFrom(pr.Pushes, pr.HeadSHA, true)) > 0
+	return pr.State != record.PullRequestMerged && len(pathFrom(pr.Pushes, pr.HeadSHA, true)) > 0
 }
 
 // RoundWaitsOnMergeState says whether a review round waits on GitHub's answer about merging the

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -70,6 +71,48 @@ func TestARoundWaitsOnTheMergeStateOnlyWhereAnApprovalStandsOnAHeadGitHubWillNot
 		t.Run(tc.name, func(t *testing.T) {
 			if got := RoundWaitsOnMergeState(tc.issue, tc.reviewer, tc.pr); got != tc.want {
 				t.Fatalf("RoundWaitsOnMergeState = %v, want %v: %s", got, tc.want, tc.name)
+			}
+		})
+	}
+}
+
+// A merged pull request has no code on its way (CodeOnItsWay): the head it merged at is final, so
+// no push its record holds from that head takes back an approval of it. One such push is GitHub's
+// deletion of the merged branch, a push from the head to no commit (intake.NoCommit), which a
+// release before the deletion guard stored as it stored any push. Another is an ordinary push to a
+// branch kept after the merge, or one made after the merge and delivered before it. On the merged
+// record an approval of the head stands (ApprovalStands), and an approval of another head is set
+// aside (ApprovalSetAside), since nothing more is coming. The same record open holds the push on
+// its way: no approval stands, and none is set aside, since the push's new head decides the round.
+func TestAMergedPullRequestHasNoCodeOnItsWay(t *testing.T) {
+	const head, other = "h2", "h1"
+	deletion := record.ClassifiedPush{SHA: intake.NoCommit, Before: head, Sender: "author"}
+	push := record.ClassifiedPush{SHA: "h3", Before: head, Sender: "author"}
+	for _, tc := range []struct {
+		name     string
+		state    record.PullRequestState
+		push     record.ClassifiedPush
+		onItsWay bool
+	}{
+		{"a merged pull request holding the deletion of its branch", record.PullRequestMerged, deletion, false},
+		{"a merged pull request holding a push from its head", record.PullRequestMerged, push, false},
+		{"an open pull request holding the deletion of its branch", record.PullRequestOpen, deletion, true},
+		{"an open pull request holding a push from its head", record.PullRequestOpen, push, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pr := record.PullRequest{Issue: "LEGION-208", Number: 42, HeadSHA: head, State: tc.state,
+				Pushes: []record.ClassifiedPush{tc.push}}
+			if got := CodeOnItsWay(pr); got != tc.onItsWay {
+				t.Fatalf("CodeOnItsWay = %v, want %v", got, tc.onItsWay)
+			}
+			if got := ApprovalStands(pr, head); got != !tc.onItsWay {
+				t.Fatalf("ApprovalStands of the head = %v, want %v", got, !tc.onItsWay)
+			}
+			if got := ApprovalSetAside(pr, head); got {
+				t.Fatal("ApprovalSetAside of the head = true, want false: the approval stands or waits on the push")
+			}
+			if got := ApprovalSetAside(pr, other); got != !tc.onItsWay {
+				t.Fatalf("ApprovalSetAside of another head = %v, want %v", got, !tc.onItsWay)
 			}
 		})
 	}
