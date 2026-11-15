@@ -734,8 +734,15 @@ func TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStart
 
 	h.relaunched()
 
-	if got := h.wantPrompts(sent + 1)[sent]; got.Message != next {
-		t.Fatalf("the prompt after the relaunch is %+v, want the task %q, to the process the launch started", got, next)
+	// The stale process left no report the daemon took (a stale plugin's report is refused), so
+	// its let-go at the launch's turn recorded its background work as unknown, and the task
+	// carries that sentence in front of it (dispatch://INFRA-3276 R3).
+	ended := h.claim().EndedWork
+	if ended.Cause != endStalePlugin || !ended.Tells() {
+		t.Fatalf("the launch's turn recorded %+v, want an untold end of the stale plugin's process", ended)
+	}
+	if got, want := h.wantPrompts(sent + 1)[sent], relaunchSentence(ended, true)+"\n\n"+next; got.Message != want {
+		t.Fatalf("the prompt after the relaunch is %+v, want the task %q, to the process the launch started", got, want)
 	}
 }
 
@@ -801,9 +808,9 @@ func TestATurnTheReplacedProcessConfirmedIsTakenBackAtTheLaunchsTurn(t *testing.
 // settlement runs with the very decision the write failed in (Handle, settle): the task would
 // go while its worker was still on it, on the process this turn did not replace.
 //
-// The negative control is that ordering reverted (interrupted's awaitingResult, cleared above
-// the write): the settlement that follows the turn then retires the task, which this test reads
-// where it asks the claim for it.
+// The negative control is that ordering reverted (interrupted's emptying of Machine.outstanding,
+// moved above the write): the settlement that follows the turn then retires the task, which this
+// test reads where it asks the claim for it.
 func TestATakeBackTheStoreRefusesAtTheTurnRetiresNoTask(t *testing.T) {
 	const task = "implement the plan"
 	h := pacedHarness(t, wakeRate)
@@ -1891,6 +1898,9 @@ func TestAnOperatorsDeliveryReplacingTheLaddersTaskRunsTheParkedLaunchNow(t *tes
 	replaced := h.locator()
 
 	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	// The session reports at the turn's end that nothing of its own runs, as Oh My Pi's does, so
+	// the replacement below ends no work and the operator's task goes as it was given (recordEnd).
+	h.reportActivity()
 	owed := h.pending()
 	if !h.m.replaceable(&owed) {
 		t.Fatalf("the task the provider error took back is %+v, want one a newer task replaces: this test needs the ladder's wait", owed)

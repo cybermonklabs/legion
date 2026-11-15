@@ -12,8 +12,8 @@ import { ReplyQuote } from "./ReplyQuote";
 import {
   DeliveryRetry,
   DeliveryStatus,
-  nothingToResend,
   type TargetedMessageAttempt,
+  takenAsUserTurn,
 } from "./TargetedMessageCard";
 
 /** A turn's action icons - copy-reference, Reply, Pin - beside its body: a row on desktop, a
@@ -93,12 +93,11 @@ export function ReplyTurn({
   replyDisabled?: boolean;
   turnID: string;
 }): ReactNode {
-  // The retry row a delivered reply keeps until the session answers it, or until its latest
-  // attempt leaves nothing to resend (`nothingToResend`).
+  // The retry row a delivered reply keeps until the session answers it or took it as its turn.
   const retry =
     delivery !== undefined &&
     delivery.answeredBy === undefined &&
-    !nothingToResend(delivery.attempts)
+    !takenAsUserTurn(delivery.attempts)
       ? delivery.retry
       : undefined;
   return (

@@ -42,9 +42,6 @@ const nativeIssueKeyPattern = /^[A-Z][A-Z0-9]{1,9}-[0-9]+$/;
 const externalIssueRefPattern = /^([^/\s]+)\/([^/\s#]+)#([1-9][0-9]*)$/;
 const bareIssueNumberPattern = /^[1-9][0-9]*$/;
 
-/** The commands whose arguments hold no `issue`, which owner resolution skips: it would fill an
- *  `issue` from LEGION_ISSUE, which their strict schemas refuse as an unknown flag, or refuse the
- *  call for want of one. */
 const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_issue: true,
   dispatch_edit_ask: true,
@@ -62,9 +59,9 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_whoami: true,
   dispatch_limits: true,
   dispatch_inbox: true,
-  dispatch_architecture_sync: true,
-  // A message to a session belongs to no issue: it goes to that session's own conversation.
+  // A session's own conversation belongs to no issue, so the call names the session instead.
   dispatch_send_to_agent: true,
+  dispatch_architecture_sync: true,
 };
 
 function canonicalExternalIssueRef(value: string): string {

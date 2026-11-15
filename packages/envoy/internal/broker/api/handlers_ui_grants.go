@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/wire"
@@ -82,7 +83,9 @@ func (s *server) revokeByApprover(w http.ResponseWriter, r *http.Request, caller
 	if !requireApprover(w, body.Approver) {
 		return
 	}
-	slog.Info("grant revocation relayed", "caller", callerName, "approver", body.Approver, "grant", id)
+	// The approver is the caller's word, of any length requireApprover takes, so the line cuts it
+	// (answer.ClipFields).
+	slog.Info("grant revocation relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "grant", id})...)
 	s.revokeGrantAs(w, r, id, body.Approver, record.HumanActor(body.Approver))
 }
 

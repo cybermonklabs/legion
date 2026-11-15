@@ -148,10 +148,10 @@ func NewGCPClient(ctx context.Context, opts ...option.ClientOption) (*secretmana
 	}
 	// The library retries only AccessSecretVersion; the metadata calls a reload and a reread make
 	// get a retry of UNAVAILABLE, at most gcpMetadataAttempts calls in all, so one transient failure
-	// neither fails a reload (and its alarm) nor a value release, and a lasting outage fails each
-	// call within seconds with its own code, as the AWS SDK's three attempts do. RESOURCE_EXHAUSTED
-	// is not retried: the read quota is shared by the whole project, and retrying into it only
-	// spends more of it.
+	// neither fails a reload (and so writes no failed-load line) nor a value release, and a lasting
+	// outage fails each call within seconds with its own code, as the AWS SDK's three attempts do.
+	// RESOURCE_EXHAUSTED is not retried: the read quota is shared by the whole project, and
+	// retrying into it only spends more of it.
 	retry := gax.WithRetry(func() gax.Retryer {
 		return &boundedRetryer{inner: gax.OnCodes([]codes.Code{codes.Unavailable}, gax.Backoff{Initial: 200 * time.Millisecond, Max: 2 * time.Second, Multiplier: 2}), left: gcpMetadataAttempts - 1}
 	})
@@ -248,7 +248,9 @@ func (g GCP) Describe(ctx context.Context, id string) (Listing, error) {
 	return g.listing(ctx, secret)
 }
 
-// listing is the Listing of one Secret the API answered, with its latest version read.
+// listing is the Listing of one Secret the API answered, with its latest version read: its state
+// and key, and, when it is ENABLED, its number (the last segment of the version's resource name,
+// which GetSecretVersion answers for the latest one), the Listing's Version.
 func (g GCP) listing(ctx context.Context, secret *secretmanagerpb.Secret) (Listing, error) {
 	name := secret.GetName()
 	ls := Listing{ID: name, Source: name, Tags: secret.GetAnnotations()}
@@ -261,6 +263,10 @@ func (g GCP) listing(ctx context.Context, secret *secretmanagerpb.Secret) (Listi
 	switch status.Code(err) {
 	case codes.OK:
 		ls.HasCurrentValue = version.GetState() == secretmanagerpb.SecretVersion_ENABLED
+		if ls.HasCurrentValue {
+			versionName := version.GetName()
+			ls.Version = versionName[strings.LastIndex(versionName, "/")+1:]
+		}
 		// The version's own key is what encrypts the value; a version made before the secret's
 		// replication policy was changed stays on the key it was made with.
 		onKey = g.onKey(version.GetReplicationStatus().GetAutomatic().GetCustomerManagedEncryption().GetKmsKeyVersionName())
@@ -297,8 +303,8 @@ func (g GCP) onKey(keyVersion string) bool {
 // ErrNotFound when Secret Manager holds no such secret or no version (NOT_FOUND), when the
 // secret has an expire_time, or when the latest version is disabled or destroyed
 // (FAILED_PRECONDITION), all the same answer to the caller: the secret is not readable. The value
-// must be non-empty UTF-8, since the broker injects it into an environment; an error names the
-// secret and never the bytes.
+// must be non-empty UTF-8, since the broker injects it into an environment, and one that is not
+// wraps ErrValueNotText; an error names the secret and never the bytes.
 func (g GCP) Read(ctx context.Context, source string) (string, error) {
 	if err := g.held.verdict(source, func() error {
 		secret, err := g.Client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: source})
@@ -346,7 +352,7 @@ func (g GCP) Read(ctx context.Context, source string) (string, error) {
 	}
 	data := out.GetPayload().GetData()
 	if len(data) == 0 || !utf8.Valid(data) {
-		return "", fmt.Errorf("secret manager %s: value is not a non-empty UTF-8 string", latest)
+		return "", fmt.Errorf("secret manager %s: %w", latest, ErrValueNotText)
 	}
 	return string(data), nil
 }

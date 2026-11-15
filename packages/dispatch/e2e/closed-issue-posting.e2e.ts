@@ -28,9 +28,7 @@ import { asUser } from "./users";
 // reads each back.
 //
 // Fixture: before the close, bob posted a plain message, a message to the live planner, and one
-// to the live tester whose delivery failed: the tester's listener answers every send 503, past
-// the take-over window too. A 404 would not fail it, since Dispatch keeps a message for a session
-// the listener holds no record of.
+// to the live tester whose delivery failed (the tester's listener answers 404).
 
 const spec = "The quick brown fox jumps over the lazy dog.";
 
@@ -57,7 +55,7 @@ interface Fixture {
 
 async function seedClosedIssue(): Promise<Fixture> {
   await setLiveSessions([planner, tester]);
-  await setSessionSendStatus(tester.session_id, 503);
+  await setSessionSendStatus(tester.session_id, 404);
   await createProject({ key: "E2E", name: "Closed issues" });
   const issue = await createIssue({ project: "E2E", spec, title: "Asked after it closed" });
   const question = await createMessage(issue.key, { body: "Bob's question" }, { login: "bob" });
@@ -205,9 +203,7 @@ test("Retry of a failed delivery on a closed issue posts a new attempt", async (
   try {
     const page = await alice.newPage();
     const card = await openMessage(page, issueKey, testerMessageId);
-    await expect(card).toContainText(
-      "Failed: envoy listener: listener returned 503: service starting"
-    );
+    await expect(card).toContainText(`Failed: no live session ${tester.session_id}`);
     const retry = card.getByRole("button", { exact: true, name: "Retry" });
     await expect(retry).toBeVisible();
     await setSessionSendStatus(tester.session_id, 200);

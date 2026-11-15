@@ -518,17 +518,10 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "answers") {
       return response({ session_id: SESSION, since: AT, total: 0, items: [] });
     }
-    // `dispatch send-to-agent`: the session's direct message, answered once its first attempt
-    // reached the session.
+    // `dispatch send-to-agent`: answered once the first delivery attempt settled, here as sent.
     if (rest === "messages" && method === "POST") {
       return response(
-        {
-          ...messageBody(),
-          issue_key: null,
-          deliveries: [
-            { attempt: 1, delivery: "aside", error: null, session_id: segments[3], state: "sent" },
-          ],
-        },
+        { ...messageBody(), issue_key: null, deliveries: [{ delivery: "aside", state: "sent" }] },
         201
       );
     }

@@ -371,10 +371,7 @@ test("an agent's answer on a failed attempt is accepted and shown as the answer"
   // it cannot share their round: a PATCH that arrives first answers
   // `404 unknown fixture session s1` and fails the row. Only the project is independent.
   await Promise.all([setLiveSessions([planner]), createProject({ key: "CORE", name: "Core" })]);
-  // The listener answers every send 503, past the take-over window too, so the attempt fails. A
-  // 404 would not do: Dispatch keeps the message for a session the listener holds no record of,
-  // and a kept attempt is no failure.
-  await setSessionSendStatus("s1", 503);
+  await setSessionSendStatus("s1", 404);
   const issue = await createIssue({ project: "CORE", title: "Failed receipt" });
   const question = "Did you get this?";
   const message = await createMessage(issue.key, {
@@ -388,9 +385,7 @@ test("an agent's answer on a failed attempt is accepted and shown as the answer"
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
     const card = turn(page, question);
-    await expect(card).toContainText(
-      "Failed: envoy listener: listener returned 503: service starting"
-    );
+    await expect(card).toContainText("Failed: no live session s1");
 
     // The receipt was wrong: the session did get the message and answers on that attempt.
     const answer = (await replyToMessageDelivery(

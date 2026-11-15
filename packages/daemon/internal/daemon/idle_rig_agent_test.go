@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,12 +76,23 @@ type idleRigAdoption struct {
 // idleRigPlan is what a role process does with the next prompt it is given: take a turn on it, or
 // acknowledge it and take none, which is the shape of a resume that never reaches its first turn.
 // Topics are the topics the process registers with the Envoy listener beside its agent subject,
-// as `envoy_subscribe` adds one. ExitsAsReleasedInProduction is a process that ends as a released
-// Oh My Pi does in production: it registers again every idleRigRegistrationRefresh while it runs
-// and deletes nothing when it stops (idleRigRoleProcess.run).
+// as `envoy_subscribe` adds one.
+//
+// Background is the background work the session's host runs, by the kind its activity report
+// names it with — `subagent` for a running `task` subagent, `async-job` for any other job the
+// host's manager runs (asyncJobKinds, packages/pi-shared/src/session-activity.ts) — and none
+// while nothing runs. The process reports it as the Oh My Pi extension does
+// (packages/pi-legion/extensions/legion.ts): at every turn's end whatever it says, and between
+// turns whenever it changes (idleRigRoleProcess.watchActivity), so a test that changes it
+// mid-run is a subagent starting or ending in a live session.
+//
+// ExitsAsReleasedInProduction is a process that ends as a released Oh My Pi does in production:
+// it registers again every idleRigRegistrationRefresh while it runs and deletes nothing when it
+// stops (idleRigRoleProcess.run).
 type idleRigPlan struct {
 	TakeTurn                    bool     `json:"takeTurn"`
 	Topics                      []string `json:"topics"`
+	Background                  []string `json:"background"`
 	ExitsAsReleasedInProduction bool     `json:"exitsAsReleasedInProduction"`
 }
 
@@ -317,10 +329,11 @@ func TestIdleRigRoleProcess(t *testing.T) {
 	os.Exit(0)
 }
 
-// The subjects, header and replies of a session's own delivery, which the role process reads
+// The subjects, headers and replies of a session's own delivery, which the role process reads
 // and answers as a plugin in consumer mode does. They are packages/envoy's: bus.DeliverSubject
 // and contracts.AgentSubject build the two subjects, cmd/listener/session_relay.go names the
-// header and the replies, and cmd/listener/session_delivery.go the mode the registration
+// frame header and the replies, internal/bus/stream.go the probe header
+// (bus.ConnectionProbeHeader), and cmd/listener/session_delivery.go the mode the registration
 // answers. The rig writes them out because they are another module's, and an Envoy that renamed
 // one would be a contract change this rig has to be told about.
 const (
@@ -332,6 +345,10 @@ const (
 	idleRigAgentSubjectPrefix = "notifications.agent."
 	// idleRigStreamSeqHeader is a relay frame's stream sequence, in decimal.
 	idleRigStreamSeqHeader = "Envoy-Stream-Seq"
+	// idleRigProbeHeader, "1", with no body, is the listener's connection probe on the relay
+	// subject (bus.ConnectionProbeHeader): the send route asks with it whether the session still
+	// subscribes the subject. It is no frame, and is answered done before anything is decoded.
+	idleRigProbeHeader = "Envoy-Probe"
 	// idleRigRelayReceived is the answer that the frame decoded, before any work of the
 	// session's; idleRigRelayDone is the answer that it was written, which acknowledges the
 	// message to the consumer.
@@ -402,6 +419,15 @@ type idleRigRoleProcess struct {
 	// counts.
 	recordedMu sync.Mutex
 	recorded   map[uint64]bool
+
+	// reportMu orders this process's activity reports, which a turn's end and the watch between
+	// turns both send. reported is the background work the last report sent named, and taken
+	// whether the daemon took it: a report it did not take is sent again at the watch's next
+	// reading whatever that reads, as the extension forgets a report that did not reach the
+	// daemon (lastActivity in packages/pi-legion/extensions/legion.ts).
+	reportMu sync.Mutex
+	reported []string
+	taken    bool
 
 	// refreshMu is held across each registration refresh (refreshRegistration), and stopped
 	// says the process is ending, after which no refresh starts: the process ends with no
@@ -489,6 +515,7 @@ func (p *idleRigRoleProcess) run() error {
 	if err := p.reportActivity(); err != nil {
 		return err
 	}
+	go p.watchActivity()
 	// Oh My Pi's plugin sends its DELETE of the registration in its session_shutdown handler,
 	// but at a production release that DELETE does not take effect. The default stand-in deletes
 	// its registration and its interests as it stops, which models a released role whose claim
@@ -616,8 +643,15 @@ func (p *idleRigRoleProcess) openDelivery() error {
 // frame decodes, records the message with the rig, and only then answers `done`, which is what
 // acknowledges the message to the consumer. A frame whose stream sequence this process has
 // already recorded — the relay sends again what it saw no reply to — is acknowledged and not
-// recorded twice.
+// recorded twice. The listener's connection probe is no frame: it is answered `done`, as a
+// plugin answers it before it decodes anything, and recorded nowhere.
 func (p *idleRigRoleProcess) relayed(msg *nats.Msg) {
+	if msg.Header.Get(idleRigProbeHeader) == "1" {
+		if msg.Reply != "" {
+			p.reply(msg, idleRigRelayDone)
+		}
+		return
+	}
 	var item idleRigEnvelope
 	if err := json.Unmarshal(msg.Data, &item); err != nil {
 		fmt.Fprintf(os.Stderr, "idle rig role process: decode a frame for %s: %v\n", p.session, err)
@@ -754,13 +788,56 @@ func (p *idleRigRoleProcess) ready() error {
 	}, nil)
 }
 
-// reportActivity is the session's report that it runs no background work and has no reminder due,
-// which the idle rule reads before it releases the pod (R1).
+// reportActivity is the session's report of what it is doing, sent whatever it says, as the
+// extension's turn-end report is (its `session_stop` handler): once the process is ready, and
+// after every task it is given (prompted). It names the background work the rig's plan says is
+// running (idleRigPlan.Background) and no reminder due. The idle rule reads it before it releases
+// the pod (R1), and holds the pod while it names background work running.
 func (p *idleRigRoleProcess) reportActivity() error {
-	return p.post(p.daemon+"/legion/v1/claims/activity", claim.ActivityRequest{
+	p.reportMu.Lock()
+	defer p.reportMu.Unlock()
+	plan, err := p.plan()
+	if err != nil {
+		return err
+	}
+	return p.report(plan.Background)
+}
+
+// idleRigActivityPeriod is how often a role process reads its background work between turns: the
+// extension's managed interval, five seconds there (SESSION_ACTIVITY_PERIOD_MS), cut to one here
+// so a subagent that ends is reported within a second rather than within the rig's waits.
+const idleRigActivityPeriod = time.Second
+
+// watchActivity is the extension's managed interval between turns: every idleRigActivityPeriod
+// it reads the background work the rig's plan says is running and reports it when it differs
+// from what the daemon last took, or when the daemon took nothing last time, and sends nothing
+// otherwise. A reading it cannot make is skipped, as the next one comes a period later. Each
+// reading is made under reportMu, as reportActivity's is, so the report the daemon holds last is
+// always of the latest reading: none read before a change lands after one read since.
+func (p *idleRigRoleProcess) watchActivity() {
+	ticker := time.NewTicker(idleRigActivityPeriod)
+	defer ticker.Stop()
+	for range ticker.C {
+		p.reportMu.Lock()
+		if plan, err := p.plan(); err == nil && (!p.taken || !slices.Equal(plan.Background, p.reported)) {
+			if err := p.report(plan.Background); err != nil {
+				fmt.Fprintf(os.Stderr, "idle rig role process: report the activity of %s: %v\n", p.session, err)
+			}
+		}
+		p.reportMu.Unlock()
+	}
+}
+
+// report posts one activity report through the daemon's own route, naming kinds as the
+// background work running, and records whether the daemon took it. The caller holds reportMu.
+func (p *idleRigRoleProcess) report(kinds []string) error {
+	err := p.post(p.daemon+"/legion/v1/claims/activity", claim.ActivityRequest{
 		ClaimToken: p.claimToken, SessionID: p.session, Secret: p.secret,
-		Activity: claim.SessionActivity{At: time.Now().UTC()},
+		Activity: claim.SessionActivity{At: time.Now().UTC(),
+			BackgroundWork: claim.BackgroundWork{Running: len(kinds) > 0, Kinds: kinds}},
 	}, nil)
+	p.reported, p.taken = kinds, err == nil
+	return err
 }
 
 // serve answers the daemon's frames until the connection ends or a shutdown arrives.

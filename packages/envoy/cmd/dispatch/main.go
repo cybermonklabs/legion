@@ -337,22 +337,6 @@ func main() {
 		agentStream = agentstream.NewNATS(streamConn)
 	}
 
-	// A person's targeted message to a session the listener holds no record of is kept on that
-	// session's own subject, published through the NATS client. With test hooks and no NATS it is
-	// kept in an in-process recorder the e2e harness reads (GET /api/v1/messages/_test/kept)
-	// instead, and with neither such a message settles failed. Only a value that is there is put
-	// in the interface: a nil *bus.Client in it would read as a publisher.
-	var agentPublisher api.AgentPublisher
-	switch {
-	case natsClient != nil:
-		agentPublisher = natsClient
-	case boot.TestHooksEnabled:
-		agentPublisher = api.NewAgentPublishRecorder()
-		slog.Info("dispatch: targeted messages kept in the test hook's recorder")
-	default:
-		slog.Info("dispatch: a targeted message to a session with no record fails: keeping it needs NATS")
-	}
-
 	database, err := store.Open(ctx, boot.DatabaseURL)
 	if err != nil {
 		slog.Error("dispatch: open database", "error", err)
@@ -521,7 +505,6 @@ func main() {
 		Events:         broker,
 		App:            appCfg,
 		AgentStream:    agentStream,
-		AgentPublisher: agentPublisher,
 		Files:          fileStore,
 		Lifetime:       ctx,
 	}

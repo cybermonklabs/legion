@@ -678,8 +678,9 @@ func (r *repositories) servedGaps(gaps []webhookAppGap, refused []refusedReposit
 }
 
 // installReadRetry is how long refreshOnMappingChange waits before it reads the mapping again of
-// its own while a failed installation read leaves a repository as it stands (awaitingRead): 30 s
-// doubling to 10 min, without limit (Attempts is unused), back to 30 s once none is left.
+// its own while a read GitHub did not answer, an installation read or a default-branch read past
+// GitHub's rate limit, leaves a repository as it stands (awaitingRead): 30 s doubling to 10 min,
+// without limit (Attempts is unused), back to 30 s once none is left.
 var installReadRetry = bootprobe.Retry{Initial: 30 * time.Second, Max: 10 * time.Minute}
 
 // recoveryHoldBound is how long a recovery's release waits stay untold while its listing is held
@@ -695,7 +696,8 @@ var recoveryHoldBound = defaultHoldWarnEvery
 // repositories, three reads each, takes at most ceil(3n / mappingReads) of these.
 var installReadAttempt = 15 * time.Second
 
-// readFailures is the refusals of refused that a failed installation read made (readErr).
+// readFailures is the refusals of refused that a read GitHub did not answer made (readErr), its
+// installation read or its default-branch read past GitHub's rate limit (unreadDefaultBranch).
 func readFailures(refused []refusedRepository) []refusedRepository {
 	var failed []refusedRepository
 	for _, refusal := range refused {
@@ -878,8 +880,8 @@ func (w *workflowRuntime) nameMapping(ctx context.Context) error {
 }
 
 // refreshMapping reads the repository mapping again: refreshOnMappingChange's read, which a
-// mapping change in Dispatch, an admission held for it (requestMappingRead) or a repository whose
-// installation read failed (installReadRetry) asks for. A repository the daemon serves whose
+// mapping change in Dispatch, an admission held for it (requestMappingRead) or a read GitHub did
+// not answer (installReadRetry) asks for. A repository the daemon serves whose
 // installation read fails stays served on its last answer, with the name GitHub last gave it and
 // no read of GitHub, recorded as unverified so it is read again: GitHub's failure to answer is no
 // reason to stop serving a repository it answered for, and no reason either to hold back the rest
@@ -1122,9 +1124,10 @@ func (w *workflowRuntime) requestMappingRead() uint64 {
 // with no limit, until it applies: a read takes the whole mapping, so retrying loses no request,
 // and a daemon stopped before one applies reads the mapping at boot. A finished read covers every
 // request made before it started, and then recovers each repository the read stopped leaving out
-// for a failed installation read (recoverRepositories). While a failed installation read leaves a
-// repository as it stands (awaitingRead: left out for now, or served on its last answer), or a
-// recovery has not committed yet, it reads the mapping again of its own on installReadRetry's
+// for a read GitHub did not answer (recoverRepositories). While such a read leaves a repository as
+// it stands (awaitingRead: left out for now, for its installation read or its default-branch read
+// past GitHub's rate limit, or served on its last answer, its installation read having failed), or
+// a recovery has not committed yet, it reads the mapping again of its own on installReadRetry's
 // backoff, 30 s doubling to 10 min, reset once nothing waits, so the repository is served, or
 // confirmed, and its issues recovered, once GitHub answers, with no restart and no mapping change.
 // While a held recovery has release waits to tell and time left to recoveryHoldBound
@@ -1185,7 +1188,8 @@ func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
 }
 
 // markRecovered adds to the repositories to recover (recovering) each repository before names, a
-// refusal for a failed installation read in the mapping as last read, that after, the same of the
+// refusal for a read GitHub did not answer (its installation read, or its default-branch read past
+// GitHub's rate limit: readFailures) in the mapping as last read, that after, the same of the
 // mapping just published, does not name: GitHub answered for it, or it is no longer mapped. A
 // repository after names is dropped from the set: it is unread again, and the read that next stops
 // leaving it out adds it back. It runs under the fact lock, with the publication, so every event
@@ -1962,7 +1966,8 @@ func parentKey(parent *string) string {
 // prepareUnrecorded readies the event of an issue the workflow does not record, as
 // prepareRepository says, holding back an admission on a repository not served for a read of the
 // mapping, under the sequence the event was delivered at (held), when await is set. An admission
-// on a repository a failed installation read leaves out is not held back: GitHub is being read
+// on a repository left out for a read GitHub did not answer (its installation read, or its
+// default-branch read past GitHub's rate limit) is not held back: GitHub is being read
 // again for it already, so the event is returned to be applied and acknowledged, its apply says
 // nothing and keeps nothing (workflow.Resolution.Unread), and the issue is taken from Dispatch's
 // listing once GitHub answers for the repository (recoverRepositories). A served repository kept

@@ -1,7 +1,11 @@
 import { z } from "zod";
 import type { MessageWithTrees } from "./dispatch-api.generated";
 import { ActorSchema, InboundActorSchema } from "./dispatch-api-core";
-import { DELIVERY_CAPABILITIES } from "./dispatch-api-limits";
+import {
+  DELIVERY_ATTEMPT_STATES,
+  DELIVERY_CAPABILITIES,
+  SETTLED_DELIVERY_STATES,
+} from "./dispatch-api-limits";
 import {
   carriedBodyFields,
   type ReplyBlock,
@@ -32,18 +36,14 @@ export const messageDeliveryFields = {
    */
   duplicate: z.boolean().optional(),
   /**
-   * `pending` is an attempt Dispatch has committed but not yet sent, or whose send it never
-   * learned the outcome of: the row is written before the listener call and settled by a
-   * second transaction after it, so no Envoy send holds a database connection. A retry
-   * resumes a pending attempt no live sender still holds, under its original idempotency key,
-   * so the listener deduplicates a send that did land.
-   *
-   * `kept` is an attempt whose session the listener still held no record of when Dispatch's
-   * take-over window ended (the time Dispatch retries a send to a session the listener does not
-   * know). Dispatch then stored the message on that session's agent subject itself, and the
-   * session reads it when it registers again.
+   * What became of this attempt (`DeliveryAttemptState`). `pending` is an attempt Dispatch has
+   * committed but not yet sent, or whose send it never learned the outcome of: the row is
+   * written before the listener call and settled by a second transaction after it, so no Envoy
+   * send holds a database connection. A retry resumes a pending attempt no live sender still
+   * holds, under its original idempotency key, so the listener deduplicates a send that did
+   * land.
    */
-  state: z.enum(["pending", "sent", "failed", "kept"]),
+  state: z.enum(DELIVERY_ATTEMPT_STATES),
   error: z.string().nullable(),
   reply_id: z.string().nullable(),
   created_at: z.string(),
@@ -143,11 +143,7 @@ export const messageDeliveryEventPayloadFields = {
   session_id: z.string(),
   target: z.string().optional(),
   title: z.string(),
-  /** `kept`: the listener still held no record of the session when Dispatch's take-over window
-   *  ended, so Dispatch stored the message on the session's agent subject itself, and the session
-   *  reads it when it registers again. A host built before `kept` refuses this state and reads
-   *  the payload as it came (`dispatch-inbound-parity.test.ts`). */
-  state: z.enum(["sent", "failed", "kept"]),
+  state: z.enum(SETTLED_DELIVERY_STATES),
   /** The stream already held this message: an earlier attempt landed, so this one is recognised as
    *  a repeat and not handed to the recipient again (`DELIVERY_DUPLICATE_WINDOW_MS`). Absent means
    *  false. */

@@ -221,7 +221,7 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 		},
 		{
 			name:   "a google login",
-			secret: policytest.KindSecret("SHAPE_KEY", fixtureOperator, policy.TierAgent, policy.KindGoogleLogin, `{"type":"authorized_user"}`),
+			secret: policytest.KindSecret("SHAPE_KEY", fixtureOperator, policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin)),
 			minted: googleToken,
 			real:   googleToken,
 			want:   []string{SlotValue},
@@ -260,7 +260,7 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 		},
 		{
 			name:   "a GitHub App",
-			secret: policytest.KindSecret("SHAPE_KEY", fixtureOperator, policy.TierAgent, policy.KindGitHubApp, "stored-app-key"),
+			secret: policytest.KindSecret("SHAPE_KEY", fixtureOperator, policy.TierAgent, policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)),
 			minted: githubMint,
 			real:   "ghs_realinstallationtoken",
 			want:   []string{SlotGitHubPrefix + "acme"},
@@ -396,7 +396,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 		},
 		{
 			name:     "a GitHub App of two installations",
-			secret:   policytest.KindSecret("SHAPE_KEY", fixtureOperator, policy.TierAgent, policy.KindGitHubApp, "stored-app-key"),
+			secret:   policytest.KindSecret("SHAPE_KEY", fixtureOperator, policy.TierAgent, policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)),
 			mint:     githubMint,
 			want:     map[string]string{SlotGitHubPrefix + "acme": "ghs_acme_token", SlotGitHubPrefix + "zed": "ghs_zed_token"},
 			wantKind: policy.KindGitHubApp,

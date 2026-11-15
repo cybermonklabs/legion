@@ -186,10 +186,20 @@ var sessionStoreVariables = []string{ompsessions.StorageVariable, ompsessions.DS
 // whatever the Secret's key is called.
 const providersDSNFile = ProvidersDir + "/" + ompsessions.DSNFileName
 
-// sessionProxyFlagNames are the flags a pod's `legion launcher` is told the Cloud SQL
+// sessionProxyFlagNames are the flags a pod's `legion launcher` is always told the Cloud SQL
 // session database by, in the order sessionProxyFlags writes them: the instance's connection name,
-// the database in it, and the IAM login the pod signs in as.
+// the database in it, and the IAM login the pod signs in as, which is the login of the service
+// account it impersonates where the store names one (sessionProxyAccountFlag). All three are
+// required, so a launcher carrying them is what marks a pod as created under cloudsql-iam
+// (sessionProxyFlagsIn).
 var sessionProxyFlagNames = [3]string{"--session-instance", "--session-database", "--session-user"}
+
+// sessionProxyAccountFlag names the Google service account a pod's `legion launcher` impersonates
+// with the pod's own credentials to sign in to Cloud SQL (Database.ImpersonateServiceAccount). It
+// is optional, so it is no member of sessionProxyFlagNames: a pod that signs in as itself carries
+// no such flag at all, never an empty one, so a deployment that names no account keeps the very
+// command its pods were created with before the flag existed, and none of them drifts for it.
+const sessionProxyAccountFlag = "--session-impersonate-service-account"
 
 // legionVolumeNames are the volumes Legion puts in a pod, an issue pod's, the controller's or the
 // probe's, whose names the operator's volumes may not take: the shared ones, the role homes, the
@@ -937,19 +947,24 @@ func (r *Runtime) sessionDSNFile(l launch) string {
 }
 
 // sessionProxyFlags are what a pod's `legion launcher` is told of the Cloud SQL session database
-// it proxies its generations' sessions to, none under any other store. There is no address among
-// them: the launcher binds the socket in the generation's own private directory, which it knows
-// from --roles-dir and the role in an issue pod's one container, and from --private-dir in the
-// controller's.
+// it proxies its generations' sessions to, none under any other store: the three of
+// sessionProxyFlagNames, then sessionProxyAccountFlag only where the store names a service account
+// to impersonate, so the login the pod signs in as is its own identity's, or that account's. There
+// is no address among them: the launcher binds the socket in the generation's own private
+// directory, which it knows from --roles-dir and the role in an issue pod's one container, and
+// from --private-dir in the controller's.
 func (r *Runtime) sessionProxyFlags() []string {
 	if r.sessionStore.Kind != ompsessions.StoreCloudSQLIAM {
 		return nil
 	}
 	database := r.sessionStore.Database
 	values := [len(sessionProxyFlagNames)]string{database.Instance, database.Name, database.User}
-	flags := make([]string, 0, 2*len(values))
+	flags := make([]string, 0, 2*len(values)+2)
 	for i, value := range values {
 		flags = append(flags, sessionProxyFlagNames[i], value)
+	}
+	if database.ImpersonateServiceAccount != "" {
+		flags = append(flags, sessionProxyAccountFlag, database.ImpersonateServiceAccount)
 	}
 	return flags
 }

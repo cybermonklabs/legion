@@ -305,10 +305,7 @@ test("a session that goes away before the send is excluded by the server and nam
   browser,
 }, testInfo) => {
   await setLiveSessions([planner, tester, observer]);
-  // The Tester's listener answers every send 503, past the take-over window too, so its send
-  // fails. A 404 would not do: Dispatch keeps a message for a session the listener holds no
-  // record of, and a kept copy offers no Retry.
-  await setSessionSendStatus(tester.session_id, 503);
+  await setSessionSendStatus(tester.session_id, 404);
 
   const alice = await asUser(browser, "alice");
   try {

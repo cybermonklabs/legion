@@ -1,4 +1,10 @@
-import { type FakeSession, getSentMessages, setLiveSessions, setSessionSendStatus } from "./agents";
+import {
+  type FakeSession,
+  getSentMessages,
+  setLiveSessions,
+  setSessionSendStatus,
+  setSessionStopped,
+} from "./agents";
 import {
   baseUrl,
   e2eAgentToken,
@@ -686,8 +692,8 @@ test("a person's own token sends a switch recorded as them with the agent beside
 // A4: a session that stopped running never answers. Thirty seconds after Dispatch took the
 // switch the page says no answer came, keeps the values the session last reported, and gives the
 // pickers back; an answer that still comes replaces the line. A switch whose send already failed
-// (the listener did not take it) says so as soon as Dispatch answers with the failed attempt,
-// without waiting for that deadline.
+// (no live session took it) says so as soon as Dispatch answers with the failed attempt, without
+// waiting for that deadline.
 // SLOW(>=2s): two switches, each a round trip of its own: the answered one waits out the page's
 // once-a-second read of the thread (MIN_REFETCH_INTERVAL_MS, web/src/api/query-refresh.ts), and
 // the failed one waits out the listener take-over window Dispatch answers after, as the comment
@@ -732,18 +738,54 @@ test("a switch the session never answers says so after 30 seconds and keeps the 
     await expect(status).toHaveText("The session answered: Model set to anthropic/model-b.");
 
     // The send itself fails: Dispatch answers with a failed attempt, and the page says so with no
-    // wait for the deadline. The listener answers every send 503, so Dispatch answers only once
-    // the listener take-over window has passed: half a second under the harness's
-    // DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW (e2e/run-server.sh), of the twelve seconds a
-    // deployment runs, in real time the page's installed clock does not hold back. A 404 would
-    // not fail it: Dispatch keeps a message for a session the listener holds no record of.
-    await setSessionSendStatus(id, 503);
+    // wait for the deadline. Dispatch answers only once the listener take-over window has passed:
+    // half a second under the harness's DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW
+    // (e2e/run-server.sh), of the twelve seconds a deployment runs, in real time the page's
+    // installed clock does not hold back.
+    await setSessionSendStatus(id, 404);
     await model.selectOption("openai/model-c");
     await expect(status).toHaveText(/^No answer came from the session: \S/);
     await expect(status).not.toHaveText(NO_ANSWER);
     await expect(model).toBeEnabled();
     await expect(send).toBeEnabled();
     await expectPicked(page, "anthropic/model-a", "auto");
+    await expectNoSidewaysScroll(page, testInfo.project.name);
+  } finally {
+    await context.close();
+  }
+});
+
+// INFRA-626. Every other message to a session Envoy knows and that is not running is stored for
+// it and handed over when it runs again. A switch is the one send that must not be: `/model` and
+// `/effort` apply to the session that reads them, so one stored would change a model at an
+// unknown later time. The switch asks for a session that is running now (`connected_only`), the
+// listener refuses a stopped one, and the header says so at once rather than queueing silently.
+test("a switch to a session that is not running is refused rather than stored for it", async ({
+  browser,
+}, testInfo) => {
+  const session = liveSession(20);
+  const id = session.session_id;
+  await setLiveSessions([session]);
+  await publishAgentStreamFrame(id, freshReplay(id), "replay");
+  const { context, page } = await viewer(browser, testInfo.project.name, "alice");
+  try {
+    await page.goto(livePath(id));
+    await expectPicked(page, "anthropic/model-a", "auto");
+    const { model, status, thinking } = header(page);
+
+    await setSessionStopped(id, true);
+    await model.selectOption("anthropic/model-b");
+    await expect(status).toHaveText("No answer came from the session: the session is stopped");
+    // The pickers come straight back and the header still reads what the session last
+    // reported: nothing was changed, and nothing will be.
+    await expect(model).toBeEnabled();
+    await expect(thinking).toBeEnabled();
+    await expectPicked(page, "anthropic/model-a", "auto");
+
+    // The refusal is the listener's, and it is the switch's own request that asked for it: every
+    // other send leaves `connected_only` out and is queued for a stopped session.
+    const sends = await getSentMessages();
+    expect(sends.map((send) => [send.target_session, send.connected_only])).toEqual([[id, true]]);
     await expectNoSidewaysScroll(page, testInfo.project.name);
   } finally {
     await context.close();
