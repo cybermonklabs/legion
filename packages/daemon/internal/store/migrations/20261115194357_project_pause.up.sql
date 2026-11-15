@@ -1,0 +1,131 @@
+-- 20261115194357_project_pause.up.sql — the records of a project's pause (dispatch://INFRA-3759):
+-- each pause, each role a pause asks to stop, each pod a pause holds, and the two marks a resume
+-- of a released pod gets from it.
+--
+-- project_pauses holds one row per pause. project is the project's Dispatch key, the spelling
+-- the outbox reads off an issue key (split_part(outbox.issue, '-', 1), record's outboxClaimable),
+-- so the outbox's claim can ask this table directly whether a row's project is paused. by is who
+-- paused: the kind `controller` with the controller's session id, or the kind `operator` with no
+-- session. A pause is open until ended_at is set, with who ended it in the same shape. The checks
+-- make every other row impossible: a controller with no session, an operator with one, a reason
+-- that is only white space, an end without who ended it, or who ended it without an end. The
+-- partial unique index allows one open pause per project, so a second pause is refused by the
+-- database as well as by the pause's own transaction (store's Pause, which takes
+-- treelifecycle.Serialize first).
+--
+-- project_pause_stops holds one row for each role a pause asks to stop: the pause, the claim, its
+-- issue and role, when the pause asked, and when and how the stop ended. A stop ends `stopped`
+-- (the role stopped, with launch_owed saying whether a launch was owed when it stopped),
+-- `taken_over` (a park, a close or an operator took the role over first), `failed` (the claim
+-- failed or retired) or `cancelled` (the resume ended the pause first). A pause has at most one
+-- open stop per claim. The open stops are what the state names as the roles the pause still
+-- waits on.
+--
+-- project_pause_pod_holds holds one row for each pod a pause keeps: the pause, its project, the
+-- issue whose pod it is, when the hold began, and when and why it ended (`resumed`: the resume
+-- found a live role in the pod; `ready`: a role of the pod became ready; `deleted`: a close, a
+-- park, a linger, a production check's look or a teardown deleted the pod). A pod has at most one
+-- open hold. The hold names its pause by (pause_id, project), so a hold of one project can never
+-- name another project's pause, and its issue must be an issue of that project.
+--
+-- pod_resumes.clock_at is when a resume's stuck clock starts. Every row has one: the backfill
+-- copies at, and a trigger copies at into a row inserted without it. The trigger is for a daemon
+-- of an earlier release on the same database, which names the column nowhere, and for a
+-- hand-written insert; the daemon of this release writes the column itself (store's
+-- RecordPodWakeTx). pod_resumes.pause_id is the pause that held the wake, null for every other
+-- wake. A held wake pairs with no release, so the check refuses a pause_id beside a release_id.
+--
+-- No outbox kind is added, so outbox_kind_check stays as 20261114031356 wrote it. The pause's
+-- stop is a `supervise` row whose op is `pause_stop`, and the controller's two notices are
+-- `controller_notice` rows of the notice kinds `project-paused` and `project-resumed`; no SQL
+-- constrains an op or a notice kind.
+--
+-- Migrations here are forward-only and this one has no down file. A daemon of an earlier release
+-- on a shared database reads none of these tables and none of the two columns, so the tables stay
+-- and are read again by the roll forward. Resume the project before the earlier image runs: that
+-- release has no pause, and it launches every role a pause still holds. Then the outbox needs
+-- three operator steps, with the daemon stopped. The earlier release decodes a row strictly
+-- (record.DecodeOutboxPayload, DisallowUnknownFields), so a row it cannot decode fails and is
+-- retried on its backoff for ever, as 20261111041503 says of its notice kind. The rows of the two
+-- new notice kinds go:
+--
+--   delete from outbox where kind = 'controller_notice'
+--     and payload->>'kind' in ('project-paused', 'project-resumed');
+--
+-- The stops of the pause go too (a resume deletes the ones that have not run, so this finds only
+-- a stop that was running at the resume):
+--
+--   delete from outbox where kind = 'supervise' and payload->>'op' = 'pause_stop';
+--
+-- And a start keeps its work but loses the two keys the earlier release does not know, the pause
+-- and the wake's kind (record.SuperviseRequest's Pause and WakeKind):
+--
+--   update outbox set payload = payload - 'pause' - 'wakeKind'
+--     where kind = 'supervise' and payload->>'op' = 'start'
+--     and (payload ? 'pause' or payload ? 'wakeKind');
+create table project_pauses (
+  id bigserial primary key,
+  project text not null check (project ~ '^[A-Z][A-Z0-9]*$'),
+  began_at timestamptz not null,
+  by_kind text not null check (by_kind in ('controller', 'operator')),
+  by_session text not null default '',
+  reason text not null check (reason ~ '[^[:space:]]'),
+  ended_at timestamptz,
+  ended_by_kind text check (ended_by_kind in ('controller', 'operator')),
+  ended_by_session text,
+  constraint project_pauses_by_session check ((by_kind = 'controller') = (by_session <> '')),
+  constraint project_pauses_end_has_its_by check (
+    (ended_at is null) = (ended_by_kind is null) and (ended_by_kind is null) = (ended_by_session is null)),
+  constraint project_pauses_ended_by_session check (
+    ended_by_kind is null or (ended_by_kind = 'controller') = (ended_by_session <> '')),
+  unique (id, project)
+);
+create unique index project_pauses_one_open on project_pauses (project) where ended_at is null;
+
+create table project_pause_stops (
+  id bigserial primary key,
+  pause_id bigint not null references project_pauses (id),
+  claim text not null check (claim <> ''),
+  issue text not null check (issue ~ '^[A-Z][A-Z0-9]*-[0-9]+$'),
+  role text not null check (role <> ''),
+  asked_at timestamptz not null,
+  ended_at timestamptz,
+  ended_as text check (ended_as in ('stopped', 'taken_over', 'failed', 'cancelled')),
+  launch_owed boolean not null default false,
+  constraint project_pause_stops_end_has_its_kind check ((ended_at is null) = (ended_as is null)),
+  constraint project_pause_stops_owed_only_when_stopped check (not launch_owed or ended_as = 'stopped')
+);
+create unique index project_pause_stops_one_open on project_pause_stops (pause_id, claim) where ended_at is null;
+create index project_pause_stops_pause_claim on project_pause_stops (pause_id, claim);
+
+create table project_pause_pod_holds (
+  id bigserial primary key,
+  pause_id bigint not null,
+  project text not null,
+  issue text not null check (issue ~ '^[A-Z][A-Z0-9]*-[0-9]+$'),
+  held_at timestamptz not null,
+  ended_at timestamptz,
+  ended_why text check (ended_why in ('resumed', 'ready', 'deleted')),
+  foreign key (pause_id, project) references project_pauses (id, project),
+  constraint project_pause_pod_holds_issue_of_project check (split_part(issue, '-', 1) = project),
+  constraint project_pause_pod_holds_end_has_its_why check ((ended_at is null) = (ended_why is null))
+);
+create unique index project_pause_pod_holds_one_open on project_pause_pod_holds (project, issue) where ended_at is null;
+
+alter table pod_resumes add column clock_at timestamptz;
+update pod_resumes set clock_at = at;
+alter table pod_resumes alter column clock_at set not null;
+
+create function pod_resumes_clock_from_at() returns trigger language plpgsql as $$
+begin
+  if new.clock_at is null then
+    new.clock_at := new.at;
+  end if;
+  return new;
+end $$;
+
+create trigger pod_resumes_clock_from_at before insert on pod_resumes
+  for each row execute function pod_resumes_clock_from_at();
+
+alter table pod_resumes add column pause_id bigint references project_pauses (id),
+  add constraint pod_resumes_held_wake_pairs_with_no_release check (pause_id is null or release_id = 0);

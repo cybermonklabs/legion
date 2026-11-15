@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
 // OutboxKind names one durable side effect.
@@ -124,6 +125,52 @@ type LaneKey struct {
 type HeldRow struct {
 	OutboxRow
 	WaitsOn int64
+}
+
+// pauseHold is one shape of outbox row a project's pause holds: every row of kind, or, where op
+// is set, the rows of kind whose supervise op is op.
+type pauseHold struct {
+	kind OutboxKind
+	op   SuperviseOp
+}
+
+// pauseHolds is the one list of the rows a project's pause holds (decision 9 of
+// dispatch://INFRA-3759): every row that launches a role, hands it a task or a message, or starts
+// or ends a production check's look. Those are a supervise row whose op is `start`, an architect's
+// notice (which resumes a released architect, the daemon's wakeForDelivery), the four messages to
+// one role (phase_ended, hook_prompt, role_message, update_ask) and the merger's merge-queue
+// message, and the three rows of a production check (check_wake, check_look, check_bound). Every
+// other row runs while the project is paused: the stops (a supervise row of any other op,
+// issue_suspend, issue_release), the writes to Dispatch, and the controller's notices
+// (controller_notice), since the pause never holds the controller (spec Design item 8).
+//
+// The outbox's claim reads the list as SQL literals (store.go's outboxPauseFree, built from it),
+// so DueRows, ClaimRow, HeldRows and PauseHeldRows hold exactly these rows.
+// TestEveryOutboxKindIsHeldOrNotHeldByAPause names every kind the lanes run as held or not held,
+// so a kind added to a lane fails it until somebody decides which it is.
+var pauseHolds = []pauseHold{
+	{kind: OutboxKindSupervise, op: "start"},
+	{kind: OutboxKindNotice},
+	{kind: OutboxKindPhaseEnded},
+	{kind: OutboxKindHookPrompt},
+	{kind: OutboxKindRoleMessage},
+	{kind: OutboxKindUpdateAsk},
+	{kind: OutboxKindMergeQueueRemoval},
+	{kind: OutboxKindCheckWake},
+	{kind: OutboxKindCheckLook},
+	{kind: OutboxKindCheckBound},
+}
+
+// PauseHeldRow is one row a project's pause holds, as the state lists it and the resume logs it
+// (Store.PauseHeldRows). Claim is the claim the row is for where the row names one, and empty
+// where it names none: an architect's notice goes to the architect that owns its issue when it
+// runs (the daemon's readNoticeRoute walks the tree for it), and a production check's rows name
+// no role. WaitedSeconds counts from the moment the row came due (next_at), as HeldRow's do in the
+// state (api.HeldOutboxRow).
+type PauseHeldRow struct {
+	OutboxRow
+	Claim         claim.Token
+	WaitedSeconds int64
 }
 
 // OwedStart is one pending worker start that waits for its issue's admission slot
@@ -388,6 +435,66 @@ type Notice struct {
 	// Update is an update-stalled notice's account of the round that is not finishing, and is
 	// absent from every other kind. Only an UpdateStalledNotice carries one.
 	Update *UpdateStalled `json:"update,omitempty"`
+	// Pause is a project-paused or project-resumed notice's account of the act, and is absent
+	// from every other kind. Only those two kinds carry one.
+	Pause *ProjectPause `json:"pause,omitempty"`
+}
+
+// ProjectPause is what the controller is told when the operator pauses or resumes its project
+// (decision 24 of dispatch://INFRA-3759): who acted, when, and why. A project-paused notice names
+// the pause the act began and the reason it was given; a project-resumed notice names the pause
+// the act ended, which is its why, and carries no reason of its own.
+type ProjectPause struct {
+	// ID is the pause: the one begun, or the one ended (store's Pause, its id).
+	ID int64 `json:"id"`
+	// By is who acted: who paused, or who resumed.
+	By PauseActor `json:"by"`
+	// At is when the act was done.
+	At time.Time `json:"at"`
+	// Reason is why the project was paused, on a project-paused notice alone.
+	Reason string `json:"reason,omitempty"`
+}
+
+// PauseActor is who paused a project or ended its pause: the kind `controller` with the
+// controller's session id, or the kind `operator` with no session. The store records the same two
+// shapes (store.PauseActor, the checks of project_pauses).
+type PauseActor struct {
+	Kind    string `json:"kind"`
+	Session string `json:"session,omitempty"`
+}
+
+// The two kinds of PauseActor.
+const (
+	PauseByController = "controller"
+	PauseByOperator   = "operator"
+)
+
+// validate holds the account to its kind's fields: an id, an actor of one of the two shapes, a
+// moment, and a reason with words in it on a project-paused notice and none on a
+// project-resumed notice.
+func (p ProjectPause) validate(kind NoticeKind) error {
+	if p.ID <= 0 || p.At.IsZero() {
+		return fmt.Errorf("a %s notice names its pause and when it was acted on", kind)
+	}
+	switch p.By.Kind {
+	case PauseByController:
+		if p.By.Session == "" {
+			return fmt.Errorf("a %s notice by the controller names the controller's session", kind)
+		}
+	case PauseByOperator:
+		if p.By.Session != "" {
+			return fmt.Errorf("a %s notice by the operator names no session; it names %q", kind, p.By.Session)
+		}
+	default:
+		return fmt.Errorf("a %s notice is by the controller or the operator, not %q", kind, p.By.Kind)
+	}
+	if kind == ProjectPausedNotice && strings.TrimSpace(p.Reason) == "" {
+		return fmt.Errorf("a %s notice names the reason the project was paused", kind)
+	}
+	if kind != ProjectPausedNotice && p.Reason != "" {
+		return fmt.Errorf("a %s notice carries no reason; only a project-paused notice does", kind)
+	}
+	return nil
 }
 
 // NoticeFailure is why a claim failed, as the notices of that failure name it: Cause is the one
@@ -652,6 +759,12 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // tree's root, Decision what the person did, Ref where in Dispatch, Actor who; a spec decision
 // carries its Version, a changes request its Reason. The controller decides whether the tree runs
 // again (skill://legion-controller/references/parked-decisions.md).
+//
+// A project-paused notice tells the controller that the operator paused its project, and a
+// project-resumed notice that the operator resumed it (decision 24 of dispatch://INFRA-3759). Its
+// issue is the project key, and its Pause names who acted, when, and why: the pause's reason, or
+// the pause the resume ended (ProjectPause). Each is queued in the pause's or the resume's own
+// transaction (store's Pause and Resume); the controller's own pause or resume tells it nothing.
 const (
 	TriageNotice         NoticeKind = "triage"
 	SlotFreeNotice       NoticeKind = "slot-free"
@@ -663,6 +776,8 @@ const (
 	UpdateStalledNotice  NoticeKind = "update-stalled"
 	ProviderErrorsNotice NoticeKind = "provider-errors"
 	TreeStalledNotice    NoticeKind = "tree-stalled"
+	ProjectPausedNotice  NoticeKind = "project-paused"
+	ProjectResumedNotice NoticeKind = "project-resumed"
 )
 
 // NoticePerClaim is whether one unpublished controller notice of kind stands per claim — the
@@ -700,7 +815,10 @@ func NoticePerClaim(kind NoticeKind) bool {
 // issue that stays in the workflow and comes back at the next wake; "tree_close" is the tree's
 // close — the request that ends the claim, the tree's root claim included; "issue_close" is a
 // child issue's close as done, which ends the claim as a tree close does and drops its session,
-// since the issue is finished and its next run, should a person set it todo again, starts fresh.
+// since the issue is finished and its next run, should a person set it todo again, starts fresh;
+// "pause_stop" is a project pause's stop of one live role (store's Pause), which stops its process
+// and keeps its session, phase and task as an idle release's stop does, and is its own op because
+// it is bound to its pause (Pause below) and does nothing once that pause has ended.
 // There is no plain stop: only a close ends a claim from the workflow, so the op states which.
 type SuperviseOp string
 
@@ -824,6 +942,19 @@ type SuperviseRequest struct {
 	// finishes a start without acting when the issue's check is not the one it names; zero names
 	// no instance (a row queued before the field) and is not fenced.
 	CheckOpenedAt time.Time `json:"checkOpenedAt,omitzero"`
+	// Pause is the project pause a row serves (store's Pause, its id). A `pause_stop` row carries
+	// it always: its executor stops the claim for that pause, and finishes without acting once
+	// the pause has ended (decision 4 of dispatch://INFRA-3759). A start may carry the pause that
+	// held it, and the launch a pause owed a role it stopped always does: the start the stop
+	// transaction writes beside the held wake (WakeKind pods.WakePause). Every other request
+	// carries none.
+	Pause int64 `json:"pause,omitempty"`
+	// WakeKind marks a start that brings a released role back for a wake: the wake's kind, one of
+	// the pods vocabulary (pods.WakeDelivery and the five beside it), as the resume the wake took
+	// records it. The start finishes without acting when its claim is no longer released, since
+	// a park, a close or a moved phase took the role over while the row waited (decision 10).
+	// A start that is no wake, and every request of another op, carries none.
+	WakeKind string `json:"wakeKind,omitempty"`
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
@@ -1489,6 +1620,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Update != nil {
 			return fmt.Errorf("a %s notice carries an update round; only the controller's update-stalled notice does", value.Kind)
 		}
+		if value.Pause != nil {
+			return fmt.Errorf("a %s notice carries a project pause; only the controller's project-paused and project-resumed notices do", value.Kind)
+		}
 		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
 			return err
 		}
@@ -1514,6 +1648,18 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.Kind != TickNotice && len(value.Held) > 0 {
 			return fmt.Errorf("a %s notice carries held issues only when it is a tick", value.Kind)
+		}
+		pauseKind := value.Kind == ProjectPausedNotice || value.Kind == ProjectResumedNotice
+		if pauseKind != (value.Pause != nil) {
+			return fmt.Errorf("a %s notice carries a project pause only when it is a project-paused or a project-resumed notice", value.Kind)
+		}
+		if pause := value.Pause; pause != nil {
+			if value.Reason != "" {
+				return fmt.Errorf("a %s notice carries its reason in its pause, not beside it", value.Kind)
+			}
+			if err := pause.validate(value.Kind); err != nil {
+				return err
+			}
 		}
 		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
 			return err
@@ -1556,6 +1702,18 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			if err := value.Kept.validate(); err != nil {
 				return err
 			}
+		}
+		if value.Op == "pause_stop" && (value.Pause <= 0 || !claim.IsRole(value.Role)) {
+			return fmt.Errorf("a pause's stop names its pause and the role it stops; it names pause %d and role %q", value.Pause, value.Role)
+		}
+		if value.Pause < 0 || (value.Pause != 0 && value.Op != "pause_stop" && value.Op != "start") {
+			return fmt.Errorf("a supervise %s names pause %d; only a pause's stop and a start name one", value.Op, value.Pause)
+		}
+		if value.WakeKind != "" && (value.Op != "start" || !validWakeKind(value.WakeKind)) {
+			return fmt.Errorf("a supervise %s names the wake kind %q; only a start names one, and it is one of the pod wake kinds (pods.WakeDelivery and the five beside it)", value.Op, value.WakeKind)
+		}
+		if value.WakeKind == pods.WakePause && value.Pause == 0 {
+			return fmt.Errorf("a start for a %s wake names the pause that owed it", value.WakeKind)
 		}
 	case RoleMessage:
 		if value.Role == "" {
@@ -1751,7 +1909,7 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
-		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice:
+		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ProjectPausedNotice, ProjectResumedNotice:
 		return true
 	default:
 		return false
@@ -1760,7 +1918,18 @@ func controllerOnlyNoticeKind(kind NoticeKind) bool {
 
 func validSuperviseOp(op SuperviseOp) bool {
 	switch op {
-	case "start", "suspend", "release", "tree_close", "issue_close":
+	case "start", "suspend", "release", "tree_close", "issue_close", "pause_stop":
+		return true
+	default:
+		return false
+	}
+}
+
+// validWakeKind says whether kind is one of the pod wake kinds a resume records (pods.WakeDelivery
+// and the five beside it), the one vocabulary a start's WakeKind is held to.
+func validWakeKind(kind string) bool {
+	switch kind {
+	case pods.WakeDelivery, pods.WakeChecks, pods.WakeRoleMessage, pods.WakeAgentMessage, pods.WakeBackstop, pods.WakePause:
 		return true
 	default:
 		return false

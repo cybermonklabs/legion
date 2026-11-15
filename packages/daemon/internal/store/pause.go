@@ -1,0 +1,812 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+)
+
+// The records of a project's pause (dispatch://INFRA-3759, decision 2 of its plan): each pause
+// (project_pauses), each role a pause asks to stop (project_pause_stops) and each pod a pause
+// keeps (project_pause_pod_holds), as migrations/20261115194357_project_pause.up.sql defines
+// them. A pause's project is the project's Dispatch key ("LEGION"), the spelling the outbox reads
+// off an issue key; the claim-keyed and pod-keyed tables hold the project token ("legion",
+// claim.ProjectToken), and each function below says which spelling it takes.
+
+// PauseActorKind is who can act on a pause: the project's controller or the operator.
+type PauseActorKind string
+
+const (
+	// PauseByController is the project's controller, which names the session it acts from.
+	PauseByController PauseActorKind = "controller"
+	// PauseByOperator is the operator, through the operator's bearer, which names no session.
+	PauseByOperator PauseActorKind = "operator"
+)
+
+// PauseActor is who paused a project or who ended its pause: the controller with its session id,
+// or the operator with none. The table's checks hold the same shape (project_pauses_by_session,
+// project_pauses_ended_by_session), and validate says it before the write does.
+type PauseActor struct {
+	Kind    PauseActorKind
+	Session string
+}
+
+func (a PauseActor) validate() error {
+	switch a.Kind {
+	case PauseByController:
+		if a.Session == "" {
+			return errors.New("the controller acts on a pause from its session, and names none")
+		}
+	case PauseByOperator:
+		if a.Session != "" {
+			return fmt.Errorf("the operator acts on a pause with no session, and names %q", a.Session)
+		}
+	default:
+		return fmt.Errorf("%q cannot act on a pause: only the controller and the operator can", a.Kind)
+	}
+	return nil
+}
+
+// Pause is one pause of a project. EndedAt and EndedBy are zero while it is open.
+type Pause struct {
+	ID int64
+	// Project is the project's Dispatch key.
+	Project string
+	Since   time.Time
+	By      PauseActor
+	Reason  string
+	EndedAt time.Time
+	EndedBy PauseActor
+}
+
+// Ended is whether a resume has ended the pause.
+func (p Pause) Ended() bool { return !p.EndedAt.IsZero() }
+
+// AlreadyPausedError is a pause refused because the project's pause stands: the project has at
+// most one open pause (project_pauses_one_open). Standing is that pause, which the refusal names.
+type AlreadyPausedError struct {
+	Standing Pause
+}
+
+func (e *AlreadyPausedError) Error() string {
+	return fmt.Sprintf("project %s is already paused: pause %d, by %s, since %s",
+		e.Standing.Project, e.Standing.ID, e.Standing.By.Kind, e.Standing.Since.UTC().Format(time.RFC3339))
+}
+
+// NotPausedError is a resume refused because the project has no open pause to end.
+type NotPausedError struct {
+	Project string
+}
+
+func (e *NotPausedError) Error() string {
+	return fmt.Sprintf("project %s is not paused", e.Project)
+}
+
+// PauseRow is one outbox row a pause or a resume queues, encoded by its caller
+// (record.NewOutboxRow). The store does not import record, whose own tests import the store, so
+// the payload is the caller's to build, as every row of an idle release is (IdleReleaseRow).
+type PauseRow struct {
+	Kind    string
+	Payload []byte
+}
+
+// PauseStopClaim is one live claim a pause asks to stop, as the claims table holds it.
+type PauseStopClaim struct {
+	Claim      claim.Token
+	Tree       string
+	Issue      string
+	Role       claim.Role
+	Generation uint64
+}
+
+// PauseRequest is what the pause's transaction is given.
+type PauseRequest struct {
+	// Project is the project's Dispatch key.
+	Project string
+	By      PauseActor
+	// Reason is why the project is paused, which may not be empty or white space alone.
+	Reason string
+	// At is when the pause begins, on the daemon's clock.
+	At time.Time
+	// StopRow builds the `pause_stop` row of one claim the pause asks to stop: a `supervise`
+	// row of the claim's issue, which runs in that issue's lifecycle lane as a `suspend` row does.
+	StopRow func(pause Pause, stop PauseStopClaim) (PauseRow, error)
+	// Notice builds the controller's notice of the pause, queued under the project's key, or is
+	// nil to queue none: the operator's pause tells the controller, and the controller's own pause
+	// does not (decision 24).
+	Notice func(pause Pause) (PauseRow, error)
+}
+
+// Pause is the pause's one transaction (decision 3 of dispatch://INFRA-3759). It takes the
+// daemon's fact serializer first (treelifecycle.Serialize), as ReleaseIdleIssue does, so a pause
+// and a fact's writes never interleave. It refuses a second open pause with an
+// *AlreadyPausedError naming the pause that stands, writes the pause row, reads the project's live
+// claims — every claim of the project that is not suspended, failed or retired, the controller's
+// claim excepted (claim.IsController) — and writes for each one stop row and one `pause_stop`
+// outbox row (req.StopRow), then queues the controller's notice when req.Notice is given. It
+// answers the pause and the claims it asked to stop, in token order.
+func (s *Store) Pause(ctx context.Context, req PauseRequest) (Pause, []PauseStopClaim, error) {
+	if err := req.By.validate(); err != nil {
+		return Pause{}, nil, fmt.Errorf("pause %s: %w", req.Project, err)
+	}
+	if strings.TrimSpace(req.Reason) == "" {
+		return Pause{}, nil, fmt.Errorf("pause %s: a pause needs a reason", req.Project)
+	}
+	if req.At.IsZero() || req.StopRow == nil {
+		return Pause{}, nil, fmt.Errorf("pause %s: a pause needs its moment and the builder of its stop rows", req.Project)
+	}
+	token, err := claim.ProjectToken(req.Project)
+	if err != nil {
+		return Pause{}, nil, fmt.Errorf("pause %s: %w", req.Project, err)
+	}
+	var pause Pause
+	var stops []PauseStopClaim
+	err = s.Tx(ctx, func(tx pgx.Tx) error {
+		pause, stops = Pause{}, nil
+		if err := treelifecycle.Serialize(ctx, tx); err != nil {
+			return err
+		}
+		standing, open, err := readOpenPause(ctx, tx, req.Project, "")
+		if err != nil {
+			return err
+		}
+		if open {
+			return &AlreadyPausedError{Standing: standing}
+		}
+		if pause, err = scanPause(tx.QueryRow(ctx, `insert into project_pauses (project, began_at, by_kind, by_session, reason)
+			values ($1, $2, $3, $4, $5) returning `+pauseColumns,
+			req.Project, req.At, string(req.By.Kind), req.By.Session, req.Reason)); err != nil {
+			return fmt.Errorf("write the pause: %w", err)
+		}
+		live, err := liveClaimsOf(ctx, tx, token)
+		if err != nil {
+			return err
+		}
+		for _, stop := range live {
+			if _, err := OpenPauseStopTx(ctx, tx, pause.ID, stop, req.At); err != nil {
+				return err
+			}
+			row, err := req.StopRow(pause, stop)
+			if err != nil {
+				return fmt.Errorf("build the stop of %s: %w", stop.Claim, err)
+			}
+			if _, err := insertOutboxRow(ctx, tx, stop.Issue, IdleReleaseRow{Kind: row.Kind, Payload: row.Payload}); err != nil {
+				return err
+			}
+			stops = append(stops, stop)
+		}
+		if req.Notice != nil {
+			return queuePauseNotice(ctx, tx, req.Project, pause, req.Notice)
+		}
+		return nil
+	})
+	if err != nil {
+		return Pause{}, nil, fmt.Errorf("pause %s: %w", req.Project, err)
+	}
+	return pause, stops, nil
+}
+
+// ResumeRequest is what the resume's transaction is given.
+type ResumeRequest struct {
+	// Project is the project's Dispatch key.
+	Project string
+	By      PauseActor
+	// At is when the resume ends the pause, on the daemon's clock.
+	At time.Time
+	// ReadHeld, when given, reads in the resume's transaction the outbox rows the pause holds,
+	// for the resume's log (record.Postgres.PauseHeldRows). It runs once the pause's row is
+	// locked and before it is ended, so the outbox's clause still holds every row it read, and
+	// it keeps what it read itself: the store does not import record.
+	ReadHeld func(ctx context.Context, tx pgx.Tx) error
+	// Notice builds the controller's notice of the resume from the pause it ended, queued under
+	// the project's key, or is nil to queue none.
+	Notice func(ended Pause) (PauseRow, error)
+}
+
+// Resumed is what the resume's transaction did.
+type Resumed struct {
+	// Pause is the pause the resume ended, with its end.
+	Pause Pause
+	// Cancelled are the stops the pause still waited on, which the resume ended `cancelled`.
+	Cancelled []PauseStop
+	// DeletedStopRows counts the pause's `pause_stop` outbox rows that had not run, which the
+	// resume deleted.
+	DeletedStopRows int64
+	// Clocks counts the project's open resumes whose stuck clock the resume set.
+	Clocks int64
+}
+
+// Resume is the resume's one transaction (decision 22 of dispatch://INFRA-3759). It takes no
+// treelifecycle.Serialize (decision 13). It locks the project's open pause row for update, which
+// waits for every stop transaction that holds that row for share (LockPauseTx), and refuses with
+// a *NotPausedError when no pause is open. It reads the held rows (req.ReadHeld), ends the pause
+// with who ended it, deletes the pause's `pause_stop` outbox rows no lane is running (a row under
+// a live lease runs to its end and finds its pause ended), ends the pause's open stop rows
+// `cancelled`, sets the stuck clock of the project's open resumes to the resume's moment
+// (SetProjectResumeClocksTx), and queues the controller's notice when req.Notice is given.
+func (s *Store) Resume(ctx context.Context, req ResumeRequest) (Resumed, error) {
+	if err := req.By.validate(); err != nil {
+		return Resumed{}, fmt.Errorf("resume %s: %w", req.Project, err)
+	}
+	if req.At.IsZero() {
+		return Resumed{}, fmt.Errorf("resume %s: a resume needs its moment", req.Project)
+	}
+	token, err := claim.ProjectToken(req.Project)
+	if err != nil {
+		return Resumed{}, fmt.Errorf("resume %s: %w", req.Project, err)
+	}
+	var out Resumed
+	err = s.Tx(ctx, func(tx pgx.Tx) error {
+		out = Resumed{}
+		pause, open, err := readOpenPause(ctx, tx, req.Project, " for update")
+		if err != nil {
+			return err
+		}
+		if !open {
+			return &NotPausedError{Project: req.Project}
+		}
+		if req.ReadHeld != nil {
+			if err := req.ReadHeld(ctx, tx); err != nil {
+				return fmt.Errorf("read the rows pause %d holds: %w", pause.ID, err)
+			}
+		}
+		if out.Pause, err = scanPause(tx.QueryRow(ctx, `update project_pauses
+			set ended_at = $2, ended_by_kind = $3, ended_by_session = $4 where id = $1 returning `+pauseColumns,
+			pause.ID, req.At, string(req.By.Kind), req.By.Session)); err != nil {
+			return fmt.Errorf("end pause %d: %w", pause.ID, err)
+		}
+		deleted, err := tx.Exec(ctx, `delete from outbox
+			where kind = 'supervise' and payload->>'op' = 'pause_stop' and payload->>'pause' = $1::bigint::text
+			and split_part(issue, '-', 1) = $2 and (lease_until is null or lease_until <= $3)`,
+			pause.ID, req.Project, req.At)
+		if err != nil {
+			return fmt.Errorf("delete the stop rows of pause %d: %w", pause.ID, err)
+		}
+		out.DeletedStopRows = deleted.RowsAffected()
+		rows, err := tx.Query(ctx, `update project_pause_stops set ended_at = $2, ended_as = 'cancelled'
+			where pause_id = $1 and ended_at is null returning `+pauseStopColumns, pause.ID, req.At)
+		if err != nil {
+			return fmt.Errorf("cancel the stops of pause %d: %w", pause.ID, err)
+		}
+		if out.Cancelled, err = scanPauseStops(rows); err != nil {
+			return fmt.Errorf("cancel the stops of pause %d: %w", pause.ID, err)
+		}
+		if out.Clocks, err = SetProjectResumeClocksTx(ctx, tx, token, req.At); err != nil {
+			return err
+		}
+		if req.Notice != nil {
+			return queuePauseNotice(ctx, tx, req.Project, out.Pause, req.Notice)
+		}
+		return nil
+	})
+	if err != nil {
+		return Resumed{}, fmt.Errorf("resume %s: %w", req.Project, err)
+	}
+	return out, nil
+}
+
+// queuePauseNotice queues the controller's notice of a pause or a resume under the project's key,
+// the issue column a project-level controller notice carries (record.OutboxRow.Issue).
+func queuePauseNotice(ctx context.Context, tx pgx.Tx, project string, pause Pause, notice func(Pause) (PauseRow, error)) error {
+	row, err := notice(pause)
+	if err != nil {
+		return fmt.Errorf("build the controller's notice of pause %d: %w", pause.ID, err)
+	}
+	_, err = insertOutboxRow(ctx, tx, project, IdleReleaseRow{Kind: row.Kind, Payload: row.Payload})
+	return err
+}
+
+// pauseColumns is a pause row as scanPause reads it.
+const pauseColumns = `id, project, began_at, by_kind, by_session, reason, ended_at,
+	coalesce(ended_by_kind, ''), coalesce(ended_by_session, '')`
+
+func scanPause(row pgx.Row) (Pause, error) {
+	var p Pause
+	var byKind, endedByKind string
+	var ended *time.Time
+	if err := row.Scan(&p.ID, &p.Project, &p.Since, &byKind, &p.By.Session, &p.Reason, &ended,
+		&endedByKind, &p.EndedBy.Session); err != nil {
+		return Pause{}, err
+	}
+	p.By.Kind, p.EndedBy.Kind = PauseActorKind(byKind), PauseActorKind(endedByKind)
+	p.EndedAt = orZero(ended)
+	return p, nil
+}
+
+// readOpenPause is project's open pause and whether there is one, read with lock appended to the
+// select (" for share", " for update", or "" for none).
+func readOpenPause(ctx context.Context, db queryRower, project, lock string) (Pause, bool, error) {
+	p, err := scanPause(db.QueryRow(ctx, `select `+pauseColumns+` from project_pauses
+		where project = $1 and ended_at is null`+lock, project))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Pause{}, false, nil
+	}
+	if err != nil {
+		return Pause{}, false, fmt.Errorf("read the open pause of %s: %w", project, err)
+	}
+	return p, true, nil
+}
+
+// OpenPause is project's open pause, and whether one is open: what the daemon reads at boot and
+// at each outbox sweep to set its flag (decision 18). project is the Dispatch key.
+func (s *Store) OpenPause(ctx context.Context, project string) (Pause, bool, error) {
+	return readOpenPause(ctx, s.pool, project, "")
+}
+
+// OpenPauseTx is OpenPause through tx's snapshot, for the state's read.
+func OpenPauseTx(ctx context.Context, tx pgx.Tx, project string) (Pause, bool, error) {
+	return readOpenPause(ctx, tx, project, "")
+}
+
+// LockOpenPauseTx is project's open pause read with its row locked for share, which a stop
+// transaction whose own pause has ended reads (decision 6): a resume of that open pause then
+// waits for the stop transaction to commit.
+func LockOpenPauseTx(ctx context.Context, tx pgx.Tx, project string) (Pause, bool, error) {
+	return readOpenPause(ctx, tx, project, " for share")
+}
+
+// LockPauseTx is pause id read with its row locked for share: the stop transaction of decision 6
+// takes it on the pause its suspension carries, open or ended, so a resume that would end it
+// waits for the stop's records to commit. A pause no row holds is an error.
+func LockPauseTx(ctx context.Context, tx pgx.Tx, id int64) (Pause, error) {
+	p, err := scanPause(tx.QueryRow(ctx, `select `+pauseColumns+` from project_pauses where id = $1 for share`, id))
+	if err != nil {
+		return Pause{}, fmt.Errorf("read pause %d: %w", id, err)
+	}
+	return p, nil
+}
+
+// LastEndedPause is the newest pause of project a resume ended, and whether there is one: the
+// state's `lastPause` while the project runs (decision 25). project is the Dispatch key.
+func (s *Store) LastEndedPause(ctx context.Context, project string) (Pause, bool, error) {
+	return readLastEndedPause(ctx, s.pool, project)
+}
+
+// LastEndedPauseTx is LastEndedPause through tx's snapshot, for the state's read.
+func LastEndedPauseTx(ctx context.Context, tx pgx.Tx, project string) (Pause, bool, error) {
+	return readLastEndedPause(ctx, tx, project)
+}
+
+func readLastEndedPause(ctx context.Context, db queryRower, project string) (Pause, bool, error) {
+	p, err := scanPause(db.QueryRow(ctx, `select `+pauseColumns+` from project_pauses
+		where project = $1 and ended_at is not null order by ended_at desc, id desc limit 1`, project))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Pause{}, false, nil
+	}
+	if err != nil {
+		return Pause{}, false, fmt.Errorf("read the last pause of %s: %w", project, err)
+	}
+	return p, true, nil
+}
+
+// liveClaimsOf is every live claim of the project whose token is project, in token order: one
+// that is not suspended, failed or retired, and is not the controller's (claim.IsController),
+// which the pause never stops (spec Design item 8).
+func liveClaimsOf(ctx context.Context, tx pgx.Tx, project string) ([]PauseStopClaim, error) {
+	rows, err := tx.Query(ctx, `select token, tree, issue, role, generation from claims
+		where project = $1 and state <> all($2) order by token`, project,
+		[]string{string(supervise.StateSuspended), string(supervise.StateFailed), string(supervise.StateRetired)})
+	if err != nil {
+		return nil, fmt.Errorf("read the live claims of %s: %w", project, err)
+	}
+	defer rows.Close()
+	var live []PauseStopClaim
+	for rows.Next() {
+		var c PauseStopClaim
+		var token, role string
+		var generation int64
+		if err := rows.Scan(&token, &c.Tree, &c.Issue, &role, &generation); err != nil {
+			return nil, fmt.Errorf("read the live claims of %s: %w", project, err)
+		}
+		c.Claim, c.Role, c.Generation = claim.Token(token), claim.Role(role), uint64(generation)
+		if claim.IsController(c.Role, c.Issue, c.Tree) {
+			continue
+		}
+		live = append(live, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the live claims of %s: %w", project, err)
+	}
+	return live, nil
+}
+
+// PauseStopEnd is how a pause's stop of one role ended (project_pause_stops.ended_as).
+type PauseStopEnd string
+
+const (
+	// PauseStopStopped: the role stopped (RecordPauseStoppedTx).
+	PauseStopStopped PauseStopEnd = "stopped"
+	// PauseStopTakenOver: a park, a close, a linger or an operator took the role over first.
+	PauseStopTakenOver PauseStopEnd = "taken_over"
+	// PauseStopFailed: the claim failed or retired.
+	PauseStopFailed PauseStopEnd = "failed"
+	// PauseStopCancelled: the resume ended the pause while the stop was still open.
+	PauseStopCancelled PauseStopEnd = "cancelled"
+)
+
+// PauseStop is one stop a pause asked of one role. EndedAt is zero and End empty while it is
+// open; LaunchOwed is whether the role was owed a launch when it stopped.
+type PauseStop struct {
+	ID         int64
+	Pause      int64
+	Claim      claim.Token
+	Issue      string
+	Role       claim.Role
+	AskedAt    time.Time
+	EndedAt    time.Time
+	End        PauseStopEnd
+	LaunchOwed bool
+}
+
+const pauseStopColumns = `id, pause_id, claim, issue, role, asked_at, ended_at, coalesce(ended_as, ''), launch_owed`
+
+func scanPauseStops(rows pgx.Rows) ([]PauseStop, error) {
+	defer rows.Close()
+	var stops []PauseStop
+	for rows.Next() {
+		var s PauseStop
+		var token, role, end string
+		var ended *time.Time
+		if err := rows.Scan(&s.ID, &s.Pause, &token, &s.Issue, &role, &s.AskedAt, &ended, &end, &s.LaunchOwed); err != nil {
+			return nil, err
+		}
+		s.Claim, s.Role, s.End, s.EndedAt = claim.Token(token), claim.Role(role), PauseStopEnd(end), orZero(ended)
+		stops = append(stops, s)
+	}
+	return stops, rows.Err()
+}
+
+// OpenPauseStopTx opens pause's stop of one claim at at, unless that pause already has an open
+// stop of the claim (project_pause_stops_one_open), and answers whether it opened one. The pause's
+// own transaction opens one per live claim; the boot and the catch-up after a pause open one for
+// a claim the pause meets later, in the transaction that queues its `pause_stop` row.
+func OpenPauseStopTx(ctx context.Context, tx pgx.Tx, pause int64, stop PauseStopClaim, at time.Time) (bool, error) {
+	if err := validPauseStopClaim(stop); err != nil {
+		return false, err
+	}
+	var id int64
+	err := tx.QueryRow(ctx, `insert into project_pause_stops (pause_id, claim, issue, role, asked_at)
+		values ($1, $2, $3, $4, $5) on conflict do nothing returning id`,
+		pause, string(stop.Claim), stop.Issue, string(stop.Role), at).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("open pause %d's stop of %s: %w", pause, stop.Claim, err)
+	}
+	return true, nil
+}
+
+func validPauseStopClaim(stop PauseStopClaim) error {
+	if stop.Claim == "" || !claim.IsIssueKey(stop.Issue) || !claim.IsRole(stop.Role) {
+		return fmt.Errorf("a pause's stop names a claim, its issue and its role; it names %q, %q and %q", stop.Claim, stop.Issue, stop.Role)
+	}
+	return nil
+}
+
+// EndPauseStop ends pause's open stop of token as end, in a transaction of its own; see
+// EndPauseStopTx.
+func (s *Store) EndPauseStop(ctx context.Context, pause int64, token claim.Token, end PauseStopEnd, at time.Time) (bool, error) {
+	var ended bool
+	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		ended, err = EndPauseStopTx(ctx, tx, pause, token, end, at)
+		return err
+	})
+	return ended, err
+}
+
+// EndPauseStopTx ends pause's open stop of token at at as end — taken over, failed or cancelled —
+// and answers whether one was open. A role that stopped is recorded by RecordPauseStoppedTx
+// instead, which also ends a stop the resume cancelled.
+func EndPauseStopTx(ctx context.Context, tx pgx.Tx, pause int64, token claim.Token, end PauseStopEnd, at time.Time) (bool, error) {
+	switch end {
+	case PauseStopTakenOver, PauseStopFailed, PauseStopCancelled:
+	default:
+		return false, fmt.Errorf("end pause %d's stop of %s: %q is not how a stop is ended here; a stop that stopped is recorded with RecordPauseStoppedTx", pause, token, end)
+	}
+	tag, err := tx.Exec(ctx, `update project_pause_stops set ended_at = $3, ended_as = $4
+		where pause_id = $1 and claim = $2 and ended_at is null`, pause, string(token), at, string(end))
+	if err != nil {
+		return false, fmt.Errorf("end pause %d's stop of %s: %w", pause, token, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// RecordPauseStopped records, in a transaction of its own, that pause's stop of the claim
+// stopped; see RecordPauseStoppedTx.
+func (s *Store) RecordPauseStopped(ctx context.Context, pause int64, stop PauseStopClaim, at time.Time, launchOwed bool) error {
+	return s.Tx(ctx, func(tx pgx.Tx) error { return RecordPauseStoppedTx(ctx, tx, pause, stop, at, launchOwed) })
+}
+
+// RecordPauseStoppedTx records that the claim stopped for pause at at, and whether it was owed a
+// launch: it ends the claim's newest stop of that pause that is open or that the resume ended
+// `cancelled`, since the role did stop (decision 6), and writes one stop already ended where the
+// pause asked none — the gate's own stop of a launch (decision 7) — so the role's newest stop is
+// always on record. The stop transaction calls it under the issue's lock (LockIssueForPause), so
+// two stops of one claim never write it side by side.
+func RecordPauseStoppedTx(ctx context.Context, tx pgx.Tx, pause int64, stop PauseStopClaim, at time.Time, launchOwed bool) error {
+	if err := validPauseStopClaim(stop); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `update project_pause_stops set ended_at = $3, ended_as = 'stopped', launch_owed = $4
+		where id = (select id from project_pause_stops where pause_id = $1 and claim = $2
+			and (ended_at is null or ended_as = 'cancelled') order by id desc limit 1)`,
+		pause, string(stop.Claim), at, launchOwed)
+	if err != nil {
+		return fmt.Errorf("record pause %d's stop of %s: %w", pause, stop.Claim, err)
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `insert into project_pause_stops
+		(pause_id, claim, issue, role, asked_at, ended_at, ended_as, launch_owed)
+		values ($1, $2, $3, $4, $5, $5, 'stopped', $6)`,
+		pause, string(stop.Claim), stop.Issue, string(stop.Role), at, launchOwed); err != nil {
+		return fmt.Errorf("record pause %d's stop of %s: %w", pause, stop.Claim, err)
+	}
+	return nil
+}
+
+// OpenPauseStops are pause's open stops, oldest first: the claims whose stop the pause still
+// waits on, which the state names (decision 25).
+func (s *Store) OpenPauseStops(ctx context.Context, pause int64) ([]PauseStop, error) {
+	return readOpenPauseStops(ctx, s.pool, pause)
+}
+
+// OpenPauseStopsTx is OpenPauseStops through tx's snapshot, for the state's read.
+func OpenPauseStopsTx(ctx context.Context, tx pgx.Tx, pause int64) ([]PauseStop, error) {
+	return readOpenPauseStops(ctx, tx, pause)
+}
+
+func readOpenPauseStops(ctx context.Context, db rowsQuerier, pause int64) ([]PauseStop, error) {
+	rows, err := db.Query(ctx, `select `+pauseStopColumns+` from project_pause_stops
+		where pause_id = $1 and ended_at is null order by id`, pause)
+	if err != nil {
+		return nil, fmt.Errorf("read the open stops of pause %d: %w", pause, err)
+	}
+	stops, err := scanPauseStops(rows)
+	if err != nil {
+		return nil, fmt.Errorf("read the open stops of pause %d: %w", pause, err)
+	}
+	return stops, nil
+}
+
+// LockIssueForPause takes the transaction-scoped advisory lock every writer of issue's pod hold
+// takes first, after treelifecycle.Serialize where that writer takes it at all (decisions 6 and 13
+// of dispatch://INFRA-3759): two stops of one pod's roles, a resume's end of the pod's hold and
+// a role's ready then run one after another, and the later reads what the earlier wrote. The
+// lock is released when tx ends.
+//
+// It is keyed on the issue as record.Postgres.ClaimRow keys an issue's lifecycle lane, but in
+// the two-key form, pg_advisory_xact_lock(int, int): Postgres keeps the two-key space apart from
+// the one-key space, where every other advisory lock of the daemon lives (ClaimRow's
+// 'legion.outbox.lifecycle:' and 'legion.outbox.catch-up:' keys, treelifecycle.Serialize, the
+// migrations' lock), so this lock can never be mistaken for one of those whatever the hashes
+// give. The first key names the lock and the second the issue; two issues whose keys hash alike
+// only serialize their pod holds.
+func LockIssueForPause(ctx context.Context, tx pgx.Tx, issue string) error {
+	if !claim.IsIssueKey(issue) {
+		return fmt.Errorf("lock %q for its pod hold: not an issue key", issue)
+	}
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('legion.pause.issue'), hashtext($1::text))`, issue); err != nil {
+		return fmt.Errorf("lock %s for its pod hold: %w", issue, err)
+	}
+	return nil
+}
+
+// PausePodHoldEnd is why a pause's hold of a pod ended (project_pause_pod_holds.ended_why).
+type PausePodHoldEnd string
+
+const (
+	// PausePodHoldResumed: the resume found a live role in the pod (decision 13).
+	PausePodHoldResumed PausePodHoldEnd = "resumed"
+	// PausePodHoldReady: a role of the pod became ready.
+	PausePodHoldReady PausePodHoldEnd = "ready"
+	// PausePodHoldDeleted: a close, a park, a linger, a production check's look or a teardown
+	// deleted the pod.
+	PausePodHoldDeleted PausePodHoldEnd = "deleted"
+)
+
+// PausePodHold is one hold a pause put on an issue's pod. EndedAt is zero and End empty while it
+// stands.
+type PausePodHold struct {
+	ID    int64
+	Pause int64
+	// Project is the pause's project, the Dispatch key.
+	Project string
+	Issue   string
+	HeldAt  time.Time
+	EndedAt time.Time
+	End     PausePodHoldEnd
+}
+
+const pausePodHoldColumns = `id, pause_id, project, issue, held_at, ended_at, coalesce(ended_why, '')`
+
+func scanPausePodHold(row pgx.Row) (PausePodHold, error) {
+	var h PausePodHold
+	var end string
+	var ended *time.Time
+	if err := row.Scan(&h.ID, &h.Pause, &h.Project, &h.Issue, &h.HeldAt, &ended, &end); err != nil {
+		return PausePodHold{}, err
+	}
+	h.End, h.EndedAt = PausePodHoldEnd(end), orZero(ended)
+	return h, nil
+}
+
+// OpenPausePodHold opens pause's hold of issue's pod in a transaction of its own; see
+// OpenPausePodHoldTx.
+func (s *Store) OpenPausePodHold(ctx context.Context, pause int64, issue string, at time.Time) (bool, error) {
+	var opened bool
+	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		opened, err = OpenPausePodHoldTx(ctx, tx, pause, issue, at)
+		return err
+	})
+	return opened, err
+}
+
+// OpenPausePodHoldTx takes issue's lock (LockIssueForPause) and opens pause's hold of issue's pod
+// at at, unless a hold of that pod already stands (project_pause_pod_holds_one_open), and answers
+// whether it opened one. The hold carries its pause's project, so a pause of one project cannot
+// hold another project's pod (project_pause_pod_holds_issue_of_project). A pause no row holds is
+// an error.
+func OpenPausePodHoldTx(ctx context.Context, tx pgx.Tx, pause int64, issue string, at time.Time) (bool, error) {
+	if err := LockIssueForPause(ctx, tx, issue); err != nil {
+		return false, err
+	}
+	var project string
+	if err := tx.QueryRow(ctx, `select project from project_pauses where id = $1`, pause).Scan(&project); err != nil {
+		return false, fmt.Errorf("hold the pod of %s for pause %d: %w", issue, pause, err)
+	}
+	var id int64
+	err := tx.QueryRow(ctx, `insert into project_pause_pod_holds (pause_id, project, issue, held_at)
+		values ($1, $2, $3, $4) on conflict do nothing returning id`, pause, project, issue, at).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("hold the pod of %s for pause %d: %w", issue, pause, err)
+	}
+	return true, nil
+}
+
+// EndPausePodHold ends the hold of issue's pod in a transaction of its own; see
+// EndPausePodHoldTx.
+func (s *Store) EndPausePodHold(ctx context.Context, issue string, end PausePodHoldEnd, at time.Time) (bool, error) {
+	var ended bool
+	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		ended, err = EndPausePodHoldTx(ctx, tx, issue, end, at)
+		return err
+	})
+	return ended, err
+}
+
+// EndPausePodHoldTx takes issue's lock (LockIssueForPause) and ends the hold that stands on
+// issue's pod, whichever pause put it there, at at for the reason end, and answers whether one
+// stood.
+func EndPausePodHoldTx(ctx context.Context, tx pgx.Tx, issue string, end PausePodHoldEnd, at time.Time) (bool, error) {
+	switch end {
+	case PausePodHoldResumed, PausePodHoldReady, PausePodHoldDeleted:
+	default:
+		return false, fmt.Errorf("end the pod hold of %s: %q is no reason a hold ends", issue, end)
+	}
+	if err := LockIssueForPause(ctx, tx, issue); err != nil {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx, `update project_pause_pod_holds set ended_at = $2, ended_why = $3
+		where project = split_part($1, '-', 1) and issue = $1 and ended_at is null`, issue, at, string(end))
+	if err != nil {
+		return false, fmt.Errorf("end the pod hold of %s: %w", issue, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// PausePodHoldOf is the hold that stands on issue's pod, and whether one does.
+func (s *Store) PausePodHoldOf(ctx context.Context, issue string) (PausePodHold, bool, error) {
+	return readPausePodHold(ctx, s.pool, issue)
+}
+
+// PausePodHoldOfTx is PausePodHoldOf through tx: the idle view's read of the hold, and a writer
+// that already holds issue's lock.
+func PausePodHoldOfTx(ctx context.Context, tx pgx.Tx, issue string) (PausePodHold, bool, error) {
+	return readPausePodHold(ctx, tx, issue)
+}
+
+func readPausePodHold(ctx context.Context, db queryRower, issue string) (PausePodHold, bool, error) {
+	h, err := scanPausePodHold(db.QueryRow(ctx, `select `+pausePodHoldColumns+` from project_pause_pod_holds
+		where project = split_part($1, '-', 1) and issue = $1 and ended_at is null`, issue))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PausePodHold{}, false, nil
+	}
+	if err != nil {
+		return PausePodHold{}, false, fmt.Errorf("read the pod hold of %s: %w", issue, err)
+	}
+	return h, true, nil
+}
+
+// OpenPausePodHolds is every hold standing on a pod of project, by issue: the pods the resume
+// ends the holds of where a role is live (decision 22), and the pods a project release names when
+// it refuses (departure 1). project is the Dispatch key.
+func (s *Store) OpenPausePodHolds(ctx context.Context, project string) ([]PausePodHold, error) {
+	rows, err := s.pool.Query(ctx, `select `+pausePodHoldColumns+` from project_pause_pod_holds
+		where project = $1 and ended_at is null order by issue`, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the pod holds of %s: %w", project, err)
+	}
+	defer rows.Close()
+	var holds []PausePodHold
+	for rows.Next() {
+		h, err := scanPausePodHold(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read the pod holds of %s: %w", project, err)
+		}
+		holds = append(holds, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the pod holds of %s: %w", project, err)
+	}
+	return holds, nil
+}
+
+// CloseRoleOpenResumeTx closes, at at, the open resume of issue's role — the one no first turn has
+// stamped and nothing has closed — and answers whether one was open: the stop transaction of a
+// pause closes it (decision 6, gap finding 10), since the role it waited for has stopped again
+// before it took a turn. project is the project token, as pod_resumes holds it.
+func CloseRoleOpenResumeTx(ctx context.Context, tx pgx.Tx, project, issue string, role claim.Role, at time.Time) (bool, error) {
+	tag, err := tx.Exec(ctx, `update pod_resumes set closed_at = $4
+		where project = $1 and issue = $2 and role = $3 and first_turn_at is null and closed_at is null`,
+		project, issue, string(role), at)
+	if err != nil {
+		return false, fmt.Errorf("close the open resume of %s's %s: %w", issue, role, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SetResumeClock moves the stuck clock of issue's role's open resume to at; see
+// SetResumeClockTx.
+func (s *Store) SetResumeClock(ctx context.Context, project, issue string, role claim.Role, at time.Time) (bool, error) {
+	return setResumeClock(ctx, s.pool, project, issue, role, at)
+}
+
+// SetResumeClockTx moves the stuck clock (pod_resumes.clock_at) of the open resume of issue's
+// role to at, the moment the wake pacing lets that role's launch out (decision 14), and answers
+// whether the role had an open resume. It never moves a clock backwards (greatest): a clock a
+// resume of the project or a later reservation already moved stays. project is the project
+// token, as pod_resumes holds it.
+func SetResumeClockTx(ctx context.Context, tx pgx.Tx, project, issue string, role claim.Role, at time.Time) (bool, error) {
+	return setResumeClock(ctx, tx, project, issue, role, at)
+}
+
+func setResumeClock(ctx context.Context, db execer, project, issue string, role claim.Role, at time.Time) (bool, error) {
+	tag, err := db.Exec(ctx, `update pod_resumes set clock_at = greatest(clock_at, $4)
+		where project = $1 and issue = $2 and role = $3 and first_turn_at is null and closed_at is null`,
+		project, issue, string(role), at)
+	if err != nil {
+		return false, fmt.Errorf("set the stuck clock of %s's %s: %w", issue, role, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SetProjectResumeClocksTx moves the stuck clock of every open resume of project to at, the
+// resume's moment (decision 14), never backwards (greatest), and answers how many resumes are
+// open. A wake that waited out the pause is no wake that is stuck. Only the resume's own
+// transaction (Resume) sets every clock of a project at once, so it has no form on the pool.
+// project is the project token, as pod_resumes holds it.
+func SetProjectResumeClocksTx(ctx context.Context, tx pgx.Tx, project string, at time.Time) (int64, error) {
+	tag, err := tx.Exec(ctx, `update pod_resumes set clock_at = greatest(clock_at, $2)
+		where project = $1 and first_turn_at is null and closed_at is null`, project, at)
+	if err != nil {
+		return 0, fmt.Errorf("set the stuck clocks of %s's open resumes: %w", project, err)
+	}
+	return tag.RowsAffected(), nil
+}

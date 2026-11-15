@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
 type unsupportedOutboxPayload struct{}
@@ -48,7 +50,13 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ControllerNotice{Kind: ProviderErrorsNotice, Role: claim.RoleImplementer,
 			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},
 		ControllerNotice{Kind: TreeStalledNotice, Reason: "LEGION-208 has stopped. The tree has been quiet for 7.0 hours."},
+		ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now,
+			Reason: "the model provider is down"}},
+		ControllerNotice{Kind: ProjectResumedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now.Add(time.Hour)}},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Task: "Write the spec."},
+		SuperviseRequest{Op: "pause_stop", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakePause, Pause: 7},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		LingerClose{Generation: 7},
 		WorkspaceRemove{Linger: 3},
@@ -247,6 +255,107 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	}
 }
 
+// Every kind the lanes run is decided here as held by a project's pause or not (decision 9 of
+// dispatch://INFRA-3759), and the decision is the one list the outbox's claim reads (pauseHolds):
+// a kind added to a lane fails this test until somebody writes it below, held or not. "every row"
+// is a kind the pause holds whole, "op start" the supervise kind, whose start alone launches a
+// role, and "" a kind that runs through the pause: a stop, a write to Dispatch, a controller's
+// notice.
+func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
+	decided := map[OutboxKind]string{
+		OutboxKindSupervise:          "op start",
+		OutboxKindNotice:             "every row",
+		OutboxKindPhaseEnded:         "every row",
+		OutboxKindHookPrompt:         "every row",
+		OutboxKindRoleMessage:        "every row",
+		OutboxKindUpdateAsk:          "every row",
+		OutboxKindMergeQueueRemoval:  "every row",
+		OutboxKindCheckWake:          "every row",
+		OutboxKindCheckLook:          "every row",
+		OutboxKindCheckBound:         "every row",
+		OutboxKindControllerNotice:   "",
+		OutboxKindDispatchStatus:     "",
+		OutboxKindDispatchMessage:    "",
+		OutboxKindGateSeed:           "",
+		OutboxKindLingerClose:        "",
+		OutboxKindIssueSuspend:       "",
+		OutboxKindWorkspaceRemove:    "",
+		OutboxKindIssueBranch:        "",
+		OutboxKindIssueBundle:        "",
+		OutboxKindIssueRelease:       "",
+		OutboxKindGatedStepsPublish:  "",
+		OutboxKindClaimRelease:       "",
+		OutboxKindDesignGatesPublish: "",
+		OutboxKindMergeQueueRead:     "",
+	}
+	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim} {
+		for _, kind := range LaneKinds(lane) {
+			if _, ok := decided[kind]; !ok {
+				t.Errorf("%s runs on the %s lane and nobody decided whether a project's pause holds it: add it to pauseHolds or to this test as not held", kind, lane)
+			}
+		}
+	}
+	listed := map[OutboxKind]string{}
+	for _, hold := range pauseHolds {
+		if _, twice := listed[hold.kind]; twice {
+			t.Errorf("pauseHolds names %s twice", hold.kind)
+		}
+		listed[hold.kind] = "every row"
+		if hold.op != "" {
+			listed[hold.kind] = "op " + string(hold.op)
+		}
+	}
+	for kind, want := range decided {
+		if got := listed[kind]; got != want {
+			t.Errorf("a project's pause holds %s as %q, want %q", kind, got, want)
+		}
+	}
+	for kind := range listed {
+		if _, ok := decided[kind]; !ok {
+			t.Errorf("pauseHolds names %s, which this test decides nothing of", kind)
+		}
+	}
+}
+
+// The pause rule the outbox's claim embeds names, as SQL literals, exactly the rows pauseHolds
+// lists: the kinds held whole in one `in` list and each kind held for one op beside it. It is
+// read off outboxClaimable itself, the text DueRows, ClaimRow and HeldRows run, so a rule built
+// from another list, or a claim that lost the rule, fails here.
+func TestThePauseRuleOfTheClaimNamesExactlyThePauseHolds(t *testing.T) {
+	if !strings.Contains(outboxClaimable, outboxPauseFree) {
+		t.Fatalf("outboxClaimable does not embed the pause rule:\n%s", outboxClaimable)
+	}
+	whole := regexp.MustCompile(`outbox\.kind in \(([^)]*)\)`).FindAllStringSubmatch(outboxPauseFree, -1)
+	if len(whole) != 1 {
+		t.Fatalf("the pause rule holds %d lists of whole kinds, want one:\n%s", len(whole), outboxPauseFree)
+	}
+	sqlHolds := map[string]bool{}
+	for _, literal := range strings.Split(whole[0][1], ",") {
+		literal = strings.TrimSpace(literal)
+		if !strings.HasPrefix(literal, "'") || !strings.HasSuffix(literal, "'") {
+			t.Fatalf("the pause rule names %s, which is no SQL literal", literal)
+		}
+		sqlHolds[strings.Trim(literal, "'")] = true
+	}
+	for _, shape := range regexp.MustCompile(`\(outbox\.kind = '([a-z_]+)' and outbox\.payload->>'op' = '([a-z_]+)'\)`).FindAllStringSubmatch(outboxPauseFree, -1) {
+		sqlHolds[shape[1]+" op "+shape[2]] = true
+	}
+	goHolds := map[string]bool{}
+	for _, hold := range pauseHolds {
+		if hold.op == "" {
+			goHolds[string(hold.kind)] = true
+		} else {
+			goHolds[string(hold.kind)+" op "+string(hold.op)] = true
+		}
+	}
+	if !reflect.DeepEqual(sqlHolds, goHolds) {
+		t.Fatalf("the pause rule holds %v, want pauseHolds' %v", sqlHolds, goHolds)
+	}
+	if strings.Contains(outboxPauseFree, "$") {
+		t.Fatalf("the pause rule takes a parameter, which would move every statement's own:\n%s", outboxPauseFree)
+	}
+}
+
 func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 	now := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -292,6 +401,28 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "an update-stalled notice with no round", payload: ControllerNotice{Kind: UpdateStalledNotice, Update: &UpdateStalled{Waiting: []UpdateWaiting{{Claim: "legion-LEGION-208-tester", State: "working"}}}}, reason: "requires its round and the claims it waits on"},
 		{name: "a slot-free wake carrying held issues", payload: ControllerNotice{Kind: SlotFreeNotice, Held: []HeldIssue{{Issue: "LEGION-209", Reason: HeldDesignGate, HeldBy: []string{"LEGION-208"}}}}, reason: "carries held issues only when it is a tick"},
 		{name: "a triage notice carrying held issues", payload: ControllerNotice{Kind: TriageNotice, Held: []HeldIssue{{Issue: "LEGION-209", Reason: HeldUnclassified}}}, reason: "carries held issues only when it is a tick"},
+		{name: "a project-paused notice for an architect", payload: Notice{Kind: ProjectPausedNotice}, reason: "unknown notice kind"},
+		{name: "a project-resumed notice for an architect", payload: Notice{Kind: ProjectResumedNotice}, reason: "unknown notice kind"},
+		{name: "an architect's notice carrying a project pause", payload: Notice{Kind: "held", Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now, Reason: "down"}}, reason: "only the controller's project-paused and project-resumed notices do"},
+		{name: "a project-paused notice carrying no pause", payload: ControllerNotice{Kind: ProjectPausedNotice}, reason: "carries a project pause only when it is"},
+		{name: "a project-resumed notice carrying no pause", payload: ControllerNotice{Kind: ProjectResumedNotice}, reason: "carries a project pause only when it is"},
+		{name: "a tick carrying a project pause", payload: ControllerNotice{Kind: TickNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now}}, reason: "carries a project pause only when it is"},
+		{name: "a project-paused notice of no pause", payload: ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{By: PauseActor{Kind: PauseByOperator}, At: now, Reason: "down"}}, reason: "names its pause and when it was acted on"},
+		{name: "a project-paused notice of no moment", payload: ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, Reason: "down"}}, reason: "names its pause and when it was acted on"},
+		{name: "a project-paused notice with no reason", payload: ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now, Reason: " \n"}}, reason: "names the reason the project was paused"},
+		{name: "a project-resumed notice with a reason", payload: ControllerNotice{Kind: ProjectResumedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now, Reason: "fixed"}}, reason: "carries no reason; only a project-paused notice does"},
+		{name: "a project-paused notice with its reason beside its pause", payload: ControllerNotice{Kind: ProjectPausedNotice, Reason: "down", Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now, Reason: "down"}}, reason: "carries its reason in its pause"},
+		{name: "a pause by the controller with no session", payload: ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByController}, At: now, Reason: "down"}}, reason: "names the controller's session"},
+		{name: "a pause by the operator with a session", payload: ControllerNotice{Kind: ProjectResumedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator, Session: "session-1"}, At: now}}, reason: "names no session"},
+		{name: "a pause by someone else", payload: ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: "reviewer"}, At: now, Reason: "down"}}, reason: "is by the controller or the operator"},
+		{name: "a pause's stop of no pause", payload: SuperviseRequest{Op: "pause_stop", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3}, reason: "names its pause and the role it stops"},
+		{name: "a pause's stop of no role", payload: SuperviseRequest{Op: "pause_stop", Tree: "LEGION-208", Generation: 3, Pause: 7}, reason: "names its pause and the role it stops"},
+		{name: "a pause's stop of the controller", payload: SuperviseRequest{Op: "pause_stop", Role: claim.RoleController, Pause: 7}, reason: "names its pause and the role it stops"},
+		{name: "a suspend naming a pause", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7}, reason: "only a pause's stop and a start name one"},
+		{name: "a start naming a negative pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Pause: -7}, reason: "only a pause's stop and a start name one"},
+		{name: "a suspend naming a wake kind", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakeChecks}, reason: "only a start names one"},
+		{name: "a start naming no wake kind of the pods", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: "listener_ready"}, reason: "only a start names one"},
+		{name: "a pause's launch naming no pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: pods.WakePause}, reason: "names the pause that owed it"},
 		{name: "unknown supervise operation", payload: SuperviseRequest{Op: "unknown"}, reason: "unknown supervise operation"},
 		{name: "a stop that is not a tree close", payload: SuperviseRequest{Op: "stop", Tree: "LEGION-208", Role: claim.RoleArchitect}, reason: "unknown supervise operation"},
 		{name: "an issue close naming a linger", payload: SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Linger: 7}, reason: "only a tree close"},
