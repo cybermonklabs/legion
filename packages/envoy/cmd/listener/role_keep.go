@@ -499,10 +499,9 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 // for a claim that cannot be made and expires unread.
 //
 // A sender that keeps a queue of its own and redelivers from it - the Legion daemon's notice
-// queue and a phase worker's stall reminder - opts out on the publish route's own request field
-// instead (keep false, read by roleSend.noHolder), which is the one give-up a sender can
-// address: nothing publishes a raw role message it would redeliver, so the role lane always
-// keeps.
+// queue - opts out on the publish route's own request field instead (keep false, read by
+// roleSend.noHolder), which is the one give-up a sender can address: nothing publishes a raw role
+// message it would redeliver, so the role lane always keeps.
 func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, bool) {
 	if !roles.Valid(role) {
 		return keptRoleCopy{}, false

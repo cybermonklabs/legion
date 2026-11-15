@@ -640,20 +640,19 @@ func fallbackRoleForward(ctx context.Context, deps Deps, item contracts.Envelope
 }
 
 // forwardOf maps a role's resolution to how item reaches it, as the listener's role lane maps the
-// same resolution to its delivery outcomes, but for the gone holder below, which the lane does not
-// keep for:
+// same resolution to its delivery outcomes, but for the unresponsive holder below, which the lane
+// keeps for and the outbox does not:
 //
-//   - no claim (the listener's no_holder): kept on the role's kept lane for its next holder;
+//   - no claim (the listener's no_holder): kept on the role's kept lane for its next holder, who
+//     is handed the copy inside the copy's hour (one hour from the keep);
 //   - a holder whose own record is past the gone horizon (session.Gone, dated by that record or
-//     by what the lookup remembers of it): kept as an unclaimed role is, since the listener's
-//     role-claim reaper releases that claim - the one release there is - and the holder that
-//     claims the role next is handed the copy. The listener keeps for no lapsed claim at all
-//     (roleKeepable), refusing it 404 holder_lapsed, so this is the one resolution the two keep
-//     differently;
-//   - a holder past the live window and within that horizon (session.Unresponsive), where the
-//     listener's delivery reports delivery_failed: pending, so the event waits for the session to
-//     answer again rather than being published to nobody, and nothing is kept, since the claim
-//     stands and the copy would wait for a claim that never comes;
+//     by what the lookup remembers of it): kept as an unclaimed role is, as the listener keeps
+//     it (roleKeepable). The listener's role-claim reaper releases that claim - the one release
+//     there is - and the holder that claims the role next is handed the copy inside its hour;
+//   - a holder past the live window and within that horizon (session.Unresponsive), which the
+//     listener's lane keeps for too (roleKeepable): pending, so the event waits for the session
+//     to answer again rather than being published to nobody, and nothing is kept, for the reason
+//     below;
 //   - a holder nothing dates - no record in the session bucket and no memory of one - pending
 //     too: a bucket's maximum age can be shorter than the gone horizon, so a record it no longer
 //     holds says the bucket forgot the session, not that the session died;
@@ -665,9 +664,12 @@ func fallbackRoleForward(ctx context.Context, deps Deps, item contracts.Envelope
 //     reached the holder, for every holder alike, because every holder is delivered its copy
 //     from its own consumer by the listener's relay and answers the forward with nothing.
 //
-// A holder that is only unresponsive is the one no-holder case that is not kept: it keeps its
-// claim and writes no new one, so a copy kept for it would wait for a claim that never comes, and
-// the stream holds the forward for the session itself. It stays the pending error above.
+// A holder that is only unresponsive is the one no-holder case the outbox does not keep, and it
+// stays the pending error above. The outbox sends a pending event again until the session answers
+// and the forward reaches it, or until its record passes the gone horizon and the case above keeps
+// the copy. A copy kept now would wait one hour at most, and the walk that drops it at the end of
+// that hour sends no dead letter for an outbox copy (isOutboxCopy, cmd/listener), so its end would
+// tell nobody.
 //
 // The listener's capability check (frameDeliveryMode) does not apply: a Dispatch envelope's payload
 // is the event itself, which has no top-level delivery key, so the listener reads it as an untagged
@@ -700,8 +702,9 @@ func forwardOf(role string, item contracts.Envelope, resolution roles.Resolution
 }
 
 // keptOrSkipped is how a role route no live holder can take reaches the role's next holder: a
-// keep of the copy on the role's kept lane, which the holder that claims the role next is handed
-// (cmd/listener/role_keep.go), and which a holder that claimed the role while the keep was in
+// keep of the copy on the role's kept lane, which the holder that claims the role next inside the
+// copy's hour is handed (cmd/listener/role_keep.go), and which the listener's walk drops at the end
+// of that hour with no dead letter, and which a holder that claimed the role while the keep was in
 // flight is handed by the keep itself (handOverKept). The keep carries no holder, so the route is
 // keyed on its role topic as the skip it replaced was, and holds back no session's later events.
 //
