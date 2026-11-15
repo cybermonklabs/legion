@@ -420,8 +420,9 @@ const legionPullRequestView = z.object({
  * neither when it was read nor what the round's own wait is, which is what this carries. */
 const legionMergeWaitView = z.object({
   /** The head the round waits on, the pull request's current head: the head the approval stands
-   * on, and the head GitHub's answer is about. */
-  waitsOn: nonEmptyString,
+   * on, and the head GitHub's answer is about. The daemon always writes it; the reader takes it as
+   * optional, since no plugin code reads it (LEGION_ANSWER_READS). */
+  waitsOn: nonEmptyString.optional(),
   /** The merge state the record holds for that head (`record.PullRequest.MergeState`), the same
    * word `pullRequest.mergeState` carries. Absent while the record holds no state for this head:
    * beside no `stateReadAt` the record holds no read of this head, and beside a `stateReadAt` it
@@ -440,8 +441,9 @@ const legionMergeWaitView = z.object({
    * listener settles a head only once every check it has seen there is terminal, so 0 is no
    * evidence of what GitHub holds: CI still running, no check at all, and runs that concluded with
    * their settlement not yet arrived all read 0, so read the head's runs and their status on
-   * GitHub before acting. Written whatever its value, so 0 is that reading and not a gap. */
-  checkRuns: z.number().int().nonnegative(),
+   * GitHub before acting. Written whatever its value, so 0 is that reading and not a gap. The
+   * reader takes it as optional, since no plugin code reads it (LEGION_ANSWER_READS). */
+  checkRuns: z.number().int().nonnegative().optional(),
   /** The head and the merge state the architect and the reviewer were told of
    * (`record.ReviewDecision.ToldStuckHead` and `ToldStuckState`, the marks workflow's
    * `tellStuckMergeState` leaves). They name what the reviewer's decision last records as told,

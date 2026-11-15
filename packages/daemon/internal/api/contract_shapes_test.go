@@ -304,7 +304,9 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // starts again at its first value, so the twelve issues carry every value of every list. Each
 // issue's architect carries a failure, a pending cause and a held task, as a worker does. No
 // other body carries them on an architect, so without this body no record describes those keys
-// at their architect paths, and the value comparison reads no value there.
+// at their architect paths, and the value comparison reads no value there. Each issue also carries
+// a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
+// merge states, so the twelve issues carry all eight words at both key paths.
 func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	t.Helper()
 	at := time.Date(2026, 9, 22, 9, 30, 0, 0, time.UTC)
@@ -382,6 +384,11 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			PullRequest: &PullRequestView{
 				Repo: "acme/widgets", Number: 2000 + i, Head: "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29", State: "open",
 				MergeState: string(mergeWords[i%len(mergeWords)]),
+			},
+			MergeWait: &MergeWaitView{
+				WaitsOn: "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29", MergeState: string(mergeWords[i%len(mergeWords)]),
+				StateReadAt: &at, HeadUpdatedAt: &at, CheckRuns: 2,
+				ToldHead: "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29", ToldState: string(mergeWords[i%len(mergeWords)]),
 			},
 			GatedSteps: []GatedStepView{{Step: stepWords[i%len(stepWords)], Status: statusWords[i%len(statusWords)]}},
 			WaitingLine: &WaitingLineView{

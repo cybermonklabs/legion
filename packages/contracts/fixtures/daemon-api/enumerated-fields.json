@@ -259,6 +259,82 @@
   },
   {
     "answer": "state",
+    "keyPath": "issues.*.mergeWait.mergeState",
+    "values": [
+      {
+        "value": "behind",
+        "since": 133
+      },
+      {
+        "value": "blocked",
+        "since": 133
+      },
+      {
+        "value": "clean",
+        "since": 133
+      },
+      {
+        "value": "dirty",
+        "since": 133
+      },
+      {
+        "value": "draft",
+        "since": 133
+      },
+      {
+        "value": "has_hooks",
+        "since": 133
+      },
+      {
+        "value": "unknown",
+        "since": 133
+      },
+      {
+        "value": "unstable",
+        "since": 133
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.mergeWait.toldState",
+    "values": [
+      {
+        "value": "behind",
+        "since": 133
+      },
+      {
+        "value": "blocked",
+        "since": 133
+      },
+      {
+        "value": "clean",
+        "since": 133
+      },
+      {
+        "value": "dirty",
+        "since": 133
+      },
+      {
+        "value": "draft",
+        "since": 133
+      },
+      {
+        "value": "has_hooks",
+        "since": 133
+      },
+      {
+        "value": "unknown",
+        "since": 133
+      },
+      {
+        "value": "unstable",
+        "since": 133
+      }
+    ]
+  },
+  {
+    "answer": "state",
     "keyPath": "issues.*.gatedSteps.*.step",
     "values": [
       {
@@ -1220,6 +1296,82 @@
       {
         "value": "unstable",
         "since": 86
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "mergeWait.mergeState",
+    "values": [
+      {
+        "value": "behind",
+        "since": 133
+      },
+      {
+        "value": "blocked",
+        "since": 133
+      },
+      {
+        "value": "clean",
+        "since": 133
+      },
+      {
+        "value": "dirty",
+        "since": 133
+      },
+      {
+        "value": "draft",
+        "since": 133
+      },
+      {
+        "value": "has_hooks",
+        "since": 133
+      },
+      {
+        "value": "unknown",
+        "since": 133
+      },
+      {
+        "value": "unstable",
+        "since": 133
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "mergeWait.toldState",
+    "values": [
+      {
+        "value": "behind",
+        "since": 133
+      },
+      {
+        "value": "blocked",
+        "since": 133
+      },
+      {
+        "value": "clean",
+        "since": 133
+      },
+      {
+        "value": "dirty",
+        "since": 133
+      },
+      {
+        "value": "draft",
+        "since": 133
+      },
+      {
+        "value": "has_hooks",
+        "since": 133
+      },
+      {
+        "value": "unknown",
+        "since": 133
+      },
+      {
+        "value": "unstable",
+        "since": 133
       }
     ]
   },
