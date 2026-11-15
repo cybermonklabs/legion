@@ -94,22 +94,32 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 133's merge wait
-(dispatch://INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on GitHub's
-answer about merging the pull request's head carries `mergeWait`, the head the round waits on, the
-merge state the record holds for that head, when that state was last read, when GitHub last moved
-the pull request, how many of the fence's check runs are that head's own, and the head and state the
-architect and the reviewer were told of; an issue whose round waits on nothing there carries no such
-key, and a caller from a pod below 133 is served every issue without `mergeWait`), after contract
-132's `waiting_on_issue` (dispatch://INFRA-3036: the waiting line's `kind` gains `waiting_on_issue`,
-a started issue that gave its admission slot back to wait on another issue, and a caller from a pod
-whose claims record a contract under 132 is served such a member without its `kind`, `api.stateFor`,
-`withoutWaitingOnIssue`), after contract 123's phase completion head (dispatch://INFRA-3146: a phase
-completion names the head its evidence is about, which `handoff_complete` reads from the handoff
-record's `head` for the planner, the tester and the reviewer as well as the implementer, and no
-shape the plugin parses moves), after contract 111's tree quiet time (dispatch://INFRA-2560: every
-issue of a live tree carries `treeMovedAt`, when that tree last moved, and `quietHours`, how long it
-has been still, which a caller below 111 is served without), after contract 104's claim recoveries
+number is the one `DaemonAPIVersion` declares, last bumped by contract 141's experiment assignments
+(dispatch://INFRA-2566: each issue of `GET /legion/v1/state` carries `assignments`, one
+`{experiment, variant, mode, drawnAt}` per experiment answer that applies to it, absent from an
+issue no experiment holds an answer for; the reader this plugin parses the state through takes
+the key as optional, because a caller from a pod whose claims record a contract under 141 is
+served every issue without it (`api.stateFor`, `withoutAssignments`)), after contract 137's session
+service account (INFRA-3621: a pod's `legion launcher` may be told
+`--session-impersonate-service-account <email>`, which the daemon renders only where
+`runtime.kubernetes.session_database.impersonate_service_account` is set, and no shape the plugin
+parses moves), after contract 133's merge
+wait (dispatch://INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on
+GitHub's answer about merging the pull request's head carries `mergeWait`, the head the round
+waits on, the merge state the record holds for that head, when that state was last read, when
+GitHub last moved the pull request, how many of the fence's check runs are that head's own, and
+the head and state the architect and the reviewer were told of; an issue whose round waits on
+nothing there carries no such key, and a caller from a pod below 133 is served every issue without
+`mergeWait`), after contract 132's `waiting_on_issue` (dispatch://INFRA-3036: the waiting line's
+`kind` gains `waiting_on_issue`, a started issue that gave its admission slot back to wait on
+another issue, and a caller from a pod whose claims record a contract under 132 is served such a
+member without its `kind`, `api.stateFor`, `withoutWaitingOnIssue`), after contract 123's phase
+completion head (dispatch://INFRA-3146: a phase completion names the head its evidence is about,
+which `handoff_complete` reads from the handoff record's `head` for the planner, the tester and
+the reviewer as well as the implementer, and no shape the plugin parses moves), after contract
+111's tree quiet time (dispatch://INFRA-2560: every issue of a live tree carries `treeMovedAt`,
+when that tree last moved, and `quietHours`, how long it has been still, which a caller below 111
+is served without), after contract 104's claim recoveries
 (dispatch://INFRA-3161: `fresh_session` reaches a claim stored working that no process stands
 behind, the compaction refuses that claim `CLAIM_NOT_RUNNING` naming `fresh_session`, and no shape
 the plugin parses moves), after contract 98's held list
