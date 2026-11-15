@@ -5,7 +5,8 @@ another role's transcript among them; before you run a build or a test suite in 
 moment your phase needs a tool the worker image may not carry — a database client, a linter, a
 one-off CLI — before you install, download, or vendor anything; before you measure Oh My Pi's
 binary; before you run knives on a fork in a pod; and when a test fails in your pod. Every path it
-cites is in cybermonklabs/legion.
+cites is in cybermonklabs/legion, except the knives paths of its knives section, which are in
+knives v3.2.6.
 
 ## What runs in your pod, and what runs on the pull request
 
@@ -435,12 +436,12 @@ figure came from
 
 ## Working on a fork with knives in a pod
 
-knives finds a checkout only under `$HOME`, at most three directories deep, and takes only a
-colocated clone bound by its `upstream` remote (knives v3.2.6, `src/bind.rs` `scan`,
-`checkouts_under`). Your issue workspace is a git worktree under `/legion/workspaces`, so knives
-never sees it. The shared clone of your issue's repository, under `/legion/repos`, is what it
-binds. So run every knives command as `KNIVES_OWNER=<machine> HOME=/legion/repos knives …`, where
-`<machine>` is `legion-<project>-<key>` with the project and the issue key lower-cased
+knives binds the checkout you stand in, and finds any other checkout only under `$HOME`, at most
+three directories deep. It takes only a colocated clone bound by its `upstream` remote, and a
+sweep or `knives repos` always looks under `$HOME` (knives v3.2.6, `src/bind.rs` `scan`,
+`checkouts_under`). The shared clone of your issue's repository is under `/legion/repos`, outside
+your `$HOME`. So run every knives command as `KNIVES_OWNER=<machine> HOME=/legion/repos knives …`,
+where `<machine>` is `legion-<project>-<key>` with the project and the issue key lower-cased
 (`legion-acme-acme-41`). Every role of the issue uses that one name, as the owner of its claims
 and as the name of the pod's machine in the shared ledger. Each step below was measured with
 knives v3.2.6.
@@ -450,18 +451,22 @@ other steps write the issue's disk, so skip each one that another role of the po
 
 1. Link your role's knives config home to `/legion/knives`, on the issue's disk. knives reads
    `KNIVES_CONFIG_HOME`, then `$XDG_CONFIG_HOME/knives`, then `$HOME/.config/knives`
-   (`src/config.rs` `default_config_home`), and each role's `$XDG_CONFIG_HOME` is a file system of
-   that role alone, in memory. Through the link, every role of the pod reads one registry, one
-   claim file and one ledger:
+   (`src/config.rs` `default_config_home`). Each role's `$XDG_CONFIG_HOME` is that role's own, kept
+   for the pod's life (`docs/kubernetes.md`, "Anatomy of a Sandbox pod"). Through the link, every
+   role of the pod reads one registry, one claim file and one ledger:
 
    ```bash
    mkdir -p /legion/knives
-   ln -s /legion/knives "$XDG_CONFIG_HOME/knives"
+   ln -sT /legion/knives "$XDG_CONFIG_HOME/knives"
+   readlink -f "$XDG_CONFIG_HOME/knives"
    ```
 
-   When `$XDG_CONFIG_HOME/knives` is already a directory, copy its `repos.toml` into
-   `/legion/knives/` if that has none, remove the directory, and make the link. A claim the
-   directory held protected nothing outside your role: take it again with `knives start`.
+   `readlink` prints `/legion/knives`. When `ln` says `File exists` and `readlink` prints
+   `/legion/knives`, an earlier run of your role made the link: go on. When `readlink` prints
+   another path, `$XDG_CONFIG_HOME/knives` is a directory of your role alone. Copy its
+   `repos.toml` into `/legion/knives/` if that has none, remove the directory, and run the block
+   again. A claim that directory held protected nothing outside your role: take it again with
+   `knives start`.
 
 2. Write the registry entry of the fork your tree works, and no other entry, in
    `$XDG_CONFIG_HOME/knives/repos.toml`, with its `workspaces` path written in full under
@@ -475,14 +480,14 @@ other steps write the issue's disk, so skip each one that another role of the po
    git remote add upstream <upstream>
    git remote add release <release>       # only when the entry names one
    jj git fetch --remote upstream --branch <base>
-   jj git fetch --remote origin --branch <release_branch>
+   jj git fetch --remote origin --branch <release_branch>       # only when the entry names one
    ```
 
    `<base>` is the entry's `base`, `main` when it names none. Fetch `<release_branch>` from
    `release` when the entry names that remote.
 
 4. For the entry's `ledger = "<ledger owner>/<ledger name>"`, make the pod's ledger directory and
-   fetch the machine's own ref when the ledger has it:
+   fetch the machine's own ref:
 
    ```bash
    g=/legion/knives/ledger-repositories/<ledger owner>--<ledger name>
@@ -490,31 +495,32 @@ other steps write the issue's disk, so skip each one that another role of the po
    git --git-dir "$g" config core.bare false
    git --git-dir "$g" remote add origin https://github.com/<ledger owner>/<ledger name>.git
    git --git-dir "$g" config knives.machine <machine>
-   if git --git-dir "$g" ls-remote --exit-code origin refs/knives/<machine> >/dev/null; then
-     git --git-dir "$g" fetch origin refs/knives/<machine>:refs/knives/<machine>
-   fi
+   git --git-dir "$g" fetch origin refs/knives/<machine>:refs/knives/<machine>
    ```
 
-   The machine writes only `refs/knives/<machine>`, and every pod of the issue writes that ref. A
-   new pod's disk does not hold it, and without the fetch the first sweep refuses to push it
-   (`NotOwn`, `src/ledger_git/mod.rs` `pending`). Run no `knives ledger migrate`: it converts a
-   checkout of the ledger's old `main`, and this directory checks out nothing, since knives reads
-   only its `refs/knives/*` (`skills/using-knives/references/ledger.md`, "Sharing between
-   machines").
+   The fetch fails with `couldn't find remote ref` when no earlier pod of the issue wrote the
+   ledger, and then the step is done. Send any other failure of it to your architect. The machine
+   writes only `refs/knives/<machine>`, and every pod of the issue writes that ref. A new pod's
+   disk does not hold it, and without the fetch every sweep of the pod refuses to push it
+   (`refusing to write as <machine>`, `src/ledger_git/mod.rs` `pending`). Run no
+   `knives ledger migrate`: it converts a checkout of the ledger's old `main`, and this directory
+   checks out nothing, since knives reads only its `refs/knives/*`
+   (`skills/using-knives/references/ledger.md`, "Sharing between machines").
 
-5. Name the fork with `--repo` on every `gh` command: the clone's two remotes name two owners, so
-   a `gh` command that names no repository is refused.
+`KNIVES_OWNER=<machine> HOME=/legion/repos knives repos --json` then names the shared clone as the
+fork's `path`, and a first sweep (below) exits 0.
 
-`knives repos` then lists the fork at the shared clone, `knives repos --json` prints the
-`config_path` it reads, under `$XDG_CONFIG_HOME/knives`, and a first sweep (below) exits 0.
+From step 3 on, the clone's remotes name two owners, and every role's workspace shares them. So
+every role of the pod names the fork with `--repo` on every `gh` command: `legion gh` refuses a
+command that names no repository there.
 
 ### After each knives command that writes
 
-A knives command writes its entry and exits. Then it starts `knives ledger sweep` in the
-background and does not wait, and a failed push goes only to `ledger-sweep.log` (`src/main.rs`
-`main`, `src/ledger_sweep/mod.rs` `hand_off`). So after each `start`, `finish`, `notch -m`,
-`track`, `depends`, `sync` and `release` command that writes, run the sweep and read its exit
-status:
+A knives command writes its entry, starts `knives ledger sweep` in the background as it exits,
+and does not wait for it. A failed push of that sweep goes only to `ledger-sweep.log`
+(`src/main.rs` `main`, `src/ledger_sweep/mod.rs` `hand_off`). So after each `start`, `finish`,
+`notch -m`, `track`, `depends`, `sync` and `release` command that writes, run the sweep and read
+its exit status:
 
 ```bash
 KNIVES_OWNER=<machine> HOME=/legion/repos knives ledger sweep --json
@@ -522,28 +528,31 @@ KNIVES_OWNER=<machine> HOME=/legion/repos knives ledger sweep --json
 
 - Exit 0, with `unsent` 0 on the ledger's destination: the entry is in the shared ledger. Go on.
 - Exit 3: read `problems`. The entry stays in `/legion/knives`, and the next sweep sends it. Do
-  not push the branch, start work on it or complete your phase until a sweep exits 0. A push that
-  git cannot authenticate, or that GitHub refuses with 403, means your role's App cannot write the
-  ledger: send the problem text to your architect.
+  not push the branch, start work on it or complete your phase until a sweep exits 0. A problem
+  `refusing to write as <machine>` means the pod skipped the fetch of step 4: run it, then sweep
+  again. A push that git cannot authenticate, or that GitHub refuses with 403, means your role's
+  App cannot write the ledger: send the problem text to your architect.
 
-The sweep pushes with plain git, and `legion git-credential` answers it with your role's own App
-token for the ledger's owner. No person's token is used.
+The sweep pushes from a directory that is no clone. The git configuration entries every role is
+given name `legion git-credential` there too (`docs/kubernetes.md`, `gitConfigPairs`), so it
+answers the push with your role's own App token, and no person's token is used.
 
 ### What knives v3.2.6 does in a pod
 
 - Every role of the pod reads one claim file, so a `start` of a branch that another owner holds
-  is refused, naming the holder.
+  is refused, naming the holder. A role of your own issue runs under the same owner name, so its
+  `start` of your branch resumes your claim and is not refused (`src/commands/claim.rs` `decide`).
 - A claim is in `/legion/knives/state.json`, on the pod's disk, and goes with the pod. Its ledger
   entries stay.
 - A claim does not stop a role in another pod, or a person on their own machine: `start` decides
   from `state.json` alone and reads no ledger first (`src/commands/start.rs`, `ledger.md`, "No
-  pull"). They see your claim only as an entry in the ledger. A later knives changes this, so
+  pull"). They see your claim only as an entry in the ledger. A later knives may change this, so
   read `knives start --help` of the knives you run.
 - To read who claimed or released a branch, run `knives ledger sweep`, then
-  `knives notch <branch> --json`: each entry carries `owner` and `claim_change`. `notch`, `start`
-  and `finish` pull nothing. `knives status --no-github` pulls first, but its claim column reads
-  the local `state.json` alone (`src/commands/status/claims.rs`), so read notes there, never who
-  holds a branch.
+  `knives notch <branch> --json`: each entry carries `owner`, and an entry that changed the claim
+  carries `claim_change`. `notch`, `start` and `finish` pull nothing. `knives status --no-github`
+  pulls first, but its claim column reads the local `state.json` alone
+  (`src/commands/status/claims.rs`), so read notes there, never who holds a branch.
 
 ### When your work on a branch stops
 
@@ -554,9 +563,11 @@ run of your role, took in this pod. When no process of the pod works in the clai
 run `knives finish <branch> --force --why '<KEY>: taken in another place of this pod (<role>)'`.
 knives v3.2.6 records a `--why` only with `--force`.
 
-A `finish` that prints `claim was not held` wrote nothing. That is a branch claimed in an earlier
-pod, whose claim went with that pod's disk. To release it in the ledger, run `knives start
-<branch>`, the sweep, `knives finish <branch>` and the sweep.
+A `finish` that prints `claim was not held` wrote nothing: `state.json` holds no claim of the
+branch. Read the ledger (the sweep, then `knives notch <branch> --json`). When the newest entry of
+`<machine>` with a `claim_change` is `claimed` or `resumed`, an earlier pod took that claim, and
+it went with that pod's disk. To release it in the ledger, run `knives start <branch>`, the sweep,
+`knives finish <branch>` and the sweep.
 
 ## The tests your pod cannot run
 

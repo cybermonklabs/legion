@@ -1,4 +1,4 @@
-kind: Changed
+kind: Added
 body: |-
   `skills/legion-worker/references/tools.md` has a section for a role that works on a fork with
   knives in a pod. Every role of the pod links its knives config home to `/legion/knives`, so one

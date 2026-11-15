@@ -155,9 +155,10 @@ on, so a pane's `git` and `jj git push` read the hosts.yml of the repository in 
 about where the bundle holds its directory, the owner's otherwise, and nothing else.
 
 In a pod, a knives ledger sweep (`skills/legion-worker/references/tools.md`, "Working on a fork
-with knives in a pod") pushes the fork's ledger repository with plain git through the same helper.
-The helper answers it with the role's own App token for the ledger's owner, and no person's token
-is used.
+with knives in a pod") pushes the fork's ledger repository with plain git from a directory that is
+no clone. The git configuration entries every role is given (`gitConfigPairs`,
+[kubernetes.md](kubernetes.md)) name this helper there too, so it answers that push by the same
+rule, and no person's token is used.
 
 The `git` in `bin/` runs `legion git --after <state_dir>/bin` (`packages/daemon/cmd/legion/git.go`).
 The daemon writes it at boot, unless the first `git` on the daemon's own `PATH` is the worker
