@@ -58,7 +58,8 @@ var forwardingWrites = map[string][]writerKey{
 
 // checkRefusalWrites refuses a refusal its port's recorder would record without the code a
 // registered writer names: in each package of refusalDirs, outside the body of every
-// registeredWriters and forwardingWrites function, each way net/http writes a 4xx. A raw write
+// registeredWriters and forwardingWrites function, each of the forms below by which net/http
+// writes a 4xx (what it does not see is named in packages/envoy/AGENTS.md). A raw write
 // (w.WriteHeader(status), or as a method expression http.ResponseWriter.WriteHeader(w, status),
 // http.Error(w, message, status), http.Redirect(w, r, url, status) or
 // http.RedirectHandler(url, status)) is refused when its status is from 400 to 499 or is one

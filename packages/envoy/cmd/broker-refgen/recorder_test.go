@@ -82,13 +82,14 @@ type refusedForm struct {
 type problemAt struct{ file, line, says, write string }
 
 // refusedForms is the table of the check
-// dispatch://INFRA-2771/artifact/verification-md#b-ca-refusal-gate: one row for each way net/http
-// writes a 4xx, the first eight named as that check names them. A row's files name each name of
-// net/http that writes the row's way (http.NotFound's row http.NotFoundHandler too), and some of
-// them as a value rather than a call. WriteHeader's row also calls it as a method expression, with
-// its receiver first; http.Error's row writes through net/http imported by an alias, and imports
-// it as . and as _, which name none of its writes; and http.ServeMux's row is handed a mux on the
-// airlock's proxy port, where no recorder records a mux's own answers.
+// dispatch://INFRA-2771/artifact/verification-md#b-ca-refusal-gate: one row for each form by which
+// net/http writes a 4xx that the rule refuses, the first eight named as that check names them. A
+// row's files name each name of net/http that writes the row's way (http.NotFound's row
+// http.NotFoundHandler too), and some of them as a value rather than a call. WriteHeader's row also
+// calls it as a method expression, with its receiver first; http.Error's row writes through
+// net/http imported by an alias, and imports it as . and as _, which name none of its writes; and
+// http.ServeMux's row is handed a mux on the airlock's proxy port, where no recorder records a
+// mux's own answers.
 var refusedForms = []refusedForm{
 	{"WriteHeader", map[string]string{
 		apiDir + "/conflict.go": `package api
