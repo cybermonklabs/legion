@@ -84,7 +84,15 @@ func TestTheDeletersRemovalFollowsNoLinkWithNoContainment(t *testing.T) {
 // so the removal makes volumeRemovalPasses passes over the directory and answers errStillFilling
 // once names are still appearing after them, which the sweep passes over as a removal that
 // failed part way (trimmer.remove).
+//
+// Which of the writer and the removal is faster is the scheduler's to decide: a removal that
+// empties the directory between two of the writer's names finds it empty, removes it and answers
+// nil, and the writer then has nowhere to write. That outcome is no answer on the bound, so the
+// case stages the race again, up to filledTries times, until the writer stayed ahead; a removal
+// with no bound on its passes never answers while the writer runs, which the helper fails on.
+// On 2026-11-15 one run of the package in this pod met that nil once (round 23's surface run).
 func TestARemovalOfADirectoryStillBeingWrittenInEnds(t *testing.T) {
+	const filledTries = 20
 	dir := t.TempDir()
 	held, err := os.Open(dir)
 	if err != nil {
@@ -92,9 +100,12 @@ func TestARemovalOfADirectoryStillBeingWrittenInEnds(t *testing.T) {
 	}
 	defer held.Close()
 	filling := filepath.Join(dir, "entry", "filling")
-	mkdirFixture(t, filling)
 
-	removal := removeWhileFilling(t, held, filling)
+	var removal error
+	for try := 1; try <= filledTries && removal == nil; try++ {
+		mkdirFixture(t, filling)
+		removal = removeWhileFilling(t, held, filling)
+	}
 	if !errors.Is(removal, errStillFilling) {
 		t.Fatalf("the removal answered %v, want %v for the directory still being written in", removal, errStillFilling)
 	}
