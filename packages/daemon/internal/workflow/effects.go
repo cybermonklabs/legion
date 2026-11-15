@@ -449,19 +449,22 @@ const testerVerdictLabel = "Tester's verdict"
 
 // start starts the phase worker of the issue's current phase, a start stamped with that phase and
 // with the entry it raises for that role (enter), whose task is word for word the task the
-// worker is sent. A start that must not resume the claim's recorded session says so,
-// freshSession, and only the operator's `legion claims retry --fresh-session` does
-// (record.SuperviseRequest's FreshSession). A phase with no worker, and accepting, whose
-// architect admission started with the tree, start nobody.
-func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, freshSession bool) error {
+// worker is sent. Its start carries no mark (startMarks), a fresh session among them: the
+// operator's `legion claims retry --fresh-session` reaches a retry of a held phase (restart) and
+// never a transition's start. movedBack is whether the move into that phase was a move back to an
+// earlier one, which is written on the row beside the entry and is the transition's to read, not
+// this function's: the issue record already names the phase it moved into by the time a start
+// is made. A phase with no worker, and accepting, whose architect admission started with the
+// tree, start nobody.
+func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack bool) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
-	entry, err := e.enter(ctx, tx, issue, role, task)
+	entry, err := e.enter(ctx, tx, issue, role, task, movedBack)
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, task, entry, startMarks{freshSession: freshSession})
+	return e.started(ctx, tx, issue, role, task, entry, startMarks{})
 }
 
 // restart starts the phase worker of a phase entry the issue never left: the architect's or the
@@ -474,7 +477,8 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // Carrying the row's own number rather than nothing keeps the fence live for a worker the retry
 // does start afresh: its start names that entry, so a later entry of the same phase still refuses
 // this one's completion. A retry told not to resume the claim's recorded session passes that on,
-// freshSession, as a start does.
+// freshSession, and only the operator's `legion claims retry --fresh-session` does
+// (record.SuperviseRequest's FreshSession).
 //
 // The start is marked a resend (record.SuperviseRequest.ResendEntry), because it hands the role
 // the work of the entry its row already names: a claim that confirmed that entry's last task and
@@ -552,10 +556,11 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // the rest of the generation (record.Store.ClearTreeGeneration), so the entry the record now
 // holds names work nothing would send. The start is marked a resume task, so the outbox still
 // hands no second prompt to a claim that holds its phase's task
-// (record.SuperviseRequest.ResumeTask).
+// (record.SuperviseRequest.ResumeTask). The entry it raises is of no move back: the promotion
+// hands the role the phase it already stands in, and moves the issue nowhere.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	task := ResumePhaseTask(issue)
-	entry, err := e.enter(ctx, tx, issue, role, task)
+	entry, err := e.enter(ctx, tx, issue, role, task, false)
 	if err != nil {
 		return err
 	}
@@ -596,8 +601,7 @@ type startMarks struct {
 	ruleResume bool
 	// freshSession says the start must not resume the session the claim records but begin one of
 	// its own (record.SuperviseRequest.FreshSession). Only the operator's `legion claims retry
-	// --fresh-session` asks for it, which reaches a start and a retry of a held phase alike
-	// (start, restart).
+	// --fresh-session` asks for it, which reaches the retry of a held phase alone (restart).
 	freshSession bool
 	// reasserts says the start sends work the record already owes the role rather than carrying
 	// a fact new to the record, so it marks no movement of the issue (reassertion, startOrOwe). It
@@ -686,7 +690,8 @@ const (
 // A start whose phase holds one of the cap's slots is marked for it, and the outbox holds such
 // a row unclaimable while the issue holds no slot (store.go's outboxInOrder). The cap counts
 // the issues the daemon has started whose change is still to write, each holding its row from
-// its start until its work is past its review (record.KeepsSlot), so a start claimable at once
+// its start until its work is past its review, except while it waits on another issue
+// (record.KeepsSlot, blockers.waitsOf), so a start claimable at once
 // would put a worker to work on an issue holding no slot — where the cap is full that is what
 // it would do — and a worker put to work on an issue the cap has not admitted is what a start
 // of a phase worker may never be. A transition's start, admission's start of a mid-phase member,
@@ -744,17 +749,17 @@ const (
 //
 // No other start of the daemon's comes through here, and none may: the tree architect's start
 // (admit's promotion, awaiting_reconcile.go), which waits for no slot of its own, since the row
-// the cap counts is its root's and the root holds it from its promotion until its work is past
-// its review (record.KeepsSlot), the production check's look (check.go), the pod wake
-// (wake.go), the resume of a cancelled idle release (the daemon's outbox), the roles admission
-// brings back beside a member's phase worker (admit's startMidPhaseMembers) and the phase's
-// resume task a ready worker level with the entry its phases row names is given (catch_up.go's
-// readyWorkerTask) are enqueued directly and stay claimable at once. None of the first five
-// puts a worker to work on a phase, so none of them is the cap's to hold, and a slot they waited
-// for might never be offered. The last is sent to a worker already at work on the phase it is
-// in — its agent has just reported ready — so the issue already holds the row the cap counts in
-// a phase up to its review, and needs none past it (record.KeepsSlot), and this one has nothing
-// to wait for. The work of an entry that same ready worker stands below is sent through
+// the cap counts is its root's, the production check's look (check.go), the pod wake (wake.go),
+// the resume of a cancelled idle release (the daemon's outbox), the roles admission brings back
+// beside a member's phase worker (admit's startMidPhaseMembers) and the phase's resume task a
+// ready worker level with the entry its phases row names is given (catch_up.go's
+// readyWorkerTask) are enqueued directly and stay claimable at once. None of the first five puts
+// a worker to work on a phase, so none of them is the cap's to hold, and a slot they waited for
+// might never be offered. The last is sent to a worker already at work on the phase it is in —
+// its agent has just reported ready — so in a phase up to its review the issue holds the row the
+// cap counts already or gave it back to wait on another issue, a wait that stops none of its
+// work, and past its review it needs none (record.KeepsSlot), so this one has nothing to wait
+// for in any case. The work of an entry that same ready worker stands below is sent through
 // SendOwedEntry, and that start comes through here with the rest.
 func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time) error {
 	return startOrOwe(ctx, tx, store, issue, payload, at, newsOfTheIssue)
@@ -840,13 +845,20 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // The task it writes is the text the worker is sent, word for word, so the record holds exactly
 // what the worker is told and a claim left behind the entry can be sent that work again from the
 // record alone (SendOwedEntry).
-func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string) (int64, error) {
+//
+// movedBack is written with them: whether the start raising this entry was a move back to an
+// earlier phase. Its one reader is the completion route's entry fence, which takes a completion
+// of an earlier entry at the head the record holds and refuses it whatever head it names when
+// the entry standing now was raised by a move back, since such an entry asks for the phase's
+// work to be done again (record.PhaseRow.EntryMovedBack, api/handoff.go). It is written here
+// rather than counted anywhere (record.PhaseRow.EntryMovedBack says why no count answers it).
+func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack bool) (int64, error) {
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
 		return 0, err
 	}
 	row.Entry++
-	row.EntryTask, row.EntryRaisedAt = task, e.now()
+	row.EntryTask, row.EntryRaisedAt, row.EntryMovedBack = task, e.now(), movedBack
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return 0, err
 	}
@@ -858,8 +870,9 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // retro), and a resumed session cannot otherwise tell a new phase from its last.
 // The handoff a phase ended with is a Dispatch handoff record on the issue, which the line names by
 // its phase word and version with the command that reads that version, the record the daemon
-// accepted, whatever was written to the phase since; a commit is named only when the completion
-// reported one (the implementer's, retro's, the merger's).
+// accepted, whatever was written to the phase since; a commit is named, as `Handoff commit:`,
+// whenever the completion reported one: the head the planner's, the implementer's, the tester's or
+// the reviewer's record names, and the commit retro and the merger stand on.
 // A handoff's verdict is always the tester's, since the daemon accepts one from no other role on
 // a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
 // phase completion and starts nobody), so the line names the tester: the reviewer it starts on a

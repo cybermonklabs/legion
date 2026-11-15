@@ -6,7 +6,7 @@ import type { Doc } from "yjs";
 import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
-import type { Ask, BlockSchema } from "../../api/types";
+import type { Ask } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { watchPicturePath } from "../refs/reference-target";
 import { Timestamp } from "../refs/Timestamp";
@@ -20,13 +20,13 @@ import type { Highlight } from "./highlight";
 import { embedHighlight } from "./highlight";
 import { refocusWhenSettled } from "./refocus-when-settled";
 import { DocumentRuntime } from "./runtime";
+import { compiledBlockSchema } from "./schema";
 import type { AskBlockHost } from "./typed-block-drawing";
 
 export interface VersionViewProps {
   artifactId: string;
   /** The document's block-indexed asks, so a historical decision block still names its asker. */
   asks: readonly Ask[];
-  blockSchema: BlockSchema | undefined;
   /** The version this one is marked against - the last approved one - with which the view draws
    *  what changed since it: the words each changed block gained, and each block removed since
    *  then where it stood. It carries the reading Go made of that version, in its version mode,
@@ -45,7 +45,6 @@ export interface VersionViewProps {
 export function VersionView({
   artifactId,
   asks,
-  blockSchema,
   changeBaseline,
   createdAt,
   highlight,
@@ -124,12 +123,7 @@ export function VersionView({
     // `markdown` is a required field of a text version, read under the same check as the
     // reading beside it, so an answer that is a text has it and one that is not (a file
     // version) has neither: this one test stands for both.
-    if (
-      parent === null ||
-      markdown === undefined ||
-      login === undefined ||
-      blockSchema === undefined
-    ) {
+    if (parent === null || markdown === undefined || login === undefined) {
       return;
     }
 
@@ -148,7 +142,7 @@ export function VersionView({
       const editor = await createEditor(parent, {
         access: "read",
         awareness: null,
-        blockSchema,
+        blockSchema: compiledBlockSchema,
         heatMapMode: "hidden",
         onAskBlockHosts: setAskBlockHosts,
         user: { color: colorForLogin(login), name: login },
@@ -218,7 +212,7 @@ export function VersionView({
       ydoc?.destroy();
       setEditorHandle(undefined);
     };
-  }, [baseline, blockSchema, createEditor, highlighted, login, markdown, queryClient, tree]);
+  }, [baseline, createEditor, highlighted, login, markdown, queryClient, tree]);
 
   if (versionQuery.isPending) {
     return <p>Loading version…</p>;

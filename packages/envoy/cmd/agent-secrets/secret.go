@@ -1,11 +1,12 @@
 // packages/envoy/cmd/agent-secrets/secret.go
 //
-// The secret forms: a person reads and writes agent secrets in the broker's own secret store -
-// AWS Secrets Manager (secret_aws.go) or GCP Secret Manager (secret_gcp.go), chosen by the
-// broker's `store` setting - under their own cloud sign-in, then asks the broker to reread each
-// one written, so the change is served at once. The broker is asked only for its settings
-// (GET /v1/settings: the namespace, key and which store it uses) and for the reread; every read
-// and write is the person's own call to the store, which its own IAM decides.
+// The secret forms: a person or an agent reads and writes agent secrets in the broker's own secret
+// store - AWS Secrets Manager (secret_aws.go) or GCP Secret Manager (secret_gcp.go), chosen by the
+// broker's `store` setting - under the cloud credential its environment gives it, whatever kind of
+// identity that is, then asks the broker to reread each one written, so the change is served at
+// once. The broker is asked only for its settings (GET /v1/settings: the namespace, key and which
+// store it uses) and for the reread; every read and write is the caller's own call to the store,
+// which the store's own IAM decides.
 package main
 
 import (
@@ -47,19 +48,19 @@ func init() {
 	// Register after variable initialization: the handlers use commands for help.
 	secretForms = []secretForm{
 		{command{"secret list", "agent-secrets secret list [--json] [--profile P]",
-			"List every agent secret under your own cloud sign-in: its name, owner, tier, kind, shape,\nmax grant, default grant, whether it has a value, and its deletion once it is deleted, with\nthe earliest purge beside it on Secrets Manager; --json also prints each one's store,\nsecret name, github-owners, requesters, scopes and admin mark, and its created and\nlast-changed times where the store gives them. Name the store the rows are in."}, cmdSecretList},
+			"List every agent secret, under the environment's cloud credential: its name, owner, tier, kind,\nshape, max grant, default grant, whether it has a value, and its deletion once it is deleted,\nwith the earliest purge beside it on Secrets Manager; --json also prints each one's store,\nsecret name, github-owners, requesters, scopes and admin mark, and its created and\nlast-changed times where the store gives them. Name the store the rows are in."}, cmdSecretList},
 		{command{"secret show", "agent-secrets secret show NAME [--json] [--profile P]",
 			"Print an agent secret's name, store, secret name, owner, tier, kind, github-owners,\nrequesters, scopes, admin mark, shape, max grant, default grant, its created and\nlast-changed times, its deletion once it is deleted, with the earliest purge beside\nit on Secrets Manager, and its versions; --json prints those and whether it has a value.\nNever print its value."}, cmdSecretShow},
-		{command{"secret create", "agent-secrets secret create NAME --owner me|shared --tier agent|human [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--shape " + strings.Join(policy.Shapes, "|") + "] [--max-grant DURATION] [--default-grant session] [--profile P]",
-			"Create an agent secret under your own cloud sign-in. On Google Cloud, a person may lend their\naccess token in CLOUDSDK_AUTH_ACCESS_TOKEN only to create a new secret that person owns. Then\nask the broker to serve it. Read its value from standard input, or type it at a prompt with echo off."}, cmdSecretCreate},
+		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL --tier agent|human [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--shape " + strings.Join(policy.Shapes, "|") + "] [--max-grant DURATION] [--default-grant session] [--profile P]",
+			"Create an agent secret under the environment's cloud credential, then ask the broker to serve it.\n--owner me is the email of the person that credential names, and is refused where it names\nnone; --owner EMAIL names the owning person by email. Read its value from standard input, or\ntype it at a prompt with echo off."}, cmdSecretCreate},
 		{command{"secret set", "agent-secrets secret set NAME [--profile P]",
-			"Set a new agent-secret value under your own cloud sign-in. Then ask the broker to serve it.\nRead the value from standard input, or type it at a prompt with echo off."}, cmdSecretSet},
-		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared] [--tier agent|human] [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--shape " + strings.Join(policy.Shapes, "|") + "|none] [--max-grant DURATION|none] [--default-grant session|none] [--profile P]",
-			"Change an agent secret's owner, tier, kind, GitHub owners, requesters, scopes, admin mark,\nshape, max grant or default grant under your own cloud sign-in. Then ask the broker to reread\nit. none removes a kind, GitHub owners, requesters, scopes, the admin mark, a shape, a max\ngrant or a default grant, in a retag of its own. An administrator changes a shared secret's\nowner and tier. This CLI cannot tell whether a requesters entry naming a service is one the\ndeployment registers: it holds no list of them, so the broker's answer to the reread is what\ncatches an unregistered name, printing its refusal and its reason, and the retag exits 1 with\nthe tag written."}, cmdSecretRetag},
+			"Set a new agent-secret value under the environment's cloud credential. Then ask the broker to\nserve it. Read the value from standard input, or type it at a prompt with echo off."}, cmdSecretSet},
+		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL] [--tier agent|human] [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--shape " + strings.Join(policy.Shapes, "|") + "|none] [--max-grant DURATION|none] [--default-grant session|none] [--profile P]",
+			"Change an agent secret's owner, tier, kind, GitHub owners, requesters, scopes, admin mark,\nshape, max grant or default grant under the environment's cloud credential. Then ask the broker\nto reread it. none removes a kind, GitHub owners, requesters, scopes, the admin mark, a shape, a\nmax grant or a default grant, in a retag of its own. An administrator changes a shared secret's\nowner and tier. This CLI cannot tell whether a requesters entry naming a service is one the\ndeployment registers: it holds no list of them, so the broker's answer to the reread is what\ncatches an unregistered name, printing its refusal and its reason, and the retag exits 1 with\nthe tag written."}, cmdSecretRetag},
 		{command{"secret delete", "agent-secrets secret delete NAME [--profile P]",
-			"Schedule the agent secret NAME's deletion, restorable for 30 days, under your own cloud\nsign-in, then ask the broker to stop serving it at once."}, cmdSecretDelete},
+			"Schedule the agent secret NAME's deletion, restorable for 30 days, under the environment's\ncloud credential, then ask the broker to stop serving it at once."}, cmdSecretDelete},
 		{command{"secret restore", "agent-secrets secret restore NAME [--profile P]",
-			"Cancel the agent secret NAME's scheduled deletion under your own cloud sign-in, then ask\nthe broker to serve it again at once."}, cmdSecretRestore},
+			"Cancel the agent secret NAME's scheduled deletion under the environment's cloud credential,\nthen ask the broker to serve it again at once."}, cmdSecretRestore},
 	}
 	execForm := commands[len(commands)-1]
 	commands = commands[:len(commands)-1]
@@ -381,15 +382,20 @@ func orDash(s string) string {
 // method takes the secret's name under the prefix (secretName's slug); the full store-side name
 // (each backend's own id) is each backend's own concern.
 type secretBackend interface {
-	// requireAccount refuses, before any read, a sign-in whose account does not hold the agent
-	// secrets: a read there would list another account's secrets as if they were the agent
-	// secrets. AWS only: GCP needs no equivalent (gcpBackend.requireAccount says why).
+	// requireAccount refuses, before any read or write, a sign-in whose account does not hold the
+	// agent secrets: a read there would list another account's secrets as if they were the agent
+	// secrets. AWS only: GCP needs no equivalent (gcpBackend.requireAccount says why). AWS keeps
+	// the sign-in it read for personEmail and identity.
 	requireAccount(ctx context.Context) error
-	// requireWriteSignIn makes sure a write runs under a person's own sign-in, before anything
-	// is written - AWS refuses a machine's own role; GCP signs in with the person's gcloud login
-	// in place of a machine's Application Default Credentials, and refuses where it cannot - and
-	// answers the signed-in person's lowercased email for --owner me.
-	requireWriteSignIn(ctx context.Context) (email string, err error)
+	// personEmail answers, for --owner me alone, the lowercased email of the person the sign-in
+	// names: AWS reads an Identity Center sign-in's session name, GCP asks Google's userinfo
+	// endpoint. It refuses a sign-in that names no person - a machine's role, a service account, a
+	// token without an email scope - which reads and writes all the same: the store's IAM, not
+	// this CLI, decides what any sign-in may do.
+	personEmail(ctx context.Context) (string, error)
+	// identity names the sign-in for a refusal of the store's (secretSession.refusedAs): AWS's
+	// ARN, or which Google credential the backend took and what it is.
+	identity() string
 	// signInPrefix is the shell assignments a command line the form prints for running again
 	// (pipeCommand) needs to sign in as this one did when the sign-in came from a variable that
 	// may have been set for this command alone: GCP's GOOGLE_APPLICATION_CREDENTIALS when set, and
@@ -419,7 +425,7 @@ type secretBackend interface {
 	restore(ctx context.Context, slug string) error
 
 	// isAccessDenied reports whether err is the store's own access-denied refusal, used by
-	// retag's shared-secret message.
+	// retag's shared-secret message and by every refusal's identity (secretSession.refusedAs).
 	isAccessDenied(err error) bool
 
 	// close releases the backend's own connection (GCP's gRPC client; AWS's HTTP-based SDK
@@ -428,9 +434,9 @@ type secretBackend interface {
 	close() error
 }
 
-// secretSession is one secret form's connection: the broker and the backend (requireAccount,
-// requireWriteSignIn) opened for it, and src, the store those reads and writes go to, which
-// every answer and every refusal of the form names (source.go).
+// secretSession is one secret form's connection: the broker and the backend (requireAccount)
+// opened for it, and src, the store those reads and writes go to, which every answer and every
+// refusal of the form names (source.go).
 type secretSession struct {
 	ctx     context.Context
 	broker  *client
@@ -441,33 +447,52 @@ type secretSession struct {
 // Close releases the session's backend connection.
 func (s *secretSession) Close() error { return s.backend.close() }
 
-type lentExistingWriteRefuser interface {
-	refuseLentExistingWrite(slug string) error
-}
-
-func (s *secretSession) refuseLentExistingWrite(slug string) error {
-	if backend, ok := s.backend.(lentExistingWriteRefuser); ok {
-		return backend.refuseLentExistingWrite(slug)
-	}
-	return nil
-}
-
 // storeName is the store this session reads and writes, for a line that names where an answer
-// came from: the secret forms call the store directly under the person's own cloud sign-in, so
-// the store, not the broker, is the source of what they print.
+// came from: the secret forms call the store directly under the environment's cloud credential,
+// so the store, not the broker, is the source of what they print.
 func (s *secretSession) storeName() string { return s.src.storeName() }
+
+// refusedAs is err, and where err is the store's own access-denied refusal, the sign-in the form
+// called the store as (backend.identity) beside it, so a refusal of IAM's names whom IAM refused.
+func (s *secretSession) refusedAs(err error) error {
+	if !s.backend.isAccessDenied(err) {
+		return err
+	}
+	return fmt.Errorf("%w; the store refused %s", err, s.backend.identity())
+}
+
+// ownerTag is the owner tag --owner names, as checkOwnerTier answered it: shared, a person's
+// email, or, for me, the email of the person the sign-in names (backend.personEmail), which only
+// --owner me asks for. A sign-in that names no person, or names one by an email the broker does
+// not accept as an owner, is refused naming --owner <email>, which names the owner instead.
+func (s *secretSession) ownerTag(owner string) (string, error) {
+	if owner != ownerMe {
+		return owner, nil
+	}
+	email, err := s.backend.personEmail(s.ctx)
+	if err == nil && !policy.ValidPersonOwner(email) {
+		err = fmt.Errorf("the sign-in's email %q is not an email the broker accepts as an owner", email)
+	}
+	if err != nil {
+		return "", usageErr{fmt.Errorf("--owner me: %w: name the owner with --owner <email>", err)}
+	}
+	return email, nil
+}
 
 // secretFailIn is secretFail for a failure met once the session is open: it names the store the
 // form looked in, so no refusal of this CLI's reads as another secrets CLI's answer about the
-// name. It is a function rather than a method on secretSession because broker-refgen reads every
-// exit code this package returns, and it follows a plain call, never a method's.
+// name, and the sign-in the store refused (refusedAs). It is a function rather than a method on
+// secretSession because broker-refgen reads every exit code this package returns, and it follows a
+// plain call, never a method's.
 func secretFailIn(stderr io.Writer, form string, s *secretSession, err error) int {
-	return secretFail(stderr, form, fmt.Errorf("%w; looked in %s", err, s.storeName()))
+	return secretFail(stderr, form, fmt.Errorf("%w; looked in %s", s.refusedAs(err), s.storeName()))
 }
 
-// openSession reads the broker's settings from AGENT_SECRETS_URL and opens the backend its
-// `store` field names (openSecretBackend). It checks nothing about the sign-in: connectReader
-// and connectWriter do.
+// openSession reads the broker's settings from AGENT_SECRETS_URL, opens the backend its `store`
+// field names (openSecretBackend) and, on AWS, refuses a sign-in in another account
+// (backend.requireAccount), whose secrets are not the agent secrets; GCP needs no equivalent. It
+// refuses no sign-in for the kind of identity it is, a read's or a write's: the store's IAM
+// decides what it may do.
 func openSession(ctx context.Context, profile string) (*secretSession, error) {
 	base := brokerBaseURL()
 	if base == "" {
@@ -485,7 +510,12 @@ func openSession(ctx context.Context, profile string) (*secretSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &secretSession{ctx: ctx, broker: broker, backend: backend, src: brokerSource(base).withSettings(settings)}, nil
+	s := &secretSession{ctx: ctx, broker: broker, backend: backend, src: brokerSource(base).withSettings(settings)}
+	if err := backend.requireAccount(ctx); err != nil {
+		s.Close()
+		return nil, err
+	}
+	return s, nil
 }
 
 // openSecretBackend builds the backend settings.Store names: AWS Secrets Manager, pinned to the
@@ -506,7 +536,7 @@ func openSecretBackend(ctx context.Context, profile string, settings Settings) (
 		return &awsBackend{settings: settings, sm: sm, st: st}, nil
 	case secrets.StoreGCP:
 		if profile != "" {
-			return nil, usageErr{fmt.Errorf("--profile names an AWS profile; this broker's store is %s, which signs in with your Google sign-in (your Application Default Credentials, or your gcloud login), not --profile", settings.Store)}
+			return nil, usageErr{fmt.Errorf("--profile names an AWS profile; this broker's store is %s, which signs in with CLOUDSDK_AUTH_ACCESS_TOKEN, your Application Default Credentials or your gcloud login, not --profile", settings.Store)}
 		}
 		if err := checkSettingsKMSKeyName(settings); err != nil {
 			return nil, err
@@ -515,36 +545,6 @@ func openSecretBackend(ctx context.Context, profile string, settings Settings) (
 	default:
 		return nil, fmt.Errorf("the broker's settings name an unknown secret store %q", settings.Store)
 	}
-}
-
-// connectReader is openSession for a read: on AWS it refuses a sign-in in another account
-// (backend.requireAccount), whose secrets are not the agent secrets; GCP needs no equivalent. Any
-// sign-in that can read there reads: IAM decides what it may read.
-func connectReader(ctx context.Context, profile string) (*secretSession, error) {
-	s, err := openSession(ctx, profile)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.backend.requireAccount(ctx); err != nil {
-		s.Close()
-		return nil, err
-	}
-	return s, nil
-}
-
-// connectWriter is openSession for a write: it makes sure the write runs under a person's own
-// sign-in (backend.requireWriteSignIn) before anything is written, and answers their email.
-func connectWriter(ctx context.Context, profile string) (*secretSession, string, error) {
-	s, err := openSession(ctx, profile)
-	if err != nil {
-		return nil, "", err
-	}
-	email, err := s.backend.requireWriteSignIn(ctx)
-	if err != nil {
-		s.Close()
-		return nil, "", err
-	}
-	return s, email, nil
 }
 
 // displayName is the NAME a session asks for the secret named id, or id itself when its name
@@ -686,7 +686,7 @@ func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 	if len(positional) > 0 {
 		return secretFail(stderr, form, usageErr{fmt.Errorf("unexpected argument %q", positional[0])})
 	}
-	s, err := connectReader(context.Background(), *profile)
+	s, err := openSession(context.Background(), *profile)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -748,7 +748,7 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := connectReader(context.Background(), *profile)
+	s, err := openSession(context.Background(), *profile)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -796,7 +796,7 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	const form = "secret create"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
 	flags, profile := secretFlags(form, stderr)
-	owner := flags.String("owner", "", "me (your email, from your AWS or Google sign-in) or shared")
+	owner := flags.String("owner", "", "me (the email of the person your AWS or Google sign-in names), shared, or a person's email")
 	tier := flags.String("tier", "", "agent (its owner's agents use it without asking) or human (a person approves each use)")
 	kind := flags.String("kind", "", strings.Join(policy.Kinds, ", ")+" or none (the default)")
 	githubOwners := flags.String("github-owners", "", `the GitHub accounts a github-app secret mints for, separated by spaces ("<login> <login>")`)
@@ -814,7 +814,7 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 		err = usageErr{errors.New("--owner and --tier are required")}
 	}
 	if err == nil {
-		err = checkOwnerTier(*owner, *tier)
+		*owner, err = checkOwnerTier(*owner, *tier)
 	}
 	if err == nil {
 		err = checkKind(*kind)
@@ -846,12 +846,12 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, email, err := connectWriter(context.Background(), *profile)
+	s, err := openSession(context.Background(), *profile)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
 	defer s.Close()
-	ownerValue, err := ownerTag(*owner, email)
+	ownerValue, err := s.ownerTag(*owner)
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
@@ -924,14 +924,11 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, _, err := connectWriter(context.Background(), *profile)
+	s, err := openSession(context.Background(), *profile)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
 	defer s.Close()
-	if err := s.refuseLentExistingWrite(slug); err != nil {
-		return secretFailIn(stderr, form, s, err)
-	}
 	// The value is read under the shape the secret already carries: a set names no tag, and
 	// reading a one-line value the untagged way would store a document's own final line ending
 	// away from an owner who declared it a document, who could then store no such value at all.
@@ -968,14 +965,11 @@ func cmdSecretDelete(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, _, err := connectWriter(context.Background(), *profile)
+	s, err := openSession(context.Background(), *profile)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
 	defer s.Close()
-	if err := s.refuseLentExistingWrite(slug); err != nil {
-		return secretFailIn(stderr, form, s, err)
-	}
 	deletion, err := s.backend.delete(s.ctx, slug)
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)
@@ -995,14 +989,11 @@ func cmdSecretRestore(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, _, err := connectWriter(context.Background(), *profile)
+	s, err := openSession(context.Background(), *profile)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
 	defer s.Close()
-	if err := s.refuseLentExistingWrite(slug); err != nil {
-		return secretFailIn(stderr, form, s, err)
-	}
 	if err := s.backend.restore(s.ctx, slug); err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}

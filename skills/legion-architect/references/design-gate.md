@@ -155,13 +155,15 @@ once for each of them, each on that step's own document. Under `Design gate step
 the spec and register it with `register_gate` at its current version, with no `step` and no
 approval step: do not request approval and do not wait for `design-approved`; the gate opens at
 registration. File every child of your decomposition before that registration, since the gate's
-opening starts the root's own first phase unless Dispatch shows an open child under it.
+opening starts the root's own first phase unless the root waits on another issue, an open child
+under it or a `blocked_by` link to an issue that is not `done`.
 
 ## The armed gate
 
 Run this exact sequence for each gated step, before the tree's work starts, with every child of
 your decomposition filed before step 4, since the gate's opening starts the root's own first
-phase unless Dispatch shows an open child under it. One approval request covers the `criteria`
+phase unless the root waits on another issue, an open child under it or a `blocked_by` link to an
+issue that is not `done`. One approval request covers the `criteria`
 and the `spec` step together (step 4), and each of them is registered on its own document
 (step 5); the `decisions` step is a request of its own.
 
@@ -284,13 +286,12 @@ approval or changes request delivers your next task, and so does a newer spec ve
 Dispatch shows the request back on your turn. While the root waits on a question instead, the
 human's approval or changes request of the spec answers that wait too, and the task says how the
 spec stands. Your resume takes no slot, whether or not the gate opened, because the root holds
-one all along: an issue holds one of the cap's slots from the moment the daemon starts it until
-its work is past its review — `accepting`, `retro` and `merging` hold none — or
-until it is done or Dispatch takes it out of the workflow. The answered root stands in
+one all along: a root in `awaiting_person` keeps its admission slot
+([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)). The answered root stands in
 the admission line until the pass that resumes it, and nothing is sent to you about that wait:
 your record's `waitingLine` gives the live place in the line and the line's length, and beside
 them the line's own fields — `part` and `kind`, `partPlace` of `partLength` inside that part,
-`holdsSlot`, true for your root, which has held its slot since its start, `since` for an issue
+`holdsSlot`, true for your root, which holds its slot already, `since` for an issue
 whose work came back or `rootRank`, `ownRank` and `rootKey` for one that has not started, and
 `reason`, the daemon's own sentence for that place. `why` on any issue of your tree that is
 not working now says the same in one word and one sentence: `claim_stopped`, a claim nothing

@@ -78,8 +78,9 @@ func TestSignOffIsRefusedOutsideAccepting(t *testing.T) {
 }
 
 // The architect's sign_off in accepting moves the issue to retro with the status retro and starts
-// the implementer there, its task naming the phase, the review's handoff record (the reviewer
-// reports no commit) and the pull request; the architect that just acted is told nothing.
+// the implementer there, its task naming the phase, the review's handoff record (the reviewer's
+// completion seeded here reported no commit) and the pull request; the architect that just acted is
+// told nothing.
 func TestSignOffInAcceptingStartsRetro(t *testing.T) {
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
@@ -101,7 +102,7 @@ func TestSignOffInAcceptingStartsRetro(t *testing.T) {
 		}
 	}
 	if strings.Contains(task, "Handoff commit:") {
-		t.Fatalf("the implementer's retro task %q names a commit the reviewer never reported", task)
+		t.Fatalf("the implementer's retro task %q names a commit the seeded reviewer's completion never reported", task)
 	}
 	if pass := implementerPass(t, pool); pass != 0 {
 		t.Fatalf("acceptance counted the implementer %d passes, want none: nothing went back", pass)

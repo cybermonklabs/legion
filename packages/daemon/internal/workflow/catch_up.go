@@ -177,9 +177,15 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // reads no slot and carries no entry, the claim being on the entry its row names already; the
 // owed entry's start takes the slot mark the slot rule gives its phase, as every start
 // Engine.started builds does (StartOrOwe), so it waits for the issue's admission slot in a phase
-// up to the review and for none past it. Either way nothing here waits on the cap: a claim whose
-// agent has just said it is ready is running, so an issue in a phase up to its review already
-// holds the slot admission gave it, and one past its review needs none (record.KeepsSlot).
+// up to the review and for none past it (record.KeepsSlot). Most often an issue up to its review
+// holds that slot already: a claim whose agent has just said it is ready is running, and
+// admission has long since given its tree a slot. The one such issue at work that holds none is
+// one that gave its row back to wait on another issue (admit's releaseSlotsForWaits,
+// record.Issue.ReleasedForWaitAt), and the two branches still hold for it: the wait stops none of
+// its work, so a level claim's resume is no new work and goes at once, while an owed entry's work
+// is work the claim does not have, and its start waits until the issue holds a slot again, as the
+// slot repair's does (admit's resumeSlottedWorkers). The rule is "Admission" in the Issue
+// Lifecycle section of the root AGENTS.md.
 func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) error {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil || issue.Project != e.cfg.Project || record.OutOfWorkflow(issue.Status) {

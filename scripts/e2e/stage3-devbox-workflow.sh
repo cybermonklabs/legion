@@ -813,15 +813,13 @@ pass
 primary_issue() {
   begin primary-architect-posts-and-registers-spec
   # Every root's architect registers a closed gate on its own and its root then waits on the
-  # person, keeping the admission slot it took at its admission: an issue holds one of the cap's
-  # slots from the moment the daemon starts it until its work is past its review — accepting,
-  # retro and merging hold none — or until it is done or Dispatch takes it out of
-  # the workflow.
+  # person, keeping the admission slot it took at its admission: a root in awaiting_person keeps
+  # its slot (root AGENTS.md, "Admission").
   # So the human's approval resumes this root on the next pass whatever the cap says, and the 1800 s
   # bound below is slack: nothing has to give a row back first. admission_cap stays 2, which is the
   # peak this lane needs under that rule: the two roots the daemon starts here hold both rows while
   # their work stands short of its review, each of the two waiting roots is admitted as one of them
-  # gives its row back — the first root when its architect accepts it, the no-change root at its
+  # gives its row back — the first root when it enters accepting, the no-change root at its
   # close — and no scene of the run needs a third root at work beside them.
   drive_gate "$root_issue" "Stage 3 proof gate operation" 1800
   artifact_id=$gate_artifact
