@@ -118,24 +118,28 @@ account granted it. The mint reads that second set before each token and asks fo
 permissions cut down to it: a permission the account has not approved is left out of the
 request, and the daemon says so once on its stderr, naming the App, the owner and the
 permission. The daemon itself reads
-GitHub with the implement App too, in a pass as it starts and every two minutes after: it reads
-each open pull request's base branch and the checks that branch requires (its rulesets and its
-branch protection), since only those decide whether CI is red at a head, and so where Legion sends
-the issue. Whether the merge happens is GitHub's to decide, under those same rules.
+GitHub with the implement App too, at two moments and at no other: as the workflow runtime starts,
+which covers what arrived while the daemon was down, and once an agent's handoff has been recorded,
+the moment the daemon next decides on that pull request's state. It runs on no timer, and it reads
+one issue's own pull request rather than a listing of every open one, so a handoff costs the reads
+of its own pull request alone.
+It reads no repository ruleset, no branch protection and no check run: whether CI is red at a head
+reaches the daemon as Envoy's settled observation of that head's checks, and the checks a base
+branch requires the daemon never reads at all, so it names no required check that has never run.
+Whether the merge happens is GitHub's to decide, under the rules that repository sets.
 
-The same pass applies what a GitHub event lost, or still waiting behind the daemon's GitHub
-consumer, would have carried, so such an event leaves the record behind for at most one pass:
+Each of those two reads is the backstop for a webhook that never arrived — GitHub can fail to
+deliver one, and Dispatch's redelivery sweep gives up after five attempts — so what a GitHub event
+lost, or that still waits behind the daemon's GitHub consumer, leaves the record behind only until
+the next of them:
 
-- **An opened or reopened pull request, in any phase.** Every pass lists each served repository's
-  open pull requests, a request per hundred of them. One on an issue's branch, `legion/<KEY>`, of
+- **An opened or reopened pull request, in any phase.** An issue whose record holds no open pull
+  request has its own branch, `legion/<KEY>`, looked up. A pull request on that branch of
   the repository itself (not a fork's) that the daemon does not record open is applied as its
   opened webhook would be, a reopen when the record holds the same pull request: the workflow
   records it in whatever phase the issue is, and moves an implementing issue whose implementer
   completed on to testing.
 
-The daemon reads GitHub with the implement App too, but on no timer: no pass comes round over the
-served repositories, and the checks a base branch requires the daemon never reads at all, since
-whether the merge happens is GitHub's to decide under that branch's own rules.
 - **A close or a merge.** A pull request recorded open that GitHub shows closed has its close
   applied, or its merge with its merge commit: the merge closes an issue waiting on it in
   `merging` and otherwise tells the architect `pr-merged`, and a close without merging tells
@@ -423,15 +427,16 @@ What each part is for:
   ```
 
   A pane working one of them is told that key, and its jj appends a `Dispatch: <KEY>` line to
-  every commit the pane makes in its own workspace, beside the `Omp-Session:` line every pane's
-  commits carry, so a squash landing that branch carries the issue key in its message — which is
-  what a base branch that requires the key in the commit it lands reads.
+  every commit the pane makes in its own workspace, after the `Omp-Session:` and `Legion-Role:`
+  lines every pane's commits carry, so a squash landing that branch carries the issue key in its
+  message — which is what a base branch that requires the key in the commit it lands reads.
+  A `git commit` gets the session and role lines from the pane's `git`, and no issue line.
   A repository the key names must be one [Dispatch maps to the
   project](#the-projects-repositories): the mapping is what the project serves, and this key only
   selects among it, so a name the project does not serve stamps nothing and the boot log says so
   once, naming the repository and the project.
   A pane of a repository the key does not name is told no key, and its commits carry the session
-  line alone, as does a commit that pane's shell makes in any other jj repository.
+  and role lines alone, as does a commit that pane's shell makes in any other jj repository.
   The variable the pane is told is the runtime's own, so `runtime.kubernetes.pod.env` and
   `runtime.tmux.pane_env` are refused for setting it.
   The loader refuses a name that is no `owner/name` and a repository the list names twice,
@@ -1079,6 +1084,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   memory: none
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
   open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
+  merge waits: 2; the oldest head, WIDGETS-11 #38, head 9c1f0be, GitHub said blocked, read 2026-10-03T10:40:11Z
   open update rounds: none
   agents in a tool call: 1 — WIDGETS-12 implementer "bash toolu_01F3 since 2026-10-03T10:41:07Z"
   pending Dispatch status writes: none
@@ -1132,6 +1138,21 @@ Closing the terminal leaves the project without one, and the daemon logs
   The role is on the line because a check opened before the release that gave the project
   `production_check` is worked by the implementer, and one opened after it by the role that
   setting names.
+
+  The `merge waits` line counts the review rounds whose approved head waits on GitHub's merge
+  state and names the oldest head: its issue, its pull request, the head, and what the record holds
+  of the daemon's last read of that head (`merge waits: none` when no round waits). The part after
+  the head reads one of four ways, each saying what the record holds; only a reading with a state
+  on record says `GitHub said`. `GitHub said blocked, read 2026-10-19T09:00:00Z` is the state GitHub
+  gave for this head and the moment of the daemon's read that gave it. `GitHub said blocked, read
+  time not recorded` is a state GitHub gave for this head with no moment of the read beside it:
+  the time is what is missing, never the read, and the daemon's next read of the pull request
+  records it. `read 2026-10-19T09:00:00Z with no merge state` is a read of this head whose answer
+  carried no merge state, which is rare. `no read recorded for this head` says the record holds no
+  read of this head yet, and the daemon's next read of the pull request fills it. The line says "the oldest head" because that is
+  what it is oldest by: the head that has stood longest, the smallest `headUpdatedAt`, and not the
+  round read longest ago, although the read is the only moment the line prints — the wait an
+  operator acts on is the one a head has sat through.
 
   The `agents in a tool call` line names every claim whose agent is in a tool call the daemon has
   seen the start of and no end of: how many, and each by issue and role with the tool, the call id

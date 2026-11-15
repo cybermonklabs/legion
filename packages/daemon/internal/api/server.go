@@ -793,23 +793,21 @@ func statementBound(bound time.Duration) int64 {
 // contract that named the issues the daemon's record holds in the workflow and queues nowhere,
 // is served it without `admission.held` (withoutHeld); a caller below quietTimeContract, the
 // contract that added each issue's measure of its tree's quiet time, is served it without
-// `treeMovedAt` and `quietHours` (withoutQuietTime); and a caller below waitingOnIssueContract,
-// the contract that added `waiting_on_issue` to the line's `kind`, is served every member of
-// that kind without its `kind` (withoutWaitingOnIssue), a word and not a key, so it adds none to
-// the count below.
-// The seventeen compose: each is applied when the state carries something of its own, so a
+// `treeMovedAt` and `quietHours` (withoutQuietTime); a caller below waitingOnIssueContract, the
+// contract that added `waiting_on_issue` to the line's `kind`, is served every member of that
+// kind without its `kind` (withoutWaitingOnIssue), a word and not a key; and a caller below
+// mergeWaitContract, the contract that added what a reviewing issue's round waits on from
+// GitHub, is served it without `mergeWait` (withoutMergeWait).
+// The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
-// carrying none of the thirty keys, the line's own fields being fields of a view such a
+// carrying none of the keys they strip, the line's own fields being fields of a view such a
 // caller is served none of at all, each of them absent rather than empty, since a strict reader
 // before the contract that added a key refuses it whether or not it names anything, and with no
-// retired entry under `strandedClaims`. Every later reader takes all thirty keys as
-// optional and all three states — `packages/contracts/src/legion-api.ts` marks
-// `admission.trees`, `admission.held`, `wakesWaiting`, `claimsToRefresh`, the issues'
-// `gatedSteps`, `waitingLine`, `why`, `phaseEntry`, `givenEntry`, `treeMovedAt` and
-// `quietHours`, the workers' counts of the moves back, the claim views' `step` and
-// `leakCheckCause`, each of the nine the decided record added and `contract` itself optional
-// for exactly these bodies. Any other caller — a pod at this contract, the operator's `legion
-// state`, a tmux pane — is served the state as this contract writes it.
+// retired entry under `strandedClaims`. Every later reader takes each key a row of
+// stateNarrowings strips as optional for exactly these bodies, and
+// `packages/contracts/src/legion-api.ts` marks each one so. Any other
+// caller — a pod at this contract, the operator's `legion state`, a tmux pane — is served the
+// state as this contract writes it.
 //
 // Each narrowing is written to the daemon's own log as it is applied, one line naming the
 // caller, the contract that caller's pod records, the contract this daemon declares and what
@@ -874,7 +872,7 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 // (TestANarrowedBodySaysSo).
 const narrowedTheState = "api: narrowed the state to the caller's plugin contract"
 
-// stateNarrowing is one of the seventeen narrowings stateFor applies: the contract that added the
+// stateNarrowing is one of the narrowings stateFor applies: the contract that added the
 // keys to this route, whether a state carries anything of it, the body served without it, and
 // what the log line names as dropped. Each arm carries its own `dropped` rather than the
 // contract number alone, because a reader of the log who is told only a number has to find out
@@ -886,7 +884,7 @@ type stateNarrowing struct {
 	dropped  string
 }
 
-// stateNarrowings are the seventeen, lowest contract first, which is the order stateFor applies
+// stateNarrowings are the narrowings, lowest contract first, which is the order stateFor applies
 // them in: a caller below all of them is served a body with every one of these keys gone. The
 // order is the history of the route and nothing a strip depends on, so a row added at the end
 // needs no reading of the rows before it. Three rows do touch one key, and they are the reason
@@ -925,6 +923,7 @@ var stateNarrowings = []stateNarrowing{
 	{quietTimeContract, carriesQuietTime, withoutQuietTime, "the issues' treeMovedAt and quietHours"},
 	{waitingOnIssueContract, carriesWaitingOnIssue, withoutWaitingOnIssue, "the waiting line's kind " +
 		"of every member waiting on another issue"},
+	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -996,11 +995,8 @@ const backwardMovesContract = 62
 // one built after strips the key instead, so the strip is what keeps the count from a caller
 // that did not ask for it rather than what keeps such a caller reading at all. It was the
 // highest of the bands when it was taken, this daemon's own contract then; recordFieldsContract,
-// whyAndLineFieldsContract, leakCheckCauseContract, phaseEntriesContract, heldContract,
-// quietTimeContract and waitingOnIssueContract stand above it now, so a caller in a pod at 73 or
-// 74 is served the count and neither the decided record's keys, nor each issue's answer with the
-// line's own fields, nor a claim view's `leakCheckCause`, nor the two entry numbers, nor
-// `admission.held`, nor the tree's quiet time, nor any word of the line's `kind`.
+// whyAndLineFieldsContract and every later row of stateNarrowings stand above it now, so a
+// caller in a pod at 73 or 74 is served the count and none of what those later rows add.
 const claimsToRefreshContract = 73
 
 // recordFieldsContract is the daemon contract that decided every field of the claim record and
@@ -1050,9 +1046,7 @@ const leakCheckCauseContract = 87
 // built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
 // for a key it does not name, and one built after strips the keys instead, so the strip is what
 // keeps the numbers from a caller that did not ask for them rather than what keeps such a caller
-// reading at all. heldContract, quietTimeContract and waitingOnIssueContract stand above it, and
-// the last one's strip takes a word and no key, so a caller in a pod at 94 through 97 is served
-// the two keys and neither `admission.held` nor the tree's quiet time.
+// reading at all.
 const phaseEntriesContract = 94
 
 // quietTimeContract is the daemon contract that added each issue's measure of its tree's quiet
@@ -1075,8 +1069,19 @@ const quietTimeContract = 111
 // INFRA-3146's 123 among them, reads `kind` with a `z.enum` of the four words before it, which
 // refuses a word it does not name and with it the whole state body, so a caller below 132 is
 // served such a member without its `kind` (withoutWaitingOnIssue), which that schema takes as
-// optional. It is the highest of the seventeen bands, this daemon's own contract.
+// optional.
 const waitingOnIssueContract = 132
+
+// mergeWaitContract is the daemon contract that added `mergeWait`, what a reviewing issue's
+// round waits on from GitHub (version.go's 133). A plugin before it is served the state without
+// the object: one built before sjawhar/legion#2788 reads it with a strict schema and would
+// refuse the whole body for a key it does not name, and one built after strips the key instead,
+// so the strip is what keeps the object from a caller that did not ask for it rather than what
+// keeps such a caller reading at all. A key's contract is the one that added it, so this is the
+// number dispatch://INFRA-3027 declares and no band of another change: a caller from a pod
+// below it is served the state without `mergeWait`, whatever else the contracts it does reach
+// give it.
+const mergeWaitContract = 133
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1233,6 +1238,32 @@ func withoutWaitingLine(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
 		issue.WaitingLine = nil
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// carriesMergeWait is whether any issue of state carries what its review round waits on from
+// GitHub. Like the step record and the place in the line it is written only where there is one —
+// an issue that is not reviewing, and a reviewing issue whose round waits on nothing at GitHub,
+// carries no such key — so this is asked of the state rather than answered true.
+func carriesMergeWait(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.MergeWait != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutMergeWait is state with no issue carrying `mergeWait`, the object mergeWaitContract
+// added to the state; nothing else of that contract is on the route. The issue map is copied, so
+// the state the source answered is left as it was.
+func withoutMergeWait(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		issue.MergeWait = nil
 		issues[key] = issue
 	}
 	state.Issues = issues

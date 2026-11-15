@@ -974,6 +974,7 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/live/_test/rotate":                   {Status: http.StatusOK, Response: testHookOK{}},
 	"POST /api/v1/artifacts/_test/quiesce":             {Status: http.StatusOK, Response: testHookOK{}},
 	"POST /api/v1/artifacts/{id}/_test/outside-schema": {Status: http.StatusNoContent},
+	"POST /api/v1/artifacts/{id}/_test/newer-content":  {Status: http.StatusNoContent},
 	"POST /api/v1/agents/{session_id}/stream/_test/publish": {
 		Status: http.StatusOK, Response: testHookOK{}, Params: publishFrameQuery{},
 		// The body is the frame's own bytes, read whole and published unparsed; only

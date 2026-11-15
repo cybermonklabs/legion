@@ -38,7 +38,7 @@ answer from what came back, never from the dispatch.
 | 3. Framework docs | `web_search`, then `read` the library's official docs page | [library] docs [topic] |
 | 4. External practices | `web_search`, then `read` what the tool's or standard's maintainer publishes (docs, RFC, changelog); give its URL | current practice for [topic] |
 
-Before you rely on a step 1 hit, `grep` `docs/solutions/` for its path. If another file lists that path under its front-matter `supersedes:` key (on that line or as a list item below it), use that file instead; if one has a line `Extends docs/solutions/<hit path>`, read both. Nothing else reconciles these links.
+Before you rely on a step 1 hit, `grep` `docs/solutions/` for its path. If another file lists that path under its front-matter `supersedes:` key (on that line or as a list item below it), use that file instead; if one has a line `Extends docs/solutions/<hit path>`, read both. The "Documentation" section of the repository's `AGENTS.md` names the pages whose rule a later rule replaces: for a hit on one of them, follow the rule that section names. Nothing else reconciles these links.
 
 ## Output
 
