@@ -250,3 +250,54 @@ func TestASweepNamesTenEntriesOfARootItPassesOverAndCountsTheRest(t *testing.T) 
 	}
 	f.assertPrefixed()
 }
+
+// The line a sweep writes for an entry whose age it could not read names what it failed on, and a
+// role decides how deep that is: it makes a chain of directories inside an entry and takes the
+// read permission off the last one. The line is of a size set by the names in it and not by the
+// depth, as the deleter's refusal of a removal is (removalFailure): the walk is a minute's work
+// for every sweep, and each such line is written again on every sweep. The case reads the line at
+// two depths of the same names, and the deeper one may be longer only by the digits of its depth.
+// Measured on this code at eaf96c43 in an issue pod: a chain 1000 deep of 250-byte names wrote a
+// line of 251307 bytes on every sweep, against 2813 bytes at 10 deep.
+func TestAnAgeThatCannotBeReadIsLoggedAtASizeItsDepthDoesNotSet(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("the test process is root, which reads a mode-000 directory: an age read that fails cannot be staged for it")
+	}
+	line := func(depth int) string {
+		f := newTrimFixture(t, 0)
+		entry := filepath.Join(f.roots[3].Path, "chain-tool")
+		chain := entry
+		for level := range depth {
+			chain = filepath.Join(chain, fmt.Sprintf("%04d-level", level))
+		}
+		locked := filepath.Join(chain, "locked")
+		mkdirFixture(t, locked)
+		if err := os.Chmod(locked, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+		f.useVolume(steady(90))
+		f.setSettings(trimSettings())
+
+		f.trimmer().sweep(context.Background(), *trimSettings(), steady(90)(0))
+		var said []string
+		for _, written := range f.linesWritten() {
+			if strings.Contains(written, "chain-tool") && strings.Contains(written, "could not be read") {
+				said = append(said, written)
+			}
+		}
+		if len(said) != 1 {
+			t.Fatalf("the sweep wrote %d lines of the entry %s whose age it could not read at %d deep, want one: %q", len(said), entry, depth, f.linesWritten())
+		}
+		if !strings.Contains(said[0], "locked") {
+			t.Errorf("the line at %d deep does not name locked, the directory the read failed on: %.300s", depth, said[0])
+		}
+		return said[0]
+	}
+
+	shallow, deep := line(2), line(300)
+	if grown := len(deep) - len(shallow); grown > 16 {
+		t.Errorf("the line for an entry 300 deep is %d bytes, %d more than the %d of one 2 deep: its size is set by the depth a role made, not by the names in it: %.200s…",
+			len(deep), grown, len(shallow), deep)
+	}
+}
