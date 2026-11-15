@@ -284,10 +284,11 @@ export const SHINGLE_WORDS = 5;
  * shingle. Each shingle is kept as the first six bytes of its sha256, a whole number below 2^48,
  * so the sets of a whole corpus fit in memory and hold none of its text. Two different shingles
  * share a number with a chance near 2^-48 for each pair of them, so the corpus's millions of
- * shingles may hold a few such pairs; each moves one similarity by one shingle at most. A text of
- * fewer than five words has no 5-gram, so this keeps its whole run as one shingle, and two such
- * texts join only when they are the same words; a text with no word has none and joins nothing.
- * Sorted ascending, each number once.
+ * shingles may hold a few such pairs; each adds one shared shingle to every comparison of two
+ * cases that hold one of each. A text of fewer than five words has no 5-gram, so this keeps its
+ * whole run as one shingle, and two such texts join only when they are the same words, barring
+ * such a shared number; a text with no word has none and joins nothing. Sorted ascending, each
+ * number once.
  */
 export function shinglesOf(text: string): number[] {
   const words = text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
