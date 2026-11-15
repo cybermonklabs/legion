@@ -93,7 +93,7 @@ requires a bearer checks no `Host`.
 | `/v1/legion/agents/sessions/{session_id}` | GET/PUT | One Legion session's registry entry. GET adds `live` (the session's own state in the session registry, true only while it reads `live`; an `unresponsive` session reads false and has not ended, see “Session state”) and `replaced_by`/`replaced_at` (the next session of its role token by `started_at`), both derived at the read, or answers `404 {"error":"unknown legion agent <id>"}`; PUT records the daemon's entry for the session, and a write moving a recorded session to another issue or role is a 409, concurrent writes included: a write claims `session.<id>` by compare-and-swap before it writes the index keys. All three registry routes answer 503 naming the missing grant on a listener whose NATS user lacks the `legion_agents` grant; every other route serves |
 | `/v1/legion/agents/roles/{role_token}` | GET | `{"entries":[…]}`: a role token's sessions, newest first (the first is the current holder), `[]` when none |
 | `/v1/legion/agents` | GET/PUT | GET `?issue={KEY}`: an issue's sessions by role in workflow order, then newest first, `[]` when none. PUT: a batch of at most 256 entries and 1 MiB, every entry validated before the first write (400 naming the bad entry's index); a batch that fails after that names how many were written (`written`) with the failed entry's own status, a 503 to retry for a write the bucket did not answer. Every read comes from the bucket itself, never a cache |
-| `/v1/messages/send` | POST | Send a direct agent-to-agent message. The target is read from the session store itself, so a 404 means the store says that session's key is gone; a store read or a publish the bus did not answer is a 503 with `Retry-After: 1` (see “Send and publish answers” below). |
+| `/v1/messages/send` | POST | Send a direct agent-to-agent message. The target is read from the session store itself, and a session the store holds no entry within the gone horizon for is looked up in the known-session store (every session that registered in the last 30 days): `200` with `state` `connected` or `stopped` stores the message, a `409` refuses a stopped target the request asked `connected_only` of, and a 404 means neither store knows the session; a store read or a publish the bus did not answer is a 503 with `Retry-After: 1` (see “Send and publish answers” below). |
 | `/v1/messages/publish` | POST | Publish an event. Required `message` becomes the human `payload_summary`; optional `payload` is distinct machine data in `payload`. A topic the stream captures is answered once JetStream stored it, bounded to five seconds; `notifications.team.<name>` is such a topic, and each session that follows it reads the stored copy from its own consumer. A role topic is forwarded to its live holder's agent subject and answered once the stream stored that forward, or with a 504 after four seconds (see "Role delivery and exceptions"). Any other `notifications.` topic no stream subject captures is refused `400` by name, since no session would receive it. A publish of a captured topic the bus did not serve, and a role-holder read at a role send's first resolution that did not answer, are both the 503 below rather than a 500. |
 | `/healthz` | GET | Health check (always available, even during startup); its bus checks answer within 3 s, and a rebuild of the KV watches that has not succeeded for a minute after a reconnect is `200 degraded` naming the `KV watch rebuild` - not a refusal, which would take the probes' only listener out and replace it with one that rebuilds into the same failure on empty caches, so the state pages through the `<N>-reconnect-hooks-stalled` alarm instead - while a rebuild that fails and is run again under that minute leaves the answer it had (see “Webhook and health check bounds” below). The healthy answer, and every degraded one that keeps its fields, carries `role_claim_repair`: `completed_at` (RFC 3339, UTC) and `age_seconds` of the role claim watcher's last whole read of the role bucket, both `null` before one completes, `bound_seconds` (120, `store.RoleClaimRepairBound`), and `put_back` and `took_out`, the claims that read put back into the copy and took out of it. A read older than the bound is `200 degraded` naming `role claim repair unavailable`, never `503`, and `GET /v1/sessions` still answers `200` from the copy then |
 
@@ -167,20 +167,28 @@ attempt:
 
 | Outcome of the attempt | Answer |
 | --- | --- |
-| The store says the key is gone (`nats.ErrKeyNotFound`, which also covers a session id no session can register under) | `404 {"error":"no live session <id>"}` |
+| The store holds an entry within the gone horizon, and the connection probe of the session's relay subject was answered, met silence or failed any other way, or was not made because the entry records no consumer delivery | `200`, `state` `connected`, `recipient_state` `live` or `unresponsive` by the entry's age and `last_seen` the entry's; the message is stored |
+| The store holds an entry within the gone horizon, and the probe met no responders | `200`, `state` `stopped`, `recipient_state` by the entry's age and `last_seen` the entry's; the message is stored |
+| The store has no entry within the gone horizon (`nats.ErrKeyNotFound`, or an entry past it), and the known-session store holds a record of the session | `200`, `state` `stopped`, `recipient_state` `gone` and `last_seen` the record's; the message is stored, and the session gets it from its own consumer if it runs again under the same id within 72 hours |
+| The target is stopped (either `stopped` row above) and the request set `connected_only` | `409 {"error":"the session is stopped"}`, recorded `session_stopped`, with nothing stored |
+| Neither store knows the session (no entry within the gone horizon and no record, which also covers a session id no session can register under) | `404 {"error":"no live session <id>"}` |
 | The store read did not answer (its second ran out, or the read failed any other way) | `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1` |
-| The target is live but does not advertise the frame's `delivery.mode`, or that mode cannot be read unambiguously | `403` naming the session, and the mode when it could be read |
+| The target's entry, or for a target with no entry its known-session record when that record carries capabilities, does not advertise the frame's `delivery.mode`, or that mode cannot be read unambiguously | `403` naming the session, and the mode when it could be read |
 | The publish is refused as too large (`bus.ErrTooLarge`) | `413` naming the size against the server's max payload |
 | The publish is refused for its subject or key (`bus.ErrRefused`) | `400` naming the refusal, with no `Retry-After` |
 | The stream refuses the publish because it holds its byte limit (`bus.ErrStreamFull`) | `503 {"error":"envoy: the message bus refused the message because its stream is full: <reason>"}` with `Retry-After: 1`, recorded `stream_full` |
 | The server denies the publish under this listener's own grant (`bus.ErrPublishDenied`) | `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After`, recorded `publish_denied` (below) |
 | Any other publish failure | `503` with the same prefix and `Retry-After: 1`, carrying the bus's own reason |
 
-A target whose record the store holds is resolved whatever its state, so a send to an
-`unresponsive` session is published to its inbox and waits there for it. The `404` is only a target
-the store holds no record of; it reports that target's `state` as `gone`, and its `last_seen` while
-the registry still remembers it (two hours past the last registration, `session.LastSeenMemory`),
-so a caller never reads a refusal as the end of a session that is merely quiet.
+A target whose entry the store holds within the gone horizon is resolved whatever its state, so a
+send to an `unresponsive` session is published to its inbox and waits there for it. The `404` is
+only a target with no entry within the gone horizon and no known-session record; it reports that
+target's `state` as `gone`, and its `last_seen` while the registry still remembers it (two hours
+past the last registration, `session.LastSeenMemory`), so a caller never reads a refusal as the end
+of a session that is merely quiet. A listener whose known-session store does not answer (no store,
+a bucket its grant does not open yet, its first read not complete, or a copy past its stale bound)
+holds no records, so a target with no entry within the gone horizon gets the `404` there, and one
+whose entry stands is still judged by its probe, as above.
 
 `POST /v1/messages/publish` answers the publish of a topic the stream captures that failed, and a
 role send's first role-holder resolution that did not answer, exactly the same way; that
@@ -247,9 +255,10 @@ Each inbound send and publish is recorded in one line, INFO when accepted and WA
 `listener send` (`target_session`) and `listener publish` (`topic`), both carrying `event_id`,
 `source`, `source_session`, `payload_summary`, `outcome` and `status`, and `holder` as well when a
 role topic resolved one. `outcome` is one of `accepted`, `invalid_request`, `too_large`,
-`bus_unavailable` and `stream_full`, plus `no_live_session` for send, `capability_refused` for send
-and a role send, `publish_denied` for send and publish alike, since a publish on either transport
-can be denied, and `role_unclaimed`, `role_lapsed`,
+`bus_unavailable` and `stream_full`, plus `no_live_session` for send, `session_stopped` for a
+`connected_only` send whose target is stopped, `capability_refused` for send and a role send,
+`publish_denied` for send and publish alike, since a publish on either transport can be denied,
+and `role_unclaimed`, `role_lapsed`,
 `role_claim_unreadable` and a role send's one 504 reason, `delivery_failed`, for publish. A role
 send whose message the listener kept is `accepted`, because its 202 is an answer and not a
 refusal, so `role_unclaimed` and `role_lapsed` name a send that kept nothing. Two

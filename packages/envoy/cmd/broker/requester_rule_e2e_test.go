@@ -434,11 +434,9 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 			}
 		}
 		// The operator's own line, the one that says the deployment's binding is what to fix.
-		log := broker.Await(t, requests.MintFailedMessage)
-		for _, want := range []string{"class=binding", "name=" + requesterUnboundSecret} {
-			if !strings.Contains(log, want) {
-				t.Fatalf("the broker's %q line does not carry %q:\n%s", requests.MintFailedMessage, want, log)
-			}
+		record := broker.AwaitRecord(t, requests.MintFailedMessage, map[string]any{"name": requesterUnboundSecret})
+		if record["class"] != "binding" {
+			t.Fatalf("the broker's %q line for %s carries class %v, want binding: %v", requests.MintFailedMessage, requesterUnboundSecret, record["class"], record)
 		}
 		// Nothing reached Google at all: the minter refuses an unbound secret before it resolves
 		// the broker's own credential and before it makes any call.
