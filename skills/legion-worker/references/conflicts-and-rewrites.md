@@ -109,8 +109,8 @@ fingerprint=$(set -o pipefail; jj -R "$LEGION_WORKSPACE" diff --from "fork_point
   unaffected.
 
 Where each role gets its two heads: the implementer — the tip before and after its own forward merge;
-the tester — the commit its latest results name and the new head; the reviewer — the `commit_id` of
-its last submitted review (`gh api --paginate repos/{owner}/{repo}/pulls/{n}/reviews --jq '.[] | {commit_id, state, user: .user.login, body}'`, whose pages concatenate in order, so the last line is the last submitted review)
+the tester — the commit its latest results name and the new head; the reviewer — the head its last
+submitted review read, which that review's Legion footer names, never that review's `commit_id`, which GitHub can move onto a later head (*The reviewer* in `skill://legion-worker/references/merge-gate.md` gives the read, what stands for a footer that names no head, and the measurement)
 and the new head; the merger never computes a fingerprint — it merges the head it read, and no
 Legion check compares that head with the approved one.
 

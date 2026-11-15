@@ -65,7 +65,7 @@ The reviewer's `phase-finished` with an `APPROVED` review puts the issue in `acc
 
 - the tester's handoff, `dispatch handoff-read --issue <issue> --phase test`;
 - `dispatch results --issue <issue>`: each check, every result recorded against it with the commit it was recorded at, and the check's own line saying whether a pass stands and from which roles;
-- the reviewer's approval of that head by SHA (`gh api --paginate repos/<o>/<r>/pulls/<n>/reviews`);
+- the reviewer's approval of that head by SHA, the head its Legion footer names and never its `commit_id`, which GitHub can move onto a later head (`gh api --paginate repos/<o>/<r>/pulls/<n>/reviews`; `skill://legion-worker/references/merge-gate.md` gives the read of each review's footer head, and what stands for a footer that names none);
 - each claim the reviewer's prose makes, checked against the code at that head and command output, never against the finding it ruled on or its own verdict: no other agent reads it.
 
 A tree often brings its own shortfall written up; that is no permission: your job is the goal. Accept only when a pass stands for every `before_merge` check of this issue at the approved head, each requirement the spec states has a check, and no criterion left the tree; on a parent, that head is section 4's last round. A pass stands is the check's own answer, which `dispatch results` prints under it: a pass at another commit, a pass recorded under an older wording of the check and a retracted pass are each printed and none of them is a pass that stands, while a fail recorded after a pass leaves that pass standing until someone retracts it.
