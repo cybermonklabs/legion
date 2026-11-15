@@ -1477,7 +1477,7 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 				"if [ \"$last\" = --help ]; then\n" +
 				"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
 				"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
-				"if [ \"$4\" = graphql ]; then\n" + tc.graphql + "fi\n" +
+				"if [ \"$4\" = graphql ]; then\n  :\n" + tc.graphql + "fi\n" +
 				"echo rest >> \"$GH_STANDIN_RECORD\"\n" + tc.rest
 			if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
 				t.Fatal(err)
