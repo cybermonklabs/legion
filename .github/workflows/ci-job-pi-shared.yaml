@@ -33,6 +33,9 @@ jobs:
       - name: Typecheck pi-shared
         run: bun run typecheck
         working-directory: packages/pi-shared
+      # src/jj-attribution.test.ts runs the real jj in a scratch repository for one case, and
+      # refuses on GitHub Actions without one.
+      - uses: ./.github/actions/install-jj
       # test/skills-partition.test.ts stages each plugin's skills with scripts/pi-plugin-prepack.sh
       # --stage-skills and holds the two lists to a partition of skills/.
       - name: Test pi-shared

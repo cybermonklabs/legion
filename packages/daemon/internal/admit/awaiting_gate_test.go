@@ -312,8 +312,9 @@ func seedRequestedGate(t *testing.T, pool *pgxpool.Pool, gate record.DesignGate)
 	mirrorAsk(t, pool, record.RootAsk{Issue: gate.Issue, Ask: "ask-approval", Kind: record.AskApproval, Artifact: gate.ArtifactID})
 }
 
-// handBackOnAClosedGate leaves LEGION-100 waiting on its gate at version 4, its slot taken by
-// LEGION-NEXT, after its own architect handed the approval request back to the person at handBack.
+// handBackOnAClosedGate leaves LEGION-100 waiting on its gate at version 4, keeping its slot while
+// LEGION-NEXT waits in the line, after its own architect handed the approval request back to the
+// person at handBack.
 func handBackOnAClosedGate(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 	t.Helper()
 	handBackOnAClosedGateAt(t, pool, admission, handBack)
@@ -334,8 +335,8 @@ func handBackOnAClosedGateAt(t *testing.T, pool *pgxpool.Pool, admission *Admiss
 	}
 }
 
-// resumedTask frees LEGION-RUN's slot, so the answered LEGION-100 is promoted, and returns the
-// task its architect resumes with.
+// resumedTask closes LEGION-RUN, a fact whose admission pass resumes the answered LEGION-100 on
+// the slot it holds, and returns the task its architect resumes with.
 func resumedTask(t *testing.T, pool *pgxpool.Pool, admission *Admission) string {
 	t.Helper()
 	apply(t, pool, admission, "run-finished", intake.DispatchIssue{
@@ -1843,7 +1844,7 @@ func TestAPersonsActDeliveredBeforeTheEventThatStartsItsWaitStartsNoWait(t *test
 
 // A registration reads the approval and nothing else: the mirror row it writes is its request's,
 // so it fences no question (second-review round-21 P3-2, same-model P3-2). An ordinary question its
-// read never saw, delivered late, still releases the root's slot and waits on the person.
+// read never saw, delivered late, still puts the root in a wait on the person, keeping its slot.
 func TestARegistrationFencesNoQuestion(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)

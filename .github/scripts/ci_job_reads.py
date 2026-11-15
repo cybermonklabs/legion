@@ -2139,7 +2139,7 @@ GATES = [
          "packages/pi-shared/src/git-lock.test.ts:63 reads it and holds git-lock.ts's copy to it"),
     ) + envoy_client_dep("packages/pi-shared/tsconfig.json paths @legion/envoy-client/errors; src imports "
                          "@legion/envoy-client/* (exports.bun -> src)")
-      + bun_job("pi-shared")),
+      + install_jj("pi-shared") + bun_job("pi-shared")),
 
     gate("pi_envoy", "pi-envoy", reads=reads(
         ("packages/pi-envoy/**", f"{at('pi-envoy', 'Typecheck pi-envoy')}, test and pack in packages/pi-envoy"),

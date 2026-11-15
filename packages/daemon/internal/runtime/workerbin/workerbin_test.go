@@ -1,6 +1,8 @@
 package workerbin
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +13,45 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
+// standInImageGit points imageGit at a stand-in for the image's git wrapper, a script in a new
+// directory, until the test ends, and answers that directory.
+func standInImageGit(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	git := filepath.Join(dir, "git")
+	if err := os.WriteFile(git, []byte("#!/bin/sh\necho image-git\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	previous := imageGit
+	imageGit = git
+	t.Cleanup(func() { imageGit = previous })
+	return dir
+}
+
+// otherGitDir is a new directory that holds an executable git that is not the image's.
+func otherGitDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte("#!/bin/sh\necho another-git\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// entryNames is the names of what dir holds, in order.
+func entryNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
+}
+
 // Oh My Pi's bash tool sources the operator's rc file and snapshots the PATH it leaves, so an rc
 // that prepends its own directories (this devbox's dotfiles shims, with their own legion and gh)
 // lands them ahead of the launcher directory. The prefix Oh My Pi runs before every command,
@@ -18,7 +59,7 @@ import (
 // front, so legion and gh both resolve to its scripts, and running it again leaves PATH as it was.
 func TestShellPrefixResolvesLegionsLauncherAheadOfAnRcsDirectories(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state dir")
-	if err := Install(root, "/opt/legion"); err != nil {
+	if err := Install(root, "/opt/legion", "/usr/bin:/bin"); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	rc := t.TempDir()
@@ -48,7 +89,7 @@ func TestShellPrefixResolvesLegionsLauncherAheadOfAnRcsDirectories(t *testing.T)
 // Install writes for the image's legion, so a pod's gh and a pane's are one wrapper.
 func TestTheImagesGhIsTheWrapperInstallWrites(t *testing.T) {
 	root := t.TempDir()
-	if err := Install(root, "/opt/legion/bin/legion"); err != nil {
+	if err := Install(root, "/opt/legion/bin/legion", "/usr/bin:/bin"); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	want, err := os.ReadFile(filepath.Join(LauncherDir(root), "gh"))
@@ -64,12 +105,13 @@ func TestTheImagesGhIsTheWrapperInstallWrites(t *testing.T) {
 	}
 }
 
-// Install puts two private 0700 scripts in a 0700 bin under root and nothing else: the launcher,
-// which execs the installing legion, and gh, which execs its `legion gh` (the wrapper that picks
-// the owner's gh directory).
+// Where the image's git leads path, Install puts two private 0700 scripts in a 0700 bin under root
+// and nothing else: the launcher, which execs the installing legion, and gh, which execs its
+// `legion gh` (the wrapper that picks the owner's gh directory).
 func TestInstallInstallsThePrivateLauncherAndTheGhWrapper(t *testing.T) {
+	image := standInImageGit(t)
 	root := t.TempDir()
-	if err := Install(root, "/opt/legion"); err != nil {
+	if err := Install(root, "/opt/legion", image); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	bin := LauncherDir(root)
@@ -97,20 +139,112 @@ func TestInstallInstallsThePrivateLauncherAndTheGhWrapper(t *testing.T) {
 		}
 	}
 	for dir, want := range map[string][]string{root: {"bin"}, bin: {"gh", "legion"}} {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		names := make([]string, 0, len(entries))
-		for _, entry := range entries {
-			names = append(names, entry.Name())
-		}
-		if !slices.Equal(names, want) {
+		if names := entryNames(t, dir); !slices.Equal(names, want) {
 			t.Fatalf("%s holds %q after Install, want %q", dir, names, want)
 		}
 	}
-	if err := Install(root, "legion"); err == nil || !strings.Contains(err.Error(), "not an absolute path") {
+	if err := Install(root, "legion", image); err == nil || !strings.Contains(err.Error(), "not an absolute path") {
 		t.Fatalf("Install with a relative executable = %v, want a refusal", err)
+	}
+}
+
+// Where the first git on path is not the image's, the image's git later on path included, and
+// where path holds no git at all, Install writes bin's git too: a 0700 script that execs the
+// installing legion's `legion git --after` with bin's own absolute path, both single-quoted. bin
+// then holds gh, git and legion.
+func TestInstallWritesTheGitWrapperWhereTheImagesGitDoesNotLeadPath(t *testing.T) {
+	image := standInImageGit(t)
+	for name, path := range map[string]string{
+		"another git ahead of the image's": otherGitDir(t) + ":" + image,
+		"no git on path":                   t.TempDir(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "state dir")
+			if err := Install(root, "/opt/legion state/legion", path); err != nil {
+				t.Fatalf("Install: %v", err)
+			}
+			bin := LauncherDir(root)
+			script := filepath.Join(bin, "git")
+			contents, err := os.ReadFile(script)
+			if err != nil {
+				t.Fatalf("git: %v", err)
+			}
+			if want := "#!/bin/sh\nexec '/opt/legion state/legion' git --after '" + bin + "' -- \"$@\"\n"; string(contents) != want {
+				t.Fatalf("git = %q, want %q", contents, want)
+			}
+			if info, err := os.Stat(script); err != nil {
+				t.Fatalf("git stat: %v", err)
+			} else if info.Mode().Perm() != 0o700 {
+				t.Fatalf("git mode = %o, want 0700", info.Mode().Perm())
+			}
+			if names := entryNames(t, bin); !slices.Equal(names, []string{"gh", "git", "legion"}) {
+				t.Fatalf("bin holds %q after Install, want gh, git and legion", names)
+			}
+		})
+	}
+}
+
+// Where the image's git is the first git on path, Install writes no git into bin and removes the
+// one an earlier run wrote. So the git an agent's shell finds under Path is the image's, which is
+// what the image's jj wrapper reads before a push.
+func TestInstallWritesNoGitWrapperWhereTheImagesGitLeadsPath(t *testing.T) {
+	image := standInImageGit(t)
+	root := t.TempDir()
+	stale := filepath.Join(LauncherDir(root), "git")
+	if err := Install(root, "/opt/legion", otherGitDir(t)+":"+image); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if _, err := os.Stat(stale); err != nil {
+		t.Fatalf("the first Install wrote no git: %v", err)
+	}
+	path := image + ":" + otherGitDir(t)
+	if err := Install(root, "/opt/legion", path); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("bin/git after an Install whose path the image's git leads: %v, want it removed", err)
+	}
+	if names := entryNames(t, LauncherDir(root)); !slices.Equal(names, []string{"gh", "legion"}) {
+		t.Fatalf("bin holds %q after Install, want gh and legion", names)
+	}
+	shell := exec.Command("sh", "-c", "command -v git")
+	shell.Env = []string{"PATH=" + Path(path, root)}
+	out, err := shell.Output()
+	if err != nil {
+		t.Fatalf("command -v git: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(out)), filepath.Join(image, "git"); got != want {
+		t.Fatalf("command -v git under Path = %q, want the image's git %q", got, want)
+	}
+}
+
+// The git Install reads on path leaves out bin itself, written as it is, with a trailing slash,
+// or through a link: a daemon started from an agent's shell inherits a PATH that bin leads, and
+// bin's own git there must not decide whether bin holds one.
+func TestInstallGitWrapperSkipsItsOwnDirectory(t *testing.T) {
+	image := standInImageGit(t)
+	root := t.TempDir()
+	bin := LauncherDir(root)
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "bin link")
+	if err := os.Symlink(bin, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, own := range []string{bin, bin + "/", link} {
+		if err := Install(root, "/opt/legion", otherGitDir(t)); err != nil {
+			t.Fatalf("Install: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(bin, "git")); err != nil {
+			t.Fatalf("the first Install wrote no git: %v", err)
+		}
+		if err := Install(root, "/opt/legion", own+":"+image); err != nil {
+			t.Fatalf("Install: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(bin, "git")); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("with %q first on path, bin/git after Install: %v, want it removed, since the git after bin is the image's", own, err)
+		}
 	}
 }
 
