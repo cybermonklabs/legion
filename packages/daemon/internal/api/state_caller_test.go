@@ -548,7 +548,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// that half), with the two keys contract 111 added gone, each issue of a live tree's
 			// `treeMovedAt` and `quietHours` (withoutQuietTime), with what each reviewing issue's
 			// round waits on from GitHub gone, the object contract 133 added (withoutMergeWait), and
-			// with each issue's `assignments` gone, the experiment answers contract 139 added
+			// with each issue's `assignments` gone, the experiment answers contract 141 added
 			// (withoutAssignments). Every row that reaches here is below all of them, so every one
 			// of them goes whatever the row is.
 			var want, got map[string]any

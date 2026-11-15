@@ -594,12 +594,12 @@ type Issue struct {
 	// and only where that row records a draw: `memory` for a tree whose roles run with the
 	// project's memory overlays and instructions, and `none` for one that runs without them —
 	// the control arm `none` as much as the empty arm an experiment at mode off draws, which the
-	// memory draw before contract 139 wrote as the word `none`. MemoryDrawMode is the mode in
+	// memory draw before contract 141 wrote as the word `none`. MemoryDrawMode is the mode in
 	// force at that draw (config.ExperimentMode's words) and MemoryDrawnAt the instant of it.
 	// All three are absent together for an issue no `memory` answer applies to — a tree first
 	// opened before the setting existed, or one the draw never reached — and for one whose only
 	// `memory` answer records no draw, which is a hand-over settling a unit at no arm: that tree
-	// answered none of the three before contract 139 and answers none of them now, so a reader
+	// answered none of the three before contract 141 and answers none of them now, so a reader
 	// counting the trees a group reached counts the same trees it did. The draw is made once, for
 	// the unit, and every issue of a tree shows its tree's: an issue's memory group is its tree's
 	// (contract 49). They are the one experiment's answer spelled out for the readers that knew
@@ -649,9 +649,9 @@ type Issue struct {
 	// declares the experiments (config.Project.ExperimentsDeclared): the `memory` block's
 	// experiment first, unless `experiments.memory` declares it instead, then the experiments
 	// `settings.projects.<KEY>.experiments` names, in its order, then any experiment the file no
-	// longer names, in the order of their names (contract 139). Absent for an issue no experiment
+	// longer names, in the order of their names (contract 141). Absent for an issue no experiment
 	// holds an answer for, so the wire never carries an empty list, and absent from every issue of
-	// the body the route serves a caller below 139 (stateFor, withoutAssignments).
+	// the body the route serves a caller below 141 (stateFor, withoutAssignments).
 	Assignments []AssignmentView `json:"assignments,omitempty"`
 }
 

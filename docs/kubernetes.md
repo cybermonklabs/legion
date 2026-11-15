@@ -2241,7 +2241,7 @@ A caller in a pod whose claims record a contract below 49 is served the state wi
 Store migration 20261104073148_issue_memory_group adds the three columns they are read from to `issues` — `memory_group`, `memory_draw_mode` and `memory_drawn_at` — written once, when the tree's lifecycle row is first created, and backfilled for no row.
 Store migration 20261104153554_issue_memory_carried adds `memory_carried` beside them, the hand-over's own answer about a root handed over out of another tree, which no caller of the state reads.
 It backfills the hand-overs the release before it recorded: a row whose `handed_over_from` names a tree that holds a `tree_lifecycles` row of the project's normalized token, and that carries no draw of its own, is marked carried.
-Those old trees ran with no memory, the setting having not existed then, so the mark is written and no group with it, which is the answer the hand-over wrote from then on: `record.Store.CarryMemory` until daemon API contract 139, and `record.Store.CarryAssignments` since, which settles the child at no variant (contract 139, below).
+Those old trees ran with no memory, the setting having not existed then, so the mark is written and no group with it, which is the answer the hand-over wrote from then on: `record.Store.CarryMemory` until daemon API contract 141, and `record.Store.CarryAssignments` since, which settles the child at no variant (contract 141, below).
 A child handed over out of a tree nothing ever opened keeps the column's default, false, and is drawn at its own first open like any other new tree.
 
 To roll this release back to contract 48, put `legion.yaml` back without `projects.<KEY>.memory`, which the earlier release refuses as a key it does not know, and re-pin it.
@@ -2335,8 +2335,8 @@ The first run printed `BEGIN`, three `ALTER TABLE`s, `UPDATE 2`, six `ALTER TABL
 After them the three assignment columns stood, none of the six entry columns did, `claims.leak_check_cause` still stood, `schema_version` held 132 rows with none of 20261111225552 and its highest still at 20261112180548, the two supervise payloads had lost both keys and kept every other key they carried — the `assignment` the second of them carried among them — and the `notice` row kept its own `entry`.
 Running `Migrate` again then applied that one migration a second time, reporting one migration applied: the six entry columns stood on the three tables again, the three assignment columns were dropped again, and `schema_version` held 133 rows, 20261111225552 among them and 20261112180548 still the highest.
 
-**Each issue's experiment assignments in the state (daemon API contract 139).**
-A release at contract 139 carries, on every issue of `GET /legion/v1/state`, `assignments`:
+**Each issue's experiment assignments in the state (daemon API contract 141).**
+A release at contract 141 carries, on every issue of `GET /legion/v1/state`, `assignments`:
 one `{experiment, variant, mode, drawnAt}` per experiment answer that applies to that issue, in the order the project's file declares the experiments:
 first the `memory` block's experiment, `settings.projects.<KEY>.memory`, which every project declares — at mode `off` where its file writes no block — unless `settings.projects.<KEY>.experiments` names `memory` itself;
 then the experiments `settings.projects.<KEY>.experiments` names, in its order;
@@ -2344,7 +2344,7 @@ then any experiment the file no longer names, in the order of their names.
 An issue carries its tree's answer for an experiment whose unit is the tree, and its own answer for one whose unit is the issue.
 `variant` and `mode` ride whatever they hold, the empty string included, and `drawnAt` is absent where the row holds no instant:
 that row — no arm, no mode, no instant — is a hand-over settling a child at no arm for an experiment the tree it left held no row for, which is how a reader tells a unit settled at no arm from a unit never drawn, which is no row at all.
-The key is absent from an issue no experiment holds an answer for, so the wire carries no empty list, and absent from every issue of the body a caller in a pod whose claims record a contract below 139 is served.
+The key is absent from an issue no experiment holds an answer for, so the wire carries no empty list, and absent from every issue of the body a caller in a pod whose claims record a contract below 141 is served.
 The three memory fields of contract 49 answer exactly as they did and no reader of them changes:
 they are now read off the answer of the experiment named `memory`, whichever spelling declared it, and only where that row records a draw.
 `settings.projects.<KEY>.experiments` is a key new in this release, and every project carries it: `[]` for a project whose file declares no experiment under that key.
@@ -5772,7 +5772,7 @@ each issue's pod (every role of it alike) and the image probe's.
   Nothing else says that the generation ran outside the arm its record names, so an analysis reads those lines and counts such a unit out of its exposure.
 
 - **Where an arm shows.**
-  Every issue of `GET /legion/v1/state` carries `assignments`, one `{experiment, variant, mode, drawnAt}` per answer that applies to it, in the order the project declares the experiments: the `memory` block's experiment first, unless `experiments.memory` declares it instead, then the `experiments` key's own in the file's order, then any the file no longer names (daemon API contract 139, [Rolling back the upgrade](#rolling-back-the-upgrade)).
+  Every issue of `GET /legion/v1/state` carries `assignments`, one `{experiment, variant, mode, drawnAt}` per answer that applies to it, in the order the project declares the experiments: the `memory` block's experiment first, unless `experiments.memory` declares it instead, then the `experiments` key's own in the file's order, then any the file no longer names (daemon API contract 141, [Rolling back the upgrade](#rolling-back-the-upgrade)).
   `settings.projects.<KEY>.experiments` carries the `experiments` key's declaration itself, and `settings.projects.<KEY>.memory` the block's.
   `legion state` prints one line per declared experiment, counting the issues that hold each arm; every project declares the `memory` experiment — one that writes neither the `memory` block nor `experiments.memory` declares it at mode `off`, and one that writes `experiments.memory` declares it at that key's own mode — so there is always a line, and `memory: none` is what a deployment reads until a tree is drawn.
   `legion config-reference --json` prints every key of the block with its default, whether it is required and what it does, and reads no `legion.yaml`, no daemon and no cluster.

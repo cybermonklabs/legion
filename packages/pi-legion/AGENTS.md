@@ -94,11 +94,11 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 139's experiment assignments
+number is the one `DaemonAPIVersion` declares, last bumped by contract 141's experiment assignments
 (dispatch://INFRA-2566: each issue of `GET /legion/v1/state` carries `assignments`, one
 `{experiment, variant, mode, drawnAt}` per experiment answer that applies to it, absent from an
 issue no experiment holds an answer for; the reader this plugin parses the state through takes
-the key as optional, because a caller from a pod whose claims record a contract under 139 is
+the key as optional, because a caller from a pod whose claims record a contract under 141 is
 served every issue without it (`api.stateFor`, `withoutAssignments`)), after contract 133's merge
 wait (dispatch://INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on
 GitHub's answer about merging the pull request's head carries `mergeWait`, the head the round

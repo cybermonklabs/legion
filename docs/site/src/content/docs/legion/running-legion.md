@@ -1280,7 +1280,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   own for an issue experiment, so one count serves both kinds. A count of trees would fit a tree
   experiment alone, and even there it would not count draws: a child handed over as a tree of its
   own takes its old tree's draw verbatim, so two trees hold one draw.
-  A daemon older than contract 139, which is the daemon the documented rollback leaves, serves
+  A daemon older than contract 141, which is the daemon the documented rollback leaves, serves
   no `assignments`, so the `memory` line counts an issue that carries none from its
   `memoryGroup` and `memoryDrawMode`, wherever `memoryGroup` is set, and reads as the
   earlier release's own `legion state` prints it.
