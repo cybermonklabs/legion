@@ -280,11 +280,12 @@ export function renderSessionAnswers(
     length += 2 + block.length;
   }
   const leftOut = count - blocks.length;
-  return [
+  const text = [
     header,
     ...blocks,
     ...(leftOut === 0 ? [] : [leftOutLine(leftOut, namesCommand)]),
   ].join("\n\n");
+  return text;
 }
 
 /** What `dispatch answers` prints: every item of the 72 hours before `now`, newest first, in the

@@ -798,7 +798,10 @@ function readingDispatch(
 test("a new item longer than the character cap moves the list", async () => {
   const older = writtenBefore(2, "m-older", "Ship it.");
   let items = [older];
-  const read = readingDispatch(() => items, () => NOW);
+  const read = readingDispatch(
+    () => items,
+    () => NOW
+  );
   const session = {};
   expect(await withSessionAnswers([skill, ask], requestOf(read, noBranch, session))).toEqual([
     skill,
@@ -822,7 +825,10 @@ test("an edit that makes a shown comment too long for the character cap moves th
   const newer = writtenBefore(1, "m-newer", "x".repeat(3_000));
   const shipIt = writtenBefore(2, "c-1", "Ship it.", comment);
   let items = [newer, shipIt];
-  const read = readingDispatch(() => items, () => NOW);
+  const read = readingDispatch(
+    () => items,
+    () => NOW
+  );
   const session = {};
   const placed = listMessage(renderSessionAnswers(items, { now: NOW }));
   expect(await withSessionAnswers([skill, ask], requestOf(read, noBranch, session))).toEqual([
@@ -860,7 +866,10 @@ test("a retracted answer moves the list", async () => {
   const message = writtenBefore(2, "m-1", "Also check the docs.");
   let items = [writtenBefore(1, "ask-1", "The second way, please.", answer), message];
   let clock = NOW;
-  const read = readingDispatch(() => items, () => clock);
+  const read = readingDispatch(
+    () => items,
+    () => clock
+  );
   const session = {};
   await withSessionAnswers([skill, ask], requestOf(read, noBranch, session));
   clock = NOW + 60_000;
@@ -876,7 +885,10 @@ test("an item the 72-hour window left behind keeps the list's place and bytes", 
   const newest = writtenBefore(1, "m-new", "Use the second way.");
   let items = [newest, writtenBefore(71, "m-old", "Ship it.")];
   let clock = NOW;
-  const read = readingDispatch(() => items, () => clock);
+  const read = readingDispatch(
+    () => items,
+    () => clock
+  );
   const session = {};
   const placed = listMessage(renderSessionAnswers(items, { now: NOW }));
   await withSessionAnswers([skill, ask], requestOf(read, noBranch, session));

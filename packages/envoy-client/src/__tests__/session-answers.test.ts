@@ -430,9 +430,8 @@ describe("sessionAnswersWords and sessionAnswersChanged", () => {
     answer = () => listed(edited);
     const afterEdit = await readSessionAnswers(options);
     expect(afterEdit.text).toBe(fresh.text);
-    expect(
-      sessionAnswersChanged(fresh.words ?? [], afterEdit.words ?? [], afterEdit.since)
-    ).toBe(true);
+    const edits = sessionAnswersChanged(fresh.words ?? [], afterEdit.words ?? [], afterEdit.since);
+    expect(edits).toBe(true);
     // A failed read carries the cache under a longer header.
     answer = () => json({ code: "INTERNAL", error: "database is down" }, 500);
     const cached = await readSessionAnswers(options);
