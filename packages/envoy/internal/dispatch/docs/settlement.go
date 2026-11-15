@@ -769,6 +769,13 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event) er
 // whoever its actor is (events.Quiet). That actor outlives the pending row the commit deletes, for
 // the settlement after the reopen to name, which wakes whom the edit's own settlement would have
 // woken on the open issue (clearSettlementPending).
+//
+// The editor so kept is credited with the text that editor wrote and with no version that adds
+// none of it. A version whose credit is only that editor (settlementVersionCredit.kept) - one of
+// the reopen's ask-state write, an ask repair's sweep, a rebuild or a copy marked owed, each
+// naming no editor of its own - names SettlementActor on its artifact.version event and as its
+// write's actor (versionActor), while its derived events and the move of an approval request over
+// the closed issue's versions still name that editor (versionWrite.keptEditor).
 func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutcome) {
 	s, room, state, tx, ledger := st.service, st.room, st.state, st.tx, st.ledger
 	// read is the settlement's private copy of the document (readSettlementTree), and nothing but
@@ -849,7 +856,10 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// (settlementPendingStatement) and the reopen's move to name (FollowClosedIssueVersions). A
 	// settlement on an open issue has named its editor itself, and one on a closed issue that
 	// credits SettlementActor names no editor, as the settlement after the reopen, crediting the
-	// same edits, named none then: each forgets the editor an earlier settlement kept.
+	// same edits, named none then: each forgets the editor an earlier settlement kept. One on a
+	// closed issue whose credit is only the kept editor (settlementVersionCredit.kept), its version
+	// adding none of their text, keeps that same editor, so the reopen still finds the editor of
+	// the text the closed issue's versions hold.
 	var kept *model.Actor
 	if st.issueClosed && !st.credit.actor.SameAs(SettlementActor) {
 		kept = &st.credit.actor
@@ -861,12 +871,17 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		return settleDone, st.abandon(err)
 	}
 	if versioning {
-		result, writeErr := s.writeVersionTx(ctx, tx, room, renderedTree{tree: st.versioned, markdown: markdown, offsets: offsets}, st.credit.actor, &versionWrite{
+		var keptEditor *model.Actor
+		if st.credit.kept {
+			keptEditor = &st.credit.actor
+		}
+		result, writeErr := s.writeVersionTx(ctx, tx, room, renderedTree{tree: st.versioned, markdown: markdown, offsets: offsets}, st.credit.versionActor(), &versionWrite{
 			authors:          st.credit.authors,
 			capture:          &st.credit.capture,
 			docUpdateVersion: &st.snapshotCursor,
 			closedIssue:      st.issueClosed,
 			settlement:       true,
+			keptEditor:       keptEditor,
 		})
 		if writeErr != nil {
 			// The version a human approved holds an element this build does not know: the version
@@ -905,7 +920,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		versionEvent := model.Event{
 			IssueKey: st.owner.IssueKey,
 			Type:     "artifact.version",
-			Actor:    st.credit.actor,
+			Actor:    st.credit.versionActor(),
 			Payload:  ArtifactVersionEventPayload(room, st.owner.Name, result.version, nil, result.changes),
 		}
 		if st.owner.IssueKey == nil {

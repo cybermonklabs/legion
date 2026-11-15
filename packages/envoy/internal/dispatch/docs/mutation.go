@@ -42,6 +42,13 @@ type versionWrite struct {
 	// (MoveApprovalAsk's bySettlement). A version a route writes - a named version, an edit, a
 	// summary edit - moves the request to its agent, whatever text it stores.
 	settlement bool
+	// keptEditor is set by a settlement's version whose credit is only the editor a settlement on
+	// the document's closed issue kept (settlementVersionCredit.kept), to that editor; the
+	// version's own actor is then SettlementActor. A request such a version moves from a version
+	// before the latest one spans the versions written while the issue was closed, whose move the
+	// reopen left to this settlement (FollowClosedIssueVersions) and which hold that editor's
+	// text, so that move names that editor, as the reopen's own move does (moveApprovalAsk).
+	keptEditor *model.Actor
 }
 
 // mergeInto copies src into *dst, allocating *dst if it is nil and src holds anything; a nil or
@@ -2359,8 +2366,10 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 		// opening another Inbox row. The request then waits on its agent until it is handed back,
 		// unless this is a settlement's version (versionWrite.settlement), the request waited on
 		// the person and this version stores byte for byte the text it named, which keeps it with
-		// the person (MoveApprovalAsk).
-		moved, err := MoveApprovalAsk(ctx, tx, s.events, artifactID, version, markdown, actor, write.settlement, s.serverURL)
+		// the person (MoveApprovalAsk). A move over versions written while the issue was closed
+		// names the editor a closed issue's settlement kept, where this version names
+		// SettlementActor only because it adds none of that editor's text (versionWrite.keptEditor).
+		moved, err := moveApprovalAsk(ctx, tx, s.events, artifactID, version, markdown, actor, write.keptEditor, write.settlement, s.serverURL)
 		if err != nil {
 			return versionWriteResult{}, err
 		}

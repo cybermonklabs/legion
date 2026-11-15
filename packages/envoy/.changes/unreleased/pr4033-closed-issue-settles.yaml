@@ -12,11 +12,14 @@ body: |-
   approval request that waits on the person keeps its turn, quietly, when a settlement writes a new
   version of its document that stores byte for byte the text the request names. A version that a
   route writes, such as a named version or an upload, still moves the request to its agent. The
-  settlement after a reopen names the editor whose edit the closed issue's settlement saved, as the
-  settlement after a reopen did before, and migration `20261115091510` adds
-  `doc_closed_edit_sources` to keep that editor past the closed issue's settlement. An approval
-  given after a reopen, before its settlement, is carried to the version that settlement writes
-  when that version differs from the approved one only in the questions the close withdrew and the
-  reopen opened again. A settlement whose room a close retired before the settlement held it, or
-  before it caught the room up, is now logged rather than ending without a word, and is armed
-  again when no close since its arming moved the room's generation.
+  settlement after a reopen names the editor whose edit the closed issue's settlement saved on the
+  ask events of that edit, as the settlement after a reopen did before, and migration
+  `20261115091510` adds `doc_closed_edit_sources` to keep that editor past the closed issue's
+  settlement. That editor is credited with their own text only: a later version that adds none of
+  it, such as one of the reopen's ask-state write, an ask repair's sweep or a rebuild, is in the
+  name of the settlement, while a move of an approval request over the closed issue's versions is
+  still in theirs. An approval given after a reopen, before its settlement, is carried to the
+  version that settlement writes when that version differs from the approved one only in the
+  questions the close withdrew and the reopen opened again. A settlement whose room a close retired
+  before the settlement held it, or before it caught the room up, is now logged rather than ending
+  without a word, and is armed again when no close since its arming moved the room's generation.

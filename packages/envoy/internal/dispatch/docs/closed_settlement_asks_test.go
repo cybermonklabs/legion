@@ -23,12 +23,14 @@ import (
 // makes on the closed issue is still refused after it (closed_settlement_test.go has the
 // settlements themselves).
 
-// appendedEvent is one event as the event log stores it: its type, its actor and whether it
-// notifies anyone (events.Broker.Notify).
+// appendedEvent is one event as the event log stores it: its type, its actor, whether it
+// notifies anyone (events.Broker.Notify), and the id its payload names (an ask event's ask), empty
+// for none.
 type appendedEvent struct {
 	kind   string
 	actor  model.Actor
 	notify bool
+	id     string
 }
 
 // latestEventID is the id of the newest event the log holds, 0 for none.
@@ -45,7 +47,7 @@ func latestEventID(t *testing.T, database *store.Store) int64 {
 func eventsAfter(t *testing.T, database *store.Store, after int64) []appendedEvent {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `
-		select type, actor, notify from events where id > $1 order by id
+		select type, actor, notify, coalesce(payload->>'id', '') from events where id > $1 order by id
 	`, after)
 	if err != nil {
 		t.Fatalf("read the events appended after %d: %v", after, err)
@@ -55,7 +57,7 @@ func eventsAfter(t *testing.T, database *store.Store, after int64) []appendedEve
 	for rows.Next() {
 		var event appendedEvent
 		var actor []byte
-		if err := rows.Scan(&event.kind, &actor, &event.notify); err != nil {
+		if err := rows.Scan(&event.kind, &actor, &event.notify, &event.id); err != nil {
 			t.Fatalf("read an appended event: %v", err)
 		}
 		if err := json.Unmarshal(actor, &event.actor); err != nil {

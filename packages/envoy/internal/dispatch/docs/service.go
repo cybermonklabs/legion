@@ -1628,15 +1628,29 @@ func stampBlockIDs(doc *crdt.Doc, origin any) (*pmdoc.Node, int, []stampedAsk, e
 }
 
 // settlementVersionCredit is whom a settlement's version credits, taken before the tree it records:
-// capture, its authors in order, and actor, whom its derived events name. state is the room the
-// capture was taken from (consumeAskAuthors). askSources, copied once the settlement holds the
-// tree it reconciles, names who introduced each new ask block in it.
+// capture, its authors in order, and actor, whom its derived events name. kept says actor is only
+// the editor a settlement on the document's closed issue kept (settlementAuthors): that editor's
+// text is in an earlier version, so the version itself names SettlementActor (versionActor) while
+// the ask events that text causes, and the move of an approval request over it, still name them.
+// state is the room the capture was taken from (consumeAskAuthors). askSources, copied once the
+// settlement holds the tree it reconciles, names who introduced each new ask block in it.
 type settlementVersionCredit struct {
 	capture    authorCapture
 	state      *roomState
 	authors    []model.Actor
 	actor      model.Actor
+	kept       bool
 	askSources askBlockSources
+}
+
+// versionActor is whom the version itself names, on its artifact.version event and as the actor
+// of its write (writeVersionTx): actor, or SettlementActor where actor is only the kept editor
+// (kept), whose text the version does not add.
+func (credit settlementVersionCredit) versionActor() model.Actor {
+	if credit.kept {
+		return SettlementActor
+	}
+	return credit.actor
 }
 
 // settlementRead is one read of a settlement's room (readSettlementTree): the tree, the commit
@@ -1680,19 +1694,20 @@ func (s *Service) readSettlementTree(state *roomState, doc *crdt.Doc, room strin
 }
 
 // settlementCredit is whom a settlement's version of read, a read of room, lists
-// (settlementAuthors): the pending authors, the edit source and the document's latest person
-// sender the document's pending-settlement row names, all read in tx under the document's
-// advisory lock, and the room's in-flight credits no committed version has listed that were
-// observed before the read. Taken once the settlement has stored the room's updates through the
-// read (Ledger.flushThrough), the pending authors hold the authors those appends wrote, so a
-// credit observed after the bound whose update the settlement stored is listed too; one whose
-// update the read lacks stays pending for the next version.
+// (settlementAuthors): the pending authors, the edit source the document's pending-settlement row
+// names and whether it is the document's closed edit source (readSettlementEditSource), and the
+// latest person sender the row names, all read in tx under the document's advisory lock, and the
+// room's in-flight credits no committed version has listed that were observed before the read.
+// Taken once the settlement has stored the room's updates through the read
+// (Ledger.flushThrough), the pending authors hold the authors those appends wrote, so a credit
+// observed after the bound whose update the settlement stored is listed too; one whose update the
+// read lacks stays pending for the next version.
 func settlementCredit(ctx context.Context, tx pgx.Tx, state *roomState, room string, read settlementRead) (settlementVersionCredit, error) {
 	owed, err := readPendingAuthors(ctx, tx, room)
 	if err != nil {
 		return settlementVersionCredit{}, err
 	}
-	_, recorded, err := readOwedSettlement(ctx, tx, room)
+	recorded, recordedKept, err := readSettlementEditSource(ctx, tx, room)
 	if err != nil {
 		return settlementVersionCredit{}, err
 	}
@@ -1702,7 +1717,7 @@ func settlementCredit(ctx context.Context, tx pgx.Tx, state *roomState, room str
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	return settlementAuthors(state, owed, recorded, durableLatest, read.through), nil
+	return settlementAuthors(state, owed, recorded, recordedKept, durableLatest, read.through), nil
 }
 
 // settlementAuthors takes the authors a settlement's version lists (captureAuthors), with the
@@ -1720,7 +1735,16 @@ func settlementCredit(ctx context.Context, tx pgx.Tx, state *roomState, room str
 // last names its edit source in recorded's place, nil for an edit no one peer can be credited
 // with. durableLatest, the latest person sender the row names, is what the capture names as the
 // person who edited last for the version's edit notice (captureAuthors, latestEditSource).
-func settlementAuthors(state *roomState, owed map[string]model.Actor, recorded, durableLatest *model.Actor, through uint64) settlementVersionCredit {
+//
+// recordedKept says recorded is the editor a settlement on the document's closed issue kept
+// (doc_closed_edit_sources), which a write that named no edit source of its own put on the row it
+// inserted (settlementPendingStatement). Where no in-flight credit names a newer source and the
+// version lists no one, that editor is the actor only because of that write: their text is in the
+// version the closed issue's settlement wrote, and this version adds none of it. The credit is then
+// kept (settlementVersionCredit.kept): its derived events still name that editor, since what they
+// reconcile is the text that editor wrote, and so does the move of an approval request over the
+// closed issue's versions (versionWrite.keptEditor); the version itself names SettlementActor.
+func settlementAuthors(state *roomState, owed map[string]model.Actor, recorded *model.Actor, recordedKept bool, durableLatest *model.Actor, through uint64) settlementVersionCredit {
 	capture := captureAuthors(state, owed, durableLatest, nil, nil, through)
 	credit := settlementVersionCredit{capture: capture, state: state, authors: actorSlice(capture.authors)}
 	latest := recorded
@@ -1733,6 +1757,7 @@ func settlementAuthors(state *roomState, owed map[string]model.Actor, recorded, 
 	if latest != nil {
 		if _, found := capture.authors[actorKey(*latest)]; found || len(credit.authors) == 0 {
 			credit.actor = *latest
+			credit.kept = !found && newest == 0 && recordedKept
 			return credit
 		}
 	}

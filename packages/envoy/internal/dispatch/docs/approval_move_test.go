@@ -32,7 +32,7 @@ func TestAnApprovalRequestKeepsItsTurnOverAVersionOfTheTextThePersonWasAskedAbou
 	if asked == "" {
 		t.Fatal("version 1 stores no text, so no version can repeat it")
 	}
-	askID := openStoredApprovalAsk(t, database, artifactID)
+	askID := openStoredApprovalAsk(t, database, artifactID, 1)
 
 	for _, step := range []struct {
 		name                      string
@@ -70,11 +70,11 @@ func TestAnApprovalRequestKeepsItsTurnOverAVersionOfTheTextThePersonWasAskedAbou
 	}
 }
 
-// openStoredApprovalAsk stores an open approval request over version 1 of artifactID, waiting on
-// the person, as the approval route writes one, and returns its id.
-func openStoredApprovalAsk(t *testing.T, database *store.Store, artifactID string) string {
+// openStoredApprovalAsk stores an open approval request over version of artifactID, waiting on the
+// person, as the approval route writes one, and returns its id.
+func openStoredApprovalAsk(t *testing.T, database *store.Store, artifactID string, version int) string {
 	t.Helper()
-	documents := []model.AskApprovalDocument{{ArtifactID: artifactID, Name: "document.md", Version: 1, RequestedVersion: 1}}
+	documents := []model.AskApprovalDocument{{ArtifactID: artifactID, Name: "document.md", Version: version, RequestedVersion: version}}
 	approval, err := EncodeApproval(&model.AskApproval{Documents: documents})
 	if err != nil {
 		t.Fatal(err)

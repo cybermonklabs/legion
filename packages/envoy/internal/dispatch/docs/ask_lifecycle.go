@@ -259,7 +259,9 @@ const reopenOwedAskDocuments = `
 // The mark sets marked_at to now, which a new row takes as its default, and leaves the latest
 // edit source and the latest person sender a row names as they are; a row it inserts names the
 // editor a settlement while the issue was closed kept (doc_closed_edit_sources,
-// settlementPendingStatement), so the settlement the mark leaves owed names that editor.
+// settlementPendingStatement), so the settlement the mark leaves owed names that editor on the
+// events of the ask blocks that editor's text holds, and names SettlementActor on a version that
+// adds none of that text (settlementAuthors).
 // It arms nothing: the room's next load, a timer or the resumption runs the settlement
 // (onLoadDocument, RunSettlementResumption).
 //
@@ -304,7 +306,10 @@ func (s *Service) MarkReopenOwedAskDocuments(ctx context.Context, issueKey strin
 // settlement's version holds the text the reopen leaves, which its own write compares with the
 // version the request names and with the approved text. A reopen that writes back the text the
 // person was asked about then keeps the request with the person, which a move to the closed
-// issue's version, whose blocks show the close's resolved states, would not.
+// issue's version, whose blocks show the close's resolved states, would not. Where that
+// settlement's version lists no author, it adds none of the kept editor's text and names
+// SettlementActor, but its move of a request that names a version from before the close spans the
+// closed issue's versions and names the kept editor, as this move does (versionWrite.keptEditor).
 //
 // The one case this leaves stale is a document whose stored updates past its latest version render
 // that version again. Its settlement writes no version, since a settlement versions only a

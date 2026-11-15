@@ -672,7 +672,9 @@ func latestPersonOf(sender *model.Actor, creditsPerson bool) (person *model.Acto
 // written. Before a closed issue's document settled, that row stood through the closed period; a
 // write that names no edit source of its own - the reopen's ask-state write and its mark, which
 // credit no one (withLifecycleWrite, MarkReopenOwedAskDocuments), an uncredited update, a copy
-// marked owed - leaves the settlement it owes naming that editor, as it named it then. With
+// marked owed - leaves the settlement it owes naming that editor on the events of the text that
+// editor wrote, as it named it then. That settlement's version names SettlementActor where it
+// lists no one, since the editor's text is in the closed issue's version (settlementAuthors). With
 // setPerson it records person as the latest person sender a version's edit notice names
 // (latestPersonOf), nil to clear it; without it each row keeps the one it has. No person sender is
 // kept past a closed issue's settlement: the edit notice after a reopen carries no edit that
@@ -747,8 +749,8 @@ func readLastPerson(ctx context.Context, q Queryer, room string) (*model.Actor, 
 
 // readOwedSettlement reports whether room owes a settlement and the latest edit source its row
 // names. A room's load reads it on the pool reserved for loads and takes no advisory lock, which
-// a durable writer can hold for as long as its transaction runs; a settlement reads it in its own
-// transaction under that lock, for the actor its version names (settlementAuthors).
+// a durable writer can hold for as long as its transaction runs; a settlement reads the source in
+// its own transaction under that lock (readSettlementEditSource).
 func readOwedSettlement(ctx context.Context, q Queryer, room string) (owed bool, lastActor *model.Actor, err error) {
 	var encoded []byte
 	err = q.QueryRow(ctx, `
@@ -768,6 +770,36 @@ func readOwedSettlement(ctx context.Context, q Queryer, room string) (owed bool,
 		return false, nil, fmt.Errorf("decode the document's latest edit source: %w", err)
 	}
 	return true, &actor, nil
+}
+
+// readSettlementEditSource reads, for a settlement in its own transaction under the document's
+// advisory lock, the latest edit source the document's pending-settlement row names, nil when the
+// row is gone or names none, and whether that source is the very editor doc_closed_edit_sources
+// keeps for the document, the value a write that named no edit source of its own copied into the
+// row it inserted (settlementPendingStatement). The settlement credits that editor with the text
+// they wrote and names them on no version that adds none of it (settlementAuthors).
+func readSettlementEditSource(ctx context.Context, q Queryer, room string) (recorded *model.Actor, kept bool, err error) {
+	var encoded []byte
+	err = q.QueryRow(ctx, `
+		select p.last_actor, coalesce(p.last_actor = kept.last_actor, false)
+		from doc_settlements_pending p
+			left join doc_closed_edit_sources kept on kept.artifact_id = p.artifact_id
+		where p.artifact_id = $1
+	`, room).Scan(&encoded, &kept)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read the document's latest edit source: %w", err)
+	}
+	if encoded == nil {
+		return nil, false, nil
+	}
+	var actor model.Actor
+	if err := json.Unmarshal(encoded, &actor); err != nil {
+		return nil, false, fmt.Errorf("decode the document's latest edit source: %w", err)
+	}
+	return &actor, kept, nil
 }
 
 // settlementRowFacts is one reading of a document's pending-settlement row: whether a row was
