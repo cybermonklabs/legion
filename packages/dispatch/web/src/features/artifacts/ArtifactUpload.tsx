@@ -283,13 +283,16 @@ export function uploadedFileText(
   return `![${caption}](${buildDispatchReference({ ...route, version: pinned })})`;
 }
 
-/** Files pasted or dropped into a draft's field, each uploaded and its text added to the draft. */
-export interface DraftUpload {
-  /** Uploads the files a paste holds to `owner`, in place of the paste; a paste of text alone is
-   *  left to the field. */
-  paste(event: ClipboardEvent<HTMLElement>, owner: ArtifactOwner): void;
-  /** Uploads the files a drop holds to `owner`, in place of the drop. */
-  drop(event: DragEvent<HTMLElement>, owner: ArtifactOwner): void;
+/** Files pasted or dropped into a draft's field, each uploaded and its text added to the draft:
+ *  the one the paste or the drop names (`Draft`) where a host draws one field for one draft after
+ *  another, and the field's own where it names none. */
+export interface DraftUpload<Draft = void> {
+  /** Uploads the files a paste holds to `owner`, in place of the paste, and adds their text to
+   *  `draft`; a paste of text alone is left to the field. */
+  paste(event: ClipboardEvent<HTMLElement>, owner: ArtifactOwner, draft: Draft): void;
+  /** Uploads the files a drop holds to `owner`, in place of the drop, and adds their text to
+   *  `draft`. */
+  drop(event: DragEvent<HTMLElement>, owner: ArtifactOwner, draft: Draft): void;
   /** Uploads still out. */
   pending: number;
   error: unknown;
@@ -301,29 +304,35 @@ export interface DraftUpload {
   /** The name of the last file Dispatch stored with no answer to give for it, so its reference
    *  could not be added to the draft; null otherwise. */
   madeUnanswered: string | null;
-  /** Uploads the last refused file again, to the owner it was sent to. Where that refusal is one
-   *  the reader stopped, the press behind it may have reached Dispatch, so this makes that press
-   *  again, base and all: it goes under its key, and Dispatch answers it with what the first one
-   *  did rather than storing the file a second time. A paste of several files is several presses
-   *  at once, and the reader can stop more than one of them, so the press made again is the one
-   *  of the file whose refusal is on screen (`stopped`), never whichever press stopped last.
-   *  Where Dispatch itself decided the refusal, that file has no stopped press: it is sent
-   *  afresh, its base read again and the press under a key of its own, which is what a refusal
-   *  Dispatch decided asks for. */
+  /** Uploads the last refused file again, to the owner it was sent to and for the draft it was
+   *  pasted into. Where that refusal is one the reader stopped, the press behind it may have
+   *  reached Dispatch, so this makes that press again, base and all: it goes under its key, and
+   *  Dispatch answers it with what the first one did rather than storing the file a second time.
+   *  A paste of several files is several presses at once, and the reader can stop more than one
+   *  of them, so the press made again is the one of the file whose refusal is on screen
+   *  (`stopped`), never whichever press stopped last. Where Dispatch itself decided the refusal,
+   *  that file has no stopped press: it is sent afresh, its base read again and the press under a
+   *  key of its own, which is what a refusal Dispatch decided asks for. */
   retry(): void;
 }
 
 /**
  * The one upload behind a draft's field - a composer's, an ask's answer, a reply under an ask:
  * every file pasted or dropped into it uploads to the owner the paste or drop named, and once the
- * server has it, `insert` receives the text to add (`uploadedFileText`). The owner rides the
- * upload as its own mutation variable, as a send carries its request: TanStack gives a pending
- * mutation each new render's options before `mutationFn` runs, so an owner read from the closure
- * would follow a pick made in the paste's own task. The text, the refreshed lists and a Retry all
- * read that same owner. The base rides with it (`captureUploadBase`), read once for the press
- * before the write is made, so every attempt of that press sends the same bytes.
+ * server has it, `insert` receives the text to add (`uploadedFileText`) and the draft to add it
+ * to. The owner rides the upload as its own mutation variable, as a send carries its request:
+ * TanStack gives a pending mutation each new render's options before `mutationFn` runs, so an
+ * owner read from the closure would follow a pick made in the paste's own task. The text, the
+ * refreshed lists and a Retry all read that same owner. The draft rides with it for the same
+ * reason: `insert` is the newest render's, and a host may draw one field for one draft after
+ * another - an ask's card for the next ask - so the text of a file that lands, or that Retry
+ * makes again, after the field moved on goes into the draft it was pasted into, not the one the
+ * field shows. The base rides too (`captureUploadBase`), read once for the press before the write
+ * is made, so every attempt of that press sends the same bytes.
  */
-export function useDraftUpload(insert: (text: string) => void): DraftUpload {
+export function useDraftUpload<Draft = void>(
+  insert: (text: string, draft: Draft) => void
+): DraftUpload<Draft> {
   const queryClient = useQueryClient();
   const [pending, setPending] = useState(0);
   const retryGuard = useSubmitGuard();
@@ -331,7 +340,7 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
   // its file kept across a reload with it.
   const upload = useKeyedWrite<
     { file: File; owner: ArtifactOwner; result: UploadResult },
-    { base: UploadBase; file: File; owner: ArtifactOwner }
+    { base: UploadBase; draft: Draft; file: File; owner: ArtifactOwner }
   >({
     method: "POST",
     write: async ({ base, file, owner }, bounds) => ({
@@ -344,43 +353,53 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
     label: ({ file }) => `Upload of ${file.name || "a file"}`,
     // Stored either way; with no answer to give, its reference cannot be added to the draft, and
     // the field says so (`upload.unanswered`).
-    onSuccess: (landed, { file, owner }) => {
+    onSuccess: (landed, { draft, file, owner }) => {
       refreshOwnerArtifacts(queryClient, owner);
-      if (landed !== null) insert(uploadedFileText(owner, file, landed.result));
+      if (landed !== null) insert(uploadedFileText(owner, file, landed.result), draft);
     },
     onSettled: () => {
       setPending((count) => count - 1);
       retryGuard.release();
     },
   });
-  /** Uploads `files` to `owner`, each as a press of its own, in the order they were taken in:
-   *  each base is read before its press is made, which holds that order through the reads.
-   *  `pending` counts from the press rather than from `onMutate`, which the base read comes
-   *  before: a draft that said nothing was uploading would take a Reply over an upload to come. */
-  const send = async (files: readonly File[], owner: ArtifactOwner): Promise<void> => {
+  /** Uploads `files` to `owner` for `draft`, each as a press of its own, in the order they were
+   *  taken in: each base is read before its press is made, which holds that order through the
+   *  reads. `pending` counts from the press rather than from `onMutate`, which the base read
+   *  comes before: a draft that said nothing was uploading would take a Reply over an upload to
+   *  come. */
+  const send = async (
+    files: readonly File[],
+    owner: ArtifactOwner,
+    draft: Draft
+  ): Promise<void> => {
     for (const file of files) {
       setPending((count) => count + 1);
-      upload.mutate({ base: await captureUploadBase(owner, file), file, owner });
+      upload.mutate({ base: await captureUploadBase(owner, file), draft, file, owner });
     }
   };
-  const receive = (files: FileList, owner: ArtifactOwner, event: { preventDefault(): void }) => {
+  const receive = (
+    files: FileList,
+    owner: ArtifactOwner,
+    draft: Draft,
+    event: { preventDefault(): void }
+  ) => {
     if (files.length === 0) {
       return;
     }
     event.preventDefault();
     upload.forgetUnanswered();
     // The files are taken here: a clipboard event's own list is good for this task alone.
-    void send([...files], owner);
+    void send([...files], owner, draft);
   };
   return {
-    drop: (event, owner) => receive(event.dataTransfer.files, owner, event),
+    drop: (event, owner, draft) => receive(event.dataTransfer.files, owner, draft, event),
     error: upload.error,
     isError: upload.isError,
     isPending: upload.isPending,
     madeUnanswered:
       upload.unanswered === undefined ? null : upload.unanswered.variables.file.name || "the file",
     method: upload.method,
-    paste: (event, owner) => receive(event.clipboardData.files, owner, event),
+    paste: (event, owner, draft) => receive(event.clipboardData.files, owner, draft, event),
     pending,
     retry: () => {
       const last = upload.variables;
@@ -396,7 +415,7 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
           ? upload.stopped((variables) => variables.file === last.file)
           : undefined;
         if (stopped === undefined) {
-          void send([last.file], last.owner);
+          void send([last.file], last.owner, last.draft);
           return;
         }
         // The very same press, base and all: nothing is read for it, so the write counts as
@@ -410,7 +429,7 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
 
 /** `Uploading file…` while any of a draft's uploads is out, and a refused one's reason with its
  *  Retry, which makes a press the reader stopped again (`DraftUpload.retry`). */
-export function DraftUploadStatus({ upload }: { upload: DraftUpload }): ReactNode {
+export function DraftUploadStatus<Draft>({ upload }: { upload: DraftUpload<Draft> }): ReactNode {
   return (
     <>
       {upload.pending > 0 ? (

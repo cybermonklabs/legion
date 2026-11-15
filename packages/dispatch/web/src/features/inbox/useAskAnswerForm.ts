@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, useEffect, useId, useRef, useState } from "react";
+import { type FormEvent, type SetStateAction, useEffect, useId, useRef, useState } from "react";
 
 import {
   ApiError,
@@ -22,12 +22,12 @@ import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
-import { useAnswerDraft } from "./answer-drafts";
+import { setAnswerDraft, useAnswerDraft } from "./answer-drafts";
 import {
   clearPendingAskThreadInvalidation,
   hasPendingAskThreadInvalidation,
 } from "./ask-thread-freshness";
-import { useOutstandingAnswerWrite } from "./outstanding-answers";
+import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers";
 import { askArtifactId, invalidateOwnerReads } from "./owner-reads";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
@@ -55,6 +55,22 @@ interface AskAnswerFailure {
   message: string;
   /** False for a refusal the same answer never gets past. */
   retryable: boolean;
+}
+
+/** One press of the answer: the ask it is of (`AskPress`) and what it sends. */
+interface AnswerPress extends AskPress {
+  readonly input: AnswerAskInput;
+}
+
+/** Whether a press changes an answer the server has already recorded, which its input names by
+ *  that answer's time (`answerAskInput`). */
+function changesAnswer({ input }: AnswerPress): boolean {
+  return input.expected_answer_at !== undefined;
+}
+
+/** One press of a question back: the ask it is of (`AskPress`) and the text it posts. */
+interface ClarificationPress extends AskPress {
+  readonly text: string;
 }
 
 /**
@@ -172,24 +188,34 @@ export function useAskAnswerForm({
   }, [ask.id, queryClient, refreshInitialThread, threadQuery.data]);
   const edits = threadQuery.data?.edits ?? [];
   const answers = threadQuery.data?.answers ?? [];
+  // Text a press addresses to its ask: this form's own while the form is drawn for that ask, and
+  // that ask's draft once a host has drawn the form for another (`setAnswerDraft`), so the text
+  // a landing clears, or an upload adds, is the press's ask's and never the one the card shows.
+  const setAnswerTextOf = (askId: string, next: SetStateAction<string>) => {
+    if (askId === ask.id) setAnswerText(next);
+    else setAnswerDraft(askId, next);
+  };
   // The card says why an answer was refused, in the ask's own words, beside the draft it holds;
   // the shell's indicator shows the answer only while it is out. The row's removal from the
   // Inbox, its restore on a refusal and the hold that keeps the question where the reader
-  // pressed it are the decline's too, and are written once beside the hold itself.
+  // pressed it are the decline's too, and are written once beside the hold itself. Each press
+  // carries the ask it answers: `retry()` runs the newest render's `write` and callbacks with the
+  // press's own values (`useKeyedWrite`), and a host may draw this card for one ask after
+  // another, so a Retry sends the stopped answer to its own ask under its key, and its landing
+  // reads that ask again.
   const mutation = useOutstandingAnswerWrite({
-    askId: ask.id,
-    label: () => `Answer to “${ask.question}”`,
+    label: (press: AnswerPress) => `Answer to “${press.ask.question}”`,
     method: "POST",
-    write: (input: AnswerAskInput, bounds) => answer(ask.id, input, bounds),
+    write: (press: AnswerPress, bounds) => answer(press.ask.id, press.input, bounds),
     // A change to an answer the server has already recorded leaves the Inbox alone: the ask has
     // no open row there to take out.
-    removesRow: () => replacing.current === undefined,
-    onError: (error) => {
+    removesRow: (press) => !changesAnswer(press),
+    onError: (error, press) => {
       if (error instanceof ApiError && error.code === "ASK_EDITED") {
         setAskChanged(true);
         setSelected([]);
         setOtherSelected(false);
-        void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+        void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
       }
       if (
         error instanceof ApiError &&
@@ -199,7 +225,7 @@ export function useAskAnswerForm({
       ) {
         // Each refusal meets the same change again, so the form it was sent from closes and the
         // card shows the thread's current answer, not one this card recorded earlier.
-        void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+        void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
         replacing.current = undefined;
         setJustAnswered(null);
         setChanging(false);
@@ -208,20 +234,20 @@ export function useAskAnswerForm({
     onSettled: () => {
       submitGuard.release();
     },
-    onSuccess: (updatedAsk) => {
-      const changed = replacing.current !== undefined;
+    onSuccess: (updatedAsk, press) => {
+      const changed = changesAnswer(press);
       replacing.current = undefined;
       setChanging(false);
       // The text is the recorded answer now, not an unsent draft: a later card for this ask
       // starts empty, and nothing offers to copy what the server already took.
-      setAnswerText("");
+      setAnswerTextOf(press.ask.id, "");
       // Answered either way; with no answer to give, the card reads the ask afresh instead of
       // showing the one Dispatch would have handed back.
       setJustAnswered(updatedAsk);
       if (changed || updatedAsk === null) {
         if (updatedAsk?.answer != null) {
           const changedAnswer = updatedAsk.answer;
-          queryClient.setQueryData<AskRead>(["ask-thread", ask.id], (current) =>
+          queryClient.setQueryData<AskRead>(["ask-thread", press.ask.id], (current) =>
             current === undefined
               ? undefined
               : {
@@ -231,38 +257,39 @@ export function useAskAnswerForm({
                 }
           );
         }
-        void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+        void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
         void queryClient.invalidateQueries({ queryKey: ["me", "answers"] });
       }
-      if (!changed) onAnswered?.(ask.id);
-      invalidateOwnerReads(queryClient, ask);
+      if (!changed) onAnswered?.(press.ask.id);
+      invalidateOwnerReads(queryClient, press.ask);
     },
   });
+  // A question back carries its ask as an answer does, for the same reason.
   const clarification = useKeyedWrite({
     inline: true,
-    label: () => `Question back on “${ask.question}”`,
+    label: (press: ClarificationPress) => `Question back on “${press.ask.question}”`,
     method: "POST",
-    write: (text: string, bounds) => {
-      if (ask.issue_key === null) {
+    write: (press: ClarificationPress, bounds) => {
+      if (press.ask.issue_key === null) {
         return api.createArtifactComment(
-          askArtifactId(ask),
-          { ask_id: ask.id, body: text },
+          askArtifactId(press.ask),
+          { ask_id: press.ask.id, body: press.text },
           bounds
         );
       }
-      return createReply(ask.issue_key, { ask_id: ask.id, body: text }, bounds);
+      return createReply(press.ask.issue_key, { ask_id: press.ask.id, body: press.text }, bounds);
     },
     onSettled: () => {
       submitGuard.release();
     },
-    onSuccess: () => {
-      setAnswerText("");
+    onSuccess: (_comment, press) => {
+      setAnswerTextOf(press.ask.id, "");
       setQuestionChoice(false);
-      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+      void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
       // A clarification hands the turn to the asker: every surface that renders this ask from
       // its owner's list (a decision block reads `["asks", key]`) must see the new `waiting_on`,
       // not just the Inbox.
-      invalidateOwnerReads(queryClient, ask);
+      invalidateOwnerReads(queryClient, press.ask);
     },
   });
 
@@ -349,7 +376,10 @@ export function useAskAnswerForm({
   const sendAnswer = (text: string) => {
     submitGuard.guard(() => {
       const answerSelection = isApproval || hasOptions ? selected : [];
-      mutation.mutate(answerAskInput(displayedAsk, answerSelection, text, replacing.current));
+      mutation.mutate({
+        ask,
+        input: answerAskInput(displayedAsk, answerSelection, text, replacing.current),
+      });
     });
   };
 
@@ -400,7 +430,7 @@ export function useAskAnswerForm({
   const sendClarification = () => {
     const text = answerText.trim();
     if (text === "") return;
-    submitGuard.guard(() => clarification.mutate(text));
+    submitGuard.guard(() => clarification.mutate({ ask, text }));
   };
   const completed = changing ? null : recordedAsk;
   // What the reader typed and no form will ever send: the question closed under them - withdrawn,
@@ -436,6 +466,7 @@ export function useAskAnswerForm({
     sendAnswer,
     sendClarification,
     setAnswerText,
+    setAnswerTextOf,
     setQuestionChoice,
     startChanging,
     submitGuard,

@@ -7,8 +7,9 @@ export interface DraftStore {
   /** Forgets every draft. The unit-test preload calls it after each test, since the store
    *  outlives any one render. */
   reset(): void;
-  /** Writes the key's draft and tells every field holding that key; `""` forgets the draft. */
-  set(key: string, text: string): void;
+  /** Writes the key's draft - the text, or an updater, which reads the draft as it is now - and
+   *  tells every field holding that key; `""` forgets the draft. */
+  set(key: string, next: SetStateAction<string>): void;
   /** The key's draft and its setter; the component re-renders whenever any field for that key
    *  changes it. An updater reads the draft as it is now, so a text added when an upload lands
    *  never overwrites what another upload or a keystroke put there since the render that
@@ -28,8 +29,10 @@ export function createDraftStore(): DraftStore {
   const drafts = new Map<string, string>();
   const listeners = new Map<string, Set<() => void>>();
 
-  const set = (key: string, text: string): void => {
-    if ((drafts.get(key) ?? "") === text) return;
+  const set = (key: string, next: SetStateAction<string>): void => {
+    const current = drafts.get(key) ?? "";
+    const text = typeof next === "function" ? next(current) : next;
+    if (current === text) return;
     if (text === "") drafts.delete(key);
     else drafts.set(key, text);
     for (const listener of listeners.get(key) ?? []) listener();
@@ -49,11 +52,7 @@ export function createDraftStore(): DraftStore {
       [key]
     );
     const draft = useSyncExternalStore(subscribe, () => drafts.get(key) ?? "");
-    const setDraft = useCallback(
-      (next: SetStateAction<string>) =>
-        set(key, typeof next === "function" ? next(drafts.get(key) ?? "") : next),
-      [key]
-    );
+    const setDraft = useCallback((next: SetStateAction<string>) => set(key, next), [key]);
     return [draft, setDraft];
   }
 

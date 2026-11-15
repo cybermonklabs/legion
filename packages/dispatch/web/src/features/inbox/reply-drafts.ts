@@ -19,5 +19,10 @@ export function clearReplyDraft(askId: string, sent?: string): void {
 /** The ask's draft and its setter; the component re-renders whenever any composer changes it. */
 export const useReplyDraft = store.useDraft;
 
+/** Writes an ask's draft by the ask's id, from outside every composer for it: where an upload
+ *  pasted into a composer adds its reference once a host draws the composer for another ask
+ *  (`AskReplyComposer`). */
+export const setReplyDraft = store.set;
+
 /** Forgets every reply draft, for the unit-test preload. */
 export const resetReplyDrafts = store.reset;

@@ -233,6 +233,7 @@ export function AskCard({
     sendAnswer,
     sendClarification,
     setAnswerText,
+    setAnswerTextOf,
     setQuestionChoice,
     startChanging,
     submit,
@@ -283,9 +284,12 @@ export function AskCard({
       : documentProject === undefined
         ? undefined
         : { project: documentProject };
-  const upload = useDraftUpload((text) => {
-    setAnswerText((current) => appendToDraft(current, text));
-    setQuestionChoice(false);
+  // A file's text joins the answer of the ask it was pasted or dropped under, which its press
+  // carries (`useDraftUpload`, `setAnswerTextOf`); only text added to the field on screen puts its
+  // question choice away.
+  const upload = useDraftUpload((text: string, askId: string) => {
+    setAnswerTextOf(askId, (current) => appendToDraft(current, text));
+    if (askId === ask.id) setQuestionChoice(false);
   });
   const uploading = upload.pending > 0;
   const answerFieldRef = useRef<HTMLTextAreaElement>(null);
@@ -446,11 +450,15 @@ export function AskCard({
             setQuestionChoice(false);
           }}
           onDrop={
-            uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner)
+            uploadOwner === undefined
+              ? undefined
+              : (event) => upload.drop(event, uploadOwner, ask.id)
           }
           onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
           onPaste={
-            uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
+            uploadOwner === undefined
+              ? undefined
+              : (event) => upload.paste(event, uploadOwner, ask.id)
           }
           placeholder={answerPlaceholder}
           ref={answerFieldRef}

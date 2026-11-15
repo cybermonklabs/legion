@@ -29,7 +29,7 @@ import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
-import { clearReplyDraft, useReplyDraft } from "./reply-drafts";
+import { clearReplyDraft, setReplyDraft, useReplyDraft } from "./reply-drafts";
 
 export type CreateReply = (
   issueKey: string,
@@ -102,7 +102,11 @@ export function AskReplyComposer({
   // ask sees it in flight.
   const mutationKey = ["ask-reply", ask.id];
   const { sending } = useSending(mutationKey);
-  const upload = useDraftUpload((text) => setBody((current) => appendToDraft(current, text)));
+  // A file's text joins the draft of the ask it was pasted or dropped under, which its press
+  // carries (`useDraftUpload`): a host may draw this composer for another ask before it lands.
+  const upload = useDraftUpload((text: string, askId: string) =>
+    setReplyDraft(askId, (current) => appendToDraft(current, text))
+  );
   const uploading = upload.pending > 0;
   // The form shows a refused reply itself, with Retry, under the draft it kept.
   const submit = useKeyedWrite({
@@ -145,11 +149,15 @@ export function AskReplyComposer({
           id={fieldId}
           onChange={(event) => setBody(event.target.value)}
           onDrop={
-            uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner)
+            uploadOwner === undefined
+              ? undefined
+              : (event) => upload.drop(event, uploadOwner, ask.id)
           }
           onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
           onPaste={
-            uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
+            uploadOwner === undefined
+              ? undefined
+              : (event) => upload.paste(event, uploadOwner, ask.id)
           }
           value={body}
         />

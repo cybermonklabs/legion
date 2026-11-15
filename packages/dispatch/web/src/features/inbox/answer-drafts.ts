@@ -21,5 +21,9 @@ export const answerDraft = store.read;
 /** The ask's draft and its setter; the component re-renders whenever any form changes it. */
 export const useAnswerDraft = store.useDraft;
 
+/** Writes an ask's draft by the ask's id, from outside every field for it: what a press of that
+ *  ask's form addresses once a host draws the form for another ask (`useAskAnswerForm`). */
+export const setAnswerDraft = store.set;
+
 /** Forgets every answer draft, for the unit-test preload. */
 export const resetAnswerDrafts = store.reset;

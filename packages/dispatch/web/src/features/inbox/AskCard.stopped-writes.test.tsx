@@ -1,14 +1,16 @@
-import { expect, jest, spyOn, test } from "bun:test";
-import { act, waitFor, within } from "@testing-library/react";
+import { expect, jest, mock, spyOn, test } from "bun:test";
+// biome-ignore lint/style/noRestrictedImports: the pastes below carry a file, which user-event has no form for
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { api, NetworkError } from "../../api/client";
-import type { Ask, AskRead } from "../../api/types";
+import { api, NetworkError, type WriteBounds } from "../../api/client";
+import type { AnswerAskInput, Ask, AskRead, Comment } from "../../api/types";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
+import { answerDraft } from "./answer-drafts";
 import {
   answeredAsk,
   firstAnswer,
@@ -18,7 +20,8 @@ import {
 } from "./ask-card-fixture";
 
 // A write the reader stopped on the card: a hand-on, an answer, a question back and a reply may
-// each have been made, so the card says what its Retry does rather than that the write failed.
+// each have been made, so the card says what its Retry does rather than that the write failed;
+// and what that Retry is of once a host draws the same card for another ask.
 
 installAskCardApiMocks();
 
@@ -69,7 +72,9 @@ const dropped = (path: string) => new NetworkError(path, new TypeError("Failed t
 
 /** An open question on its card over the held clock, its answer write `answerAsk`: the reader
  *  picks Ship and presses Answer. */
-async function answerOpenQuestion(answerAsk: () => Promise<Ask>) {
+async function answerOpenQuestion(
+  answerAsk: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>
+) {
   const open = answeredAsk({ answer: null, state: "open" });
   const rendered = renderCard(
     <AskCard answerAsk={answerAsk} ask={open} initialThread={thread(open, [])} />
@@ -189,5 +194,235 @@ test("a reply the reader stopped says Retry asks again under its key", async () 
     realClock();
     view.unmount();
     createComment.mockRestore();
+  }
+});
+
+/** The question a host draws the same card for next (`ThreadBody` draws one card for one ask
+ *  after another): another open ask, on another issue. */
+function nextQuestion(overrides: Partial<Ask> = {}): Ask {
+  return answeredAsk({
+    answer: null,
+    id: "ask-2",
+    issue_key: "CORE-2",
+    question: "Which window?",
+    state: "open",
+    ...overrides,
+  });
+}
+
+/** Presses the Retry of the card's one refusal, on the clock the case holds. */
+async function retryTheRefusal() {
+  await userOnFakeClock().click(
+    within(screen.getByRole("alert")).getByRole("button", { name: "Retry" })
+  );
+  await tick(1_000);
+}
+
+/** An attempt Dispatch answers with `answer` once the clock the case holds moves on, so what the
+ *  landing does to the card runs inside that move (`tick`), not inside the click that made the
+ *  attempt, which user-event lets run outside `act`. */
+function answersOnTheClock<T>(answer: T): () => Promise<T> {
+  return () => {
+    const { promise, resolve } = Promise.withResolvers<T>();
+    setTimeout(() => resolve(answer), 100);
+    return promise;
+  };
+}
+
+// A hand-on's refusal stays on the card as the card moves to the next ask, and its Retry is still
+// that hand-on: it hands the first ask to the person picked for it, not the ask the card shows.
+test("a stopped hand-on's Retry after the card moves to another ask hands on the ask it was pressed on", async () => {
+  const open = answeredAsk({ answer: null, state: "open" });
+  const next = nextQuestion();
+  const handAskTo = spyOn(api, "handAskTo").mockRejectedValue(
+    dropped("/api/v1/asks/ask-1/asked-of")
+  );
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice" },
+    { login: "bob" },
+  ]);
+  // The hand-on reads the ask's thread again once it settles, stopped or not.
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(open, []));
+  const { queryClient, rerender, view } = renderCard(
+    <AskCard ask={open} initialThread={thread(open, [])} />
+  );
+  try {
+    const control = await screen.findByLabelText<HTMLSelectElement>("Hand this question to");
+    // The people are read only once the reader reaches for the control (`AskHandOn`).
+    await userEvent.setup().click(control);
+    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
+    jest.useFakeTimers();
+    await userOnFakeClock().selectOptions(control, "bob");
+    await stopTheLateWrite(queryClient);
+    const stopped = handAskTo.mock.calls.length;
+
+    rerender(<AskCard ask={next} initialThread={thread(next, [])} />);
+    handAskTo.mockResolvedValue({ ...open, asked_of: "bob" });
+    await retryTheRefusal();
+
+    expect(handAskTo).toHaveBeenCalledTimes(stopped + 1);
+    const again = handAskTo.mock.calls.at(-1);
+    expect(again?.[0]).toBe("ask-1");
+    expect(again?.[1]).toBe("bob");
+  } finally {
+    realClock();
+    view.unmount();
+    handAskTo.mockRestore();
+    listUsers.mockRestore();
+    getAsk.mockRestore();
+  }
+});
+
+// So does an answer: its Retry sends the stopped answer to the first ask under its key. Sent to
+// the ask the card shows, it would answer that ask with the first one's answer, or be refused
+// `422 KEY_REUSED` where the first had reached Dispatch, since the key covers the path.
+test("a stopped answer's Retry after the card moves to another ask answers the ask it was pressed on", async () => {
+  const answerAsk = mock((_id: string, _input: AnswerAskInput, _bounds: WriteBounds) =>
+    Promise.reject<Ask>(dropped("/api/v1/asks/ask-1/answer"))
+  );
+  const { open, queryClient, rerender, view } = await answerOpenQuestion(answerAsk);
+  try {
+    await stopTheLateWrite(queryClient);
+    const stoppedKey = answerAsk.mock.calls[0]?.[2].key;
+    const stopped = answerAsk.mock.calls.length;
+
+    const next = nextQuestion();
+    rerender(<AskCard answerAsk={answerAsk} ask={next} initialThread={thread(next, [])} />);
+    answerAsk.mockImplementation(
+      answersOnTheClock({ ...open, answer: firstAnswer, state: "answered" })
+    );
+    await retryTheRefusal();
+
+    expect(answerAsk).toHaveBeenCalledTimes(stopped + 1);
+    const again = answerAsk.mock.calls.at(-1);
+    expect(again?.[0]).toBe("ask-1");
+    expect(again?.[1]).toEqual({ expected_edited_at: null, selected: ["Ship"] });
+    expect(again?.[2].key).toBe(stoppedKey);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// A question back's Retry posts the stopped text on the first ask's issue, under its key, and its
+// landing drops that text from the first ask's draft, where it was written.
+test("a stopped question back's Retry after the card moves to another ask posts on the ask it was pressed on", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    dropped("/api/v1/issues/CORE-1/comments")
+  );
+  const open = answeredAsk({ answer: null, state: "open" });
+  const next = nextQuestion();
+  const { queryClient, rerender, view } = renderCard(
+    <AskCard ask={open} initialThread={thread(open, [])} />
+  );
+  try {
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(screen.getByLabelText("Your answer"));
+    await user.paste("Ship what, exactly?");
+    await user.click(screen.getByRole("button", { name: "Ask back" }));
+    await stopTheLateWrite(queryClient);
+    const stoppedKey = createComment.mock.calls[0]?.[2].key;
+    const stopped = createComment.mock.calls.length;
+
+    rerender(<AskCard ask={next} initialThread={thread(next, [])} />);
+    createComment.mockImplementation(answersOnTheClock({} as Comment));
+    await retryTheRefusal();
+
+    expect(createComment).toHaveBeenCalledTimes(stopped + 1);
+    const again = createComment.mock.calls.at(-1);
+    expect(again?.[0]).toBe("CORE-1");
+    expect(again?.[1]).toEqual({ ask_id: "ask-1", body: "Ship what, exactly?" });
+    expect(again?.[2].key).toBe(stoppedKey);
+    expect(answerDraft("ask-1")).toBe("");
+  } finally {
+    realClock();
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+/** A picture pasted into a draft, and what Dispatch answers its upload with. */
+const shot = new File(["bytes"], "shot.png", { type: "image/png" });
+const SHOT_STORED = {
+  artifact: { kind: "image", name: "shot.png", slug: "shot-png" } as never,
+  version: { number: 1 } as never,
+};
+const SHOT_TEXT = "![shot.png](dispatch://CORE-1/artifact/shot-png@v1)";
+
+// An upload's text joins the draft the file was pasted into: made again by Retry once the card
+// shows another ask, it goes into the first ask's answer, not into the answer on screen.
+test("a stopped upload's Retry after the card moves to another ask adds the file to the answer it was pasted into", async () => {
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    dropped("/api/v1/issues/CORE-1/artifacts")
+  );
+  const open = answeredAsk({ answer: null, state: "open" });
+  const next = nextQuestion();
+  const { queryClient, rerender, view } = renderCard(
+    <AskCard ask={open} initialThread={thread(open, [])} />
+  );
+  try {
+    jest.useFakeTimers();
+    // user-event's paste carries text, never the file this field uploads.
+    fireEvent.paste(screen.getByLabelText("Your answer"), { clipboardData: { files: [shot] } });
+    await tick(1_000);
+    await stopTheLateWrite(queryClient);
+    const stoppedKey = uploadArtifact.mock.calls[0]?.[2].key;
+    const stopped = uploadArtifact.mock.calls.length;
+
+    rerender(<AskCard ask={next} initialThread={thread(next, [])} />);
+    uploadArtifact.mockResolvedValue(SHOT_STORED);
+    await retryTheRefusal();
+
+    expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
+    const again = uploadArtifact.mock.calls.at(-1);
+    expect(again?.[0]).toEqual({ issue: "CORE-1" });
+    expect(again?.[2].key).toBe(stoppedKey);
+    expect(answerDraft("ask-1")).toBe(SHOT_TEXT);
+    expect(screen.getByLabelText("Your answer")).toHaveValue("");
+  } finally {
+    realClock();
+    view.unmount();
+    uploadArtifact.mockRestore();
+  }
+});
+
+// The same under a reply to an answered ask: the file's text joins the first ask's reply draft,
+// which its composer shows once the card is drawn for that ask again.
+test("a stopped upload's Retry after the card moves to another ask adds the file to the reply it was pasted into", async () => {
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    dropped("/api/v1/issues/CORE-1/artifacts")
+  );
+  const answered = answeredAsk();
+  const next = nextQuestion({ answer: firstAnswer, state: "answered" });
+  const { queryClient, rerender, view } = renderCard(
+    <AskCard ask={answered} initialThread={thread(answered)} />
+  );
+  try {
+    jest.useFakeTimers();
+    // user-event's paste carries text, never the file this field uploads.
+    fireEvent.paste(screen.getByRole("textbox", { name: "Reply" }), {
+      clipboardData: { files: [shot] },
+    });
+    await tick(1_000);
+    await stopTheLateWrite(queryClient);
+    const stoppedKey = uploadArtifact.mock.calls[0]?.[2].key;
+    const stopped = uploadArtifact.mock.calls.length;
+
+    rerender(<AskCard ask={next} initialThread={thread(next)} />);
+    uploadArtifact.mockResolvedValue(SHOT_STORED);
+    await retryTheRefusal();
+
+    expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
+    const again = uploadArtifact.mock.calls.at(-1);
+    expect(again?.[0]).toEqual({ issue: "CORE-1" });
+    expect(again?.[2].key).toBe(stoppedKey);
+    expect(screen.getByRole("textbox", { name: "Reply" })).toHaveValue("");
+    rerender(<AskCard ask={answered} initialThread={thread(answered)} />);
+    expect(screen.getByRole("textbox", { name: "Reply" })).toHaveValue(SHOT_TEXT);
+  } finally {
+    realClock();
+    view.unmount();
+    uploadArtifact.mockRestore();
   }
 });

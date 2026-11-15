@@ -24,7 +24,7 @@ import {
 } from "../../theme/classes";
 import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useOutstandingAnswerWrite } from "./outstanding-answers";
+import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers";
 import { invalidateOwnerReads } from "./owner-reads";
 
 /**
@@ -140,6 +140,11 @@ function DeclineDialog({
   );
 }
 
+/** One press of the decline: the ask it is of (`AskPress`) and what it sends. */
+interface DeclinePress extends AskPress {
+  readonly input: DeclineAskInput;
+}
+
 /**
  * The person's **Decline to answer**: they close an open question with no answer, and Dispatch
  * tells the agent that asked to decide without one. It is drawn on an open question alone -
@@ -169,24 +174,25 @@ export function DeclineControl({
   const submitGuard = useSubmitGuard();
   const [open, setOpen] = useState(false);
   // The dialog shows a refused decline itself, over the note it keeps, so the write is inline:
-  // the shell's indicator carries it only while it is out.
+  // the shell's indicator carries it only while it is out. Each press carries the ask it
+  // declines (`AskPress`), so its landing reads again the ask it was made on, whichever ask the
+  // card is drawn for by then.
   const write = useOutstandingAnswerWrite({
-    askId: ask.id,
-    label: () => `Decline of “${ask.question}”`,
+    label: (press: DeclinePress) => `Decline of “${press.ask.question}”`,
     method: "POST",
-    write: (input: DeclineAskInput, bounds) => decline(ask.id, input, bounds),
+    write: (press: DeclinePress, bounds) => decline(press.ask.id, press.input, bounds),
     onSettled: () => submitGuard.release(),
-    onSuccess: (declined) => {
+    onSuccess: (declined, press) => {
       setOpen(false);
       // The card reads its ask from the thread, so the record it swaps to is this decline.
       if (declined !== null) {
-        queryClient.setQueryData<AskRead>(["ask-thread", ask.id], (current) =>
+        queryClient.setQueryData<AskRead>(["ask-thread", press.ask.id], (current) =>
           current === undefined ? undefined : { ...current, ask: declined }
         );
       }
-      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
-      invalidateOwnerReads(queryClient, ask);
-      onDeclined?.(ask.id);
+      void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
+      invalidateOwnerReads(queryClient, press.ask);
+      onDeclined?.(press.ask.id);
     },
   });
 
@@ -207,7 +213,9 @@ export function DeclineControl({
             write.reset();
             setOpen(false);
           }}
-          onSubmit={(note) => submitGuard.guard(() => write.mutate(note === "" ? {} : { note }))}
+          onSubmit={(note) =>
+            submitGuard.guard(() => write.mutate({ ask, input: note === "" ? {} : { note } }))
+          }
           saving={write.isPending}
         />
       ) : null}

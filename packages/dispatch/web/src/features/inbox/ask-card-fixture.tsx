@@ -95,10 +95,17 @@ export function renderCard(node: ReactNode) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
-  const view = render(
+  const drawn = (card: ReactNode) => (
     <MemoryRouter>
-      <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>{card}</QueryClientProvider>
     </MemoryRouter>
   );
-  return { queryClient, view };
+  const view = render(drawn(node));
+  return {
+    queryClient,
+    /** Draws `next` where the card was, as a host that draws one card for one ask after another
+     *  does: the same card, with its state, rendered for the next ask. */
+    rerender: (next: ReactNode) => view.rerender(drawn(next)),
+    view,
+  };
 }

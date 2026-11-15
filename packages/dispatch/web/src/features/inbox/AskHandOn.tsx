@@ -53,12 +53,14 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
   const want = () => setWanted(true);
   const write = useAskHandOn(ask);
   const onLive = useContext(AskHandOnLiveContext);
-  const live = write.pending || write.failed;
+  // The ask held is the one the live hand-on is of, which is the card's own unless a host has
+  // drawn the card for another ask since that press (`useAskHandOn`).
+  const held = write.liveAskId;
   useEffect(() => {
-    if (!live) return;
-    onLive(ask.id, true);
-    return () => onLive(ask.id, false);
-  }, [ask.id, live, onLive]);
+    if (held === undefined) return;
+    onLive(held, true);
+    return () => onLive(held, false);
+  }, [held, onLive]);
   const waitingOn = askWaitingOnPerson(ask) ?? "";
   // The list is drawn only once the reader reaches for the control, as it is read: the query
   // keeps its people for the session, so a card that built its options from whatever another
