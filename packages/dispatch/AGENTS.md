@@ -2724,9 +2724,26 @@ routes for the last window it applied and writes whether the pull request ids, r
 measure are equal, exiting 1 when one does not. `docs/site/src/content/docs/dispatch/delivery.md`
 ("For agents") is its user's guide. `e2e/__tests__/delivery-live-probe.test.ts` (`bun run test`)
 runs it as a process against a Bun websocket server that replays `packages/contracts/fixtures/live`
-and holds the body it applies to `after.json`. It also checks that the probe reopens at once
-after a 4001, its second subscribe arriving within 500 ms of the close, and within the first
-attempt's spread after a 1012 (`RECONNECT_SPREAD_MS`, two seconds).
+and holds the body it applies to `after.json`.
+It also checks that the probe reopens after a 4001 and after a 1012 and resumes each time with the
+change and revisions it holds.
+Neither row reads a clock; each reads the `wait_ms` its close line carries, and the two catch
+different things.
+The 4001 row sends a rotation, which the probe answers at once, so the close line's `wait_ms` is
+null; a probe that answered it on the reconnect timer and reports that wait fails the row's line
+assertion whenever it reopens inside the row.
+The row also pins `--reconnect-spread-ms` a day, far above its own per-test limit, so a probe that
+reports null but still reopens on a timer drawn from that spread is cut off by the runner's limit on
+all but about one draw in 2,880; that rate is that probe's alone, and one that reports its wait
+fails on every draw.
+The 1012 row pins `--reconnect-spread-ms` 50 ms, so the probe's own wait is a draw from [0, 50 ms),
+and the row holds that the close line's `wait_ms` is a number in that window: a reopen at once,
+which writes null, or on a later attempt's backoff, at least a second, fails it on every run.
+The backoff's own shape is held by the unit row in `web/src/api/live-socket.test.ts`, and the
+resume's content and order by the row's own assertions.
+A third row reads the wait each close line reports (`wait_ms`): at `--reconnect-spread-ms 0`, two
+1012 closes report 0 ms each only while the parsed option reaches the probe's `reconnectWaitMs`
+and a restart close sets the attempt counter back to 0.
 
 The `webkit` Playwright project runs the rows tagged `@webkit` (`webkitTagged` in
 `e2e/playwright.config.ts`) of `e2e/collab-cursor.e2e.ts`, `e2e/deep-links.e2e.ts`,

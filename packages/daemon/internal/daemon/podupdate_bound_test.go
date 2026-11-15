@@ -423,12 +423,12 @@ func TestPodUpdateEndsTheRoundOfAnOperatorsSuspensionWhenItsPodIsGone(t *testing
 // operator suspends the implementer while it is still in the round's pod, and then that pod goes
 // and the displaced path brings the tester back in the pod that replaced it. The claims record
 // that other pod in the round's own place, which says the round's pod went whatever the
-// operator's suspension says, so the round ends there over the pod that went
-// (endRoundOverAGonePod), with nothing lost and nothing told, and nothing is replaced. Read the
-// hold first, the round would wait for the operator's resume over a pod that is gone, and tell
-// the controller of a suspension that holds nothing.
+// operator's suspension says, so the round ends at that sweep before any hold is read
+// (reconcileIssuePodUpdate, dispatch://INFRA-3276 R5), with nothing lost and nothing told, and
+// nothing is replaced. Read the hold first, the round would wait for the operator's resume over a
+// pod that is gone, and tell the controller of a suspension that holds nothing.
 func TestPodUpdateEndsTheRoundOfAnOperatorsSuspensionWhenAnotherPodIsInItsPlace(t *testing.T) {
-	const overAGonePod = "supervise: the pod of this issue's update round is not there, and every claim of the round had answered; nothing was lost and the round is over"
+	const overAGonePod = "supervise: the pod this issue's update round was opened over is gone; the round is over"
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 

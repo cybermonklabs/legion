@@ -353,6 +353,7 @@ on:
       - '!packages/daemon/internal/store/migration_20261112070503_test.go'
       - '!packages/daemon/internal/store/migration_20261112180548_test.go'
       - '!packages/daemon/internal/store/migration_20261113082214_test.go'
+      - '!packages/daemon/internal/store/migration_20261113082415_test.go'
       - '!packages/daemon/internal/store/migration_20261113090512_test.go'
       - '!packages/daemon/internal/store/migration_20261113110610_test.go'
       - '!packages/daemon/internal/store/migration_20261114031356_test.go'

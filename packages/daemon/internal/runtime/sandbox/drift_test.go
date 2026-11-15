@@ -430,6 +430,45 @@ func TestPodDriftSaysThePodTheLocatorRecordsIsNotThere(t *testing.T) {
 	}
 }
 
+// The pod an issue's Sandbox holds now, asked by the issue alone (IssuePod), which is what the
+// daemon decides an update round whose claims record no pod by. While the Sandbox's own pod is
+// there it is that pod; once that pod goes it is the pod the controller made in its place, which
+// is another uid; and once the Sandbox itself is gone it is no pod at all, though the store was
+// read. An issue no Sandbox was ever made for reads the same as one whose Sandbox is gone.
+func TestIssuePodIsThePodTheIssuesSandboxHoldsNow(t *testing.T) {
+	g := newRig(t, nil)
+	loc := g.spawn(workerSpec(t))
+	if pod, read := g.r.IssuePod(testTree); !read || pod != loc.Sandbox.PodUID {
+		t.Errorf("IssuePod of %s = %q, read %t; want the pod the launch recorded, %s", testTree, pod, read, loc.Sandbox.PodUID)
+	}
+
+	name := loc.Sandbox.Name
+	if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
+		t.Fatal(err)
+	}
+	g.eventually("the controller to make another pod", func() bool {
+		pod := g.r.storedPod(name)
+		return pod != nil && string(pod.UID) != loc.Sandbox.PodUID
+	})
+	if pod, read := g.r.IssuePod(testTree); !read || pod == "" || pod == loc.Sandbox.PodUID {
+		t.Errorf("IssuePod of %s once its pod was made again = %q, read %t; want the new pod's uid", testTree, pod, read)
+	}
+
+	if err := g.dyn.Tracker().Delete(sandboxGVR, testNamespace, name); err != nil {
+		t.Fatal(err)
+	}
+	g.eventually("the sandbox store to see it gone", func() bool {
+		s, err := g.r.storedSandbox(name)
+		return err == nil && s == nil
+	})
+	if pod, read := g.r.IssuePod(testTree); !read || pod != "" {
+		t.Errorf("IssuePod of %s with its Sandbox gone = %q, read %t; want no pod, read", testTree, pod, read)
+	}
+	if pod, read := g.r.IssuePod("LEGION-999"); !read || pod != "" {
+		t.Errorf("IssuePod of an issue with no Sandbox = %q, read %t; want no pod, read", pod, read)
+	}
+}
+
 // A pod under a suspended Sandbox is on its way out, and the round over it decides nothing true
 // — unless the suspension is that round's own replacement. ReplacePod suspends the Sandbox and
 // names the displaced pod on it under the round's own mark in one write (roundDisplacedAnnotation,
