@@ -1437,9 +1437,28 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // holder the listener calls only unresponsive (notify.ErrHolderUnresponsive): its session is past
 // the listener's live window but still holds the role, so the message is kept for it rather than
 // dropped as a message to a role nobody holds (dispatch://INFRA-392).
+//
+// A role whose claim is released is told nothing either, and is not woken: the claim is read
+// before the publish (as wakeForDelivery reads it) and a released one ends the row there. The
+// message's three senders in the workflow - tellChecks (a CI settlement), tellGateMoved (a design
+// gate's move) and tellStuckMergeState (an approved round stuck on its merge state) - only inform;
+// before a release stopped its session cleanly, such a message to a released role was dropped all
+// the same once that session expired; and a wake for each would start a pod for every CI
+// settlement and every gate move, once per released role. Left to the publish, the message would
+// meet a released role as one nobody holds: the listener answers holder_lapsed with the holder's
+// state gone (notify.ErrNoHolder below) and raises the role's wake beside that answer, so the pod
+// would come back for a message the row had already dropped. One window is left: a release
+// between this read and the publish, which the listener refuses (holder_lapsed) and wakes the role
+// on, as every release did before this read. An outbox with no supervisor (a test's), or a role no
+// machine of this daemon holds, publishes as before.
 func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload record.RoleMessage) error {
 	if r.notices == nil {
 		return errors.New("role message executor has no Envoy publisher")
+	}
+	if r.supervisor != nil && r.supervisedClaim(claim.Token(payload.Role)).Released() {
+		r.log.Info("outbox role message finished undelivered: its role's pod is released, and the message is not worth a wake",
+			"row", row.ID, "issue", row.Issue, "role", payload.Role)
+		return nil
 	}
 	err := r.notices.Publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrHolderUnresponsive) {

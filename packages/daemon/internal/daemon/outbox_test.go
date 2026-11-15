@@ -1189,6 +1189,66 @@ func TestOutboxRoleMessageAnswersOfTheConfirmedPublishRoute(t *testing.T) {
 	}
 }
 
+// A role message only informs - of a CI settlement, a design gate's move, an approved round stuck
+// on its merge state - so a role whose pod was released is told nothing and is not woken for it:
+// the row ends before any publish. Published, it would meet the listener's answer for a role
+// nobody holds, which raises the role's wake, and the pod would come back for a message the row
+// had already dropped.
+func TestOutboxRoleMessageToAReleasedRoleEndsWithoutAWake(t *testing.T) {
+	ctx := context.Background()
+	publisher := &outboxPublisher{}
+	runner, sup, pool := hookRunner(t, publisher)
+	implementer := releasedClaim(t, sup, claim.RoleImplementer)
+	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208",
+		record.RoleMessage{Role: string(token), Body: "CI settled at head"}, time.Now().Add(-time.Minute)))
+
+	if err := runner.RunOnce(ctx); err != nil {
+		t.Fatalf("drain the role message: %v", err)
+	}
+
+	if published := publisher.publishes(); len(published) != 0 {
+		t.Fatalf("publishes = %#v, want none: the released role is not told", published)
+	}
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("outbox rows left = %d, want the message finished", left)
+	}
+	if held := implementer.Claim(); !held.Released() {
+		t.Fatalf("the implementer is %s by %s, want it still released: the message is no wake", held.State, held.SuspendedBy)
+	}
+	var resumes int
+	if err := pool.QueryRow(ctx, `select count(*) from pod_resumes where issue = $1`, "LEGION-208").Scan(&resumes); err != nil {
+		t.Fatalf("read the recorded wakes: %v", err)
+	}
+	if resumes != 0 {
+		t.Fatalf("recorded wakes = %d, want none", resumes)
+	}
+}
+
+// A role whose claim this daemon supervises and has not released is published to as before: the
+// claim read stops only the message to a released pod.
+func TestOutboxRoleMessageToAClaimNotReleasedIsPublished(t *testing.T) {
+	ctx := context.Background()
+	publisher := &outboxPublisher{}
+	runner, sup, pool := hookRunner(t, publisher)
+	startedClaim(t, sup, claim.RoleImplementer)
+	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208",
+		record.RoleMessage{Role: string(token), Body: "CI settled at head"}, time.Now().Add(-time.Minute)))
+
+	if err := runner.RunOnce(ctx); err != nil {
+		t.Fatalf("drain the role message: %v", err)
+	}
+
+	published := publisher.publishes()
+	if len(published) != 1 || published[0].topic != notify.RoleTopicPrefix+string(token) || published[0].message != "CI settled at head" {
+		t.Fatalf("publishes = %#v, want the one message to %s", published, notify.RoleTopicPrefix+string(token))
+	}
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("outbox rows left = %d, want the message finished", left)
+	}
+}
+
 func TestOutboxGateSeedAppliesApprovedFactAndReturnsApprovalFailure(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
