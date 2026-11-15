@@ -81,7 +81,7 @@ const server = Bun.serve({
     if (review !== null && request.method === "POST") {
       if (noRoute) {
         // A build older than the route, answering as its router answers a path it has no route
-        // for (`unmatchedRoute` in packages/envoy/internal/dispatch/routes/router.go).
+        // for (`staticHandler` in packages/envoy/internal/dispatch/routes/router.go).
         return Response.json(
           {
             code: "NOT_FOUND",

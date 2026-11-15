@@ -396,9 +396,10 @@ func routeProbePath(pattern string) string {
 
 // routeProbeBody is the JSON body a probe sends. Every mutation that decodes before it
 // authenticates accepts `actor` (a bearer's self-identification). Two kinds of route need more:
-// the review routes' input has no actor field and would answer 400 to an unknown key, and a reply
-// route answers REPLY_FORBIDDEN to a malformed reply as well as to the wrong caller, so its probe
-// must be a complete reply to reach the caller check.
+// a review route refuses a body without a valid state (400 INVALID_REVIEW) before it reads the
+// document, so its probe is an approval, and a reply route answers REPLY_FORBIDDEN to a malformed
+// reply as well as to the wrong caller, so its probe must be a complete reply to reach the caller
+// check.
 func routeProbeBody(route apiRoute) string {
 	switch route.Method + " " + route.Pattern {
 	case "POST /api/v1/artifacts/{id}/reviews", "POST /api/v1/artifacts/{id}/versions/{number}/reviews":

@@ -43,16 +43,13 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PATCH /api/v1/priorities/{id}",
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep",
 	"POST /api/v1/artifacts/{id}/rebuild",
-	// The document header's review. goingToolRoutes gives it no row on purpose, as it gives none
-	// to the review route dispatch_review performs (below): a review records an approval or a
-	// changes request in a person's name, and the loop that proposes operations on Dispatch's
-	// graph must never propose one. Keep it here; never give it a row.
+	// The two review routes: this one, the document header's, and the one dispatch_review
+	// performs (below). goingToolRoutes gives neither a row on purpose: a review records an
+	// approval or a changes request in a person's name, and the loop that proposes operations on
+	// Dispatch's graph must never propose one. Keep both here; never give either a row.
 	"POST /api/v1/artifacts/{id}/reviews",
 	"POST /api/v1/artifacts/{id}/versions",
-	// dispatch_review performs this write, and goingToolRoutes gives it no row on purpose: a
-	// review records an approval or a changes request in a person's name, and the loop that
-	// proposes operations on Dispatch's graph must never propose one. Keep it here; never give
-	// it a row.
+	// dispatch_review's review, kept here for the reason the document header's above is.
 	"POST /api/v1/artifacts/{id}/versions/{number}/reviews",
 	"POST /api/v1/asks/{id}/answer",
 	"POST /api/v1/asks/{id}/decline",

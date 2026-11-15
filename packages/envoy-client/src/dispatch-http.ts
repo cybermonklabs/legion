@@ -284,7 +284,7 @@ export class DispatchNoRouteError extends DispatchServiceError {
  * `DispatchNoRouteError`'s: a build without the versioned review route may simply be older than
  * that route rather than half of a release in progress, and no other route is asked, so the
  * message says why. Dispatch's no-route answer carries only a code, an error and a hint
- * (`unmatchedRoute`, packages/envoy/internal/dispatch/routes/router.go) and names no build, so
+ * (`staticHandler`, packages/envoy/internal/dispatch/routes/router.go) and names no build, so
  * it points at the probe that does, `/healthz`, whose `commit` member is the commit that build
  * runs (`healthzHandler`, packages/envoy/cmd/dispatch/main.go), rather than guessing.
  */
@@ -1362,10 +1362,10 @@ export class DispatchClient {
   /**
    * Records the review of the person the credential names on one version of a document:
    * `approved`, or `changes_requested` with its `reason`. It sends
-   * `POST /api/v1/artifacts/{id}/versions/{version}/reviews` with `{state, reason?}` and nothing
+   * `POST /api/v1/artifacts/{id}/versions/{number}/reviews` with `{state, reason?}` and nothing
    * else (`createArtifactVersionReview` in packages/envoy/internal/dispatch/api/reviews.go); the
    * body names no actor, since the route records the person the credential names. `version` is
-   * the version the caller read, sent as a segment of the path rather than as a member of the
+   * the version the caller read, sent as the path's `{number}` rather than as a member of the
    * body: a Dispatch route ignores a member it does not declare (`decodeJSON`;
    * packages/envoy/cmd/dispatch/README.md, "Two builds at once"), so a build without this route
    * answers that it has no route for it rather than recording the review at a version it picks
@@ -1379,8 +1379,7 @@ export class DispatchClient {
    * names the request it answered.
    *
    * A build without the route answers no route each time the review is sent (`#noRoute`), and
-   * this then throws `reviewNoRouteRefusal`'s refusal rather than the rolling-release message:
-   * that build may simply be older than the route. No other route is asked, since the review
+   * this then throws `reviewNoRouteRefusal`'s refusal. No other route is asked, since the review
    * route such a build serves takes no version.
    */
   async reviewArtifact(
@@ -1390,11 +1389,8 @@ export class DispatchClient {
   ): Promise<ArtifactReview> {
     const path = ["api", "v1", "artifacts", artifactID, "versions", String(version), "reviews"];
     // Built from the two members the route takes, so nothing else a caller's object carries can
-    // reach the wire.
-    const body =
-      input.reason === undefined
-        ? { state: input.state }
-        : { state: input.state, reason: input.reason };
+    // reach the wire; JSON leaves out a reason that is undefined.
+    const body = { state: input.state, reason: input.reason };
     try {
       return await this.#json("POST", path, body);
     } catch (error) {
@@ -1946,11 +1942,10 @@ export class DispatchClient {
    * again, a write under the same `Idempotency-Key`. Dispatch authenticates a request before any
    * handler runs (`brokerTokenActor`, packages/envoy/internal/dispatch/api/broker_token.go), so
    * that 401 says it did nothing and the request is safe to send again. It is sent again once
-   * per `#send`, which is once per attempt: a second such answer is that attempt's, as any other
-   * refusal is. A no-route retry (`#noRoute`) is a new attempt, which runs `#send` afresh and so
-   * may send its request again once after such an answer of its own. A trade the broker refuses
-   * throws out of the second presentation, so the call fails in the broker's own words, which
-   * name `agent-secrets login` after a revoke.
+   * per `#send`, and a second such answer is returned as any other refusal is; each no-route
+   * retry (`#noRoute`) runs `#send` afresh, so it may send its request again once after such an
+   * answer of its own. A trade the broker refuses throws out of the second presentation, so the
+   * call fails in the broker's own words, which name `agent-secrets login` after a revoke.
    */
   async #send(
     method: string,
