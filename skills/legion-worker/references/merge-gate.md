@@ -148,9 +148,23 @@ as the fingerprint decides (*The reviewer*, below, and
   gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submitted_at, footer: ([.body // "" | scan("<!-- legion: (\\{.*?\\}) -->")] | last | .[0]? // "" | try fromjson catch {})} | select(.footer.phase == "review" and .footer.session == "<your session id>") | [.id, .state, .submitted_at, (.footer.head // "no head")] | @tsv'
   ```
 
-  A footer that names no head, as none of the reviewer's seven footers on #3516 does, leaves the head the issue's newest `review` handoff names (`dispatch handoff-read --issue <issue> --phase review`), which the reviewer records before it submits each review, a confirmation's included.
-  The handoff names it `head`, or `headReviewed` in a record an earlier reviewer prompt wrote.
-  Where no `review` handoff stands for that review, as for a review made outside Legion's workflow, the head is the one full SHA its body names as the head it reviewed or approved, and a confirmation's is the new head it approves.
+  A footer that names no head, as none of the reviewer's seven footers on #3516 does, leaves the head named by that review's own `review` handoff, which the reviewer records before it submits each review, a confirmation's included.
+  That handoff is the newest version your session wrote at or before that review's `submitted_at`, and not the issue's newest: on #3516 the approval 5908357397, submitted at 01:10:46Z, has INFRA-1520's version 6, written at 01:10:08Z, which names `e9a820cf`, while version 7, written at 08:30:56Z for the confirmation, names `6019bdc9`.
+  `dispatch handoff-read` prints, on its first line, the version, the session that wrote it and when; this reads down from the newest until it finds that handoff, and prints the head it names, `head`, or `headReviewed` in a record an earlier reviewer prompt wrote:
+
+  ```bash
+  issue=<issue> sid=<your session id> at=<that review's submitted_at>; v=
+  while out=$(dispatch handoff-read --issue "$issue" --phase review ${v:+--version "$v"}); do
+    line=$(printf '%s\n' "$out" | head -n 1); v=${line#*, version }; v=${v%% *}; written=${line##* at }
+    case $line in *" session $sid at "*)
+      if [ "$(jq -rn --arg w "$written" --arg a "$at" '$w[0:19] <= $a[0:19]')" = true ]; then
+        printf '%s\n' "$out" | tail -n +2 | jq -r '.head // .headReviewed // "no head"'; break; fi;;
+    esac
+    [ "$v" -gt 1 ] || { echo "no review handoff of this session at or before $at"; break; }; v=$((v - 1))
+  done
+  ```
+
+  Where no such handoff stands for that review (it prints `HANDOFF_NOT_FOUND`, or no handoff of this session at or before it, as for a review made outside Legion's workflow), the head is the one full SHA its body names as the head it reviewed or approved, and a confirmation's is the new head it approves.
   A body that names more than one such SHA and does not say which it read, or names none, leaves no head to take the fingerprint at, which is a new round.
   Equal and that review was
   `APPROVE`: submit one more `APPROVE` naming the new head by SHA, its body naming both SHAs
