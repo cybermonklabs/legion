@@ -77,6 +77,30 @@ func TestAReadyWorkerHoldingItsPhaseWithNothingPendingIsGivenItsPhaseTask(t *tes
 	}
 }
 
+// A start of the worker's phase already queued for its claim, and not yet run, covers the claim's
+// ready: the outbox will deliver that start's task, so a second ready before it runs queues
+// nothing more (queuedRowCovers). Without it a worker whose process comes up twice before its
+// start runs would be sent its phase's task twice, one prompt more than the work it has.
+func TestAQueuedStartOfThePhaseCoversASecondReadyOfItsWorker(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Tree: "LEGION-209", Project: "LEGION", Title: "a child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
+	seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0})
+	seedPhaseWorker(t, pool, "LEGION-209", claim.RoleTester, "")
+	engine := testEngine(config.DesignGateRootIssues, nil)
+
+	for _, id := range []string{"supervise:tester:2:ready", "supervise:tester:2:ready-again"} {
+		if _, err := intake.ApplyFact(t.Context(), pool, "supervise", id,
+			intake.ClaimReady{Issue: "LEGION-209", Role: claim.RoleTester, Launch: 2}, engine, admissionStub{}); err != nil {
+			t.Fatalf("apply %s: %v", id, err)
+		}
+	}
+
+	if got := superviseRequests(t, pool, "start"); !sameCounts(got, map[string]int{"LEGION-209/tester": 1}) {
+		t.Fatalf("two readies queued starts %v, want the first one's start alone: the start it queued for testing has not run, so it covers the second", got)
+	}
+}
+
 // A role that does not hold the issue's phase is given nothing: its phase is over, and the phase
 // that is running belongs to another claim.
 func TestAReadyWorkerThatDoesNotHoldTheIssuesPhaseIsGivenNothing(t *testing.T) {
