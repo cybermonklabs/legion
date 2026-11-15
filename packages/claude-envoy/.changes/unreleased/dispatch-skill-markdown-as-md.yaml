@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  The dispatch skill now says that markdown, a draft, a report or a record, goes to Dispatch as a
+  document under a `.md` name, whatever the local file is called
+  (`dispatch artifact --name <name>.md --content-file <file>`), because Dispatch previews a `.md`
+  document and not a `.txt` file; a `.txt` name is only for plain text that is not markdown, and a
+  log keeps its `.log` name.

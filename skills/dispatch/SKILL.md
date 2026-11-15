@@ -59,6 +59,7 @@ A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to r
 - One issue per deliverable, its content the issue's document.
 - A message replies to a person or tells them what they must know now.
 - Text a person must read to decide belongs in the spec. An artifact is a real file.
+- Markdown (a draft, a report, a record) goes up as a document under a `.md` name, whatever the local file is called: `dispatch artifact --name <name>.md --content-file <file>`. Dispatch previews a `.md` document and not a `.txt` file. A `.txt` name is only for plain text that is not markdown, and a log keeps its `.log` name.
 
 ## Architecture components
 
