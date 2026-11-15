@@ -299,6 +299,10 @@ RULES = {
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:269-270 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:782,855")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:161")),
+    f"{DAEMON}/internal/prompts/prompts_test.go": reads(
+        ("AGENTS.md", "internal/prompts/prompts_test.go:785 ../../../.."),
+        ("scripts/e2e/README.md", "internal/prompts/prompts_test.go:785 ../../../.."),
+        ("docs/site/src/content/docs/legion/concepts.md", "internal/prompts/prompts_test.go:785 ../../../..")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
         ("packages/pi-legion/agents/*", "internal/prompts/roles_test.go:260"),
         ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:578")),
