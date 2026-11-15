@@ -2329,12 +2329,19 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var await func(repo, tree, child, parent string)
 	var githubAPI string
 	var consumerLag func(context.Context) []intake.ConsumerLag
+	// The pause service exists only with the workflow (projectPause): a daemon without one hands
+	// the API none, which answers every pause PAUSE_UNAVAILABLE. The nil check keeps a nil
+	// *pause.Service out of the interface, which would read as a service there.
+	var pauses api.PauseService
 	if workflow != nil {
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.tokens, workflow.grants
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
 		handoffCompleted = workflow.handoffCompleted
 		githubAPI = workflow.githubAPI
 		consumerLag = workflow.consumers.Lag
+		if workflow.pauses != nil {
+			pauses = workflow.pauses.service
+		}
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
@@ -2412,6 +2419,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		CapabilityReported: s.capabilityReported,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
+		Pause:              pauses,
 	})
 
 	group, serving := errgroup.WithContext(ctx)
@@ -2745,6 +2753,12 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	}
 	state.WakesWaiting = api.WakesWaitingOf(held, paced)
 	state.ClaimsToRefresh = claimsToRefresh(claims, s.noPluginInstall)
+	// The project's pause, read through tx as every other durable fact here (api.PauseStateTx):
+	// `paused` with the roles it waits on and the rows it holds while the project is paused, and
+	// `lastPause` while it runs after a pause has ended (decision 25 of dispatch://INFRA-3759).
+	if state.Paused, state.LastPause, err = api.PauseStateTx(ctx, tx, s.project, now); err != nil {
+		return api.State{}, nil, err
+	}
 	state.Daemon = api.DaemonInfo{
 		Project:       s.project,
 		SchemaVersion: version,

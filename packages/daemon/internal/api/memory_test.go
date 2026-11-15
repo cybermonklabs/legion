@@ -27,10 +27,12 @@ var memoryDrawnAt = time.Date(2026, 9, 20, 11, 4, 5, 0, time.UTC)
 // its admission line carry their place in it with the line's own fields beside that place, every
 // issue of it that is not working now carries its answer under `why`, each issue whose current
 // phase names a phase worker role carries the entry that role stands on and the entry it was given,
-// each reviewing root of it carries what its round waits on from GitHub, and every issue of a live
-// tree carries that tree's quiet time, so one state proves every downgrade of stateNarrowings but
-// waitingOnIssueContract's, and that they compose; it stands no member of the line of the kind that
-// contract added, whose downgrade waiting_on_issue_test.go proves. What the quiet-time band is
+// each reviewing root of it carries what its round waits on from GitHub, every issue of a live
+// tree carries that tree's quiet time, and the project stands paused (`paused`), so one state
+// proves every downgrade of stateNarrowings but waitingOnIssueContract's, and that they compose; it
+// stands no member of the line of the kind that contract added, whose downgrade
+// waiting_on_issue_test.go proves, and the pause's other key, `lastPause`, is pause_test.go's
+// state of its own. What the quiet-time band is
 // measured on in finer grain — both halves on each member of one tree, and neither on an issue
 // whose tree has left the workflow — is quiet_time_test.go's state of its own.
 
@@ -190,6 +192,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// GitHub (mergeWaitContract), the contract that added it, so a pod at it is served the
 		// object and every pod below it is not, whatever else the contracts it does reach give it.
 		wait bool
+		// pause is whether the caller is served the project's pause, `paused` here, which
+		// pauseContract added beside `lastPause`, so a pod at it is served the key and every pod
+		// below it is not.
+		pause bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
 		{name: "a pod below PodUpdateContract, below every narrowing", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -248,13 +254,16 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band from quietTimeContract to below waitingOnIssueContract: the tree quiet time is
 		// served too, and every key a later row of stateNarrowings adds is held back.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true},
-		// The band from waitingOnIssueContract to below mergeWaitContract, the last band under the
-		// declared contract: the fixture stands nothing waitingOnIssueContract's row takes, so it
-		// reads as the band below it, and `mergeWait` is still held back.
+		// The band from waitingOnIssueContract to below mergeWaitContract: the fixture stands
+		// nothing waitingOnIssueContract's row takes, so it reads as the band below it, and
+		// `mergeWait` is still held back.
 		{name: "a pod at waitingOnIssueContract", remote: statePodAddr + ":41000", claims: podClaims(waitingOnIssueContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true},
-		{name: "a pod at mergeWaitContract, the newest the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
+		// The band from mergeWaitContract to below pauseContract, the last band under the
+		// declared contract: `mergeWait` is served too, and the project's pause is held back.
+		{name: "a pod at mergeWaitContract", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
+		{name: "a pod at pauseContract, the newest the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, pause: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, pause: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, pause: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -360,6 +369,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				delete(want, ClaimsToRefreshField)
 			}
 			delete(want, "contract")
+			// A pod below pauseContract is served no `paused`, the key that contract added beside
+			// `lastPause` (api's withoutPause), which is every pod of every band below it.
+			if !tc.pause {
+				delete(want, "paused")
+			}
 			// A pod below retiredStrandedContract is served the report of claims nothing will
 			// wake without its retired entries, the state contract 56 added (api's
 			// withoutRetiredStranded), which is every pod of every band below this contract.

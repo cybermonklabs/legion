@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -257,6 +258,11 @@ type Options struct {
 	// claim route `POST /legion/v1/claims/activity` writes. Nil answers that route 500 and
 	// changes nothing else.
 	ClaimActivity ClaimActivityStore
+	// Pause is the project's pause service (internal/pause's Service), which the four pause and
+	// resume routes act through and whose flag the claim routes read to refuse a turn while the
+	// project is paused (refusedWhilePaused). Nil is a daemon with no workflow, which has no pause:
+	// it answers every pause and resume PAUSE_UNAVAILABLE and refuses no turn for one.
+	Pause PauseService
 }
 
 // TreeLifecycles is the store's durable tree barrier (store.Store) as the operator routes use it:
@@ -352,6 +358,8 @@ type server struct {
 	capabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
 	releaseRecordStore ReleaseRecordStore
 	claimActivity      ClaimActivityStore
+	// pause is Options.Pause, nil for a daemon with no workflow.
+	pause PauseService
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
 	// a server that is ready, since a caller that sets no latch is serving already.
 	readiness func() bool
@@ -419,6 +427,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		capabilityReported: opts.CapabilityReported,
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
+		pause:              opts.Pause,
 		readiness:          opts.Ready,
 		log:                opts.Log,
 		stopping:           opts.Stopping,
@@ -485,17 +494,21 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	mux.HandleFunc("POST /legion/v1/roots/close", s.closeRoot)
 	mux.HandleFunc("POST /legion/v1/children/park", s.parkChild)
 	mux.HandleFunc("POST /legion/v1/children/rerun", s.rerunChild)
+	mux.HandleFunc("POST /legion/v1/project/pause", s.projectPause)
+	mux.HandleFunc("POST /legion/v1/project/resume", s.projectResume)
 
 	mux.HandleFunc("POST /legion/v1/operator/claims", s.operator(s.spawn))
 	mux.HandleFunc("GET /legion/v1/operator/claims", s.operator(s.list))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/deliver", s.operator(s.claimRequest("deliver", s.deliverEvent)))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/suspend", s.operator(s.claimRequest("suspend", suspendEvent)))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/resume", s.operator(s.claimRequest("resume", resumeEvent)))
+	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/resume", s.operator(s.claimRequest("resume", s.resumeEvent)))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/stop", s.operator(s.claimRequest("stop", stopEvent)))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree))
+	mux.HandleFunc("POST /legion/v1/operator/project/pause", s.operator(s.operatorProjectPause))
+	mux.HandleFunc("POST /legion/v1/operator/project/resume", s.operator(s.operatorProjectResume))
 
 	// The catch-all answers every unrouted request, including a known path asked for with the
 	// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
@@ -666,6 +679,38 @@ func (s *server) stopRefusal(request string) string {
 	return request + " refused: the daemon is stopping; ask again once it is back"
 }
 
+// refusedWhilePaused refuses request of c, answering PROJECT_PAUSED, while the project is paused
+// and c is not the controller's claim (decision 20): a turn a paused project's role would start —
+// a compaction or a fresh session the controller asks for, the operator's resume, retry,
+// compaction, spawn or delivery — waits for the resume, and nothing of the claim changes. The
+// pause flag decides (pause.Service.Paused), as it decides every launch the machines hold; the
+// refusal names the standing pause when the store's read finds it. A stop, a suspension, an
+// issue's status and the daemon's own status are not turns, and no caller of this asks of them.
+func (s *server) refusedWhilePaused(w http.ResponseWriter, r *http.Request, request string, c supervise.Claim) bool {
+	if s.pause == nil || claim.IsController(c.Role, c.Issue, c.Tree) {
+		return false
+	}
+	id, paused := s.pause.Paused()
+	if !paused {
+		return false
+	}
+	body := PauseFailure{Failure: Failure{Code: projectPaused}}
+	named := fmt.Sprintf("pause %d", id)
+	standing, found, err := s.pause.OpenPause(r.Context())
+	switch {
+	case err != nil:
+		s.logRequestFailure(r, err, "api: read the open pause for a refusal", "pause", id)
+	case found:
+		view := pauseViewOf(standing)
+		body.Pause, named = &view, describePause(standing)
+	}
+	body.Error = fmt.Sprintf("%s of %s refused: the project is paused (%s), and a paused project starts no turn of a role but the controller's; nothing of %s changed. Resume the project first",
+		request, c.Token, named, c.Token)
+	s.log.Info("api: refused a request: the project is paused", "request", request, "claim", c.Token, "pause", id)
+	writeJSON(w, http.StatusConflict, body)
+	return true
+}
+
 // stateRoute answers the state out of one repeatable-read, read-only snapshot, under a bound of
 // the daemon's own (stateReadBound, Options.StateReadBound). Before INFRA-3169 the only thing
 // that ended this read was the client giving up, so a read that never finished held its
@@ -796,9 +841,11 @@ func statementBound(bound time.Duration) int64 {
 // contract that added each issue's measure of its tree's quiet time, is served it without
 // `treeMovedAt` and `quietHours` (withoutQuietTime); a caller below waitingOnIssueContract, the
 // contract that added `waiting_on_issue` to the line's `kind`, is served every member of that
-// kind without its `kind` (withoutWaitingOnIssue), a word and not a key; and a caller below
+// kind without its `kind` (withoutWaitingOnIssue), a word and not a key; a caller below
 // mergeWaitContract, the contract that added what a reviewing issue's round waits on from
-// GitHub, is served it without `mergeWait` (withoutMergeWait).
+// GitHub, is served it without `mergeWait` (withoutMergeWait); and a caller below pauseContract,
+// the contract that added the project's pause, is served it without `paused` and `lastPause`
+// (withoutPause).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -925,6 +972,7 @@ var stateNarrowings = []stateNarrowing{
 	{waitingOnIssueContract, carriesWaitingOnIssue, withoutWaitingOnIssue, "the waiting line's kind " +
 		"of every member waiting on another issue"},
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
+	{pauseContract, carriesPause, withoutPause, "paused and lastPause"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1083,6 +1131,16 @@ const waitingOnIssueContract = 132
 // below it is served the state without `mergeWait`, whatever else the contracts it does reach
 // give it.
 const mergeWaitContract = 133
+
+// pauseContract is the daemon contract that added the project's pause to the state (version.go's
+// 143, dispatch://INFRA-3759): `paused`, the pause that stands with the roles it waits on and the
+// rows it holds, and `lastPause`, the newest ended pause while the project runs. A plugin before it
+// is served the state without either key: one built before sjawhar/legion#2788 reads it with a
+// strict schema and would refuse the whole body for a key it does not name, and one built after
+// strips the key instead, so the strip is what keeps the pause from a caller that did not ask for
+// it rather than what keeps such a caller reading at all. The two are one band: a state carries
+// one of them at most, and both describe the one pause record.
+const pauseContract = 143
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1268,6 +1326,21 @@ func withoutMergeWait(state State) State {
 		issues[key] = issue
 	}
 	state.Issues = issues
+	return state
+}
+
+// carriesPause is whether state carries a key pauseContract added: `paused` while the project is
+// paused, `lastPause` while it runs after a pause has ended. Each is written only where there is
+// one, so this is asked of the state rather than answered true.
+func carriesPause(state State) bool {
+	return state.Paused != nil || state.LastPause != nil
+}
+
+// withoutPause is state with neither `paused` nor `lastPause`, the two keys pauseContract added to
+// this route; the rest of that contract is other routes. Both are pointers, dropped on the state's
+// own copy, so the state the source answered is left as it was.
+func withoutPause(state State) State {
+	state.Paused, state.LastPause = nil, nil
 	return state
 }
 
