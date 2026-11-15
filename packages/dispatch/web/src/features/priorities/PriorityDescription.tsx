@@ -45,9 +45,11 @@ export function PriorityDescription({
   rows?: number;
 }): ReactNode {
   const [editing, setEditing] = useState(false);
-  // `description` is the read's, with the priority writes' own changes composed over it
-  // (`usePriorityWrites`), so a save shows here from its press, and a refused or discarded one
-  // stops showing: nothing here keeps a copy of what it sent.
+  // What this reader last wrote, over which text of the server's: the rendered block shows it
+  // until the server's own text changes, since the write is a round trip and the block must
+  // not show the old text meanwhile.
+  const [written, setWritten] = useState<{ readonly text: string; readonly over: string }>();
+  const shown = written?.over === description ? written.text : description;
 
   if (canWrite && editing)
     return (
@@ -56,19 +58,22 @@ export function PriorityDescription({
         label={label}
         multiline
         onDone={() => setEditing(false)}
-        onSave={onSave}
+        onSave={(next) => {
+          setWritten({ text: next, over: description });
+          onSave(next);
+        }}
         placeholder="What this priority is, in markdown"
         rows={rows}
-        value={description}
+        value={shown}
       />
     );
   const body =
-    description.trim() === "" ? (
+    shown.trim() === "" ? (
       <p className={textMutedOnCanvas}>
         {canWrite ? `${NONE_WRITTEN} Click here to write one.` : NONE_WRITTEN}
       </p>
     ) : (
-      <MarkdownBody markdown={description} />
+      <MarkdownBody markdown={shown} />
     );
   if (!canWrite) return body;
   return (

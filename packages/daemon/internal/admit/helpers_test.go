@@ -188,11 +188,11 @@ func assertSlots(t *testing.T, pool *pgxpool.Pool, want []record.Slot) {
 }
 
 // waitingLine is the waiting line of project, in its order, under the design gate of steps (nil
-// for the deployment's single step spec). It reads the line exactly as admission does, through
-// the one judgement it promotes from (blockers.JudgeLine): the mirror rows of every issue a
-// blocker can hold first, so the line leaves out an issue one of them holds where it stands
-// (record.LineFacts.Held), the children-first judgement next, so it leaves out a parent whose
-// own Dispatch children are still open (record.LineFacts.ChildWaits), and then the line.
+// for the deployment's single step spec). It reads the stored state and judges the line through
+// blockers.JudgeLine, the judgement admission promotes from: the held set
+// (record.LineFacts.Held), the children-first waits (record.LineFacts.ChildWaits) and the waits
+// of started issues (record.LineFacts.Waits), and then the line. It runs none of the releases a
+// pass runs before it judges the line, so it shows the line as the last pass left it.
 func waitingLine(t *testing.T, pool *pgxpool.Pool, project string, steps []record.DesignStep) []string {
 	t.Helper()
 	var got []string
@@ -296,9 +296,24 @@ func seedSlotted(t *testing.T, pool *pgxpool.Pool, key, rank string) {
 // that seed their own records (newAdmissionForProject).
 func seedSlottedForProject(t *testing.T, pool *pgxpool.Pool, project, key, rank string) {
 	t.Helper()
+	seedSlottedInPhase(t, pool, project, key, rank, phase.Admitted, nil)
+}
+
+// seedSlottedInPhase is the general form of seedSlotted: the root stands in the phase given
+// rather than at admitted, and shape is where a test says what else the record carries. It is
+// the package's one slotted-issue fixture, so a test of a started issue in a worker phase seeds
+// the record, the slot row and the tree lifecycle exactly as a test of one at admitted does.
+func seedSlottedInPhase(t *testing.T, pool *pgxpool.Pool, project, key, rank string, at phase.Phase, shape func(*record.Issue)) {
+	t.Helper()
+	issue := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: project, Title: key, Tree: key, Phase: at, Generation: 1, Status: "in_progress",
+		Rank: rank, HandedOver: true}
+	if shape != nil {
+		shape(&issue)
+	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
-		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: project, Title: key, Tree: key, Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: rank, HandedOver: true}); err != nil {
+		if err := records.PutIssue(context.Background(), tx, issue); err != nil {
 			t.Fatalf("put active issue: %v", err)
 		}
 		slots, err := records.Slots(context.Background(), tx)

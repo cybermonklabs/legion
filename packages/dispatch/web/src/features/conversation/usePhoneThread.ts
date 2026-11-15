@@ -1,6 +1,5 @@
+import type { MutationKey } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
-
-import type { MutationKey } from "../../api/cache/keys";
 
 import { useSending } from "../../hooks/useSending";
 import type { ReplyTarget } from "./composer-model";

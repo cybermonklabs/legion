@@ -1,8 +1,9 @@
+import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
-import { useShownQuery } from "../../api/cache/shown-query";
+
 import { api } from "../../api/client";
-import { commentsQueryKey, whoAmIQuery } from "../../api/queries";
+import { whoAmIQuery } from "../../api/queries";
 import type { Artifact, IDCandidate } from "../../api/types";
 import type { Highlight } from "../doc/highlight";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
@@ -97,7 +98,7 @@ export function ArtifactDocument({
   onVersionChange: (version: number | null) => void;
   version: number | undefined;
 }): ReactNode {
-  const user = useShownQuery(whoAmIQuery());
+  const user = useQuery(whoAmIQuery());
   const selected: SelectedItem | undefined =
     commentId === undefined
       ? askId === undefined
@@ -108,20 +109,19 @@ export function ArtifactDocument({
   // The ask is read under its whole id alone: a prefix is no key anything is cached under. The
   // comment list is the document's own, the same read whichever comment the address names.
   const askRead = selected?.kind === "ask" ? landing.id : undefined;
-  const commentsKey = commentsQueryKey(
-    owner.kind === "issue"
-      ? { document: artifact.id, issue: owner.key }
-      : { artifact: owner.artifactId }
-  );
-  const comments = useShownQuery({
-    queryKey: commentsKey,
+  const comments = useQuery({
+    enabled: commentId !== undefined,
+    queryKey:
+      owner.kind === "issue"
+        ? ["comments", owner.key, artifact.id]
+        : ["artifact", owner.artifactId, "comments"],
     queryFn: () =>
       owner.kind === "issue"
         ? api.listComments(owner.key, artifact.id)
         : api.listArtifactComments(owner.artifactId),
-    enabled: commentId !== undefined,
   });
-  const ask = useShownQuery({
+  const ask = useQuery({
+    enabled: askRead !== undefined,
     queryKey: ["ask", askRead],
     queryFn: () => {
       if (askRead === undefined) {
@@ -129,7 +129,6 @@ export function ArtifactDocument({
       }
       return api.getAsk(askRead);
     },
-    enabled: askRead !== undefined,
   });
   const selectedItem =
     selected === undefined

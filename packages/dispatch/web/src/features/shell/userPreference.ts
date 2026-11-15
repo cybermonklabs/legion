@@ -1,5 +1,6 @@
+import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useShownQuery } from "../../api/cache/shown-query";
+
 import { whoAmIQuery } from "../../api/queries";
 
 /** A name a browser keeps something under for one signed-in person: a choice they made, and the
@@ -73,7 +74,7 @@ export function useUserPreference<T>(
   write: (value: T) => string,
   options?: UserPreferenceOptions<T>
 ): [T, (next: T) => void] {
-  const whoAmI = useShownQuery(whoAmIQuery());
+  const whoAmI = useQuery(whoAmIQuery());
   const login = whoAmI.data?.login;
   const identity: UserPreferenceIdentity =
     login !== undefined ? "resolved" : whoAmI.isPending ? "pending" : "failed";

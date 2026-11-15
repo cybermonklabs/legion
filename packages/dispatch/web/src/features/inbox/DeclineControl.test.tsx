@@ -1,28 +1,16 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
-import { answerRoute } from "../../__tests__/send-answers";
-import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
-import { ApiError, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
+import { ApiError, api, type DeclineAskInput } from "../../api/client";
 import type { Ask, AskRead } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { AskCard } from "./AskCard";
-
-/** Every decline a card of this file sends, answered by `how`: the card writes through the one
- *  write path, from its request alone (`askDeclineRequest`). */
-function declinesWith(
-  how: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>
-): void {
-  answerRoute<(id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>>(
-    "POST",
-    "/api/v1/asks/*/decline"
-  ).mockImplementation(how);
-}
 
 let whoAmI: Mock<typeof api.whoAmI>;
 let getReferences: Mock<typeof api.getReferences>;
@@ -229,12 +217,16 @@ test("a decline sends the person's note and closes the question", async () => {
   const note = "The release owner decides this one.";
   const declined = declinedAsk(note);
   const sent: DeclineAskInput[] = [];
-  declinesWith(async (_id, input) => {
-    sent.push(input);
-    return declined;
-  });
   const { view } = renderCard(
-    <AskCard ask={open} getAskThread={async () => thread(declined)} initialThread={thread(open)} />
+    <AskCard
+      ask={open}
+      declineAsk={async (_id, input) => {
+        sent.push(input);
+        return declined;
+      }}
+      getAskThread={async () => thread(declined)}
+      initialThread={thread(open)}
+    />
   );
   const card = within(view.container);
   try {
@@ -259,12 +251,16 @@ test("the decline dialog counts what is left to write, and sends no note when em
   const open = openAsk();
   const declined = declinedAsk("");
   const sent: DeclineAskInput[] = [];
-  declinesWith(async (_id, input) => {
-    sent.push(input);
-    return declined;
-  });
   const { view } = renderCard(
-    <AskCard ask={open} getAskThread={async () => thread(declined)} initialThread={thread(open)} />
+    <AskCard
+      ask={open}
+      declineAsk={async (_id, input) => {
+        sent.push(input);
+        return declined;
+      }}
+      getAskThread={async () => thread(declined)}
+      initialThread={thread(open)}
+    />
   );
   const card = within(view.container);
   try {
@@ -301,9 +297,13 @@ test("a decline out keeps its dialog through Escape and the backdrop, and shows 
   // The decline the server has not answered yet, refused by hand once the dialog has stood
   // through both ways out of it.
   const out = Promise.withResolvers<Ask>();
-  declinesWith(() => out.promise);
   const { view } = renderCard(
-    <AskCard ask={open} getAskThread={async () => thread(open)} initialThread={thread(open)} />
+    <AskCard
+      ask={open}
+      declineAsk={() => out.promise}
+      getAskThread={async () => thread(open)}
+      initialThread={thread(open)}
+    />
   );
   const card = within(view.container);
   try {

@@ -11,16 +11,16 @@
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/dispatch-search-two-builds.sh --base-commit legion-envoy-v29.47.1
 #
-# DATABASE_URL is required and must name a loopback host: the run drops and recreates its `public`
-# schema, so the base build migrates it from empty and this build migrates it forward, as a
-# deployment's upgrade does. The database must already hold the `vector` extension, which meaning
-# search needs. --base-commit is required and names the commit the base build is built from, which
-# for this proof is the release before pull request #2809 added the five members
-# (legion-envoy-v29.47.1); its tree is taken with `git archive` into the run's own work directory,
-# so the checkout is never touched. The ports are SEARCH_TWO_BUILDS_BASE_PORT (19081),
-# SEARCH_TWO_BUILDS_HEAD_PORT (19082) and SEARCH_TWO_BUILDS_ENVOY_PORT (19083), each refused when
-# something already answers on it, so this proof and dispatch-two-builds.sh beside it hold no
-# port in common. Running them at once still takes a database each: both reset their own
+# DATABASE_URL is required and must name a loopback host: the run empties its `public` schema and
+# keeps the extensions it holds, so the base build migrates it from empty and this build migrates
+# it forward, as a deployment's upgrade does. The database must already hold the `vector`
+# extension, which meaning search needs. --base-commit is required and names the commit the base
+# build is built from, which for this proof is the release before pull request #2809 added the
+# five members (legion-envoy-v29.47.1); its tree is taken with `git archive` into the run's own
+# work directory, so the checkout is never touched. The ports are SEARCH_TWO_BUILDS_BASE_PORT
+# (19081), SEARCH_TWO_BUILDS_HEAD_PORT (19082) and SEARCH_TWO_BUILDS_ENVOY_PORT (19083), each
+# refused when something already answers on it, so this proof and dispatch-two-builds.sh beside it
+# hold no port in common. Running them at once still takes a database each: both reset their own
 # DATABASE_URL's `public` schema, so one database given to both leaves each build migrating a
 # schema the other emptied. The work directory, under TMPDIR, holds the base tree, both binaries
 # and every process's log: removed when the run passes, kept and printed when it fails.

@@ -1,7 +1,5 @@
 import type { ReactNode } from "react";
 
-import { useWriteSelection, useWrites } from "../../api/cache/cache";
-import type { Write } from "../../api/cache/write-store";
 import { apiErrorMessage } from "../../api/client";
 import {
   borderDefault,
@@ -19,6 +17,7 @@ import {
   sameKeyRetryNote,
 } from "./keyed-write";
 import { StopTrying } from "./StopTrying";
+import { useWriteSelection, useWrites, type Write } from "./write-store";
 
 /** Why the refused write was not saved, in the reader's words. */
 function refusalReason(refusal: Error): string {

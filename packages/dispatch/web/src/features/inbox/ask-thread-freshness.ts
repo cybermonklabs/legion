@@ -1,5 +1,3 @@
-import type { Cache } from "../../api/cache/cache";
-
 interface FreshnessState {
   activeInboxFetches: Set<number>;
   latestInboxFetch: number;
@@ -9,10 +7,10 @@ interface FreshnessState {
   pendingIssues: Map<string, number>;
 }
 
-const stateByCache = new WeakMap<Cache, FreshnessState>();
+const stateByQueryClient = new WeakMap<object, FreshnessState>();
 
-function stateFor(cache: Cache): FreshnessState {
-  let state = stateByCache.get(cache);
+function stateFor(queryClient: object): FreshnessState {
+  let state = stateByQueryClient.get(queryClient);
   if (state === undefined) {
     state = {
       activeInboxFetches: new Set(),
@@ -20,25 +18,25 @@ function stateFor(cache: Cache): FreshnessState {
       pending: new Map(),
       pendingIssues: new Map(),
     };
-    stateByCache.set(cache, state);
+    stateByQueryClient.set(queryClient, state);
   }
   return state;
 }
 
-function discardEmptyState(cache: Cache, state: FreshnessState): void {
+function discardEmptyState(queryClient: object, state: FreshnessState): void {
   if (
     state.activeInboxFetches.size === 0 &&
     state.pending.size === 0 &&
     state.pendingIssues.size === 0
   ) {
-    stateByCache.delete(cache);
+    stateByQueryClient.delete(queryClient);
   }
 }
 
 /** Starts an Inbox query generation. A marker records the generation that was in flight when
  * its event arrived, so only a later Inbox request can supersede that marker. */
-export function beginInboxFetch(cache: Cache): number {
-  const state = stateFor(cache);
+export function beginInboxFetch(queryClient: object): number {
+  const state = stateFor(queryClient);
   state.latestInboxFetch += 1;
   state.activeInboxFetches.add(state.latestInboxFetch);
   return state.latestInboxFetch;
@@ -48,11 +46,11 @@ export function beginInboxFetch(cache: Cache): number {
  * issue's marker clears only on a newer response that arrived: its body was composed after the
  * event, so every card it seeds on that issue holds the moved claimant and route. */
 export function finishInboxFetch(
-  cache: Cache,
+  queryClient: object,
   fetch: number,
   asks: readonly { readonly id: string }[] | undefined
 ): void {
-  const state = stateFor(cache);
+  const state = stateFor(queryClient);
   state.activeInboxFetches.delete(fetch);
   const listed = asks === undefined ? undefined : new Set(asks.map((ask) => ask.id));
   for (const [askID, markedDuring] of state.pending) {
@@ -67,14 +65,14 @@ export function finishInboxFetch(
       }
     }
   }
-  discardEmptyState(cache, state);
+  discardEmptyState(queryClient, state);
 }
 
 /** Records an ask event that arrived while the Inbox was fetching but before this thread existed
  * in the cache. Its card must read the targeted endpoint instead of trusting that in-flight list
  * response. */
-export function markPendingAskThreadInvalidation(cache: Cache, askID: string): void {
-  const state = stateFor(cache);
+export function markPendingAskThreadInvalidation(queryClient: object, askID: string): void {
+  const state = stateFor(queryClient);
   state.pending.set(askID, state.latestInboxFetch);
 }
 
@@ -82,8 +80,8 @@ export function markPendingAskThreadInvalidation(cache: Cache, askID: string): v
  * and arrived while the Inbox was fetching. The in-flight body names the old claimant and route
  * for each of the issue's asks, so a card on that issue that mounts from it reads the targeted
  * endpoint instead, until a newer Inbox response lands. */
-export function markPendingAskThreadsOnIssue(cache: Cache, issueKey: string): void {
-  const state = stateFor(cache);
+export function markPendingAskThreadsOnIssue(queryClient: object, issueKey: string): void {
+  const state = stateFor(queryClient);
   state.pendingIssues.set(issueKey, state.latestInboxFetch);
 }
 
@@ -91,10 +89,10 @@ export function markPendingAskThreadsOnIssue(cache: Cache, issueKey: string): vo
  * so a concurrent React render cannot consume it before the query starts. An ask on a marked issue
  * is pending too. */
 export function hasPendingAskThreadInvalidation(
-  cache: Cache,
+  queryClient: object,
   ask: { readonly id: string; readonly issue_key: string | null }
 ): boolean {
-  const state = stateByCache.get(cache);
+  const state = stateByQueryClient.get(queryClient);
   if (state === undefined) return false;
   return (
     state.pending.has(ask.id) || (ask.issue_key !== null && state.pendingIssues.has(ask.issue_key))
@@ -104,9 +102,9 @@ export function hasPendingAskThreadInvalidation(
 /** Clears the ask's own marker once its targeted read has supplied data. An issue's marker stays:
  * other cards on the issue may still mount from the stale Inbox body, and only a newer Inbox
  * response clears it (`finishInboxFetch`). */
-export function clearPendingAskThreadInvalidation(cache: Cache, askID: string): void {
-  const state = stateByCache.get(cache);
+export function clearPendingAskThreadInvalidation(queryClient: object, askID: string): void {
+  const state = stateByQueryClient.get(queryClient);
   if (state === undefined) return;
   state.pending.delete(askID);
-  discardEmptyState(cache, state);
+  discardEmptyState(queryClient, state);
 }

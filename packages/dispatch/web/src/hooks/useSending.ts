@@ -1,6 +1,10 @@
+import {
+  type MutationFilters,
+  type MutationKey,
+  useIsMutating,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
-import { type MutationFilters, useCache, usePendingMutations } from "../api/cache/cache";
-import type { MutationKey } from "../api/cache/keys";
 
 /** The last segment of a key a send moves to once it is past its deadline (`pastDeadlineKey`). */
 const PAST_DEADLINE = "past-deadline";
@@ -35,18 +39,18 @@ export function useSending(
   mutationKey: MutationKey,
   { untilDeadline = false }: { readonly untilDeadline?: boolean } = {}
 ): Sending {
-  const cache = useCache();
+  const queryClient = useQueryClient();
   const filters = useMemo<MutationFilters>(
     () =>
       untilDeadline
         ? {
             mutationKey,
-            predicate: (key) => key?.at(-1) !== PAST_DEADLINE,
+            predicate: (mutation) => mutation.options.mutationKey?.at(-1) !== PAST_DEADLINE,
           }
         : { mutationKey },
     [mutationKey, untilDeadline]
   );
-  const sending = usePendingMutations(filters) > 0;
-  const sendingNow = useCallback(() => cache.pendingMutations(filters) > 0, [filters, cache]);
+  const sending = useIsMutating(filters) > 0;
+  const sendingNow = useCallback(() => queryClient.isMutating(filters) > 0, [filters, queryClient]);
   return { sending, sendingNow };
 }

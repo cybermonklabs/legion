@@ -1,11 +1,10 @@
 import { expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { answerAskAnswers, answerAskSnoozes } from "../../__tests__/send-answers";
-import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { api } from "../../api/client";
 import type { InboxRow } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -122,7 +121,7 @@ test("Snooze inside the drawer folds the row into Later, same as the Inbox page"
   const user = userEvent.setup();
   let served: InboxRow[] = [issueAsk()];
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
-  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+  const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(async (id, until) => {
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
     return { snoozed_until: until };
   });
@@ -158,7 +157,7 @@ test("Answering an ask inside the drawer submits and removes it from the list, s
   let served = [withOptions];
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
   const getAsk = mockAskReads([withOptions]);
-  const answerAsk = answerAskAnswers().mockImplementation(async () => {
+  const answerAsk = spyOn(api, "answerAsk").mockImplementation(async () => {
     served = [];
     return {
       ...withOptions,

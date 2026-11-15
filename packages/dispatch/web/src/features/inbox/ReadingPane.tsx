@@ -1,14 +1,7 @@
-import {
-  type ReactNode,
-  type RefObject,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { useQuery } from "@tanstack/react-query";
+import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
+
 import { isText } from "../../api/artifact-version";
-import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { AskApproval, InboxRow } from "../../api/types";
@@ -16,8 +9,6 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { borderDefault } from "../../theme/classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import { CHANGED_BLOCK_CLASS } from "../doc/change-marks";
-import { DocumentRuntime } from "../doc/runtime";
-import { loadBlockSchema } from "../doc/schema";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { VersionView } from "../doc/VersionView";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -49,16 +40,8 @@ function subjectOf(ask: InboxRow): PaneSubject {
 }
 
 export interface ReadingPaneProps {
-  /** The head's "Assign to me" write is in flight or refused, or has stopped being either: the
-   *  Inbox keeps a live row listed, which keeps this column on it under the Unassigned filter
-   *  the assignment takes it out of. */
-  onAssignLive: (askId: string, live: boolean) => void;
   /** The reader's own answer landed; the list selects the next row. */
   onAnswered: (askId: string) => void;
-  /** The head's priority pick is in flight or refused, or has stopped being either: the Inbox
-   *  keeps the row where it stood, which keeps this column on it under a priority filter the
-   *  pick takes it out of. */
-  onPriorityLive: (askId: string, live: boolean) => void;
   /** The head's Snooze write is in flight or refused, or has stopped being either: the Inbox
    *  keeps a live row listed, which is what keeps this column on it long enough for a refusal
    *  to be read. */
@@ -72,8 +55,6 @@ export interface ReadingPaneProps {
 interface PaneFlowProps {
   ask: InboxRow;
   onAnswered: (askId: string) => void;
-  onAssignLive: (askId: string, live: boolean) => void;
-  onPriorityLive: (askId: string, live: boolean) => void;
   onSnoozeLive: (askId: string, live: boolean) => void;
   viewer: string | undefined;
 }
@@ -96,14 +77,7 @@ function QuestionCard({ ask, onAnswered }: Pick<PaneFlowProps, "ask" | "onAnswer
 
 /** An anchored question, and a question in no document: the card the Inbox has always drawn,
  *  under the head's own controls. */
-function CardBody({
-  ask,
-  onAnswered,
-  onAssignLive,
-  onPriorityLive,
-  onSnoozeLive,
-  viewer,
-}: PaneFlowProps): ReactNode {
+function CardBody({ ask, onAnswered, onSnoozeLive, viewer }: PaneFlowProps): ReactNode {
   return (
     <PaneFrame
       head={
@@ -111,9 +85,7 @@ function CardBody({
           artifact={undefined}
           ask={ask}
           onAnswered={onAnswered}
-          onAssignLive={onAssignLive}
           onNextChange={undefined}
-          onPriorityLive={onPriorityLive}
           onSkipToAnswer={undefined}
           onSnoozeLive={onSnoozeLive}
           sectionBlockId={undefined}
@@ -162,8 +134,6 @@ function ApprovalBody({
   artifactId,
   ask,
   onAnswered,
-  onAssignLive,
-  onPriorityLive,
   onSnoozeLive,
   viewer,
 }: PaneFlowProps & { approval: AskApproval; artifactId: string }): ReactNode {
@@ -183,18 +153,11 @@ function ApprovalBody({
   const settled = useSettled(artifactId);
   const approvedVersion = approval.approved?.version;
 
-  const { blockSchema: runtimeBlockSchema } = useContext(DocumentRuntime);
-  const blockSchemaQuery = useShownQuery({
-    queryFn: loadBlockSchema,
-    queryKey: ["block-schema"],
-    staleTime: Number.POSITIVE_INFINITY,
-  });
-  const blockSchema = runtimeBlockSchema ?? blockSchemaQuery.data;
-  const user = useShownQuery(whoAmIQuery()).data;
-  const artifactQuery = useShownQuery({ ...artifactQueryOptions(artifactId), enabled: settled });
+  const user = useQuery(whoAmIQuery()).data;
+  const artifactQuery = useQuery({ ...artifactQueryOptions(artifactId), enabled: settled });
   // The version the request is marked against: the document's last approval by any person, read
   // under the document page's own version key, as today's card reads it (`EarlierApproval`).
-  const baselineQuery = useShownQuery({
+  const baselineQuery = useQuery({
     enabled: settled && approvedVersion !== undefined,
     queryFn: () => {
       if (approvedVersion === undefined) {
@@ -224,7 +187,7 @@ function ApprovalBody({
   // The version the column draws, read under the key `VersionView` reads it by: both readers
   // share the one cache entry, so naming it here costs the page no second request, and the
   // answer tells the column when the text it shows has landed.
-  const versionQuery = useShownQuery({
+  const versionQuery = useQuery({
     enabled: settled && latestVersion !== undefined,
     queryFn: () => {
       if (latestVersion === undefined) {
@@ -336,7 +299,6 @@ function ApprovalBody({
             // what was decided in them, and a column the reader flips through with `j` reads no
             // list of the document's asks to name their askers.
             asks={[]}
-            blockSchema={blockSchema}
             changeBaseline={changeBaseline}
             createdAt={
               (artifact.versions ?? []).find((version) => version.number === latestVersion)
@@ -363,9 +325,7 @@ function ApprovalBody({
           artifact={artifact}
           ask={ask}
           onAnswered={onAnswered}
-          onAssignLive={onAssignLive}
           onNextChange={marked ? nextChange : undefined}
-          onPriorityLive={onPriorityLive}
           onSkipToAnswer={undefined}
           onSnoozeLive={onSnoozeLive}
           sectionBlockId={undefined}
@@ -387,8 +347,6 @@ function DecisionBody({
   ask,
   blockId,
   onAnswered,
-  onAssignLive,
-  onPriorityLive,
   onSnoozeLive,
   viewer,
 }: PaneFlowProps & { artifactId: string; blockId: string }): ReactNode {
@@ -403,9 +361,7 @@ function DecisionBody({
           artifact={document.artifact}
           ask={ask}
           onAnswered={onAnswered}
-          onAssignLive={onAssignLive}
           onNextChange={undefined}
-          onPriorityLive={onPriorityLive}
           onSkipToAnswer={document.showsDocument ? document.skipToBlock : undefined}
           onSnoozeLive={onSnoozeLive}
           sectionBlockId={document.sectionBlockId}
@@ -432,8 +388,6 @@ function DecisionBody({
  */
 export function ReadingPane({
   onAnswered,
-  onAssignLive,
-  onPriorityLive,
   onSnoozeLive,
   row,
   viewer,
@@ -443,7 +397,7 @@ export function ReadingPane({
   }
   const ask = row.ask;
   const subject = subjectOf(ask);
-  const flow = { ask, onAnswered, onAssignLive, onPriorityLive, onSnoozeLive, viewer };
+  const flow = { ask, onAnswered, onSnoozeLive, viewer };
   if (subject.kind === "approval") {
     return <ApprovalBody {...flow} approval={subject.approval} artifactId={subject.artifactId} />;
   }

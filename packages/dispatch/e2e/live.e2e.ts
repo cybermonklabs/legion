@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { RECONNECT_SPREAD_MS } from "../web/src/api/cache/live-socket";
-import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/cache/query-refresh";
+import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
+import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import {
   createAsk,
   createIssue,
@@ -548,7 +548,7 @@ test("live: a change committed while the first live socket fails to open is show
     );
 
     // The second socket waits a draw from [0, RECONNECT_SPREAD_MS) armed when the first
-    // handshake failed (`web/src/api/cache/live-socket.ts`), which the page's own clock spends.
+    // handshake failed (`web/src/api/live-socket.ts`), which the page's own clock spends.
     await page.clock.install();
     await page.goto(`/issues/${issue.key}/conversation`);
     const head: string = (await (await whoami).json()).event_head;
@@ -654,8 +654,6 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     `/api/v1/issues/${issue.key}/events?limit=1&order=desc`,
     // The Conversation's live-agent query.
     `/api/v1/issues/${issue.key}/subscribers`,
-    // The one block-schema fetch every document surface shares for the session.
-    "/api/v1/schema/blocks",
     // The header's read of the project's architecture sources: the `Components:` line offers
     // its picker only when the project has one. The component tree itself,
     // `/api/v1/projects/CORE/architecture`, is fetched only once the picker opens, never on

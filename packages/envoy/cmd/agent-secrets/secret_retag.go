@@ -65,7 +65,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	const form = "secret retag"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
 	flags, profile := secretFlags(form, stderr)
-	newOwner := flags.String("owner", "", "the new owner: me (your email, from your AWS or Google sign-in) or shared")
+	newOwner := flags.String("owner", "", "the new owner: me (the email of the person your AWS or Google sign-in names), shared, or a person's email")
 	newTier := flags.String("tier", "", "the new tier: agent or human")
 	newKind := flags.String("kind", "", strings.Join(policy.Kinds, ", ")+" or none")
 	newGitHubOwners := flags.String("github-owners", "", `the GitHub accounts a github-app secret mints for, separated by spaces ("<login> <login>"), or none`)
@@ -83,7 +83,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		err = usageErr{errors.New("--owner, --tier, --kind, --github-owners, --requesters, --scopes, --admin, --shape, --max-grant, --default-grant or a combination is required")}
 	}
 	if err == nil {
-		err = checkOwnerTier(*newOwner, *newTier)
+		*newOwner, err = checkOwnerTier(*newOwner, *newTier)
 	}
 	if err == nil {
 		err = checkKind(*newKind)
@@ -151,14 +151,11 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, email, err := connectWriter(context.Background(), *profile)
+	s, err := openSession(context.Background(), *profile)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
 	defer s.Close()
-	if err := s.refuseLentExistingWrite(slug); err != nil {
-		return secretFailIn(stderr, form, s, err)
-	}
 	held, err := s.backend.currentTags(s.ctx, slug)
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)
@@ -174,7 +171,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	}
 	maps.Copy(after, set)
 	if *newOwner != "" {
-		if after[policy.TagOwner], err = ownerTag(*newOwner, email); err != nil {
+		if after[policy.TagOwner], err = s.ownerTag(*newOwner); err != nil {
 			return secretFailIn(stderr, form, s, err)
 		}
 	}
@@ -190,7 +187,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(remove) > 0 {
 		if err := s.backend.removeTags(s.ctx, slug, held, remove); err != nil {
-			fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s\n", form, err, s.storeName())
+			fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s\n", form, s.refusedAs(err), s.storeName())
 			rereadIfRestored(s, stdout, stderr, form, name, err)
 			return 1
 		}
@@ -203,7 +200,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	}
 	set[policy.TagOwner], set[policy.TagTier] = owner, tier
 	if err := s.backend.setTags(s.ctx, slug, held, set); err != nil {
-		fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s\n", form, err, s.storeName())
+		fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s\n", form, s.refusedAs(err), s.storeName())
 		// AWS: IAM conditioned on the request tags leaves a shared secret's owner and tier to
 		// administrators specifically. GCP has no per-secret condition on secretmanager.secrets.update,
 		// so a deployment instead grants that permission at all only to administrators for the

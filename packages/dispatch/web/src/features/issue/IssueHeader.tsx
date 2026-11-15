@@ -1,30 +1,27 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
+  useEffect,
   useId,
   useLayoutEffect,
+  useRef,
   useState,
 } from "react";
 import { Link } from "react-router-dom";
-import { useCache } from "../../api/cache/cache";
-import { mergeIssue } from "../../api/cache/issue-cache";
-import { useShownQuery } from "../../api/cache/shown-query";
-import { storeIssueState } from "../../api/cache/viewer-state";
+
 import {
   AGENT_LIST_REFILLING,
   api,
   apiErrorCodeIn,
   apiErrorMessage,
-  issueClaimReleaseRequest,
   issuePatchRequest,
-  issueStateRequest,
-  issueUnsubscribeRequest,
 } from "../../api/client";
-import { issueQuery, pinnedIssuesKey, projectsQuery, userStateQuery } from "../../api/queries";
+import { mergeIssue } from "../../api/issue-cache";
+import { projectsQuery, userStateQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
-import { InPlaceEditBox, type InPlaceReadProps } from "../../components/InPlaceEditBox";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -33,12 +30,15 @@ import {
   badgePrimary,
   bgTransparent,
   borderDefault,
+  borderStrongHover,
   borderTransparent,
   calloutWarningBg,
   calloutWarningBorder,
   calloutWarningText,
   card,
   dangerText,
+  focusBorder,
+  focusVisibleRing,
   inputClasses,
   linkHoverText,
   linkText,
@@ -49,8 +49,10 @@ import {
   secondaryButtonText,
   statusPill,
   statusPillDot,
+  surfaceMutedStrongBg,
   textMutedHoverToSecondary,
   textMutedOnSurface,
+  textPrimaryOnSurface,
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
@@ -74,7 +76,7 @@ import { IssueLabels } from "./IssueLabels";
 import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
-import { withPinned } from "./pins";
+import { stateForIssue } from "./pins";
 import { RepoControl } from "./RepoControl";
 import {
   RouteReachUnknownMarker,
@@ -91,8 +93,8 @@ const routeHint =
 const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
 
 /** Whether `input` is the Status pill's pick alone: that control shows its write in the shell's
- *  indicator, and a refused pick stops being composed, where every other header field holds its
- *  draft and says why itself. */
+ *  indicator and rolls back on a refusal, where every other header field holds its draft and
+ *  says why itself. */
 function statusPickOnly(input: IssueUpdateInput | undefined): boolean {
   return input !== undefined && Object.keys(input).length === 1 && input.status !== undefined;
 }
@@ -118,12 +120,25 @@ export function IssueHeader({
   priorityWrite: IssuePriorityWrite;
   state: UserIssueState;
 }): ReactNode {
-  const cache = useCache();
+  const queryClient = useQueryClient();
   const [editingTitle, setEditingTitle] = useState(false);
-  // The route and the parent editors open over their rail item in a panel, which takes the
-  // focus into itself (`AnchoredPanel`); the item they hang off stays where it is.
   const [routeEditing, setRouteEditing] = useState(false);
+  const routeInputRef = useRef<HTMLInputElement>(null);
+  // Focus the route input once when editing opens: the trigger button unmounts, so without this
+  // focus would drop to the body and a keyboard user would have to find the form again.
+  useEffect(() => {
+    if (routeEditing) {
+      routeInputRef.current?.focus();
+    }
+  }, [routeEditing]);
   const [parentEditing, setParentEditing] = useState(false);
+  const parentInputRef = useRef<HTMLInputElement>(null);
+  // Same focus handoff as the route editor: the trigger button unmounts when the form opens.
+  useEffect(() => {
+    if (parentEditing) {
+      parentInputRef.current?.focus();
+    }
+  }, [parentEditing]);
   // Whether the details rail has anywhere left to scroll, which is what its trailing fade says.
   // The rail element is state rather than a ref so this runs once per rail, not once per render:
   // three things change the answer and none of them is a render of this component - the reader
@@ -164,55 +179,54 @@ export function IssueHeader({
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
   const agentText = useAgentText();
-  const subscribers = useShownQuery({
+  const subscribers = useQuery({
     queryKey: ["subscribers", issue.key],
     queryFn: () => api.getIssueSubscribers(issue.key),
   });
   const subscriberList = subscribers.isError ? [] : (subscribers.data ?? []);
   // The count is a claim about who is subscribed, so only a read that answered makes it.
   const subscribersCounted = !subscribers.isError && subscribers.data !== undefined;
-  // The unsubscribe and the claim release go in the issue's line (`issue:<key>`), as its fields
-  // do, each made from its request alone; a reload keeps their order and drops them unsent, since
-  // a `DELETE` carries no idempotency key and a repeat could undo what another person did
-  // meanwhile (`Writes.resume`).
+  // Every write here names `write` first: its answer and its variables are what the callbacks
+  // below read.
   const unsubscribe = useKeyedWrite({
-    request: (sessionId: string) => issueUnsubscribeRequest(issue.key, sessionId),
-    target: () => `issue:${issue.key}`,
+    write: (sessionId: string, bounds) => api.unsubscribeIssueSession(issue.key, sessionId, bounds),
     inline: true,
     label: (sessionId) =>
       `${agentText.sessionText(sessionId, subscriberList.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${issue.key}`,
     onSuccess: () => {
-      void cache.invalidate({ queryKey: ["subscribers", issue.key] });
+      void queryClient.invalidateQueries({ queryKey: ["subscribers", issue.key] });
     },
   });
   const releaseClaim = useKeyedWrite({
-    request: () => issueClaimReleaseRequest(issue.key),
-    target: () => `issue:${issue.key}`,
+    write: (_variables, bounds) => api.releaseIssueClaim(issue.key, bounds),
     inline: true,
     label: () => `Claim on ${issue.key} released`,
     onSuccess: (next) => {
-      if (next !== null) mergeIssue(cache, next);
-      void cache.invalidate({ queryKey: ["issues"] });
+      if (next !== null) mergeIssue(queryClient, next);
+      void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
   // A title, route, parent or close the header shows refused itself, beside its draft; a status
   // pick is a control, so its refusal is the shell's (`PendingWritesIndicator`), and the pick
-  // stops being composed. Every field write goes in the issue's line (`issue:<key>`), so an older
-  // one still being tried never lands after a newer one, whatever left the page meanwhile. A
-  // landing with no answer to give is merged by reading the issue again.
+  // rolls back. Every field write goes in the issue's line (`issue:<key>`), so an older one still
+  // being tried never lands after a newer one, whatever left the page meanwhile. A landing with no
+  // answer to give is merged by reading the issue again.
   const updateIssue = useKeyedWrite({
     inline: (input) => !statusPickOnly(input),
     label: (input) => issueUpdateLabel(issue.key, input),
     target: () => `issue:${issue.key}`,
     request: (input: IssueUpdateInput) => issuePatchRequest(issue.key, input),
-    onSuccess: (next) => {
+    onSettled: (_data, error) => {
+      drafts.onIssueSettled(error);
+    },
+    onSuccess: (next, input) => {
       if (next === null) {
-        void cache.invalidate({ queryKey: issueQuery(issue.key).queryKey });
+        void queryClient.invalidateQueries({ queryKey: ["issue", issue.key] });
       } else {
-        mergeIssue(cache, next);
+        mergeIssue(queryClient, next);
       }
-      drafts.onIssueSuccess(next?.body ?? issue);
-      void cache.invalidate({ queryKey: ["issues"] });
+      drafts.onIssueSuccess(next ?? issue, input);
+      void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
   const labelsMutation = useKeyedWrite({
@@ -220,8 +234,8 @@ export function IssueHeader({
     target: () => `issue:${issue.key}`,
     request: (labels: string[]) => issuePatchRequest(issue.key, { labels }),
     onSuccess: (next) => {
-      if (next !== null) mergeIssue(cache, next);
-      void cache.invalidate({ queryKey: ["issues"] });
+      if (next !== null) mergeIssue(queryClient, next);
+      void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
   const drafts = useIssueDrafts(issue, updateIssue);
@@ -277,7 +291,7 @@ export function IssueHeader({
   // rather than claiming a gate it has not read. Only a root issue has steps at all
   // (`gatedStepEntries`), so a child issue does not ask for the list: a disabled query still
   // reads whatever the shared cache holds, and a child draws the single chip either way.
-  const projects = useShownQuery({ ...projectsQuery(), enabled: issue.parent === null });
+  const projects = useQuery({ ...projectsQuery(), enabled: issue.parent === null });
   const projectRow = projects.data?.find((candidate) => candidate.key === issue.project);
   const entries = gatedStepEntries(projectRow, issue);
   // Which document a step reviews is `gated-steps.ts`'s to say, so the chip asks the drawn
@@ -290,33 +304,37 @@ export function IssueHeader({
     documentArtifact?.approval !== undefined &&
     (documentArtifact.approval.state !== "draft" || approvalRequestOpen);
   const pinGuard = useSubmitGuard();
-  // The header's pin writes the same row as the Conversation's and the Activity tab's pins, so it
-  // goes in that row's line (`pin:<key>`, `features/issue/pin-write.ts`): one row, one line. Its
-  // change is the issue's `pinned` alone, over the row as it stands (`shows`), so the store
-  // composes it over each answer that lands there while it is live, composes a pin waiting behind
-  // it over the row Dispatch answers it with, and leaves the row Dispatch last gave if it leaves
-  // without landing (R7 and R10 of dispatch://INFRA-299). Its answer is merged into the viewer's
-  // state, which holds Dispatch's answers alone (`storeIssueState`).
   const updateState = useKeyedWrite({
     label: (pinned: boolean) => `${issue.key} ${pinned ? "pinned" : "unpinned"}`,
-    request: (pinned: boolean) => issueStateRequest(issue.key, { pinned }),
-    target: () => `pin:${issue.key}`,
-    shows: (pinned) => (shown) => {
-      shown.on<UserState>(userStateQuery().queryKey, (current) =>
-        withPinned(current, issue.key, pinned)
-      );
-    },
+    write: (pinned: boolean, bounds) => api.putIssueState(issue.key, { pinned }, bounds),
     onSettled: () => {
       pinGuard.release();
-      void cache.invalidate({ queryKey: userStateQuery().queryKey });
+      void queryClient.invalidateQueries({ queryKey: userStateQuery().queryKey });
       // The sidebar lists the pinned issues from their own read, which follows the pin however
       // its write settled: with an answer, landed with none (`null`), or refused.
-      void cache.invalidate({ exact: true, queryKey: pinnedIssuesKey });
+      void queryClient.invalidateQueries({ exact: true, queryKey: ["issues", "pinned"] });
     },
-    // A read already out was asked before this press.
-    onMutate: () => cache.cancel({ queryKey: userStateQuery().queryKey }),
+    onMutate: async (pinned) => {
+      await queryClient.cancelQueries({ queryKey: userStateQuery().queryKey });
+      const previous = queryClient.getQueryData<UserState>(userStateQuery().queryKey);
+      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
+        ...current,
+        [issue.key]: { ...state, pinned },
+      }));
+      return { previous };
+    },
+    onError: (_error, _pinned, context) => {
+      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
+        ...current,
+        [issue.key]: stateForIssue(context?.previous, issue.key),
+      }));
+    },
     onSuccess: (next) => {
-      if (next !== null) storeIssueState(cache, issue.key, next);
+      if (next === null) return;
+      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
+        ...current,
+        [issue.key]: next,
+      }));
     },
   });
   const saveTitleOnEnter = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -336,35 +354,18 @@ export function IssueHeader({
       setParentEditing(false);
     }
   };
-  // One way out of either panel editor, for Cancel, for Escape and for a press outside it:
-  // `AnchoredPanel` takes those two at the document's capture phase, so the discard cannot sit
-  // on the field's own `onKeyDown` where the press never arrives.
-  const cancelRoute = () => {
-    drafts.discardRoute();
-    setRouteEditing(false);
-  };
-  const cancelParent = () => {
-    drafts.discardParent();
-    setParentEditing(false);
-  };
-  // The save Dispatch refused, as the header shows it beside the draft it was sent with: the
-  // drafts keep it, because every press is a write of its own in the issue's line and the
-  // mutation's own state names the newest press rather than the one that failed. A status pick
-  // is a control, so its refusal is the shell's (`PendingWritesIndicator`).
-  const refusal =
-    drafts.refusal === undefined || statusPickOnly(drafts.refusal.input)
-      ? undefined
-      : drafts.refusal;
   // A refused parent save (PARENT_INPUT, ISSUE_CLOSED) renders the server's reason inline,
   // like a route validation error, instead of the generic update failure line.
-  const parentSaveFailed = refusal?.input.parent !== undefined;
-  const parentError = apiErrorMessage(refusal?.error, "Could not save parent.");
+  const parentSaveFailed = updateIssue.isError && updateIssue.variables?.parent !== undefined;
+  const parentError = apiErrorMessage(updateIssue.error, "Could not save parent.");
   // A title Dispatch refused (CAP_EXCEEDED past ISSUE_TITLE_MAX, ISSUE_CLOSED) shows its reason
   // with no Retry, since the same title is refused every time; any other failure keeps the generic
   // line and its Retry.
   const titleRefusal =
-    refusal?.input.title !== undefined && apiErrorCodeIn(refusal.error, titleRefusals)
-      ? refusal.error.message
+    updateIssue.isError &&
+    updateIssue.variables?.title !== undefined &&
+    apiErrorCodeIn(updateIssue.error, titleRefusals)
+      ? updateIssue.error.message
       : null;
   // A `session:` route is an agent: its button names it as `AgentName` does, with the agent's own
   // live link beside it. A role route is its address.
@@ -376,13 +377,12 @@ export function IssueHeader({
         ? drafts.route
         : agentText.sessionText(routeSession, undefined)
   }`;
-  // The pill's box is the shared editor's (`InPlaceEditBox`), handed in by its read slot; what
-  // is left here is what names this control and what it says.
-  const routeButton = (box: InPlaceReadProps) => (name: ReactNode) => (
+  const routeButton = (name: ReactNode) => (
     <button
-      {...box}
       aria-label={routeLabel}
+      className={`inline-flex min-h-11 max-w-[14ch] shrink-0 items-center truncate rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
       disabled={isClosed}
+      onClick={() => setRouteEditing(true)}
       title={drafts.route === "" ? undefined : drafts.route}
       type="button"
     >
@@ -439,54 +439,55 @@ export function IssueHeader({
             />
           </div>
           <div className="flex min-w-0 flex-1 items-start gap-2">
-            {/* The heading and the editor share one box and one grid cell, drawn by
-                `components/InPlaceEditBox`: the heading, rendered in both states over the live
-                draft, is what sizes that cell, so the box is the same before, during and after
-                an edit, whichever of the two is in it. A heading wrapped onto two lines giving
-                way to a one-line editor (and, from 2xl where the slot is content-sized, to an
-                editor of its own width) moved every control beside it between the mousedown
-                that ends the edit and the mouseup, and the browser gave that click to neither.
-                The rules that hold the box still — the editor out of the flow, the floor of
-                twenty characters, the heading kept mounted and out of the way while the edit is
-                open — are that component's, and it gives the route and the parent editors the
-                same box. What stays here is this editor's own content: its draft, its save and
-                its discard. */}
-            <InPlaceEditBox
-              box="title"
-              className="flex-1"
-              disabled={isClosed}
-              editing={editingTitle}
-              input={{
-                "aria-describedby": drafts.titleError === null ? undefined : "issue-title-help",
-                "aria-label": "Issue title",
-                disabled: isClosed,
-                maxLength: ISSUE_TITLE_MAX,
-                onBlur: () => {
+            {editingTitle ? (
+              <input
+                aria-describedby={drafts.titleError === null ? undefined : "issue-title-help"}
+                aria-label="Issue title"
+                className={`min-w-0 flex-1 rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight outline-none md:py-0 ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
+                disabled={isClosed}
+                maxLength={ISSUE_TITLE_MAX}
+                onBlur={() => {
                   drafts.requestTitleSubmit();
                   setEditingTitle(false);
-                },
-                onChange: (event) => drafts.writeTitle(event.target.value),
-                onKeyDown: (event) => {
+                }}
+                onChange={(event) => drafts.writeTitle(event.target.value)}
+                onKeyDown={(event) => {
                   if (event.key === "Escape") {
                     drafts.discardTitle();
                     setEditingTitle(false);
                     return;
                   }
                   saveTitleOnEnter(event);
-                },
-                ref: (node) => {
-                  node?.focus();
-                },
-                value: drafts.title,
-              }}
-              name="title"
-              onOpen={() => setEditingTitle(true)}
-              overlay="cover"
-              read={(box) => (
-                // The header's one `h1`, which is what the title is read and measured by.
-                <h1 {...box}>{drafts.title}</h1>
-              )}
-            />
+                }}
+                ref={(node) => node?.focus()}
+                value={drafts.title}
+              />
+            ) : (
+              <h1
+                className={`min-w-0 flex-1 break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface} ${
+                  isClosed ? "" : `cursor-text ${borderStrongHover}`
+                }`}
+                onClick={() => {
+                  if (!isClosed) {
+                    setEditingTitle(true);
+                  }
+                }}
+                onFocus={() => {
+                  if (!isClosed) {
+                    setEditingTitle(true);
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (!isClosed && (event.key === "Enter" || event.key === " ")) {
+                    event.preventDefault();
+                    setEditingTitle(true);
+                  }
+                }}
+                tabIndex={isClosed ? -1 : 0}
+              >
+                {drafts.title}
+              </h1>
+            )}
             <PinButton
               disabled={updateState.isPending}
               label={state.pinned ? "Unpin issue" : "Pin issue"}
@@ -524,7 +525,6 @@ export function IssueHeader({
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
             priority={issuePriority(issue.priority)}
-            reserve
             write={priorityWrite}
           />
           <AssigneeControl
@@ -652,78 +652,24 @@ export function IssueHeader({
               variant="rail"
             />
           </div>
-          {/* The rail item stays where it is while its editor is open: the editor is a panel
-              over it (`InPlaceEditBox`, `overlay="panel"`), because a label, a field, Save,
-              Cancel and an error line cannot fit the pill's box. Unmounting the item and
-              adding a form row under the header moved every item to its right and dropped
-              everything below the header by about 52 px. */}
-          <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-            <span aria-describedby="issue-route-hint" className="font-medium" title={routeHint}>
-              Message route:
-            </span>
-            <InPlaceEditBox
-              box="rail"
-              disabled={isClosed}
-              editing={routeEditing}
-              name="route"
-              onDismiss={cancelRoute}
-              onOpen={() => setRouteEditing(true)}
-              onSubmit={saveRoute}
-              overlay="panel"
-              read={(box) =>
-                routeSession === undefined ? (
-                  routeButton(box)(drafts.route === "" ? "No route" : drafts.route)
-                ) : (
-                  <AgentName
-                    className="inline-flex shrink-0 items-center"
-                    control={routeButton(box)}
-                    kind="control"
-                    sessionId={routeSession}
-                    storedTitle={undefined}
-                  />
-                )
-              }
-            >
-              <label
-                aria-describedby="issue-route-hint"
-                className="sr-only"
-                htmlFor="issue-route"
-                title={routeHint}
-              >
+          {routeEditing ? null : (
+            <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
+              <span aria-describedby="issue-route-hint" className="font-medium" title={routeHint}>
                 Message route:
-              </label>
-              <input
-                aria-label="Message route"
-                aria-describedby="issue-route-hint issue-route-help"
-                className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
-                disabled={isClosed}
-                id="issue-route"
-                onChange={(event) => drafts.writeRoute(event.target.value)}
-                placeholder="role:legion-controller-core"
-                value={drafts.route}
-              />
-              <button
-                className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-                disabled={isClosed || !drafts.routeIsValid || updateIssue.isPending}
-                type="submit"
-              >
-                Save route
-              </button>
-              <button
-                className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
-                onClick={cancelRoute}
-                type="button"
-              >
-                Cancel
-              </button>
-              <span
-                className={drafts.routeIsValid ? "sr-only" : `text-sm ${dangerText}`}
-                id="issue-route-help"
-              >
-                A message route must be role:[a-z0-9-]+ or session:[0-9a-f-]{`{16,}`}.
               </span>
-            </InPlaceEditBox>
-          </div>
+              {routeSession === undefined ? (
+                routeButton(drafts.route === "" ? "No route" : drafts.route)
+              ) : (
+                <AgentName
+                  className="inline-flex shrink-0 items-center"
+                  control={routeButton}
+                  kind="control"
+                  sessionId={routeSession}
+                  storedTitle={undefined}
+                />
+              )}
+            </div>
+          )}
           <button
             aria-expanded={subscribersOpen}
             className={`flex min-h-11 shrink-0 items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium ${textSecondaryHoverToPrimary}`}
@@ -739,72 +685,31 @@ export function IssueHeader({
             expanded={referencesOpen}
             onToggle={() => setReferencesOpen((open) => !open)}
           />
-          <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-            <span className="font-medium">Parent:</span>
-            {issue.parent === null ? null : (
-              <Link
-                className={`dispatch-inline-link shrink-0 underline ${linkText} ${linkHoverText}`}
-                to={buildIssuePath({ key: issue.parent, kind: "issue" })}
-              >
-                {issue.parent}
-              </Link>
-            )}
-            <InPlaceEditBox
-              box="rail"
-              disabled={isClosed}
-              editing={parentEditing}
-              name="parent"
-              onDismiss={cancelParent}
-              onOpen={() => setParentEditing(true)}
-              onSubmit={saveParent}
-              overlay="panel"
-              read={(box) => (
-                <button
-                  {...box}
-                  // The name starts with the word on the button - "None" or "Edit" - because a
-                  // name that does not contain the visible text leaves the control out of reach
-                  // of a voice user (WCAG 2.5.3, axe's `label-content-name-mismatch`).
-                  aria-label={
-                    issue.parent === null ? "None, set parent issue" : "Edit parent issue"
-                  }
-                  disabled={isClosed}
-                  type="button"
+          {parentEditing ? null : (
+            <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
+              <span className="font-medium">Parent:</span>
+              {issue.parent === null ? null : (
+                <Link
+                  className={`dispatch-inline-link shrink-0 underline ${linkText} ${linkHoverText}`}
+                  to={buildIssuePath({ key: issue.parent, kind: "issue" })}
                 >
-                  {issue.parent === null ? "None" : "Edit"}
-                </button>
+                  {issue.parent}
+                </Link>
               )}
-            >
-              <label className="sr-only" htmlFor="issue-parent">
-                Parent
-              </label>
-              <input
-                aria-describedby="issue-parent-help"
-                className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
+              <button
+                // The name starts with the word on the button - "None" or "Edit" - because a
+                // name that does not contain the visible text leaves the control out of reach
+                // of a voice user (WCAG 2.5.3, axe's `label-content-name-mismatch`).
+                aria-label={issue.parent === null ? "None, set parent issue" : "Edit parent issue"}
+                className={`inline-flex min-h-11 max-w-[14ch] shrink-0 items-center rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
                 disabled={isClosed}
-                id="issue-parent"
-                onChange={(event) => drafts.writeParent(event.target.value)}
-                placeholder={`${issue.project}-12`}
-                value={drafts.parent}
-              />
-              <button
-                className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-                disabled={isClosed || updateIssue.isPending}
-                type="submit"
-              >
-                Save parent
-              </button>
-              <button
-                className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
-                onClick={cancelParent}
+                onClick={() => setParentEditing(true)}
                 type="button"
               >
-                Cancel
+                {issue.parent === null ? "None" : "Edit"}
               </button>
-              <span className="sr-only" id="issue-parent-help">
-                Parent issue key in {issue.project}; leave empty to clear the parent.
-              </span>
-            </InPlaceEditBox>
-          </div>
+            </div>
+          )}
           {/* The repository is where the work goes, like the parent, so it sits in this rail,
               which scrolls rather than wrapping: a repository name can be long, and the state
               row above must keep every control on one row at a phone width. An issue whose
@@ -834,6 +739,104 @@ export function IssueHeader({
       <span className="sr-only" id="issue-route-hint">
         {routeHint}
       </span>
+      {routeEditing ? (
+        <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={saveRoute}>
+          <label
+            aria-describedby="issue-route-hint"
+            className={`text-sm font-medium ${textSecondaryOnSurface}`}
+            htmlFor="issue-route"
+            title={routeHint}
+          >
+            Message route:
+          </label>
+          <input
+            aria-label="Message route"
+            aria-describedby="issue-route-hint issue-route-help"
+            className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
+            disabled={isClosed}
+            id="issue-route"
+            onChange={(event) => drafts.writeRoute(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                drafts.discardRoute();
+                setRouteEditing(false);
+              }
+            }}
+            placeholder="role:legion-controller-core"
+            ref={routeInputRef}
+            value={drafts.route}
+          />
+          <button
+            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            disabled={isClosed || !drafts.routeIsValid || updateIssue.isPending}
+            type="submit"
+          >
+            Save route
+          </button>
+          <button
+            className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
+            onClick={() => {
+              drafts.discardRoute();
+              setRouteEditing(false);
+            }}
+            type="button"
+          >
+            Cancel
+          </button>
+          <span
+            className={drafts.routeIsValid ? "sr-only" : `text-sm ${dangerText}`}
+            id="issue-route-help"
+          >
+            A message route must be role:[a-z0-9-]+ or session:[0-9a-f-]{`{16,}`}.
+          </span>
+        </form>
+      ) : null}
+      {parentEditing ? (
+        <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={saveParent}>
+          <label className="sr-only" htmlFor="issue-parent">
+            Parent
+          </label>
+          <span aria-hidden="true" className={`text-sm font-medium ${textSecondaryOnSurface}`}>
+            Parent:
+          </span>
+          <input
+            aria-describedby="issue-parent-help"
+            className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
+            disabled={isClosed}
+            id="issue-parent"
+            onChange={(event) => drafts.writeParent(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                drafts.discardParent();
+                setParentEditing(false);
+              }
+            }}
+            placeholder={`${issue.project}-12`}
+            ref={parentInputRef}
+            value={drafts.parent}
+          />
+          <button
+            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            disabled={isClosed || updateIssue.isPending}
+            type="submit"
+          >
+            Save parent
+          </button>
+          <button
+            className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
+            onClick={() => {
+              drafts.discardParent();
+              setParentEditing(false);
+            }}
+            type="button"
+          >
+            Cancel
+          </button>
+          <span className="sr-only" id="issue-parent-help">
+            Parent issue key in {issue.project}; leave empty to clear the parent.
+          </span>
+        </form>
+      ) : null}
       {drafts.titleError === null ? null : (
         <p className={`mt-1 text-sm ${dangerText}`} id="issue-title-help">
           {drafts.titleError}
@@ -884,7 +887,7 @@ export function IssueHeader({
           retrying={releaseClaim.isPending}
         />
       ) : null}
-      {refusal !== undefined ? (
+      {updateIssue.isError && !statusPickOnly(updateIssue.variables) ? (
         parentSaveFailed ? (
           <p className={`mt-1 text-sm ${dangerText}`} id="issue-parent-error">
             {parentError}

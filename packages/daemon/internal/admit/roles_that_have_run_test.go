@@ -22,7 +22,7 @@ import (
 // the re-admission. A role that holds none has never run, and a session started for it would hold
 // no transcript and no task, so nothing but a message could ever wake it: it is not started at all.
 //
-// The four states are the member mid-phase, the member in a phase that holds no slot, the
+// The four states are the member mid-phase, the member in a phase with no worker of its own, the
 // re-admitted root itself, and the member whose phase worker never ran.
 //
 // What the old behaviour was: the first two states' assertion that a role holding no claim row has
@@ -163,7 +163,7 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 		survived(t, pool, tokens)
 	})
 
-	t.Run("a member in a phase that holds no slot", func(t *testing.T) {
+	t.Run("a member in a phase with no worker of its own", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 1, nil)
 		// Accepting waits on the tree's architect, which the promotion starts, so the member's own

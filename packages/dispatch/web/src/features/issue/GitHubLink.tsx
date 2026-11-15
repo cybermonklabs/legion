@@ -1,5 +1,6 @@
+import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { useShownQuery } from "../../api/cache/shown-query";
+
 import { ApiError, api } from "../../api/client";
 import type { ExternalLink } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -98,7 +99,7 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
   const match =
     href?.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)\/?$/) ?? null;
   const isPullRequest = match?.[3] === "pull";
-  const githubReference = useShownQuery({
+  const githubReference = useQuery({
     enabled: match !== null,
     queryKey: ["github-link", link.url],
     queryFn: async () => {
@@ -110,7 +111,7 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
     retry: false,
   });
   const headSHA = isPullRequest ? githubReference.data?.head?.sha : undefined;
-  const checks = useShownQuery({
+  const checks = useQuery({
     enabled: headSHA !== undefined,
     queryKey: ["github-link-checks", link.url, headSHA],
     queryFn: async () => {

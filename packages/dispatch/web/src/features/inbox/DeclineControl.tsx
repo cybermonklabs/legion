@@ -1,9 +1,8 @@
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
+import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
 
-import { useCache } from "../../api/cache/cache";
-
-import { apiErrorMessage, askDeclineRequest, type DeclineAskInput } from "../../api/client";
+import { apiErrorMessage, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import type { Ask, AskRead } from "../../api/types";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -151,13 +150,15 @@ function DeclineDialog({
  */
 export function DeclineControl({
   ask,
+  decline,
   onDeclined,
 }: {
   ask: Ask;
+  decline: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
   /** Called once the server has recorded the decline, as an answer from this card calls it. */
   onDeclined?: (id: string) => void;
 }): ReactNode {
-  const cache = useCache();
+  const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
   const [open, setOpen] = useState(false);
   // The dialog shows a refused decline itself, over the note it keeps, so the write is inline:
@@ -165,21 +166,18 @@ export function DeclineControl({
   const write = useOutstandingAnswerWrite({
     askId: ask.id,
     label: () => `Decline of “${ask.question}”`,
-    request: (input: DeclineAskInput) => askDeclineRequest(ask.id, input),
+    write: (input: DeclineAskInput, bounds) => decline(ask.id, input, bounds),
     onSettled: () => submitGuard.release(),
     onSuccess: (declined) => {
       setOpen(false);
       // The card reads its ask from the thread, so the record it swaps to is this decline.
       if (declined !== null) {
-        cache.setDispatched(
-          ["ask-thread", ask.id],
-          declined,
-          (current: AskRead | undefined, record) =>
-            current === undefined ? undefined : { ...current, ask: record }
+        queryClient.setQueryData<AskRead>(["ask-thread", ask.id], (current) =>
+          current === undefined ? undefined : { ...current, ask: declined }
         );
       }
-      void cache.invalidate({ queryKey: ["ask-thread", ask.id] });
-      invalidateOwnerReads(cache, ask);
+      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+      invalidateOwnerReads(queryClient, ask);
       onDeclined?.(ask.id);
     },
   });

@@ -1,6 +1,7 @@
+import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { useShownQuery } from "../../api/cache/shown-query";
+
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { CredentialPendingRow, InboxRow } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
@@ -84,9 +85,9 @@ function needsYou(
 
 /** The rail's and the compact top bar's `Needs you N`: the reader's own, over the whole inbox. */
 export function useNeedsYouCount(): number {
-  const inbox = useShownQuery(inboxQuery());
+  const inbox = useQuery(inboxQuery());
   // Until `/auth/whoami` answers, the rail shows no number rather than one that is not theirs.
-  const viewer = useShownQuery(whoAmIQuery()).data?.login;
+  const viewer = useQuery(whoAmIQuery()).data?.login;
   const { requests } = useCredentialRequests();
   return needsYou(inbox.data ?? [], requests, viewer).count;
 }

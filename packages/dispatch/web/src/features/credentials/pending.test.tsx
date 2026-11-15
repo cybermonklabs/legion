@@ -1,8 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
+import { type Query, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-
-import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 
 import { api } from "../../api/client";
 import type { CredentialPendingResponse } from "../../api/types";
@@ -19,22 +18,22 @@ function renderPending() {
 }
 
 // A `null`-holding query (no secrets broker) can neither fetch again on its own nor have the poll
-// armed: `enabled` and `refetchInterval` both read the same fact of Dispatch's answer, which the
-// cache layer hands each of them, so if one ever answered differently from the other a brokerless
-// Dispatch would start polling.
+// armed: `enabled` and `refetchInterval` both read the same `query.state.data !== null` fact, so
+// if one ever answered differently from the other a brokerless Dispatch would start polling.
 test("credentialPendingQuery's enabled and refetchInterval agree: armed for a list, off for null", () => {
   const query = credentialPendingQuery();
-  const heldList: CredentialPendingResponse = { pending: [] };
+  const heldNull = { state: { data: null } } as unknown as Query<CredentialPendingResponse | null>;
+  const heldList = {
+    state: { data: { pending: [] } },
+  } as unknown as Query<CredentialPendingResponse | null>;
 
   expect(query.enabled).toBeInstanceOf(Function);
   expect(query.refetchInterval).toBeInstanceOf(Function);
-  const enabled = query.enabled as (dispatched: CredentialPendingResponse | null) => boolean;
-  const refetchInterval = query.refetchInterval as (
-    dispatched: CredentialPendingResponse | null
-  ) => number | false;
+  const enabled = query.enabled as (query: typeof heldNull) => boolean;
+  const refetchInterval = query.refetchInterval as (query: typeof heldNull) => number | false;
 
-  expect(enabled(null)).toBe(false);
-  expect(refetchInterval(null)).toBe(false);
+  expect(enabled(heldNull)).toBe(false);
+  expect(refetchInterval(heldNull)).toBe(false);
   expect(enabled(heldList)).toBe(true);
   expect(typeof refetchInterval(heldList)).toBe("number");
   expect(refetchInterval(heldList)).toBeGreaterThan(0);

@@ -1,7 +1,7 @@
 import { spyOn } from "bun:test";
-import { RECONNECT_SPREAD_MS } from "../api/cache/live-socket";
+import type { QueryClient } from "@tanstack/react-query";
 
-import type { QueryClient } from "../api/cache/test-client";
+import { RECONNECT_SPREAD_MS } from "../api/live-socket";
 import { deliveryRunQuery, deliveryTimelineQuery } from "../api/queries";
 import type {
   DeliveryLiveBody,

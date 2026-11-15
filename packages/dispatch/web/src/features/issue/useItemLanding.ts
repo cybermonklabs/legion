@@ -1,5 +1,6 @@
 import { ID_AMBIGUOUS, isIdPrefix } from "@legion/contracts";
-import { useShownQuery } from "../../api/cache/shown-query";
+import { useQuery } from "@tanstack/react-query";
+
 import { ApiError, type ErrorCandidate } from "../../api/client";
 import type { IDCandidate, IssueDetails } from "../../api/types";
 import { askQuery, commentQuery, messageQuery, useWholeRouteRead } from "../refs/reference-target";
@@ -90,12 +91,12 @@ export function useItemLanding(
   // The item's own read waits for the whole id: a prefix is never a key anything is cached
   // under.
   const id = whole?.id;
-  const comment = useShownQuery({
+  const comment = useQuery({
     ...commentQuery(id),
     enabled: route.kind === "comment" && id !== undefined,
   });
-  const ask = useShownQuery({ ...askQuery(id), enabled: route.kind === "ask" && id !== undefined });
-  const message = useShownQuery({
+  const ask = useQuery({ ...askQuery(id), enabled: route.kind === "ask" && id !== undefined });
+  const message = useQuery({
     ...messageQuery(route.key, id),
     enabled: route.kind === "message" && id !== undefined,
   });

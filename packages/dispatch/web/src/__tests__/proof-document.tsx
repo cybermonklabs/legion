@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, expect, spyOn } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import { http, type RequestHandler } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
-
-import { QueryClient, QueryClientProvider } from "../api/cache/test-client";
 
 import { api } from "../api/client";
 import type {
@@ -37,21 +36,6 @@ export const artifact: Artifact = {
   session_id: null,
   slug: "spec",
   versions: [],
-};
-
-const blockSchema = {
-  types: [
-    {
-      attributes: {
-        kind: { choices: ["note", "warning"], default: "note", kind: "enum" as const },
-        title: { default: "", kind: "string" as const },
-      },
-      content: "paragraph+" as const,
-      name: "callout",
-      render: "host" as const,
-    },
-  ],
-  version: 1,
 };
 
 export function createQueryClient(): QueryClient {
@@ -211,7 +195,6 @@ export function renderProofDocument({
         }
       | undefined,
   };
-  queryClient.setQueryData(["block-schema"], blockSchema);
   const toolbar: { current: DocumentToolbar | undefined } = { current: undefined };
   /** Every value the document reported upward, so a suite can assert it reported none at all. */
   const toolbarChanges: (DocumentToolbar | undefined)[] = [];

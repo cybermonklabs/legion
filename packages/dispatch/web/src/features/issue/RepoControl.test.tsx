@@ -1,11 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of the project's mappings, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { cacheOf, QueryClient, QueryClientProvider, useQuery } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary, RepoProject } from "../../api/types";
 import { RepoControl } from "./RepoControl";
@@ -211,10 +211,7 @@ test("RepoControl lists the project's mapped repositories, shows the resolved on
     );
     expect(select().value).toBe("acme/gadgets");
     expect(screen.getByText("acme/gadgets", { selector: badge })).toBeTruthy();
-    // The project list shows the pick over Dispatch's list, which holds only Dispatch's answers
-    // and so still names none until that list is read again.
-    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)?.[0]?.repo).toBe("acme/gadgets");
-    expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.repo).toBeNull();
+    expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.repo).toBe("acme/gadgets");
   } finally {
     unmount();
     patchIssue.mockRestore();
@@ -339,7 +336,7 @@ test("RepoControl shows a failed mappings read beside a resolved repository", as
   }
 });
 
-test("RepoControl shows Dispatch's repository again and the server's refusal when a pick is refused", async () => {
+test("RepoControl rolls back and shows the server's refusal", async () => {
   const patchIssue = answerIssuePatches().mockRejectedValue(
     new ApiError(400, {
       code: "REPO_NOT_MAPPED",

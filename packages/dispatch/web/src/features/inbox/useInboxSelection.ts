@@ -133,9 +133,9 @@ export function useInboxSelection({
   const [snoozeRefusal, setSnoozeRefusal] = useState<string | undefined>(undefined);
   /** The rows the reader has pressed Dismiss on here, by `rowId`, while that press is out: the
    *  list's hand-hold skips them, so a row they dismissed leaves the list at once even with their
-   *  hand still on it. An id leaves once its press settles - a refused one stops being composed,
-   *  so its row is drawn as Dispatch holds it again, and one the server took is out of the list -
-   *  so the hold never stops covering a row the reader can still see. */
+   *  hand still on it. An id leaves once its press settles - the rollback of a refused one puts
+   *  an ordinary row back, and one the server took is out of the list - so the hold never stops
+   *  covering a row the reader can still see. */
   const pressedHere = useRef<Set<string>>(new Set());
   // The one dismiss write every control on this list shares, the row's own and the bar's: the
   // write takes the row - and every control drawn on it - off the page, so its refusal is the
@@ -169,10 +169,10 @@ export function useInboxSelection({
     const named = row === undefined ? undefined : dismissRow(row);
     if (named !== undefined) selectedThreads.push(named);
   }
-  // One pick, over the ids the bar is counting: the same composed move the per-row control makes,
-  // shown while the write is live and no longer once it is refused, once per ask. The ids the
-  // server took leave the selection; the ones it refused are marked again under its own reason,
-  // even if Clear ran while the write was in flight, so a second pick retries exactly those.
+  // One pick, over the ids the bar is counting: the same optimistic move and rollback the per-row
+  // control makes, once per ask. The ids the server took leave the selection; the ones it refused
+  // are marked again under its own reason, even if Clear ran while the write was in flight, so a
+  // second pick retries exactly those.
   const snoozePick = (until: string) => {
     const ids = [...selectedAsks];
     setSnoozeRefusal(undefined);

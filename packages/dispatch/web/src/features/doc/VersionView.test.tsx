@@ -1,18 +1,19 @@
 import { beforeAll, expect, jest, test } from "bun:test";
 import type { ChangeDecorations, DocumentJSON } from "@legion/proof-editor";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
-import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import type { AuthenticatedUser, DisplayTree } from "../../api/types";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { type ChangeBaseline, changeMarksAgainst } from "./change-marks";
 import type { CreateEditor, EditorHandle } from "./editor";
 import { embedHighlight } from "./highlight";
 import { DocumentRuntime } from "./runtime";
+import { compiledBlockSchema } from "./schema";
 import { VersionView } from "./VersionView";
 
 // Every row seeds the version the way the server answers for it: its markdown and the reading
@@ -71,10 +72,6 @@ function renderVersionView({
     number: 1,
     summary: null,
   });
-  const blockSchema = runtime.runtime.blockSchema;
-  if (blockSchema === undefined) {
-    throw new Error("VersionView test runtime must provide a block schema.");
-  }
   // Inside a router, as the document page renders it: a click on a reference in the version
   // opens what it names (`document-references.tsx`).
   const tree = (shown: { by: string; id: string; quote: string } | undefined) => (
@@ -84,7 +81,6 @@ function renderVersionView({
           <VersionView
             artifactId="artifact-1"
             asks={[]}
-            blockSchema={blockSchema}
             changeBaseline={changeBaseline}
             createdAt="2026-09-09T00:00:00Z"
             highlight={shown}
@@ -105,7 +101,7 @@ function renderVersionView({
       queryClient.setQueryData<AuthenticatedUser>(["whoami"], user);
     });
   };
-  return { ...runtime, blockSchema, rerender, setWhoAmI, view };
+  return { ...runtime, rerender, setWhoAmI, view };
 }
 
 // The parent builds `highlight` afresh on every render. An editor rebuilt for each such render
@@ -204,10 +200,10 @@ test("VersionView renders the version read-only with the highlighted quote focus
   }
 });
 
-test("VersionView renders a typed callout with the fetched block schema", async () => {
+test("VersionView renders a typed callout with the manifest the page was built with", async () => {
   const markdown = ':::callout{#callout-1 kind="warning" title="Read this"}\nBody text.\n:::\n';
   const markdownTree = treeOf(markdown);
-  const { blockSchema, editors, view } = renderVersionView({
+  const { editors, view } = renderVersionView({
     highlight: undefined,
     markdown,
     markdownTree,
@@ -215,7 +211,7 @@ test("VersionView renders a typed callout with the fetched block schema", async 
 
   try {
     await waitFor(() => expect(editors).toHaveLength(1));
-    expect(editors[0]?.options.blockSchema).toBe(blockSchema);
+    expect(editors[0]?.options.blockSchema).toBe(compiledBlockSchema);
     expect(editors[0]?.documentJSON).toEqual(markdownTree as DocumentJSON);
   } finally {
     view.unmount();

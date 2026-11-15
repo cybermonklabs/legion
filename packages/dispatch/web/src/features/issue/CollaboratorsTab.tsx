@@ -1,6 +1,7 @@
 import { isLegionRole, LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { useShownQuery } from "../../api/cache/shown-query";
+
 import { issueCollaboratorsQuery } from "../../api/queries";
 import type {
   IssueCollaboratorAgent,
@@ -110,7 +111,7 @@ function Worked({
  * click from the conversation it had; a person is their login as plain text, as everywhere.
  */
 export function CollaboratorsTab({ issueKey }: { issueKey: string }): ReactNode {
-  const query = useShownQuery(issueCollaboratorsQuery(issueKey));
+  const query = useQuery(issueCollaboratorsQuery(issueKey));
   if (query.isPending) {
     return <p className={textMutedOnCanvas}>Loading collaborators…</p>;
   }

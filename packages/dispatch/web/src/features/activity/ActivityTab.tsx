@@ -1,9 +1,8 @@
+import { replaceEqualDeep, useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
-import { useCache } from "../../api/cache/cache";
-import { type EventPages, mergeEventPages } from "../../api/cache/event-log";
-import { replaceEqualDeep } from "../../api/cache/keys";
-import { useShownInfiniteQuery } from "../../api/cache/shown-query";
+
 import { api } from "../../api/client";
+import { type EventPages, mergeEventPages } from "../../api/event-feed";
 import type { UserState } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import {
@@ -35,8 +34,8 @@ interface ActivityTabProps {
  * filters: this is the record, not a place to write.
  */
 export function ActivityTab({ issueKey, state }: ActivityTabProps): ReactNode {
-  const cache = useCache();
-  const log = useShownInfiniteQuery({
+  const queryClient = useQueryClient();
+  const log = useInfiniteQuery({
     initialPageParam: null as number | null,
     queryKey: ["events", issueKey],
     queryFn: ({ pageParam }) =>
@@ -75,7 +74,7 @@ export function ActivityTab({ issueKey, state }: ActivityTabProps): ReactNode {
   );
 
   const togglePin = (eventId: number) =>
-    writePin(cache, issueKey, (dismissed) => ({
+    writePin(queryClient, issueKey, (dismissed) => ({
       id: eventItemId({ id: eventId }),
       op: isPinnedEvent(dismissed, eventId) ? "unpin" : "pin",
     }));

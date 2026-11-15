@@ -6,11 +6,12 @@ import { linkHoverText, linkText } from "../../theme/classes";
 import type { DwellRef } from "../shell/useDwell";
 import { composerFirst } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
-import { AskReplyComposer, AskThread, type AskThreadQuery } from "./AskThread";
+import { AskReplyComposer, AskThread, type AskThreadQuery, type CreateReply } from "./AskThread";
 
 interface AskThreadDisclosureProps {
   ask: Ask;
   thread: AskThreadQuery;
+  createReply?: CreateReply;
   embedded?: boolean;
   /** Where a file pasted or dropped into the reply goes (`AskReplyComposer`). */
   uploadOwner?: ArtifactOwner;
@@ -29,6 +30,7 @@ interface AskThreadDisclosureProps {
 export function AskThreadDisclosure({
   ask,
   thread,
+  createReply,
   embedded = false,
   uploadOwner,
   markNewest,
@@ -90,7 +92,7 @@ export function AskThreadDisclosure({
         </button>
         {composerOpen ? (
           <div className="mt-2" id={composerId}>
-            <AskReplyComposer ask={ask} uploadOwner={uploadOwner} />
+            <AskReplyComposer ask={ask} createReply={createReply} uploadOwner={uploadOwner} />
           </div>
         ) : null}
       </>

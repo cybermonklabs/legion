@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -10,8 +11,6 @@ import {
   installFakeLiveSockets,
   snapshotFrame,
 } from "../../__tests__/live-socket-harness";
-import { answerDeliverySettings } from "../../__tests__/send-answers";
-import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { api } from "../../api/client";
 import type {
   DeliveryLiveView,
@@ -220,7 +219,7 @@ test("an unconfigured timeline shows the setup form in its place, reading no set
     updated_by: { id: "alice@example.com", kind: "user" },
   };
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
-  const putDeliverySettings = answerDeliverySettings().mockResolvedValue(saved);
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(saved);
 
   try {
     const queryClient = renderPage();

@@ -1,6 +1,7 @@
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useShownQuery } from "../../api/cache/shown-query";
+
 import { isDeliveryNotConfigured } from "../../api/client";
 import { deliveryMeasuresQuery, deliveryTimelineQuery } from "../../api/queries";
 import type { DeliverySessionGroup } from "../../api/types";
@@ -306,7 +307,7 @@ export function DeliveryPage(): ReactNode {
     }
     return params.toString();
   }, [state.filters, search]);
-  const query = useShownQuery(
+  const query = useQuery(
     deliveryTimelineQuery({ kind: "timeline", window: liveWindow(state.window), query: liveQuery })
   );
   const data = query.data;
@@ -314,7 +315,7 @@ export function DeliveryPage(): ReactNode {
   // the brush window), so they read the brush where the timeline keeps reading the whole window.
   // With no brush the timeline's own answer carries them (`measures`), so the page subscribes its
   // population once; only a brush subscribes a measures view of its own, for its window.
-  const brushed = useShownQuery({
+  const brushed = useQuery({
     ...deliveryMeasuresQuery({
       kind: "measures",
       window:

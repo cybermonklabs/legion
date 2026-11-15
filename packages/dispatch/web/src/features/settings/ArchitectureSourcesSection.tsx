@@ -1,12 +1,7 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
-import { useCache } from "../../api/cache/cache";
-import { useShownQuery } from "../../api/cache/shown-query";
-import {
-  apiErrorMessage,
-  architectureSourceDeleteRequest,
-  architectureSourceRequest,
-  architectureSourceSyncRequest,
-} from "../../api/client";
+
+import { api, apiErrorMessage } from "../../api/client";
 import { architectureSourcesQuery, projectsQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -37,15 +32,9 @@ import {
 import { ProjectSelect } from "./ProjectSelect";
 
 /** A source's address: a project and one of its repositories. */
-export interface SourceKey {
+interface SourceKey {
   readonly project: string;
   readonly repo: string;
-}
-
-/** The line every write of one architecture source stands in: its save, its removal and the
- *  refresh the project's own page offers (`features/architecture/ArchitecturePage.tsx`). */
-export function sourceLine({ project, repo }: SourceKey): string {
-  return `architecture-source:${project}/${repo}`;
 }
 
 /** A project's architecture sources, one row per repository: the branch its architecture
@@ -54,27 +43,24 @@ export function sourceLine({ project, repo }: SourceKey): string {
  * "Access verified" until a sync reports otherwise — and a failed check surfaces the server's
  * reason inline. Saving a repository the project already has changes that source's branch. */
 export function ArchitectureSourcesSection(): ReactNode {
-  const cache = useCache();
+  const queryClient = useQueryClient();
   const [project, setProject] = useState("");
   const [repository, setRepository] = useState("");
   const [branch, setBranch] = useState("main");
   const submitGuard = useSubmitGuard();
-  const sources = useShownQuery(architectureSourcesQuery());
-  const projects = useShownQuery(projectsQuery());
-  // The form shows a refused save beside the repository it was refused over. Every write of one
-  // source - its save, its removal and its refresh - stands in that row's line
-  // (`architecture-source:<project>/<owner/repo>`), so they go out in press order.
+  const sources = useQuery(architectureSourcesQuery());
+  const projects = useQuery(projectsQuery());
+  // The form shows a refused save beside the repository it was refused over.
   const saveSource = useKeyedWrite({
     inline: true,
     label: (input: { project: string; repo: string; branch: string }) =>
       `${input.project}'s architecture source ${input.repo}`,
-    request: (input: { project: string; repo: string; branch: string }) =>
-      architectureSourceRequest(input.project, input.repo, { branch: input.branch }),
-    target: (input) => sourceLine(input),
+    write: (input, bounds) =>
+      api.putArchitectureSource(input.project, input.repo, { branch: input.branch }, bounds),
     onSettled: () => submitGuard.release(),
     onSuccess: () => {
       // The settings list's key prefixes every project's own list, so both refresh.
-      void cache.invalidate({ queryKey: architectureSourcesQuery().queryKey });
+      void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey });
       setProject("");
       setRepository("");
       setBranch("main");
@@ -82,9 +68,9 @@ export function ArchitectureSourcesSection(): ReactNode {
   });
   const deleteSource = useKeyedWrite({
     label: (source: SourceKey) => `${source.project}'s architecture source ${source.repo} removed`,
-    request: (source: SourceKey) => architectureSourceDeleteRequest(source.project, source.repo),
-    target: sourceLine,
-    onSuccess: () => void cache.invalidate({ queryKey: architectureSourcesQuery().queryKey }),
+    write: (source, bounds) => api.deleteArchitectureSource(source.project, source.repo, bounds),
+    onSuccess: () =>
+      void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
   });
   // A refresh settles into the row either way: a rejected model comes back 200
   // with the reason in last_error, and even a 409 (access revoked, branch gone)
@@ -92,9 +78,9 @@ export function ArchitectureSourcesSection(): ReactNode {
   const refreshSource = useKeyedWrite({
     label: (source: SourceKey) =>
       `Refresh of ${source.project}'s architecture source ${source.repo}`,
-    request: (source: SourceKey) => architectureSourceSyncRequest(source.project, source.repo),
-    target: sourceLine,
-    onSettled: () => void cache.invalidate({ queryKey: architectureSourcesQuery().queryKey }),
+    write: (source, bounds) => api.syncArchitectureSource(source.project, source.repo, bounds),
+    onSettled: () =>
+      void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
   });
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

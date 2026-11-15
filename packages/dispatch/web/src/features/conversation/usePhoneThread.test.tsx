@@ -1,13 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
+import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-
-import {
-  cacheOf,
-  type MutationKey,
-  QueryClient,
-  QueryClientProvider,
-} from "../../api/cache/test-client";
 
 import { ApiError, api } from "../../api/client";
 import { pastDeadlineKey } from "../../hooks/useSending";
@@ -60,7 +54,7 @@ async function refuseReply(queryClient: QueryClient, mutationKey: MutationKey): 
     sendKey: "send-1",
   };
   try {
-    const store = heldSends(cacheOf(queryClient));
+    const store = heldSends(queryClient);
     act(() => {
       store.send(mutationKey, request);
     });
@@ -197,7 +191,7 @@ test("Back with the thread composer's refusal showing drops the refusal and ends
 
     act(() => view.result.current.leave());
     expect(view.result.current.id).toBeUndefined();
-    expect(heldSends(cacheOf(queryClient)).get(view.result.current.composerKey)).toBeUndefined();
+    expect(heldSends(queryClient).get(view.result.current.composerKey)).toBeUndefined();
     expect(view.result.current.replyTo).toBeNull();
     expect(view.result.current.holds("comment-1")).toBe(false);
   } finally {
@@ -218,9 +212,7 @@ test("Back from another thread keeps the thread composer's refusal for its own t
 
     act(() => view.result.current.open("comment-2"));
     act(() => view.result.current.leave());
-    expect(heldSends(cacheOf(queryClient)).get(view.result.current.composerKey)?.status).toBe(
-      "refused"
-    );
+    expect(heldSends(queryClient).get(view.result.current.composerKey)?.status).toBe("refused");
     expect(view.result.current.replyTo).toBe(reply);
   } finally {
     view.unmount();
@@ -240,7 +232,7 @@ test("ending the thread composer's reply drops a refusal it holds", async () => 
     await refuseReply(queryClient, view.result.current.composerKey);
 
     act(() => view.result.current.endReply());
-    expect(heldSends(cacheOf(queryClient)).get(view.result.current.composerKey)).toBeUndefined();
+    expect(heldSends(queryClient).get(view.result.current.composerKey)).toBeUndefined();
     expect(view.result.current.replyTo).toBeNull();
     expect(view.result.current.id).toBe("comment-1");
   } finally {

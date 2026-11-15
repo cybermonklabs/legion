@@ -1,8 +1,8 @@
 import { writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { RECONNECT_SPREAD_MS } from "../web/src/api/cache/live-socket";
-import { QUERY_RETRY_DELAY_MS } from "../web/src/api/cache/query-client";
+import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
+import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 
 import {
   createAsk,
@@ -418,7 +418,7 @@ test("an out-of-schema document names its repair and uploads replacement markdow
   expect(corrupted.status()).toBe(204);
 
   await page.goto(`/issues/${issue.key}/artifacts/${upload.artifact.slug}`);
-  await expect(page.getByText("replace the document from markdown to repair it")).toBeVisible();
+  await expect(page.getByText("A person decides whether to replace the document")).toBeVisible();
   await page.getByLabel("Upload artifact").setInputFiles({
     buffer: Buffer.from("repaired\n"),
     mimeType: "text/markdown",
@@ -461,7 +461,7 @@ test("an out-of-schema document does not reconnect from cached text", async ({ p
   expect(corrupted.status()).toBe(204);
   await openDocument();
 
-  await expect(page.getByText("replace the document from markdown to repair it")).toBeVisible();
+  await expect(page.getByText("A person decides whether to replace the document")).toBeVisible();
   await expect(documentEditor(page)).toBeHidden();
   expect(await page.evaluate(() => "__e2eNavMarker" in window)).toBe(true);
   expect(sockets()).toBe(1);
@@ -507,7 +507,7 @@ test("a mounted editor does not reconnect into a document made unreadable while 
   // socket, which is the count this row reads.
   await page.clock.fastForward(RECONNECT_SPREAD_MS);
 
-  await expect(page.getByText("replace the document from markdown to repair it")).toBeVisible();
+  await expect(page.getByText("A person decides whether to replace the document")).toBeVisible();
   await expect(documentEditor(page)).toBeHidden();
   const text = await page.request.get(`/api/v1/artifacts/${upload.artifact.id}/text`);
   expect(text.status()).toBe(409);

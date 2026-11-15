@@ -6,17 +6,14 @@ import { configure } from "@testing-library/react";
 // happy-dom has no IndexedDB; the store of a document's unsent edits (`pending-edits.ts`) runs on
 // this in-memory one, which keeps IndexedDB's transaction ordering.
 import "fake-indexeddb/auto";
-import serverBlockSchema from "../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
-import { notifyManager } from "../api/cache/test-client";
-import { type Writes, watchWriteStores } from "../api/cache/write-store";
+import { notifyManager } from "@tanstack/react-query";
 import { resetReachability } from "../api/reachability";
-import type { BlockSchema } from "../api/types";
-import { blockSchemaCache } from "../features/doc/schema";
 import { resetAnswerDrafts } from "../features/inbox/answer-drafts";
 import { resetOutstandingAnswers } from "../features/inbox/outstanding-answers";
 import { resetReplyDrafts } from "../features/inbox/reply-drafts";
 import { resetPinState } from "../features/issue/pin-write";
 import { resetWriteStorage } from "../features/writes/write-storage";
+import { type Writes, watchWriteStores } from "../features/writes/write-store";
 import { reportableJestDomMatchers } from "./jest-dom-matchers";
 import { forgetTestAnswers, requestsThatReachedNetwork } from "./network";
 import { resetRouteAnswers } from "./send-answers";
@@ -96,13 +93,6 @@ expect.extend(reportableJestDomMatchers());
 // up with it is the old second as a bound: a held-clock `waitFor` no longer catches a slowdown
 // that stays under 10 s of fake time, and a failing one reports ten times slower.
 configure({ asyncUtilTimeout: 10_000 });
-
-// Unit tests have no Dispatch server to answer GET /api/v1/schema/blocks, so the session cache
-// starts already holding the checked-in server schema: every MarkdownBody, ask card, and
-// document surface renders through the real schema without a network request, and a test that
-// wants a different schema replaces it through its own `api.getBlockSchema` spy before the
-// first render in its file.
-void blockSchemaCache.load(async () => serverBlockSchema as unknown as BlockSchema);
 
 // A route a test answers - `answerRoute` above this seam, `answerRequests` at it - is that test's:
 // the next test answers its own.

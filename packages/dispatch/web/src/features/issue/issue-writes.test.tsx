@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for blur, submit, focus, one edit inside a single act batch, and one repeated identical selection
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,12 +7,11 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api, NetworkError } from "../../api/client";
-import { projectIssuesQueryKey } from "../../api/queries";
 import type { Issue, IssueDetails, IssueSummary } from "../../api/types";
 import type { IssueStatus } from "../project/board-model";
 import { useBoardMoves } from "../project/board-moves";
+import { projectIssuesQueryKey } from "../project/issue-filters";
 import { IssuePage } from "./IssuePage";
 
 const issue: IssueDetails = {
@@ -449,26 +449,19 @@ test("IssuePage ignores same-task duplicate route saves", async () => {
   }
 });
 
-// The engine's submit guard is gone with the queues it ordered (R8 of dispatch://INFRA-299), so
-// two status picks in one task are two writes of the issue's line rather than one press and one
-// refusal: the store sends them one after the other, and the status the person picked is what
-// the server is left with. A browser fires no `change` for a selection the control already
-// holds, so this pair is reachable from a test alone.
-test("IssuePage sends two same-task status saves one after the other, in the issue's line", async () => {
+test("IssuePage ignores a same-task duplicate status save", async () => {
   const { patchIssue, restore } = stubIssueApi();
   const { unmount } = renderIssuePage();
 
   try {
     const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
+    // The same selection delivered twice in one task is what the guard under test ignores, and
     // user-event's `selectOptions` cannot deliver a selection the control already holds.
     fireEvent.change(status, { target: { value: "backlog" } });
     fireEvent.change(status, { target: { value: "backlog" } });
 
-    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
-    expect(patchIssue.mock.calls).toEqual([
-      ["CORE-1", { status: "backlog" }, keyedAttempt],
-      ["CORE-1", { status: "backlog" }, keyedAttempt],
-    ]);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt);
   } finally {
     unmount();
     restore();
@@ -616,13 +609,9 @@ test("IssuePage does not retry an invalid route draft after a failed save", asyn
     await user.clear(route);
     await user.click(route);
     await user.paste("not-a-route");
-    // Retry sits in the header, outside the route editor's panel, so pressing it dismisses the
-    // panel and discards the invalid draft with it - what Cancel and Escape do. Neither the
-    // press nor the discard may send anything.
     await user.click(screen.getByRole("button", { name: "Retry" }));
     expect(patchIssue).toHaveBeenCalledTimes(1);
 
-    route = await openRouteEditor();
     saveRoute = screen.getByRole("button", { name: "Save route" });
     routeForm = saveRoute.closest("form");
     if (routeForm === null) {
@@ -820,14 +809,12 @@ test("IssuePage does not submit a route that was typed but never saved", async (
 
   try {
     const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
+    const route = await openRouteEditor();
     await user.selectOptions(status, "backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
 
-    // The route editor opens over its rail item, and the Status pick is outside that panel, so
-    // the draft is typed with the status save already out rather than before it.
-    const route = await openRouteEditor();
     await user.click(route);
     await user.paste("role:legion");
     act(() => {
@@ -897,13 +884,7 @@ test("IssuePage renders the server's reason when a title save is refused, with n
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "Renamed" }, keyedAttempt)
     );
 
-    // The blur that saves closed the editor, so the heading is what the person reads: it keeps
-    // the title they typed, and the reason stands in the header's own alert beneath it, not in
-    // the editor's `aria-describedby`, which names the local "Title is required." alone.
-    const reported = await screen.findByText(refusal);
-    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Renamed");
-    expect(reported.id).toBe("issue-title-error");
-    expect(reported).toHaveAttribute("role", "alert");
+    await screen.findByText(refusal);
     expect(screen.queryByText("Could not update this issue.")).not.toBeInTheDocument();
     // Dispatch refuses the same title every time, so nothing offers to send it again.
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
@@ -951,11 +932,7 @@ test("IssuePage retries an unchanged failed route draft", async () => {
   }
 });
 
-// The route no longer waits for the reader to retry the title before it: the store lets a
-// refused write go and the next write of the issue's line goes out (R8 of
-// dispatch://INFRA-299). The title's refusal keeps its Retry, which sends that title again,
-// after the route that passed it.
-test("IssuePage sends the route behind a failed title at once, and Retry sends that title again", async () => {
+test("IssuePage retries a failed drained title before sending the queued route", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const statusSave = Promise.withResolvers<Issue>();
@@ -972,20 +949,19 @@ test("IssuePage sends the route behind a failed title at once, and Retry sends t
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
 
-    // The title editor is staged first and closed by its own blur, because the route editor
-    // opens over its rail item in a panel and a press on the heading outside that panel
-    // dismisses it - exactly as a press outside any popover does.
+    // The route input takes focus when it opens, which would blur (and submit) an open title
+    // editor exactly as a click does in a browser; open it first so both drafts can be staged.
+    const route = await openRouteEditor();
     const title = await openTitleEditor();
+    const routeForm = screen.getByRole("button", { name: "Save route" }).closest("form");
+    if (routeForm === null) {
+      throw new Error("Save route must be inside a form.");
+    }
     await user.clear(title);
     await user.click(title);
     await user.paste("Queued title");
     // Blur has no user-event form; it is what the title editor saves on.
     fireEvent.blur(title);
-    const route = await openRouteEditor();
-    const routeForm = screen.getByRole("button", { name: "Save route" }).closest("form");
-    if (routeForm === null) {
-      throw new Error("Save route must be inside a form.");
-    }
     await user.click(route);
     await user.paste("role:queued");
     // Submit has no user-event form; the route form saves on its own submit.
@@ -999,14 +975,11 @@ test("IssuePage sends the route behind a failed title at once, and Retry sends t
     );
     titleSave.reject(new Error("offline"));
     await screen.findByRole("alert");
-    await waitFor(() =>
-      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:queued" }, keyedAttempt)
-    );
-    expect(patchIssue).toHaveBeenCalledTimes(3);
+    expect(patchIssue).toHaveBeenCalledTimes(2);
 
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() =>
-      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "Queued title" }, keyedAttempt)
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:queued" }, keyedAttempt)
     );
     expect(patchIssue).toHaveBeenCalledTimes(4);
   } finally {
@@ -1132,7 +1105,7 @@ test("a board move then a header status change land in press order after an outa
   const outstanding = Promise.withResolvers<void>();
   const moveAnswers = Promise.withResolvers<void>();
   patchIssue.mockImplementation(async (key, input, bounds) => {
-    // As `api.send` does, the request is told to `sent` before anything goes out.
+    // As `api.patchIssue` does, the request is told to `sent` before anything goes out.
     bounds.sent?.({ body: input, method: "PATCH", path: `/api/v1/issues/${key}` });
     if (!up) throw new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"));
     if (input.rank !== undefined) {

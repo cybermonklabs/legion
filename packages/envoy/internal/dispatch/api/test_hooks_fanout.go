@@ -45,8 +45,12 @@ const (
 	testHookAcksChannel = "dispatch_test_hook_acks"
 	// testHookLockNamespace is the first key of every test-hook lock ("HOOK"), in the two-key form
 	// so it can never collide with the single-key locks internal/dispatch/docs takes, and apart
-	// from the two-key namespaces of the loop leases (duty.leaseNamespace, "LOOP") and the copy
-	// locks (docs.copiedAsksLockNamespace, "COPY"). The second key is the listening connection's
+	// from the other two-key namespaces of the server: the loop leases' (duty.leaseNamespace,
+	// "LOOP"), the copy locks' (docs.copiedAsksLockNamespace, "COPY"), a conditional edit's
+	// admission's (docs.conditionalEditQueueLockNamespace, "QUEU"), the issue dependencies'
+	// (lockProjectIssueDependencies), the deployment's own issue dependencies'
+	// (lockDeploymentIssueDependencies), one repository mapping's write (lockRepoProjectWrite) and
+	// the rename graph's own (refuseRepoRenameChain). The second key is the listening connection's
 	// backend pid, which no other live connection has, so two processes' keys never meet.
 	testHookLockNamespace int32 = 0x484F4F4B
 	// testHookTimeout bounds a call: the wait for this process's own listener, and then for every

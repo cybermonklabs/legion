@@ -1,6 +1,7 @@
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useId, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { useShownQuery } from "../../api/cache/shown-query";
+
 import { api } from "../../api/client";
 import type { Artifact, IssueReferences } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -245,7 +246,7 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
   const closedRefusalId = useId();
   const closedRefusal = isClosed ? CLOSED_ISSUE_DOCUMENT_REFUSAL : null;
   const upload = useArtifactUpload({ issue: issueKey ?? "" }, { refusal: closedRefusal });
-  const artifacts = useShownQuery({
+  const artifacts = useQuery({
     enabled: issueKey !== undefined,
     queryKey: ["artifacts", issueKey],
     queryFn: () => {
@@ -255,7 +256,7 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
       return api.listArtifacts(issueKey);
     },
   });
-  const references = useShownQuery({
+  const references = useQuery({
     enabled: issueKey !== undefined,
     queryKey: ["issue", issueKey, "references"],
     queryFn: () => {

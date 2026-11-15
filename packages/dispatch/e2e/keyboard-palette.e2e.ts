@@ -376,7 +376,7 @@ test("a Set priority row the server refuses is reported by the header, in the di
     await expect(dialog).toHaveCount(0);
 
     // The row writes through the page's one priority write, so the header reports its refusal
-    // and the badge shows Dispatch's priority again, exactly as for the picker and the digit keys.
+    // and the badge rolls back, exactly as for the picker and the digit keys.
     const header = page.getByTestId("issue-header");
     const failure = header
       .getByRole("alert")

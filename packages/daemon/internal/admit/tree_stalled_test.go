@@ -482,15 +482,18 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 // member nothing is going to move. They are the control for the waits as well: the pass that
 // leaves the waiting trees alone is a pass that still names every tree that has stopped.
 //
-// The four waits silence a tree only while the project's line can still move, and the last two
-// cases are that clause in both directions. The trees above are a project whose line moves: the
-// ones that have stopped hold slots of their own and no wait silences them, so a worker of one
-// of them can finish and give its slot back. The deadlocked project below holds nothing but
-// trees that wait by design — every slot of it held by an issue one of the four silences, every
-// claim of it idle — and no work of it can start again by itself, because a slot is freed by a
-// phase or by a status change and both need a worker that needs a slot. Every tree of it is
-// named, however its members wait. The control after it is that same project with one agent at
-// work, which is a line that can still move, and its trees are told to nobody.
+// The four waits silence a tree only while the project's line can still move, save a wait on
+// work outside the tree, which silences it whatever the line does
+// (lineHolds.waitsOnWorkOutsideItsTree, TestATreeThatWaitsOnABlockedByLinkIsNeverToldAsStopped),
+// and the last two cases are that clause in both directions. The trees above are a project
+// whose line moves: the ones that have stopped hold slots of their own and no wait silences
+// them, so a worker of one of them can finish and give its slot back. The deadlocked project
+// below holds nothing but trees that wait by design — every slot of it held by an issue one of
+// the four silences, every claim of it idle — and no work of it can start again by itself,
+// because a slot is freed by a phase or by a status change and both need a worker that needs a
+// slot. None of its members waits on work outside its tree, so every tree of it is named. The
+// control after it is that same project with one agent at work, which is a line that can still
+// move, and its trees are told to nobody.
 //
 // The test is written over the behaviour and not over the predicate: it seeds the trees, runs
 // an admission pass past the bound and reads what the controller is told, so a later rule that
@@ -784,14 +787,21 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 	// project, so a deadlock seeded beside the trees above would be no deadlock at all.
 	const deadAwaiting, deadParent, deadChild = "LEGION-800", "LEGION-810", "LEGION-811"
 	// deadlockedProject seeds one such project and the admission that reads it: a root waiting
-	// on a person, holding a slot the first wait silences, and a root waiting for the one open
-	// Dispatch child under it, holding a slot the third wait silences while that child stands
-	// in the line holding none, which is the fourth. The cap is exactly the two slots they
-	// hold, so the child in the line is offered neither. architect is the state of the parent's
-	// architect claim, which is the one fact the control changes. t is the subtest's own, so
-	// the database it opens is closed with that subtest and a premise it refuses is refused
-	// there rather than in the test that owns neither.
-	deadlockedProject := func(t *testing.T, architect supervise.ClaimState) (*pgxpool.Pool, *Admission) {
+	// on a person, holding a slot the first wait silences, and a root at admitted with one open
+	// Dispatch child under it. The cap is exactly the two slots they hold. opened says whether
+	// the parent's design gate has opened. Where it has not, the parent is its architect writing
+	// the design, which keeps its row through any wait (blockers.waitsOf), and the closed gate
+	// holds the parent and the child alike (design_gate, the second wait): every slot of the
+	// project is held by an issue a wait silences and no slot is free, which is the deadlock.
+	// Where it has opened, the parent's own first phase waits for the child (children_first), and
+	// a started issue that waits on another issue gives its row back (releaseSlotsForWaits): the
+	// pass frees a slot before the measure and the child, standing in the line holding none,
+	// takes it on that same pass, so that project is no deadlock under the composed rule, which
+	// is the case the liveness clause's free-slot term answers. architect is the state of the
+	// parent's architect claim, which is the one fact the control changes. t is the subtest's
+	// own, so the database it opens is closed with that subtest and a premise it refuses is
+	// refused there rather than in the test that owns neither.
+	deadlockedProject := func(t *testing.T, architect supervise.ClaimState, opened bool) (*pgxpool.Pool, *Admission) {
 		t.Helper()
 		deadPool := migratedPool(t)
 		registerController(t, deadPool)
@@ -799,9 +809,12 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		deadAdmission.UseStalledTreeNotice(bound)
 		seedQuietRoot(t, deadPool, deadAwaiting, "A", phase.AwaitingPerson)
 		seedQuietRoot(t, deadPool, deadParent, "B", phase.Admitted)
-		deadApproved := 1
-		seedGate(t, deadPool, record.DesignGate{Issue: deadParent, ArtifactID: "artifact-810", LatestVersion: 1,
-			ApprovedVersion: &deadApproved, EverOpened: true})
+		gate := record.DesignGate{Issue: deadParent, ArtifactID: "artifact-810", LatestVersion: 1}
+		if opened {
+			deadApproved := 1
+			gate.ApprovedVersion, gate.EverOpened = &deadApproved, true
+		}
+		seedGate(t, deadPool, gate)
 		seedQuietChild(t, deadPool, deadParent, deadChild, "B1", phase.Admitted, "todo")
 		seedMirror(t, deadPool, deadParent, "in_progress")
 		seedMirrorChild(t, deadPool, deadChild, "todo", deadParent)
@@ -809,16 +822,13 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		seedClaim(t, deadRecords, deadAwaiting, deadAwaiting, claim.RoleArchitect, supervise.StateIdle)
 		seedClaim(t, deadRecords, deadParent, deadParent, claim.RoleArchitect, architect)
 
-		// The project's own premise, read from the facts its pass judges from: both slots of
-		// the project are held, each by a root one of the four waits silences, and the child
-		// holds none and stands in the line, which is the cap's own hold. Without this, a
-		// project named for some other reason would read here as a deadlock and prove nothing.
+		// The project's own premise, read from the facts its pass judges from before any pass
+		// runs: both slots of the project are held, each by a root one of the four waits
+		// silences. Without this, a project named for some other reason would read here as a
+		// deadlock and prove nothing.
 		deadFacts, deadSlots := passFacts(t, deadPool)
 		if !issue(t, deadPool, deadAwaiting).AwaitingPerson() {
 			t.Fatalf("%s does not wait on a person: the premise is that every slot holder of this project waits by design", deadAwaiting)
-		}
-		if _, waits := deadFacts.ChildWaits[deadParent]; !waits {
-			t.Fatalf("%s waits for no child of its own: the pass's own facts hold %v", deadParent, deadFacts.ChildWaits)
 		}
 		for _, slot := range deadSlots {
 			if slot.Issue != deadAwaiting && slot.Issue != deadParent {
@@ -827,11 +837,25 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 			}
 		}
 		if len(deadSlots) != 2 {
-			t.Fatalf("the project holds %#v, want one slot for each of its two roots: the cap is full and no holder of it waits for nothing",
-				deadSlots)
+			t.Fatalf("the project holds %#v, want one slot for each of its two roots: the cap is full", deadSlots)
 		}
-		if got, want := waitingLine(t, deadPool, testProject, nil), []string{deadChild}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("the waiting line of the project is %v, want %v: the child is the issue the cap itself holds", got, want)
+		if opened {
+			if _, waits := deadFacts.ChildWaits[deadParent]; !waits {
+				t.Fatalf("%s waits for no child of its own: the pass's own facts hold %v", deadParent, deadFacts.ChildWaits)
+			}
+			if got, want := waitingLine(t, deadPool, testProject, nil), []string{deadChild}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("the waiting line of the project is %v, want %v: the child waits for a slot", got, want)
+			}
+			return deadPool, deadAdmission
+		}
+		words := passWords(t, deadPool, deadFacts, deadSlots)
+		for _, key := range []string{deadParent, deadChild} {
+			if words[key] != record.HeldDesignGate {
+				t.Fatalf("the line leaves %s behind for %q, want %q: the closed gate is what holds the parent's tree", key, words[key], record.HeldDesignGate)
+			}
+		}
+		if got := waitingLine(t, deadPool, testProject, nil); len(got) != 0 {
+			t.Fatalf("the waiting line of the project is %v, want it empty: a free slot would have an issue to take it", got)
 		}
 		return deadPool, deadAdmission
 	}
@@ -840,7 +864,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 	// and every claim of it is idle, so nothing of it can start again by itself, and every tree
 	// of it is named with its quiet hours whatever its members wait for.
 	t.Run("deadlocked", func(t *testing.T) {
-		deadPool, deadAdmission := deadlockedProject(t, supervise.StateIdle)
+		deadPool, deadAdmission := deadlockedProject(t, supervise.StateIdle, false)
 		deadSettled := settleMovements(t, deadPool, deadAwaiting, deadParent, deadChild)
 		deadAdmission.now = func() time.Time { return deadSettled.Add(7 * time.Hour) }
 
@@ -857,7 +881,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 				" is in admitted. No role works this phase. The record holds no pull request." + decide},
 		}
 		if got := stalledNotices(t, deadPool); !reflect.DeepEqual(got, wantDeadlocked) {
-			t.Fatalf("the deadlocked project was told %#v, want %#v: where no slot holder of a project can finish and no agent of it is at work, every tree of it is named however its members wait",
+			t.Fatalf("the deadlocked project was told %#v, want %#v: where no slot holder of a project can finish and no agent of it is at work, every tree of it is named save one that waits on work outside it, and no member here does",
 				got, wantDeadlocked)
 		}
 	})
@@ -867,7 +891,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 	// move and the four waits silence what they are there to silence — neither the tree waiting
 	// on a person nor the tree whose architect is working is told.
 	t.Run("line-moving", func(t *testing.T) {
-		livePool, liveAdmission := deadlockedProject(t, supervise.StateWorking)
+		livePool, liveAdmission := deadlockedProject(t, supervise.StateWorking, false)
 		liveSettled := settleMovements(t, livePool, deadAwaiting, deadParent, deadChild)
 		liveAdmission.now = func() time.Time { return liveSettled.Add(7 * time.Hour) }
 
@@ -875,6 +899,33 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 
 		if got := stalledRoots(t, livePool); got != nil {
 			t.Fatalf("the project with an agent at work was told of %v, want nothing: every tree of it waits by design and its line can still move", got)
+		}
+	})
+
+	// 16a. The same two trees with the parent's design gate open: the parent's own first phase
+	// waits for its open child, and a started issue that waits on another issue gives its row
+	// back (releaseSlotsForWaits) on the pass, before the measure. Every claim is idle and every
+	// remaining slot holder waits by design, so the claim term and the slot term both fail, but
+	// a slot now stands free and the child in the line waits on nothing, so the promotion that
+	// follows the measure starts it on that same pass: the line moves, the free-slot term says
+	// so, and neither tree is told. Without that term this project read as a deadlock on the very
+	// pass that promotes one of its issues.
+	t.Run("released-slot-moves-the-line", func(t *testing.T) {
+		freePool, freeAdmission := deadlockedProject(t, supervise.StateIdle, true)
+		freeSettled := settleMovements(t, freePool, deadAwaiting, deadParent, deadChild)
+		freeAdmission.now = func() time.Time { return freeSettled.Add(7 * time.Hour) }
+
+		tick(t, freePool, freeAdmission, "released-slot-moves-the-line")
+
+		if got := issue(t, freePool, deadParent); got.ReleasedForWaitAt == nil || holdsSlot(t, freePool, deadParent) {
+			t.Fatalf("%s = %+v holding a slot %t, want it released for the wait on its child: the premise of this case", deadParent,
+				got, holdsSlot(t, freePool, deadParent))
+		}
+		if !holdsSlot(t, freePool, deadChild) {
+			t.Fatalf("%s holds no slot after the pass, want the one its parent gave back: the premise is that the line moved on this pass", deadChild)
+		}
+		if got := stalledRoots(t, freePool); got != nil {
+			t.Fatalf("the project was told of %v, want nothing: a slot a wait gave back and an issue of the line to take it is the line moving", got)
 		}
 	})
 
@@ -891,7 +942,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 	const deadMerging = "LEGION-820"
 	silentWorkerProject := func(t *testing.T, silence, background time.Duration) (*pgxpool.Pool, *Admission) {
 		t.Helper()
-		silentPool, silentAdmission := deadlockedProject(t, supervise.StateIdle)
+		silentPool, silentAdmission := deadlockedProject(t, supervise.StateIdle, false)
 		if silence > 0 {
 			silentAdmission.UseWorkerSilence(silence, background)
 		}
@@ -1041,4 +1092,334 @@ func TestAWorkingTreeIsNeverReportedStalled(t *testing.T) {
 				got, wantSilent)
 		}
 	})
+}
+
+// A started issue that gave its admission slot back to wait on another issue (blockers.waitsOf,
+// releaseSlotsForWaits) is a wait by design: a blocker holds it, and it stands in the waiting
+// line as record.LineWaitingOnIssue holding no slot, which is the line's own membership and so
+// no word of record.HeldReason (silencedTree's doc says why the table gains no row for it). Its
+// tree is told to nobody while the project's line can move, and, since the link is work outside
+// the tree, where the line cannot move as well (lineHolds.waitsOnWorkOutsideItsTree,
+// TestATreeThatWaitsOnABlockedByLinkIsNeverToldAsStopped). The same link on an issue past its
+// review is no such wait: that issue holds no slot by the phase rule (record.KeepsSlot), needs
+// none and stands in no line, so the walk leaves it behind as an issue already started that has
+// stopped, and its tree is told. A third tree that has simply stopped holds a slot no wait
+// silences, which keeps the project's line moving and is told as the control.
+//
+// The release runs on a first pass at the moment the movements settle, and the measure is read
+// on a second pass seven hours later, so a release that marked a movement could not hide the
+// tree it released behind a quiet time inside the bound.
+func TestAStartedIssueThatGaveItsSlotBackForAWaitIsAWaitByDesign(t *testing.T) {
+	const (
+		released = "LEGION-701"
+		pastRev  = "LEGION-710"
+		stopped  = "LEGION-720"
+		blocker  = "LEGION-709"
+	)
+	pool := migratedPool(t)
+	bound := deploymentBound(t, "")
+	admission := quiet(t, 4)
+	admission.UseStalledTreeNotice(bound)
+	registerController(t, pool)
+	records := claimStore(t, pool)
+
+	seedMirror(t, pool, blocker, "in_progress")
+	seedQuietRoot(t, pool, released, "A", phase.Implementing)
+	seedMirror(t, pool, released, "in_progress", blocker)
+	seedClaim(t, records, released, released, claim.RoleImplementer, supervise.StateIdle)
+	seedQuietRoot(t, pool, pastRev, "B", phase.Merging)
+	seedMirror(t, pool, pastRev, "in_progress", blocker)
+	seedClaim(t, records, pastRev, pastRev, claim.RoleMerger, supervise.StateIdle)
+	seedQuietRoot(t, pool, stopped, "C", phase.Implementing)
+	seedClaim(t, records, stopped, stopped, claim.RoleImplementer, supervise.StateIdle)
+
+	settled := settleMovements(t, pool, released, pastRev, stopped)
+	admission.now = func() time.Time { return settled }
+	tick(t, pool, admission, "release")
+
+	// The premise, read after the release: the issue at work before its review gave its row back
+	// for the wait and stands in the line as the waiting kind; the issue past its review holds no
+	// row, carries no mark of a release for a wait and stands in no line.
+	if at := issue(t, pool, released).ReleasedForWaitAt; at == nil || !at.Equal(settled) || holdsSlot(t, pool, released) {
+		t.Fatalf("%s = %+v holding a slot %t, want it released for its wait at %v and holding none", released,
+			issue(t, pool, released), holdsSlot(t, pool, released), settled)
+	}
+	if marked := issue(t, pool, pastRev).ReleasedForWaitAt; marked != nil || holdsSlot(t, pool, pastRev) {
+		t.Fatalf("%s carries a release for a wait at %v and holds a slot %t, want neither: past its review it holds no slot to give back",
+			pastRev, marked, holdsSlot(t, pool, pastRev))
+	}
+	facts, slots := passFacts(t, pool)
+	kinds := map[string]record.LineKind{}
+	inTx(t, pool, func(tx pgx.Tx) {
+		issues, err := record.NewStore().LiveIssues(context.Background(), tx, testProject)
+		if err != nil {
+			t.Fatalf("list the live issues: %v", err)
+		}
+		line, _ := record.Waiting(issues, slots, facts)
+		for _, entry := range line {
+			kinds[entry.Issue.Key] = entry.Kind
+		}
+	})
+	if kinds[released] != record.LineWaitingOnIssue {
+		t.Fatalf("%s stands in the line as %v, want %v: the started issue that gave its row back waits there for one", released,
+			kinds[released], record.LineWaitingOnIssue)
+	}
+	if kind, stands := kinds[pastRev]; stands {
+		t.Fatalf("%s stands in the line as %v, want it in no line: an issue past its review needs no slot", pastRev, kind)
+	}
+
+	settled = settleMovements(t, pool, released, pastRev, stopped)
+	admission.now = func() time.Time { return settled.Add(7 * time.Hour) }
+	tick(t, pool, admission, "measure")
+
+	got := stalledRoots(t, pool)
+	slices.Sort(got)
+	if want := []string{pastRev, stopped}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the controller was told of %v, want %v: an issue that gave its slot back for a wait waits by design, and the same link on an issue past its review does not",
+			got, want)
+	}
+}
+
+// A started issue that gave its slot back to wait on a Dispatch blocked-by link (blockers.waitsOf,
+// releaseSlotsForWaits) never makes its own tree read as stopped, whatever project the issue it
+// waits on is in: its wait ends when that issue finishes, and nothing of its own tree is the
+// thing that has stopped. That holds where the project's line cannot move as well
+// (lineCanMove): the waiter is no slot holder and no entry the promotion can start, so a project
+// whose only work waits on another project reads as unable to move, and before this rule its
+// tree was told on the second pass. Where the issue it waits on is in this project and has
+// stopped, the notice goes on that issue's tree, which is the tree that has stopped, and not on
+// the waiter's.
+//
+// Each project runs over several passes with the clock moved past `stalled_tree_notice_hours`
+// each time, and each case says what every pass must have told: nothing for the project whose
+// only tree waits, and the stopped tree alone, on every pass, for the two that hold one. The
+// first pass is the one that releases the waiter's row.
+func TestATreeThatWaitsOnABlockedByLinkIsNeverToldAsStopped(t *testing.T) {
+	const (
+		waiter     = "LEGION-901"
+		otherIssue = "OTHER-9"
+		stoppedRet = "LEGION-910"
+		sameRoot   = "LEGION-920"
+	)
+	bound := deploymentBound(t, "")
+	// project seeds the waiter, a root in implementing with a Dispatch blocked-by link to
+	// blocker, under a cap of four, and answers the pool and the admission.
+	project := func(t *testing.T, blocker string) (*pgxpool.Pool, *Admission, *store.Store) {
+		t.Helper()
+		pool := migratedPool(t)
+		admission := quiet(t, 4)
+		admission.UseStalledTreeNotice(bound)
+		registerController(t, pool)
+		records := claimStore(t, pool)
+		seedQuietRoot(t, pool, waiter, "A", phase.Implementing)
+		seedMirror(t, pool, waiter, "in_progress", blocker)
+		seedClaim(t, records, waiter, waiter, claim.RoleImplementer, supervise.StateIdle)
+		return pool, admission, records
+	}
+	// The waiter alone, on a link to an issue of another project: the project's only tree waits,
+	// nothing of the project can move, and no pass tells anything.
+	t.Run("blocker-in-another-project", func(t *testing.T) {
+		pool, admission, _ := project(t, otherIssue)
+		seedMirrorIn(t, pool, "OTHER", otherIssue, "in_progress")
+		for pass, roots := range waitPasses(t, pool, admission, []string{waiter}, waiter) {
+			if roots != nil {
+				t.Fatalf("pass %d told the controller of %v, want nothing: a started issue that gave its slot back to wait on %s waits by design, whatever project %s is in",
+					pass+1, roots, otherIssue, otherIssue)
+			}
+		}
+	})
+
+	// The control: the same project with a second tree that has truly stopped, a root in retro,
+	// which holds no slot. The project's line still cannot move, so that tree is told on the
+	// first pass past the bound, and the waiter's tree is told on none.
+	t.Run("stopped-tree-beside-it", func(t *testing.T) {
+		pool, admission, records := project(t, otherIssue)
+		seedQuietRoot(t, pool, stoppedRet, "B", phase.Retro)
+		seedClaim(t, records, stoppedRet, stoppedRet, claim.RoleImplementer, supervise.StateIdle)
+		for pass, roots := range waitPasses(t, pool, admission, []string{waiter}, waiter, stoppedRet) {
+			if want := []string{stoppedRet}; !reflect.DeepEqual(roots, want) {
+				t.Fatalf("after pass %d the controller was told of %v, want %v: the tree that has stopped is told, and the tree that waits on another issue is not",
+					pass+1, roots, want)
+			}
+		}
+	})
+
+	// The issue it waits on is the root of another tree of this project, standing in its merge
+	// with its merger idle: that tree has stopped, so it is the one told, and the waiter's tree,
+	// which stands still only because that tree does, is not.
+	t.Run("stopped-blocker-in-this-project", func(t *testing.T) {
+		pool, admission, records := project(t, sameRoot)
+		seedQuietRoot(t, pool, sameRoot, "B", phase.Merging)
+		seedMirror(t, pool, sameRoot, "in_progress")
+		seedClaim(t, records, sameRoot, sameRoot, claim.RoleMerger, supervise.StateIdle)
+		for pass, roots := range waitPasses(t, pool, admission, []string{waiter}, waiter, sameRoot) {
+			if want := []string{sameRoot}; !reflect.DeepEqual(roots, want) {
+				t.Fatalf("after pass %d the controller was told of %v, want %v: the notice goes on the tree of the issue that stopped and not on the tree that waits on it",
+					pass+1, roots, want)
+			}
+		}
+	})
+
+	// The waiter held from implementing, on the same link to another project: a held issue up to
+	// its review holds its slot (record.KeepsSlot reads the phase it was held from), so it gives
+	// that slot back for the wait like any started issue, and the wait on work outside its tree
+	// leaves its tree unnamed whatever the hold says (the held paragraph of
+	// lineHolds.waitsOnWorkOutsideItsTree's doc). With waitsOnWorkOutsideItsTree false for a held
+	// issue, the first pass tells the controller of this tree; with blockers.waitsOf no longer
+	// releasing a held issue, waitPasses fails on its premise.
+	t.Run("held-waiter", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := quiet(t, 4)
+		admission.UseStalledTreeNotice(bound)
+		registerController(t, pool)
+		records := claimStore(t, pool)
+		seedQuietRoot(t, pool, waiter, "A", phase.Held)
+		seedMirror(t, pool, waiter, "in_progress", otherIssue)
+		seedClaim(t, records, waiter, waiter, claim.RoleImplementer, supervise.StateIdle)
+		seedMirrorIn(t, pool, "OTHER", otherIssue, "in_progress")
+		for pass, roots := range waitPasses(t, pool, admission, []string{waiter}, waiter) {
+			if roots != nil {
+				t.Fatalf("pass %d told the controller of %v, want nothing: a held issue that gave its slot back to wait on %s waits on work outside its tree",
+					pass+1, roots, otherIssue)
+			}
+		}
+	})
+}
+
+// waitPasses runs the release pass at the settled movement of keys and then three passes, each
+// seven hours past the one before, and answers the roots told on each pass after the first. The
+// notices are left in the outbox, so a tree told once is in every later answer. Each of waiters
+// must have given its row back for its wait on the release pass: that is the premise of every
+// case that reads it.
+func waitPasses(t *testing.T, pool *pgxpool.Pool, admission *Admission, waiters []string, keys ...string) [][]string {
+	t.Helper()
+	settled := settleMovements(t, pool, keys...)
+	admission.now = func() time.Time { return settled }
+	tick(t, pool, admission, "release")
+	for _, waiter := range waiters {
+		if at := issue(t, pool, waiter).ReleasedForWaitAt; at == nil || holdsSlot(t, pool, waiter) {
+			t.Fatalf("%s = %+v holding a slot %t, want it released for its wait: the premise of this case", waiter,
+				issue(t, pool, waiter), holdsSlot(t, pool, waiter))
+		}
+	}
+	var told [][]string
+	for pass := 1; pass <= 3; pass++ {
+		at := settled.Add(time.Duration(pass) * 7 * time.Hour)
+		admission.now = func() time.Time { return at }
+		tick(t, pool, admission, fmt.Sprintf("measure-%d", pass))
+		roots := stalledRoots(t, pool)
+		slices.Sort(roots)
+		told = append(told, roots)
+	}
+	return told
+}
+
+// A root whose own first phase waits for an open child (the children-first wait) gave its slot
+// back for that wait, and whether the wait is on work outside its tree depends on the child
+// (lineHolds.waitsOnWorkOutsideItsTree). A child the daemon has released is released work, which
+// nothing of the waiting tree moves: the tree is told to nobody however the line stands. A child
+// the architect filed and never released is work of the tree that its architect can release, so
+// the wait leaves the tree to the stall measure exactly as any other wait of the daemon's does:
+// told once the project's line can no longer move.
+//
+// What fails without the rule: with waitsOnWorkOutsideItsTree true for every
+// record.LineWaitingOnIssue entry whatever its children, the unreleased child's tree is told to
+// nobody and unreleased-child fails; with it false for every children-first wait, released-child
+// fails.
+//
+// Each project is the root alone at admitted under a design gate that has opened, with its
+// architect idle, under a cap of four, measured over three passes past the bound.
+func TestAWaitOnAChildIsAWaitByDesignOnlyOnceTheChildIsReleased(t *testing.T) {
+	const (
+		root  = "LEGION-950"
+		child = "LEGION-951"
+		other = "OTHER-9"
+	)
+	bound := deploymentBound(t, "")
+	project := func(t *testing.T) (*pgxpool.Pool, *Admission, *store.Store) {
+		t.Helper()
+		pool := migratedPool(t)
+		admission := quiet(t, 4)
+		admission.UseStalledTreeNotice(bound)
+		registerController(t, pool)
+		records := claimStore(t, pool)
+		seedQuietRoot(t, pool, root, "A", phase.Admitted)
+		seedGate(t, pool, record.DesignGate{Issue: root, ArtifactID: "artifact-950", LatestVersion: 1,
+			ApprovedVersion: new(1), EverOpened: true})
+		seedMirror(t, pool, root, "in_progress")
+		seedClaim(t, records, root, root, claim.RoleArchitect, supervise.StateIdle)
+		return pool, admission, records
+	}
+
+	// A child the architect filed and has not released, so the daemon holds no record of it.
+	// Nothing else of the project can move, and the tree is told on every pass.
+	t.Run("unreleased-child", func(t *testing.T) {
+		pool, admission, _ := project(t)
+		seedMirrorChild(t, pool, child, "backlog", root)
+		for pass, roots := range waitPasses(t, pool, admission, []string{root}, root) {
+			if want := []string{root}; !reflect.DeepEqual(roots, want) {
+				t.Fatalf("after pass %d the controller was told of %v, want %v: a wait on a child nobody released is the tree's own work, which its architect can do",
+					pass+1, roots, want)
+			}
+		}
+	})
+
+	// The released child: recorded in the tree, in implementing, and itself waiting on an issue
+	// of another project, so it gave its own slot back. Nothing of the project can move, and
+	// neither wait is the tree's own work: the tree is told to nobody.
+	t.Run("released-child", func(t *testing.T) {
+		pool, admission, records := project(t)
+		seedQuietChild(t, pool, root, child, "A1", phase.Implementing, "in_progress")
+		takeSlot(t, pool, child)
+		seedMirrorChild(t, pool, child, "in_progress", root, other)
+		seedMirrorIn(t, pool, "OTHER", other, "in_progress")
+		seedClaim(t, records, root, child, claim.RoleImplementer, supervise.StateIdle)
+		for pass, roots := range waitPasses(t, pool, admission, []string{root, child}, root, child) {
+			if roots != nil {
+				t.Fatalf("pass %d told the controller of %v, want nothing: %s waits on a child the daemon released, and that child waits on %s",
+					pass+1, roots, root, other)
+			}
+		}
+	})
+}
+
+// A queued root past its review holds no row and keeps none (slotFor), so its promotion opens
+// its tree whatever the cap says. The liveness clause's free-slot term reads that same decision
+// (capLets): a project whose only slot holder waits by design under a full cap, and whose only
+// line entry is such a root, can still move, and its waiting tree is told to nobody on the pass
+// that opens the carried root's tree.
+//
+// What fails without the rule: a free-slot term that answers false at a full cap before it
+// reads the line reads the project as unable to move on the very pass that opens the carried
+// root's tree, and the controller is told that LEGION-930's tree has stopped.
+func TestAFullCapWithAHandedOverRootPastItsReviewStillMoves(t *testing.T) {
+	const (
+		awaiting = "LEGION-930"
+		carried  = "LEGION-940"
+	)
+	pool := migratedPool(t)
+	admission := quiet(t, 1)
+	admission.UseStalledTreeNotice(deploymentBound(t, ""))
+	registerController(t, pool)
+	records := claimStore(t, pool)
+	seedQuietRoot(t, pool, awaiting, "A", phase.AwaitingPerson)
+	seedClaim(t, records, awaiting, awaiting, claim.RoleArchitect, supervise.StateIdle)
+	carriedRoot(t, pool, carried, phase.Accepting, "B")
+
+	if !holdsSlot(t, pool, awaiting) {
+		t.Fatalf("%s holds no slot: the premise is that it fills the cap of one", awaiting)
+	}
+	assertWaiting(t, pool, []string{carried})
+
+	settled := settleMovements(t, pool, awaiting)
+	admission.now = func() time.Time { return settled.Add(7 * time.Hour) }
+	tick(t, pool, admission, "measure")
+
+	if !treeOpen(t, pool, carried) {
+		t.Fatalf("the tree of %s is closed after the pass: the premise is that its promotion opens it under the full cap", carried)
+	}
+	if got := stalledRoots(t, pool); got != nil {
+		t.Fatalf("the controller was told of %v, want nothing: the promotion of this pass starts %s under the full cap, so the line moves",
+			got, carried)
+	}
 }

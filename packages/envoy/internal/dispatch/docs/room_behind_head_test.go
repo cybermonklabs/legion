@@ -67,6 +67,19 @@ func storedHead(t *testing.T, database *store.Store, artifactID string) int64 {
 	return head
 }
 
+// savedVersion is the number of the document's latest saved version, the one a rebuild from it
+// goes back to.
+func savedVersion(t *testing.T, database *store.Store, artifactID string) int {
+	t.Helper()
+	var number int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce(max(number), 0) from artifact_versions where artifact_id = $1
+	`, artifactID).Scan(&number); err != nil {
+		t.Fatalf("read the document's latest saved version: %v", err)
+	}
+	return number
+}
+
 // storedMarkdown is the stored document's rendering, the one every reload of it reads.
 func storedMarkdown(t *testing.T, database *store.Store, artifactID string) string {
 	t.Helper()

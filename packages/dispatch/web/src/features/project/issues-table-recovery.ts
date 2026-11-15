@@ -1,54 +1,36 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useWrites } from "../../api/cache/cache";
-import { defineWriteKind, type WriteOutcome } from "../../api/cache/write-store";
 import { ApiError } from "../../api/client";
-import { projectIssuesQueryKey } from "../../api/queries";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
+import { defineWriteKind, useWrites } from "../writes/write-store";
 import { WRITES_IN_FLIGHT } from "./issues-table-model";
 import { readTableAction, type TableAction, writeTableAction } from "./issues-table-storage";
 
 export type { TableAction } from "./issues-table-storage";
 
-/** Dispatch's answer to an epic's create, as far as its kind reads it: the issue it made, read
- *  through the answer's `body`. */
-interface CreatedEpic {
-  readonly body: { readonly key: string };
-}
-
 // Keep the answer's issue key even when the table that started creation is no longer mounted.
-export const tableEpicWrite = defineWriteKind<string, string, CreatedEpic>({
+export const tableEpicWrite = defineWriteKind<string>({
   name: "issues-table-epic",
   kept: (value): value is string => typeof value === "string",
-  landed: (cache, write, answer, awaited) => {
+  landed: (client, write, answer, awaited) => {
     const action = readTableAction(write.detail);
-    if (action?.writes.create === write.key && answer !== null) {
-      writeTableAction(write.detail, { ...action, target: answer.body.key });
+    if (
+      action?.writes.create === write.key &&
+      answer &&
+      typeof answer === "object" &&
+      "key" in answer &&
+      typeof answer.key === "string"
+    ) {
+      writeTableAction(write.detail, { ...action, target: answer.key });
     }
     // What a created epic changes is this project's listings and the ancestry read that hangs
     // off them, not every query the tab holds.
     if (!awaited || answer === null) {
-      void cache.invalidate({ queryKey: projectIssuesQueryKey(write.detail, []) });
-      void cache.invalidate({ queryKey: ["issue-ancestors", write.detail] });
+      void client.invalidateQueries({ queryKey: ["issues", "project", write.detail] });
+      void client.invalidateQueries({ queryKey: ["issue-ancestors", write.detail] });
     }
   },
 });
-
-/** What the table says once the last of its refused writes leaves Pending changes, by what became
- *  of it; `ofAction` says whether it was a step of the interrupted action, which Finish
- *  completes. */
-function outcomeReport(kind: Exclude<WriteOutcome["kind"], "refused">, ofAction: boolean): string {
-  switch (kind) {
-    case "landed":
-      return ofAction
-        ? "The retried changes are saved. Finish the interrupted action to complete its remaining steps."
-        : "All changes saved.";
-    case "discarded":
-      return "The failed change was discarded.";
-    case "taken":
-      return "The failed change was not made.";
-  }
-}
 
 export function useTableRecovery(project: string, report: (text: string) => void) {
   const writes = useWrites();
@@ -104,9 +86,7 @@ export function useTableRecovery(project: string, report: (text: string) => void
             event.write.id,
             owned.current.get(event.write.id)?.issue ?? event.write.label
           );
-        return;
-      }
-      if (failed.current.delete(event.write.id)) {
+      } else if (failed.current.delete(event.write.id)) {
         // Only a write of the interrupted action's own says anything about finishing it: a
         // Move or a Rename retried beside one reports like any other change.
         const ofAction =
@@ -115,13 +95,17 @@ export function useTableRecovery(project: string, report: (text: string) => void
         reportRef.current(
           failed.current.size
             ? `Changes not saved: ${[...failed.current.values()].join(", ")}. Retry them in Pending changes.`
-            : outcomeReport(event.kind, ofAction)
+            : event.kind === "discarded"
+              ? "The failed change was discarded."
+              : ofAction
+                ? "The retried changes are saved. Finish the interrupted action to complete its remaining steps."
+                : "All changes saved."
         );
       }
-      if (event.kind !== "landed") {
-        // A write discarded or let go of no longer exists, so the record must not go on
-        // claiming it: the step goes with it, which keeps `settle` from waiting on a row that is
-        // gone and lets the resume work that step out from the server again.
+      if (event.kind === "discarded") {
+        // A discarded write no longer exists, so the record must not go on claiming it: the
+        // step goes with it, which keeps `settle` from waiting on a row that is gone and lets
+        // the resume work that step out from the server again.
         const owner = owned.current.get(event.write.id);
         const held = current.current;
         if (
@@ -130,11 +114,11 @@ export function useTableRecovery(project: string, report: (text: string) => void
           owner.action === held.id &&
           held.writes[owner.step] !== undefined
         ) {
-          const { [owner.step]: _gone, ...rest } = held.writes;
+          const { [owner.step]: _discarded, ...rest } = held.writes;
           remember({ ...held, writes: rest });
         }
       }
-      owned.current.delete(event.write.id);
+      if (event.kind !== "refused") owned.current.delete(event.write.id);
     });
     return () => {
       alive.current = false;
@@ -171,32 +155,16 @@ export function useTableRecovery(project: string, report: (text: string) => void
     },
     settle: async (record: TableAction) => {
       const rows = writes.rows().filter((row) => Object.values(record.writes).includes(row.key));
-      /** What becomes of `row`, told by the store for every way a write leaves it: a write it
-       *  let go of with nothing made - a sign-out landing, a sign-out in another tab, another
-       *  login taking over, a `DISPATCH_LOGIN_CHANGED` refusal (`taken`) - says it was not made,
-       *  rather than leaving Finish waiting for an answer that never comes. Its id, not its key,
-       *  names it: a Retry may move it to a new key. */
       const outcome = (row: (typeof rows)[number]) => {
         const { promise, resolve, reject } = Promise.withResolvers<void>();
-        const stop = writes.onOutcome((event) => {
+        const unsubscribe = writes.onOutcome((event) => {
           if (event.write.id !== row.id) return;
-          stop();
-          switch (event.kind) {
-            case "landed":
-              resolve();
-              return;
-            case "refused":
-              reject(event.refusal);
-              return;
-            case "discarded":
-              reject(new Error(`${row.label} was discarded.`));
-              return;
-            case "taken":
-              reject(new Error(`${row.label} was not made.`));
-              return;
-            default:
-              event satisfies never;
-          }
+          unsubscribe();
+          if (event.kind === "landed") resolve();
+          else
+            reject(
+              event.kind === "refused" ? event.refusal : new Error(`${row.label} was discarded.`)
+            );
         });
         return promise;
       };

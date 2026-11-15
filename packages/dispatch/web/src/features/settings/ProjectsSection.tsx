@@ -1,7 +1,8 @@
 import { PROJECT_NAME_MAX } from "@legion/contracts";
+import type { Mutation } from "@tanstack/react-query";
+import { useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
-import { useCache, useMutations } from "../../api/cache/cache";
-import { useShownQuery } from "../../api/cache/shown-query";
+
 import { api, apiErrorMessage } from "../../api/client";
 import {
   projectDefaultAssigneesQuery,
@@ -9,7 +10,7 @@ import {
   usersQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import type { CreateProjectInput } from "../../api/types";
+import type { CreateProjectInput, ProjectDefaultAssignee } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
@@ -41,43 +42,42 @@ import {
  * the same `["projects"]` query, so a project created here is immediately selectable there
  * without any explicit wiring between the two sections. */
 export function ProjectsSection(): ReactNode {
-  const cache = useCache();
+  const queryClient = useQueryClient();
   const [projectKey, setProjectKey] = useState("");
   const [projectName, setProjectName] = useState("");
   // Who the new project defaults to until the reader picks somebody else: `null` is "nobody has
   // picked", not "nobody", and reads as the viewer below.
   const [projectAssignee, setProjectAssignee] = useState<string | null>(null);
   const projectSubmitGuard = useSubmitGuard();
-  const projects = useShownQuery(projectsQuery());
+  const projects = useQuery(projectsQuery());
   // The form shows a refused create beside the key it was refused over.
   const createProject = useKeyedWrite({
     inline: true,
     label: (input: CreateProjectInput) => `New project ${input.key}`,
-    unlined: "a create names no row until Dispatch makes the project",
     write: (input, bounds) => api.createProject(input, bounds),
     onSettled: () => projectSubmitGuard.release(),
     // Made either way, so the form empties; with no answer to give, it says what was made
     // (`createProject.unanswered`).
     onSuccess: () => {
-      void cache.invalidate({ queryKey: projectsQuery().queryKey });
+      void queryClient.invalidateQueries({ queryKey: projectsQuery().queryKey });
       // The project list carries no default assignee: the defaults read is the one place the new
       // project's default comes from, and the read the page holds was answered before it existed.
-      void cache.invalidate({ queryKey: projectDefaultAssigneesQuery().queryKey });
+      void queryClient.invalidateQueries({ queryKey: projectDefaultAssigneesQuery().queryKey });
       setProjectKey("");
       setProjectName("");
       setProjectAssignee(null);
     },
   });
-  const defaults = useShownQuery(projectDefaultAssigneesQuery());
+  const defaults = useQuery(projectDefaultAssigneesQuery());
   // The people list is read only once a reader reaches for a picker, as `AssigneeControl` does
   // it, so opening Settings makes no request for it.
   const [wantUsers, setWantUsers] = useState(false);
-  const users = useShownQuery({ ...usersQuery(), enabled: wantUsers });
+  const users = useQuery({ ...usersQuery(), enabled: wantUsers });
   const defaultAssignees = new Map((defaults.data ?? []).map((row) => [row.project, row.assignee]));
   const logins = (users.data ?? []).map((user) => user.login);
   // The server takes the person creating the project when the call names nobody, so that is what
   // the form starts on; the reader may pick anyone else who has signed in.
-  const viewer = useShownQuery(whoAmIQuery()).data?.login;
+  const viewer = useQuery(whoAmIQuery()).data?.login;
   const newProjectAssignee = projectAssignee ?? viewer ?? "";
   const submitProject = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -333,8 +333,14 @@ type DefaultAssigneePick = { assignee: string };
 /** What a pick's save resolves to when a newer pick was waiting behind it: nothing was sent. */
 type DefaultAssigneeSuperseded = { superseded: true };
 
+type DefaultAssigneeSave = Mutation<
+  ProjectDefaultAssignee | DefaultAssigneeSuperseded | null,
+  Error,
+  DefaultAssigneePick
+>;
+
 /** One project's default-assignee saves. The mutation scope runs a project's saves one at a time
- *  in pick order in the page's mutations, so a save still out or waiting when the row
+ *  in pick order in the QueryClient's mutation cache, so a save still out or waiting when the row
  *  unmounts keeps its place, and a pick on a remounted row waits behind it. When a save's turn
  *  comes and a newer pick is waiting behind it, it is superseded and sends nothing: while a save
  *  is out, only the newest pick follows it, from whichever mount made it. The server ends at the
@@ -357,10 +363,13 @@ function useDefaultAssigneeWrite(project: string): {
   shown: string | undefined;
   submit: (assignee: string) => void;
 } {
-  const cache = useCache();
+  const queryClient = useQueryClient();
   const defaultsKey = projectDefaultAssigneesQuery().queryKey;
   const mutationKey = ["project-default-assignee", project];
-  const mutation = useKeyedWrite({
+  const mutation = useKeyedWrite<
+    ProjectDefaultAssignee | DefaultAssigneeSuperseded,
+    DefaultAssigneePick
+  >({
     mutationKey,
     scope: { id: `project-default-assignee:${project}` },
     // A refused save stays in the cache, with no row observing it, until a newer save of the
@@ -368,62 +377,79 @@ function useDefaultAssigneeWrite(project: string): {
     gcTime: Number.POSITIVE_INFINITY,
     // The row shows its newest save's refusal itself, beside the control it was refused over.
     inline: true,
-    label: (pick: DefaultAssigneePick) => `${project}'s default assignee ${pick.assignee}`,
-    unlined: "one project's picks are ordered by the newest press, not by a line (`scope`)",
-    write: async (pick: DefaultAssigneePick, bounds) => {
-      // The page lists mutations in the order they were made, so the last pending one is the
+    label: (pick) => `${project}'s default assignee ${pick.assignee}`,
+    write: async (pick, bounds): Promise<ProjectDefaultAssignee | DefaultAssigneeSuperseded> => {
+      // The cache lists mutations in the order they were made, so the last pending one is the
       // newest pick. Any other is waiting behind this save, and only it need reach the server.
-      const waiting = cache.mutations<DefaultAssigneePick>({
-        exact: true,
-        mutationKey,
-        status: "pending",
-      });
-      if (waiting.at(-1)?.variables !== pick) {
-        const superseded: DefaultAssigneeSuperseded = { superseded: true };
-        return superseded;
+      const waiting = queryClient
+        .getMutationCache()
+        .findAll({ exact: true, mutationKey, status: "pending" });
+      if (waiting.at(-1)?.state.variables !== pick) {
+        return { superseded: true };
       }
       return api.putProjectDefaultAssignee(project, { assignee: pick.assignee }, bounds);
     },
     // A defaults read already out was asked before this save and could land over its answer.
-    onMutate: () => cache.cancel({ queryKey: defaultsKey }),
+    onMutate: () => queryClient.cancelQueries({ queryKey: defaultsKey }),
     onSuccess: (saved) => {
       // Saved with no answer to give: the store reads every query again.
       if (saved === null || "superseded" in saved) {
         return;
       }
-      cache.setDispatched(
-        defaultsKey,
-        saved,
-        (rows, answer) => rows && [...rows.filter((row) => row.project !== answer.project), answer]
-      );
+      queryClient.setQueryData<ProjectDefaultAssignee[]>(defaultsKey, (rows) => {
+        if (rows === undefined) {
+          return rows;
+        }
+        const others = rows.filter((row) => row.project !== saved.project);
+        return [...others, saved];
+      });
     },
     onSettled: (saved) => {
       // With gcTime Infinity nothing else clears this project's saves. A save settles in pick
       // order and is still pending while this runs, so every settled save left is older than it
       // and no longer the one a row reports: drop them, keeping at most the newest settled save
       // and the pending ones.
-      cache.forgetSettledMutations({ exact: true, mutationKey });
+      const cache = queryClient.getMutationCache();
+      for (const older of cache.findAll({ exact: true, mutationKey })) {
+        if (older.state.status !== "pending") {
+          cache.remove(older);
+        }
+      }
       // A superseded save changed nothing on the server. Not awaited: the next pick in the scope
       // need not wait for this refetch.
       if (saved == null || !("superseded" in saved)) {
-        void cache.invalidate({ queryKey: defaultsKey });
+        void queryClient.invalidateQueries({ queryKey: defaultsKey });
       }
     },
   });
-  const saves = useMutations<DefaultAssigneePick>({ exact: true, mutationKey });
+  const saves = useMutationState<
+    {
+      error: Error | null;
+      pick: DefaultAssigneePick | undefined;
+      status: DefaultAssigneeSave["state"]["status"];
+    },
+    DefaultAssigneeSave
+  >({
+    filters: { exact: true, mutationKey },
+    select: (save) => ({
+      error: save.state.error,
+      pick: save.state.variables,
+      status: save.state.status,
+    }),
+  });
   const pendingPicks = saves.filter((save) => save.status === "pending");
-  // The page lists mutations in the order they were made, so the last is the newest.
+  // The cache lists mutations in the order they were made, so the last is the newest.
   const newest = saves.at(-1);
   const refused = newest?.status === "error" ? newest : undefined;
   return {
     error: refused?.error ?? null,
     pending: pendingPicks.length > 0,
     retry: () => {
-      if (refused?.variables !== undefined) {
-        mutation.mutate({ assignee: refused.variables.assignee });
+      if (refused?.pick !== undefined) {
+        mutation.mutate({ assignee: refused.pick.assignee });
       }
     },
-    shown: pendingPicks.at(-1)?.variables?.assignee,
+    shown: pendingPicks.at(-1)?.pick?.assignee,
     submit: (assignee) => mutation.mutate({ assignee }),
   };
 }

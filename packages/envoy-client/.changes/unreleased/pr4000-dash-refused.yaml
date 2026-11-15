@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  `dispatch` refuses a bare `-` given to a text flag, as `--<field> -` or `--<field>=-`, before it
+  sends anything: it exits 2 and names the `--<field>-file` flag, which reads a file or, given `-`,
+  stdin. A call such as `dispatch result --run - --observed - --negative-control -` used to record
+  the one character `-` as its evidence. `dispatch artifact --path -` still uploads a local file
+  named `-`. A refusal whose every problem is such a value lists no flags.

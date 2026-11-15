@@ -1,9 +1,9 @@
-import type { Cache } from "../../api/cache/cache";
-import { storeIssueState } from "../../api/cache/viewer-state";
-import { defineWriteKind, liveWrite, ofKind, type Writes } from "../../api/cache/write-store";
+import type { QueryClient } from "@tanstack/react-query";
+
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import type { UserIssueState, UserState } from "../../api/types";
 import { type Shape, shape } from "../writes/write-storage";
+import { defineWriteKind, ofKind, type Writes, writesOf } from "../writes/write-store";
 import { pinnedItemMarker, stateForIssue } from "./pins";
 
 export type PinStateOperation = { readonly id: string; readonly op: "pin" | "unpin" };
@@ -44,11 +44,10 @@ function staleState(error: unknown): UserIssueState | undefined {
  * One attempt of a pin: the viewer's state of the issue - as the last pin's answer left it, or
  * read afresh - with the item pinned or unpinned, put back under the next sequence. Dispatch
  * answers a write another tab or device got in first with `STATE_STALE` and its current row,
- * which the pin is put on once more. It answers with Dispatch's answer to the write, which the
- * kind writes into the viewer's state once the issue's last pin lands.
+ * which the pin is put on once more.
  */
 function pinAttempt({ issueKey, operation }: PinWrite) {
-  return async (bounds: WriteBounds) => {
+  return async (bounds: WriteBounds): Promise<UserIssueState> => {
     let base = authoritative.get(issueKey) ?? stateForIssue(await api.getMyState(), issueKey);
     for (let stale = 0; ; stale += 1) {
       try {
@@ -57,7 +56,7 @@ function pinAttempt({ issueKey, operation }: PinWrite) {
           { dismissed: applyPinStateOperation(base.dismissed ?? [], operation), seq: base.seq + 1 },
           bounds
         );
-        authoritative.set(issueKey, next.body);
+        authoritative.set(issueKey, next);
         return next;
       } catch (error) {
         const current = staleState(error);
@@ -69,83 +68,78 @@ function pinAttempt({ issueKey, operation }: PinWrite) {
   };
 }
 
-/** Whether `writes` still holds a pin of `issueKey` that may reach Dispatch (`liveWrite`): the
- *  page's state of it is still the optimistic one. */
+/** Whether `writes` still holds a pin of `issueKey` out: the page's state of it is still the
+ *  optimistic one. */
 function pinsOut(writes: Writes, issueKey: string): boolean {
   return writes.rows().some((row) => {
     const pin = ofKind(row, pinWrite);
-    return pin !== undefined && pin.detail.issueKey === issueKey && liveWrite(pin);
+    return (
+      pin?.detail.issueKey === issueKey &&
+      (pin.status === "queued" || pin.status === "sending" || pin.status === "late")
+    );
   });
 }
 
 /**
  * A pin or an unpin, one write of the store each, ordered on its issue (`pin:<issue>`), shown in
- * the shell's indicator and kept across a reload. The write shows its change on `["user-state"]`
- * from the press, and the store composes it over each answer that lands there while it is out
- * (`writePin`); once the issue's last pin lands, the state Dispatch answered is merged into the
- * viewer's state, which holds Dispatch's answers alone, and the next pin reads the state afresh. A
- * refused, discarded or dropped one stops being composed, as every write's change does: the page
- * shows the state Dispatch last gave, with every other live pin over it, and reads it again - so
- * a read that fails leaves no pin Dispatch never took on screen - and the next pin reads the
- * state afresh. The states pins' answers left go with the person signed in (`reset`), so another
- * person's next pin never writes over them.
+ * the shell's indicator and kept across a reload. The surface applies it to `["user-state"]` at
+ * once; once the issue's last pin lands, the state Dispatch answered replaces what the page
+ * showed and the next pin reads the state afresh, and a refused, discarded or dropped one has the
+ * page read its state again. The states pins' answers left go with the person signed in
+ * (`reset`), so another person's next pin never writes over them.
  */
-const pinWrite = defineWriteKind({
+const pinWrite = defineWriteKind<PinWrite>({
   kept: keptPin,
-  landed: (cache, write, answer) => {
+  landed: (client, write, answer) => {
     const { issueKey } = write.detail;
-    if (pinsOut(cache.writes, issueKey)) return;
+    if (pinsOut(writesOf(client), issueKey)) return;
     authoritative.delete(issueKey);
     if (answer === null) {
-      void cache.invalidate({ queryKey: ["user-state"] });
+      void client.invalidateQueries({ queryKey: ["user-state"] });
       return;
     }
-    storeIssueState(cache, issueKey, answer);
+    client.setQueryData<UserState>(["user-state"], (current) => ({
+      ...current,
+      [issueKey]: answer as UserIssueState,
+    }));
   },
   name: "pin",
   reset: () => authoritative.clear(),
-  resume: (detail: PinWrite) => pinAttempt(detail),
-  undone: (_cache, write) => {
+  resume: (detail) => pinAttempt(detail),
+  undone: (client, write) => {
     authoritative.delete(write.detail.issueKey);
+    void client.invalidateQueries({ queryKey: ["user-state"] });
   },
 });
 
-/** Pins or unpins one item of `issueKey` for the viewer: one write of the store, which shows the
- *  pin on the page's state at once and composes it over each answer that lands there until it
- *  settles, made behind every pin of that issue still out. The operation may be derived from the
- *  `dismissed` list the person sees at the moment of the write (`Cache.shown`: Dispatch's state
- *  with every live pin over it), which is what a toggle needs. */
+/** Pins or unpins one item of `issueKey` for the viewer: applied to the page's state at once and
+ *  written behind every pin of that issue still out. The operation may be derived from the stored
+ *  `dismissed` list at the moment of the write, which is what a toggle needs. */
 export function writePin(
-  cache: Cache,
+  client: QueryClient,
   issueKey: string,
   operation: PinStateOperation | ((dismissed: string[]) => PinStateOperation)
 ): void {
-  const writes = cache.writes;
-  const pressed = stateForIssue(cache.shown<UserState>(["user-state"]), issueKey);
-  const applied = typeof operation === "function" ? operation(pressed.dismissed ?? []) : operation;
+  let applied: PinStateOperation | undefined;
+  client.setQueryData<UserState>(["user-state"], (current) => {
+    const state = stateForIssue(current, issueKey);
+    applied = typeof operation === "function" ? operation(state.dismissed ?? []) : operation;
+    return {
+      ...current,
+      [issueKey]: {
+        ...state,
+        dismissed: applyPinStateOperation(state.dismissed ?? [], applied),
+      },
+    };
+  });
+  if (applied === undefined) return;
   const detail = { issueKey, operation: applied };
-  writes
+  writesOf(client)
     .run({
       detail,
       kind: pinWrite,
       label: `${applied.op === "pin" ? "Pin" : "Unpin"} on ${issueKey}`,
       presentation: "indicator",
-      /** The pin as a change to the viewer's state as it stands: the item's marker in or out of
-       *  the issue's own `dismissed` list, over whatever row the cache holds - the answer, once
-       *  one has landed - so every other field of that row, and every other issue's state, is
-       *  the answer's own (R7 of dispatch://INFRA-299). */
-      shows: (shown) => {
-        shown.on<UserState>(["user-state"], (current) => {
-          const state = stateForIssue(current, issueKey);
-          return {
-            ...current,
-            [issueKey]: {
-              ...state,
-              dismissed: applyPinStateOperation(state.dismissed ?? [], applied),
-            },
-          };
-        });
-      },
       target: `pin:${issueKey}`,
       write: pinAttempt(detail),
     })

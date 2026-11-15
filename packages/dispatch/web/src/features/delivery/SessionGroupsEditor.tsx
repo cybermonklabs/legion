@@ -1,7 +1,8 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
 
-import { useCache } from "../../api/cache/cache";
 import { api, apiErrorMessage, type WriteBounds } from "../../api/client";
+import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySessionGroup } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -161,7 +162,7 @@ export function SessionGroupsEditor({
   counts: Readonly<Record<string, number>>;
 }): ReactNode {
   const id = useId();
-  const cache = useCache();
+  const queryClient = useQueryClient();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const dialog = useDialog<HTMLElement>({ initialFocusRef: closeButtonRef, onClose, open: true });
   const [selected, setSelected] = useState<string[]>([]);
@@ -172,9 +173,11 @@ export function SessionGroupsEditor({
     label: (change: GroupChange) => change.label,
     onSuccess: () => {
       setSelected([]);
-      void cache.invalidate({ live: false, queryKey: ["delivery"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["delivery"],
+        predicate: (query) => !isLiveQuery(query),
+      });
     },
-    unlined: "a group create, change or removal is this dialog's only write of its row",
     write: (change, bounds) => change.run(bounds),
   });
 

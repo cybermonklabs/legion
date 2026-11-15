@@ -1,18 +1,12 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { useCache, useWrites } from "../../api/cache/cache";
-import { mergeIssue } from "../../api/cache/issue-cache";
-import { plainWrite } from "../../api/cache/write-store";
-import {
-  ApiError,
-  api,
-  issueCreateRequest,
-  issuePatchRequest,
-  type WriteRequest,
-} from "../../api/client";
+import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/client";
+import { mergeIssue } from "../../api/issue-cache";
 import { advancesIssuesParams } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
+import { plainWrite, useWrites } from "../writes/write-store";
 import { type IssueListing, listingName } from "./issues-table-data";
 import {
   buildItems,
@@ -76,7 +70,7 @@ export function useIssueTableActions({
   items: readonly Item[];
   clearSelection: () => void;
 }) {
-  const cache = useCache();
+  const client = useQueryClient();
   const writes = useWrites();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>();
@@ -134,7 +128,7 @@ export function useIssueTableActions({
           key,
           write
         );
-        if (answer !== null) mergeIssue(cache, answer);
+        if (answer !== null) mergeIssue(client, answer);
         setMoved((current) => new Set([...current, key]));
         return key;
       }
@@ -172,9 +166,9 @@ export function useIssueTableActions({
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
       setBusy(false);
-      void cache.invalidate({ queryKey: ["issues"] });
-      void cache.invalidate({ queryKey: ["issue"] });
-      void cache.invalidate({ queryKey: ["inbox"] });
+      void client.invalidateQueries({ queryKey: ["issues"] });
+      void client.invalidateQueries({ queryKey: ["issue"] });
+      void client.invalidateQueries({ queryKey: ["inbox"] });
     }
   };
   const titleOf = (key: string) => issues.find((issue) => issue.key === key)?.title ?? key;
@@ -305,8 +299,6 @@ export function useIssueTableActions({
     const record = recovery.begin({ kind: "newEpic", keys: open });
     const key = newSendKey();
     recovery.record({ create: key }, record.id);
-    /** The id of the create this press makes, once `run` has joined it. */
-    let epicWrite: number | undefined;
     await perform(
       `Made the epic “${title}” from ${named(open)}.${skipped}`,
       async () => {
@@ -316,27 +308,22 @@ export function useIssueTableActions({
           key,
           label: `Create epic “${title}”`,
           presentation: "indicator",
-          request: issueCreateRequest({
-            project,
-            title,
-            labels: ["epic"],
-            ...(force ? { force: true } : {}),
-          }),
-          target: `project:${project}`,
+          write: (bounds) =>
+            api.createIssue(
+              { project, title, labels: ["epic"], ...(force ? { force: true } : {}) },
+              bounds
+            ),
         });
         recovery.watch(key, `Create epic “${title}”`);
-        // The write's id, read as `run` has just left it in the rows: a refusal below takes this
-        // write out by it, whatever the rows hold by the time that refusal is handled.
-        epicWrite = writes.idOf(key);
         const epic = await creation;
         if (!recovery.active(record.id)) return undefined;
         if (epic === null) {
           setUnansweredEpic(title);
           return undefined;
         }
-        mergeIssue(cache, epic);
+        mergeIssue(client, epic);
         const changed = await apply(
-          open.map((key) => ({ key, input: { parent: epic.body.key } })),
+          open.map((key) => ({ key, input: { parent: epic.key } })),
           record.id
         );
         if (!recovery.active(record.id)) return undefined;
@@ -344,9 +331,8 @@ export function useIssueTableActions({
         return changed;
       },
       (error) => {
-        // Dispatch's "possible duplicate" refusal of the create, which the reader answers in the
-        // dialog it opens rather than in Pending changes.
-        if (epicWrite !== undefined) writes.discard(epicWrite);
+        const refused = writes.rows().find((row) => row.key === key);
+        if (refused) writes.discard(refused.id);
         recovery.dismiss();
         setDuplicateEpic({ keys, title, message: error.message });
       }

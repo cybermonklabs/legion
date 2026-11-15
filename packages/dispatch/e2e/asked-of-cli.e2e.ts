@@ -63,7 +63,7 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
   test.setTimeout(240_000);
   // carol creates the project, so she is its default assignee and the person a question on its
   // document waits on: a project document has no assignee of its own.
-  await createProject({ key: "CORE", name: "Core" }, "carol");
+  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
   // A human's issue is assigned to its creator, so this one is alice's.
   const issue = await createIssue(
     { project: "CORE", title: "Ship the rollout flag" },

@@ -1,4 +1,5 @@
 import { expect, jest, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -8,9 +9,8 @@ import { graphNode } from "./__tests__/graph-fixture";
 import { installFakeLiveSockets } from "./__tests__/live-socket-harness";
 import { answerIssuePatches } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
-import { liveSocketFor } from "./api/cache/live-socket";
-import { cacheOf, QueryClient, QueryClientProvider } from "./api/cache/test-client";
 import { ApiError, api, NetworkError } from "./api/client";
+import { liveSocketFor } from "./api/live-socket";
 import type { AuthenticatedUser } from "./api/types";
 import { AuthGate } from "./app";
 // The Answers, document and project pages are lazy routes of the app. A page module's first
@@ -19,8 +19,8 @@ import { AuthGate } from "./app";
 import "./features/answers/AnswersPage";
 import "./features/document/DocumentPage";
 import "./features/project/ProjectPage";
-import { plainWrite } from "./api/cache/write-store";
 import { SendStoppedError } from "./features/writes/keyed-write";
+import { plainWrite, writesOf } from "./features/writes/write-store";
 
 test("signing out shows the sign-in page without a reload and ends the event feed's socket", async () => {
   const user = userEvent.setup();
@@ -88,7 +88,7 @@ test("signing out shows the sign-in page without a reload and ends the event fee
     listProjects.mockRestore();
     getMyState.mockRestore();
     getInbox.mockRestore();
-    liveSocketFor(cacheOf(queryClient)).close();
+    liveSocketFor(queryClient).close();
     sockets.restore();
   }
 });
@@ -101,13 +101,12 @@ function aliceWrite(
   attempts: string[],
   refuse = false
 ): Promise<unknown> {
-  return cacheOf(queryClient)
-    .writes.run({
+  return writesOf(queryClient)
+    .run({
       detail: null,
       kind: plainWrite,
       label: refuse ? "CORE-2 set to done" : "CORE-1 set to done",
       presentation: "indicator",
-      unlined: "a test write that names no row",
       write: (bounds) => {
         attempts.push(bounds.login ?? "nobody");
         bounds.sent?.({ body: { status: "done" }, method: "PATCH", path: "/api/v1/issues/CORE-1" });
@@ -178,8 +177,8 @@ test("a sign-in from another tab drops every write of the person before, stops i
     const refused = aliceWrite(queryClient, attempts, true);
     await waitFor(() =>
       expect(
-        cacheOf(queryClient)
-          .writes.rows()
+        writesOf(queryClient)
+          .rows()
           .map((row) => row.status)
       ).toEqual(["sending", "refused"])
     );
@@ -189,7 +188,7 @@ test("a sign-in from another tab drops every write of the person before, stops i
     login = "bob";
     act(() => otherTab.postMessage("bob"));
     await screen.findByText("Signed in as bob");
-    await waitFor(() => expect(cacheOf(queryClient).writes.rows()).toEqual([]));
+    await waitFor(() => expect(writesOf(queryClient).rows()).toEqual([]));
     expect(await out).toBeInstanceOf(SendStoppedError);
     expect(keptWrites()).toEqual([]);
     const made = attempts.length;
@@ -202,7 +201,7 @@ test("a sign-in from another tab drops every write of the person before, stops i
     realClock();
     otherTab.close();
     view.unmount();
-    liveSocketFor(cacheOf(queryClient)).close();
+    liveSocketFor(queryClient).close();
     sockets.restore();
     whoAmI.mockRestore();
     for (const spy of spies) spy.mockRestore();
@@ -254,12 +253,11 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
     await screen.findByText("Signed in as alice");
     const keys: string[] = [];
     let up = false;
-    const out = cacheOf(queryClient).writes.run({
+    const out = writesOf(queryClient).run({
       detail: null,
       kind: plainWrite,
       label: "CORE-1 set to done",
       presentation: "indicator",
-      unlined: "a test write that names no row",
       write: (bounds) => {
         keys.push(bounds.key);
         bounds.sent?.({ body: { status: "done" }, method: "PATCH", path: "/api/v1/issues/CORE-1" });
@@ -272,8 +270,8 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
     void aliceWrite(queryClient, attempts, true);
     await waitFor(() =>
       expect(
-        cacheOf(queryClient)
-          .writes.rows()
+        writesOf(queryClient)
+          .rows()
           .map((row) => row.status)
       ).toEqual(["sending", "refused"])
     );
@@ -283,8 +281,8 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
     await screen.findByRole("link", { name: "Sign in with Google" });
     await waitFor(() =>
       expect(
-        cacheOf(queryClient)
-          .writes.rows()
+        writesOf(queryClient)
+          .rows()
           .map((row) => row.status)
       ).toEqual(["queued", "refused"])
     );
@@ -299,14 +297,14 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
     await screen.findByText("Signed in as alice");
     expect(await out).toEqual({ key: "CORE-1" });
     expect(new Set(keys).size).toBe(1);
-    expect(cacheOf(queryClient).writes.rows()).toMatchObject([
+    expect(writesOf(queryClient).rows()).toMatchObject([
       { label: "CORE-2 set to done", status: "refused" },
     ]);
     expect(keptWrites()).toHaveLength(1);
   } finally {
     realClock();
     view.unmount();
-    liveSocketFor(cacheOf(queryClient)).close();
+    liveSocketFor(queryClient).close();
     sockets.restore();
     whoAmI.mockRestore();
     for (const spy of spies) spy.mockRestore();
@@ -378,7 +376,7 @@ test("signing out asks first, then drops every write here and tells every other 
     const attempts: string[] = [];
     const out = aliceWrite(queryClient, attempts);
     void aliceWrite(queryClient, attempts, true);
-    await waitFor(() => expect(cacheOf(queryClient).writes.rows()).toHaveLength(2));
+    await waitFor(() => expect(writesOf(queryClient).rows()).toHaveLength(2));
     expect(keptWrites()).toHaveLength(2);
     expect(asksBeforeLeaving()).toBe(true);
 
@@ -389,7 +387,7 @@ test("signing out asks first, then drops every write here and tells every other 
     ]);
     expect(logout).not.toHaveBeenCalled();
     expect(screen.getByText("Signed in as alice")).toBeTruthy();
-    expect(cacheOf(queryClient).writes.rows()).toHaveLength(2);
+    expect(writesOf(queryClient).rows()).toHaveLength(2);
     expect(keptWrites()).toHaveLength(2);
 
     answer = true;
@@ -397,7 +395,7 @@ test("signing out asks first, then drops every write here and tells every other 
     // it has: a press lands on it once it is pressable again.
     await waitFor(() => expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "Sign out" }));
-    await waitFor(() => expect(cacheOf(queryClient).writes.rows()).toEqual([]));
+    await waitFor(() => expect(writesOf(queryClient).rows()).toEqual([]));
     await screen.findByRole("link", { name: "Sign in with Google" });
     expect(logout).toHaveBeenCalledTimes(1);
     expect(await out).toBeInstanceOf(SendStoppedError);
@@ -414,7 +412,7 @@ test("signing out asks first, then drops every write here and tells every other 
     otherTab.close();
     window.confirm = originalConfirm;
     view.unmount();
-    liveSocketFor(cacheOf(queryClient)).close();
+    liveSocketFor(queryClient).close();
     sockets.restore();
     whoAmI.mockRestore();
     logout.mockRestore();
@@ -472,11 +470,11 @@ test("a sign-out in another tab drops that person's writes here", async () => {
     const attempts: string[] = [];
     const out = aliceWrite(queryClient, attempts);
     void aliceWrite(queryClient, attempts, true);
-    await waitFor(() => expect(cacheOf(queryClient).writes.rows()).toHaveLength(2));
+    await waitFor(() => expect(writesOf(queryClient).rows()).toHaveLength(2));
     expect(keptWrites()).toHaveLength(2);
 
     act(() => otherTab.postMessage({ signedOut: "alice" }));
-    await waitFor(() => expect(cacheOf(queryClient).writes.rows()).toEqual([]));
+    await waitFor(() => expect(writesOf(queryClient).rows()).toEqual([]));
     expect(await out).toBeInstanceOf(SendStoppedError);
     expect(keptWrites()).toEqual([]);
     const made = attempts.length;
@@ -486,7 +484,7 @@ test("a sign-out in another tab drops that person's writes here", async () => {
     realClock();
     otherTab.close();
     view.unmount();
-    liveSocketFor(cacheOf(queryClient)).close();
+    liveSocketFor(queryClient).close();
     sockets.restore();
     whoAmI.mockRestore();
     for (const spy of spies) spy.mockRestore();
@@ -551,7 +549,7 @@ test("nothing is read and no socket opens until whoami answers, and the feed res
     window.matchMedia = originalMatchMedia;
     whoAmI.mockRestore();
     for (const spy of held) spy.mockRestore();
-    liveSocketFor(cacheOf(queryClient)).close();
+    liveSocketFor(queryClient).close();
     sockets.restore();
   }
 });
@@ -1002,7 +1000,7 @@ async function renderSignedIn(whoAmI: () => Promise<AuthenticatedUser>) {
   await screen.findByText("Signed in as alice");
   return () => {
     view.unmount();
-    liveSocketFor(cacheOf(queryClient)).close();
+    liveSocketFor(queryClient).close();
     for (const spy of spies) spy.mockRestore();
     window.matchMedia = originalMatchMedia;
   };

@@ -1,13 +1,12 @@
 import { afterAll, expect, jest, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, a form's own submit, the same-task pair of presses, a press on a control the send holds disabled, and a key that must not press the button it reaches
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { cacheOf, QueryClient, QueryClientProvider } from "../api/cache/test-client";
-
-import { ApiError, api, type WriteBounds } from "../api/client";
+import { ApiError, api } from "../api/client";
 import type {
   AnswerAskInput,
   Ask,
@@ -25,7 +24,6 @@ import { commentDeliveryFields } from "./comment-fixture";
 import { realClock, tick } from "./fake-clock";
 import { graphNode } from "./graph-fixture";
 import { keyedAttempt } from "./keyed-attempt";
-import { answerArtifactComments, answerIssueComments, answerRoute } from "./send-answers";
 import { userOnFakeClock } from "./user";
 
 const getReferences = spyOn(api, "getReferences").mockResolvedValue({
@@ -75,29 +73,6 @@ function answered(
     answer: { at: "2026-09-09T00:05:00Z", selected: selected ?? null, text, user: "alice" },
     state: "answered",
   };
-}
-
-/** Every answer a card of this file sends, answered by `how`: the card writes through the one
- *  write path, from its request alone (`askAnswerRequest`), so a test answers it on its route
- *  rather than by handing the card a function of its own. */
-function answersWith(
-  how: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>
-): void {
-  answerRoute<(id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>>(
-    "POST",
-    "/api/v1/asks/*/answer"
-  ).mockImplementation(how);
-}
-
-/** Every clarification a card of this file sends - its **Ask back**, a comment on the ask's
- *  issue (`issueCommentRequest`) - answered by `how`. */
-function clarificationsWith(
-  how: (key: string, input: CreateCommentInput, bounds: WriteBounds) => Promise<Comment>
-): void {
-  answerRoute<(key: string, input: CreateCommentInput, bounds: WriteBounds) => Promise<Comment>>(
-    "POST",
-    "/api/v1/issues/*/comments"
-  ).mockImplementation(how);
 }
 
 function reply(
@@ -638,8 +613,13 @@ test("AskCard keeps the backlink control its count earned after an answer", asyn
   // The answer response is the one ask shape carrying no backlink count: it comes straight
   // back from the write, which never reads the graph. Answering moves no count either way.
   const { referenced_by_count: _dropped, ...withoutCount } = input;
-  answersWith(async () => answered(withoutCount, [], "Ship it."));
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async () => answered(withoutCount, [], "Ship it.")}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     expect(view.getByRole("button", { name: "Referenced by (2)" })).toBeTruthy();
@@ -663,11 +643,16 @@ test("AskCard submits the selected single option with the revision the human rev
   const user = userEvent.setup();
   const submitted: Array<{ id: string; input: AnswerAskInput }> = [];
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
-  answersWith(async (id, submission) => {
-    submitted.push({ id, input: submission });
-    return answered(input, submission.selected);
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (id, submission) => {
+        submitted.push({ id, input: submission });
+        return answered(input, submission.selected);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     const answer = view.getByLabelText("Your answer");
@@ -710,11 +695,16 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
     return { artifact: { name: "shot.png", slug: "shot-png" }, version: { number: 1 } } as never;
   });
   const input = ask();
-  answersWith(async (_id, submission) => {
-    submitted.push(submission);
-    return answered(input, submission.selected, submission.text ?? null);
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     const answer = view.getByLabelText("Your answer") as HTMLTextAreaElement;
@@ -785,11 +775,16 @@ test("AskCard submits every checked multiple option", async () => {
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ multiple: true, options: [{ label: "Docs" }, { label: "Tests" }] });
-  answersWith(async (_id, submission) => {
-    submitted.push(submission);
-    return answered(input, submission.selected);
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     await user.click(await view.findByRole("checkbox", { name: "Docs" }));
@@ -808,11 +803,16 @@ test("AskCard submits free-text without inventing a selected option", async () =
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask();
-  answersWith(async (_id, submission) => {
-    submitted.push(submission);
-    return answered(input, submission.selected, submission.text ?? null);
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     await user.click(view.getByLabelText("Your answer"));
@@ -833,11 +833,16 @@ test("AskCard submits on Ctrl+Enter but not on plain Enter", async () => {
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask();
-  answersWith(async (_id, submission) => {
-    submitted.push(submission);
-    return answered(input, submission.selected, submission.text ?? null);
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     const field = view.getByLabelText("Your answer");
@@ -861,11 +866,16 @@ test("AskCard submits a selected Other option with free text", async () => {
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
-  answersWith(async (_id, submission) => {
-    submitted.push(submission);
-    return answered(input, submission.selected, submission.text ?? null);
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     const submit = view.getByRole("button", { name: "Answer" });
@@ -890,15 +900,20 @@ test("AskCard offers to ask back for a question-shaped answer without closing th
   const answerCalls: AnswerAskInput[] = [];
   const replyCalls: Array<{ issueKey: string; input: CreateCommentInput }> = [];
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
-  answersWith(async (_id, submission) => {
-    answerCalls.push(submission);
-    return answered(input, submission.selected, submission.text ?? null);
-  });
-  clarificationsWith(async (issueKey, replyInput) => {
-    replyCalls.push({ issueKey, input: replyInput });
-    return reply({ ask_id: replyInput.ask_id, body: replyInput.body });
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => {
+        answerCalls.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      createReply={async (issueKey, replyInput) => {
+        replyCalls.push({ issueKey, input: replyInput });
+        return reply({ ask_id: replyInput.ask_id, body: replyInput.body });
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     await user.click(view.getByLabelText("Your answer"));
@@ -932,11 +947,16 @@ test("AskCard lets a human explicitly answer with a question-shaped response", a
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
-  answersWith(async (_id, submission) => {
-    submitted.push(submission);
-    return answered(input, submission.selected, submission.text ?? null);
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     await user.click(view.getByLabelText("Your answer"));
@@ -1004,11 +1024,16 @@ test("an approval-kind ask submits Approve with an optional note", async () => {
     kind: "approval",
     options: [{ label: "Approve" }, { label: "Request changes" }],
   });
-  answersWith(async (_id, submission) => {
-    submitted.push(submission);
-    return answered(input, submission.selected, submission.text ?? null);
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     await user.click(await view.findByRole("radio", { name: "Approve" }));
@@ -1058,11 +1083,16 @@ for (const refusal of [
     const user = userEvent.setup();
     let calls = 0;
     const input = ask({ options: [{ label: "Ship" }] });
-    answersWith(async () => {
-      calls++;
-      throw new ApiError(refusal.status, { code: refusal.code, error: refusal.error });
-    });
-    const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+    const { view } = renderCard(
+      <AskCard
+        ask={input}
+        answerAsk={async () => {
+          calls++;
+          throw new ApiError(refusal.status, { code: refusal.code, error: refusal.error });
+        }}
+        getAskThread={emptyThread(input)}
+      />
+    );
 
     try {
       await user.click(await view.findByRole("radio", { name: "Ship" }));
@@ -1082,14 +1112,19 @@ test("an answer that failed for another reason offers a Retry that sends it agai
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ options: [{ label: "Ship" }] });
-  answersWith(async (_id, submission) => {
-    submitted.push(submission);
-    if (submitted.length === 1) {
-      throw new Error("offline");
-    }
-    return answered(input, submission.selected);
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        if (submitted.length === 1) {
+          throw new Error("offline");
+        }
+        return answered(input, submission.selected);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     await user.click(await view.findByRole("radio", { name: "Ship" }));
@@ -1112,11 +1147,16 @@ test("an approval-kind ask names the reason Request changes needs, focuses its f
     kind: "approval",
     options: [{ label: "Approve" }, { label: "Request changes" }],
   });
-  answersWith(async (_id, submission) => {
-    submitted.push(submission);
-    return answered(input, submission.selected, submission.text ?? null);
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     expect(view.queryByText("Add a reason to send Request changes")).not.toBeInTheDocument();
@@ -1152,11 +1192,16 @@ test("a Done / Can't question is an ordinary question: Other stays, Can't needs 
     options: [{ label: "Done" }, { label: "Can't" }],
     question: "Confirm the deployment.",
   });
-  answersWith(async (_id, submission) => {
-    submitted.push(submission);
-    return answered(input, submission.selected, submission.text ?? null);
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     const card = view.getByTestId("ask-ask-1");
@@ -1222,11 +1267,16 @@ test("AskCard submits selected options alongside a typed note", async () => {
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ multiple: true, options: [{ label: "Docs" }, { label: "Tests" }] });
-  answersWith(async (_id, submission) => {
-    submitted.push(submission);
-    return answered(input, submission.selected, submission.text ?? null);
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     await user.click(await view.findByRole("checkbox", { name: "Docs" }));
@@ -1248,11 +1298,16 @@ test("AskCard requires text when Other is selected with real multiple options", 
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ multiple: true, options: [{ label: "Docs" }, { label: "Tests" }] });
-  answersWith(async (_id, submission) => {
-    submitted.push(submission);
-    return answered(input, submission.selected, submission.text ?? null);
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     await user.click(await view.findByRole("checkbox", { name: "Docs" }));
@@ -1282,11 +1337,16 @@ test("AskCard submits a selected single option with added context", async () => 
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
-  answersWith(async (_id, submission) => {
-    submitted.push(submission);
-    return answered(input, submission.selected, submission.text ?? null);
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     await user.click(await view.findByRole("radio", { name: "Ship" }));
@@ -1304,16 +1364,15 @@ test("AskCard submits a selected single option with added context", async () => 
   }
 });
 
-test("AskCard's inbox entry is listed again if an optimistic answer fails", async () => {
+test("AskCard restores its inbox entry if an optimistic answer fails", async () => {
   const user = userEvent.setup();
   let rejectAnswer: (reason?: unknown) => void = () => {};
   const pendingAnswer = new Promise<Ask>((_resolve, reject) => {
     rejectAnswer = reject;
   });
   const input = ask({ options: [{ label: "Ship" }] });
-  answersWith(() => pendingAnswer);
   const { queryClient, view } = renderCard(
-    <AskCard ask={input} getAskThread={emptyThread(input)} />
+    <AskCard ask={input} answerAsk={() => pendingAnswer} getAskThread={emptyThread(input)} />
   );
   const inboxInput: InboxRow = {
     ...input,
@@ -1338,10 +1397,10 @@ test("AskCard's inbox entry is listed again if an optimistic answer fails", asyn
     await user.click(await view.findByRole("radio", { name: "Ship" }));
     await user.click(view.getByRole("button", { name: "Answer" }));
 
-    await waitFor(() => expect(cacheOf(queryClient).shown<InboxRow[]>(["inbox"])).toEqual([]));
+    await waitFor(() => expect(queryClient.getQueryData<InboxRow[]>(["inbox"])).toEqual([]));
     rejectAnswer(new Error("offline"));
     await waitFor(() =>
-      expect(cacheOf(queryClient).shown<InboxRow[]>(["inbox"])).toEqual([inboxInput])
+      expect(queryClient.getQueryData<InboxRow[]>(["inbox"])).toEqual([inboxInput])
     );
   } finally {
     view.unmount();
@@ -1357,16 +1416,16 @@ test("AskCard reloads a changed question, requires the human to reconfirm, and a
     options: [{ label: "Hold" }],
     question: "Should we hold this release?",
   });
-  answersWith(async (_id, submission) => {
-    submitted.push(submission);
-    if (submitted.length === 1) {
-      throw new ApiError(409, { code: "ASK_EDITED", error: "question changed" });
-    }
-    return answered(current, submission.selected);
-  });
   const { view } = renderCard(
     <AskCard
       ask={input}
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        if (submitted.length === 1) {
+          throw new ApiError(409, { code: "ASK_EDITED", error: "question changed" });
+        }
+        return answered(current, submission.selected);
+      }}
       getAskThread={async () => ({
         ask: current,
         answers: [],
@@ -1438,8 +1497,13 @@ test("AskCard shows submitted free text in its answered card", async () => {
       { description: "Wait for review", label: "Hold" },
     ],
   });
-  answersWith(async () => answered(input, ["Ship"], "Proceed."));
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async () => answered(input, ["Ship"], "Proceed.")}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     await user.click(await view.findByRole("radio", { name: /^Ship/ }));
@@ -1481,14 +1545,19 @@ test("AskCard retries a failed answer without losing its form", async () => {
   const user = userEvent.setup();
   let attempts = 0;
   const input = ask({ options: [{ label: "Ship" }] });
-  answersWith(async () => {
-    attempts += 1;
-    if (attempts === 1) {
-      throw new Error("offline");
-    }
-    return answered(input, ["Ship"]);
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error("offline");
+        }
+        return answered(input, ["Ship"]);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     await user.click(await view.findByRole("radio", { name: "Ship" }));
@@ -1507,11 +1576,16 @@ test("AskCard ignores a same-task duplicate answer submit", async () => {
   const user = userEvent.setup();
   let attempts = 0;
   const input = ask({ options: [{ label: "Ship" }] });
-  answersWith(async () => {
-    attempts += 1;
-    return answered(input, ["Ship"]);
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async () => {
+        attempts += 1;
+        return answered(input, ["Ship"]);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     await user.click(await view.findByRole("radio", { name: "Ship" }));
@@ -1564,8 +1638,13 @@ test("AskCard renders replies under the question without an open-ask thread comp
 test("AskCard keeps the thread and reply composer visible after the ask is answered", async () => {
   const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }] });
-  answersWith(async () => answered(input, ["Ship"]));
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async () => answered(input, ["Ship"])}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     await user.click(await view.findByRole("radio", { name: "Ship" }));
@@ -1617,11 +1696,16 @@ test("AskCard asks back from its answer field and clears the text without cleari
     body: string | undefined;
     askId: string | null | undefined;
   }> = [];
-  clarificationsWith(async (issueKey, body) => {
-    posted.push({ issueKey, body: body.body, askId: body.ask_id });
-    return reply({ body: body.body });
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      createReply={async (issueKey, body) => {
+        posted.push({ issueKey, body: body.body, askId: body.ask_id });
+        return reply({ body: body.body });
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     const ship = await view.findByRole("radio", { name: "Ship" });
@@ -1645,14 +1729,19 @@ test("AskCard surfaces a retryable error when asking back fails", async () => {
   const user = userEvent.setup();
   let attempts = 0;
   const input = ask();
-  clarificationsWith(async (_issueKey, body) => {
-    attempts += 1;
-    if (attempts === 1) {
-      throw new Error("offline");
-    }
-    return reply({ body: body.body });
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      createReply={async (_issueKey, body) => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error("offline");
+        }
+        return reply({ body: body.body });
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
 
   try {
     await user.click(view.getByLabelText("Your answer"));
@@ -1722,16 +1811,22 @@ test("AskCard shows the newest two replies, expands the earlier ones, and puts a
     route_holder: null,
     route_status_reason: null,
   });
-  clarificationsWith(async () => {
-    const fresh = reply({
-      body: "Fresh reply",
-      created_at: "2026-09-09T00:06:00Z",
-      id: "comment-6",
-    });
-    replies = [...replies, fresh];
-    return fresh;
-  });
-  const { view } = renderCard(<AskCard ask={input} getAskThread={thread} thread="collapsed" />);
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      createReply={async () => {
+        const fresh = reply({
+          body: "Fresh reply",
+          created_at: "2026-09-09T00:06:00Z",
+          id: "comment-6",
+        });
+        replies = [...replies, fresh];
+        return fresh;
+      }}
+      getAskThread={thread}
+      thread="collapsed"
+    />
+  );
 
   try {
     const threadElement = await view.findByTestId("thread-ask-1");
@@ -2006,16 +2101,16 @@ test("a reply composer remounted while its send is out shows the draft disabled 
   const input = answered(ask(), []);
   const sent = Promise.withResolvers<Comment>();
   const bodies: (string | undefined)[] = [];
-  answerIssueComments().mockImplementation(async (_key, comment) => {
-    bodies.push(comment.body);
+  const createReply = async (_issueKey: string, body: CreateCommentInput) => {
+    bodies.push(body.body);
     return sent.promise;
-  });
+  };
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
   const composer = () => (
     <QueryClientProvider client={queryClient}>
-      <AskReplyComposer ask={input} />
+      <AskReplyComposer ask={input} createReply={createReply} />
     </QueryClientProvider>
   );
   const first = render(composer());
@@ -2051,15 +2146,15 @@ test("two reply composers for one ask share its draft and its send", async () =>
   const input = answered(ask(), []);
   const sent = Promise.withResolvers<Comment>();
   const bodies: (string | undefined)[] = [];
-  answerIssueComments().mockImplementation(async (_key, comment) => {
-    bodies.push(comment.body);
+  const createReply = async (_issueKey: string, body: CreateCommentInput) => {
+    bodies.push(body.body);
     return sent.promise;
-  });
+  };
   // The margin's inline composer and a Conversation or decision-block composer, on one page.
   const { view } = renderCard(
     <>
-      <AskReplyComposer ask={input} />
-      <AskReplyComposer ask={input} />
+      <AskReplyComposer ask={input} createReply={createReply} />
+      <AskReplyComposer ask={input} createReply={createReply} />
     </>
   );
   try {
@@ -2095,11 +2190,13 @@ test("a picture pasted into a reply composer joins its draft and holds the send 
   });
   const input = answered(ask(), []);
   const bodies: (string | undefined)[] = [];
-  answerIssueComments().mockImplementation(async (_key, comment) => {
-    bodies.push(comment.body);
-    return reply({ body: comment.body });
-  });
-  const { view } = renderCard(<AskReplyComposer ask={input} uploadOwner={{ issue: "CORE-1" }} />);
+  const createReply = async (_issueKey: string, body: CreateCommentInput) => {
+    bodies.push(body.body);
+    return reply({ body: body.body });
+  };
+  const { view } = renderCard(
+    <AskReplyComposer ask={input} createReply={createReply} uploadOwner={{ issue: "CORE-1" }} />
+  );
   try {
     const field = view.getByRole("textbox", { name: "Reply" }) as HTMLTextAreaElement;
     await user.click(field);
@@ -2198,9 +2295,12 @@ test("answering a document ask invalidates the document and projects, not an iss
     issue_key: null,
     options: [{ label: "Ship" }],
   });
-  answersWith(async (_id, submission) => answered(input, submission.selected));
   const { queryClient, view } = renderCard(
-    <AskCard ask={input} getAskThread={emptyThread(input)} />
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => answered(input, submission.selected)}
+      getAskThread={emptyThread(input)}
+    />
   );
   const invalidate = spyOn(queryClient, "invalidateQueries");
 
@@ -2227,7 +2327,9 @@ test("asking back from a document ask posts an artifact comment and keeps the se
     issue_key: null,
     options: [{ label: "Ship" }, { label: "Hold" }],
   });
-  const createArtifactComment = answerArtifactComments().mockResolvedValue(reply() as never);
+  const createArtifactComment = spyOn(api, "createArtifactComment").mockResolvedValue(
+    reply() as never
+  );
   const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
 
   try {
@@ -2364,12 +2466,16 @@ test("AskCard compact variant keeps an open note visible when a real option is p
   const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
   const sent: AnswerAskInput[] = [];
-  answersWith(async (_id, answerInput) => {
-    sent.push(answerInput);
-    return answered(input, answerInput.selected ?? [], answerInput.text ?? null);
-  });
   const { view } = renderCard(
-    <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+    <AskCard
+      answerAsk={async (_id, answerInput) => {
+        sent.push(answerInput);
+        return answered(input, answerInput.selected ?? [], answerInput.text ?? null);
+      }}
+      ask={input}
+      getAskThread={emptyThread(input)}
+      variant="compact"
+    />
   );
 
   try {
@@ -2398,15 +2504,18 @@ test("AskCard compact variant hands focus to the row when Answer disables under 
   const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
   let release: (value: Ask) => void = () => {};
-  answersWith(
-    () =>
-      new Promise<Ask>((resolve) => {
-        release = resolve;
-      })
-  );
   const { view } = renderCard(
     <div data-testid="row" tabIndex={-1}>
-      <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+      <AskCard
+        answerAsk={() =>
+          new Promise<Ask>((resolve) => {
+            release = resolve;
+          })
+        }
+        ask={input}
+        getAskThread={emptyThread(input)}
+        variant="compact"
+      />
     </div>
   );
 

@@ -13,7 +13,6 @@ import {
   documentSurfaceHandlers,
   renderProofDocument,
 } from "../../__tests__/proof-document";
-import { cacheOf } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type { Ask, IssueDetails, IssueReferenceSummary } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
@@ -619,7 +618,7 @@ test("a selection-bar action opens the margin composer for the mark and settles 
    *  compose is its send's, and the library's promise resolves. */
   const sendOpenCompose = () => {
     const { anchor, kind } = openCompose();
-    heldSends(cacheOf(queryClient)).send(marginComposeSendKey(anchor.artifact), {
+    heldSends(queryClient).send(marginComposeSendKey(anchor.artifact), {
       anchor,
       ask: { multiple: false, options: [], urgency: "med" },
       draft: { body: "Why?", mentions: [], replacement: "" },
@@ -797,7 +796,7 @@ test("a closed document's Comment opens a quote composer with no mark, which pos
     const { anchor } = margin.current?.pendingCompose ?? {};
     if (anchor === undefined) throw new Error("expected an open compose");
     act(() =>
-      heldSends(cacheOf(queryClient)).send(marginComposeSendKey(anchor.artifact), {
+      heldSends(queryClient).send(marginComposeSendKey(anchor.artifact), {
         anchor,
         ask: { multiple: false, options: [], urgency: "med" },
         draft: { body: "After the close", mentions: [], replacement: "" },

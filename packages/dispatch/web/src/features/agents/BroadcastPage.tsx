@@ -1,7 +1,7 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
-import { useCache } from "../../api/cache/cache";
-import { useShownQuery } from "../../api/cache/shown-query";
+
 import { api } from "../../api/client";
 import type {
   Agent,
@@ -78,15 +78,14 @@ function BroadcastRecipientRow({
   recipient: BroadcastRecipient;
 }): ReactNode {
   const text = useAgentText();
-  const cache = useCache();
+  const queryClient = useQueryClient();
   // The recipient is the session the broadcast addressed: `AgentName` draws it wherever the row
   // names it, and the row's accessible name is the same name as text.
   const recipientAgent: AgentPart = { sessionId: recipient.session_id, storedTitle: undefined };
   const label = text.sessionText(recipient.session_id, undefined);
   const retry = useKeyedWrite({
     label: (mode: MessageDeliveryMode) => `Delivery to ${label} again, as ${MODE_LABELS[mode]}`,
-    onSuccess: () => void cache.invalidate({ queryKey: ["broadcast"] }),
-    unlined: "a delivery sends a message to one session again and names no row",
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["broadcast"] }),
     write: (mode, bounds) => api.createMessageDelivery(recipient.message.id, mode, bounds),
   });
   // The row shows the recipient's whole thread, so its replies are read. Only these: the
@@ -179,7 +178,7 @@ export function BroadcastPage(): ReactNode {
   const location = useLocation();
   const excluded = exclusionsFromState(location.state);
   const { agents, current } = useAgents(true, true);
-  const broadcast = useShownQuery({
+  const broadcast = useQuery({
     queryFn: () => api.getBroadcast(id),
     // Keyed under ["broadcast"], the prefix every issue-less message event invalidates, so a
     // recipient's delivery receipt or reply lands here without a poll.

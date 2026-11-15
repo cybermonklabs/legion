@@ -1,10 +1,15 @@
+import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { useCache } from "../../api/cache/cache";
-import { useShownQuery } from "../../api/cache/shown-query";
-import { storeAgentState } from "../../api/cache/viewer-state";
+
 import { agentStateRequest } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
-import type { Message, MessageRead, UserAgentStateInput, UserAgentStates } from "../../api/types";
+import type {
+  Message,
+  MessageRead,
+  UserAgentState,
+  UserAgentStateInput,
+  UserAgentStates,
+} from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
@@ -74,6 +79,19 @@ export function useUnreadAtOpen(
   return next.unread;
 }
 
+/** Puts the session's state a PUT answered with into the viewer's shared agent-state query, so
+ *  every badge and row reads it at once. */
+export function storeAgentState(
+  queryClient: QueryClient,
+  sessionId: string,
+  next: UserAgentState
+): void {
+  queryClient.setQueryData<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
+    ...current,
+    [sessionId]: next,
+  }));
+}
+
 /**
  * The write both read hooks make: `input(value)` for `sessionId`, once per `dedupeKey(value)`,
  * whenever the server counts one of the session's replies unread, with the answer put into the
@@ -87,11 +105,11 @@ function useSendReadMark<V>(
   dedupeKey: (value: V) => string,
   input: (value: V) => UserAgentStateInput
 ): void {
-  const cache = useCache();
-  const unread = useShownQuery(userAgentStateQuery()).data?.[sessionId]?.unread_replies ?? 0;
+  const queryClient = useQueryClient();
+  const unread = useQuery(userAgentStateQuery()).data?.[sessionId]?.unread_replies ?? 0;
   useSendMarkOnce({
     mark: value === undefined ? undefined : { key: dedupeKey(value), value: input(value) },
-    onSuccess: (next) => storeAgentState(cache, sessionId, next),
+    onSuccess: (next) => storeAgentState(queryClient, sessionId, next),
     request: (body: UserAgentStateInput) => agentStateRequest(sessionId, body),
     shouldSend: unread !== 0,
     target: `read:agent:${sessionId}`,

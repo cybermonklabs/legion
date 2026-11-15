@@ -197,7 +197,7 @@ test("a priority the server refuses shows the header's own failure, whether the 
     });
 
     // The digit key and the picker are one write, so a refusal of either is reported once, by
-    // the control the reader is looking at, and the badge shows Dispatch's priority again.
+    // the control the reader is looking at, and the badge rolls back.
     await page.keyboard.press("2");
     const failure = header
       .getByRole("alert")

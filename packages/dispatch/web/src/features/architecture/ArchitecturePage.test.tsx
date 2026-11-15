@@ -1,11 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { answerArchitectureSourceSyncs, answerIssuePatches } from "../../__tests__/send-answers";
-import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
+import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type {
   ArchitectureTree,
@@ -14,6 +14,7 @@ import type {
   ArchitectureTreeSource,
 } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { writesOf } from "../writes/write-store";
 import { ArchitecturePage } from "./ArchitecturePage";
 
 function component(
@@ -140,7 +141,7 @@ function LocationProbe() {
 
 function renderPane(tree: ArchitectureTree, search = "") {
   const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(tree);
-  const syncArchitectureSource = answerArchitectureSourceSyncs();
+  const syncArchitectureSource = spyOn(api, "syncArchitectureSource");
   const patchIssue = answerIssuePatches();
   const getIssue = spyOn(api, "getIssue");
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -413,9 +414,7 @@ test("never synced: the source line says so and an empty model shows the Refresh
     await waitFor(() =>
       expect(pane.syncArchitectureSource).toHaveBeenCalledWith(
         "CORE",
-        "legion",
-        "legion",
-        undefined,
+        "legion/legion",
         keyedAttempt
       )
     );
@@ -444,12 +443,12 @@ test("a refused Refresh goes to the shell's pending writes, and the button is re
     );
     await user.click(screen.getByRole("button", { name: "Refresh legion/legion" }));
     await waitFor(() => {
-      const [refused] = cacheOf(pane.queryClient).writes.rows();
+      const [refused] = writesOf(pane.queryClient).rows();
       expect(refused?.status === "refused" ? refused.refusal.message : undefined).toBe(
         "GitHub is unreachable"
       );
     });
-    expect(cacheOf(pane.queryClient).writes.rows()[0]?.label).toBe(
+    expect(writesOf(pane.queryClient).rows()[0]?.label).toBe(
       "Refresh of CORE's architecture source legion/legion"
     );
     await screen.findByRole("button", { name: "Refresh legion/legion" });
@@ -553,13 +552,7 @@ test("the header has one line per source, each with its own commit, check time a
     pane.syncArchitectureSource.mockImplementation(() => Promise.withResolvers<never>().promise);
     await user.click(screen.getByRole("button", { name: "Refresh acme/infra" }));
     await waitFor(() =>
-      expect(pane.syncArchitectureSource).toHaveBeenCalledWith(
-        "CORE",
-        "acme",
-        "infra",
-        undefined,
-        keyedAttempt
-      )
+      expect(pane.syncArchitectureSource).toHaveBeenCalledWith("CORE", "acme/infra", keyedAttempt)
     );
     expect(pane.syncArchitectureSource).toHaveBeenCalledTimes(1);
     // Only the source being refreshed says so.
@@ -637,7 +630,7 @@ test("Unassigned: the picker PATCHes an explicit set, the row leaves the list at
       "CORE has no component ghost"
     );
     expect(within(list).getByRole("link", { name: "CORE-7 · Loose end" })).toBeTruthy();
-    // The refused move is drawn no more: the scope line still counts it.
+    // The optimistic move rolled back: the scope line still counts it.
     expect(screen.getByTestId("architecture-scope")).toHaveTextContent("1 unassigned");
 
     // The success path: the tree cache moves the issue at once; the row stays, saving, until

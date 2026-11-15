@@ -1,6 +1,7 @@
+import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { useShownQuery } from "../../api/cache/shown-query";
+
 import { api } from "../../api/client";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -24,7 +25,7 @@ import { useDocumentTitle } from "../shell/useDocumentTitle";
  *  again after the sender navigated away from it. */
 export function BroadcastsPage(): ReactNode {
   useDocumentTitle("Broadcasts · Dispatch");
-  const broadcasts = useShownQuery({
+  const broadcasts = useQuery({
     queryFn: () => api.listBroadcasts(),
     queryKey: ["broadcast", "list"],
   });

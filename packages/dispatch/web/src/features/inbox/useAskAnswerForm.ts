@@ -1,16 +1,17 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
-import { useCache } from "../../api/cache/cache";
-import { queryOptions } from "../../api/cache/read-options";
-import { useShownQuery } from "../../api/cache/shown-query";
-import {
-  ApiError,
-  apiErrorMessage,
-  artifactCommentRequest,
-  askAnswerRequest,
-  issueCommentRequest,
-} from "../../api/client";
+
+import { ApiError, api, apiErrorMessage, type WriteBounds } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
-import type { AnswerAskInput, Ask, AskAnswer, AskRead, AskWithTrees } from "../../api/types";
+import type {
+  AnswerAskInput,
+  Ask,
+  AskAnswer,
+  AskRead,
+  AskWithTrees,
+  Comment,
+  CreateCommentInput,
+} from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -26,6 +27,12 @@ import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
 interface UseAskAnswerFormOptions {
   ask: AskWithTrees;
+  answer: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>;
+  createReply: (
+    issueKey: string,
+    input: CreateCommentInput,
+    bounds: WriteBounds
+  ) => Promise<Comment>;
   getAskThread: (id: string) => Promise<AskRead>;
   /** Data the Inbox response already hydrated for this card's first render. */
   initialThread?: AskRead;
@@ -94,15 +101,17 @@ function answerFailure(error: Error): AskAnswerFailure {
 }
 
 export function useAskAnswerForm({
+  answer,
   ask,
+  createReply,
   getAskThread,
   initialThread,
   initialThreadUpdatedAt,
   initiallyChanging = false,
   onAnswered,
 }: UseAskAnswerFormOptions) {
-  const cache = useCache();
-  const viewer = useShownQuery(whoAmIQuery()).data?.login;
+  const queryClient = useQueryClient();
+  const viewer = useQuery(whoAmIQuery()).data?.login;
   // Each AskCard instance owns its answer field label so cards with the same
   // ask id never collide when a responsive transition briefly renders both.
   const answerFieldId = `${useId()}-answer`;
@@ -132,31 +141,29 @@ export function useAskAnswerForm({
   // thread. A thread invalidated while its Inbox snapshot was in flight bypasses that snapshot,
   // and so does every thread on an issue whose claim or route moved while it was in flight.
   const refreshInitialThread =
-    initialThread !== undefined && hasPendingAskThreadInvalidation(cache, ask);
-  const threadQuery = useShownQuery({
-    ...queryOptions<AskRead, Error>({
-      queryKey: ["ask-thread", ask.id],
-      queryFn: () => getAskThread(ask.id),
-    }),
+    initialThread !== undefined && hasPendingAskThreadInvalidation(queryClient, ask);
+  const threadQuery = useQuery<AskRead, Error>({
     initialData: refreshInitialThread ? undefined : initialThread,
     initialDataUpdatedAt: refreshInitialThread ? undefined : initialThreadUpdatedAt,
+    queryKey: ["ask-thread", ask.id],
+    queryFn: () => getAskThread(ask.id),
     staleTime: Number.POSITIVE_INFINITY,
   });
   useEffect(() => {
     if (refreshInitialThread && threadQuery.data !== undefined) {
-      clearPendingAskThreadInvalidation(cache, ask.id);
+      clearPendingAskThreadInvalidation(queryClient, ask.id);
     }
-  }, [ask.id, cache, refreshInitialThread, threadQuery.data]);
+  }, [ask.id, queryClient, refreshInitialThread, threadQuery.data]);
   const edits = threadQuery.data?.edits ?? [];
   const answers = threadQuery.data?.answers ?? [];
   // The card says why an answer was refused, in the ask's own words, beside the draft it holds;
   // the shell's indicator shows the answer only while it is out. The row's removal from the
-  // Inbox, composed no more once refused, and the hold that keeps the question where the reader
+  // Inbox, its restore on a refusal and the hold that keeps the question where the reader
   // pressed it are the decline's too, and are written once beside the hold itself.
   const mutation = useOutstandingAnswerWrite({
     askId: ask.id,
     label: () => `Answer to “${ask.question}”`,
-    request: (input: AnswerAskInput) => askAnswerRequest(ask.id, input),
+    write: (input: AnswerAskInput, bounds) => answer(ask.id, input, bounds),
     // A change to an answer the server has already recorded leaves the Inbox alone: the ask has
     // no open row there to take out.
     removesRow: () => replacing.current === undefined,
@@ -165,7 +172,7 @@ export function useAskAnswerForm({
         setAskChanged(true);
         setSelected([]);
         setOtherSelected(false);
-        void cache.invalidate({ queryKey: ["ask-thread", ask.id] });
+        void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
       }
       if (
         error instanceof ApiError &&
@@ -175,7 +182,7 @@ export function useAskAnswerForm({
       ) {
         // Each refusal meets the same change again, so the form it was sent from closes and the
         // card shows the thread's current answer, not one this card recorded earlier.
-        void cache.invalidate({ queryKey: ["ask-thread", ask.id] });
+        void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
         replacing.current = undefined;
         setJustAnswered(null);
         setChanging(false);
@@ -193,51 +200,51 @@ export function useAskAnswerForm({
       setAnswerText("");
       // Answered either way; with no answer to give, the card reads the ask afresh instead of
       // showing the one Dispatch would have handed back.
-      setJustAnswered(updatedAsk?.body ?? null);
+      setJustAnswered(updatedAsk);
       if (changed || updatedAsk === null) {
-        if (updatedAsk?.body.answer != null) {
-          cache.setDispatched(
-            ["ask-thread", ask.id],
-            updatedAsk,
-            (current: AskRead | undefined, record) =>
-              current === undefined || record.answer == null
-                ? undefined
-                : {
-                    ...current,
-                    answers: [...(current.answers ?? []), record.answer],
-                    ask: record,
-                  }
+        if (updatedAsk?.answer != null) {
+          const changedAnswer = updatedAsk.answer;
+          queryClient.setQueryData<AskRead>(["ask-thread", ask.id], (current) =>
+            current === undefined
+              ? undefined
+              : {
+                  ...current,
+                  answers: [...(current.answers ?? []), changedAnswer],
+                  ask: updatedAsk,
+                }
           );
         }
-        void cache.invalidate({ queryKey: ["ask-thread", ask.id] });
-        void cache.invalidate({ queryKey: ["me", "answers"] });
+        void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+        void queryClient.invalidateQueries({ queryKey: ["me", "answers"] });
       }
       if (!changed) onAnswered?.(ask.id);
-      invalidateOwnerReads(cache, ask);
+      invalidateOwnerReads(queryClient, ask);
     },
   });
-  // A clarification hands the ask's turn back, so it stands in that row's line (`ask:<id>`) with
-  // the answer, the decline, the hand-on and the snooze, however it is written: a comment on the
-  // ask's issue, or on the document an ask with no issue belongs to.
   const clarification = useKeyedWrite({
     inline: true,
     label: () => `Question back on “${ask.question}”`,
-    request: (text: string) =>
-      ask.issue_key === null
-        ? artifactCommentRequest(askArtifactId(ask), { ask_id: ask.id, body: text })
-        : issueCommentRequest(ask.issue_key, { ask_id: ask.id, body: text }),
-    target: () => `ask:${ask.id}`,
+    write: (text: string, bounds) => {
+      if (ask.issue_key === null) {
+        return api.createArtifactComment(
+          askArtifactId(ask),
+          { ask_id: ask.id, body: text },
+          bounds
+        );
+      }
+      return createReply(ask.issue_key, { ask_id: ask.id, body: text }, bounds);
+    },
     onSettled: () => {
       submitGuard.release();
     },
     onSuccess: () => {
       setAnswerText("");
       setQuestionChoice(false);
-      void cache.invalidate({ queryKey: ["ask-thread", ask.id] });
+      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
       // A clarification hands the turn to the asker: every surface that renders this ask from
       // its owner's list (a decision block reads `["asks", key]`) must see the new `waiting_on`,
       // not just the Inbox.
-      invalidateOwnerReads(cache, ask);
+      invalidateOwnerReads(queryClient, ask);
     },
   });
 

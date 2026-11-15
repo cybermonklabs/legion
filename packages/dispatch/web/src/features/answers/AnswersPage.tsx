@@ -1,9 +1,8 @@
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
-import { infiniteQueryOptions } from "../../api/cache/read-options";
-import { useShownInfiniteQuery, useShownQuery } from "../../api/cache/shown-query";
+
 import { api } from "../../api/client";
-import { askThreadQuery } from "../../api/queries";
 import type { MyAnswerRow, MyAnswersResponse } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -31,7 +30,11 @@ const PAGE_SIZE = 50;
  *  card's own thread query uses, so one fetch serves both; mounted in `change` mode, the card
  *  opens its form seeded with the current answer. */
 function ChangeAnswerCard({ askId }: { askId: string }): ReactNode {
-  const thread = useShownQuery(askThreadQuery(askId));
+  const thread = useQuery({
+    queryFn: () => api.getAsk(askId),
+    queryKey: ["ask-thread", askId],
+    staleTime: Number.POSITIVE_INFINITY,
+  });
   if (thread.isPending) return <LoadingSkeleton label="Loading the ask" />;
   if (thread.isError) {
     return (
@@ -135,17 +138,15 @@ function AnswerRow({
 export function AnswersPage(): ReactNode {
   useDocumentTitle("Answered by you · Dispatch");
   const [changingAsk, setChangingAsk] = useState<string | null>(null);
-  const answers = useShownInfiniteQuery(
-    infiniteQueryOptions({
-      getNextPageParam: (last: MyAnswersResponse) =>
-        last.offset + (last.rows ?? []).length < last.total
-          ? last.offset + (last.rows ?? []).length
-          : undefined,
-      initialPageParam: 0,
-      queryFn: ({ pageParam }) => api.listMyAnswers({ limit: PAGE_SIZE, offset: pageParam }),
-      queryKey: ["me", "answers"],
-    })
-  );
+  const answers = useInfiniteQuery({
+    getNextPageParam: (last: MyAnswersResponse) =>
+      last.offset + (last.rows ?? []).length < last.total
+        ? last.offset + (last.rows ?? []).length
+        : undefined,
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) => api.listMyAnswers({ limit: PAGE_SIZE, offset: pageParam }),
+    queryKey: ["me", "answers"],
+  });
 
   if (answers.isPending) return <LoadingSkeleton label="Loading your answers" />;
   if (answers.isError) {

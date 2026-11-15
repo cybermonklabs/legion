@@ -1,11 +1,11 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { useCache } from "../../api/cache/cache";
-import { useShownQuery } from "../../api/cache/shown-query";
-import { ApiError, issueCreateRequest } from "../../api/client";
+
+import { ApiError, api, type WriteBounds } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
-import type { CreateIssueInput } from "../../api/types";
+import type { CreateIssueInput, Issue } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -30,9 +30,8 @@ import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { RelatedItems } from "./RelatedItems";
 
-// The dialog shows a refusal itself, beside the draft it was refused over. A create names no row
-// of its own - Dispatch gives the issue its key - so it stands in the line of the project it
-// adds the row to (`project:<KEY>`).
+const createIssue = (input: CreateIssueInput, bounds: WriteBounds): Promise<Issue> =>
+  api.createIssue(input, bounds);
 
 /**
  * The `c` shortcut's minimal create-issue dialog: project (preselecting the route's project),
@@ -43,30 +42,37 @@ import { RelatedItems } from "./RelatedItems";
  * a person types a title, the dialog lists the related items the check finds for it, so a
  * duplicate is seen before it is filed.
  */
-export function CreateIssueDialog({ onClose }: { onClose: () => void }): ReactNode {
+export function CreateIssueDialog({
+  onClose,
+  createIssue: create = createIssue,
+}: {
+  onClose: () => void;
+  /** Write seam for tests; defaults to the real API. */
+  createIssue?: (input: CreateIssueInput, bounds: WriteBounds) => Promise<Issue>;
+}): ReactNode {
   const location = useLocation();
   const navigate = useNavigate();
-  const cache = useCache();
+  const queryClient = useQueryClient();
   const titleRef = useRef<HTMLInputElement>(null);
   const dialog = useDialog<HTMLFormElement>({ initialFocusRef: titleRef, onClose, open: true });
-  const projects = useShownQuery(projectsQuery());
+  const projects = useQuery(projectsQuery());
   const routeProject = routeProjectOf(location.pathname);
   const [project, setProject] = useState<string | undefined>(undefined);
   const [title, setTitle] = useState("");
   const [spec, setSpec] = useState("");
   const submitGuard = useSubmitGuard();
+  // The dialog shows a refusal itself, beside the draft it was refused over.
   const mutation = useKeyedWrite({
     inline: true,
     label: (input: CreateIssueInput) => `New issue “${input.title}”`,
     onSettled: () => submitGuard.release(),
-    request: (input: CreateIssueInput) => issueCreateRequest(input),
-    target: (input) => `project:${input.project}`,
+    write: create,
     onSuccess: (issue) => {
-      void cache.invalidate({ queryKey: ["issues"] });
-      void cache.invalidate({ queryKey: projectsQuery().queryKey });
+      void queryClient.invalidateQueries({ queryKey: ["issues"] });
+      void queryClient.invalidateQueries({ queryKey: projectsQuery().queryKey });
       if (issue !== null) {
         onClose();
-        navigate(buildIssuePath({ key: issue.body.key, kind: "issue" }));
+        navigate(buildIssuePath({ key: issue.key, kind: "issue" }));
         return;
       }
       // Made, with no answer to open: the draft goes, so a second press makes nothing, and the

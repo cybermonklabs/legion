@@ -1,0 +1,22 @@
+-- 20261112070503_pull_request_state_read_at.up.sql — when the daemon last read this pull request
+-- and got an answer (record.PullRequest.StateReadAt, whose doc is the full account of who stamps it
+-- and what clears it): the reader's own clock at the moment GitHub's answer was in hand. A read
+-- that only confirms the state already recorded stamps the column exactly as one that changes it
+-- does, because what the column records is the read, not the change.
+--
+-- The row carries GitHub's merge state for the head (merge_state, 20261029120200) and nothing of
+-- when it was read, so a head the daemon read a minute ago and found 'blocked' cannot be told from
+-- one nothing has read for a day: both rows hold the same state and the same silence about its age.
+-- The stamp is what tells them apart, and it is what a reader of the daemon's state looks at to see
+-- how old the recorded state is. The daemon makes no periodic read: a head is read again only at
+-- the daemon's start, after a handoff, and on a merge-state ladder, which every fact that can
+-- change GitHub's answer starts while an approved round waits on it - the pull request's own
+-- events, a push to it, a review, a CI settlement and a push to its base (workflow's askMergeState;
+-- daemon's issue_reads.go and merge_state_reads.go) - so the stamp ages between those reads.
+--
+-- Every existing row takes the zero time, the default 20261108190000 set for a time column with
+-- nothing to derive, beside the merge_state its last read gave, which it keeps. Such a row carries
+-- no moment of that read and is read as one with no read time on record, rather than as read at the
+-- migration's own moment, which would date every upgraded row to the deploy and call knowledge that
+-- may be a day old fresh. The daemon's next read of the pull request fills it.
+alter table pull_requests add column state_read_at timestamptz not null default '0001-01-01 00:00:00+00';

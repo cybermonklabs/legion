@@ -1,6 +1,7 @@
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
+
 import { isText } from "../../api/artifact-version";
-import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { AskApproval } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
@@ -26,11 +27,11 @@ function ApprovedChangeView({
   artifactId: string;
   version: number;
 }): ReactNode {
-  const before = useShownQuery({
+  const before = useQuery({
     queryKey: ["artifact", artifactId, "version", approvedVersion],
     queryFn: () => api.getArtifactVersion(artifactId, approvedVersion),
   });
-  const after = useShownQuery({
+  const after = useQuery({
     queryKey: ["artifact", artifactId, "version", version],
     queryFn: () => api.getArtifactVersion(artifactId, version),
   });

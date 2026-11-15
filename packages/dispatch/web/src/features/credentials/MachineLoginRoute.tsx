@@ -1,5 +1,6 @@
+import { useQuery } from "@tanstack/react-query";
 import { lazy, type ReactNode } from "react";
-import { useShownQuery } from "../../api/cache/shown-query";
+
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { credentialCapabilitiesQuery } from "./capabilities";
 
@@ -24,7 +25,7 @@ const MachineLoginPage = lazy(() =>
  * (`e2e/two-builds-routes.ts` walks the route under this name).
  */
 export function MachineLoginRoute(): ReactNode {
-  const capabilities = useShownQuery(credentialCapabilitiesQuery());
+  const capabilities = useQuery(credentialCapabilitiesQuery());
   if (capabilities.isPending) {
     return null;
   }

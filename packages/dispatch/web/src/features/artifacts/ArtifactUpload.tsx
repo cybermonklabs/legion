@@ -1,4 +1,5 @@
 import { isPictureType, pictureCaption } from "@legion/contracts";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import {
   type ChangeEvent,
   type ClipboardEvent,
@@ -9,8 +10,6 @@ import {
   useRef,
   useState,
 } from "react";
-
-import { type Cache, useCache } from "../../api/cache/cache";
 
 import { ApiError, type ArtifactOwner, api, type WriteBounds } from "../../api/client";
 import type { Artifact, Version } from "../../api/types";
@@ -71,14 +70,14 @@ export function uploadErrorMessage(error: unknown): string {
 }
 
 /** Refreshes the lists a write to `owner` adds a row to: an upload's, and a new document's. */
-export function refreshOwnerArtifacts(cache: Cache, owner: ArtifactOwner): void {
+export function refreshOwnerArtifacts(queryClient: QueryClient, owner: ArtifactOwner): void {
   if ("issue" in owner) {
-    void cache.invalidate({ queryKey: ["artifacts", owner.issue] });
-    void cache.invalidate({ queryKey: ["issue", owner.issue] });
+    void queryClient.invalidateQueries({ queryKey: ["artifacts", owner.issue] });
+    void queryClient.invalidateQueries({ queryKey: ["issue", owner.issue] });
   } else if ("project" in owner) {
-    void cache.invalidate({ queryKey: ["project", owner.project, "artifacts"] });
+    void queryClient.invalidateQueries({ queryKey: ["project", owner.project, "artifacts"] });
   } else {
-    void cache.invalidate({ queryKey: ["agent-artifacts", owner.session] });
+    void queryClient.invalidateQueries({ queryKey: ["agent-artifacts", owner.session] });
   }
 }
 
@@ -143,7 +142,7 @@ export interface DraftUpload {
  * read that same owner.
  */
 export function useDraftUpload(insert: (text: string) => void): DraftUpload {
-  const cache = useCache();
+  const queryClient = useQueryClient();
   const [pending, setPending] = useState(0);
   const retryGuard = useSubmitGuard();
   // Each file is one write under a key of its own, its refusal shown here beside the draft, and
@@ -158,14 +157,13 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
       result: await uploadFile(owner, file, {}, bounds),
     }),
     file: ({ file }) => file,
-    unlined: "an upload names no row until Dispatch stores the file",
     inline: true,
     label: ({ file }) => `Upload of ${file.name || "a file"}`,
     onMutate: () => setPending((count) => count + 1),
     // Stored either way; with no answer to give, its reference cannot be added to the draft, and
     // the field says so (`upload.unanswered`).
     onSuccess: (landed, { file, owner }) => {
-      refreshOwnerArtifacts(cache, owner);
+      refreshOwnerArtifacts(queryClient, owner);
       if (landed !== null) insert(uploadedFileText(owner, file, landed.result));
     },
     onSettled: () => {
@@ -265,7 +263,7 @@ export function useArtifactUpload(
     refusal = null,
   }: { immediate?: boolean; name?: string; refusal?: string | null } = {}
 ): ArtifactUpload {
-  const cache = useCache();
+  const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [summary, setSummary] = useState("");
@@ -279,7 +277,6 @@ export function useArtifactUpload(
         bounds
       ),
     file: (file) => file,
-    unlined: "an upload names no row until Dispatch stores the file",
     inline: true,
     label: (file) => `Upload of ${file.name || "a file"}`,
     onSuccess: (result) => {
@@ -287,9 +284,9 @@ export function useArtifactUpload(
       // with no answer to give, the row says so (`upload.unanswered`).
       setPendingFile(null);
       setSummary("");
-      refreshOwnerArtifacts(cache, owner);
+      refreshOwnerArtifacts(queryClient, owner);
       if (result !== null) {
-        void cache.invalidate({ queryKey: ["artifact", result.artifact.id] });
+        void queryClient.invalidateQueries({ queryKey: ["artifact", result.artifact.id] });
       }
     },
   });

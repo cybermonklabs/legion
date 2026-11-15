@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { QUERY_RETRY_DELAY_MS } from "../web/src/api/cache/query-client";
+import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import {
   baseUrl,
   createIssue,
@@ -117,10 +117,8 @@ test("a project's default repository moves with its Default radio, and a mapping
 
 // A mapping write's answer describes one row, not the project's mappings when it arrives. Here the
 // server saves the pick of acme/gadgets at once, another browser makes acme/widgets the default
-// again (which this page hears), and only then does the first answer reach the page. While the PUT
-// is held this page shows the reader's own unsaved pick over everything that lands under it, and
-// once the write settles the page reads the mappings again rather than put acme/gadgets back, so
-// the default the other browser set is what stands.
+// again (which this page hears and shows), and only then does the first answer reach the page: the
+// page reads the mappings again rather than put acme/gadgets back.
 // @pr: A two-context race: a late answer to this page's pick must not undo the default another browser set since.
 test("a late answer to a Default pick does not undo a default another browser set since @pr", async ({
   browser,
@@ -157,28 +155,8 @@ test("a late answer to a Default pick does not undo a default another browser se
 
     await radio("acme/gadgets").click();
     await savedOnServer;
-    // The other browser's default reaches this page: the mapping event, and the read of the
-    // mappings it sets off, whose answer carries acme/widgets as the default.
-    const otherBrowserRead = page.waitForResponse(async (response) => {
-      if (
-        new URL(response.url()).pathname !== "/api/v1/settings/repo-projects" ||
-        response.request().method() !== "GET"
-      ) {
-        return false;
-      }
-      const listed = (await response.json()) as Array<{ default?: boolean; repo?: string }>;
-      return listed.some((mapping) => mapping.repo === "acme/widgets" && mapping.default === true);
-    });
     await putRepoProject("acme/widgets", { default: true, project: "CORE" });
-    await otherBrowserRead;
-    // R7 of dispatch://INFRA-299 (dispatch://INFRA-299/spec#b-r7): while this page's own PUT is
-    // live, the write shows its change again over each answer that lands on the mappings read,
-    // so that answer arrives whole and the pick the reader has not saved yet is still on the
-    // screen - an exclusive field keeping its own rule, which leaves the other browser's default
-    // unchecked here. This row read the opposite, acme/widgets checked at this point, until the
-    // architect decided on 2026-11-12 that R7 is the rule and this row is what changes.
-    await expect(radio("acme/gadgets")).toBeChecked();
-    await expect(radio("acme/widgets")).not.toBeChecked();
+    await expect(radio("acme/widgets")).toBeChecked();
 
     const answered = page.waitForResponse(
       (response) =>
@@ -419,7 +397,7 @@ test("a person sets and changes a project's default assignee, and no write clear
   await createProject({ key: "CORE", name: "Core" });
   // Creating OPS as bob makes him a person who has signed in, so he is an option in the control,
   // and OPS names him from the moment it exists: every project names somebody.
-  await createProject({ key: "OPS", name: "Ops" }, "bob");
+  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -497,7 +475,7 @@ test("a default assignee picked while the last pick is saving waits its turn, an
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   // Creating OPS as bob makes him a person who has signed in, so he is an option in the control.
-  await createProject({ key: "OPS", name: "Ops" }, "bob");
+  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -566,8 +544,8 @@ test("default assignee picks made when Settings is left and reopened supersede t
   await createProject({ key: "CORE", name: "Core" });
   // Creating OPS as bob and QA as carol makes each a person who has signed in, so both are
   // options in the control.
-  await createProject({ key: "OPS", name: "Ops" }, "bob");
-  await createProject({ key: "QA", name: "Quality" }, "carol");
+  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
+  await createProject({ key: "QA", name: "Quality" }, { login: "carol" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -635,9 +613,9 @@ test("default assignee picks made while a save is out are superseded by the newe
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Ops" }, "bob");
-  await createProject({ key: "QA", name: "Quality" }, "carol");
-  await createProject({ key: "ENG", name: "Engineering" }, "dave");
+  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
+  await createProject({ key: "QA", name: "Quality" }, { login: "carol" });
+  await createProject({ key: "ENG", name: "Engineering" }, { login: "dave" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -688,7 +666,7 @@ test("a default assignee save refused while Settings is left says so when Settin
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Ops" }, "bob");
+  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
   await putProjectDefaultAssignee("CORE", { assignee: "alice" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
