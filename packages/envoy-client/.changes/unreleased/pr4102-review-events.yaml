@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  `dispatch read` names the document and the version of each review that it prints. The line of an
+  `artifact.approved` or `artifact.changes_requested` event, in an issue read and in a read of
+  `dispatch://KEY/log`, ends with `<document> v<version> approved` or
+  `<document> v<version> changes requested`. Then comes ` by plan review` or ` by a person` where
+  Dispatch recorded who gave the review, then the reason. Before, that line ended after its time,
+  so a plan review read like an approval of a spec. A plan's `Approval:` line names the plan review
+  as `by plan review (<session id>)`.
