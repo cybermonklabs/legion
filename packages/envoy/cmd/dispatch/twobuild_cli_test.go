@@ -268,3 +268,4 @@ func key(t *testing.T, project, output string) string {
 	}
 	return found
 }
+// selection probe, never merged
