@@ -43,17 +43,19 @@
  *   of that module.
  *
  * WHAT A LIMIT IS. Five places, which is what this rule reads. In each of them the limit is the
- * argument itself, or the `timeout` of an options object written there:
+ * argument itself, or the `timeout` of an options object written there under a plain key,
+ * `{ timeout: 90_000 }` or `{ timeout }`:
  *
  * - the third argument of a row call - `test(...)`, `it(...)`, `xtest(...)`, `xit(...)`, and
- *   every spelling reached from one of those: `test.only(...)`, `test.skip(...)`,
- *   `test.skipIf(<x>)(...)`, `test.each(<x>)(...)` and any modifier Bun adds later, each of which
- *   takes a limit there;
+ *   every callee reached from one of those through dotted members and calls: `test.only(...)`,
+ *   `test.skip(...)`, `test.skipIf(<x>)(...)`, `test.each(<x>)(...)` and any modifier Bun adds
+ *   later, each of which takes a limit there;
  * - the second argument of a row call. Bun reads `test(title, options, body)` as well as
- *   `test(title, body, options)`, although `@types/bun` 1.4.2 declares only the second, so the
- *   second argument is a limit wherever it is no function: a number, an options object, or a name
- *   bound to either. A function in either place is the row's body: an arrow, a function
- *   expression, or the name of a function the file declares;
+ *   `test(title, body, options)`, although `@types/bun` 1.4.2 declares only the second. So in
+ *   either place an arrow, a function expression or the name of a function the file declares is
+ *   read as the row's body, and anything else is read as a limit: a number, an options object,
+ *   a name bound to either, and also a body passed any other way, such as `helpers.body` or an
+ *   imported function, which is a false refusal (WHAT THE SCAN LEAVES OUT);
  * - the second argument of `beforeAll`, `afterAll`, `beforeEach`, `afterEach` and
  *   `onTestFinished`, which are every export of `bun:test` that `test.d.ts` declares with a
  *   `HookOptions` limit, in the bun-types 1.4.2 this package installs and in 1.4.4 alike;
@@ -112,10 +114,11 @@
  * reason is the way out for a row that drives a process and this row waits for one; a file's own
  * limit counts for its rows only where it is such a call.
  *
- * What that reading leaves out is said here, because a row it leaves out is a row no refusal
- * names. It reads a name BOUND OR ASSIGNED TO a call that waits, and references to that name,
- * and nothing broader. A row that waits through any of these shapes is read as waiting for
- * nothing, and no refusal names it:
+ * WHAT THE SCAN LEAVES OUT. Each shape the scan is known to leave out or misread is said here,
+ * because a row it leaves out is a row no refusal names. The reading of waits above reads a name
+ * BOUND OR ASSIGNED TO a call that waits, and references to that name, and nothing broader. A
+ * row that waits through any of these shapes is read as waiting for nothing, and no refusal
+ * names it:
  *
  * - a name bound to a waiting name - `const rows = lane.then(rowsOf)` - though a row that refers
  *   to `lane` itself is read;
@@ -132,7 +135,22 @@
  *   reaches none of them. A class expression or an object literal bound to a name is read, since
  *   that name's initializer holds the call;
  * - a bounded function passed as a value - `.map(runBounded)`, `.map(listing)`, a waiting
- *   function of the file's own handed to another call - which is no call the scan sees.
+ *   function of the file's own handed to another call - which is no call the scan sees;
+ * - a name bound to one of those exports itself - `const run = runBounded`,
+ *   `const list = listing` - because a name is read as an export only from an import or a
+ *   destructuring of the module, so a call of `run(...)` reaches no export;
+ * - a name destructured off a namespace import - `const { runBounded: rb } = b`, where `b` is
+ *   the `import * as b` of the module - because a destructuring is read only off an `import()`
+ *   or a `require` of the module;
+ * - a call through a namespace in brackets - `b["runBounded"](...)` - because a namespace is
+ *   read only through a dotted member;
+ * - a waiting helper imported from another module, other than `listing`: the scan reads the
+ *   functions of the file itself and the four exports above, and no other module;
+ * - a row body that is neither inline nor a function the file declares - `test("t",
+ *   helpers.body)`, `test("t", importedFn)`, or `test("t", made)` where `made` is bound to what
+ *   a call answered - because only an arrow, a function expression or the name of a function
+ *   the file declares is read as a body. Such a body is read as the row's limit instead, the
+ *   third false refusal below.
  *
  * A row that waits through one of them still states `rowLimit`, because its writer knows it
  * waits. A bare reference to `runBounded`, `listing`, `whether` or `eventually` that calls none
@@ -142,18 +160,48 @@
  * A name bound or assigned to an awaited call - `const options = await helpOptions()` - holds
  * what the call answered, so a reference to it waits for nothing and is not read; the binding's
  * own `await` is the wait. That holds only where the `await` is outermost in what the name is
- * bound to, under parentheses and `as` alone. Where the `await` stands deeper -
- * `const code = (await runBounded(...)).code` - the name is read as bound to the call, so it is
- * a waiting name although it holds a number, and a row that refers to `code` and states no
- * `rowLimit` is refused as a row that waits for a bounded child: a false refusal. The second
- * false refusal comes from `reachOf`, which matches a call to a waiting function of the file's
- * own by its bare name: a row that declares a name of its own - `const helper = ...` - where
- * `helper` also names a waiting function of the file, and calls it, is read as waiting for what
- * the file's `helper` reaches, and is refused where it states no `rowLimit`. No test file of
- * this directory writes either shape. The scan also does not read the order of a file's limit
- * and its rows: a `setDefaultTimeout` or `jest.setTimeout` written after a top-level row or hook
- * does not cover that row, since Bun applies it only to what is registered after the call, yet
- * the scan reads the row as covered by it. No test file of this directory writes either call.
+ * bound to, under parentheses and `as` alone.
+ *
+ * The scan refuses three shapes for a fault they do not have, which are false refusals:
+ *
+ * - an `await` that stands deeper in what a name is bound to -
+ *   `const code = (await runBounded(...)).code`. The name is read as bound to the call, so it is
+ *   a waiting name although it holds a number, and a row that refers to `code` and states no
+ *   `rowLimit` is refused as a row that waits for a bounded child;
+ * - a name a row declares that a waiting function of the file also bears. `reachOf` matches a
+ *   call to a waiting function of the file's own by its bare name, so a row that declares
+ *   `const helper = ...`, where `helper` also names a waiting function of the file, and calls
+ *   it, is read as waiting for what the file's `helper` reaches, and is refused where it states
+ *   no `rowLimit`;
+ * - a row body that is neither inline nor a function the file declares - `helpers.body`,
+ *   `importedFn`, `made`. `isBody` reads it as no body, so `limitOf` reads it as the row's
+ *   limit, and the row is refused as one whose limit is no call of `rowLimit` and has no reason
+ *   on the line above it.
+ *
+ * No test file of this directory writes any of the three. The reading of limits misreads these
+ * shapes, and no refusal names them:
+ *
+ * - a `setDefaultTimeout` or `jest.setTimeout` written after a top-level row or hook. It does
+ *   not cover that row, since Bun applies it only to what is registered after the call, yet the
+ *   scan reads no order and reads the row as covered by it;
+ * - a `setDefaultTimeout` called inside a hook or a row body. The scan reads it as the file's
+ *   limit, yet it runs after Bun has registered the file's rows, and Bun 1.4.4 applies it to
+ *   none of them;
+ * - several file limits. Bun applies to each row the last one called before that row is
+ *   registered, while the scan checks a row that states no limit against the largest of the
+ *   file's `rowLimit` ones, and, where the file writes none of those, names every limit the file
+ *   writes;
+ * - a 0 written as `0.0`, `0x0` or `0e0`. Bun 1.4.4 reads each as it reads `0`, as no clock, yet
+ *   the scan reads as a 0 only a limit written in the digit 0 and underscores, `0` or `0_000`,
+ *   and reads these as a limit that stops a row;
+ * - a limit Bun honours in a spelling the scan does not read: the `timeout` of an options object
+ *   under a quoted or a computed key or in a spread - `{ "timeout": n }`, `{ ["timeout"]: n }`,
+ *   `{ ...{ timeout: n } }` - and a call reached through a member in brackets -
+ *   `test["each"](t)(..., n)`, `bun["test"](..., n)`, `bun["setDefaultTimeout"](n)`. The scan
+ *   reads plain keys and dotted members, so a limit written so is no limit it reads.
+ *
+ * No test file of this directory writes `setDefaultTimeout` or `jest.setTimeout`, or any of
+ * those spellings.
  *
  * WHAT A ROWLIMIT COVERS. A `rowLimit` call is checked against the bounds of what its row waits
  * for wherever the scan reads them: a `listing` call is the `listing` bound, a `runBounded` call
@@ -197,10 +245,11 @@
  * which asks TypeScript what a callee's type is. The question there is which calls declare a row
  * of the browser suite, where a call it fails to recognise is a row that escapes the rule; the
  * question here is whether a number was derived or explained, and a name is the whole of what a
- * reader of the source sees. Reading the name also fails the safe way: anything reached from
- * a name the file bound `test` or `it` to, and anything that names a hook, is asked for its
- * limit rather than skipped. No type checker is needed for that, so the scan parses files and
- * builds no program.
+ * reader of the source sees. Reading the name also fails the safe way for what it reads:
+ * anything reached through dotted members and calls from a name the file bound `test` or `it`
+ * to, and anything that names a hook, is asked for its limit rather than skipped. A member
+ * written in brackets is not read at all (WHAT THE SCAN LEAVES OUT). No type checker is needed
+ * for that, so the scan parses files and builds no program.
  *
  * `testFiles` and `limitsOfFiles` read the file system and everything else here is pure over its
  * arguments: no environment, no network, no database and no server, so any process may call it.
@@ -250,9 +299,11 @@ export type WallClockLimit = {
   line: number;
   /** The limit the row, the hook or the file writes itself. Undefined for a row or hook that
    *  waits for a bounded child and states no limit of its own, the one call that states none and
-   *  is recorded at all: its limit is then the file's own `rowLimit` where the file states one,
-   *  the file's own `setDefaultTimeout` or `jest.setTimeout` of any other kind where it states
-   *  that, and the lane's `--timeout` where it states neither. */
+   *  is recorded at all. Bun then stops it at the file's last `setDefaultTimeout` or
+   *  `jest.setTimeout` called before the row or hook is registered, where that is no 0, which
+   *  sets no clock, and at the lane's `--timeout` where the file called none before it;
+   *  `refusedLimits` reads which of those calls the file writes, and not their order (WHAT THE
+   *  SCAN LEAVES OUT). */
   stated: StatedLimit | undefined;
   /** Whether a row, a hook or the file states it. */
   kind: LimitKind;
@@ -488,7 +539,7 @@ const rowNames = new Set(["test", "it", "xtest", "xit"]);
 /** The hooks that take a limit as their second argument. */
 const hookNames = new Set(["beforeAll", "afterAll", "beforeEach", "afterEach", "onTestFinished"]);
 
-/** The export that gives every row of a file a limit at once. */
+/** The export that gives a file's rows and hooks registered after the call a limit at once. */
 const fileLimitName = "setDefaultTimeout";
 
 /** The export whose `setTimeout` is that same file-wide limit under Jest's spelling. */
@@ -578,15 +629,16 @@ function exportOf(node: ts.Expression, names: TestNames): string | undefined {
 }
 
 /** Whether `callee` names a row: `test` and `it` under the names this file reaches them by, and
- *  everything reached from one of those - `test.only(...)`, `test.skip(...)`, `test.todo(...)`,
- *  `test.failing(...)`, and the functions `test.skipIf(<x>)` and `test.each(<x>)` answer - since
- *  Bun reads a limit in the same place in all of them.
+ *  everything reached from one of those through dotted members and calls - `test.only(...)`,
+ *  `test.skip(...)`, `test.todo(...)`, `test.failing(...)`, and the functions `test.skipIf(<x>)`
+ *  and `test.each(<x>)` answer - since Bun reads a limit in the same place in all of them.
  *
  *  The callee is walked down towards its root: a call expression to its own callee, a property
  *  access to its own object, until a name of the module is left or nothing is. That reads every
- *  modifier at once, the ones Bun adds after this is written included, and it keeps the reading
- *  failing the safe way - anything reached from a row's name is asked for a reason rather than
- *  skipped. */
+ *  modifier written as a dotted member at once, the ones Bun adds after this is written
+ *  included, and it keeps the reading failing the safe way - anything reached that way from a
+ *  row's name is asked for a reason rather than skipped. A member written in brackets,
+ *  `test["only"]`, ends the walk, so such a callee is read as no row. */
 function isRowCallee(callee: ts.Expression, names: TestNames): boolean {
   let node = unwrapped(callee);
   let exported = exportOf(node, names);
@@ -905,8 +957,9 @@ function waitsOf(
   return { waitsFor: [...named], bound: reachOfAll(waits)?.bound };
 }
 
-/** The `timeout` of an options object, however it is written: `{ timeout: 90_000 }`, and the
- *  shorthand `{ timeout }`, whose limit is the name itself. */
+/** The `timeout` of an options object under a plain key: `{ timeout: 90_000 }`, and the
+ *  shorthand `{ timeout }`, whose limit is the name itself. A quoted or a computed key and a
+ *  spread are not read (WHAT THE SCAN LEAVES OUT). */
 function timeoutOf(options: ts.ObjectLiteralExpression): ts.Expression | undefined {
   for (const property of options.properties) {
     const name = property.name;
@@ -1099,14 +1152,19 @@ function statedBy(limit: WallClockLimit): string {
 
 /** The two ways out, which every refusal of a limit whose body the scan sees wait for no bounded
  *  child ends with, written about whatever states the limit: a hook waits for children and
- *  drives processes as a row does, and `setDefaultTimeout` stands for every row of its file. */
+ *  drives processes as a row does, and `setDefaultTimeout` stands for the rows and hooks
+ *  registered after the call. */
 function remedyFor(limit: WallClockLimit): string {
-  const subject = limit.kind === "file" ? "every row of the file" : `the ${limit.kind}`;
+  const [subject, waits, drives] =
+    limit.kind === "file"
+      ? ["the rows and hooks registered after it", "wait", "drive"]
+      : [`the ${limit.kind}`, "waits", "drives"];
   return (
-    `call \`rowLimit(...)\` naming the bounded children ${subject} waits for, so the limit is ` +
-    `read from their bounds and moves when they move; or, where ${subject} drives a process ` +
-    "rather than waiting for one, give the limit a line of its own and write the sentence that " +
-    "says what it drives and why that long is enough as a comment on the line directly above it."
+    `call \`rowLimit(...)\` naming the bounded children ${subject} ${waits} for, so the limit ` +
+    `is read from their bounds and moves when they move; or, where ${subject} ${drives} a ` +
+    "process rather than waiting for one, give the limit a line of its own and write the " +
+    "sentence that says what it drives and why that long is enough as a comment on the line " +
+    "directly above it."
   );
 }
 
@@ -1115,8 +1173,9 @@ function remedyFor(limit: WallClockLimit): string {
 function waitingRemedy(limit: WallClockLimit): string {
   return (
     `state \`rowLimit(...)\` naming the bounded children and the polls the ${limit.kind} waits ` +
-    "for - as its own limit, or as the file's `setDefaultTimeout` - so the limit is read from " +
-    "their bounds, fires after theirs and moves when they move."
+    `for - as its own limit, or as a file-wide \`setDefaultTimeout\` written before the ` +
+    `${limit.kind} - so the limit is read from their bounds, fires after theirs and moves when ` +
+    "they move."
   );
 }
 
@@ -1136,8 +1195,10 @@ function shortOfBound(limit: WallClockLimit, total: number | undefined): string 
   );
 }
 
-/** Whether a limit as written is `0`, which Bun 1.4.4 reads as no clock at all, the lane's
- *  `--timeout` included, for the row it stands for or the rows registered after the call. */
+/** Whether a limit as written is a 0 in the digit 0 and underscores alone - `0`, `0_000` -
+ *  which Bun 1.4.4 reads as no clock at all, the lane's `--timeout` included, for the row it
+ *  stands for or the rows registered after the call. A 0 written otherwise - `0.0`, `0x0`,
+ *  `0e0` - is read as a limit that stops a row (WHAT THE SCAN LEAVES OUT). */
 function setsNoClock(text: string): boolean {
   return /^0+$/.test(text.replaceAll("_", ""));
 }
@@ -1149,11 +1210,13 @@ function setsNoClock(text: string): boolean {
  *  otherwise - `setDefaultTimeout(90_000)` - the refusal names that limit as what stops the row,
  *  and the lane's `--timeout` where the file states none; where every limit the file writes is
  *  `0`, it is named as setting no clock, not even the lane's `--timeout`, for the rows registered
- *  after it. Where the scan reads the bound the row waits for, the refusal names it and
- *  `rowLimit` of it, which the row must state instead. It says nothing of which clock fires
- *  first: the scan reads the largest bound among what the row waits for, not their sum (WHAT A
- *  ROWLIMIT COVERS), and nothing of how long the row spends before it starts a child, so no
- *  order it stated would hold for every row. */
+ *  after it. Where the file writes several such limits, not all of them 0, the refusal names
+ *  each with what it writes, and says that Bun applies the last one called before the row is
+ *  registered, since the scan reads no order. Where the scan reads the bound the row waits for,
+ *  the refusal names it and `rowLimit` of it, which the row must state instead. It says nothing
+ *  of which clock fires first: the scan reads the largest bound among what the row waits for,
+ *  not their sum (WHAT A ROWLIMIT COVERS), and nothing of how long the row spends before it
+ *  starts a child, so no order it stated would hold for every row. */
 function unstatedRefusal(
   limit: WallClockLimit,
   limits: readonly WallClockLimit[]
@@ -1172,15 +1235,25 @@ function unstatedRefusal(
     const where = otherwise.map((other) => `${other.title} on line ${other.line}`).join(" or ");
     const written = otherwise.map((other) => other.stated?.text ?? "");
     // Bun 1.4.4 reads `setDefaultTimeout(0)` as no clock, the lane's `--timeout` included, for the
-    // rows registered after the call; the scan reads no order, so the refusal says that much.
-    const zero = written.length > 0 && written.every(setsNoClock);
-    let clock = `the file's own ${where} stops it at ${written.join(" or ")}`;
-    if (otherwise.length === 0) {
-      clock = "the lane's `--timeout` stops it";
-    } else if (zero) {
+    // rows registered after the call, and applies to each row the last such call before it; the
+    // scan reads no order, so the refusal says that much.
+    let clock = "the lane's `--timeout` stops it";
+    if (otherwise.length > 0 && written.every(setsNoClock)) {
       clock =
         `the file's own ${where} writes 0, which sets no clock, not even the lane's ` +
         "`--timeout`, for the rows registered after it";
+    } else if (otherwise.length === 1) {
+      clock = `the file's own ${where} stops it at ${written[0]}`;
+    } else if (otherwise.length > 1) {
+      const each = otherwise
+        .map((other) => `${other.title} on line ${other.line} writes ${other.stated?.text}`)
+        .join(" and ");
+      const zero = written.some(setsNoClock)
+        ? ", a 0 setting no clock, not even the lane's `--timeout`"
+        : "";
+      clock =
+        `the file's own ${each}, and Bun applies the last of those called before the ` +
+        `${limit.kind} is registered${zero}`;
     }
     const reads =
       limit.bound === undefined
@@ -1218,23 +1291,29 @@ export function refusedLimits(limits: readonly WallClockLimit[]): RefusedLimit[]
       if (why !== undefined) refused.push({ limit, why });
       continue;
     }
-    const after = limit.kind === "file" ? " for the rows registered after it" : "";
-    const at = setsNoClock(stated.text)
-      ? `${limit.file}:${limit.line} ${statedBy(limit)} writes 0, which sets no clock${after}`
-      : `${limit.file}:${limit.line} ${statedBy(limit)} stops at ${stated.text}`;
-    const waits = limit.waitsFor.join(" and ");
+    const at = `${limit.file}:${limit.line} ${statedBy(limit)}`;
     if (stated.fromBounds) {
       const short = shortOfBound(limit, stated.total);
-      if (short !== undefined) refused.push({ limit, why: `${at}, ${short}` });
+      if (short !== undefined) {
+        refused.push({ limit, why: `${at} stops at ${stated.text}, ${short}` });
+      }
       continue;
     }
+    // A 0 sets no clock, which a sentence of its own says first; the refusal then goes on about
+    // "that 0", so no "which" clause hangs off another.
+    const zero = setsNoClock(stated.text);
+    const after = limit.kind === "file" ? " for the rows registered after it" : "";
+    const noClock = `${at} writes 0, which sets no clock${after}. That 0`;
+    const stops = zero ? `${noClock} stands` : `${at} stops at ${stated.text}`;
+    const limitIs = zero ? `${noClock} is` : `${stops}, which is`;
     if (limit.waitsFor.length > 0) {
+      const waits = limit.waitsFor.join(" and ");
       refused.push({
         limit,
         why:
-          `${at}, which is no call of \`rowLimit\`, and waits for ${waits}: ` +
-          `a reason explains the limit of a ${limit.kind} that drives a process, and this ` +
-          `${limit.kind} waits for bounded children, so ${waitingRemedy(limit)}`,
+          `${limitIs} no call of \`rowLimit\`, and ${zero ? `the ${limit.kind} ` : ""}waits for ` +
+          `${waits}: a reason explains the limit of a ${limit.kind} that drives a process, and ` +
+          `this ${limit.kind} waits for bounded children, so ${waitingRemedy(limit)}`,
       });
       continue;
     }
@@ -1242,12 +1321,12 @@ export function refusedLimits(limits: readonly WallClockLimit[]): RefusedLimit[]
     if (stated.reason === "") {
       refused.push({
         limit,
-        why: `${at}, which is no call of \`rowLimit\` and has no reason on the line above it: ${remedy}`,
+        why: `${limitIs} no call of \`rowLimit\` and has no reason on the line above it: ${remedy}`,
       });
       continue;
     }
     const short = shortReason(stated.reason, "the limit", "this long");
-    if (short !== undefined) refused.push({ limit, why: `${at} ${short}, so ${remedy}` });
+    if (short !== undefined) refused.push({ limit, why: `${stops} ${short}, so ${remedy}` });
   }
   return refused;
 }

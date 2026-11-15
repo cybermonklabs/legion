@@ -450,8 +450,8 @@ test("a file's own rowLimit states the limit of each waiting row that states non
 
     const remedy =
       "state `rowLimit(...)` naming the bounded children and the polls the row waits for - as " +
-      "its own limit, or as the file's `setDefaultTimeout` - so the limit is read from their " +
-      "bounds, fires after theirs and moves when they move.";
+      "its own limit, or as a file-wide `setDefaultTimeout` written before the row - so the " +
+      "limit is read from their bounds, fires after theirs and moves when they move.";
     const reads =
       '; it waits under the `short` bound of 60000 ms, and `rowLimit("short")` is 90000 ms: ';
     const stoppedBy = (fileLimit: string) =>
@@ -469,12 +469,12 @@ test("a file's own rowLimit states the limit of each waiting row that states non
     expect(zero.map((refusal) => refusal.limit.line)).toEqual([3, 4]);
     expect(zero[0].why).toBe(
       `${file}:3 the file's own setDefaultTimeout writes 0, which sets no clock for the rows ` +
-        "registered after it, which is no call of `rowLimit` and has no reason on the line above " +
-        "it: call `rowLimit(...)` naming the bounded children every row of the file waits for, so " +
-        "the limit is read from their bounds and moves when they move; or, where every row of the " +
-        "file drives a process rather than waiting for one, give the limit a line of its own and " +
-        "write the sentence that says what it drives and why that long is enough as a comment on " +
-        "the line directly above it."
+        "registered after it. That 0 is no call of `rowLimit` and has no reason on the line above " +
+        "it: call `rowLimit(...)` naming the bounded children the rows and hooks registered after " +
+        "it wait for, so the limit is read from their bounds and moves when they move; or, where " +
+        "the rows and hooks registered after it drive a process rather than waiting for one, give " +
+        "the limit a line of its own and write the sentence that says what it drives and why that " +
+        "long is enough as a comment on the line directly above it."
     );
     expect(zero[1].why).toBe(
       `${file}:4 the row "waits" waits for \`runBounded\` and states no limit, so the file's own ` +

@@ -113,8 +113,8 @@ interface AtOnce {
  *  of those numbers was measured from one file run alone, which is the defect this module
  *  answers: under the whole-suite shape one of them fired falsely. The names also say, in the
  *  row's own source, what that row waits for: each child, and each wait the row ends at a bound
- *  itself, such as an `eventually` below, which the short bound ends. They make a wrong value a
- *  compiler error rather than a red run. */
+ *  itself, such as an `eventually` below, which the short bound ends. A name that is not a bound
+ *  is a compiler error rather than a red run. */
 export function rowLimit(...waits: readonly (BoundName | AtOnce)[]): number {
   const spent = waits.map((wait) =>
     typeof wait === "string"
