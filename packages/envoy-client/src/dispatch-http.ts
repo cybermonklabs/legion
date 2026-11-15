@@ -297,9 +297,9 @@ function reviewNoRouteRefusal(
   return new DispatchServiceError(
     "NOT_FOUND",
     404,
-    `Dispatch at ${baseUrl} answered no route for ${route} each time the review was sent, so it ` +
-      "recorded no review. This build is older than that route. No other review route was asked " +
-      "and nothing was written: the review route an older build serves takes no version, and it " +
+    `Dispatch at ${baseUrl} answered no route for ${route} each time the review was sent, and an ` +
+      "answer of no route records no review. This build is older than that route. No other review " +
+      "route was asked: the review route an older build serves takes no version, and it " +
       `would record the review at a version that build chooses, which may not be version ${version}. ` +
       `The no-route answer does not name the build; GET ${baseUrl}/healthz names the commit of the ` +
       "build that answers it, when that build was stamped with one."

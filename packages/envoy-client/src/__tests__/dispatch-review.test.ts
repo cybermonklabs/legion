@@ -331,7 +331,7 @@ describe("dispatch review", () => {
     expect(error).toMatchObject({ code: "NOT_FOUND", status: 404 });
     const printed = messageFor(error);
     expect(printed).toBe(
-      `NOT_FOUND: Dispatch at ${base} answered no route for POST /api/v1/artifacts/artifact-spec/versions/3/reviews each time the review was sent, so it recorded no review. This build is older than that route. No other review route was asked and nothing was written: the review route an older build serves takes no version, and it would record the review at a version that build chooses, which may not be version 3. The no-route answer does not name the build; GET ${base}/healthz names the commit of the build that answers it, when that build was stamped with one.`
+      `NOT_FOUND: Dispatch at ${base} answered no route for POST /api/v1/artifacts/artifact-spec/versions/3/reviews each time the review was sent, and an answer of no route records no review. This build is older than that route. No other review route was asked: the review route an older build serves takes no version, and it would record the review at a version that build chooses, which may not be version 3. The no-route answer does not name the build; GET ${base}/healthz names the commit of the build that answers it, when that build was stamped with one.`
     );
     expect(printed).not.toContain(NO_ROUTE_ROLLING_RELEASE_MESSAGE);
     // The first attempt and one after each of the three waits, all to the versioned route: none
