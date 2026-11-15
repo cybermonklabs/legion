@@ -1316,8 +1316,8 @@ rolling one attempt back would roll back the migrations before it too.
 
 The runner also applies each migration with `standard_conforming_strings` on, `backslash_quote` at `safe_encoding` and `client_encoding` at `UTF8` (`textSettings` in `internal/pgmigrate/lock.go`), set in the statement that sets `lock_timeout`: transaction-local in `pgmigrate.Exec`, or session-local and restored on return in `pgmigrate.ExecNonTransactional`.
 So Postgres reads a migration's text as the census reads it ("Pre-deploy census" below), whatever a session setting, a connection option or a database default says.
-A `set` without `local` in a migration stays on its connection until the migration's transaction ends.
-The runner then resets the connection's session (below), so no later migration meets the setting.
+A `set` without `local` in a migration stays on its connection after the migration's transaction ends, until the runner resets the connection's session (below).
+So no later migration meets the setting.
 With `standard_conforming_strings` off, a backslash before a quote in a plain literal escapes that quote, so a text that the census reads as one statement can hold a second statement for Postgres.
 With `client_encoding` at `SJIS`, the last byte of a UTF-8 character and a backslash after it can be one character, so that backslash escapes nothing.
 With `backslash_quote` off, Postgres refuses a `\'` in an `E'…'` literal, which the census reads as an escaped quote.
@@ -1331,7 +1331,7 @@ Postgres resolves a name that a migration writes without its schema by these thr
 `role` sets the current user, whose privileges decide which of those schemas a lookup can use.
 `session_authorization` comes first, because a change of it ends a `set role` and changes the user that `role` and `"$user"` depend on.
 A migration can change each of the three for the session, with a `set` or through stored code that calls `set_config`, such as a column default, a check constraint, or a domain's check or default.
-The change stays until the migration's transaction ends, and then the runner resets the connection's session (below), so no later migration meets it.
+The change stays on the connection after the migration's transaction ends, until the runner resets the connection's session (below), so no later migration meets it.
 The runner still gives the three these values at the start of each migration, whatever session the pooled connection brings.
 Without either reset, on PostgreSQL 18.6, an insert ran a column default that put another schema first in the `search_path`.
 The next migration on that connection added a column of type `mood`, which then named that schema's domain `mood` in place of the enum that the census read, and Postgres rewrote the table.
@@ -2380,8 +2380,8 @@ It refuses:
     The census compares the setting's name without regard to case, as Postgres does, so `set "Search_Path" = public` stops the reads and `set "Lock_Timeout" = '1s'` does not.
 
   - every migration after a pending migration that sets or resets such a setting for the session, without `local`, or runs `reset all`.
-    Such a setting stays on the runner's connection until its migration's transaction ends.
-    The runner then resets the connection's session before the connection goes back to its pool ("Database migrations" above), so no later migration meets the setting.
+    Such a setting stays on the runner's connection after its migration's transaction ends, until the runner resets the connection's session before the connection goes back to its pool ("Database migrations" above).
+    So no later migration meets the setting.
     The census still turns off the catalog reads of the later migrations, which only refuses more.
     At the start of each migration the runner sets `lock_timeout`, the three text settings and the three settings that resolve names, and no other setting.
     The census tells `lock_timeout` and `statement_timeout` from the other settings, because those two keep the reads on.

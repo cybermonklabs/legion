@@ -795,10 +795,10 @@ func TestMigrateResetsSessionSettingsAMigrationLeftOnThePooledConnection(t *test
 // text on every connection the pool can give succeeds.
 //
 // Control: remove the DeallocateAll call from pgmigrate.ResetSession, keeping DISCARD ALL, and this
-// fails with SQLSTATE 26000 ("prepared statement ... does not exist"). The runner reuses the cached
-// applied check across migrations, so under the control migrate itself fails on the second
-// migration, on the connection the first migration's reset left with a dropped server statement its
-// pgx cache still names.
+// fails with SQLSTATE 26000 ("prepared statement ... does not exist"). The runner reuses its cached
+// statements on one pooled connection (the advisory lock's try, the applied check), so under the
+// control migrate itself fails at the first cached statement it runs after a reset, which names a
+// server statement that DISCARD ALL dropped while pgx's cache still holds it.
 func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 	ctx := context.Background()
 	const poolSize = 4

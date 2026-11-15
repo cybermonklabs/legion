@@ -327,23 +327,26 @@ create table sp_domdefed (id int, sp sp_domdef);
 // Stored code that a migration runs can change the session that the runner applies the next
 // migration on: a column default, a check constraint, or a domain's check or default that calls
 // set_config(…, false). The census does not read that code, and the runner applies each migration
-// on a connection of its pool, which keeps the session as the migration before left it. Each row
-// is a pending 0002 that runs such code and a pending 0003 that adds to things a column of type
-// mood with a constant default. The census judges 0003 by the enum public.mood and exempts it as
-// alter table. In five rows the code puts sp_1792 first in the search_path, and sp_1792 holds a
-// domain mood with a check. In the sixth, a column default sets session_authorization to a role
-// whose name is the name of a schema that holds such a domain, so "$user" in the search_path
-// names that schema. The runner gives session_authorization, role and search_path the values that
-// RESET gives them at the start of each migration (resetSettings in internal/pgmigrate), so 0003
-// resolves mood as the census did: the column has the type public.mood, and Postgres does not
-// rewrite things. Without that reset, mood names the domain, and Postgres rewrites things under
-// ACCESS EXCLUSIVE for a migration that the census exempted. The runner's pool holds one
-// connection, so 0003 runs on the connection that 0002 changed. The control applies 0002 alone to
-// a second database of the same fixture, on a pool of one connection too. Its 0002 captures the
-// setting the code changes into a table of its own, inside the migration's transaction after the
-// write: so each row shows that the code changes the session. The capture reads the table, not the
-// session through the pool, because the runner's reset clears the session before the connection
-// goes back to the pool.
+// on a connection of its pool. Each row is a pending 0002 that runs such code and a pending 0003
+// that adds to things a column of type mood with a constant default. The census judges 0003 by the
+// enum public.mood and exempts it as alter table. In five rows the code puts sp_1792 first in the
+// search_path, and sp_1792 holds a domain mood with a check. In the sixth, a column default sets
+// session_authorization to a role whose name is the name of a schema that holds such a domain, so
+// "$user" in the search_path names that schema. Two resets of the runner each keep 0003 resolving
+// mood as the census did, so that the column has the type public.mood and Postgres does not
+// rewrite things: the reset of the connection's session after each migration
+// (pgmigrate.ResetSession), and the values that RESET gives session_authorization, role and
+// search_path at the start of each migration (resetSettings in internal/pgmigrate). This row
+// passes while either reset holds, and fails only without both: then mood names the domain, and
+// Postgres rewrites things under ACCESS EXCLUSIVE for a migration that the census exempted.
+// TestExecResolvesNamesUnderTheValuesResetGives (internal/pgmigrate) checks the start-of-migration
+// reset alone, and TestMigrateResetsSessionSettingsAMigrationLeftOnThePooledConnection checks the
+// session reset alone. The runner's pool holds one connection, so 0003 runs on the connection that
+// 0002 changed. The control applies 0002 alone to a second database of the same fixture, on a pool
+// of one connection too. Its 0002 captures the setting the code changes into a table of its own,
+// inside the migration's transaction after the write: so each row shows that the code changes the
+// session. The capture reads the table, not the session through the pool, because the runner's
+// reset clears the session before the connection goes back to the pool.
 func TestCensusAndTheRunnerResolveNamesAlikeAfterStoredCodeChangesTheSession(t *testing.T) {
 	ctx := context.Background()
 	// sessionUser is the role that the sixth row's default gives session_authorization. It is a

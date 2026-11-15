@@ -668,7 +668,7 @@ func (c *classifier) catalogOnlyIndex(node json.RawMessage) (string, error) {
 //     a statement waits or runs. A SET LOCAL ends with the migration's transaction, so it turns
 //     off the reads of its own migration alone. A session SET, a RESET and a RESET ALL turn off
 //     the reads of their own migration and of every later one. Such a setting stays on the
-//     runner's connection until its migration's transaction ends, and the runner then resets the
+//     runner's connection after its migration's transaction ends, until the runner resets the
 //     session (ResetSession) before the connection goes back to its pool, so no later migration
 //     meets it. The pass still turns off the reads of the later migrations, which only refuses
 //     more. Of the seven settings that the runner gives each migration (resetSettings and
@@ -729,9 +729,9 @@ func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, 
 			if name := strings.ToLower(set.Name); name == "lock_timeout" || name == "statement_timeout" {
 				continue
 			}
-			// A session SET stays on the runner's connection until its migration's transaction
-			// ends, and the runner then resets the session (ResetSession), so no later migration
-			// meets it. The later migrations' reads still go off, which only refuses more.
+			// A session SET stays on the runner's connection after its migration's transaction
+			// ends, until the runner resets the session (ResetSession), so no later migration meets
+			// it. The later migrations' reads still go off, which only refuses more.
 			here, later = true, later || !set.IsLocal
 			continue
 		}

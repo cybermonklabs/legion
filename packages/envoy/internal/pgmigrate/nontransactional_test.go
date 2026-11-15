@@ -168,6 +168,10 @@ func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
 // name of the test's own database, which is random, since a role spans the cluster that every test
 // shares, and the roles are dropped after.
 //
+// PostgreSQL 18 runs a select's set_config calls in the order they are listed, so this row also
+// passes on a single select that lists session_authorization first: it checks the order of the
+// restore, not its split into separate statements.
+//
 // Control: swap the restore to give role back before session_authorization (two separate statements
 // with role first, or one select with role first) and this row fails: session_user stays the login,
 // but current_user falls back to it.

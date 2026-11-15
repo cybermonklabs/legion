@@ -98,10 +98,10 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 	for _, s := range pinSettings {
 		names = append(names, s.name)
 	}
-	// The reset settings come last so the restore below can give session_authorization and role
-	// back first, each as its own statement and in that order. The restore is deferred before the
-	// session is pinned, so a pin that fails after one of its statements has run leaves the session
-	// as it found it too.
+	// The restore below picks session_authorization and role out by name and gives each back as its
+	// own statement, in the order resetSettings lists them, before the rest go back in one select.
+	// The restore is deferred before the session is pinned, so a pin that fails after one of its
+	// statements has run leaves the session as it found it too.
 	previous, err := currentSettings(ctx, conn, append(names, resetSettings...))
 	if err != nil {
 		return fmt.Errorf("migration %s: read session settings: %w", migration.Name, err)
