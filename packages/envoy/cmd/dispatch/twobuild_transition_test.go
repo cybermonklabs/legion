@@ -8,7 +8,6 @@
 package main
 
 import (
-	"context"
 	"net/http"
 	"strconv"
 	"testing"
@@ -73,35 +72,19 @@ func openPageEditor(t *testing.T, server *dispatchProcess, artifactID string, pa
 	return editor
 }
 
-// previousBuildRows counts the live registry rows of the previous build's processes: the rows
-// stamped with its commit. build-dispatch-build.sh builds it with -X main.buildCommit=<commit>,
-// every build since migration 0135_server_processes writes that commit into its row, and a process
-// of this tree runs cmdtest.Build's unstamped binary, whose row names no commit. So the count holds
-// whatever schema numbers the previous build registers or does not.
-func (b *twoBuilds) previousBuildRows(t *testing.T) int {
-	t.Helper()
-	var live int
-	if err := b.database.Pool.QueryRow(context.Background(), `
-		select count(*) from server_processes
-		where commit = $1 and heartbeat_at > now() - make_interval(secs => $2)`,
-		b.build.commit, processes.LiveWindow.Seconds()).Scan(&live); err != nil {
-		t.Fatalf("read the live rows of the %s: %v", b.previousName(), err)
-	}
-	return live
-}
-
-// waitForThePreviousBuildToLeaveTheFleet reads the registry until no live row is the previous
-// build's (previousBuildRows), and returns how long that took. It polls rather than sleeps, and
-// gives up at fleetDepartureBound.
+// waitForThePreviousBuildToLeaveTheFleet reads the registry until no live row reads schema
+// version 0, which is the row of the previous build's process (it registers no schema numbers),
+// and returns how long that took. It polls rather than sleeps, and gives up at
+// fleetDepartureBound.
 func waitForThePreviousBuildToLeaveTheFleet(t *testing.T, builds *twoBuilds) time.Duration {
 	t.Helper()
 	started := time.Now()
 	for deadline := started.Add(fleetDepartureBound()); ; time.Sleep(fleetPollInterval) {
-		if builds.previousBuildRows(t) == 0 {
+		if fleet := builds.fleet(t); fleet.minVersion > 0 {
 			return time.Since(started)
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the %s still counts as live %s after it stopped: its row is still in the registry, past a live window (%s), a heartbeat (%s) and %s of slack",
+			t.Fatalf("the %s still counts as live %s after it stopped: the fleet's lowest schema version is still 0, past a live window (%s), a heartbeat (%s) and %s of slack",
 				builds.previousName(), time.Since(started), processes.LiveWindow, processes.HeartbeatInterval, fleetDepartureSlack)
 		}
 	}
@@ -118,9 +101,9 @@ func requireDocumentUnchanged(t *testing.T, builds *twoBuilds, artifactID, want,
 	}
 }
 
-// This tree's page admission is the whole fleet's, so a process of a previous build that
-// registers no schema numbers holds this tree's own pages read-only while it lives: its row's
-// zeros count as a process that reads version 0, and no page creates at or under that
+// This tree's page admission is the whole fleet's, so a process of the previous build holds this
+// tree's own pages read-only while it lives: it registers no schema numbers, its row's zeros
+// count as a process that reads version 0, and no page creates at or under that
 // (docs.readSchemaFleet). This row drives the transition a rolling release makes: with both
 // builds live, a document socket of this tree's page on this tree's server is admitted read-only
 // and an edit sent through it lands nowhere; once the previous build's process has stopped and
@@ -130,14 +113,6 @@ func requireDocumentUnchanged(t *testing.T, builds *twoBuilds, artifactID, want,
 // The wait for the row to leave is bounded by the registry's own numbers (fleetDepartureBound)
 // and polled: a process stopped as a deploy stops it deletes its row at the end of its HTTP
 // drain, so it leaves at once, and only a process killed without deregistering spends the window.
-//
-// Its precondition is a fact of release history, not of the tree: the previous build is the
-// newest release behind the merge base (build-dispatch-build.sh --previous-release), and every
-// release from the one cut on this row's own merge (legion-envoy-v30.21.0) registers schema
-// numbers. So the row runs its transition against a previous build that registers none, and
-// skips by name, saying why, against one that registers some: there the fleet's lowest version
-// is that build's own, no row reads 0, and the transition this row drives is not the one a
-// rolling release between those two builds makes.
 func TestThisBuildsPageTurnsWritableOnceThePreviousBuildsProcessLeavesTheFleet(t *testing.T) {
 	builds := newTwoBuilds(t)
 	builds.startPrevious(t, nil)
@@ -146,8 +121,8 @@ func TestThisBuildsPageTurnsWritableOnceThePreviousBuildsProcessLeavesTheFleet(t
 	page := sides[1].page
 
 	if fleet := builds.fleet(t); fleet.minVersion != 0 {
-		t.Skipf("the %s registers schema numbers (the fleet's lowest schema version is %d with it live), so no process reads version 0 and the transition from a build that registers none, which this row drives, is not this pair's: every release from legion-envoy-v30.21.0 registers them",
-			builds.previousName(), fleet.minVersion)
+		t.Fatalf("the fleet's lowest schema version is %d with the %s live; this row needs a previous build that registers no schema numbers, whose row reads 0",
+			fleet.minVersion, builds.previousName())
 	}
 
 	project := uniqueProjectKey(t, "XBT")
@@ -170,9 +145,6 @@ func TestThisBuildsPageTurnsWritableOnceThePreviousBuildsProcessLeavesTheFleet(t
 	}
 	editor.Close()
 
-	if builds.previousBuildRows(t) == 0 {
-		t.Fatalf("the registry holds no live row stamped with the %s's commit before it stops, so the wait below could not see it leave", builds.previousName())
-	}
 	stop(t, builds.previous())
 	waited := waitForThePreviousBuildToLeaveTheFleet(t, builds)
 	t.Logf("the %s left the fleet %s after its stop, inside the bound of %s (a live window, a heartbeat and %s of slack)",
