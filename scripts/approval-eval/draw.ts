@@ -70,7 +70,7 @@ import { RESERVE_VARIABLE, readReferenceOf, reserveOf } from "./reserve";
  * read wrongly and not a case to pass over.
  *
  * The report slice is the final test (`analyze.ts` calls it "the test set"), and the rule of
- * INFRA-2897's next final test (`reserve.ts`, item 4) draws that test from the reserved requests
+ * INFRA-2897's next final test (`reserve.ts`, item 6) draws that test from the reserved requests
  * only, its development and calibration sets from all others. So a draw over a corpus read under
  * a registered read of the reserve puts a group into report only when the reserve holds every
  * case of it after the cut, counting the cases the draw leaves out, and such a group tries report
@@ -741,7 +741,7 @@ function countsTable(draw: Draw): string {
 
 async function draw(flags: Flags): Promise<number> {
   if (readReferenceOf(process.env[RESERVE_VARIABLE]) && flags.seed === undefined) {
-    // The rule's item 4: the final test is drawn by a seed registered then, so a draw that asks to
+    // The rule's item 6: the final test is drawn by a seed registered then, so a draw that asks to
     // read the reserve takes the one its registration's digest holds, and stops before the read.
     throw new UsageError(
       `a draw that reads the reserve takes --seed, the seed its registration names\n\n${USAGE}`

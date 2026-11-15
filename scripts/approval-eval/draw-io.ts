@@ -99,7 +99,7 @@ export interface DrawExcluded {
 
 /**
  * Where a draw's report slice, the final test, came from: the reserve of INFRA-2897's next final
- * test, read under a registration of `claim.ts` (`reserve.ts`, item 4 of the rule).
+ * test, read under a registration of `claim.ts` (`reserve.ts`, item 6 of the rule).
  */
 export interface FinalTestDraw {
   /** The reference of the registered read the corpus was read under. */

@@ -8,27 +8,25 @@ import type { DispatchEvent } from "./dispatch-read";
 
 /**
  * The reserve of INFRA-2897's next final test: the cases no command of this directory reads
- * before that round's claim run, under the two versions of its rule registered in
- * dispatch://INFRA/artifact/infra-2897-final-test-reserve-md, each before its cut, under
- * dispatch://INFRA-3189's approved method ("Live and final test apart", "Data sets"). A case
- * either version holds is held.
+ * before that round's claim run, under the rule registered in
+ * dispatch://INFRA/artifact/infra-2897-final-test-reserve-md before its cut, under
+ * dispatch://INFRA-3189's approved method ("Live and final test apart", "Data sets").
  *
- * Version 1: an issue is reserved when it was created at or after `RESERVE_CUT` and the first
- * hexadecimal digit of the sha256 of `RESERVE_TEXT` followed by its key is 0 to 7. Every case on
- * a reserved issue is held, its approval requests and its questions alike.
+ * The issue tree is the unit, as the approved method's draw groups by tree: an ask that opened at
+ * or after `RESERVE_TREE_CUT` is reserved when the first hexadecimal digit of the sha256 of
+ * `RESERVE_TREE_TEXT` followed by the key of its tree's root is 0 to 7. The root is read at the
+ * ask's first opening (`askTreeRoot`, the root a live scorer meets) and at the build's pinned event
+ * (`issueTreeRoot`), and a case is held when the rule picks either: an issue moves between trees,
+ * and a case a scorer may have skipped under either root stays out of every development read.
+ * Holding more never lets a read case into the final test: the claim checks every final-test tree
+ * against the scorers' own records of what they read (the registration's item 6).
  *
- * Version 2 makes the issue tree the unit, as the approved method's draw groups by tree: an ask
- * that opened at or after `RESERVE_TREE_CUT` is reserved when the first hexadecimal digit of the
- * sha256 of `RESERVE_TREE_TEXT` followed by the key of its tree's root is 0 to 7. The root is read
- * at the ask's first opening (`askTreeRoot`, the root a live scorer meets) and at the build's
- * pinned event (`issueTreeRoot`), and a case is held when the rule picks either: an issue moves
- * between trees, and a case a scorer may have skipped under either root stays out of every
- * development read. Holding more never lets a read case into the final test: the claim checks
- * every final-test tree against the scorers' own records of what they read (the registration's
- * item 6).
+ * The registration's version 1, which held issues by their own key from 2026-11-14T06:00:00Z, was
+ * released by the owner of the next round in writing (that document's "Version 1 released"): its
+ * item 6 takes no case that version 1 alone held, so its cases are development data.
  *
- * A reserved issue, or under version 2 a tree by its root's key, that a read has already spent is
- * in `MOVED_TO_DEVELOPMENT`, with the record of that read, and is held no more.
+ * A reserved tree, by its root's key, that a read has already spent is in `MOVED_TO_DEVELOPMENT`,
+ * with the record of that read, and is held no more.
  *
  * `readCorpus` (`corpus-io.ts`) holds the reserved cases out of every corpus it reads, so every
  * command here skips them, unless `APPROVAL_EVAL_RESERVE` is `read:<reference>` and `claim.ts`
@@ -36,100 +34,48 @@ import type { DispatchEvent } from "./dispatch-read";
  * that the reserve ended, no case is held.
  */
 
-/** Version 1's cut: an issue created at or after it can be reserved. */
-export const RESERVE_CUT = "2026-11-14T06:00:00Z";
-
-/** The text version 1 appends an issue key to before it hashes it, as registered. */
-export const RESERVE_TEXT = "superfan-experiments INFRA-2897 reserve 2026-11-14:";
-
-/** Version 2's cut: an ask that opened at or after it can be reserved by its tree. */
+/** The cut: an ask that opened at or after it can be reserved by its tree. */
 export const RESERVE_TREE_CUT = "2026-11-16T00:00:00Z";
 
-/** The text version 2 appends the key of a tree's root to before it hashes it, as registered. */
+/** The text the rule appends the key of a tree's root to before it hashes it, as registered. */
 export const RESERVE_TREE_TEXT = "superfan-experiments INFRA-2897 reserve v2 2026-11-16:";
 
 /** The environment variable that lets a command read the reserved cases. */
 export const RESERVE_VARIABLE = "APPROVAL_EVAL_RESERVE";
 
 /**
- * The reserved issues, and under version 2 the reserved trees by their root's key, that a read has
- * already spent, each with the record that says so. The rule's fifth item moves each into the
- * development data, whole.
+ * The reserved trees, by their root's key, that a read has already spent, each with the record
+ * that says so. The rule's fifth item moves each into the development data, whole. None yet.
  */
-export const MOVED_TO_DEVELOPMENT: Readonly<Record<string, string>> = {
-  "INFRA-3689":
-    "a question's answer read on 2026-11-15 at 04:24Z by the super fan of the live experiments " +
-    "(dispatch://INFRA/artifact/superfan-experiments-log-md, round 3, c4)",
-  "OSSV-690":
-    "its approval request's answer shown on 2026-11-15 at 09:36:28Z by the counts of a smoke build " +
-    "that left version 1 out (dispatch://INFRA/artifact/superfan-experiments-log-md, round 8)",
-};
-
-const CUT_TIME = Date.parse(RESERVE_CUT);
+export const MOVED_TO_DEVELOPMENT: Readonly<Record<string, string>> = {};
 
 const TREE_CUT_TIME = Date.parse(RESERVE_TREE_CUT);
 
 /** The hexadecimal digits that pick a key: half of the sixteen. */
 const PICKING_DIGITS = "01234567";
 
-function picked(text: string, key: string): boolean {
-  const digest = createHash("sha256").update(`${text}${key}`, "utf8").digest("hex");
+/** Whether the rule's hash picks the key of a tree's root, whenever its asks opened. */
+export function pickedRoot(rootKey: string): boolean {
+  const digest = createHash("sha256")
+    .update(`${RESERVE_TREE_TEXT}${rootKey}`, "utf8")
+    .digest("hex");
   return PICKING_DIGITS.includes(digest.charAt(0));
 }
 
-/** Whether version 1's hash picks an issue key, whatever the issue's creation time. */
-export function pickedKey(issueKey: string): boolean {
-  return picked(RESERVE_TEXT, issueKey);
-}
-
-/** Whether version 2's hash picks the key of a tree's root, whenever its asks opened. */
-export function pickedRoot(rootKey: string): boolean {
-  return picked(RESERVE_TREE_TEXT, rootKey);
-}
-
 /**
- * Whether a case is held by the reserve: `unknown` when either version cannot say, so a corpus
- * built before what a version reads is refused even where the other holds the case; else `held`
- * when either version holds it; else `kept`. Once `ended` names the record that ended the reserve
- * (`claim.ts`), every case is kept.
+ * Whether a case is held by the reserve. An ask on no issue, or one that opened before the cut,
+ * is kept; one whose opening time is missing or does not parse is placed by its answer, which
+ * comes after the opening, so it may be held. On or after the cut, `unknown` is a case from a
+ * corpus built before `build-corpus.ts` recorded its tree's roots, which a caller refuses;
+ * otherwise the case is held when the rule picks its root at the opening or at the build (a root
+ * the build could not follow is null and picks nothing), unless a read spent that tree. Once
+ * `ended` names the record that ended the reserve (`claim.ts`), every case is kept.
  */
 export function reserveOf(
   row: CaseRow,
   ended: string | null = RESERVE_ENDED
 ): "held" | "kept" | "unknown" {
   if (ended !== null || row.issueKey === null) return "kept";
-  const first = issueReserveOf(row, row.issueKey);
-  const second = treeReserveOf(row);
-  if (first === "unknown" || second === "unknown") return "unknown";
-  return first === "held" || second === "held" ? "held" : "kept";
-}
-
-/**
- * Version 1's answer. `unknown` is a case the rule could hold that carries no `issueCreatedAt` at
- * all: its corpus was built before `build-corpus.ts` recorded when each issue was created. A case
- * answered before the cut is never held, since an issue created at or after the cut has no answer
- * before it. An issue whose creation the build did not find (`issueCreatedAt` null), or whose time
- * does not parse, is held: nothing shows that it was created before the cut.
- */
-function issueReserveOf(row: CaseRow, key: string): "held" | "kept" | "unknown" {
-  if (!pickedKey(key) || Object.hasOwn(MOVED_TO_DEVELOPMENT, key)) return "kept";
-  const answered = Date.parse(row.answeredAt);
-  if (!Number.isNaN(answered) && answered < CUT_TIME) return "kept";
-  if (row.issueCreatedAt === undefined) return "unknown";
-  if (row.issueCreatedAt === null) return "held";
-  const created = Date.parse(row.issueCreatedAt);
-  return Number.isNaN(created) || created >= CUT_TIME ? "held" : "kept";
-}
-
-/**
- * Version 2's answer. An ask that opened before its cut is kept; one whose opening time is missing
- * or does not parse is placed by its answer, which comes after the opening, so it may be held. On
- * or after the cut, `unknown` is a case from a corpus built before `build-corpus.ts` recorded its
- * tree's roots; otherwise the case is held when the rule picks its root at the opening or at the
- * build (a root the build could not follow is null and picks nothing), unless a read spent that
- * tree.
- */
-function treeReserveOf(row: CaseRow): "held" | "kept" | "unknown" {
   const opened = Date.parse(row.askCreatedAt ?? "");
   if ((Number.isNaN(opened) ? Date.parse(row.answeredAt) : opened) < TREE_CUT_TIME) return "kept";
   if (row.askTreeRoot === undefined || row.issueTreeRoot === undefined) return "unknown";
@@ -394,17 +340,6 @@ export async function reserveAccessOf(
       `${why}. The reserve of INFRA-2897's next final test opens only for a read that claim.ts ` +
       `lists, committed before the read. This run's digest is ${digest}`,
   };
-}
-
-/**
- * Records an issue's creation time from an `issue.created` event of the log, keeping the first
- * one a key has. The payload's own `created_at` is the issue's; the event's is the fallback.
- */
-export function noteIssueCreated(times: Map<string, string>, event: DispatchEvent): void {
-  if (event.type !== "issue.created" || event.issue_key === null) return;
-  if (times.has(event.issue_key)) return;
-  const own = event.payload.created_at;
-  times.set(event.issue_key, typeof own === "string" ? own : event.created_at);
 }
 
 /** Each issue's parent, by key, as far as a walk of the log has read: null for a root. */

@@ -292,8 +292,8 @@ describe("drawSlices", () => {
 
 /**
  * A draw under a registered read of the reserve: report, the final test, takes only the groups
- * the reserve holds whole (`reserve.ts`, item 4 of the rule). Which cases the reserve holds is
- * handed to the draw, so these cases need no reserved key or creation time: here it holds every
+ * the reserve holds whole (`reserve.ts`, item 6 of the rule). Which cases the reserve holds is
+ * handed to the draw, so these cases need no reserved root: here it holds every
  * case whose id starts `r-`.
  */
 describe("drawSlices under a read of the reserve", () => {

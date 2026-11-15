@@ -272,8 +272,8 @@ export async function readCorpus(
       throw new CorpusError(
         `${join(directory, "corpus.jsonl")} line ${index + 1}: case ${row.caseId} on ` +
           `${row.issueKey} may be reserved for INFRA-2897's next final test, and this corpus ` +
-          "was built before build-corpus.ts recorded what the reserve reads of a case (when its " +
-          "issue was created, and the roots of its tree): build it again"
+          "was built before build-corpus.ts recorded what the reserve reads of a case (the roots " +
+          "of its tree at the ask's opening and at the build): build it again"
       );
     }
     if (reserve === "held") {

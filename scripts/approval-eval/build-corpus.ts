@@ -13,14 +13,7 @@ import {
   verdictOf,
 } from "./corpus-io";
 import { type DispatchEvent, pageEventLog } from "./dispatch-read";
-import {
-  type IssueParents,
-  noteAskRoot,
-  noteIssueCreated,
-  noteIssueParent,
-  reserveOf,
-  treeRootOf,
-} from "./reserve";
+import { type IssueParents, noteAskRoot, noteIssueParent, reserveOf, treeRootOf } from "./reserve";
 
 /**
  * Builds the corpus of one person's approval decisions: every ask that person answered, up to a
@@ -35,11 +28,10 @@ import {
  * ask and its own `at`) collapse to the earliest event; an answer the person changed carries a
  * later `at` and is a second case.
  *
- * The same walk reads each issue's `issue.created` event, so each case carries when its issue was
- * created, and each issue's `parent` as every whole-issue event records it, so each case carries
- * the root of its issue's tree at its ask's first opening and at the build's pinned event. The
- * reserve of INFRA-2897's next final test reads them (`reserve.ts`), and the build prints how many
- * of its cases the reserve holds from every command.
+ * The same walk reads each issue's `parent` as every whole-issue event records it, so each case
+ * carries the root of its issue's tree at its ask's first opening and at the build's pinned event.
+ * The reserve of INFRA-2897's next final test reads them (`reserve.ts`), and the build prints how
+ * many of its cases the reserve holds from every command.
  *
  * Nothing it writes goes into this repository: `--out` is an absolute path outside the workspace,
  * since a corpus of a production log is large and the workspace is snapshotted whole.
@@ -133,12 +125,6 @@ export interface CaseRow {
   words: string | null;
   hasWords: boolean;
   askCreatedAt: string | null;
-  /**
-   * When the case's issue was created, from the log's `issue.created` event: null where the walk
-   * found none, and absent from a corpus built before the build recorded it. The reserve of the
-   * next final test reads it (`reserve.ts`).
-   */
-  issueCreatedAt?: string | null;
   /**
    * The root of the case's issue tree at its ask's first opening, following each issue's `parent`
    * as the log's whole-issue events recorded it up to the `ask.opened` event: null where the ask
@@ -397,7 +383,6 @@ async function build(flags: Flags): Promise<number> {
     console.log(`no --through given: pinned to the log's newest event, ${through}`);
   }
   const seeds = new Map<string, CaseSeed>();
-  const issueCreated = new Map<string, string>();
   const parents: IssueParents = new Map();
   const askRoots = new Map<string, string | null>();
   let keptEvents = 0;
@@ -405,7 +390,6 @@ async function build(flags: Flags): Promise<number> {
     through,
     onPage: (events) => {
       for (const event of events) {
-        noteIssueCreated(issueCreated, event);
         noteIssueParent(parents, event);
         noteAskRoot(askRoots, parents, event);
         if (KEPT_TYPES[event.type] !== true) continue;
@@ -420,7 +404,6 @@ async function build(flags: Flags): Promise<number> {
   const rows = withConfounds(
     [...seeds.values()].map((seed) => ({
       ...seed,
-      issueCreatedAt: seed.issueKey === null ? null : (issueCreated.get(seed.issueKey) ?? null),
       askTreeRoot: askRoots.get(seed.askId) ?? null,
       issueTreeRoot: seed.issueKey === null ? null : treeRootOf(seed.issueKey, parents),
     }))
