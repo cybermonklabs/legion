@@ -3,6 +3,7 @@
 package launcher
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -835,4 +836,59 @@ func TestVolumeGuardProcessHelper(t *testing.T) {
 	}
 	time.Sleep(guardHold)
 	os.Exit(0)
+}
+
+// A process whose working directory is a reclaimable root is not a hold on the root: the spec
+// skips a root a live `flock` holds, which it sees as an open handle on the root, and a shell
+// standing in a root holds no handle on it. A role's bash keeps one shell for its whole session,
+// so a `cd "$TMPDIR"` leaves it standing in /legion/scratch/tmp, the Go build trees' root, until
+// it moves; a trimmer that read that as a hold would sweep no Go build tree of the pod for as
+// long as one shell of any role stood there. The process stands there through its own working
+// directory and through a thread's, and the entries under the root are deleted. The negative
+// control is the trimmer that took any path a process names on the root for a hold, as the
+// trimmer at eaf96c43 does: it skipped the root whole, said so, and deleted nothing under it.
+// Measured at eaf96c43 in an issue pod with a real `sleep` started in the root and the
+// container's own /proc: the go-build tree under it stayed, and the line said the root "is held
+// open by a process of the pod and is skipped whole".
+func TestAProcessStandingInARootIsNoHoldOnIt(t *testing.T) {
+	for _, stand := range []struct {
+		name  string
+		place func(process *fixtureProcess, path string)
+	}{
+		{"its working directory", func(p *fixtureProcess, path string) { p.cwd = path }},
+		{"a thread's working directory", func(p *fixtureProcess, path string) { p.threads = map[int]string{p.pid + 1: path} }},
+	} {
+		t.Run(stand.name, func(t *testing.T) {
+			f := newTrimFixture(t, 3)
+			root := f.roots[0]
+			if root.Entry != GoBuildTrees {
+				t.Fatalf("the first reclaimable root is %+v, want the Go build trees' root, $TMPDIR", root)
+			}
+			process := fixtureProcess{pid: 4201}
+			stand.place(&process, root.Path)
+			f.proc, _ = writeProcFixture(t, process)
+			f.useVolume(steady(90))
+			f.setSettings(trimSettings())
+
+			f.trimmer().sweep(context.Background(), *trimSettings(), steady(90)(0))
+
+			under := 0
+			for _, entry := range f.entries {
+				if !strings.HasPrefix(entry.path, root.Path+"/") {
+					continue
+				}
+				under++
+				if f.exists(entry.path) {
+					t.Errorf("the sweep left %s, under the root %s that a process stands in through %s and holds no handle on", entry.path, root.Path, stand.name)
+				}
+			}
+			if under == 0 {
+				t.Fatalf("the fixture holds no entry under %s: the case can tell nothing apart", root.Path)
+			}
+			if said := f.logged("is held open by a process of the pod"); said != 0 {
+				t.Errorf("the sweep said %d times that a root is held open, want none: %q", said, f.linesWritten())
+			}
+			f.assertProtected()
+		})
+	}
 }
