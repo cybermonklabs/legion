@@ -1163,8 +1163,8 @@ test("picker keeps a pick on screen: the priority on the project board, over a l
   }
 });
 
-// SLOW(>=2s): a pick's save held three seconds, a drag across lanes behind it, and dnd-kit's
-// landing.
+// SLOW(>=2s): a pick's save held three seconds, two drags across lanes behind it, and dnd-kit's
+// landings.
 test("picker keeps a pick on screen: a card dragged to another priority lane while its pick is out stays in that lane", async ({
   browser,
 }) => {
@@ -1214,6 +1214,16 @@ test("picker keeps a pick on screen: a card dragged to another priority lane whi
     await expect.poll(() => shown.values.at(-1)).toBe("0");
     const fromDrop = shown.values.length - 1;
     await expect(p0Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    // A second drag, into the P2 lane, while the pick and the first drag are both out: the newer
+    // drag is the card's lane from the moment it is made, although its save waits for the first
+    // drag's answer before it goes out.
+    const p2Todo = page.getByRole("region", { name: "P2 lane" }).getByRole("region", {
+      name: "Todo",
+    });
+    await mouseDrag(page, card, p2Todo);
+    await expect.poll(() => shown.values.at(-1)).toBe("2");
+    const fromSecondDrop = shown.values.length - 1;
+    await expect(p2Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
     held.release();
     await savesEnded(page, held);
 
@@ -1223,12 +1233,17 @@ test("picker keeps a pick on screen: a card dragged to another priority lane whi
       `every value the card showed from the pick to the drop: ${JSON.stringify(shown.values.slice(fromPick, fromDrop))}`
     ).toBe(false);
 
-    expect(shown.values.slice(fromDrop), "every value the card showed from the drop on").toEqual([
-      "0",
-    ]);
-    await expect(p0Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
-    expect(await storedValues(issue.key, "priority", seq)).toEqual([1, 0]);
-    expect(await getIssue(issue.key)).toMatchObject({ priority: 0 });
+    expect(
+      shown.values.slice(fromDrop, fromSecondDrop),
+      "every value the card showed from the first drop to the second"
+    ).toEqual(["0"]);
+    expect(
+      shown.values.slice(fromSecondDrop),
+      "every value the card showed from the second drop on"
+    ).toEqual(["2"]);
+    await expect(p2Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    expect(await storedValues(issue.key, "priority", seq)).toEqual([1, 0, 2]);
+    expect(await getIssue(issue.key)).toMatchObject({ priority: 2 });
   } finally {
     await context.close();
   }
