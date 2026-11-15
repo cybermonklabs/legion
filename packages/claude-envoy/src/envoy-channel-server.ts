@@ -1857,15 +1857,19 @@ export async function executeEnvoyTool(
       })
       // The answer the model reads, its line first. A publish to a topic the stream captures is
       // answered with the envelope alone; a kept answer is a success of its own, which the line
-      // says in the words the Oh My Pi plugin uses (`publishConfirmationText`).
+      // says in the words the Oh My Pi plugin uses (`publishConfirmationText`). This server
+      // always names its own session as the source, so the listener sends that session a message
+      // for a kept copy no session took, and the line says so.
       return {
-        message: publishConfirmationText(result),
+        message: publishConfirmationText(result, { senderNamed: true }),
         event_id: result.envelope.event_id,
         topic: result.envelope.topic,
         ...(result.holder === undefined ? {} : { holder: result.holder }),
         ...(result.holderState === undefined ? {} : { holder_state: result.holderState }),
+        ...(result.lastSeen === undefined ? {} : { last_seen: result.lastSeen }),
         ...(result.kept === undefined ? {} : { kept: result.kept }),
         ...(result.keptReason === undefined ? {} : { kept_reason: result.keptReason }),
+        ...(result.keptUntil === undefined ? {} : { kept_until: result.keptUntil }),
       }
     }
     case EnvoyToolOperation.subscribe: {

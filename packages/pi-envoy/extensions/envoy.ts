@@ -4821,7 +4821,9 @@ export default function envoyExtension(pi: PiApi): void {
           // holder it names is the session the resolution read, which never received the message.
           const undelivered =
             result.kept !== true && source !== "" && result.holder === source && inSubagent;
-          const published = publishConfirmationText(result);
+          // The listener sends a message for a kept copy no session took only to the publish's
+          // source session, and a subagent whose parent cannot be resolved publishes from none.
+          const published = publishConfirmationText(result, { senderNamed: source !== "" });
           return toolSuccess(
             undelivered
               ? `${published}\nNot delivered: that holder is the session this subagent sends as, and the listener drops a message whose source session is its recipient, so the agent that spawned you did not receive it. Reach it with a write to its agent:// address instead.`
@@ -4831,8 +4833,10 @@ export default function envoyExtension(pi: PiApi): void {
               topic,
               ...(result.holder === undefined ? {} : { holder: result.holder }),
               ...(result.holderState === undefined ? {} : { holder_state: result.holderState }),
+              ...(result.lastSeen === undefined ? {} : { last_seen: result.lastSeen }),
               ...(result.kept === undefined ? {} : { kept: result.kept }),
               ...(result.keptReason === undefined ? {} : { kept_reason: result.keptReason }),
+              ...(result.keptUntil === undefined ? {} : { kept_until: result.keptUntil }),
               ...(undelivered ? { undelivered_echo: true } : {}),
             }
           );

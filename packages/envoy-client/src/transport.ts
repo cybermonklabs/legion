@@ -22,7 +22,8 @@ import type { TmuxPlace } from "./tmux-place";
  * nothing else (dispatch://INFRA-392): `live` within the live window (5 minutes), `unresponsive`
  * past it and inside the gone horizon (an hour), `gone` past that or with no record at all. An
  * unresponsive session is not dead — it keeps its role and issue claims, a message sent to it is
- * stored for it, and nothing starts a replacement for it.
+ * stored for it, a message to a role it holds is kept for that role for an hour, and nothing
+ * starts a replacement for it.
  */
 const SessionStateSchema = z.enum(["live", "unresponsive", "gone"]);
 
@@ -31,13 +32,14 @@ export type SessionState = z.infer<typeof SessionStateSchema>;
 /**
  * What an agent must do about a session that stopped answering (dispatch://INFRA-392). Every
  * answer that names a session in that state says this, in one wording: the tool descriptions
- * (`tool-contract.ts`), the send confirmation, and the refusal an unresponsive holder's role
- * lookup or publish gets, which is read at the moment an agent decides whether its peer is
- * alive. A publish answer names no recipient at all, so it says nothing of the kind. The minutes
- * are counted from the holder's last registration (`last_seen`) and are
- * `ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS` itself, the sum the Dispatch server refuses another
- * agent's take by, so a change of that constant changes this sentence with it rather than
- * leaving it saying a number nothing enforces.
+ * (`tool-contract.ts`), the send confirmation, the publish confirmation of a message kept for an
+ * unresponsive role holder, and the refusal that an unresponsive holder's role lookup, or a
+ * publish with `keep: false` to its role, gets. Each is read at the moment an agent decides
+ * whether its peer is alive. A publish to a topic names no recipient at all, so its confirmation
+ * says nothing of the kind. The minutes are counted from the holder's last registration
+ * (`last_seen`) and are `ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS` itself, the sum the Dispatch server
+ * refuses another agent's take by, so a change of that constant changes this sentence with it
+ * rather than leaving it saying a number nothing enforces.
  */
 export const UNRESPONSIVE_RULE =
   "An unresponsive session is not dead: it keeps its role claims and its issue claims, and a " +
@@ -183,28 +185,35 @@ const EnvelopeResponseSchema = EnvelopeSchema.extend({
   holder: z.string().optional(),
   holder_state: SessionStateSchema.optional(),
   recipient_state: SessionStateSchema.optional(),
-  // The recipient's last registration (epoch ms), which the listener sends with an unresponsive
-  // recipient's state so the sender can say how long it has been stalled; omitted when it knows
-  // none, and absent from a listener predating the field.
+  // The last registration (epoch ms) of a send's recipient, which the listener sends with an
+  // unresponsive recipient's state so the sender can say how long it has been stalled, or of a
+  // role publish's holder, which a 202 kept for a holder that is not live names beside its
+  // state; omitted when the listener knows none, and absent from a listener predating the field.
   last_seen: z.number().int().optional(),
   duplicate: z.boolean().optional(),
 });
 
 /**
- * The publish route's answer. A role topic has three of them, told apart by status: 200, a
+ * The publish route's answer. A role topic has three of them, told apart by status: 200, a live
  * session holds the role and the stream stored the forward for its consumer, with `holder`; 202,
- * nobody holds the role, so the listener kept the message on the role's kept lane and hands it to
- * the role's next holder, with `kept` and `kept_reason: "unclaimed"`, the one state a listener of
- * this build keeps for; 404, nothing was kept and the sender's own fallback must run, which
- * `request` throws as an `EnvoyApiError`. 202 is a success answer, so it passes `response.ok` and
- * reaches this schema — load-bearing: without it a kept message would read as a refusal.
+ * no live session holds the role, so the listener kept the message on the role's kept lane for
+ * one hour and hands it to the next session that holds the role live within that hour, with
+ * `kept`, `kept_reason` and `kept_until`; 404, nothing was kept and the sender's own fallback
+ * must run, which `request` throws as an `EnvoyApiError`. A 202 is answered for a role nobody
+ * claims (`kept_reason: "unclaimed"`) and for a claim whose holder is unresponsive or gone
+ * (`"holder_lapsed"`), which also names that `holder`, its `holder_state` and its `last_seen`
+ * (read by the schema this one extends). A 404 comes when the listener keeps nothing: the
+ * publish sent `keep: false`, the role's token is one no claim can name, or the keep failed. A
+ * listener of an earlier release also answers it for a holder that is not live.
+ * 202 is a success answer, so it passes `response.ok` and reaches this schema — load-bearing:
+ * without it a kept message would read as a refusal.
  */
 const PublishResponseSchema = EnvelopeResponseSchema.extend({
   kept: z.boolean().optional(),
-  /** `holder_lapsed` stays readable though no listener of this build sends it: envoy 29.4.0 kept
-   *  for a lapsed claim and answered 202 with that reason, and a reader that refused it would
-   *  read a kept message from such a listener as a refusal. */
   kept_reason: z.enum(["unclaimed", "holder_lapsed"]).optional(),
+  /** The end of the kept copy's hour, in epoch milliseconds. Absent from a listener of an earlier
+   *  release, which keeps the copy for a time it does not name. */
+  kept_until: z.number().int().optional(),
 });
 
 export type EnvoyFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -524,10 +533,12 @@ export type PublishInput = (AgentSourceInput | HumanSourceInput) &
     readonly payload?: string;
     readonly idempotencyKey?: string;
     /**
-     * Only a role topic reads this. Unset, or true, keeps a message no live holder took on the
-     * role's kept lane for the role's next holder, which the listener answers 202 (`kept`).
-     * False keeps nothing, so the listener answers 404 and the sender's own fallback runs. The
-     * field is omitted from the wire unless set, so an older listener sees an unchanged request.
+     * Only a role topic reads this. Unset, or true, keeps a message that no live session took,
+     * for a role nobody claims or a holder that is unresponsive or gone, on the role's kept lane
+     * for one hour, for the next session that holds the role live; the listener answers 202
+     * (`kept`, `keptUntil`). False keeps nothing, so the listener answers 404 and the sender's
+     * own fallback runs. The field is omitted from the wire unless set, so an older listener
+     * sees an unchanged request.
      */
     readonly keep?: boolean;
   };
@@ -594,19 +605,31 @@ export type SendResult = {
 
 export type PublishResult = {
   readonly envelope: Envelope;
-  /** A role publish's resolved holder, and the state the listener's record puts it in. */
+  /** A role publish's resolved holder, and the state the listener's record puts it in: on a 200
+   *  the live holder the message was stored for, on a 202 kept for `holder_lapsed` the holder
+   *  that is not live. */
   readonly holder?: string;
   readonly holderState?: SessionState;
+  /** That holder's last registration in epoch milliseconds, which the listener sends beside a
+   *  holder that is not live on a 202 kept for it. Absent when the listener knows none, and from
+   *  a listener predating the field. */
+  readonly lastSeen?: number;
   /**
-   * True on the listener's 202: no live holder took the message, so the listener kept it on the
-   * role's kept lane and hands it to the role's next holder. The message is not lost, so this is
-   * a success answer, not a refusal. Absent unless the listener answered it.
+   * True on the listener's 202: no live session holds the role, so the listener kept the message
+   * on the role's kept lane and hands it to the next session that holds the role live before
+   * `keptUntil`. The message is not lost, so this is a success answer, not a refusal. Absent
+   * unless the listener answered it.
    */
   readonly kept?: boolean;
-  /** Why the message was kept. A listener of this build keeps only for a role nobody claims, so
-   * it sends `unclaimed` alone; `holder_lapsed` is what envoy 29.4.0 sent for a lapsed claim. Read
-   * from the answer's own schema, so a reason a later listener adds is added in one place. */
+  /** Why the message was kept: `unclaimed` for a role nobody claims, `holder_lapsed` for a claim
+   * whose holder is unresponsive or gone. Read from the answer's own schema, so a reason a later
+   * listener adds is added in one place. */
   readonly keptReason?: z.infer<typeof PublishResponseSchema>["kept_reason"];
+  /** The end of the kept copy's hour, in epoch milliseconds. If no session takes the copy by
+   * then, the listener drops it and sends the publish's source session a message that names it.
+   * Absent from a listener of an earlier release, which names no time and sends no such
+   * message. */
+  readonly keptUntil?: number;
 };
 
 /**
@@ -1066,8 +1089,13 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         envelope: response,
         ...(response.holder === undefined ? {} : { holder: response.holder }),
         ...(response.holder_state === undefined ? {} : { holderState: response.holder_state }),
+        // Omitted rather than zero when the listener names none, as a send's is.
+        ...(response.last_seen === undefined || response.last_seen <= 0
+          ? {}
+          : { lastSeen: response.last_seen }),
         ...(response.kept === undefined ? {} : { kept: response.kept }),
         ...(response.kept_reason === undefined ? {} : { keptReason: response.kept_reason }),
+        ...(response.kept_until === undefined ? {} : { keptUntil: response.kept_until }),
       };
     },
     unregisterSession: async (input) => {
