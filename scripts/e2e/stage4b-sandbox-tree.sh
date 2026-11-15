@@ -3914,8 +3914,8 @@ for child in "$child1" "$child2"; do
   on_issue "$child" until_true 900 "planner worker on $child, a child of $tree1, to register from an issue pod of its own" issue_worker_live "$child" planner
   assert_claim_endpoints "$child" planner
   record_resident "$child" planner || fail "$child's planner has no session and pod to keep: $(claim_view "$child" planner)"
-  # The tree an issue runs under is recorded on its claims (legion claims list, OperatorClaim.tree),
-  # not on the state view's issue entry, which carries no tree.
+  # The tree an issue runs under is recorded on its claims (legion claims list, OperatorClaim.tree);
+  # this step reads it there.
   child_tree=$(claims_cli list --json | jq -r --arg issue "$child" '[.claims[] | select(.issue == $issue and .role == "planner") | .tree] | first // ""') ||
     fail "legion claims list could not be read for $child's planner"
   [ "$child_tree" = "$tree1" ] ||

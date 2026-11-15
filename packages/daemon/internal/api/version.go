@@ -1828,7 +1828,7 @@ package api
 // above 132 then. The reading before the next push, of the heads of the 150 pull requests
 // open at 2026-11-15T01:34:27Z, found #3659 declaring 135, so the number moved to 136, the
 // lowest free number above 132 then. At the forward merge that brought main in at b39062a1,
-// #3937's own, main declared 133, and #3730 had declared 136 too, so in that merge the number
+// main declared 133, #3937's own, and #3730 had declared 136 too, so in that merge the number
 // moved to the lowest free number above 133 at its push, 139: of the heads of the 150 pull
 // requests open at 2026-11-15T04:20:22Z, read at refs/pull/<n>/head, #2827, #3711 and #3983
 // declared 133, #4017 and #4021 134, #3659 135, #3730 136, #4046 137, and #3712 and #3993 138.
