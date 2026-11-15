@@ -533,15 +533,17 @@ package api
 // together while nothing has drawn for the issue's tree; the draw is made once on the tree's root
 // record, and every issue of the tree is shown its root's (api.Issue, filled by
 // internal/projection). `packages/contracts/src/legion-api.ts` mirrors them on `legionIssue`,
-// which is a `z.strictObject`, so a reader before 49 refuses a whole state carrying any of the
-// three — and every worker's `read_record` parses the state through it. `GET /legion/v1/state`
-// authenticates nobody, so a caller from a pod whose claims record a contract below 49 is served
-// the state without them (api's stateFor, withoutMemory), as a caller below 46 is served it
-// without the claim views' update rounds; a caller below both is served it without either. The
-// settings carry the project's `memory` block (mode, config files, instructions), which every
-// plugin reads loosely and which changes no strictly parsed shape. This change adds no store
-// migration of its own: the three columns are the issue record's
-// (20261104073148_issue_memory_group), and the hand-over's answer beside them is too
+// which was a `z.strictObject` at this contract, so a reader before 49 refused a whole state
+// carrying any of the three — and every worker's `read_record` parses the state through it.
+// (That schema strips such a key rather than refusing it since sjawhar/legion#2788, which
+// landed after this entry; 58 below is the first entry written under the strip.)
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 49 is served the state without them (api's stateFor, withoutMemory), as a
+// caller below 46 is served it without the claim views' update rounds; a caller below both is
+// served it without either. The settings carry the project's `memory` block (mode, config
+// files, instructions), which every plugin reads loosely and which changes no strictly parsed
+// shape. This change adds no store migration of its own: the three columns are the issue
+// record's (20261104073148_issue_memory_group), and the hand-over's answer beside them is too
 // (20261104153554_issue_memory_carried). (This branch took 47 while main's idle-release change
 // was unmerged; main landed it as 48, so this branch takes the number above it, as the collision
 // note says.)
@@ -1608,8 +1610,8 @@ package api
 // and narrowed as 87 says, the issues' `phaseEntry` and `givenEntry` are 94's and narrowed as 94
 // says, `admission.held` is 98's and narrowed as 98 says, the issues' `treeMovedAt` and
 // `quietHours` are 111's and narrowed as 111 says, and a caller below 85 has lost `kind` with the
-// rest of them already (withoutWhyAndLineFields). It is the seventeenth narrowing and the last
-// row of stateNarrowings, after 111's. The change carries one store migration beside it,
+// rest of them already (withoutWhyAndLineFields). Its row of stateNarrowings stands after
+// 111's. The change carries one store migration beside it,
 // `20261111214351`, which adds the column `ReleasedForWaitAt` is read from; a migration moves the
 // daemon's own record and is no part of this number. Nothing else of this change is on the wire.
 // (This branch took 86 at the forward merge of 2026-11-12 that brought main in at fbe970ee,
@@ -1744,4 +1746,115 @@ package api
 // reading at 2026-11-15T03:57Z found no other open pull request declaring 137: it passed over 134
 // (#4017 and #4021), 135 (#3659) and 136 (#3575 and #3730). Read the base's own number and every
 // open pull request again at every forward merge rather than from this line.)
-const DaemonAPIVersion = 137
+//
+// 141: INFRA-2566 -- the experiments each issue was drawn for on `GET /legion/v1/state`. Every
+// issue record of the state gains `assignments`, the experiment answers that apply to it: one
+// `{experiment, variant, mode, drawnAt}` per answer, in the order the project's file declares
+// the experiments (config.Project.ExperimentsDeclared): the `memory` block's experiment first,
+// unless `experiments.memory` declares it instead (config.Project.MemoryIsBlock); then the
+// experiments `settings.projects.<KEY>.experiments` names, in its order; then any experiment the
+// file no longer names, in the order of their names (internal/projection's declaredPlaces). An
+// issue carries its tree's answer for an experiment whose unit is the tree and its own for one
+// whose unit is the issue (api.Issue.Assignments, filled and ordered by internal/projection from
+// record.Assignment). `variant` and `mode` ride
+// whatever they hold, the empty string included, and `drawnAt` is absent where the row holds no
+// instant: that row — no arm, no mode, no instant — is a hand-over settling a child at no arm
+// for an experiment the tree it left held no row for, which is how a reader tells a unit settled
+// at no arm from a unit never drawn, which is no row at all. The key itself is absent from an
+// issue no experiment holds an answer for, so the wire carries no empty list. The three memory
+// fields of contract 49 answer exactly as they did and no reader of them changes: they are now
+// read off the answer of the experiment named `memory`, whichever spelling declared it (the
+// `memory` block or `experiments.memory`), and only where that row records a draw, where the
+// arm `memory` is the group `memory` and every other arm — the control `none` and the empty
+// arm an experiment at mode off draws, which the memory draw wrote as the word `none` — is
+// `none`. A `memory` row with no instant, which is a hand-over settling a unit at no arm, fills
+// none of the three, as the empty `issues.memory_group` of such a tree filled none of them
+// before: a tree that answered nothing answers nothing still, and the measurement job's count
+// of the trees each group reached is the count it was. `assignments` carries that settled row
+// all the same, with its empty variant. `settings.projects.<KEY>.experiments` is a key new at
+// 141, and every project carries it, `[]` for a project whose file declares no experiment under
+// that key, as `slack_channels` and `memory` are always carried; every plugin reads the settings
+// loosely, so no strictly parsed shape changes with it. `packages/contracts/src/legion-api.ts` mirrors
+// `assignments` on `legionIssue`, which is a `z.object`: every answer-side schema of
+// `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788, which
+// that package's own test holds it to, and 141 is later than that change, so a reader built after
+// that change and before 141 parses this state and sees no `assignments` at all rather than
+// refusing it — and every worker's `read_record` parses the state through that schema. The
+// downgrade below is still what serves such a reader: a caller that did not ask for the field is
+// not given it.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 141 is served the state without the field (api's stateFor,
+// withoutAssignments), as a caller below 49 is served it without the memory fields; a caller
+// from 49 to below this contract is served the three memory fields and no assignments, whatever
+// else its own band gives it — each band is served what the narrowing at its lower edge and
+// every narrowing below it added and none of what a narrowing above it added (api's
+// stateNarrowings, held band by band by TestTheStateRouteServesAPodItsPluginContractsIssues),
+// and each still no assignments — and a caller below 49 neither. The 86 entry above adds no
+// narrowing of its own, so a caller at 86 is served what one at 85 is: the `why` answer and the
+// line's own fields, and neither `leakCheckCause`, nor the two entry numbers, nor
+// `admission.held`, nor the tree's quiet time, nor the word `waiting_on_issue`, nor `mergeWait`,
+// nor assignments. With this entry's narrowing the route's strips compose as the strips before it
+// did. The number is held in four files that move together: this one,
+// `packages/contracts/fixtures/daemon-api/version.json`, `packages/pi-legion/package.json` and
+// `packages/claude-envoy/package.json`. The answers are the rows of `experiment_assignments`,
+// which this change's one store migration, 20261111045636_experiment_assignments, creates and
+// back-fills from the four `issues.memory_*` columns; those columns stay in the schema, are
+// written by nothing from this release on, are read by nothing this release's daemon runs but
+// that migration's back-fill, and by the copy by hand an operator runs on a roll forward
+// (`docs/kubernetes.md`), and a later release drops them.
+// (This entry took 60 when the base carried 59, 73 at the forward merge of 2026-11-11 that
+// brought main in, 74 at the push that followed, 86 at the forward merge of 2026-11-12 that
+// brought main in at 9009dc1d, 87 at the push after it, 90 at the push after that, 93 at the
+// push after that, 95 at the push after that, 97 at the forward merge of 2026-11-13 that brought
+// main in at 12ba4e6a, and 99 at the push after that. Each of those took one above every open
+// declaration rather than the lowest free number, because three branches had each taken the
+// lowest free number at three moments and collided four ways at 65. The heads were read at that
+// push over the `const DaemonAPIVersion` of main and of every one of the 140 pull requests of
+// this repository then open, at refs/pull/<n>/head, rather than over the file lists GitHub
+// gives, which it cuts short for a pull request of many files: main then declared 87, and the
+// highest open declarations were #3708's 98, above the 97 this change declared before that
+// move, #2731's and #3573's 96 and #3677's 94; every other open head declared less than 94. So
+// this change took 99, which was one above every one of them. That rule, one above every open
+// declaration, is retired here: two trees both following it push each other higher at every
+// push, and #3708 and this change did, 95 to 99 against 98. This change holds its number while
+// main's own number is below it, and renumbers only when main reaches that number or above,
+// once, in the forward merge that landing forces, to the lowest free number above main's;
+// .github/scripts/check-daemon-api-contract.sh refuses a number at or below the base's, which is
+// the one collision a renumber has to answer. At the forward merge that brought main in at
+// 045ee076, #3677's own, main declared 94; at the forward merge that brought main in at
+// b7a2f926, #3708's own, main declared 98, the entry then right above this one, still below 99,
+// so the number held; at the forward merge that brought main in at 2a6ff6c0, #3786's own, main
+// still declared 98, so the number held at 99. At the forward merge that brought main in at
+// aee2873c, #3830's own, main declared 104, the entry then right above this one, so in that
+// merge the number moved to the lowest free number above 104 at its push, 113: of the heads of
+// the 138 pull requests open at 2026-11-13T19:05:49Z, read at refs/pull/<n>/head, #3659 declared
+// 105, #2731 106, #3712 107, #3519 108, #3793 109, #3937 110, #3573 and #3715 111, and #3730 112;
+// the reads of 17:53Z and 18:51:45Z, before those three moved, had named 111 and then 112. At the
+// forward merge that brought main in at 80920857, #3573's own, main declared 111, the entry then
+// right above this one, still below 113, so the number held. At the forward merge that brought
+// main in at 50bfbb0d, #3982's own, main still declared 111, so the number held at 113. At the
+// forward merge that brought main in at 7df0a64c, main declared 123, #3793's own, the entry then
+// right above this one, so in that merge the number moved to the lowest free number above 123 at
+// its push, 131: of the heads of the 149 pull requests open at 2026-11-14T15:50:33Z, read at
+// refs/pull/<n>/head, #4021 declared 124, #4030 125, #2230 and #4017 126, #3519, #3659 and #3711
+// 127, #3730 and #4035 128, #3937 129, and #2731 and #3993 130; the read of 15:25:30Z, before
+// those two declared 130, had named 130. At the forward merge that brought main in at 8b0f29b9,
+// #3715's own, main declared 132, the entry then right above this one, so in that merge the
+// number moved to the lowest free number above 132 at its push, 134: of the heads of the 152
+// pull requests open at 2026-11-15T00:17:26Z, read at refs/pull/<n>/head, #4033 declared 132 and
+// #3937 133. Before that merge was pushed, the reading at its push, of the heads of the 151
+// pull requests open at 2026-11-15T01:04:30Z, found #4021 declaring 134 beside #2697, #3995 and
+// #4033 at 132 and #3937 at 133, so the number moved once more, to 135, the lowest free number
+// above 132 then. The reading before the next push, of the heads of the 150 pull requests
+// open at 2026-11-15T01:34:27Z, found #3659 declaring 135, so the number moved to 136, the
+// lowest free number above 132 then. At the forward merge that brought main in at b39062a1,
+// main declared 133, #3937's own, and #3730 had declared 136 too, so in that merge the number
+// moved to the lowest free number above 133 at its push, 139: of the heads of the 150 pull
+// requests open at 2026-11-15T04:20:22Z, read at refs/pull/<n>/head, #2827, #3711 and #3983
+// declared 133, #4017 and #4021 134, #3659 135, #3730 136, #4046 137, and #3712 and #3993 138.
+// Before that merge was pushed, the reading at its push, of the heads of the 148 pull requests
+// open at 2026-11-15T05:25:55Z, found #2731 and #3993 declaring 139 and #3519 140, so the
+// number moved once more, to 141, the lowest free number above 133 then. At the forward merge
+// that brought main in at 7baa398b, main declared 137, #4046's own, below 141, so the number
+// held.)
+const DaemonAPIVersion = 141
