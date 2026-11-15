@@ -1,0 +1,5 @@
+kind: Fixed
+body: A suspension that stops a role's agent process, an idle release included, now deletes the Envoy session registration of that role, as the daemon already did for a process that died. A message sent to a role whose issue pod was just released then raises the wake that brings the pod back, instead of being stored for up to five minutes with no wake. A stop that the runtime refused deletes nothing.
+time: 2026-11-15T15:14:40.313269864Z
+custom:
+    Issue: pr4088

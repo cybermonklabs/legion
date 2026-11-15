@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'Dispatch keeps a person''s targeted message to a session that the listener holds no record of: it stores the message on the agent subject of the session and records the attempt as `kept`, and the session reads the message when it registers again. Before, the attempt failed with `no live session` and nothing woke the session. A kept message is in the answers list of the session, as a sent one is.'
+time: 2026-11-15T15:14:59.983051814Z
+custom:
+    Issue: pr4088

@@ -1,0 +1,5 @@
+kind: Added
+body: 'A delivery attempt of a targeted message, and its `message.delivery` receipt, can be in the state `kept`: the listener held no record of the session, so Dispatch stored the message on the agent subject of the session, and the session reads it when it registers again.'
+time: 2026-11-15T15:15:05.358910618Z
+custom:
+    Issue: pr4088

@@ -1,0 +1,5 @@
+kind: Fixed
+body: '`dispatch send-to-agent` runs in a Legion pane again: it stopped with `unknown flag --issue` when `LEGION_ISSUE` was set. It also says when Dispatch kept the message for a session that is not running.'
+time: 2026-11-15T15:15:09.786575318Z
+custom:
+    Issue: pr4088
