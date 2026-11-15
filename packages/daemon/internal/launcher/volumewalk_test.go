@@ -355,11 +355,16 @@ func TestTheWalkKeepsAsManyUnmeasuredDirectoriesAsAReportNamesAndCountsTheRest(t
 // The walk's budget is armed before it lists its targets, and the listing is cut by it as a
 // measurement is: a role can make any number of directories under /legion/scratch, and the walk
 // opens and lists each child of the volume root to find its targets. The budget here is spent
-// before the walk begins, and the volume root holds two thousand children, each with a
-// directory of its own: the walk ends on its budget part way through the listing, measures
-// nothing, and names among what it did not measure a child of the root it never listed, by the
-// child's own path. The negative control is the walk arming its budget after the listing, as it
-// did at b7085e21: it listed every child and named only the targets two levels down.
+// before the walk begins, and the volume root holds two thousand children, eight batches of
+// names, each with a directory of its own: the walk ends on its budget part way through the
+// listing and measures nothing. Where the budget's cancel reaches the listing while the root's
+// own names are read, the walk names the volume root alone as unmeasured
+// (TestTheWalksBudgetCutsTheListingOfTheVolumeRootBetweenItsBatches); where it reaches it later,
+// it names one directory for each child, a child of the root it never listed among them by the
+// child's own path. Which of the two the case meets is the scheduler's, since the budget cancels
+// the walk from a goroutine of its own (run). The negative control is the walk arming its budget
+// after the listing, as it did at b7085e21: it listed every child and named only the targets two
+// levels down, which is neither.
 func TestTheWalksBudgetCutsTheListingOfItsTargets(t *testing.T) {
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := t.TempDir()
@@ -386,15 +391,112 @@ func TestTheWalksBudgetCutsTheListingOfItsTargets(t *testing.T) {
 		t.Errorf("the walk whose budget was spent before it began is partial %t with %d sizes after %d measurements, want partial and nothing measured",
 			result.Partial, len(result.Sizes), measurements)
 	}
+	rootAlone := result.MissingOmitted == 0 && slices.Equal(result.Missing, []shimwire.LauncherVolumeMissing{{Path: root}})
 	unlisted := slices.ContainsFunc(result.Missing, func(missing shimwire.LauncherVolumeMissing) bool {
 		return filepath.Dir(missing.Path) == root
 	})
-	if !unlisted {
-		t.Errorf("the walk names %d of the %d children's targets as unmeasured, all two levels down: it listed every child after its budget ran out", len(result.Missing)+result.MissingOmitted, children)
+	if total := len(result.Missing) + result.MissingOmitted; !rootAlone && (!unlisted || total != children) {
+		t.Errorf("the walk names %d directories as unmeasured, beginning %v, want the volume root alone or one for each of the %d children, a child it never listed among them: it listed every child after its budget ran out",
+			total, result.Missing[:min(3, len(result.Missing))], children)
 	}
-	if total := len(result.Missing) + result.MissingOmitted; total != children {
-		t.Errorf("the walk names %d directories as unmeasured, want one for each of the %d children, listed or not", total, children)
+}
+
+// The walk's budget cuts the listing of one child of the volume root between the batches of the
+// child's names, and not only before the child is opened: a role may make any number of names in
+// one child, /legion/scratch above all, and a listing that asked only before each child read
+// every one of them past the walk's minute. The case lists a volume root of three children, go,
+// scratch and uv, where scratch holds two thousand directories, eight batches of names, through
+// a context that answers live to its first three asks — the one the walk makes after the one
+// batch of the root's own names, and the ones before it lists go and before it lists scratch —
+// and cancelled to every ask after, the first of which the walk makes once it has read the first
+// batch of scratch's names. The listing is partial, answers no target to measure, and names
+// three directories as unmeasured: go/build, the target it had listed, scratch whole, and uv,
+// which it never listed. The negative control is readChild reading a child's names whole, as it
+// did at ba4e3d98, beside the root's listing as it stands here: the listing named scratch's two
+// thousand directories as targets and was cut only before uv, 2,002 directories in all.
+func TestTheWalksBudgetCutsTheListingOfOneChildBetweenItsBatches(t *testing.T) {
+	const names = 2000
+	root := t.TempDir()
+	mkdirFixture(t, filepath.Join(root, "go", "build"))
+	mkdirFixture(t, filepath.Join(root, "uv", "cache"))
+	for at := range names {
+		mkdirFixture(t, filepath.Join(root, "scratch", fmt.Sprintf("%04d", at)))
 	}
+	held, err := openVolumeDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+	ctx := &liveFor{Context: context.Background(), asks: 3}
+
+	targets, result := sizeWalk{root: root}.targets(ctx, held)
+
+	if !result.Partial || len(targets) != 0 {
+		t.Errorf("the listing cut inside scratch is partial %t with %d targets to measure, want partial and none", result.Partial, len(targets))
+	}
+	want := []shimwire.LauncherVolumeMissing{
+		{Path: filepath.Join(root, "go", "build")},
+		{Path: filepath.Join(root, "scratch")},
+		{Path: filepath.Join(root, "uv")},
+	}
+	if total := len(result.Missing) + result.MissingOmitted; total != len(want) || !slices.Equal(result.Missing, want) {
+		t.Errorf("the listing names %d directories as unmeasured, beginning %v, want %v: the target it had listed, scratch whole and the child it never listed",
+			total, result.Missing[:min(3, len(result.Missing))], want)
+	}
+}
+
+// The walk's budget cuts the listing of the volume root itself between the batches of its names:
+// /legion is writable by the role group (readBatched), so a role may make any number of names
+// directly in it, and a root listing read whole read every one of them past the walk's minute.
+// The case lists a volume root of six hundred files, three batches of names, through a context
+// that answers live to its first ask, the one the walk makes after the first batch, and cancelled
+// to every ask after, the first of which comes after the second batch. The listing is partial,
+// answers no target to measure, and names the volume root alone as unmeasured, with no reason, as
+// a cut walk names what it did not reach. The negative control is the root's listing at
+// ba4e3d98, read whole and not cut: the listing was cut only before the root's second child, and
+// named the first child, a target it had listed, and the other 599 children, 600 in all.
+func TestTheWalksBudgetCutsTheListingOfTheVolumeRootBetweenItsBatches(t *testing.T) {
+	const names = 600
+	root := t.TempDir()
+	for at := range names {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("f%04d", at)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held, err := openVolumeDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+	ctx := &liveFor{Context: context.Background(), asks: 1}
+
+	targets, result := sizeWalk{root: root}.targets(ctx, held)
+
+	if !result.Partial || len(targets) != 0 {
+		t.Errorf("the listing cut inside the root's own names is partial %t with %d targets to measure, want partial and none", result.Partial, len(targets))
+	}
+	want := []shimwire.LauncherVolumeMissing{{Path: root}}
+	if total := len(result.Missing) + result.MissingOmitted; total != len(want) || !slices.Equal(result.Missing, want) {
+		t.Errorf("the listing names %d directories as unmeasured, beginning %v, want %v: the volume root alone",
+			total, result.Missing[:min(3, len(result.Missing))], want)
+	}
+}
+
+// liveFor is a context whose Err answers nil to its first asks and context.Canceled to every ask
+// after them: the walk's budget running out at a point of the listing a case chooses, since the
+// listing asks Err between the batches of the root's own names, before each child of the root
+// and between the batches of one child's names (sizeWalk.targets, readBatched).
+type liveFor struct {
+	context.Context
+	asks, asked int
+}
+
+func (c *liveFor) Err() error {
+	c.asked++
+	if c.asked > c.asks {
+		return context.Canceled
+	}
+	return nil
 }
 
 // A path openVolumeDir refuses is quoted in its error, as every error of the trimmer's that

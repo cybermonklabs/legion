@@ -186,9 +186,10 @@ type trimmer struct {
 	settings func() *shimwire.LauncherVolumeTrim
 	// trimming answers whether settings the trimmer can run are in force (refusedTrimSettings),
 	// which is the whole of what a sweep asks of them (halted). It is asked once per listed
-	// entry, once per directory of a listed entry's walk and once per swept entry — tens of
-	// thousands of times over one sweep of the measured pod's caches — where settings takes the
-	// launcher's mutex and returns a freshly allocated copy of the struct.
+	// entry, once per directory of a listed entry's walk and once per batch of that directory's
+	// names after its first, and once per swept entry — tens of thousands of times over one
+	// sweep of the measured pod's caches — where settings takes the launcher's mutex and returns
+	// a freshly allocated copy of the struct.
 	trimming func() bool
 	// send writes one report on the pod's bound connection. An error holds the report, which
 	// the trimmer sends on the next attempt, as the launcher's bundleRestore holds its own: no
@@ -1069,10 +1070,11 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 
 // halted is the reason the sweep must end now, and "" when it must not. It is asked at every
 // entry boundary, at every entry of the listing, and before every directory that the listing's
-// walk of an entry and an entry's pre-delete re-read open (haltCheck, newestModTime, newerThan),
-// and never once an entry's removal has begun: so none of the three endings leaves an entry half
-// removed, and the listing is cut where it stands. Nothing asks the container's kill at the end
-// of its grace, which can land inside a removal (sweep).
+// walk of an entry and an entry's pre-delete re-read open and every batch of that directory's
+// names after its first (haltCheck, walkEntries, newestModTime, newerThan), and never once an
+// entry's removal has begun: so none of the three endings leaves an entry half removed, and the
+// listing is cut where it stands. Nothing asks the container's kill at the end of its grace,
+// which can land inside a removal (sweep).
 //
 // The container's stop comes first so that run returns promptly on a shutdown rather than after
 // the sweep's budget, and the settings' stop is read here rather than once per sweep so that a
@@ -1159,8 +1161,9 @@ func (p *passedOver) said() {
 // when it ends. cut is the reason the listing was ended early, and bySettings that it was the
 // settings that ended it; a cut listing ends the sweep, since the three things that cut it —
 // the budget, a stop and the container's stop — are each a reason to stop deleting as well.
-// They are asked before each entry and before each directory of an entry's walk (haltCheck),
-// and an entry whose walk they cut is not eligible: its newest time was never read.
+// They are asked before each entry, before each directory of an entry's walk and before each
+// batch of that directory's names after its first (haltCheck, walkEntries), and an entry whose
+// walk they cut is not eligible: its newest time was never read.
 //
 // A root that is absent, that cannot be opened, that a process holds open or that cannot be
 // listed is skipped and reported rather than being an error: a pod whose roles have not started
@@ -1460,8 +1463,9 @@ func (t *trimmer) remove(remover entryRemover, entry sweepEntry, passed *passedO
 // moved is whether anything in the entry was written since the listing read it, asked again
 // immediately before the delete: a build that started while the sweep listed must keep its
 // cache. A directory is asked with newerThan, which stops at the first file newer than the
-// recorded time instead of walking the tree again and asks halt before each directory it opens,
-// and a single file with the lstat it needs anyway.
+// recorded time instead of walking the tree again and asks halt before each directory it opens
+// and before each batch of its names after the first, and a single file with the lstat it needs
+// anyway.
 //
 // It compares against entry.at, the time the listing read, and not against any cutoff, which is
 // why Go's hour belongs in the listing and not here: a modification time only moves forward, so

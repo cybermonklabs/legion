@@ -323,10 +323,11 @@ const (
 // SizesMissing is every target the walk did not measure at all, each with its reason where a
 // read was refused (LauncherVolumeMissing): a directory it could not open or list or a file whose
 // lstat was refused, which ends nothing, and, of a walk that was cut, every target it had not
-// measured when it was cut — where the cut came while it listed them, every one it had listed
-// and every child of the volume root it had not yet listed. A directory the walk could read only
-// in part is a size of its own, which names the first read under it the walk did not make
-// (LauncherVolumeSize.Refused).
+// measured when it was cut — where the cut came while it listed them, every one it had listed,
+// the child of the volume root whose names it was reading where the cut came inside one, named
+// whole, and every child it had not yet listed, or the volume root alone where the cut came
+// inside the root's own listing. A directory the walk could read only in part is a size of its
+// own, which names the first read under it the walk did not make (LauncherVolumeSize.Refused).
 //
 // Faults are the panics the trimmer recovered from, each with its stack, and SwitchedOff the one
 // report no sweep produces: the trimmer has stopped itself after three faults in a row, and this

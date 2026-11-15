@@ -962,9 +962,14 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 			if err := e.endLook(ctx, tx, check, "claim failed"); err != nil {
 				return intake.Result{}, err
 			}
-			reason := fact.Reason
-			if reason == "" {
-				reason = fmt.Sprintf("the %s's claim failed before it reported the look", check.Role)
+			// The supervisor's sentence is text the daemon did not write, so it is carried as
+			// every worker-died's reason carries it, on one line, quoted and cut (deathSentence).
+			// The daemon's own sentence for a fact that holds none is written bare, as deathReason
+			// writes its own words ("the pod ended: ", "the process was last found "): the quotes
+			// in a reason mark the text the daemon did not write, and nothing else.
+			reason := fmt.Sprintf("the %s's claim failed before it reported the look", check.Role)
+			if fact.Reason != "" {
+				reason = deathSentence(fact.Reason)
 			}
 			return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{
 				Kind: "worker-died", Role: fact.Role, Reason: fmt.Sprintf("production check look %d lost its %s: %s", check.Looks, check.Role, reason),
@@ -1052,7 +1057,10 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 //
 // The two paths that already build a reason keep theirs: a role that does not work the issue's
 // phase, and a checking role of a closed issue, each say what the failure meant for that issue,
-// which is more than either of these facts is.
+// which is more than either of these facts is. The first is the daemon's own words alone. The
+// second names the look and the role in the daemon's words and then the supervisor's sentence
+// as this writes it, one line, quoted and cut (deathSentence), or, where the fact holds no
+// sentence, a sentence of the daemon's own, bare (claimFailed).
 func deathReason(fact intake.ClaimFailed, failureCarried bool) string {
 	said := make([]string, 0, 2)
 	if !failureCarried && fact.Reason != "" {

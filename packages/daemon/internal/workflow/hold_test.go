@@ -250,10 +250,12 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 				died = append(died, notice)
 			}
 		}
+		// The supervisor's sentence is quoted, as every worker-died's reason carries it
+		// (deathSentence); this one is a single short line, so nothing of it is cut.
 		want := record.Notice{Kind: "worker-died", Role: claim.RoleTester,
-			Reason: "production check look 1 lost its tester: " + sentence}
+			Reason: "production check look 1 lost its tester: " + strconv.Quote(sentence)}
 		if len(died) != 1 || !reflect.DeepEqual(died[0], want) {
-			t.Fatalf("worker-died notices of the ended look = %+v, want %+v once: its reason names the failure already", died, want)
+			t.Fatalf("worker-died notices of the ended look = %+v, want %+v once: its reason names the failure already, the sentence quoted", died, want)
 		}
 	})
 }

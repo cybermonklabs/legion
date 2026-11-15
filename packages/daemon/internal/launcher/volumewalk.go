@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -77,10 +78,11 @@ type walkResult struct {
 	// Partial is a walk its budget or the container's stop cut before it reached every target,
 	// which is the one way a walk ends early: Missing then holds, up to the report's cap, every
 	// target it had not measured, and, where the cut came while it listed its targets, every
-	// immediate child of the volume root it had not listed yet (targets), and MissingOmitted
-	// counts the rest (cut). A target the walk could read nothing of, and one it could read only
-	// in part (LauncherVolumeSize.Refused), end nothing, so a walk that met only those reached its
-	// end and is not partial.
+	// immediate child of the volume root it had not listed in full, the one whose listing it cut
+	// among them, or the volume root alone where the cut came inside the root's own listing
+	// (targets), and MissingOmitted counts the rest (cut). A target the walk could read nothing
+	// of, and one it could read only in part (LauncherVolumeSize.Refused), end nothing, so a walk
+	// that met only those reached its end and is not partial.
 	Partial bool
 	// Missing is what the walk did not measure: a target it kept no reading of — a directory it
 	// could not open or list, or a file whose lstat was refused — with the read the kernel
@@ -238,7 +240,10 @@ type sizeWalk struct {
 //
 // The budget is armed before anything is opened, so the listing of the targets is inside it as
 // the measurements are: a role may make any number of directories under /legion/scratch, and
-// each is listed (targets).
+// each is listed (targets). That listing asks the walk's context, which the budget ends,
+// between the batches of the root's own names, before each child of the root and between the
+// batches of one child's names, so a root or a child holding millions of names is cut part way
+// through its listing (readBatched).
 func (w sizeWalk) run(ctx context.Context) walkResult {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -386,17 +391,28 @@ func unreadReason(err error) string {
 // os.Root resolved that name itself: a child a role had replaced with a link that stayed
 // lexically inside the root was followed and its own elements resolved with the open this
 // kernel lets through a link (run). The open here refuses a child that is a link, whatever it
-// names. The order is the order the names sort in, which is what a handle's listing answers, as
-// os.ReadDir did.
+// names. The order is the order the names sort in, which readBatched answers for the root's
+// listing and each child's alike, as os.ReadDir did.
 //
-// ctx is the walk's, which its budget and the container's stop end, and it is asked before each
-// child is listed: a cut listing makes the walk partial, with every target it had listed and
-// every child it had not named as unmeasured up to the report's cap and counted past it (cut),
-// and nothing is measured. The root's own listing is one read and is not cut.
+// ctx is the walk's, which its budget and the container's stop end. It is asked between the
+// batches of the root's own names, and a listing it cuts there makes the walk partial, with
+// nothing measured and the volume root named as unmeasured. It is asked again before each child
+// is listed and between the batches of that child's names (readChild): a listing it cuts there
+// makes the walk partial, with every target it had listed, the child whose listing it cut,
+// named whole, and every child it had not listed named as unmeasured up to the report's cap and
+// counted past it (cut), and nothing is measured.
 func (w sizeWalk) targets(ctx context.Context, handle *dirHandle) ([]walkTarget, walkResult) {
 	result := walkResult{}
-	children, err := handle.ReadDir()
-	if err != nil {
+	children, cut, err := readBatched(ctx, handle)
+	switch {
+	case cut:
+		// The budget or the container's stop came while the root itself was being listed, so
+		// nothing was listed to measure: the volume root is what the walk did not measure, named
+		// with no reason, as every target a cut walk did not reach is.
+		result.Partial = true
+		result.miss(w.root, "")
+		return nil, result
+	case err != nil:
 		// Nothing can be measured at all. The report still goes, with the volume root named as
 		// what was not measured: a sweep that ran is worth telling the daemon about whether or
 		// not the walk could say where the bytes are.
@@ -411,14 +427,19 @@ func (w sizeWalk) targets(ctx context.Context, handle *dirHandle) ([]walkTarget,
 		}
 		return targets
 	}
+	// cutFrom is the listing cut with children[at:] not yet listed in full: what was read of
+	// children[at] is dropped and it is named whole, beside every child after it.
+	cutFrom := func(at int) ([]walkTarget, walkResult) {
+		rest := listed()
+		for _, unlisted := range children[at:] {
+			rest = append(rest, walkTarget{child: unlisted.Name()})
+		}
+		w.cut(&result, rest)
+		return nil, result
+	}
 	for at, child := range children {
 		if ctx.Err() != nil {
-			rest := listed()
-			for _, unlisted := range children[at:] {
-				rest = append(rest, walkTarget{child: unlisted.Name()})
-			}
-			w.cut(&result, rest)
-			return nil, result
+			return cutFrom(at)
 		}
 		group := walkGroupRest
 		switch child.Name() {
@@ -431,7 +452,10 @@ func (w sizeWalk) targets(ctx context.Context, handle *dirHandle) ([]walkTarget,
 			groups[group] = append(groups[group], walkTarget{child: child.Name()})
 			continue
 		}
-		inside, err := w.readChild(handle, child.Name())
+		inside, cut, err := w.readChild(ctx, handle, child.Name())
+		if cut {
+			return cutFrom(at)
+		}
 		if err != nil {
 			result.miss(w.pathOf(walkTarget{child: child.Name()}), unreadReason(err))
 			continue
@@ -454,14 +478,52 @@ func (w sizeWalk) targets(ctx context.Context, handle *dirHandle) ([]walkTarget,
 // opened on that child by its own name in the root the walk holds open: the one read no element
 // of the path is resolved by. The handle is this listing's alone and is closed with it; a
 // measurement opens the child again when it reaches a target under it (openTarget), because the
-// walk holds names and not handles between the listing and the measurements (walkTarget).
-func (w sizeWalk) readChild(handle *dirHandle, name string) ([]os.DirEntry, error) {
+// walk holds names and not handles between the listing and the measurements (walkTarget). The
+// names are read in batches, asking ctx between them, as the root's are (readBatched).
+func (w sizeWalk) readChild(ctx context.Context, handle *dirHandle, name string) (entries []os.DirEntry, cut bool, err error) {
 	child, err := handle.open(name)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer func() { _ = child.Close() }()
-	return child.ReadDir()
+	return readBatched(ctx, child)
+}
+
+// readBatched is every name in the directory dir holds, in the order the names sort, read
+// walkEntriesBatch at a time through a listing opened on dir's own descriptor, as measureUnder
+// reads a level, with ctx asked before every batch after the first. The size walk lists the
+// volume root and each of its children this way (targets, readChild), and a role may make any
+// number of names in either: /legion/scratch is the role's own, and /legion itself is writable
+// by the role group (`drwxrwsr-x nobody legion`, read in an issue pod of this deployment on
+// 2026-11-15). A listing read whole read every one of them past the walk's budget and the
+// container's stop.
+//
+// cut is a listing ctx ended part way, of which nothing is answered. Every batch is kept and
+// the names are sorted once the listing is done, since what the walk asks of a listing is asked
+// of the whole of it: the order of the root's children, and whether a child holds a directory
+// and the order of its targets (targets).
+func readBatched(ctx context.Context, dir *dirHandle) (entries []os.DirEntry, cut bool, err error) {
+	// The listing is a File opened in the handle's Root, so each entry it reads carries the
+	// lstat its own descriptor made (os.newUnixDirent, go1.27.3), as dirHandle.ReadDir's do.
+	listing, err := dir.root.Open(".")
+	if err != nil {
+		return nil, false, dir.named(err, "")
+	}
+	defer func() { _ = listing.Close() }()
+	for batch := 0; ; batch++ {
+		if batch > 0 && ctx.Err() != nil {
+			return nil, true, nil
+		}
+		names, read := listing.ReadDir(walkEntriesBatch)
+		entries = append(entries, names...)
+		switch {
+		case errors.Is(read, io.EOF):
+			slices.SortFunc(entries, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+			return entries, false, nil
+		case read != nil:
+			return nil, false, dir.named(read, "")
+		}
+	}
 }
 
 // measureTree measures one target: the bytes of every regular file under it, and of those the

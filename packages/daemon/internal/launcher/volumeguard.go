@@ -369,11 +369,12 @@ func (p *procProcess) refuse(what string, err error) {
 // and had os.Root resolve every element of it but the last with the open this kernel follows a
 // link under (volumedir.go).
 //
-// halt is asked before every directory of the tree is opened, and the first error it answers
-// ends the walk and is this one's: the listing passes the sweep's three endings (trimmer.list),
-// since one entry a role made deep or wide would otherwise hold the listing, and the sweep
-// with it, past the budget and the container's stop for as long as its walk takes. A file has
-// no tree to walk, so its one lstat asks nothing.
+// halt is asked before every directory of the tree is opened and again before every batch of a
+// directory's names after its first (walkEntries), and the first error it answers ends the walk
+// and is this one's: the listing passes the sweep's three endings (trimmer.list), since one
+// entry a role made deep or wide would otherwise hold the listing, and the sweep with it, past
+// the budget and the container's stop for as long as its walk takes. A file has no tree to
+// walk, so its one lstat asks nothing.
 func newestModTime(dir *dirHandle, name string, halt func() error) (time.Time, error) {
 	info, err := dir.Lstat(name)
 	if err != nil {
@@ -400,12 +401,13 @@ func newestModTime(dir *dirHandle, name string, halt func() error) (time.Time, e
 // the listing. It reads through dir's handle and follows no symbolic link, as newestModTime
 // above does and for the reasons given there.
 //
-// halt is asked as newestModTime asks it, before every directory of the tree is opened, and
-// for the same reason: between the listing and this re-read a role may grow the entry into a
-// tree as deep or wide as it likes and set its times back, and a walk that asked nothing would
-// hold the sweep past its budget and the container's stop for as long as that tree took to
-// read. The re-read comes before the entry's removal begins (trimmer.remove), so an ending it
-// meets leaves the entry whole and ends the sweep there.
+// halt is asked as newestModTime asks it, before every directory of the tree is opened and
+// before every batch of a directory's names after its first, and for the same reason: between
+// the listing and this re-read a role may grow the entry into a tree as deep or wide as it likes
+// and set its times back, and a walk that asked nothing would hold the sweep past its budget and
+// the container's stop for as long as that tree took to read. The re-read comes before the
+// entry's removal begins (trimmer.remove), so an ending it meets leaves the entry whole and ends
+// the sweep there.
 func newerThan(dir *dirHandle, name string, cutoff time.Time, halt func() error) (bool, error) {
 	info, err := dir.Lstat(name)
 	if err != nil {
@@ -436,14 +438,17 @@ func newerThan(dir *dirHandle, name string, cutoff time.Time, halt func() error)
 // above and listed through that descriptor, and the time and the kind a visit reads are the
 // lstat that listing made through it (dirHandle), so a link inside a tree is read as the link
 // it is and the tree it points into is never walked, exactly as filepath.WalkDir read it. halt,
-// where there is one, is asked before each directory is opened, and the walk ends with the
-// first error it answers.
+// where there is one, is asked before each directory is opened and again before each batch of
+// its names after the first, and the walk ends with the first error it answers.
 //
 // A level is listed walkEntriesBatch names at a time, as eachName reads a process's
 // descriptors, and the names of one batch are visited in the order they sort, which for a
 // directory of no more names than that is the order every name of it sorts in (nextBatch). A
 // level of N names costs the walk a batch of them and not all N: a role may make a cache entry
-// with a directory of any number of names, and the walk runs in PID 1 on every sweep.
+// with a directory of any number of names, and the walk runs in PID 1 on every sweep. For the
+// same reason halt is asked between the batches and not only before the directory is opened: a
+// walk that asked only there read a directory it had opened to its end, however long the stop
+// had been asked for (TestTheGuardWalkAsksItsStopBetweenTheBatchesOfOneDirectory).
 //
 // It holds one handle per level of the tree until that level is done, which is three
 // descriptors — the handle's two and the listing's own — and a batch of names, and no path: a
@@ -488,7 +493,14 @@ func walkLevel(dir *dirHandle, name string, depth int, halt func() error, visit 
 		return under(name, within(err, ""))
 	}
 	defer func() { _ = listing.Close() }()
-	for {
+	for batch := 0; ; batch++ {
+		// The first batch is read right after the halt above; each later one asks again, so a
+		// directory of any number of names is read no further than the batch the stop came in.
+		if batch > 0 && halt != nil {
+			if err := halt(); err != nil {
+				return err
+			}
+		}
 		entries, read := nextBatch(listing)
 		for _, entry := range entries {
 			info, err := entry.Info()
@@ -526,7 +538,8 @@ func walkLevel(dir *dirHandle, name string, depth int, halt func() error, visit 
 }
 
 // walkEntriesBatch is how many names of one level walkEntries and the size walk's measureUnder
-// read at a time: procNamesBatch, the batch eachName reads a process's descriptors in.
+// and readBatched read at a time: procNamesBatch, the batch eachName reads a process's
+// descriptors in.
 const walkEntriesBatch = procNamesBatch
 
 // nextBatch is the next walkEntriesBatch names of one level's listing, in the order they sort,
