@@ -1238,8 +1238,11 @@ describe("a document write that superseded a person's approval", () => {
   // on a plan with 409 PLAN_APPROVED_BY_REVIEW, and `dispatch plan-approve` records the plan
   // review's approval of the new version. So a write that made a plan's approval stale names
   // `dispatch plan-approve` as the way to approve it again, and never `dispatch request-approval`.
-  // Each answer below is the one Dispatch gives for an issue's plan.md today: role `plan`, slug
-  // `plan-md`, and a `superseded_approval` whose approver is the plan review's session.
+  // Each answer below says the document is a plan in every way Dispatch can: the plan's role
+  // `plan` and slug `plan-md`, which Dispatch answers today, and a `superseded_approval` whose
+  // approver is the plan review's session and whose `kind` is `plan_review`, the field the
+  // architect's ruling (dispatch://INFRA-3327/comment/f75075ad-fb17-4d08-8cdc-8cbe0cb2dc87)
+  // recommends the server add. A fix may read either; the line it prints is what this pins.
   test.each([
     [
       "dispatch_artifact",
@@ -1264,9 +1267,14 @@ describe("a document write that superseded a person's approval", () => {
       role: "plan",
       primary: false,
     };
-    const staled = advice({
-      superseded_approval: { approved_version: 1, version: 2, approved_by: session },
-    });
+    // A variable, not a literal in the call: `kind` is a field the contract does not declare yet.
+    const superseded = {
+      approved_version: 1,
+      version: 2,
+      approved_by: session,
+      kind: "plan_review",
+    };
+    const staled = advice({ superseded_approval: superseded });
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const target = new URL(String(url));
       const method = init?.method ?? "GET";
