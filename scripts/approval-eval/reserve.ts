@@ -22,8 +22,8 @@ import type { DispatchEvent } from "./dispatch-read";
  * against the scorers' own records of what they read (the registration's item 6).
  *
  * The registration's version 1, which held issues by their own key from 2026-11-14T06:00:00Z, was
- * released by the owner of the next round in writing (that document's "Version 1 released"): its
- * item 6 takes no case that version 1 alone held, so its cases are development data.
+ * released by the owner of the next round in writing (that document's "Version 1 released"):
+ * version 2's item 6 takes no case that version 1 alone held, so those cases are development data.
  *
  * A reserved tree, by its root's key, that a read has already spent is in `MOVED_TO_DEVELOPMENT`,
  * with the record of that read, and is held no more.
