@@ -20,12 +20,15 @@ export interface SwitchRequest {
  * What a switch sends the session: the line a person would type at its terminal, the value as
  * the session listed it and never rewritten, and `connected_only`.
  *
- * `connected_only` is the one thing that tells this send from every other. A `/model` or
- * `/effort` line applies to the session that reads it, so one stored for a session that is not
- * running would change its model at an unknown later time, which is worse than no switch at
- * all. The listener refuses a stopped target instead, Dispatch records the attempt failed with
- * `the session is stopped`, and the header says so (case 1 below). Every other message to that
- * session is stored for it and handed over when it runs again.
+ * A `/model` or `/effort` line applies to the session that reads it, so one stored for a session
+ * that is not running would change its model at an unknown later time, which is worse than no
+ * switch at all. `connected_only` asks the listener to refuse a stopped target instead, Dispatch
+ * records the attempt failed with `the session is stopped`, and the header says so (case 1
+ * below). The flag is not what decides it: the server holds a person's own Send or Aside whose
+ * whole body is one such line to a running session with or without it (`isSessionSwitch` in
+ * `packages/envoy/internal/dispatch/api/messages.go`), since a tab loaded before the field
+ * existed sends the switch without it. Every other message to that session is stored for it and
+ * handed over when it runs again.
  */
 export function switchMessageInput(request: SwitchRequest): CreateAgentMessageInput {
   return {

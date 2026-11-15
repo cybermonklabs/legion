@@ -288,8 +288,9 @@ type pendingMessageDelivery struct {
 	// again for every later one (insertMessageDeliveryAttempt). Every send of the attempt asks the
 	// listener for a session that is running now when it is set or the send is a model or thinking
 	// switch the session runs as its own turn (deliverMessageResuming, isSessionSwitch): a person's
-	// issue-less Send or Aside, no broadcast's copy, whose body is one switch line. The listener
-	// then refuses a stopped target rather than storing the message for it: attempt 1's own send,
+	// own issue-less Send or Aside (not one an agent wrote for them), no broadcast's copy, whose
+	// body is one switch line. The listener then refuses a stopped target rather than storing the
+	// message for it: attempt 1's own send,
 	// the delivery sweep's resume, a Retry and a mode change alike. No row records the switch rule,
 	// which each send judges from the message and the mode it is sent in: a switch an earlier
 	// release stored has rows with no flag, which a resume claims as they stand, and the rule's

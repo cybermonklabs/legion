@@ -434,7 +434,8 @@ func TestTheSweepLeavesAQueuedAttemptAlone(t *testing.T) {
 // An attempt whose sender died between the commit and the settle is resumed by the delivery
 // sweep, which asks for a connected session if the request that stored the message did, or if the
 // resumed send is a model or thinking switch the session runs as its own turn (isSessionSwitch: a
-// person's Send or Aside on no issue, no broadcast's copy, whose body is one switch line). So the
+// person's own Send or Aside, not one an agent wrote for them, on no issue, no broadcast's copy,
+// whose body is one switch line). So the
 // switch's own attempt, resumed against a stopped target, is settled failed and nothing is stored
 // for the session - the attempt a request that asked connected_only opened, which carries the
 // flag on its row (message_deliveries.connected_only), because the sweep never saw the request,
@@ -603,15 +604,16 @@ func TestARetryOfARefusedSwitchIsRefusedAgainAndQueuesNothing(t *testing.T) {
 
 // TestTheSwitchRuleCaseByCase is plan D9's switch rule, one subtest per row of its table ("The
 // switch rule, case by case", dispatch://INFRA-626/artifact/plan-md), every row sent to s1, a
-// session the listener knows and that is not running. A switch is a person's Send or Aside on no
-// issue, no broadcast's copy, whose whole body is one /model or /effort line: the one shape a
-// session runs as its own turn (isUserTurnCandidate in packages/pi-shared/src/accept-user-turn.ts,
-// isSessionSwitch here). Every attempt of one, and every send, is refused 409 "the session is
-// stopped" with nothing stored, whatever its request said and whatever its row holds. The same
-// line in any other shape reaches the session as a card and changes no model, so it is stored for
-// the session and recorded queued like any other message (spec R6). The rule is judged at each
-// send, so an attempt's connected_only carries only what its request asked, which only the agents
-// route takes and only the live view's switch sets.
+// session the listener knows and that is not running. A switch is a person's own Send or Aside
+// (not one an agent wrote for them) on no issue, no broadcast's copy, whose whole body is one
+// /model or /effort line: the one shape a session runs as its own turn (isUserTurnCandidate in
+// packages/pi-shared/src/accept-user-turn.ts, isSessionSwitch here). Every attempt of one, and
+// every send, is refused 409 "the session is stopped" with nothing stored, whatever its request
+// said and whatever its row holds. The same line in any other shape reaches the session as a card
+// and changes no model, so it is stored for the session and recorded queued like any other message
+// (spec R6). The rule is judged at each send, so an attempt's connected_only carries only what its
+// request asked, which only the agents route takes; a request that asks it holds any message to a
+// running session, a switch or not.
 func TestTheSwitchRuleCaseByCase(t *testing.T) {
 	const line = "/model anthropic/claude-x"
 	const person, session = `{"kind":"user","id":"alice"}`, `{"kind":"session","id":"s2"}`
@@ -735,6 +737,21 @@ func TestTheSwitchRuleCaseByCase(t *testing.T) {
 				stranded := rig.strand(t, session, line, "steer", false)
 				rig.sweep(t)
 				return append(judged, rig.attempt(t, "the sweep's resume of a session's message", stranded, 1, false))
+			},
+		},
+		{
+			// The flag alone holds a message that is no switch: attempt 1's own send, and the
+			// sweep's resume of an attempt a sender that died left with the flag on its row.
+			name: "a message whose request asked connected_only", refused: true,
+			judge: func(t *testing.T, rig switchRuleRig) []judgedAttempt {
+				message := rig.send(t, "a plain message asking connected_only",
+					map[string]any{"body": "hello", "delivery": "steer", "connected_only": true})
+				stranded := rig.strand(t, person, "hello", "steer", true)
+				rig.sweep(t)
+				return []judgedAttempt{
+					rig.attempt(t, "a plain message asking connected_only", message.ID, 1, true),
+					rig.attempt(t, "the sweep's resume of a plain message that asked connected_only", stranded, 1, true),
+				}
 			},
 		},
 		{

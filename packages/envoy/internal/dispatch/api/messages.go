@@ -87,8 +87,9 @@ type createAgentMessageInput struct {
 	// records that refusal as its failure, as it does on every later attempt of the message. The
 	// live view's model and thinking switch sets it; a switch sent without it, from a tab loaded
 	// before the field existed, is held to a running session all the same (isSessionSwitch), as a
-	// person's Send or Aside whose body is one switch line. Every other send that leaves it out is
-	// queued for a stopped session, and the listener hands it the message when it runs again. An
+	// person's own Send or Aside (not one an agent wrote for them) whose body is one switch line.
+	// Every other send that leaves it out is queued for a stopped session, and the listener hands
+	// it the message when it runs again. An
 	// issue message takes no such field: a stopped session's is queued whatever its body says.
 	ConnectedOnly bool `json:"connected_only"`
 }

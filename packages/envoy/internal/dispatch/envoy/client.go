@@ -222,10 +222,11 @@ type SendInput struct {
 	// JSON literal false, "optional" or "required", which is what contracts.ExpectsReply writes.
 	ExpectsReply contracts.ExpectsReply
 	// ConnectedOnly asks the listener to refuse a stopped target rather than store the message
-	// for it: a 409 with the reason "the session is stopped", and nothing stored. It is for the
-	// one send whose meaning depends on arriving now - the live view's model and thinking
-	// switch, which would otherwise apply at an unknown later time. Unset, the field is left out
-	// of the body.
+	// for it: a 409 with the reason "the session is stopped", and nothing stored. Dispatch sets it
+	// on every send of a model or thinking switch the session runs as its own turn
+	// (api.isSessionSwitch), whose line would otherwise apply at an unknown later time, and on
+	// every send of a message whose agents-route request asked for it. Unset, the field is left
+	// out of the body.
 	ConnectedOnly bool
 }
 
