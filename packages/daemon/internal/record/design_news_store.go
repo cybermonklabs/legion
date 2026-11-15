@@ -200,7 +200,7 @@ func QueueDesignNews(ctx context.Context, store Store, tx pgx.Tx, tree string, n
 	return store.Enqueue(ctx, tx, row)
 }
 
-const changesColumns = `artifact_id, from_version, to_version, state, decision_only, sections, blocks, reason, read_at`
+const changesColumns = `artifact_id, from_version, to_version, state, decision_only, unchanged, sections, blocks, reason, read_at`
 
 // DesignChangesOf is the recorded change set of each of pairs that has one, by pair, in one read;
 // a pair with none recorded has no entry, and no pairs read nothing.
@@ -224,7 +224,7 @@ func (s *Postgres) DesignChangesOf(ctx context.Context, tx pgx.Tx, pairs []Versi
 		var changes DesignChanges
 		var state string
 		var sections, blocks []byte
-		if err := rows.Scan(&changes.ArtifactID, &changes.From, &changes.To, &state, &changes.DecisionOnly, &sections, &blocks,
+		if err := rows.Scan(&changes.ArtifactID, &changes.From, &changes.To, &state, &changes.DecisionOnly, &changes.Unchanged, &sections, &blocks,
 			&changes.Reason, &changes.ReadAt); err != nil {
 			return nil, fmt.Errorf("read the change sets of %d pairs: %w", len(pairs), err)
 		}
@@ -247,7 +247,8 @@ func (s *Postgres) DesignChangesOf(ctx context.Context, tx pgx.Tx, pairs []Versi
 // row, since two stored versions never change and Dispatch's answer for them is final; a pair
 // recorded unavailable takes the new row, so a Dispatch that has gained the route since can still
 // say what changed. It refuses a set the table's shape does not hold: a state that is neither,
-// a pair whose From is not below its To, and a reason given or missing against the state.
+// a pair whose From is not below its To, a reason given or missing against the state, and an
+// unchanged pair that is unavailable or decision-only.
 func (s *Postgres) PutDesignChanges(ctx context.Context, tx pgx.Tx, changes DesignChanges) error {
 	switch {
 	case changes.State != DesignChangesRead && changes.State != DesignChangesUnavailable:
@@ -256,6 +257,8 @@ func (s *Postgres) PutDesignChanges(ctx context.Context, tx pgx.Tx, changes Desi
 		return fmt.Errorf("record the change set of %+v: from must be at least 0 and below to", changes.VersionPair)
 	case (changes.State == DesignChangesUnavailable) != (changes.Reason != ""):
 		return fmt.Errorf("record the change set of %+v: an unavailable pair says why, and a read one has no reason to give", changes.VersionPair)
+	case changes.Unchanged && (changes.State != DesignChangesRead || changes.DecisionOnly):
+		return fmt.Errorf("record the change set of %+v: only a pair read from Dispatch can be unchanged, and a decision-only one is not", changes.VersionPair)
 	}
 	sections, err := json.Marshal(append([]SectionChange{}, changes.Sections...))
 	if err != nil {
@@ -266,12 +269,12 @@ func (s *Postgres) PutDesignChanges(ctx context.Context, tx pgx.Tx, changes Desi
 		return fmt.Errorf("encode the blocks of %+v: %w", changes.VersionPair, err)
 	}
 	if _, err := tx.Exec(ctx, `insert into design_changes (`+changesColumns+`)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		on conflict (artifact_id, from_version, to_version) do update set state = excluded.state,
-			decision_only = excluded.decision_only, sections = excluded.sections, blocks = excluded.blocks,
-			reason = excluded.reason, read_at = excluded.read_at
-		where design_changes.state <> $10`,
-		changes.ArtifactID, changes.From, changes.To, string(changes.State), changes.DecisionOnly, sections, blocks,
+			decision_only = excluded.decision_only, unchanged = excluded.unchanged, sections = excluded.sections,
+			blocks = excluded.blocks, reason = excluded.reason, read_at = excluded.read_at
+		where design_changes.state <> $11`,
+		changes.ArtifactID, changes.From, changes.To, string(changes.State), changes.DecisionOnly, changes.Unchanged, sections, blocks,
 		changes.Reason, changes.ReadAt, string(DesignChangesRead)); err != nil {
 		return fmt.Errorf("record the change set of %+v: %w", changes.VersionPair, err)
 	}

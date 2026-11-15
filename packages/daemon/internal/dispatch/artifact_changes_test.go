@@ -10,9 +10,11 @@ import (
 )
 
 // The change set is read as Dispatch's route writes it (its api.artifactChanges): the pair it
-// compared, whether the decision blocks were the whole change, and each changed section and typed
-// block with how it changed. The pair is asked for in the query, so the route compares the two
-// versions the caller names.
+// compared, whether the decision blocks were the whole change and whether nothing changed, and
+// each changed unit and typed block with how it changed. Each run of the text outside every `##`
+// section carries the place it stands at: before the first section, or after a named section,
+// a repeated heading by its occurrence. The pair is asked for in the query, so the route compares
+// the two versions the caller names.
 func TestArtifactChangesReadsTheChangeSetDispatchAnswers(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/artifacts/doc-7/changes" {
@@ -27,11 +29,14 @@ func TestArtifactChangesReadsTheChangeSetDispatchAnswers(t *testing.T) {
 			"from":          3,
 			"to":            5,
 			"decision_only": false,
+			"unchanged":     false,
 			"sections": []map[string]any{
-				{"heading": "", "occurrence": 0, "change": "changed"},
+				{"heading": "", "occurrence": 0, "change": "changed", "place": "before_first_section"},
 				{"heading": "Requirements", "occurrence": 0, "change": "changed"},
+				{"heading": "", "occurrence": 0, "change": "moved", "place": "after_section", "after_heading": "Requirements", "after_occurrence": 0},
 				{"heading": "Rollout", "occurrence": 1, "change": "added"},
 				{"heading": "Scope", "occurrence": 0, "change": "moved"},
+				{"heading": "", "occurrence": 0, "change": "removed", "place": "after_section", "after_heading": "Notes", "after_occurrence": 2},
 			},
 			"blocks": []map[string]any{
 				{"id": "r2", "type": "requirement", "change": "changed"},
@@ -48,10 +53,12 @@ func TestArtifactChangesReadsTheChangeSetDispatchAnswers(t *testing.T) {
 	want := ArtifactChanges{
 		ArtifactID: "doc-7", From: 3, To: 5,
 		Sections: []SectionChange{
-			{Heading: "", Occurrence: 0, Change: ChangeChanged},
+			{Heading: "", Occurrence: 0, Change: ChangeChanged, Place: PlaceBeforeFirstSection},
 			{Heading: "Requirements", Occurrence: 0, Change: ChangeChanged},
+			{Heading: "", Occurrence: 0, Change: ChangeMoved, Place: PlaceAfterSection, AfterHeading: "Requirements"},
 			{Heading: "Rollout", Occurrence: 1, Change: ChangeAdded},
 			{Heading: "Scope", Occurrence: 0, Change: ChangeMoved},
+			{Heading: "", Occurrence: 0, Change: ChangeRemoved, Place: PlaceAfterSection, AfterHeading: "Notes", AfterOccurrence: 2},
 		},
 		Blocks: []BlockChange{
 			{ID: "r2", Type: "requirement", Change: ChangeChanged},
@@ -60,6 +67,42 @@ func TestArtifactChangesReadsTheChangeSetDispatchAnswers(t *testing.T) {
 	}
 	if !reflect.DeepEqual(changes, want) {
 		t.Fatalf("change set = %#v, want %#v", changes, want)
+	}
+}
+
+// Two versions that hold no change at all are one unchanged answer: the route says so, names no
+// unit and no block, and is not decision-only. A Dispatch from before the field sends no
+// `unchanged` and no place for a run, and the client reads its answer as neither unchanged nor
+// placed, so nothing it says is read as more than it says.
+func TestArtifactChangesReadsAnUnchangedPair(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		answer map[string]any
+		want   ArtifactChanges
+	}{
+		{name: "an unchanged pair",
+			answer: map[string]any{"artifact_id": "doc-7", "from": 4, "to": 5, "decision_only": false, "unchanged": true,
+				"sections": []any{}, "blocks": []any{}},
+			want: ArtifactChanges{ArtifactID: "doc-7", From: 4, To: 5, Unchanged: true, Sections: []SectionChange{}, Blocks: []BlockChange{}}},
+		{name: "a Dispatch from before the field",
+			answer: map[string]any{"artifact_id": "doc-7", "from": 4, "to": 5, "decision_only": false,
+				"sections": []map[string]any{{"heading": "", "occurrence": 0, "change": "changed"}}, "blocks": []any{}},
+			want: ArtifactChanges{ArtifactID: "doc-7", From: 4, To: 5, Sections: []SectionChange{{Change: ChangeChanged}}, Blocks: []BlockChange{}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(t, w, tc.answer)
+			}))
+			defer server.Close()
+
+			changes, err := New(server.URL, dispatchToken).ArtifactChanges(context.Background(), "doc-7", 4, 5)
+			if err != nil {
+				t.Fatalf("read the change set: %v", err)
+			}
+			if !reflect.DeepEqual(changes, tc.want) {
+				t.Fatalf("change set = %#v, want %#v", changes, tc.want)
+			}
+		})
 	}
 }
 

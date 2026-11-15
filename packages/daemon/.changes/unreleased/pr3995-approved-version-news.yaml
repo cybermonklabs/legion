@@ -4,10 +4,11 @@ custom:
 body: |-
   When a person approves a new version of a gated document, each worker that holds an affected
   issue's phase gets a task. The task names the version its phase last took, the new version, the
-  `##` sections and the requirements or checks that changed, and the `dispatch doc-read` command
-  that prints the new version. A `spec` or `decisions` version affects every issue of the tree, a
-  `criteria` version the root alone, and a version that changes only decision blocks sends no list
-  of changes. The tree's root architect gets one task that names every issue of the tree and what
+  `##` sections, the text outside them by where it stands, and the requirements or checks that
+  changed, and the `dispatch doc-read` command that prints the new version. A `spec` or `decisions`
+  version affects every issue of the tree, a `criteria` version the root alone, and a version that
+  changes only decision blocks, or holds the same text as the version before, sends no list of
+  changes. The tree's root architect gets one task that names every issue of the tree and what
   it is told, an issue whose holder holds a task it has not taken yet named as waiting for that
   task, and an issue in `accepting` is told through the architect that owns it. The daemon
   moves no issue and stops no turn: a running worker gets the task between its turns, and news that

@@ -368,14 +368,15 @@ type memberDraft struct {
 // told is the member as the summary names it, given what is recorded: its owed items with their
 // change sets, or with the review history that could not say which version its holder took, or
 // told nothing, for that reason, where the reconcile raises what its holder took and sends nothing
-// (settlementOf's settleRaise): every item it is owed is recorded as decision blocks alone, and its
-// holder row owes no opening. A member whose row owes the opening is sent a task with it, so it is
-// named with its items and how its holder is told. An owed item the record cannot tell yet
+// (settlementOf's settleRaise): every item it is owed is recorded as changing nothing of the work
+// (record.DesignChanges.WorkUnchanged: decision blocks alone, or nothing at all), and its holder
+// row owes no opening. A member whose row owes the opening is sent a task with it, so it is named
+// with its items and how its holder is told. An owed item the record cannot tell yet
 // (newsRecorded.change) is named by none.
 func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
 	member := workflow.NewsMember{Issue: m.issue.Key, Phase: m.issue.Phase, State: m.state}
 	if settlement, _ := settlementOf(m.owed, recorded, m.openingOwed); len(m.owed) > 0 && settlement == settleRaise {
-		member.State = workflow.NewsDecisionOnly
+		member.State = workflow.NewsWorkUnchanged
 		return member
 	}
 	for _, item := range m.owed {

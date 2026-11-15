@@ -1114,8 +1114,8 @@ func openingDelivery(owed record.TreeNews, told []record.DesignTold, tree, issue
 // nothingChangedSince is the sentence that tells a phase holder that nothing its issue holds
 // changed since version took, the version of the step's document its phase took. It is written
 // once, here, for its two senders: the opened role message to a holder owed nothing
-// (openingDelivery), and the news of a version whose only change is its decision blocks
-// (RenderNews).
+// (openingDelivery), and the news of a version that changes nothing of the work, its decision
+// blocks alone or nothing at all (RenderNews).
 func nothingChangedSince(took int) string {
 	return fmt.Sprintf("Nothing your issue holds changed since version %d, which your phase took.", took)
 }

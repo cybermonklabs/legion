@@ -813,13 +813,14 @@ func TestTheMergersStartIsHeldUntilTheChangeSetOfItsNewsIsRecorded(t *testing.T)
 
 // oneDeliveryOfTheOpening is the condition of one delivery of the opening (workflow's
 // openingDelivery), for the holder of role on the rig's root, which is between turns on its
-// phase's task: a decision-only version that closed the gate, so the holder was told "closed" by
-// the role message, and that a person then approved. The holder is owed the opening and, of the
-// work, nothing: so it gets exactly one delivery of the opening, the news task leading with the
-// opening sentence and saying that nothing its issue holds changed, with no change list, and no
-// role message beside it. Every outbox row and every delivery addressed to the holder's claim or
-// its role from the approval to the end of the case is counted.
-func oneDeliveryOfTheOpening(t *testing.T, r *newsPathRig, role claim.Role) {
+// phase's task: a version that changes nothing of the work closed the gate, so the holder was told
+// "closed" by the role message, and a person then approved it. The version changes decision blocks
+// alone, or, where unchanged, holds the same text as the one before it. The holder is owed the
+// opening and, of the work, nothing: so it gets exactly one delivery of the opening, the news task
+// leading with the opening sentence and saying that nothing its issue holds changed, and why, with
+// no change list, and no role message beside it. Every outbox row and every delivery addressed to
+// the holder's claim or its role from the approval to the end of the case is counted.
+func oneDeliveryOfTheOpening(t *testing.T, r *newsPathRig, role claim.Role, unchanged bool) {
 	t.Helper()
 	token := mustClaimToken(t, pathRoot, role)
 	if got := r.run(startOf(pathRoot, role, false)); len(got) != 1 {
@@ -833,8 +834,8 @@ func oneDeliveryOfTheOpening(t *testing.T, r *newsPathRig, role claim.Role) {
 		t.Fatalf("the %s holds %+v after its turn, want nothing: the case's own premise", role, got.Pending)
 	}
 
-	// A writer saves version 5, which changes decision blocks alone, and the gate closes: the holder
-	// is told so by its role message.
+	// A writer saves version 5, which changes decision blocks alone or nothing at all, and the gate
+	// closes: the holder is told so by its role message.
 	r.dispatchEvent(intake.DispatchArtifactVersion, 5)
 	r.run(ofKind(record.OutboxKindRoleMessage))
 	closed := r.publishedTo(token)
@@ -845,7 +846,7 @@ func oneDeliveryOfTheOpening(t *testing.T, r *newsPathRig, role claim.Role) {
 	// A person approves version 5.
 	mark, promptsBefore := r.lastRowID(), len(conn.Prompts())
 	r.client.answer = func(pair record.VersionPair) (dispatch.ArtifactChanges, error) {
-		return dispatch.ArtifactChanges{ArtifactID: pair.ArtifactID, From: pair.From, To: pair.To, DecisionOnly: true}, nil
+		return dispatch.ArtifactChanges{ArtifactID: pair.ArtifactID, From: pair.From, To: pair.To, DecisionOnly: !unchanged, Unchanged: unchanged}, nil
 	}
 	r.dispatchEvent(intake.DispatchArtifactApproved, 5)
 	r.wantTold("at the opening", pathRoot, record.AudienceHolder, 4, true)
@@ -869,16 +870,22 @@ func oneDeliveryOfTheOpening(t *testing.T, r *newsPathRig, role claim.Role) {
 	if len(prompted) != 1 || prompted[0].DeliveryID != sent.ID {
 		t.Fatalf("the %s's prompts after the approval = %+v, want the news task, once", role, prompted)
 	}
+	why := "Version 5 of its spec document (artifact-800) differs from it only in decision blocks."
+	if unchanged {
+		why = "Version 5 of its spec document (artifact-800) holds the same text as version 4."
+	}
 	for _, want := range []string{
 		"The design gate of LEGION-800 opened: a person approved version 5 of its spec document (artifact-800)",
-		"Nothing your issue holds changed since version 4, which your phase took.",
+		"Nothing your issue holds changed since version 4, which your phase took. " + why,
 	} {
 		if !strings.Contains(prompted[0].Message, want) {
 			t.Fatalf("the %s's news task = %q, want it to say %q", role, prompted[0].Message, want)
 		}
 	}
-	if strings.Contains(prompted[0].Message, "Sections:") || strings.Contains(prompted[0].Message, "which you hold in") {
-		t.Fatalf("the %s's news task = %q, want no change list", role, prompted[0].Message)
+	for _, list := range []string{"Sections:", "which you hold in", "Dispatch named no"} {
+		if strings.Contains(prompted[0].Message, list) {
+			t.Fatalf("the %s's news task = %q, want no change list", role, prompted[0].Message)
+		}
 	}
 	r.wantTold("after the news task's confirmation", pathRoot, record.AudienceHolder, 5, false)
 }
@@ -890,7 +897,7 @@ func TestAReviewerToldTheGateClosedGetsOneDeliveryOfADecisionOnlyOpening(t *test
 	r.told(pathRoot, record.AudienceHolder, 4)
 	r.told(pathRoot, record.AudienceArchitect, 4)
 	r.complete(pathRoot)
-	oneDeliveryOfTheOpening(t, r, claim.RoleReviewer)
+	oneDeliveryOfTheOpening(t, r, claim.RoleReviewer, false)
 }
 
 // The merger's half of oneDeliveryOfTheOpening: a merger waiting between turns, told the gate
@@ -901,5 +908,28 @@ func TestAMergerToldTheGateClosedGetsOneDeliveryOfADecisionOnlyOpening(t *testin
 	r.told(pathRoot, record.AudienceHolder, 4)
 	r.told(pathRoot, record.AudienceArchitect, 4)
 	r.complete(pathRoot)
-	oneDeliveryOfTheOpening(t, r, claim.RoleMerger)
+	oneDeliveryOfTheOpening(t, r, claim.RoleMerger, false)
+}
+
+// oneDeliveryOfTheOpening for a version that holds the same text as the one before it: a reviewer
+// between turns on its review, told the gate closed, gets the opening once, as the news task that
+// says nothing its issue holds changed because the new version holds the same text, and no role
+// message.
+func TestAReviewerToldTheGateClosedGetsOneDeliveryOfAnUnchangedOpening(t *testing.T) {
+	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
+	r.told(pathRoot, record.AudienceHolder, 4)
+	r.told(pathRoot, record.AudienceArchitect, 4)
+	r.complete(pathRoot)
+	oneDeliveryOfTheOpening(t, r, claim.RoleReviewer, true)
+}
+
+// oneDeliveryOfTheOpening for a version that holds the same text as the one before it: a merger
+// waiting between turns, told the gate closed, gets the opening that releases its merge once, by
+// its news-only start, and no role_message row is written for it.
+func TestAMergerToldTheGateClosedGetsOneDeliveryOfAnUnchangedOpening(t *testing.T) {
+	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Retro})
+	r.told(pathRoot, record.AudienceHolder, 4)
+	r.told(pathRoot, record.AudienceArchitect, 4)
+	r.complete(pathRoot)
+	oneDeliveryOfTheOpening(t, r, claim.RoleMerger, true)
 }

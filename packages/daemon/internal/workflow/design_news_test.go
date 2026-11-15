@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -45,14 +46,15 @@ func closedGates() map[record.DesignStep]record.DesignGate {
 	return gates
 }
 
-// specChanges is what changed in the spec from version from to version 5: four sections, among
-// them the text before the first `##` and the second section headed "Notes", three requirements
-// and a callout.
+// specChanges is what changed in the spec from version from to version 5, as Dispatch names it:
+// four units, among them the run of text outside every section that stands after the "Rollout"
+// section and the second section headed "Notes", three requirements and a callout.
 func specChanges(from int) NewsChange {
 	return NewsChange{Step: record.DesignStepSpec, Changes: record.DesignChanges{
 		VersionPair: record.VersionPair{ArtifactID: "artifact-spec", From: from, To: 5}, State: record.DesignChangesRead,
 		Sections: []record.SectionChange{{Heading: "Design", Change: "changed"}, {Heading: "Rollout", Change: "added"},
-			{Heading: "", Change: "changed"}, {Heading: "Notes", Occurrence: 1, Change: "removed"}},
+			{Heading: "", Change: "changed", Place: dispatch.PlaceAfterSection, AfterHeading: "Rollout"},
+			{Heading: "Notes", Occurrence: 1, Change: "removed"}},
 		Blocks: []record.BlockChange{{ID: "r2", Type: "requirement", Change: "changed"}, {ID: "r7", Type: "requirement", Change: "added"},
 			{ID: "r3", Type: "requirement", Change: "removed"}, {ID: "note-rollback", Type: "callout", Change: "added"}},
 	}}
@@ -141,6 +143,21 @@ func decisionOnlyHolderNews() News {
 		Steps: newsSteps, Gates: newsGates(), OpeningOwed: true, Items: []NewsChange{decisions}}
 }
 
+// unchangedChanges is a pair Dispatch read as unchanged: version 5 of the spec holds the same text
+// as version 4.
+func unchangedChanges() NewsChange {
+	return NewsChange{Step: record.DesignStepSpec, Changes: record.DesignChanges{
+		VersionPair: record.VersionPair{ArtifactID: "artifact-spec", From: 4, To: 5}, State: record.DesignChangesRead, Unchanged: true}}
+}
+
+// unchangedHolderNews is the one news task of a version that holds the same text as the one
+// before it: the gate closed on it, its holder was told so, and a person approved it later, so the
+// opening is owed and nothing else is.
+func unchangedHolderNews() News {
+	return News{Audience: record.AudienceHolder, Tree: newsTree, Issue: "LEGION-211", Phase: phase.Testing,
+		Steps: newsSteps, Gates: newsGates(), OpeningOwed: true, Items: []NewsChange{unchangedChanges()}}
+}
+
 // treeSummaryNews is the root architect's summary of a spec change over the whole tree: the
 // architect last took spec version 3 and checks version 2, and each member stands somewhere else.
 func treeSummaryNews() News {
@@ -151,7 +168,7 @@ func treeSummaryNews() News {
 			{Issue: "LEGION-209", Phase: phase.Implementing, State: NewsSentNow, Items: []NewsChange{specChanges(3)}},
 			{Issue: "LEGION-210", Phase: phase.Testing, State: NewsAtNextStart, Items: []NewsChange{specChanges(4)}},
 			{Issue: "LEGION-211", Phase: phase.Accepting, State: NewsYouAnswer, Items: []NewsChange{specChanges(4)}},
-			{Issue: "LEGION-212", Phase: phase.Reviewing, State: NewsDecisionOnly},
+			{Issue: "LEGION-212", Phase: phase.Reviewing, State: NewsWorkUnchanged},
 			{Issue: "LEGION-213", Phase: phase.Planning, State: NewsAlreadyTaken},
 			{Issue: "LEGION-214", Phase: phase.Admitted, State: NewsAdmitted},
 			{Issue: "LEGION-215", Phase: phase.Held, State: NewsStopped},
@@ -211,6 +228,7 @@ func everyNewsForm() map[string]string {
 		"the sub-architect of an accepting child":            RenderNews(acceptingHolderNews()),
 		"the planner of a child":                             RenderNews(plannerHolderNews()),
 		"the holder of a decision-only version":              RenderNews(decisionOnlyHolderNews()),
+		"the holder of an unchanged version":                 RenderNews(unchangedHolderNews()),
 		"the root architect's tree summary":                  RenderNews(treeSummaryNews()),
 		"the root architect of a merged root":                RenderNews(mergedRootSummaryNews()),
 		"the root architect's summary after the gate closed": RenderNews(closedSummaryNews()),
@@ -302,15 +320,15 @@ func TestNewsSentAfterALaterVersionClosedTheGateSaysClosed(t *testing.T) {
 }
 
 // Each step names its own pair as the version the holder's phase last took, and its own change
-// list: the spec's sections, the text outside every section among them, and its requirements;
-// the Verification document's checks, which are the root's to prove, and none of its other
-// blocks. Each item ends with the command that prints its new version, and the news ends with the
-// rule the holder's prompt carries.
+// list: the spec's sections, among them the run of text outside every section named by the section
+// it follows, and its requirements; the Verification document's checks, which are the root's to
+// prove, and none of its other blocks. Each item ends with the command that prints its new version,
+// and the news ends with the rule the holder's prompt carries.
 func TestNewsNamesEachStepsSectionsAndBlocksWithItsVersionPair(t *testing.T) {
 	text := RenderNews(rootHolderNews())
 	spec := newsItem(t, text, "The spec document (artifact-spec)")
 	for _, want := range []string{"version 5, since version 3, which your phase last took",
-		`"Design" changed`, `"Rollout" added`, "the text before the first section changed", `the 2nd section headed "Notes" removed`,
+		`"Design" changed`, `"Rollout" added`, `the text after "Rollout" changed`, `the 2nd section headed "Notes" removed`,
 		"Requirements: r2 changed; r7 added; r3 removed.", "Callouts: note-rollback added.",
 		"`dispatch doc-read --issue LEGION-208 --artifact artifact-spec --version 5`"} {
 		if !strings.Contains(spec, want) {
@@ -462,6 +480,105 @@ func TestADecisionOnlyVersionOwedTheOpeningSaysNothingChanged(t *testing.T) {
 	}
 }
 
+// A version that holds the same text as the one before it, owed only for its opening, tells the
+// holder the gate opened, that nothing its issue holds changed since the version its phase took,
+// and why: the new version holds the same text. It names no change list, empty or not, no decision
+// blocks, which did not change either, and no command and no rule, since nothing asks for an
+// answer.
+func TestAnUnchangedVersionOwedTheOpeningSaysItHoldsTheSameText(t *testing.T) {
+	text := RenderNews(unchangedHolderNews())
+	t.Logf("the news of an unchanged version:\n%s", text)
+	if opened := mergerQuote(t, "opened", "spec", "artifact-spec", 5); !strings.HasPrefix(text, opened) {
+		t.Fatalf("the news opens %q, want the opening %q first", firstLine(text), opened)
+	}
+	if want := "Nothing your issue holds changed since version 4, which your phase took. " +
+		"Version 5 of its spec document (artifact-spec) holds the same text as version 4."; !strings.Contains(text, want) {
+		t.Fatalf("the news does not say %q:\n%s", want, text)
+	}
+	for _, unwanted := range []string{"Sections:", "Requirements:", "Dispatch named no", "decision blocks", "doc-read", "request_backward_move",
+		"dispatch comment"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("the news of an unchanged version says %q:\n%s", unwanted, text)
+		}
+	}
+}
+
+// An unchanged pair is named as changing nothing, and why, with no change list under it, in each
+// form: in the holder's list beside a pair that changed, and in the root architect's summary,
+// which names the unchanged pair once and a member owed nothing else as told nothing, in words
+// true of a version that holds the same text. The control is the changed pair, whose change list
+// each form still names.
+func TestAnUnchangedPairIsNamedWithNoChangeListInEveryForm(t *testing.T) {
+	unchangedChecks := NewsChange{Step: record.DesignStepCriteria, Changes: record.DesignChanges{
+		VersionPair: record.VersionPair{ArtifactID: "artifact-checks", From: 2, To: 3}, State: record.DesignChangesRead, Unchanged: true}}
+	holder := RenderNews(News{Audience: record.AudienceHolder, Tree: newsTree, Issue: newsTree, Phase: phase.Implementing,
+		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{specChanges(3), unchangedChecks}})
+	t.Logf("the holder's news:\n%s", holder)
+	if item, want := newsItem(t, holder, "Nothing your issue holds changed since version 2"), "- Nothing your issue holds changed since version 2, "+
+		"which your phase took. Version 3 of its criteria document (artifact-checks) holds the same text as version 2."; item != want {
+		t.Errorf("the holder's item of the unchanged checks = %q, want %q and nothing under it", item, want)
+	}
+	if spec := newsItem(t, holder, "The spec document (artifact-spec)"); !strings.Contains(spec, "Sections:") {
+		t.Errorf("the holder's item of the changed spec = %q, want its change list", spec)
+	}
+
+	summary := RenderNews(News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(),
+		Items: []NewsChange{unchangedChanges()},
+		Members: []NewsMember{
+			{Issue: "LEGION-209", Phase: phase.Implementing, State: NewsSentNow, Items: []NewsChange{specChanges(3)}},
+			{Issue: "LEGION-212", Phase: phase.Reviewing, State: NewsWorkUnchanged},
+		}})
+	t.Logf("the summary:\n%s", summary)
+	if item, want := newsItem(t, summary, "The spec document (artifact-spec): version 5, since version 4"), "- The spec document (artifact-spec): "+
+		"version 5, since version 4, which you last took. It holds the same text as version 4, so nothing any issue holds changed."; item != want {
+		t.Errorf("the summary's entry of the unchanged pair = %q, want %q and nothing under it", item, want)
+	}
+	if changed := newsItem(t, summary, "The spec document (artifact-spec): version 5, since version 3."); !strings.Contains(changed, "Sections:") {
+		t.Errorf("the summary's entry of the changed pair = %q, want its change list", changed)
+	}
+	if line, want := newsLine(t, summary, "- LEGION-212, in reviewing: "), "- LEGION-212, in reviewing: told nothing: the approved version "+
+		"holds the same text as the one it took, apart from decision blocks."; line != want {
+		t.Errorf("the summary's line of the member owed nothing else = %q, want %q", line, want)
+	}
+	for name, text := range map[string]string{"holder's news": holder, "summary": summary} {
+		if strings.Contains(text, "Dispatch named no") {
+			t.Errorf("the %s names an empty change list:\n%s", name, text)
+		}
+	}
+}
+
+// Each run of the text outside every `##` section is named where Dispatch says it stands: the run
+// above the first section as the text before the first section, and any other run as the text
+// after the `##` section directly before it, a repeated heading by its place among the sections of
+// that heading and a heading with no words by its place among such headings. A `##` section whose
+// heading has no words is a section, never the text outside every section. Each unit keeps
+// Dispatch's word for how it changed.
+func TestNewsNamesEachRunOfTheTextOutsideTheSectionsWhereItStands(t *testing.T) {
+	text := RenderNews(News{Audience: record.AudienceHolder, Tree: newsTree, Issue: newsTree, Phase: phase.Reviewing,
+		Steps: newsSteps, Gates: newsGates(),
+		Items: []NewsChange{{Step: record.DesignStepSpec, Changes: record.DesignChanges{
+			VersionPair: record.VersionPair{ArtifactID: "artifact-spec", From: 3, To: 5}, State: record.DesignChangesRead,
+			Sections: []record.SectionChange{
+				{Heading: "", Change: "moved", Place: dispatch.PlaceBeforeFirstSection},
+				{Heading: "Design", Change: "changed"},
+				{Heading: "", Change: "changed", Place: dispatch.PlaceAfterSection, AfterHeading: "Design"},
+				{Heading: "Notes", Occurrence: 1, Change: "added"},
+				{Heading: "", Change: "added", Place: dispatch.PlaceAfterSection, AfterHeading: "Notes", AfterOccurrence: 1},
+				{Heading: "", Occurrence: 1, Change: "changed"},
+				{Heading: "", Change: "removed", Place: dispatch.PlaceAfterSection, AfterHeading: "", AfterOccurrence: 1},
+			}}}}})
+	t.Logf("the news of runs at each place:\n%s", text)
+	want := `  Sections: the text before the first section moved; "Design" changed; the text after "Design" changed; ` +
+		`the 2nd section headed "Notes" added; the text after the 2nd section headed "Notes" added; ` +
+		`the 1st section with an empty heading changed; the text after the 1st section with an empty heading removed.`
+	if line := newsLine(t, text, "  Sections: "); line != want {
+		t.Errorf("the sections line = %q, want %q", line, want)
+	}
+	if strings.Contains(text, "the text outside every section") {
+		t.Errorf("the news names a run Dispatch placed as the text outside every section:\n%s", text)
+	}
+}
+
 // The root architect's one summary names every member of the tree with its phase and what it is
 // told: owed and sent now, owed and carried by its next start, or told nothing and why. Each pair
 // of versions it names comes once with its change list, the architect's own marked as what it
@@ -473,7 +590,7 @@ func TestTheArchitectsSummaryNamesEveryMemberWithItsStateAndReason(t *testing.T)
 		"- LEGION-208, in awaiting_person: ": "told nothing while it waits on a person",
 		"- LEGION-209, in implementing: ":    "owed version 5 of the spec document, since version 3, which its phase last took; a task tells its implementer now.",
 		"- LEGION-210, in testing: ":         "owed version 5 of the spec document, since version 4, which its phase last took; the next start of its tester carries it.",
-		"- LEGION-212, in reviewing: ":       "told nothing: the approved version differs from the one it took only in decision blocks.",
+		"- LEGION-212, in reviewing: ":       "told nothing: the approved version holds the same text as the one it took, apart from decision blocks.",
 		"- LEGION-213, in planning: ":        "told nothing: its phase already took the approved version.",
 		"- LEGION-214, in admitted: ":        "told nothing: it has not started, and its first phase starts from the approved version.",
 		"- LEGION-215, in held: ":            "told nothing while it is stopped: the restart that moves it back into its phase carries what it is owed then.",

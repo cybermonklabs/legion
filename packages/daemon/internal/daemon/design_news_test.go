@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -494,6 +495,63 @@ func TestADecisionOnlyChangeRaisesWhatEachHolderTookAndSendsNothing(t *testing.T
 	}
 	if strings.Contains(task, "Sections:") || len(news.Openings) != 1 || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileChild, 4)}) {
 		t.Fatalf("the task = %q carrying %+v, want no change list, the opening and the one item", task, news)
+	}
+}
+
+// A version that holds the same text as the version each holder took tells nobody anything of the
+// work, as a decision-only one does: the record keeps the pair as unchanged, each holder's told
+// version and the root architect's rise straight to the approved one, and no task is sent, though
+// both holders are in a turn and the claim of each would take one. The control is the same tree
+// answered with a changed section: the pair is not unchanged, nothing rises, and each holder and
+// the root architect gets a news-only start.
+func TestAnUnchangedVersionRaisesWhatEachWorkingHolderTookAndSendsNoNews(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		answer dispatch.ArtifactChanges
+		took   int
+		starts []string
+	}{
+		{name: "an unchanged version", answer: dispatch.ArtifactChanges{Unchanged: true}, took: 5, starts: []string{}},
+		{name: "a changed section", answer: dispatch.ArtifactChanges{Sections: []dispatch.SectionChange{{Heading: "Design", Change: dispatch.ChangeChanged}}},
+			took: 4, starts: []string{reconcileRoot + "/architect@", reconcileRoot + "/reviewer@reviewing", reconcileChild + "/implementer@implementing"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newNewsReconcileRig(t)
+			r.member(reconcileRoot, "", phase.Reviewing)
+			r.member(reconcileChild, reconcileRoot, phase.Implementing)
+			r.told(reconcileRoot, record.AudienceHolder, 4)
+			r.told(reconcileChild, record.AudienceHolder, 4)
+			r.told(reconcileRoot, record.AudienceArchitect, 4)
+			r.holder(reconcileRoot, claim.RoleReviewer, supervise.StateWorking, "", 1)
+			r.holder(reconcileChild, claim.RoleImplementer, supervise.StateWorking, "", 1)
+			r.holder(reconcileRoot, claim.RoleArchitect, supervise.StateWorking, "", 0)
+			r.client.answer = func(pair record.VersionPair) (dispatch.ArtifactChanges, error) {
+				answer := tc.answer
+				answer.ArtifactID, answer.From, answer.To = pair.ArtifactID, pair.From, pair.To
+				return answer, nil
+			}
+
+			if err := r.reconcile(0); err != nil {
+				t.Fatalf("reconcile the tree's news: %v", err)
+			}
+
+			if changes, held := r.recorded(reconcilePair); !held || changes.Unchanged != tc.answer.Unchanged {
+				t.Fatalf("the recorded change set = %+v (held %t), want it recorded with unchanged %t", changes, held, tc.answer.Unchanged)
+			}
+			for _, row := range []struct {
+				issue    string
+				audience record.DesignAudience
+			}{{reconcileRoot, record.AudienceHolder}, {reconcileChild, record.AudienceHolder}, {reconcileRoot, record.AudienceArchitect}} {
+				if took, _ := r.toldOf(row.issue, row.audience).Took(record.DesignStepSpec); took != tc.took {
+					t.Fatalf("%s's %s took %d after the reconcile, want %d", row.issue, row.audience, took, tc.took)
+				}
+			}
+			got := startsTo(r.newsStarts())
+			slices.Sort(got)
+			if !reflect.DeepEqual(got, tc.starts) {
+				t.Fatalf("the news-only starts = %v, want %v", got, tc.starts)
+			}
+		})
 	}
 }
 

@@ -218,6 +218,65 @@ func TestChangeSetsAreRecordedPerPairAndAReadOneIsFinal(t *testing.T) {
 	})
 }
 
+// A change set is read back as Dispatch answered it: an unchanged pair as unchanged, and each run
+// of the text outside every section with the place Dispatch named it at, before the first section
+// or after a named `##` section, kept in the sections column beside the `##` sections, which carry
+// none. A run recorded with no place, as a Dispatch from before the place names it, reads back with
+// none. The control is a decision-only pair, which is not unchanged. An unchanged set that is
+// unavailable, or decision-only too, is refused before the write, naming the pair.
+func TestAChangeSetKeepsWhetherItIsUnchangedAndWhereEachRunStands(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	at := time.Date(2026, 11, 15, 6, 0, 0, 0, time.UTC)
+	unchanged := DesignChanges{VersionPair: VersionPair{ArtifactID: "doc-spec", From: 4, To: 5}, State: DesignChangesRead, Unchanged: true,
+		ReadAt: at}
+	decisionOnly := DesignChanges{VersionPair: VersionPair{ArtifactID: "doc-spec", From: 5, To: 6}, State: DesignChangesRead, DecisionOnly: true,
+		ReadAt: at}
+	placed := DesignChanges{VersionPair: VersionPair{ArtifactID: "doc-spec", From: 6, To: 7}, State: DesignChangesRead, ReadAt: at,
+		Sections: []SectionChange{
+			{Heading: "", Change: "changed", Place: "before_first_section"},
+			{Heading: "Design", Change: "changed"},
+			{Heading: "", Change: "moved", Place: "after_section", AfterHeading: "Notes", AfterOccurrence: 1},
+			{Heading: "", Change: "removed", Place: "after_section", AfterHeading: "", AfterOccurrence: 1},
+			{Heading: "", Change: "added"},
+		}}
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, changes := range []DesignChanges{unchanged, decisionOnly, placed} {
+			must(t, records.PutDesignChanges(ctx, tx, changes))
+		}
+	})
+	var got map[VersionPair]DesignChanges
+	inTx(t, st, func(tx pgx.Tx) {
+		var err error
+		got, err = records.DesignChangesOf(ctx, tx, []VersionPair{unchanged.VersionPair, decisionOnly.VersionPair, placed.VersionPair})
+		must(t, err)
+	})
+	if !got[unchanged.VersionPair].Unchanged || got[decisionOnly.VersionPair].Unchanged {
+		t.Fatalf("unchanged read back = %t for the unchanged pair and %t for the decision-only one, want true and false",
+			got[unchanged.VersionPair].Unchanged, got[decisionOnly.VersionPair].Unchanged)
+	}
+	if !reflect.DeepEqual(got[placed.VersionPair].Sections, placed.Sections) {
+		t.Fatalf("the sections read back = %+v, want %+v, each run at its place", got[placed.VersionPair].Sections, placed.Sections)
+	}
+	if !got[unchanged.VersionPair].WorkUnchanged() || !got[decisionOnly.VersionPair].WorkUnchanged() || got[placed.VersionPair].WorkUnchanged() {
+		t.Fatalf("work unchanged = %t, %t, %t for the unchanged, decision-only and placed pairs, want true, true and false",
+			got[unchanged.VersionPair].WorkUnchanged(), got[decisionOnly.VersionPair].WorkUnchanged(), got[placed.VersionPair].WorkUnchanged())
+	}
+
+	inTx(t, st, func(tx pgx.Tx) {
+		other := VersionPair{ArtifactID: "doc-spec", From: 7, To: 8}
+		for _, refused := range []DesignChanges{
+			{VersionPair: other, State: DesignChangesUnavailable, Unchanged: true, Reason: "dispatch has no changes route: 404", ReadAt: at},
+			{VersionPair: other, State: DesignChangesRead, Unchanged: true, DecisionOnly: true, ReadAt: at},
+		} {
+			if err := records.PutDesignChanges(ctx, tx, refused); err == nil || !strings.Contains(err.Error(), "unchanged") {
+				t.Fatalf("recording %+v = %v, want it refused as an unchanged pair the table does not hold", refused, err)
+			}
+		}
+	})
+}
+
 // A review history the reconcile could not read is recorded per question, apart from every
 // version: a later failure of the same question replaces its reason and time, the read that answers
 // clears it, and a clear of a question with nothing recorded deletes nothing. A row whose shape the

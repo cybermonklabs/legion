@@ -23,13 +23,14 @@ const (
 // gated step's document it took, and whether the gate's opening is owed to it.
 //
 // A holder row rises only where a delivery that carried news is confirmed, or where what it would
-// be told is decision blocks alone, which tell nobody anything of the work; so it says what the
-// session holding the issue's phase was given, never what the daemon meant to give it. Its first
-// value is the baseline: the approved versions the issue's first working phase of its generation
-// started from (workflow's Engine.enter), and for a tree root's architect row those its tree's
-// first opening released (workflow's putGateTold), or the gate a hand-over carried to it (admit's
-// readmit). The rows go with the issue's generation (Postgres.ClearGeneration), so the next
-// generation takes its own baseline.
+// be told changes nothing of the work (DesignChanges.WorkUnchanged: decision blocks alone, or
+// nothing at all), which tells nobody anything; so it says what the session holding the issue's
+// phase was given, never what the daemon meant to give it. Its first value is the baseline: the
+// approved versions the issue's first working phase of its generation started from (workflow's
+// Engine.enter), and for a tree root's architect row those its tree's first opening released
+// (workflow's putGateTold), or the gate a hand-over carried to it (admit's readmit). The rows go
+// with the issue's generation (Postgres.ClearGeneration), so the next generation takes its own
+// baseline.
 type DesignTold struct {
 	Issue    string
 	Audience DesignAudience
@@ -129,21 +130,44 @@ type DesignChanges struct {
 	// DecisionOnly says the two versions differ only in their decision blocks, so the change
 	// tells nobody anything about the work: Sections and Blocks are empty.
 	DecisionOnly bool
-	Sections     []SectionChange
-	Blocks       []BlockChange
+	// Unchanged says Dispatch found no change at all between the two versions: their stored texts
+	// are the same, or what differs is in no section, run or block. It tells nobody anything about
+	// the work either. Sections and Blocks are empty, DecisionOnly is false, and an unavailable
+	// pair is never unchanged, since nothing was read of it.
+	Unchanged bool
+	Sections  []SectionChange
+	Blocks    []BlockChange
 	// Reason is why Dispatch could not answer, for an unavailable pair alone.
 	Reason string
 	ReadAt time.Time
 }
 
-// SectionChange is one `##` section of a document that changed between two versions, named by its
-// heading and how many sections before it carry that heading, and how it changed (`changed`,
-// `added`, `removed`, or `moved` for a section both versions hold with the same text at another
-// place).
+// WorkUnchanged says whether Dispatch read the pair and found that nothing of the work changed:
+// its two versions differ in decision blocks alone (DecisionOnly), or in nothing (Unchanged). It is
+// the one test of that rule, read by the reconcile, which raises what a holder took past such a
+// pair and sends nothing (the daemon's settlementOf), and by the news, which says such a pair
+// changed nothing the issue holds in place of a change list (workflow.RenderNews). An unavailable
+// pair is never one, since nothing says what changed.
+func (c DesignChanges) WorkUnchanged() bool {
+	return c.State == DesignChangesRead && (c.DecisionOnly || c.Unchanged)
+}
+
+// SectionChange is one top-level unit of a document that changed between two versions, as
+// Dispatch names it (dispatch.SectionChange), and how it changed (`changed`, `added`, `removed`, or
+// `moved` for a unit both versions hold with the same text at another place). A `##` section is
+// named by its heading and how many sections before it carry that heading, a heading with no
+// words counted from 1. The heading "" with occurrence 0 is a run of the text outside every `##`
+// section, and Place, AfterHeading and AfterOccurrence say where it stands: above the first
+// section (`before_first_section`), or directly after the `##` section the two name
+// (`after_section`). A run recorded from a Dispatch that named no place has none, and a `##`
+// section never has one.
 type SectionChange struct {
-	Heading    string `json:"heading"`
-	Occurrence int    `json:"occurrence"`
-	Change     string `json:"change"`
+	Heading         string `json:"heading"`
+	Occurrence      int    `json:"occurrence"`
+	Change          string `json:"change"`
+	Place           string `json:"place,omitempty"`
+	AfterHeading    string `json:"after_heading,omitempty"`
+	AfterOccurrence int    `json:"after_occurrence,omitempty"`
 }
 
 // BlockChange is one typed block of a document that changed between two versions, by its `#id`,

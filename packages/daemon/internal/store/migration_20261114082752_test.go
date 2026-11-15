@@ -41,7 +41,8 @@ const designNewsVersion = 20261114082752
 // 20261114031356 included, which holds neither the told rows table nor the unread history table
 // and refuses a design_changes outbox row; after it, every kind the constraint already named is
 // still taken, the merge-queue kinds among them, since this migration writes the list last on any
-// database, and an unread history is taken only with its reason and a version above 0.
+// database, an unread history is taken only with its reason and a version above 0, and a change
+// set is taken as unchanged only where Dispatch answered it and it is not decision-only.
 func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261114082752(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -159,6 +160,20 @@ func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261114082752(t 
 	if _, err := store.Pool().Exec(ctx, `insert into design_changes (artifact_id, from_version, to_version, state, reason, read_at)
 		values ('doc-100', 5, 6, 'unavailable', '', now())`); err == nil {
 		t.Fatal("recording an unreadable change set with no reason was taken, want it refused")
+	}
+	if _, err := store.Pool().Exec(ctx, `insert into design_changes (artifact_id, from_version, to_version, state, unchanged, read_at)
+		values ('doc-100', 6, 7, 'read', true, now())`); err != nil {
+		t.Fatalf("record an unchanged change set after the migration: %v", err)
+	}
+	for _, refused := range []string{
+		`insert into design_changes (artifact_id, from_version, to_version, state, unchanged, reason, read_at)
+			values ('doc-100', 7, 8, 'unavailable', true, 'dispatch has no changes route', now())`,
+		`insert into design_changes (artifact_id, from_version, to_version, state, decision_only, unchanged, read_at)
+			values ('doc-100', 7, 8, 'read', true, true, now())`,
+	} {
+		if _, err := store.Pool().Exec(ctx, refused); err == nil || !strings.Contains(err.Error(), "violates check constraint") {
+			t.Fatalf("%s = %v, want an unchanged change set that is unavailable, or decision-only, refused by a check", refused, err)
+		}
 	}
 	if _, err := store.Pool().Exec(ctx, `insert into design_history_unread (artifact_id, to_version, reason, read_at)
 		values ('doc-100', 5, 'Dispatch failed 3 reads of it, the last with: 502 BAD_GATEWAY', now())`); err != nil {

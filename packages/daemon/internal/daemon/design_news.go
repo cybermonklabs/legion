@@ -269,11 +269,15 @@ func (r *outbox) readChangeSets(ctx context.Context, row record.OutboxRow, pairs
 	return read, failed
 }
 
-// changesFromDispatch is Dispatch's answer for pair as the record keeps it, read at at.
+// changesFromDispatch is Dispatch's answer for pair as the record keeps it, read at at: whether the
+// decision blocks were the whole change, whether nothing changed, and each changed unit and block,
+// a run of the text outside every section with the place Dispatch named it at.
 func changesFromDispatch(pair record.VersionPair, answer dispatch.ArtifactChanges, at time.Time) record.DesignChanges {
-	changes := record.DesignChanges{VersionPair: pair, State: record.DesignChangesRead, DecisionOnly: answer.DecisionOnly, ReadAt: at}
+	changes := record.DesignChanges{VersionPair: pair, State: record.DesignChangesRead, DecisionOnly: answer.DecisionOnly,
+		Unchanged: answer.Unchanged, ReadAt: at}
 	for _, section := range answer.Sections {
-		changes.Sections = append(changes.Sections, record.SectionChange{Heading: section.Heading, Occurrence: section.Occurrence, Change: section.Change})
+		changes.Sections = append(changes.Sections, record.SectionChange{Heading: section.Heading, Occurrence: section.Occurrence,
+			Change: section.Change, Place: section.Place, AfterHeading: section.AfterHeading, AfterOccurrence: section.AfterOccurrence})
 	}
 	for _, block := range answer.Blocks {
 		changes.Blocks = append(changes.Blocks, record.BlockChange{ID: block.ID, Type: block.Type, Change: block.Change})
@@ -291,8 +295,9 @@ const (
 	// step, or a reconcile queued since causes it, and the row that queued it, or the sweep,
 	// settles it then.
 	settleLater newsSettlement = iota
-	// settleRaise raises the told versions directly and sends nothing: every pair changed
-	// decision blocks alone, which tells nobody anything of the work, and no opening is owed.
+	// settleRaise raises the told versions directly and sends nothing: no pair changed anything of
+	// the work, each changing decision blocks alone or nothing at all, which tells nobody anything,
+	// and no opening is owed.
 	settleRaise
 	// settleSend sends the news, by a news-only start.
 	settleSend
@@ -300,25 +305,26 @@ const (
 
 // settlementOf is what the reconcile does for one told row owed items, given what is recorded:
 // settleLater while the record cannot yet tell some item (newsRecorded.change); settleRaise, with
-// the version of each step to raise to, when every pair changed decision blocks alone and the row
-// owes no opening; and settleSend otherwise. An item whose review history could not be read is
-// sent, never raised: nothing says what changed since the version its holder took. A decision-only
-// change the row owes the opening with is sent, not raised: the gate closed on that version, the
-// holder was told it closed, and a person approved it later, so the holder is owed the opening as
-// a task, with the words that nothing its issue holds changed and no change list
-// (workflow.RenderNews), since no role message carried that opening.
+// the version of each step to raise to, when no pair changed anything of the work
+// (record.DesignChanges.WorkUnchanged: decision blocks alone, or nothing at all) and the row owes
+// no opening; and settleSend otherwise. An item whose review history could not be read is sent,
+// never raised: nothing says what changed since the version its holder took. A pair that changed
+// no work, owed with the opening, is sent, not raised: the gate closed on that version, the holder
+// was told it closed, and a person approved it later, so the holder is owed the opening as a task,
+// with the words that nothing its issue holds changed and no change list (workflow.RenderNews),
+// since no role message carried that opening.
 func settlementOf(items []record.NewsItem, recorded newsRecorded, openingOwed bool) (newsSettlement, map[record.DesignStep]int) {
 	versions := map[record.DesignStep]int{}
-	decisionsOnly := true
+	workUnchanged := true
 	for _, item := range items {
 		change, told := recorded.change(item)
 		if !told {
 			return settleLater, nil
 		}
-		decisionsOnly = decisionsOnly && change.HistoryUnread == nil && change.Changes.State == record.DesignChangesRead && change.Changes.DecisionOnly
+		workUnchanged = workUnchanged && change.HistoryUnread == nil && change.Changes.WorkUnchanged()
 		versions[item.Step] = item.To
 	}
-	if decisionsOnly && !openingOwed {
+	if workUnchanged && !openingOwed {
 		return settleRaise, versions
 	}
 	return settleSend, nil
@@ -440,8 +446,8 @@ type newsHolderStart struct {
 // the fact lock, it reads again what tree owes, the change sets recorded and the review histories
 // recorded unread that stand (readNewsRecorded), and settles each told row owed news (settlementOf):
 //
-//   - a row whose every pair changed decision blocks alone, and that owes no opening, has its
-//     versions raised directly (record.Store.RaiseTold), and nothing is sent;
+//   - a row whose every pair changed decision blocks alone or nothing at all, and that owes no
+//     opening, has its versions raised directly (record.Store.RaiseTold), and nothing is sent;
 //   - otherwise a member's news goes to the holder of its phase by a news-only start
 //     (record.SuperviseRequest.News), queued as a row of its own on the member's issue, unless one
 //     is queued for that claim already, or the claim holds a task its worker has not taken yet

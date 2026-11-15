@@ -366,11 +366,31 @@ func TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend(t *te
 // opening is sent a task with it, which says nothing its issue holds changed, so the summary names
 // that member as owed and how its holder is told, never as told nothing.
 func TestTheRootArchitectsSummaryNamesADecisionOnlyMemberOwedTheOpeningAsTold(t *testing.T) {
+	summaryOfAMemberOwedNoWork(t, record.DesignChanges{
+		VersionPair: record.VersionPair{ArtifactID: "artifact-spec", From: 4, To: 5}, State: record.DesignChangesRead,
+		DecisionOnly: true, ReadAt: time.Now()})
+}
+
+// A member whose owed version holds the same text as the one it took is told nothing, as a
+// decision-only one is, and the summary says so in words true of it: the approved version holds
+// the same text, and no decision block is said to have changed. A member whose holder row also owes
+// the opening is named as owed and how its holder is told, as a decision-only one is.
+func TestTheRootArchitectsSummaryNamesAnUnchangedMemberAsToldNothingAndOneOwedTheOpeningAsTold(t *testing.T) {
+	summaryOfAMemberOwedNoWork(t, record.DesignChanges{
+		VersionPair: record.VersionPair{ArtifactID: "artifact-spec", From: 4, To: 5}, State: record.DesignChangesRead,
+		Unchanged: true, ReadAt: time.Now()})
+}
+
+// summaryOfAMemberOwedNoWork records changes, a pair from version 4 to 5 that changes nothing of
+// the work (record.DesignChanges.WorkUnchanged), and reads the tester's line of the root
+// architect's summary twice: owed no opening, it is told nothing in words true of either such pair;
+// owed the opening, it is owed the version and its next start carries it, and the summary names
+// the pair with no change list, empty or not.
+func summaryOfAMemberOwedNoWork(t *testing.T, changes record.DesignChanges) {
+	t.Helper()
 	r := newNewsRig(t)
 	r.inTx(func(tx pgx.Tx) error {
-		return r.records.PutDesignChanges(r.ctx, tx, record.DesignChanges{
-			VersionPair: record.VersionPair{ArtifactID: "artifact-spec", From: 4, To: 5}, State: record.DesignChangesRead,
-			DecisionOnly: true, ReadAt: time.Now()})
+		return r.records.PutDesignChanges(r.ctx, tx, changes)
 	})
 	const tested = "- LEGION-502, in testing: "
 	line := func(task string) string {
@@ -385,7 +405,7 @@ func TestTheRootArchitectsSummaryNamesADecisionOnlyMemberOwedTheOpeningAsTold(t 
 	}
 
 	task, _ := r.send(newsRoot, claim.RoleArchitect, rootSummary())
-	if got, want := line(task), tested+"told nothing: the approved version differs from the one it took only in decision blocks."; got != want {
+	if got, want := line(task), tested+"told nothing: the approved version holds the same text as the one it took, apart from decision blocks."; got != want {
 		t.Fatalf("the tester's line, owed no opening = %q, want %q", got, want)
 	}
 
@@ -396,6 +416,9 @@ func TestTheRootArchitectsSummaryNamesADecisionOnlyMemberOwedTheOpeningAsTold(t 
 	if got, want := line(task), tested+"owed version 5 of the spec document, since version 4, which its phase last took; "+
 		"the next start of its tester carries it."; got != want {
 		t.Fatalf("the tester's line, owed the opening = %q, want %q", got, want)
+	}
+	if pair := "- The spec document (artifact-spec): version 5, since version 4. "; !strings.Contains(task, pair) || strings.Contains(task, "Dispatch named no") {
+		t.Fatalf("summary = %q, want the pair from version 4 named as %q with no change list", task, pair)
 	}
 }
 

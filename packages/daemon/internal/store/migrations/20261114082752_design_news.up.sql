@@ -24,12 +24,20 @@
 -- design_changes holds what changed in one document from one version to another, read from
 -- Dispatch (GET /api/v1/artifacts/{id}/changes). Two stored versions of a document never change,
 -- so a recorded change set never goes stale, and keeping it is no copy of a value its owner can
--- move. state `read` is Dispatch's answer: decision_only, and the sections and typed blocks that
--- differ. state `unavailable` is a pair Dispatch could not answer, a release without the route, a
--- document Dispatch no longer holds or a bounded run of failures, with the reason in reason; the
--- news then names the two versions and says why it names no change. from_version 0 is a pair whose
--- document had no approved version before to_version: its holder took the step while none stood,
--- or the review history was read and named none.
+-- move. state `read` is Dispatch's answer: decision_only, unchanged, and the sections and typed
+-- blocks that differ. decision_only says the two versions differ in decision blocks alone, and
+-- unchanged that they differ in nothing at all; each tells nobody anything of the work, and the
+-- two are never true together, since Dispatch makes exactly one of the two flags or a named
+-- section or block true of an answer. An entry of sections is a `##` section by its heading and
+-- occurrence, or a run of the text outside every section, under the heading "" and occurrence 0
+-- with the place Dispatch names it at (place, after_heading, after_occurrence): the jsonb keeps
+-- them as the daemon writes them (record.SectionChange), so they need no column. state
+-- `unavailable` is a pair Dispatch could not answer, a release without the route, a document
+-- Dispatch no longer holds or a bounded run of failures, with the reason in reason; nothing was
+-- read of it, so it is never unchanged, and the news then names the two versions and says why it
+-- names no change. from_version 0 is a pair whose document had no approved version before
+-- to_version: its holder took the step while none stood, or the review history was read and named
+-- none.
 --
 -- design_history_unread holds each question of a document's review history (GET
 -- /api/v1/artifacts/{id}/reviews) that the reconcile could not answer within its bounded attempts:
@@ -61,10 +69,11 @@
 -- row. No release carries 20261113212423 and main never merged it, so no deployment's database
 -- records it. Only a database that a build of this branch migrated before the forward merge does,
 -- and such a database is a test's own: it would apply this file a second time and fail on the
--- first create table below, so make it again rather than upgrade it. design_history_unread was
--- added to this file before any release carried 20261114082752, so it is written here rather than
--- in a migration of its own. A database a build of this branch migrated before the table was added
--- records this version without it, and it too is a test's own, to make again.
+-- first create table below, so make it again rather than upgrade it. design_history_unread, and
+-- design_changes.unchanged with its check, were added to this file before any release carried
+-- 20261114082752, so they are written here rather than in a migration of their own. A database a
+-- build of this branch migrated before either was added records this version without it, and it
+-- too is a test's own, to make again.
 --
 -- Rolling the image back needs no restore of the schema. The release before this one names none
 -- of the three tables nor the new column in any statement, its pending_task_deliveries insert
@@ -88,6 +97,7 @@ create table design_changes (
   to_version integer not null,
   state text not null check (state in ('read', 'unavailable')),
   decision_only boolean not null default false,
+  unchanged boolean not null default false,
   sections jsonb not null default '[]'::jsonb check (jsonb_typeof(sections) = 'array'),
   blocks jsonb not null default '[]'::jsonb check (jsonb_typeof(blocks) = 'array'),
   reason text not null default '',
@@ -95,7 +105,9 @@ create table design_changes (
   primary key (artifact_id, from_version, to_version),
   check (to_version > from_version),
   -- A pair Dispatch could not answer says why, and a pair it answered has no reason to give.
-  check ((state = 'unavailable') = (reason <> '')));
+  check ((state = 'unavailable') = (reason <> '')),
+  -- Only a pair Dispatch answered can be unchanged, and a decision-only one is not.
+  check (not unchanged or (state = 'read' and not decision_only)));
 
 create table design_history_unread (
   artifact_id text not null,

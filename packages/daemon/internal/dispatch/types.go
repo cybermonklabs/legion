@@ -281,30 +281,57 @@ func (a Approval) LatestReviewer() Actor {
 // GET /api/v1/artifacts/{id}/changes answers it (its artifactChanges), whose JSON it decodes as it
 // stands, as DesignGateDocument names its route's shape. Both versions are compared with their
 // decision blocks cut out, so an answer a person gave, or an ask added or moved, changes no
-// section and no block. DecisionOnly says the cut is the whole change: the stored texts differ and
-// cut to the same text, and Sections and Blocks are empty. Two versions of a document never
-// change, so the answer for one pair never goes stale.
+// section and no block. Dispatch makes exactly one of three things true of an answer:
+// DecisionOnly, the cut is the whole change (the stored texts differ and cut to the same text);
+// Unchanged, the two versions differ in nothing any section, run or block holds (their stored
+// texts are the same, or what differs is in none of them); or Sections or Blocks names at least
+// one item. So an answer that names nothing says which of the first two it is. A Dispatch from
+// before Unchanged sends no such field, so an identical version from it decodes as an answer that
+// names nothing and is neither. Two versions of a document never change, so the answer for one
+// pair never goes stale.
 type ArtifactChanges struct {
 	ArtifactID   string `json:"artifact_id"`
 	From         int    `json:"from"`
 	To           int    `json:"to"`
 	DecisionOnly bool   `json:"decision_only"`
-	// Sections are the document's `##` sections whose text differs or that moved, in the later
-	// version's order, and then the sections only the earlier version holds. The text outside
-	// every `##` section is one section of its own, first, under the heading "" and occurrence 0.
+	Unchanged    bool   `json:"unchanged"`
+	// Sections are the document's top-level units whose text differs, that moved, or that one
+	// version alone holds: each `##` section, and each run of the text outside every `##`
+	// section, which carries the place it stands at (SectionChange). They are in the later
+	// version's order, and then the units only the earlier version holds, in its order.
 	Sections []SectionChange `json:"sections"`
 	// Blocks are the typed blocks other than ask blocks whose text or any attribute differs.
 	Blocks []BlockChange `json:"blocks"`
 }
 
-// SectionChange is one `##` section that changed: its heading's text, how many sections before
-// it carry that heading (0 for the first), and how it changed: ChangeChanged, ChangeAdded,
-// ChangeRemoved or ChangeMoved.
+// SectionChange is one top-level unit of a document that changed, and how it changed:
+// ChangeChanged, ChangeAdded, ChangeRemoved or ChangeMoved. A `##` section is named by its
+// heading's text and by how many sections before it carry that heading, 0 for the first; a `##`
+// heading with no words is counted from 1. The heading "" with occurrence 0 is one run of the text
+// outside every `##` section, and Place says where it stands: PlaceBeforeFirstSection, or
+// PlaceAfterSection with AfterHeading and AfterOccurrence naming the `##` section directly before
+// it. The place is the run's in the later version for a changed, added or moved run, and in the
+// earlier version for a removed one. A `##` section carries no place, and neither does a run from
+// a Dispatch that predates the place. AfterHeading and AfterOccurrence decode to "" and 0 where
+// Dispatch leaves them out, which they are only beside a place other than PlaceAfterSection.
 type SectionChange struct {
-	Heading    string `json:"heading"`
-	Occurrence int    `json:"occurrence"`
-	Change     string `json:"change"`
+	Heading         string `json:"heading"`
+	Occurrence      int    `json:"occurrence"`
+	Change          string `json:"change"`
+	Place           string `json:"place,omitempty"`
+	AfterHeading    string `json:"after_heading,omitempty"`
+	AfterOccurrence int    `json:"after_occurrence,omitempty"`
 }
+
+// PlaceBeforeFirstSection and PlaceAfterSection are the two places a run of the text outside
+// every `##` section stands at (SectionChange's Place): above the first `##` section, or directly
+// after the one AfterHeading and AfterOccurrence name. They are as Dispatch spells them (its
+// api.placeBeforeFirstSection and api.placeAfterSection). No mechanism shares a value between this
+// module and Dispatch's, so the spellings change together.
+const (
+	PlaceBeforeFirstSection = "before_first_section"
+	PlaceAfterSection       = "after_section"
+)
 
 // BlockChange is one typed block that changed: its `#id`, its type in the later version (in the
 // earlier one for a removed block), and how it changed.
@@ -314,11 +341,12 @@ type BlockChange struct {
 	Change string `json:"change"`
 }
 
-// ChangeChanged, ChangeAdded and ChangeRemoved are the three ways a section or a block stands
-// between two versions of a document, and ChangeMoved a fourth that a section alone takes: both
-// versions hold it with the same text, at another place among the sections both hold. They are
-// as Dispatch spells them (its api.changeChanged and the three beside it). No mechanism shares a
-// value between this module and Dispatch's, so the spellings change together.
+// ChangeChanged, ChangeAdded and ChangeRemoved are the three ways a top-level unit or a block
+// stands between two versions of a document, and ChangeMoved a fourth that a unit alone takes: both
+// versions hold it with the same text, at another place among the document's top-level units (its
+// `##` sections and the runs of text outside them). They are as Dispatch spells them (its
+// api.changeChanged and the three beside it). No mechanism shares a value between this module and
+// Dispatch's, so the spellings change together.
 const (
 	ChangeChanged = "changed"
 	ChangeAdded   = "added"
