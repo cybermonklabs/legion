@@ -154,6 +154,11 @@ The shared clone's `credential.helper` is `!legion git-credential` with `credent
 on, so a pane's `git` and `jj git push` read the hosts.yml of the repository in the path git asks
 about where the bundle holds its directory, the owner's otherwise, and nothing else.
 
+In a pod, a knives ledger sweep (`skills/legion-worker/references/tools.md`, "Working on a fork
+with knives in a pod") pushes the fork's ledger repository with plain git through the same helper.
+The helper answers it with the role's own App token for the ledger's owner, and no person's token
+is used.
+
 The `git` in `bin/` runs `legion git --after <state_dir>/bin` (`packages/daemon/cmd/legion/git.go`).
 The daemon writes it at boot, unless the first `git` on the daemon's own `PATH` is the worker
 image's wrapper, `/opt/legion/bin/git`, which hands a commit to `legion git` itself. In that case
