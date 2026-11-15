@@ -62,3 +62,25 @@ func TestHandleAgentMessage_StoredInterestOnAnotherMachine(t *testing.T) {
 		t.Fatalf("result = %+v, want owned elsewhere with no delivery, NAK or error", result)
 	}
 }
+
+// TestHandleAgentMessage_StoredInterestHereWithAnUnansweredRead tests that a session whose stored
+// subscription names this listener, and whose record read did not answer, is a failure the caller
+// NAKs. That read leaves the entry nil as a record that is gone does, but says nothing of the
+// session, so the message is neither relayed, nor left to another listener, nor held as one for a
+// session that is gone.
+func TestHandleAgentMessage_StoredInterestHereWithAnUnansweredRead(t *testing.T) {
+	interest := &store.Interest{
+		SessionID: "ses_target",
+		Dir:       "/test",
+		MachineID: "test-machine",
+	}
+
+	result := session.HandleAgentMessage(
+		newTestEnvelope("agent", "notifications.agent.ses_target", "test"),
+		"ses_target", "test-machine", interest, nil, false, 0, true,
+	)
+
+	if result.Err == nil || result.Relayed || result.OwnedElsewhere {
+		t.Fatalf("result = %+v, want an error the caller NAKs, with no delivery and no owner elsewhere", result)
+	}
+}
