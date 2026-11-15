@@ -137,8 +137,39 @@ as the fingerprint decides (*The reviewer*, below, and
   architect is told the reason when the review's own webhook arrived, so the reviewer submits again at the head it read.
   A `COMMENT` decides nothing. After a
   forward merge, compute the fingerprint (*The unchanged-diff check* in
-  `skill://legion-worker/references/conflicts-and-rewrites.md`) at the
-  `commit_id` of your last submitted review and at the new head. Equal and that review was
+  `skill://legion-worker/references/conflicts-and-rewrites.md`) at the head your last submitted
+  review read and at the new head.
+  That head is the `head` of that review's Legion footer, never the review's `commit_id`, because GitHub can move a review's `commit_id` onto a later head: on cybermonklabs/legion#3516, review 5908357397 was submitted at 01:10:46Z at `e9a820cf`, and on 2026-11-15 its `commit_id` read `6019bdc9`, the forward merge committed at 05:20:10Z whose first parent is `e9a820cf`, so a fingerprint taken at `commit_id` compares the new head with itself.
+  This read lists the reviews your session submitted, each with the head its last Legion footer names, and its pages concatenate oldest first, so its last line is your last submitted review.
+  Put in it the session id your own footers carry: another reviewer session, a side review among them, writes `"phase":"review"` footers on the same pull request too.
+  Where it prints no line, your session submitted no review on this pull request, which leaves no head to take the fingerprint at: a new round.
+
+  ```bash
+  gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submitted_at, footer: ([.body // "" | scan("<!-- legion: (\\{.*?\\}) -->")] | last | .[0]? // "" | try fromjson catch {})} | select(.footer.phase == "review" and .footer.session == "<your session id>") | [.id, .state, .submitted_at, (.footer.head // "no head")] | @tsv'
+  ```
+
+  A footer that names no head, as none of the reviewer's seven footers on #3516 does, leaves the head named by that review's own `review` handoff, which the reviewer records before it submits each review, a confirmation's included.
+  That handoff is the newest version your session wrote at or before that review's `submitted_at`, and not the issue's newest: on #3516 the approval 5908357397, submitted at 01:10:46Z, has INFRA-1520's version 6, written at 01:10:08Z, which names `e9a820cf`, while version 7, written at 08:30:56Z for the confirmation, names `6019bdc9`.
+  `dispatch handoff-read` prints, on its first line, the version, the session that wrote it and when; this reads down from the newest until it finds that handoff, and prints the head it names, `head`, or `headReviewed` in a record an earlier reviewer prompt wrote:
+
+  ```bash
+  issue=<issue> sid=<your session id> at=<that review's submitted_at>; v=
+  while out=$(dispatch handoff-read --issue "$issue" --phase review ${v:+--version "$v"}) || { printf '%s\n' "$out"; false; }; do
+    line=$(printf '%s\n' "$out" | head -n 1); v=${line#*, version }; v=${v%% *}; written=${line##* at }
+    case $line in *" session $sid at "*)
+      if [ "$(jq -rn --arg w "$written" --arg a "$at" '$w[0:19] <= $a[0:19]')" = true ]; then
+        printf '%s\n' "$out" | tail -n +2 | jq -r '.head // .headReviewed // "no head"'; break; fi;;
+    esac
+    [ "$v" -gt 1 ] || { echo "no review handoff of this session at or before $at"; break; }; v=$((v - 1))
+  done
+  ```
+
+  Its last line says which case holds.
+  A full SHA is the head.
+  `no head` (a handoff that names none), `no review handoff of this session at or before …` or `HANDOFF_NOT_FOUND: …` says no handoff names the head for that review, as for a review made outside Legion's workflow: the head is then the one full SHA its body names as the head it reviewed or approved, and a confirmation's is the new head it approves.
+  Any other line, `Dispatch at … is unreachable` or another refusal (in a script `dispatch` prints its refusal on standard output, which the loop prints as it leaves), is Dispatch not answering, never "no handoff": run it again, and while it does not answer there is no head to take the fingerprint at, which is a new round.
+  A body that names more than one such SHA and does not say which it read, or names none, leaves no head to take the fingerprint at, which is a new round.
+  Equal and that review was
   `APPROVE`: submit one more `APPROVE` naming the new head by SHA, its body naming both SHAs
   and the fingerprint — a confirmation, not a round; no thermo pass, no thread pass. Equal and
   that review was `COMMENT` or `REQUEST_CHANGES`: continue that round against the new head;

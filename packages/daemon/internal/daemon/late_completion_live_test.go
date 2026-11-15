@@ -1163,14 +1163,3 @@ func blocksText(blocks []requestBlock) string {
 	}
 	return strings.Join(texts, "\n")
 }
-
-// streamAnthropicToolUse answers one Anthropic Messages request with a single call of the tool
-// name, whose id is id and whose input is input, as the plugins' own pane harness scripts one
-// (packages/pi-shared/test/omp-harness.ts, messageStream's tool_use arm): the block opens with an
-// empty input, one input_json_delta carries the whole input, and the message stops for tool_use.
-func streamAnthropicToolUse(w http.ResponseWriter, provider, id, name string, input map[string]any) {
-	arguments, _ := json.Marshal(input)
-	block, _ := json.Marshal(map[string]any{"type": "tool_use", "id": id, "name": name, "input": map[string]any{}})
-	delta, _ := json.Marshal(map[string]string{"type": "input_json_delta", "partial_json": string(arguments)})
-	streamAnthropicBlock(w, provider, "tool_use", string(block), string(delta))
-}

@@ -99,7 +99,11 @@ number is the one `DaemonAPIVersion` declares, last bumped by contract 141's exp
 `{experiment, variant, mode, drawnAt}` per experiment answer that applies to it, absent from an
 issue no experiment holds an answer for; the reader this plugin parses the state through takes
 the key as optional, because a caller from a pod whose claims record a contract under 141 is
-served every issue without it (`api.stateFor`, `withoutAssignments`)), after contract 133's merge
+served every issue without it (`api.stateFor`, `withoutAssignments`)), after contract 137's session
+service account (INFRA-3621: a pod's `legion launcher` may be told
+`--session-impersonate-service-account <email>`, which the daemon renders only where
+`runtime.kubernetes.session_database.impersonate_service_account` is set, and no shape the plugin
+parses moves), after contract 133's merge
 wait (dispatch://INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on
 GitHub's answer about merging the pull request's head carries `mergeWait`, the head the round
 waits on, the merge state the record holds for that head, when that state was last read, when
