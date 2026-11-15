@@ -493,6 +493,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: quietTimeContract, issue: withoutQuietTime, dropped: "the issues' treeMovedAt and quietHours"},
 	{contract: podUpdateGraceContract, state: withoutPodUpdateGrace, dropped: "settings.pod_update_grace_minutes"},
 	{contract: mergeWaitContract, issue: withoutMergeWait, dropped: "the issues' mergeWait"},
+	{contract: assignmentsContract, issue: withoutAssignments, dropped: "the issues' assignments"},
 	{contract: shapedAnswersContract, state: withoutLowestPluginContract, issue: withoutClaimRoundReport,
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 }
@@ -811,6 +812,21 @@ const waitingOnIssueContract = 132
 // that constant, and the contract the object arrived at stays where it is.
 const mergeWaitContract = 133
 
+// assignmentsContract is the daemon contract that added each issue's experiment assignments to
+// the state (version.go's 141). A plugin before it is served every issue without the field
+// (withoutAssignments): one built before sjawhar/legion#2788 reads it with a strict schema and
+// would refuse the whole body for a key it does not name, and one built after strips the key
+// instead. The three memory fields keep their own band at memoryContract beside this one, so a
+// caller from memoryContract to below this one is served the one experiment's answer in the three
+// keys it has read since 49 and no assignments, and a caller below 49 neither. The field's
+// `variant` and `mode` ride whatever they hold and are no enumeration, so no value strip is owed.
+// `settings.projects.<KEY>.experiments` arrived at this contract too, and every plugin reads the
+// settings loosely, so it is recorded at every contract, as 87's two settings keys are.
+//
+// It is a literal of its own and never shapedAnswersContract: a renumber of this change moves
+// that constant, and the contract the field arrived at stays where it is.
+const assignmentsContract = 141
+
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
 // deployment that gates no step carries an empty list of it (GatedStepViewsOf), which the wire
@@ -843,6 +859,18 @@ func withoutQuietTime(issue Issue) (Issue, bool) {
 func withoutMergeWait(issue Issue) (Issue, bool) {
 	moved := issue.MergeWait != nil
 	issue.MergeWait = nil
+	return issue, moved
+}
+
+// withoutAssignments is the issue with no `assignments`, the one field assignmentsContract added
+// to an issue; nothing else of that contract is on the route but a `settings` key, which every
+// plugin reads loosely. The three memory fields are left where they are: they are the band of
+// memoryContract, and a caller above it reads them whatever it reads here. The field is
+// `omitempty` and absent from an issue no experiment answers for, so the band reports a move only
+// for a list that holds an answer.
+func withoutAssignments(issue Issue) (Issue, bool) {
+	moved := len(issue.Assignments) > 0
+	issue.Assignments = nil
 	return issue, moved
 }
 

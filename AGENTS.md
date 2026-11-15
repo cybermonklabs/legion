@@ -433,6 +433,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   - version
 
+  - config-reference
+
   - start
 
   - stop

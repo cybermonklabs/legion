@@ -7,7 +7,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/memorygroup"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -42,7 +41,7 @@ const ServingFloor = 46
 // The last is the constant rather than its number, because this change's own entry is the last
 // one: a renumber of this change moves shapedAnswersContract and this list with it, and moving
 // one of the two alone would describe a shape at a contract no entry declares.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, shapedAnswersContract}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, shapedAnswersContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -510,8 +509,11 @@ var gatedStepStatuses = valuesFrom(gatedStepsContract,
 
 // memoryGroups is every group a tree's memory draw can give it, and memoryDrawModes every mode
 // it can be drawn under. Both are recorded at memoryContract, the contract the draw arrived at.
-var memoryGroups = valuesFrom(memoryContract, memorygroup.GroupMemory, memorygroup.GroupNone)
-var memoryDrawModes = valuesFrom(memoryContract, config.MemoryOff, config.MemoryOn, config.MemoryRandom)
+// Since 141 the three memory fields are read off the answer of the experiment named memory
+// (internal/projection's memoryOf), whose two arms are these two groups and whose modes are these
+// three words, so the words on the wire did not move.
+var memoryGroups = valuesFrom(memoryContract, config.MemoryVariantMemory, config.MemoryVariantNone)
+var memoryDrawModes = valuesFrom(memoryContract, config.ExperimentOff, config.ExperimentOn, config.ExperimentRandom)
 
 // controllerRuntimes is every runtime the registered controller's locator names. The field is
 // older than the floor and the list has not moved since. It stays a literal: the runtime

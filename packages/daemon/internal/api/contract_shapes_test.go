@@ -19,7 +19,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/memorygroup"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -162,8 +161,8 @@ func (f declaredField) String() string { return f.typ + "." + f.name }
 
 // shapeSettingsFile is a tmux legion.yaml that sets every key the maximal kubernetes file of
 // this package (settingsFixtureFile) leaves unset: the Oh My Pi invocation and its launch
-// prefix, a role's stall backstop, a project's memory block, and the `runtime.tmux` block
-// itself, which no file of the kubernetes runtime carries. Together the two files write every
+// prefix, a role's stall backstop, a project's memory block and an experiment of its own with
+// every field an experiment has, and the `runtime.tmux` block itself, which no file of the kubernetes runtime carries. Together the two files write every
 // key the settings block has.
 const shapeSettingsFile = `project: SHAPES
 postgres_dsn: postgres://legion:fixture-dsn-password@127.0.0.1:5432/legion
@@ -179,6 +178,14 @@ projects:
       mode: random
       config_files: [/etc/legion/memory-overlay.yml]
       instructions: /etc/legion/memory-instructions.md
+    experiments:
+      plan-length:
+        mode: on
+        on_variant: short
+        unit: issue
+        variants:
+          - {name: short, weight: 2, config_files: [/etc/legion/short-plan.yml], instructions: /etc/legion/short-plan.md}
+          - {name: long}
 github_apps:
   implement:
     app_id: "1001"
@@ -328,8 +335,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	kindWords := []record.LineKind{record.LineReturning, record.LineAnswered, record.LineQueuedRoot,
 		record.LineFirstPhase, record.LineWaitingOnIssue}
 	whyWords := []WhyState{WhyClaimStopped, WhyWaiting, WhyBlocked, WhyUnlisted}
-	groupWords := []memorygroup.Group{memorygroup.GroupMemory, memorygroup.GroupNone}
-	modeWords := []config.MemoryMode{config.MemoryOff, config.MemoryOn, config.MemoryRandom}
+	groupWords := []string{config.MemoryVariantMemory, config.MemoryVariantNone}
+	modeWords := []config.ExperimentMode{config.ExperimentOff, config.ExperimentOn, config.ExperimentRandom}
 	heldWords := []record.HeldReason{record.HeldTreeClosed, record.HeldTreeParked, record.HeldLabelOff,
 		record.HeldAncestry, record.HeldRootAwaitingPerson, record.HeldDesignGate, record.HeldDispatchBlocker,
 		record.HeldChildrenFirst, record.HeldAcceptedAncestor, record.HeldAtWork, record.HeldUnclassified}
@@ -398,7 +405,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 				Reason: "It stands in the line so that the body carries this kind and this part.",
 			},
 			Why:            &WhyView{State: whyWords[i%len(whyWords)], Reason: "The body carries this state."},
-			MemoryGroup:    string(groupWords[i%len(groupWords)]),
+			MemoryGroup:    groupWords[i%len(groupWords)],
 			MemoryDrawMode: string(modeWords[i%len(modeWords)]),
 		}
 		if i < len(roleWords) {

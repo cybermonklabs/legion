@@ -107,7 +107,16 @@ among the claims whose locator names a pod and that record a contract, and every
 gains `updateState` and `wake`, which a
 caller from an earlier contract is served without, and `handoff_complete` reads the `ready` that
 a plugin below 86 still sends, so that such a pod can end its phase: `false` is ignored, and `true` is refused
-`READY_RETIRED`, since no daemon from 86 on acts on READY), after contract 133's merge wait
+`READY_RETIRED`, since no daemon from 86 on acts on READY), after contract 141's experiment
+assignments (dispatch://INFRA-2566: each issue of `GET /legion/v1/state` carries `assignments`, one
+`{experiment, variant, mode, drawnAt}` per experiment answer that applies to it, absent from an
+issue no experiment holds an answer for; the reader this plugin parses the state through takes the
+key as optional, because a caller from a pod whose claims record a contract under 141 is served
+every issue without it, `shaping.go`'s `shapeIssue`, `withoutAssignments`), after contract 137's
+session service account (INFRA-3621: a pod's `legion launcher` may be told
+`--session-impersonate-service-account <email>`, which the daemon renders only where
+`runtime.kubernetes.session_database.impersonate_service_account` is set, and no shape the plugin
+parses moves), after contract 133's merge wait
 (dispatch://INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on GitHub's
 answer about merging the pull request's head carries `mergeWait`, the head the round waits on, the
 merge state the record holds for that head, when that state was last read, when GitHub last moved
