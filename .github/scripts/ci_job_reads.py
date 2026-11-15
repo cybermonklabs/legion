@@ -530,9 +530,28 @@ DAEMON_RACE_PKGS = [f"./{p}/" for p in DAEMON_RACE_PACKAGES]
 DAEMON_RACE_TEXT = "go test -count=1 -race -timeout 30m " + " ".join(DAEMON_RACE_PKGS)
 DAEMON_PLAIN_STEP = "Test the Go daemon"
 DAEMON_PLAIN_PATTERN = "/(" + "|".join(DAEMON_RACE_PACKAGES) + ")$"
-DAEMON_PLAIN_SCRIPT = f"""\
-set -o pipefail
-go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -count=1 -timeout 15m"""
+# Both steps write the `go test -json` stream to a file that the step after them uploads, and
+# replay to the log the package lines of a green run and the whole stream of a red one, as the
+# envoy jobs of the INFRA-1075 branch do. A step that writes a file is no one-line go test, so each
+# is pinned whole.
+
+
+def _go_test_json_script(command, report):
+    return f"""\
+s=0
+{command} > "$RUNNER_TEMP/go-test-json/{report}" || s=$?
+if [ "$s" -eq 0 ]; then
+  jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/{report}"
+else
+  jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/{report}"
+fi
+exit $s"""
+
+
+DAEMON_RACE_SCRIPT = _go_test_json_script(
+    "go test -json -count=1 -race -timeout 30m " + " ".join(DAEMON_RACE_PKGS), "daemon-race.json")
+DAEMON_PLAIN_SCRIPT = "set -o pipefail\nmkdir -p \"$RUNNER_TEMP/go-test-json\"\n" + _go_test_json_script(
+    f"go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -json -count=1 -timeout 15m", "daemon.json")
 
 
 # ---------------------------------------------------------------- the envoy race lane
@@ -849,18 +868,20 @@ GATES = [
     ], reads=CI_SELF + setup_go("typecheck", f"{DAEMON}/go.mod")),
 
     gate("test", "test", runs=[
-        step_run("test", DAEMON_RACE_STEP, DAEMON_RACE_TEXT, DAEMON, DAEMON_RACE_PKGS, race=True),
         script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion', at("test", "Stage 1 live proof"),
                    DAEMON, ["./cmd/legion"], mode="build"),
         script_run("scripts/e2e/lib/held-port.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {',
                    at("test", "bun test scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
     ], exact=[
-        # check-ci-filters.sh reduces only a one-line go test, so the step's whole script is
-        # pinned, as the envoy-go unit step's is. A Run cannot name "./... but the four", so the
-        # entry declares the superset ./..., as the envoy-go unit step's does; the race step's Run
-        # above is what claims the four.
+        # check-ci-filters.sh reduces only a one-line go test, so each step's whole script is
+        # pinned, as the envoy-go unit step's is. A Run cannot name "./... but the three", so the
+        # plain step's entry declares the superset ./..., as the envoy-go unit step's does; the race
+        # step's entry is what claims the three.
         pinned_step("test", DAEMON_PLAIN_STEP, DAEMON, DAEMON_PLAIN_SCRIPT, [
             (DAEMON, ["./..."], "go list ./... piped into go test, counted as go test ./...", {}),
+        ]),
+        pinned_step("test", DAEMON_RACE_STEP, DAEMON, DAEMON_RACE_SCRIPT, [
+            (DAEMON, DAEMON_RACE_PKGS, DAEMON_RACE_TEXT, {"race": True}),
         ]),
     ], reads=CLAUDE_ENVOY_BUILD + reads(
         (".github/scripts/*", f"{at('test', 'Test release scripts')} and the steps after it: each .github/scripts/*.test.sh sources "
