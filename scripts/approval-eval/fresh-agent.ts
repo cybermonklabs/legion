@@ -26,7 +26,7 @@ import { labelsOf, scrubSecrets } from "./models";
 import { renderPrompt } from "./recipes";
 import { renderChecked } from "./render";
 import type { ReplayedDocument } from "./replay";
-import { bytesDigestOf } from "./reserve";
+import { bytesDigestOf, executableOf } from "./reserve";
 import {
   CACHE_VERSION,
   cachePath,
@@ -1018,16 +1018,16 @@ async function modelsFileOf(omp: string): Promise<string | null> {
 /**
  * What a run that reads the reserve adds to its digest (`reserve.ts`) for the agent it scores,
  * which lives outside the repository: the bytes of the executable, the version it prints, and the
- * bytes of the models file every profile copies. An upgrade of the agent or a change of its
- * models is then another run, which the reserve's registration does not name.
+ * bytes of the models file every profile copies. `omp` is the absolute path `readFlags` resolved,
+ * the one each case runs. An upgrade of the agent or a change of its models is then another run,
+ * which the reserve's registration does not name.
  */
 async function agentInputsOf(omp: string): Promise<string[]> {
-  const executable = omp.includes("/") ? omp : (Bun.which(omp) ?? omp);
   const child = Bun.spawn({ cmd: [omp, "--version"], stdout: "pipe", stderr: "ignore" });
   const [printed, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
   const models = await modelsFileOf(omp);
   return [
-    `agent ${await bytesDigestOf(executable)}`,
+    `agent ${await bytesDigestOf(omp)}`,
     `agent version ${code === 0 ? JSON.stringify(printed.trim()) : `exit ${code}`}`,
     `agent models ${models === null ? "none" : await bytesDigestOf(models)}`,
   ];
@@ -1163,7 +1163,7 @@ function readFlags(argv: readonly string[]): Flags {
     cases: whole(values.cases, "--cases", DEFAULT_CASES, 1, USAGE),
     neighbours: shapeOf(values.neighbours, "--neighbours", DEFAULT_SHAPE, USAGE),
     answers: answersOf(values.answers),
-    omp: values.omp?.trim() || DEFAULT_OMP,
+    omp: executableOf(values.omp?.trim() || DEFAULT_OMP, process.env.PATH),
     concurrency: whole(values.concurrency, "--concurrency", DEFAULT_CONCURRENCY, 1, USAGE),
   };
 }

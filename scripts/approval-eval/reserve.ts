@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream, type Dirent } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { CaseRow } from "./build-corpus";
 import { RESERVE_ENDED, RESERVE_READS, type ReserveRead } from "./claim";
 import type { DispatchEvent } from "./dispatch-read";
@@ -146,15 +146,24 @@ export interface Run {
   inputs?: () => Promise<readonly string[]>;
 }
 
-/** The bundle holds something a run digest cannot cover, so no registration can name the run. */
-export class BundleError extends Error {
-  override readonly name = "BundleError";
+/** The run reads something a digest cannot cover, so no registration can name the run. */
+export class DigestError extends Error {
+  override readonly name = "DigestError";
 }
 
-/** The sha256 of a file's bytes, following a link to it, or `missing` where no file is there. */
+/**
+ * The sha256 of a file's bytes, following a link to it, or `missing` where nothing is there. A
+ * path that names something other than a regular file (a pipe, a device, a directory) is refused
+ * (`DigestError`): a command can read different bytes from it on each run.
+ */
 export async function bytesDigestOf(path: string): Promise<string> {
   const found = await stat(path).catch(() => null);
-  if (!found?.isFile()) return "missing";
+  if (found === null) return "missing";
+  if (!found.isFile()) {
+    throw new DigestError(
+      `${path} is not a regular file, so no digest covers what is read from it`
+    );
+  }
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   return hash.digest("hex");
@@ -168,15 +177,16 @@ export async function bytesDigestOf(path: string): Promise<string> {
  * a corpus or an output lives does not change the digest. A `FILE_OPTIONS` value is taken as
  * written and by the bytes of its file, so an arms file (`--arms`) or a distillation
  * (`--distillation`) is pinned by what it holds. Every other value is taken as written: an arm, a
- * model, a number, never looked up on the disk. A link in the bundle is refused (`BundleError`),
- * since a change behind it would not change the digest.
+ * model, a number, never looked up on the disk. The value of a directory or file option is the
+ * next argument whatever it starts with, as `parseArgs` reads it. A link in the bundle, or a file
+ * option that names something other than a regular file, is refused (`DigestError`).
  *
  * What it leaves open: a registered run can be made again until the reserve ends; the files inside
  * a directory an argument names (a corpus, a draw, an `--out` that holds an earlier run's evidence
  * or answers) are not in the digest; and what the model and Dispatch servers answer is live.
  */
 export async function runDigestOf(run: Run, root: string): Promise<string> {
-  const lines = ["approval-eval run digest 2", `command ${basename(run.argv[1] ?? "")}`];
+  const lines = ["approval-eval run digest 3", `command ${basename(run.argv[1] ?? "")}`];
   const files: string[] = [];
   for (const directory of BUNDLE_DIRECTORIES) {
     const found = await filesUnder(root, directory);
@@ -188,7 +198,10 @@ export async function runDigestOf(run: Run, root: string): Promise<string> {
   let option: string | null = null;
   for (const argument of run.argv.slice(2)) {
     const equals = argument.startsWith("--") ? argument.indexOf("=") : -1;
-    if (equals > 0) {
+    if (option !== null && (PATH_OPTIONS.includes(option) || FILE_OPTIONS.includes(option))) {
+      lines.push(await valueLine(option, argument, run.env));
+      option = null;
+    } else if (equals > 0) {
       const name = argument.slice(0, equals);
       lines.push(`flag ${name}`, await valueLine(name, argument.slice(equals + 1), run.env));
       option = null;
@@ -224,7 +237,7 @@ async function filesUnder(root: string, directory: string): Promise<string[] | n
     if (entry.isDirectory()) found.push(...((await filesUnder(root, path)) ?? []));
     else if (entry.isFile()) found.push(path);
     else
-      throw new BundleError(`${path} is not a regular file or directory, so no digest covers it`);
+      throw new DigestError(`${path} is not a regular file or directory, so no digest covers it`);
   }
   return found;
 }
@@ -235,11 +248,20 @@ async function valueLine(option: string | null, value: string, env: Run["env"]):
   const written = `value ${JSON.stringify(value)}`;
   if (option === null || !FILE_OPTIONS.includes(option)) return written;
   const trimmed = value.trim();
-  const path =
-    option === "--omp" && !trimmed.includes("/")
-      ? (Bun.which(trimmed, { PATH: env.PATH ?? "" }) ?? trimmed)
-      : trimmed;
+  const path = option === "--omp" ? executableOf(trimmed, env.PATH) : trimmed;
   return `${written} ${await bytesDigestOf(path)}`;
+}
+
+/**
+ * The absolute path of the executable an `--omp` names: a path with a slash from the working
+ * directory, a bare name from `PATH`, as the shell finds it. `fresh-agent.ts` runs this exact path
+ * for every case, so the executable the digest reads is the one each case runs, whatever working
+ * directory a case runs in. A bare name that `PATH` does not find is returned as it is.
+ */
+export function executableOf(omp: string, path: string | undefined): string {
+  if (omp.includes("/")) return resolve(omp);
+  const found = Bun.which(omp, { PATH: path ?? "" });
+  return found === null ? omp : resolve(found);
 }
 
 /** What `claim.ts` registers: the reads of the reserve, and the record that ended it. */
@@ -284,7 +306,7 @@ export async function reserveAccessOf(
   try {
     digest = await runDigestOf(run, root);
   } catch (error) {
-    if (error instanceof BundleError) return { kind: "refused", reason: error.message };
+    if (error instanceof DigestError) return { kind: "refused", reason: error.message };
     throw error;
   }
   const named = registration.reads.filter((read) => read.reference === reference);

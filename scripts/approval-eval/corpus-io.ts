@@ -238,21 +238,22 @@ export async function outDirectory(out: string): Promise<string> {
  * count left out is printed, unless `APPROVAL_EVAL_RESERVE` is `read:<reference>` and the
  * registration (`claim.ts` unless `options.registration` names another) lists that reference with
  * this run's digest. `options.inputs` is what a command adds to the digest for what it runs from
- * outside the repository. Any other read of the reserve is refused, with the run's digest. Once
- * the registration records that the reserve ended, nothing is held. A corpus built before the
+ * outside the repository, and `options.root` the root the bundle is read under (this checkout's
+ * unless a test names another). Any other read of the reserve is refused, with the run's digest.
+ * Once the registration records that the reserve ended, nothing is held. A corpus built before the
  * build recorded when each issue was created, holding a case the reserve could hold, is refused:
  * only a new build can say whether that case is reserved.
  */
 export async function readCorpus(
   corpus: string,
-  options: { registration?: Registration; inputs?: Run["inputs"] } = {}
+  options: { registration?: Registration; inputs?: Run["inputs"]; root?: string } = {}
 ): Promise<Corpus> {
   const directory = resolve(corpus);
   const access = await reserveAccessOf(
     process.env[RESERVE_VARIABLE],
     options.registration ?? REGISTRATION,
     { argv: process.argv, env: process.env, inputs: options.inputs },
-    REPOSITORY_ROOT
+    options.root ?? REPOSITORY_ROOT
   );
   if (access.kind === "refused") throw new CorpusError(access.reason);
   const readUnder = access.kind === "read" ? access.reference : null;
