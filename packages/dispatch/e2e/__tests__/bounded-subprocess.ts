@@ -411,9 +411,13 @@ function oneLine(text: string): string {
 /** A URL's userinfo password, which `masked` hides: a scheme, `://`, a user, `:`, then everything
  *  up to the last `@` of the same word, a word ending at whitespace, a quote or a backslash. A URL
  *  inside JSON or inside a shell word is read too, and a password that holds `/`, `?`, `#` or `@`
- *  is hidden whole. A URL whose user has no `:` after it, as in `postgres://user@host/db`, or
- *  whose word has no `@` after that `:`, as in `postgres://127.0.0.1:5433/db`, carries no
- *  password and is left as it is. */
+ *  is hidden whole. That hides too much, never too little: a word that holds an `@` after the `:`
+ *  that follows a URL's user or host is hidden from that `:` to the last `@` even where no
+ *  password is there, as `postgres://127.0.0.1:5433/mine?application_name=a@b` prints as
+ *  `postgres://127.0.0.1:***@b`, since a password may hold `/` or `?` and no reader of the text
+ *  can tell where one would end. A URL whose user has no `:` after it, as in
+ *  `postgres://user@host/db`, or whose word has no `@` after that `:`, as in
+ *  `postgres://127.0.0.1:5433/db`, is left as it is. */
 const urlPassword = /([a-z][a-z0-9+.-]*:\/\/[^\s:/?#@"'\\]*):[^\s"'\\]*@/gi;
 
 /** `password` as `passwordParameter` reads a key: each letter as itself or as `%` and the hex
@@ -432,11 +436,14 @@ const passwordKey = [..."password"]
  *  reads `password` percent-decoded and in any case, and stands at the start of the text or after
  *  a character no key holds, which is anything but a letter, a digit, `_` or `%`: after
  *  whitespace, `?` or `&` where libpq reads it, and after `=` or a quote where a variable, a flag
- *  or JSON holds the connection string. Its value runs to the next whitespace, `&`, quote or
- *  backslash, or, where it opens with `'`, as libpq quotes a value holding a space, to the `'`
- *  that closes it. No other key is hidden: `dbname=mine`, `passwords=x` and `mypassword=x` stay. */
+ *  or JSON holds the connection string. Whitespace may stand on either side of its `=`, as libpq
+ *  reads `password = sekrit`, and it is kept as written. The value starts after that whitespace
+ *  and runs to the next whitespace, `&`, quote or backslash, or, where it opens with `'`, as
+ *  libpq quotes a value holding a space, to the `'` that closes it. No other key is hidden:
+ *  `dbname=mine`, `passwords=x` and `mypassword=x` stay, but in `password= dbname=mine` libpq
+ *  reads `dbname=mine` as the password, and it is hidden. */
 const passwordParameter = new RegExp(
-  String.raw`(?<![\w%])(${passwordKey})=(?:'(?:[^'\\]|\\[\s\S])*'?|[^\s&"'\\]*)`,
+  String.raw`(?<![\w%])(${passwordKey}\s*=\s*)(?:'(?:[^'\\]|\\[\s\S])*'?|[^\s&"'\\]*)`,
   "gi"
 );
 
@@ -449,10 +456,10 @@ const passwordParameter = new RegExp(
  *  stderr, which CI keeps in a public log, so neither may print a password. Two forms still show:
  *  a value not opened with `'` that holds a raw `&`, quote or backslash shows what follows that
  *  character, and a URL password holding a quote or backslash is not matched, so it shows whole.
- *  Hiding more than the password costs a reader part of a word; hiding a host, or a password that
- *  is not there, would mislead one, so a URL with no password is left whole. */
+ *  Hiding more than a password costs a reader part of a word, as `urlPassword` does where a URL
+ *  with no password holds a later `@`; hiding less would put a password in that log. */
 export function masked(text: string): string {
-  return text.replace(urlPassword, "$1:***@").replace(passwordParameter, "$1=***");
+  return text.replace(urlPassword, "$1:***@").replace(passwordParameter, "$1***");
 }
 
 /** What the cost line and the failure call a child: the file that started it, the command with

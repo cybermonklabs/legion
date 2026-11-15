@@ -191,6 +191,14 @@ test("a child's name hides each password libpq reads and keeps the rest", () => 
       "host=127.0.0.1 PASSWORD=sekrit dbname=mine",
       "host=127.0.0.1 PASSWORD=*** dbname=mine",
     ],
+    "the keyword form with whitespace on both sides of its =": [
+      "host=127.0.0.1 password = sekrit dbname=mine",
+      "host=127.0.0.1 password = *** dbname=mine",
+    ],
+    "the keyword form with whitespace after its =": [
+      "host=127.0.0.1 password= sekrit dbname=mine",
+      "host=127.0.0.1 password= *** dbname=mine",
+    ],
     "the keyword form across lines": [
       "host=127.0.0.1\npassword=sekrit\ndbname=mine",
       "host=127.0.0.1\npassword=***\ndbname=mine",
@@ -219,6 +227,12 @@ test("a child's name hides each password libpq reads and keeps the rest", () => 
       "postgres://legion_test@127.0.0.1:5433/mine",
       "postgres://legion_test@127.0.0.1:5433/mine",
     ],
+    // Over-masked on purpose: a password may hold `/` or `?`, so an `@` later in the word reads
+    // as the end of one, and the port and the path go with it.
+    "a URL with no password and an at sign in its query": [
+      "postgres://127.0.0.1:5433/mine?application_name=a@b",
+      "postgres://127.0.0.1:***@b",
+    ],
     "keys that are not password": [
       "host=127.0.0.1 passwords=x mypassword=x dbname=mine",
       "host=127.0.0.1 passwords=x mypassword=x dbname=mine",
@@ -227,7 +241,7 @@ test("a child's name hides each password libpq reads and keeps the rest", () => 
   expect(
     Object.fromEntries(Object.entries(forms).map(([form, [text]]) => [form, masked(text)])),
     "A child's name, which the cost line and a failure print on the run's stderr, still holds a " +
-      "password of the form named, or lost a part of the text that is no password."
+      "password of the form named, or hides other than what this row expects of that form."
   ).toEqual(Object.fromEntries(Object.entries(forms).map(([form, [, shown]]) => [form, shown])));
   // `named` itself, for what it does beyond `masked`: an entry named PGPASSWORD, the variable
   // libpq reads a password from, hides its whole value, spaces and all, and one the caller takes
