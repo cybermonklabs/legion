@@ -16,7 +16,7 @@ import {
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
 import { connectedDot, documentEditor, typeAtEnd } from "./editor";
-import { firstRolloutCommit, firstRolloutRefusal } from "./first-rollout";
+import { firstRolloutCommit, firstRolloutRefusal, type LiveFleet } from "./first-rollout";
 import {
   apiPinCookie,
   binaryB,
@@ -153,7 +153,7 @@ function pageNumbers(
  *  `processes.LiveWindow` (`packages/envoy/internal/dispatch/processes/processes.go`), which the
  *  servers read. A row of a build before the fleet columns holds no numbers, and its zeros are
  *  what it counts as. */
-async function liveFleet(): Promise<{ minVersion: number; maxCreatable: number }> {
+async function liveFleet(): Promise<LiveFleet> {
   const read = await sql(
     `select count(*), coalesce(min(schema_version), 0), coalesce(max(schema_creatable), 0)
      from server_processes where heartbeat_at > now() - make_interval(secs => 15)`

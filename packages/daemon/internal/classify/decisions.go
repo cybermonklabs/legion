@@ -1137,10 +1137,11 @@ func CodeOnItsWay(pr record.PullRequest) bool {
 // `unknown` for it for good, and the daemon never reads its state after the merge: workflow's
 // askMergeStateFor refuses a pull request that is not open, so the state the record holds is the
 // one it held before the merge. A closed one merges nothing until a reopen, and a reopen asks for
-// a read of the head again (the opened handler, then Apply's askMergeState). Both readers rely on
-// this test and make none of their own: workflow's reviewRound ends the round on an approval that
-// stands on a merged pull request's head, since this rule leaves it nothing to wait on, and
-// projection's mergeWaitView shows no wait for a pull request that is not open.
+// a read of the head again (the opened handler, then Apply's askMergeState). Neither reader tests
+// for an open pull request itself. Projection's mergeWaitView makes no state test at all.
+// Workflow's reviewRound tests only for a closed pull request before it asks this rule, and it
+// leaves the approval that stands there to the architect, as an open round. For a merged one this
+// rule's false ends the round.
 func RoundWaitsOnMergeState(issue record.Issue, reviewer record.PhaseRow, pr *record.PullRequest) bool {
 	if issue.Phase != phase.Reviewing || pr == nil || reviewer.Decision == nil {
 		return false

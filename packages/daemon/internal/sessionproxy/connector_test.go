@@ -325,7 +325,8 @@ func (h handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // adminCall is one Admin API request: its path, its Authorization header and, for
 // generateEphemeralCert, the access_token of its body. complete says that the fake read the whole
 // request. A generateEphemeralCert call is incomplete when its body ended early, because the
-// connector abandoned it; it then has no access_token. A call with no body is complete.
+// connector abandoned it; it then has no access_token. A connectSettings call, which has no body,
+// is complete. A call the fake does not answer is not.
 type adminCall struct {
 	path, authorization, accessToken string
 	complete                         bool
@@ -420,7 +421,6 @@ func (f *adminAPIFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(f.t, w, &sqladmin.GenerateEphemeralCertResponse{EphemeralCert: &sqladmin.SslCert{Cert: cert}})
 	default:
-		call.complete = true
 		f.record(call)
 		f.t.Errorf("the connector called %s %s, which the Admin API fake does not answer", r.Method, r.URL.Path)
 		http.Error(w, "not found", http.StatusNotFound)

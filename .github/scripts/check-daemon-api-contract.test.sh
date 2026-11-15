@@ -197,7 +197,7 @@ run_check() {
   queries=$(wc -l < "$root/stub/pr-queries" | tr -d ' ')
 }
 
-all_five_files='packages/daemon/internal/api/version.go, packages/contracts/fixtures/daemon-api/version.json, packages/contracts/fixtures/daemon-api/state.json, packages/pi-legion/package.json, packages/claude-envoy/package.json'
+all_five_files="packages/daemon/internal/api/version.go$(printf ', %s' "${other_sites[@]}")"
 
 # How a refusal for files that disagree says to write the number: the golden tests write the two
 # fixtures, and the two manifests take it by hand. A pattern for contains, so `.` stands for the
@@ -468,8 +468,9 @@ check "names every file that holds the number" "$(contains "$out" "$all_five_fil
 check "reads no open pull request" "$(is "$queries" 0)"
 
 echo "case: each other file one number behind version.go"
-for site in packages/contracts/fixtures/daemon-api/version.json packages/pi-legion/package.json \
-  packages/claude-envoy/package.json; do
+for site in "${other_sites[@]}"; do
+  # state.json holds the number twice, and has cases of its own above.
+  case "$site" in */state.json) continue ;; esac
   root=$(fixture "behind-${site//\//-}")
   declaration 7 > "$root/stub/refs/main"
   declaration 8 > "$root/packages/daemon/internal/api/version.go"

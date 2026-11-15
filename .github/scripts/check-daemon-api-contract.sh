@@ -85,24 +85,19 @@ from urllib.parse import quote
 
 DECLARATION = "packages/daemon/internal/api/version.go"
 WORKFLOW = ".github/workflows/ci.yaml"
-# Every file that holds the number. They move together, so a refusal names all of them, and each
-# file after version.go must hold the number version.go declares.
-SITES = (
-    DECLARATION,
-    "packages/contracts/fixtures/daemon-api/version.json",
-    "packages/contracts/fixtures/daemon-api/state.json",
-    "packages/pi-legion/package.json",
-    "packages/claude-envoy/package.json",
-)
-# Where each file of SITES after version.go holds the number, which held_in reads: dotted key
-# paths into its JSON, each an integer. state.json holds it twice, since TestStateGolden writes the
-# number as both the daemon's and the caller's. version.go's reader is number_in.
+# Where each file after version.go holds the number, which held_in reads: dotted key paths into
+# its JSON, each an integer. state.json holds it twice, since TestStateGolden writes the number as
+# both the daemon's and the caller's. version.go's reader is number_in.
 FIELDS = {
     "packages/contracts/fixtures/daemon-api/version.json": ("daemonApiVersion",),
     "packages/contracts/fixtures/daemon-api/state.json": ("contract.daemon", "contract.caller"),
     "packages/pi-legion/package.json": ("legion.daemonApiVersion",),
     "packages/claude-envoy/package.json": ("legion.daemonApiVersion",),
 }
+# Every file that holds the number: version.go, then the files of FIELDS in their order. They move
+# together, so a refusal names all of them, and each file after version.go must hold the number
+# version.go declares.
+SITES = (DECLARATION, *FIELDS)
 DECLARED = re.compile(r"^const\s+DaemonAPIVersion\s*=\s*(\d+)\s*$", re.M)
 # version.go's first history entry: the first line that starts `// <number>:`.
 HISTORY = re.compile(r"^// \d+:", re.M)
@@ -405,9 +400,7 @@ tree_number, line = number_in(
     lambda: f"; the base, {base_is}, carries {base_number}. {renumber(repository, base_number)}",
 )
 
-# Every other file that holds the number must hold the one version.go declares. This runs before
-# the pass for a number above the base's, since a bump is where a file is left behind. It reads
-# only this checkout, so its refusal reads no open pull request and names no free number.
+# The agreement rule of the header: it runs before the pass for a number above the base's.
 for site in SITES:
     if site == DECLARATION:
         continue
@@ -440,8 +433,7 @@ else:
     built_is = f"the commit GitHub built this pull request's merge ref on ({parent})"
     built_text = read_at(repository, parent, f"{DECLARATION} on {built_is}")
 
-# Only the contract's history and declaration are compared: an edit of the doc comment above the
-# first history entry alone touches no contract (history_and_declaration).
+# Only the history and the declaration are compared (history_and_declaration).
 if history_and_declaration(tree_text) == history_and_declaration(built_text):
     print(
         f"this change leaves the history and the declaration in {DECLARATION} as {built_is} has "

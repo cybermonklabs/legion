@@ -261,7 +261,7 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 		if !moved {
 			return intake.Result{}, nil
 		}
-		return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior)
+		return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byPush)
 	case phase.Implementing:
 		row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
 		if err != nil || !row.Completed() {
@@ -313,19 +313,21 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 	if issue.Phase != phase.Reviewing {
 		return intake.Result{}, nil
 	}
-	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior)
+	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byPush)
 }
 
-// reaskRound re-asks issue's review round (settleRound) after a push, or after the head it left
-// arrived, pr being the pull request as the fact left it and prior as the fact found it: the round
-// as prior had it is the before a round stuck the same way is deduped against (stuckAs), so a push
-// classified late at the head the round was already told stuck at tells nothing again.
-func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, prior record.PullRequest) error {
+// reaskRound re-asks issue's review round (settleRound) after a fact that changed the pull
+// request - a push, the head it left arriving, GitHub's merge state, the merge - with by the
+// fact's summary. pr is the pull request as the fact left it, and prior is the pull request as
+// the fact found it. The round as prior had it is the before a round stuck the same way is
+// deduped against (stuckAs), so a fact at the head the round was already told stuck at tells
+// nothing again.
+func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, prior record.PullRequest, by string) error {
 	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {
 		return err
 	}
-	_, err = e.settleRound(ctx, tx, issue, reviewer, pr, e.reviewRound(issue, reviewer, &prior), byPush)
+	_, err = e.settleRound(ctx, tx, issue, reviewer, pr, e.reviewRound(issue, reviewer, &prior), by)
 	return err
 }
 
@@ -340,9 +342,7 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // accepting, since a merged pull request leaves the round nothing to wait on (reviewRound).
 // Without this, an approval that came before the merge would hold the issue in reviewing: no read
 // of the merged pull request ever comes (askMergeStateFor), and once the reviewer has completed no
-// other fact settles the round. The round as the pull request stood before the merge is the
-// before a stuck round is deduped against (stuckAs), so a round the merge finds stuck is not told
-// again.
+// other fact settles the round.
 func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMerged) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil || pr.State == record.PullRequestMerged {
@@ -367,12 +367,7 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	if issue.Phase != phase.Reviewing {
 		return intake.Result{}, nil
 	}
-	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	_, err = e.settleRound(ctx, tx, *issue, reviewer, pr, e.reviewRound(*issue, reviewer, &prior), byMerge)
-	return intake.Result{}, err
+	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMerge)
 }
 
 // waitingForTree is what a root's architect is told when the merge of its pull request finds the

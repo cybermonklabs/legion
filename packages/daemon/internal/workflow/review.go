@@ -169,12 +169,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 	if issue.Phase != phase.Reviewing {
 		return intake.Result{}, nil
 	}
-	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	_, err = e.settleRound(ctx, tx, *issue, reviewer, pr, e.reviewRound(*issue, reviewer, &prior), byMergeState)
-	return intake.Result{}, err
+	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMergeState)
 }
 
 // settledChecks is what the CI settlement standing for the pull request's head says: the head it
