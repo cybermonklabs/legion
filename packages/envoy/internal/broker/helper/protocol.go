@@ -316,11 +316,11 @@ const BrokerCallWait = 30 * time.Second
 // the bound, and the helper writes its answer within 5 s of the bound, the allowance every op has
 // for its read and its write: the op's requests end with its context at the bound, and the helper
 // answers at the bound plus 1 s whatever the op is doing. 2 s + 20 s + 5 s is 27 s, under 30 s.
-// A released agent-secrets from before this bound also waits 30 s for enroll and unenroll
-// (BrokerCallWait), so it gets this helper's answer and not an empty reply. Its machine login
-// waits 10 s, so a broker slower than about 8 s can still outlast it. A healthy broker answers in
-// a fraction of a second (DefaultFirstConfirmBound); the slow answers that were measured took 5 s
-// and 8 s.
+// A released agent-secrets that asks enroll-session-key and unenroll-session-key (every release
+// from legion-envoy-v10.0.0) also waits 30 s for them (BrokerCallWait), so it gets this helper's
+// answer and not an empty reply. Its machine login waits 10 s, so a broker slower than about 8 s
+// can still outlast it. A healthy broker answers in a fraction of a second
+// (DefaultFirstConfirmBound); the slow answers that were measured took 5 s and 8 s.
 const DefaultBrokerCallBound = BrokerCallWait - 10*time.Second
 
 // ErrNoReply is in every Call error that comes after the helper was sent the whole request: the

@@ -5920,7 +5920,8 @@ A client waits `helper.BrokerCallWait` (30 s, the dial included) for the answer 
 `agent-secrets enroll --helper` on each of its `DRAINING` tries, `agent-secrets unenroll --helper`, and the `login` call of `agent-secrets machine login`.
 `login-status` reads the helper's own state and calls no broker, so each `login-status` call still waits 10 s.
 `DefaultBrokerCallBound` is `BrokerCallWait` less 10 s, so the answer reaches every client inside its 30 s: a dial of up to 2 s (`helper.Call`), the 20 s bound and the 5 s to write the answer come to 27 s.
-A released `agent-secrets` from before this answer also waits 30 s for `enroll --helper` and `unenroll --helper` (every release that has them, `legion-envoy-v10.0.0` to `legion-envoy-v30.20.0`, read on 2026-11-15), so it gets the answer too.
+Every released `agent-secrets` that has `enroll --helper` and `unenroll --helper` (`legion-envoy-v3.12.0` to `legion-envoy-v30.20.0`, read on 2026-11-15) also waits 30 s for them.
+Those from `legion-envoy-v10.0.0` on ask the helper's `enroll-session-key` and `unenroll-session-key`, so they get the answer too; an older one asks `enroll-box` and `unenroll-box`, which this helper answers `unknown op`.
 
 Each broker-call answer says whether the broker's outcome is known, by one rule (`requestReach.settle`, `broker.go`), which reads a trace on the op's request (`traceReach`).
 A 4xx is known, because the broker decides each refusal before it writes anything.
