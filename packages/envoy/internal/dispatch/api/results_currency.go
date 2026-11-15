@@ -9,9 +9,30 @@ import "github.com/sjawhar/envoy/internal/dispatch/model"
 // The field is derived from those three alone, after the comparison has answered them, so it
 // costs no read of the database or of GitHub and changes none of them.
 //
-// Remove this file, its call in listCheckResults, model.CheckResult.Currency and the two
-// model.Currency* words once no client older than pi-envoy 17.1.0 is in use: pi-envoy 17.1.0 is
-// the first release that reads `commit_stands`.
+// Once no client older than pi-envoy 17.1.0 is in use, remove this file and
+// results_currency_test.go, the answerCompatibilityCurrency call in listCheckResults,
+// model.CheckResult.Currency and model.Currency*, and the currency descriptions in
+// packages/envoy/AGENTS.md, packages/envoy/cmd/dispatch/README.md and routes_table.go.
+// From the repository root, grep for `pi-envoy 17[.]1[.]0|Currency` in packages/envoy and
+// packages/contracts to find the compatibility code, tests and documentation together.
+// Regenerate packages/contracts/schemas/dispatch-openapi.json with
+// `go run ./cmd/dispatch openapi --out ../contracts/schemas/dispatch-openapi.json` from
+// packages/envoy, then packages/contracts/src/dispatch-api.generated.ts with
+// `bun run gen:api` from packages/contracts. Keep standingCommit: the gate uses it.
+
+// answerCompatibilityCurrency adds only the field older clients print. A read that names a
+// commit answers none: no such client makes one, and current there would mean the commit the
+// reader named rather than the work as it stands.
+func answerCompatibilityCurrency(checks []model.CheckBlock, at string) {
+	if at != noCommitNamed {
+		return
+	}
+	for index := range checks {
+		for result := range checks[index].Results {
+			checks[index].Results[result].Currency = compatibilityCurrency(checks[index].Results[result])
+		}
+	}
+}
 
 // compatibilityCurrency is the word a client older than pi-envoy 17.1.0 prints for one result,
 // in that client's own vocabulary, where `current` meant the result speaks for the work as it
@@ -37,7 +58,7 @@ func compatibilityCurrency(result model.CheckResult) string {
 		switch {
 		case *result.CheckWordsMoved:
 			return model.CurrencyOlder
-		case result.Retracted == nil:
+		case standingCommit(result) == model.CommitAtBasis:
 			return model.CurrencyCurrent
 		}
 	}

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 	"testing"
 
@@ -131,6 +130,11 @@ func TestEachResultAnswersTheCurrencyOfTheClientBeforeTheResultsContract(t *test
 		"a result at the head under words that moved", model.CommitAtBasis, true, false, "older")
 	currencyIs(t, read, "k1", first.Result.ID,
 		"a result at another commit under words that moved", model.CommitOtherCommit, true, false, "older")
+	if response := retractAsPerson(t, handler, moved.Result.ID, "The run was against the wrong branch."); response.Code != http.StatusCreated {
+		t.Fatalf("retract %s: status=%d body=%s", moved.Result.ID, response.Code, response.Body.String())
+	}
+	currencyIs(t, readRawResults(t, handler, issue.Key, noCommitNamed), "k1", moved.Result.ID,
+		"a retracted result at the head under words that moved", model.CommitAtBasis, true, true, "older")
 	currencyIs(t, read, "k3", failed.Result.ID,
 		"the sibling check's result", model.CommitAtBasis, false, false, "current")
 	uploadDocument(t, handler, owner, "verification.md", siblingChecks)
@@ -149,13 +153,13 @@ func TestEachResultAnswersTheCurrencyOfTheClientBeforeTheResultsContract(t *test
 		"a retracted result at the head", model.CommitAtBasis, false, true, "")
 	currencyIs(t, read, "k1", first.Result.ID,
 		"a retracted result at another commit", model.CommitOtherCommit, false, true, "older")
-	currencyIs(t, read, "k1", moved.Result.ID,
-		"the result at the head beside the retractions", model.CommitAtBasis, false, false, "current")
+	currencyIs(t, read, "k3", failed.Result.ID,
+		"the fail at the head beside the retractions", model.CommitAtBasis, false, false, "current")
 
 	// A read pinned to a commit answers no currency, even for a result at that commit.
 	pinned := readRawResults(t, handler, issue.Key, newHeadCommit)
 	currencyIs(t, pinned, "k1", moved.Result.ID,
-		"a result at the commit the reader named", model.CommitAtBasis, false, false, "")
+		"a result at the commit the reader named", model.CommitAtBasis, false, true, "")
 	currencyIs(t, pinned, "k1", first.Result.ID,
 		"a result at another commit than the one the reader named", model.CommitOtherCommit, false, true, "")
 }
@@ -183,6 +187,71 @@ func TestAResultDispatchCannotPlaceAnswersNoCurrency(t *testing.T) {
 	nowhere := decodeBody[recordedResult](t, recordResult(t, handler, loose.Key, resultBody("k1", "pass", headCommit, nil)))
 	currencyIs(t, readRawResults(t, handler, loose.Key, noCommitNamed), "k1", nowhere.Result.ID,
 		"a result of an issue with no repository", model.CommitOtherCommit, false, false, "older")
+}
+
+// The gate and the compatibility field share the same standing rule for all 60 combinations,
+// including fields absent from a result's own POST answer. A fail has the same currency as a
+// pass but cannot make the gate answer yes.
+func TestCurrencyAndTheGateAgreeOnEveryResultState(t *testing.T) {
+	unmoved, moved := false, true
+	rows := []struct {
+		commit            string
+		wordsMoved        *bool
+		currency          string
+		retractedCurrency string
+		passStands        string
+	}{
+		{"absent", nil, "", "", "no"},
+		{"absent", &unmoved, "", "", "no"},
+		{"absent", &moved, "", "", "no"},
+		{"", nil, "", "", "no"},
+		{"", &unmoved, "", "", "no"},
+		{"", &moved, "", "", "no"},
+		{"at_basis", nil, "", "", "no"},
+		{"at_basis", &unmoved, "current", "", "yes"},
+		{"at_basis", &moved, "older", "older", "no"},
+		{"other_commit", nil, "", "", "no"},
+		{"other_commit", &unmoved, "older", "older", "no"},
+		{"other_commit", &moved, "older", "older", "no"},
+		{"unknown", nil, "", "", "no"},
+		{"unknown", &unmoved, "", "", "unknown"},
+		{"unknown", &moved, "", "", "no"},
+	}
+	for _, row := range rows {
+		for _, retracted := range []bool{false, true} {
+			for _, verdict := range []string{"pass", "fail"} {
+				words := "absent"
+				if row.wordsMoved != nil {
+					words = fmt.Sprint(*row.wordsMoved)
+				}
+				t.Run(fmt.Sprintf("commit=%s/moved=%s/retracted=%t/%s", row.commit, words, retracted, verdict), func(t *testing.T) {
+					result := model.CheckResult{Verdict: verdict, Role: "tester", CheckWordsMoved: row.wordsMoved}
+					if row.commit != "absent" {
+						result.CommitStands = &model.ResultCommitStands{Answer: row.commit}
+					}
+					wantCurrency, wantPass := row.currency, row.passStands
+					if retracted {
+						result.Retracted = &model.CheckResultRetracted{}
+						wantCurrency = row.retractedCurrency
+					}
+					if verdict != "pass" || retracted {
+						wantPass = "no"
+					}
+					currency := compatibilityCurrency(result)
+					if currency != wantCurrency {
+						t.Errorf("currency=%q, want %q", currency, wantCurrency)
+					}
+					gate := passStandsOf(model.CheckBlock{Results: []model.CheckResult{result}}, comparison{})
+					if gate.Answer != wantPass {
+						t.Errorf("pass_stands=%q, want %q", gate.Answer, wantPass)
+					}
+					if (gate.Answer == model.PassStandsYes) != (verdict == "pass" && currency == model.CurrencyCurrent) {
+						t.Errorf("pass_stands=%q disagrees with verdict=%q currency=%q", gate.Answer, verdict, currency)
+					}
+				})
+			}
+		}
+	}
 }
 
 // oldClientResults is what `dispatch results` printed in every client before the results
@@ -247,10 +316,5 @@ func TestTheClientBeforeTheResultsContractPrintsCurrentAndOlder(t *testing.T) {
 	}, "\n")
 	if printed != want {
 		t.Errorf("the client before the results contract prints\n%s\nwant\n%s", printed, want)
-	}
-	if lines := strings.Split(printed, "\n"); slices.ContainsFunc(lines, func(line string) bool {
-		return strings.Contains(line, ", unknown. ")
-	}) {
-		t.Errorf("the client before the results contract prints unknown for a placed result:\n%s", printed)
 	}
 }

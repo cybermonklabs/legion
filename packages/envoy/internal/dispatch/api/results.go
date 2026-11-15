@@ -360,15 +360,8 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	reader.learn(r.Context(), checks)
 	for index := range checks {
 		reader.answer(r.Context(), &checks[index])
-		// The compatibility field older clients print (results_currency.go). A read that names a
-		// commit answers none: no such client makes one, and `current` there would mean the
-		// commit the reader named rather than the work as it stands.
-		if at == noCommitNamed {
-			for result := range checks[index].Results {
-				checks[index].Results[result].Currency = compatibilityCurrency(checks[index].Results[result])
-			}
-		}
 	}
+	answerCompatibilityCurrency(checks, at)
 	body.Checks = checks
 	WriteJSON(w, http.StatusOK, body)
 }
