@@ -27,7 +27,7 @@ const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 // three wall-clock projects (`clockProjectNames`, e2e/configurations.ts): they carry
 // `default: false` since dispatch://INFRA-1280, so a listing that names no project holds no row
 // of theirs, and `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` and
-// `nested-directive.e2e.ts` - 54 rows in this head's wall-clock listing - reach the union below
+// `nested-directive.e2e.ts` - 51 rows in this head's wall-clock listing - reach the union below
 // from it alone.
 //
 // Each listing names its own DISPATCH_E2E_PROCESSES and DISPATCH_E2E_SIGNIN and never the

@@ -121,6 +121,8 @@ export const realStackReasons: Record<string, string> = {
   "document-way-back.e2e.ts":
     "a correction and two removals written and then re-read on the open page, the issue's list and its Activity; the refused removal is the server's judgement that the document holds writing, which only a settled version makes true",
   "document.e2e.ts": "collaboration, uploads, marks, and the live connection dot",
+  "download-names.e2e.ts":
+    "the server computes each download's Content-Disposition, the name the browser saves, and its Cache-Control; the rows write a version and then download again, since an older version's name changes only once a newer one is written",
   "editor-paste.e2e.ts": "pastes into the live editor, read back after a reload",
   "email-links.e2e.ts": "asserts in the live editor before the past version",
   "failed-room.e2e.ts": "a document room that fails and recovers",
