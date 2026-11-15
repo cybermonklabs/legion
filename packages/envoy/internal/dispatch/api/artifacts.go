@@ -992,11 +992,13 @@ type artifactVersionText struct {
 }
 
 // maxIntegerColumn is the largest number a Postgres integer column holds. A number the caller
-// names that such a column keys is no row at all past it: artifact_versions.number and every
-// column that names one of a document's versions (user_document_reads.version among them),
-// message_deliveries.attempt, and events.seq, the position an issue's or a document's event list
-// pages by. pgx refuses to encode a larger number against such a column, which a route would
-// answer 500 as its own fault.
+// names that such a column keys or stores is no row and no value at all past it:
+// artifact_versions.number and every column that names one of a document's versions
+// (user_document_reads.version among them), message_deliveries.attempt and
+// comment_deliveries.attempt, events.seq, the position an issue's or a document's event list
+// pages by, going_events.sequence, check_results' failed, skipped and excluded counts, and
+// user_issue_state.last_read_seq. pgx refuses to encode a larger number against such a column,
+// which a route would answer 500 as its own fault.
 const maxIntegerColumn = math.MaxInt32
 
 // fitsIntegerColumn reports whether a number the caller named is no greater than
@@ -1004,10 +1006,14 @@ const maxIntegerColumn = math.MaxInt32
 // bound before any query is made with it, each with its own lower bound and its own refusal: the
 // two of this file that read a version number from a path or a query (parseVersionNumber), the
 // read mark's body (putDocumentRead), the delivery accept's attempt in its path (acceptDelivery,
-// which answers it as the attempt it is not, 404 MESSAGE_NOT_FOUND), and an event list's after
-// and before (parseEventPosition). The plan review's body needs no check of its own, since it
-// refuses every version above the plan's latest, which is within the bound
-// (createArtifactPlanReview). A reference's `@v<n>` pin is held to the same bound by its own
+// which answers it as the attempt it is not, 404 MESSAGE_NOT_FOUND), the attempt a reply names
+// in its body (replyComment and replyMessage, each answering it as the delivery it is not, 404),
+// an event list's after and before (parseEventPosition), a result's three counts
+// (checkResultInput.refusal, 400 RESULT_INPUT), the issue read position's last_read_seq
+// (putUserState, 400 INVALID_STATE), and a going stream's Last-Event-ID header
+// (goingResumeFrom, which reads it as no point to resume from). The plan review's body needs no
+// check of its own, since it refuses every version above the plan's latest, which is within the
+// bound (createArtifactPlanReview). A reference's `@v<n>` pin is held to the same bound by its own
 // checks in refs (BlockTextAt, blockPrefixCandidates), which answer a version past it as one the
 // document does not have.
 func fitsIntegerColumn[N int | int64](number N) bool {
@@ -1079,18 +1085,26 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	s.serveFileVersion(w, r, artifact.ID, number, content, contentType, sha, size)
 }
 
-// The ways a section or a typed block of a document stands between two of its versions
+// The ways a top-level unit or a typed block of a document stands between two of its versions
 // (artifactSectionChange, artifactBlockChange): the later version holds it otherwise than the
 // earlier, holds it and the earlier does not, or the earlier holds it and the later does not. A
-// section has a fourth, moved: both versions hold it with the same text, and its place among the
-// document's top-level units, the `##` sections and the runs of text outside every section, is
-// another (movedSections). A block has no fourth: a block that moves changes the text of the
-// sections it moves within or between, and those are named.
+// unit - a `##` section, or a run of the text outside every section - has a fourth, moved: both
+// versions hold it with the same text, and its place among the document's top-level units is
+// another (movedUnits). A block has no fourth: a block that moves changes the text of the units
+// it moves within or between, and those are named.
 const (
 	changeChanged = "changed"
 	changeAdded   = "added"
 	changeRemoved = "removed"
 	changeMoved   = "moved"
+)
+
+// The places a run of the text outside every `##` section stands at (artifactSectionChange's
+// Place): above the first `##` section, or directly after one, which AfterHeading and
+// AfterOccurrence name.
+const (
+	placeBeforeFirstSection = "before_first_section"
+	placeAfterSection       = "after_section"
 )
 
 // artifactChanges is the body of GET /api/v1/artifacts/{id}/changes: what changed in a document
@@ -1099,23 +1113,26 @@ const (
 //
 // Both versions are compared with their decision blocks cut out (docs.WithoutAskBlocks), so an
 // answer a person gave, or an ask added, reworded or moved, changes no section and no block.
-// DecisionOnly says that the cut is the whole change: the two stored texts differ, and they cut
-// to the same text. Sections and Blocks are empty then, as they are for two versions whose stored
-// texts are the same. A version that only puts its sections in another order is no decision-only
-// change: it names the sections it moved.
+//
+// Exactly one of three things is true of a change set, and compareVersions decides which in one
+// place. DecisionOnly says the cut is the whole change: the two stored texts differ, and they cut
+// to the same text. Unchanged says the two versions differ in nothing any unit or block holds:
+// their stored texts are the same, or they cut to texts that name no unit and no block and are
+// not decision-only. Otherwise Sections or Blocks names at least one item. So a change set that
+// names nothing always says which of the two it is, and one that says neither always names what
+// changed: a version that only puts its sections in another order names the sections it moved.
 type artifactChanges struct {
 	ArtifactID   string `json:"artifact_id"`
 	From         int    `json:"from"`
 	To           int    `json:"to"`
 	DecisionOnly bool   `json:"decision_only"`
-	// Sections are the document's `##` sections whose text differs or that moved, in the later
-	// version's order, and then the sections only the earlier version holds, in its order
-	// (cutSections). A moved section stands where the later version holds it, among the changed
-	// and added ones. The text outside every `##` section - the title, what stands above the
-	// first `##`, and what follows a later `#` heading up to the next `##` - is one section of
-	// its own, first, under the heading "" and occurrence 0, so a change there is named too, and
-	// so is a move: a run of it that stands at another place among the sections moves it
-	// (movedSections), which is how a `##` section moved across a `#` heading is named.
+	Unchanged    bool   `json:"unchanged"`
+	// Sections are the document's top-level units whose text differs, that moved, or that one
+	// version alone holds (cutUnits): each `##` section, and each run of the text outside every
+	// `##` section - the title and what stands above the first `##`, or what follows a `#`
+	// heading up to the next `##` - under the heading "" and occurrence 0 with the place it
+	// stands at. They are in the later version's document order, a moved unit where the later
+	// version holds it, and then the units only the earlier version holds, in its order.
 	Sections []artifactSectionChange `json:"sections"`
 	// Blocks are the typed blocks whose text or any attribute differs, in the same order
 	// (cutTypedBlocks), each named by an id its own stored version carries. No ask block is one
@@ -1123,16 +1140,22 @@ type artifactChanges struct {
 	Blocks []artifactBlockChange `json:"blocks"`
 }
 
-// artifactSectionChange is one `##` section that changed, named as decisionSums names a
-// decision: by its heading's text, and by how many sections before it carry that heading, 0 for
-// the first. The heading "" with occurrence 0 is the text outside every `##` section, all of it
-// joined in document order, moved when its joined text is the same and a run of it stands at
-// another place among the sections; a `##` heading with no words is counted from occurrence 1.
-// Change is changed, added, removed or moved (changeChanged and the three beside it).
+// artifactSectionChange is one top-level unit of a document that changed. A `##` section is
+// named as decisionSums names a decision: by its heading's text, and by how many sections before
+// it carry that heading, 0 for the first; a `##` heading with no words is counted from occurrence
+// 1. The heading "" with occurrence 0 is one run of the text outside every `##` section, and
+// Place says which: before_first_section, or after_section with AfterHeading and AfterOccurrence
+// naming the `##` section that stands directly before the run. The place is the run's in the
+// later version for a changed, added or moved run, and in the earlier version for a removed one.
+// A `##` section carries none of the three. Change is changed, added, removed or moved
+// (changeChanged and the three beside it).
 type artifactSectionChange struct {
-	Heading    string `json:"heading"`
-	Occurrence int    `json:"occurrence"`
-	Change     string `json:"change" enum:"changed,added,removed,moved"`
+	Heading         string  `json:"heading"`
+	Occurrence      int     `json:"occurrence"`
+	Change          string  `json:"change" enum:"changed,added,removed,moved"`
+	Place           string  `json:"place,omitempty" enum:"before_first_section,after_section"`
+	AfterHeading    *string `json:"after_heading,omitempty"`
+	AfterOccurrence *int    `json:"after_occurrence,omitempty"`
 }
 
 // artifactBlockChange is one typed block that changed: its `#id`, its type in the later version
@@ -1240,26 +1263,51 @@ func (s *server) versionsMarkdown(ctx context.Context, artifactID string, number
 }
 
 // cutVersion is one stored version as a change set compares it: the text it cuts to once its
-// decision blocks are left out, that cut text's `##` sections, the order of its top-level units
-// (places, cutSections), and its typed blocks.
+// decision blocks are left out, that cut text's top-level units in document order (cutUnits),
+// and its typed blocks.
 type cutVersion struct {
-	text     string
-	sections []cutSection
-	places   []placeKey
-	blocks   []cutBlock
+	text   string
+	units  []cutUnit
+	blocks []cutBlock
 }
 
-// cutSection is one `##` section of a cut version: its key and its text.
-type cutSection struct {
-	key  sectionKey
-	text string
+// cutUnit is one top-level unit of a cut version: a `##` section, or one run of the text outside
+// every section. key names it across the two versions (placeKey), and text is its text with the
+// blank lines at its end removed. after is where a run stands: the key of the `##` section
+// directly before it, or the zero key, which no `##` section has, for a run above the first
+// section. A section's after is the zero key and is never read.
+type cutUnit struct {
+	key   placeKey
+	text  string
+	after sectionKey
 }
 
-// placeKey names one top-level unit of a cut version across its versions, as movedSections orders
-// them: a `##` section by its key (section), or one run of the text outside every section by its
-// own text (run) and by how many runs before it hold that same text (occurrence). A run's section
-// is the zero key, the key of the text outside every section, which no `##` section has, so a
-// run and a section never share a placeKey.
+// isRun reports whether the unit is a run of the text outside every section: a run's key holds
+// the zero section key, which no `##` section's does (placeKey).
+func (unit cutUnit) isRun() bool {
+	return unit.key.section == sectionKey{}
+}
+
+// named is the unit as a change set names it, with how it changed (artifactSectionChange): a
+// `##` section by its heading and occurrence, and a run under the heading "" and occurrence 0
+// with the place it stands at in the version it was read from.
+func (unit cutUnit) named(change string) artifactSectionChange {
+	if !unit.isRun() {
+		return artifactSectionChange{Heading: unit.key.section.heading, Occurrence: unit.key.section.occurrence, Change: change}
+	}
+	named := artifactSectionChange{Change: change, Place: placeBeforeFirstSection}
+	if unit.after != (sectionKey{}) {
+		heading, occurrence := unit.after.heading, unit.after.occurrence
+		named.Place, named.AfterHeading, named.AfterOccurrence = placeAfterSection, &heading, &occurrence
+	}
+	return named
+}
+
+// placeKey names one top-level unit of a cut version across its versions: a `##` section by its
+// key (section), or one run of the text outside every section by its own text (run) and by how
+// many runs before it hold that same text (occurrence). A run's section is the zero key, which no
+// `##` section has, and a run's text is never empty, so a run and a section never share a
+// placeKey and no unit has the zero placeKey.
 type placeKey struct {
 	section    sectionKey
 	run        string
@@ -1274,31 +1322,57 @@ type cutBlock struct {
 
 // compareVersions is the change set from the stored markdown before to the stored markdown after
 // (artifactChanges), its document and version numbers left for the caller to fill in.
+//
+// It names what differs first (nameChanges), and then says whether the change set is unchanged,
+// here and in no other place: one that is not decision-only and names no unit and no block is
+// unchanged, whatever its two texts were. So no pair of texts can answer a change that names
+// nothing. Two stored texts that are the same are never parsed, since they cut to one text and
+// name nothing, and the same line makes them unchanged.
 func compareVersions(before, after string) (artifactChanges, error) {
 	changes := artifactChanges{Sections: []artifactSectionChange{}, Blocks: []artifactBlockChange{}}
-	if before == after {
-		return changes, nil
+	if before != after {
+		earlier, err := readCutVersion(before)
+		if err != nil {
+			return artifactChanges{}, err
+		}
+		later, err := readCutVersion(after)
+		if err != nil {
+			return artifactChanges{}, err
+		}
+		if earlier.text == later.text {
+			changes.DecisionOnly = true
+		} else {
+			nameChanges(&changes, earlier, later)
+		}
 	}
-	earlier, err := readCutVersion(before)
-	if err != nil {
-		return artifactChanges{}, err
-	}
-	later, err := readCutVersion(after)
-	if err != nil {
-		return artifactChanges{}, err
-	}
-	if earlier.text == later.text {
-		changes.DecisionOnly = true
-		return changes, nil
-	}
-	changesByKey(earlier.sections, later.sections,
-		func(section cutSection) sectionKey { return section.key },
-		func(a, b cutSection) bool { return a.text == b.text },
-		movedSections(earlier.places, later.places),
-		func(section cutSection, change string) {
-			changes.Sections = append(changes.Sections, artifactSectionChange{
-				Heading: section.key.heading, Occurrence: section.key.occurrence, Change: change,
-			})
+	changes.Unchanged = !changes.DecisionOnly && len(changes.Sections) == 0 && len(changes.Blocks) == 0
+	return changes, nil
+}
+
+// nameChanges adds to changes each top-level unit and each typed block that differs between
+// earlier and later, in the order changesByKey reports them. A `##` section is paired across the
+// versions by its key. A run of the text outside every section is named by three rules, in turn:
+//
+//   - a run both versions hold, by its text and occurrence (placeKey), is in its place when it
+//     stands in the longest common subsequence of the two versions' units, and moved, where the
+//     later version holds it, when it stands outside it (movedUnits);
+//   - of the runs left, two that stand at one place, above the first section or after the same
+//     `##` section, are one run whose text changed (runsPairedByPlace);
+//   - a run left after that is added when the later version holds it, and removed when the
+//     earlier does.
+func nameChanges(changes *artifactChanges, earlier, later cutVersion) {
+	paired := runsPairedByPlace(earlier.units, later.units)
+	changesByKey(earlier.units, later.units,
+		func(unit cutUnit) placeKey {
+			if partner, held := paired[unit.key]; held {
+				return partner
+			}
+			return unit.key
+		},
+		func(a, b cutUnit) bool { return a.text == b.text },
+		movedUnits(earlier.units, later.units),
+		func(unit cutUnit, change string) {
+			changes.Sections = append(changes.Sections, unit.named(change))
 		})
 	changesByKey(earlier.blocks, later.blocks,
 		func(block cutBlock) string { return block.id },
@@ -1307,7 +1381,6 @@ func compareVersions(before, after string) (artifactChanges, error) {
 		func(block cutBlock, change string) {
 			changes.Blocks = append(changes.Blocks, artifactBlockChange{ID: block.id, Type: block.node.Type, Change: change})
 		})
-	return changes, nil
 }
 
 // readCutVersion parses one stored version with the parser every read of a stored text uses
@@ -1324,31 +1397,28 @@ func readCutVersion(markdown string) (cutVersion, error) {
 	if err != nil {
 		return cutVersion{}, err
 	}
-	sections, places := cutSections(cut, text, offsets)
-	return cutVersion{text: text, sections: sections, places: places, blocks: cutTypedBlocks(cut, markdown)}, nil
+	return cutVersion{text: text, units: cutUnits(cut, text, offsets), blocks: cutTypedBlocks(cut, markdown)}, nil
 }
 
-// cutSections cuts a version's cut text into its `##` sections by the rule decisionSums cuts a
-// decision by and names one by: a top-level `##` heading opens a section, the next top-level
-// heading of its level or higher closes it - `#` included, which opens none - and a deeper
-// heading is text of the section it stands in. A section is keyed by its heading and by how many
-// sections before it carry that heading, and its text runs from its heading to where it closes,
-// with the blank lines at its end removed. Only a top-level heading cuts, since one inside a
-// quote, a list or a callout is text of the block that holds it. decisionSums' `## Replaced` rule
-// is no part of this one: that is how a decisions document files a decision, while a section here
-// is any document's own `##` heading.
+// cutUnits cuts a version's cut text into its top-level units, in document order: its `##`
+// sections, cut by the rule decisionSums cuts a decision by and names one by, and the runs of the
+// text no `##` section holds. A top-level `##` heading opens a section, the next top-level heading
+// of its level or higher closes it - `#` included, which opens none - and a deeper heading is text
+// of the section it stands in. A section is keyed by its heading and by how many sections before
+// it carry that heading, and its text runs from its heading to where it closes, with the blank
+// lines at its end removed. Only a top-level heading cuts, since one inside a quote, a list or a
+// callout is text of the block that holds it. decisionSums' `## Replaced` rule is no part of this
+// one: that is how a decisions document files a decision, while a section here is any document's
+// own `##` heading. A `##` heading with no words is keyed from occurrence 1, so no section takes
+// the zero key.
 //
-// The text no `##` section holds, before the first one and from a `#` heading to the next `##`,
-// is one section more, first in the list, keyed by the heading "" and occurrence 0: each of its
-// runs with the blank lines at its end removed, joined in document order. So a change to the
-// document's title or to the text above its first `##` is named like a change to any section. A
-// document that holds no such text has no such section. A `##` heading with no words is keyed from
-// occurrence 1, so it never takes that key.
-//
-// Beside the sections it answers the version's top-level units in document order (placeKey),
-// the order movedSections compares: each `##` section by its key, and each of those runs by its
-// text and by how many runs before it hold the same text.
-func cutSections(doc *pmdoc.Node, text string, offsets []pmdoc.BlockOffset) ([]cutSection, []placeKey) {
+// A run is all the text between two sections, or above the first, or below the last: the title
+// and the text above the first `##`, or the text from a `#` heading that closes a section to the
+// next `##`, with the blank lines at its end removed. So each place holds at most one run, and a
+// change to the title or to the text under a `#` heading is named like a change to any section.
+// A run is keyed by its text and by how many runs before it hold the same text, and stands after
+// the section that closed where it starts, or above the first section (cutUnit's after).
+func cutUnits(doc *pmdoc.Node, text string, offsets []pmdoc.BlockOffset) []cutUnit {
 	headings := map[string]struct{}{}
 	for _, child := range doc.Children {
 		if child.Type == "heading" {
@@ -1356,26 +1426,25 @@ func cutSections(doc *pmdoc.Node, text string, offsets []pmdoc.BlockOffset) ([]c
 			headings[id] = struct{}{}
 		}
 	}
-	var sections []cutSection
-	var places []placeKey
-	var outside []string
+	var units []cutUnit
 	seen := map[string]int{"": 1}
 	runs := map[string]int{}
-	var key sectionKey
+	// key is the open section's key, and last the key of the section that closed last: the zero
+	// key until one has, which is the place of a run above the first section.
+	var key, last sectionKey
 	// start is where the open section starts, -1 while none is open, and free where the text
 	// outside every section that runs up to the next section starts.
 	start, free := -1, 0
 	keepOutside := func(end int) {
 		if run := strings.TrimRight(text[free:end], "\n"); run != "" {
-			outside = append(outside, run)
-			places = append(places, placeKey{run: run, occurrence: runs[run]})
+			units = append(units, cutUnit{key: placeKey{run: run, occurrence: runs[run]}, text: run, after: last})
 			runs[run]++
 		}
 	}
 	closeAt := func(end int) {
 		if start >= 0 {
-			sections = append(sections, cutSection{key: key, text: strings.TrimRight(text[start:end], "\n")})
-			start, free = -1, end
+			units = append(units, cutUnit{key: placeKey{section: key}, text: strings.TrimRight(text[start:end], "\n")})
+			start, free, last = -1, end, key
 		}
 	}
 	for _, offset := range offsets {
@@ -1391,16 +1460,12 @@ func cutSections(doc *pmdoc.Node, text string, offsets []pmdoc.BlockOffset) ([]c
 			keepOutside(offset.From)
 			key = sectionKey{heading: heading, occurrence: seen[heading]}
 			seen[heading]++
-			places = append(places, placeKey{section: key})
 			start = offset.From
 		}
 	}
 	closeAt(len(text))
 	keepOutside(len(text))
-	if len(outside) == 0 {
-		return sections, places
-	}
-	return append([]cutSection{{key: sectionKey{}, text: strings.Join(outside, "\n\n")}}, sections...), places
+	return units
 }
 
 // cutTypedBlocks is every typed block of a cut tree whose id its stored version carries (stored,
@@ -1430,13 +1495,12 @@ func cutTypedBlocks(doc *pmdoc.Node, stored string) []cutBlock {
 	return blocks
 }
 
-// movedSections is the keys of the sections whose place among the document's top-level units is
-// another in later than in earlier, the key "" and 0 naming the text outside every section. The
-// units are each version's places (cutSections): its `##` sections and each run of the text
-// outside every section, a run opening above the first `##` or at a `#` heading. A `##` section
-// stands under one `#` heading or another only as those runs around it say, so a section moved
-// across a `#` heading keeps both the order of the `##` sections and the joined text outside
-// them, and only the order of all the units shows the move.
+// movedUnits is the keys of the units both versions hold whose place among the document's
+// top-level units is another in later than in earlier (cutUnits): its `##` sections and each run
+// of the text outside every section, a run standing above the first `##` or opening at a `#`
+// heading. A `##` section stands under one `#` heading or another only as the runs around it say,
+// so a section moved across a `#` heading keeps the order of the `##` sections, and only the order
+// of all the units shows the move.
 //
 // The two orders are the units both versions hold, each in its own version's order. A unit is in
 // its place when it is in one longest common subsequence of the two orders, and moved when it is
@@ -1448,36 +1512,25 @@ func cutTypedBlocks(doc *pmdoc.Node, stored string) []cutBlock {
 // its first unit stands as early in later as the first of any sequence that long can, then its
 // second, and so on. So of two units that swapped places, the one later holds second is moved,
 // and a section lifted from last to first is the one moved, its neighbours' sequence being the
-// only longest one.
-//
-// A run is no section of the change set: the text outside every section is, all its runs joined.
-// So a run outside the subsequence names that text, and so does a run later holds and earlier
-// does not. With the joined text the same, such a run is that text cut at other places by the
-// `##` sections, which is a section that crossed it; with the joined text changed, the text is
-// named changed whatever its place.
+// only longest one. A run holds its own text by its key, so a run moved is a `#` heading's text
+// standing at another place, and a section moved across a `#` heading names whichever of the two
+// the later version holds second.
 //
 // The keys are of a unit's place alone: changesByKey names changed a section whose text differs,
-// wherever it stands, and moved only a section whose text is the same, the text outside every
-// section among them.
-func movedSections(earlier, later []placeKey) map[sectionKey]struct{} {
+// wherever it stands, and moved only a unit whose text is the same.
+func movedUnits(earlier, later []cutUnit) map[placeKey]struct{} {
 	place := make(map[placeKey]int, len(earlier))
 	for index, unit := range earlier {
-		place[unit] = index
+		place[unit.key] = index
 	}
-	moved := map[sectionKey]struct{}{}
 	// units are the units both versions hold in later's order, and places each one's index in
-	// earlier. A run only later holds names the text outside every section (a run's section, the
-	// zero key).
+	// earlier.
 	var units []placeKey
 	var places []int
 	for _, unit := range later {
-		at, holds := place[unit]
-		switch {
-		case holds:
-			units = append(units, unit)
+		if at, holds := place[unit.key]; holds {
+			units = append(units, unit.key)
 			places = append(places, at)
-		case unit.section == (sectionKey{}):
-			moved[unit.section] = struct{}{}
 		}
 	}
 	// longest[i] is the length of the longest rising sequence that starts at places[i], read from
@@ -1496,17 +1549,53 @@ func movedSections(earlier, later []placeKey) map[sectionKey]struct{} {
 		}
 	}
 	// The sequence is taken from the left: each unit is its next when a sequence as long as the
-	// rest of it starts there above its last place, and every other unit is moved, a run of
-	// outside text naming the text outside every section.
+	// rest of it starts there above its last place, and every other unit is moved.
+	moved := map[placeKey]struct{}{}
 	need, last := len(starts), -1
 	for i, at := range places {
 		if longest[i] == need && at > last {
 			need, last = need-1, at
 			continue
 		}
-		moved[units[i].section] = struct{}{}
+		moved[units[i]] = struct{}{}
 	}
 	return moved
+}
+
+// runsPairedByPlace pairs the runs of the text outside every section that the other version
+// holds no run of the same key for (nameChanges' second rule): a run of earlier whose key later
+// does not hold, and a run of later whose key earlier does not hold, that stand at the same place,
+// above the first section or after the same `##` section. It answers, for each such run of
+// earlier, its partner's key, which changesByKey compares it under, so the two are one run whose
+// text changed. A place holds at most one run of a version (cutUnits), so a run has one partner
+// at most, and earlier holds no unit under its partner's key. A run with no partner keeps its own
+// key, so changesByKey names it added or removed.
+func runsPairedByPlace(earlier, later []cutUnit) map[placeKey]placeKey {
+	keys := func(units []cutUnit) map[placeKey]struct{} {
+		held := make(map[placeKey]struct{}, len(units))
+		for _, unit := range units {
+			held[unit.key] = struct{}{}
+		}
+		return held
+	}
+	earlierKeys, laterKeys := keys(earlier), keys(later)
+	// left is each run of later whose key earlier does not hold, by the place it stands at.
+	left := map[sectionKey]placeKey{}
+	for _, unit := range later {
+		if _, held := earlierKeys[unit.key]; unit.isRun() && !held {
+			left[unit.after] = unit.key
+		}
+	}
+	paired := map[placeKey]placeKey{}
+	for _, unit := range earlier {
+		if _, held := laterKeys[unit.key]; !unit.isRun() || held {
+			continue
+		}
+		if partner, found := left[unit.after]; found {
+			paired[unit.key] = partner
+		}
+	}
+	return paired
 }
 
 // changesByKey compares one kind of item of two versions by key, and hands report each item that

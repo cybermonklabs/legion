@@ -1087,6 +1087,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The attempt is a number comment_deliveries keeps in an integer column, so one past that
+	// column (fitsIntegerColumn) is a delivery no comment has, answered as the read below answers
+	// one, before any query is made with it.
+	if !fitsIntegerColumn(input.Attempt) {
+		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment delivery not found")
+		return
+	}
 	attempt, err := scanCommentDelivery(tx.QueryRow(r.Context(), `
 		select `+commentDeliveryColumns+`
 		from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3 for update

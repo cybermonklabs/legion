@@ -343,6 +343,7 @@ Each item below names a task and where its code is, then notes on it.
 
   `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
   `GET` lists each check of the issue's Verification document with every result recorded against it.
+  A recorded result's `failed`, `skipped` and `excluded` counts are each from 0 to 2147483647, since `check_results` keeps them in `integer` columns (`fitsIntegerColumn`): any other is `400 RESULT_INPUT` before any query is made with it.
   What a read says about a result is computed at the read, never written by a push.
   Each check answers the commits and branches its results are compared with (`compared_with`), why it has none where it has none (`compared_nothing`) and whether a pass of it stands (`pass_stands`);
   each result answers where its commit stands against those (`commit_stands`) and whether the check's words moved after it was recorded (`check_words_moved`):
@@ -718,16 +719,18 @@ each row's id and index and each cell's id, row, column, the opening words of th
 The walk lays each table out once, in document order, on the one budget of span cells a render of the document spends (`maxSpanCells`, `tableGrid`), so a cell is listed under the header `GET .../text` draws above it, a table past the budget with its spans adding nothing, and tables a browser pasted with spans filling that budget cost one request one budget, not one each.
 `GET .../text` returns the full-document Proof-state token and the document's latest version number, or `null` when it has none (the live markdown beside it and that version are two unsynchronised reads, in both directions; `token` is the concurrency primitive).
 `GET /api/v1/artifacts/{id}/changes?from=<n>&to=<m>` (`getArtifactChanges`, `api/artifacts.go`) answers what changed between two stored versions of one document, which it reads as `GET .../versions/{number}` reads them:
-`decision_only`, true when the two stored texts differ and are the same once every ask block is cut (`docs.WithoutAskBlocks`), with `sections` and `blocks` empty then;
-`sections`, each `##` section whose text differs with ask blocks cut, or that moved, named by heading and occurrence as `decisionSums` names a decision, the text outside every `##` section being the one section under the heading "" and occurrence 0;
-and `blocks`, each typed block other than an ask block whose text or any attribute differs, by its `#id` and type, each section and block marked `changed`, `added` or `removed`, and a section also `moved`.
-A section is `moved` when both versions hold it with the same text and its place among the document's top-level units is another (`movedSections`).
-The units are the `##` sections and each run of text outside every section (a run stands above the first `##` or opens at a `#` heading), a run named by its own text and by how many runs before it hold that text.
-A unit is in its place when it stands in one longest common subsequence of the two versions' orders of the units both hold;
-of several that long, the one kept holds the later version's earliest units, so of two units that swapped places the later version's second is `moved`, and a reorder alone is never `decision_only`.
-A run outside that subsequence, or one only the later version holds, moves the text outside every section, so a `##` section moved across a `#` heading is named: the section "" is `moved` when its joined text is the same, and `changed` when it differs.
-A section whose text differs is `changed` wherever it stands, and a block is never `moved`, since a block that moves changes the text of the sections it moves within or between.
-Each list holds the later version's items in its order, a moved section where the later version holds it, and then what only the earlier version holds.
+`decision_only`, true when the two stored texts differ and are the same once every ask block is cut (`docs.WithoutAskBlocks`);
+`unchanged`, true when the two differ in nothing any section or block holds: the stored texts are the same, or the cut texts name nothing and are not decision-only;
+`sections`, each top-level unit whose text differs with ask blocks cut, that moved, or that one version alone holds;
+and `blocks`, each typed block other than an ask block whose text or any attribute differs, by its `#id` and type, each unit and block marked `changed`, `added` or `removed`, and a unit also `moved`.
+Exactly one of `decision_only`, `unchanged` and a non-empty `sections` or `blocks` holds, decided in one place (`compareVersions`), so a change set that names nothing always says why, and `sections` and `blocks` are empty when either flag is true.
+The units are the `##` sections, named by heading and occurrence as `decisionSums` names a decision, and each run of text outside every section: the title and what stands above the first `##`, or what follows a `#` heading up to the next `##` (`cutUnits`).
+A run is named under the heading "" and occurrence 0 with its place: `place` `before_first_section`, or `after_section` with `after_heading` and `after_occurrence` naming the `##` section directly before it, in the later version for a `changed`, `added` or `moved` run and in the earlier for a `removed` one.
+A unit is `moved` when both versions hold it with the same text and it stands outside one longest common subsequence of the two versions' orders of the units both hold (`movedUnits`), a run held by both when both hold its text at the same occurrence;
+of several that long, the one kept holds the later version's earliest units, so of two units that swapped places the later version's second is `moved`, a `##` section moved across a `#` heading names the section or the run, and a reorder alone is never `decision_only`.
+A run whose text, at its occurrence, the other version does not hold pairs with that version's run of the same kind at the same place and is `changed` (`runsPairedByPlace`), and a run left unpaired is `added` or `removed`.
+A section whose text differs is `changed` wherever it stands, and a block is never `moved`, since a block that moves changes the text of the units it moves within or between.
+Each list holds the later version's items in its document order, a moved unit where the later version holds it, and then what only the earlier version holds, in its order.
 It parses the two versions' stored markdown and never the block index, so it does not wait for the deferred pass over a large document's blocks (`docs.deferBlockIndexBlocks`).
 It answers `400 INVALID_VERSION` unless both numbers are positive, at most 2147483647, and `from` is below `to`, `404 NOT_FOUND` for a version the document does not have, and `400 NOT_DOCUMENT` for an artifact that is not a document;
 `artifact_versions.number` is an `integer`, so a larger number names no version, and the route and `GET .../versions/{number}` both refuse it before they read a version (`parseVersionNumber`) rather than answer `500`;
@@ -1710,6 +1713,7 @@ The document Keep takes is its issue's `decisions.md` resolved as the view resol
 It appends `decision.kept` (`{artifact_id, block_id, changed_version}`) on the decision's issue, which wakes nobody (`events.Quiet`): a Keep asks its agent for nothing.
 `GET` and `PUT /api/v1/me/documents/{id}/read` `{version}` are one person's last read version of a document (`user_document_reads`, keyed on `model.CanonicalLogin` as `user_ask_snooze` is), which the Spec tab marks each block changed since; they serve per-person state as `GET /api/v1/me/state` and `PUT /api/v1/me/issues/{key}/state` do, need the `person` scope as those two do, and announce nothing.
 A `version` that is negative or above 2147483647 is `400 INVALID_STATE` before the write, since `user_document_reads.version` is an `integer` (`fitsIntegerColumn`, the bound `parseVersionNumber` reads a path's or a query's version number with).
+`PUT /api/v1/me/issues/{key}/state` holds `last_read_seq` to the same bound, since `user_issue_state.last_read_seq` is an `integer`: a negative or larger one is `400 INVALID_STATE` before the write.
 
 A comment and a message are collections of blocks too (migrations 0142-0144, `itemblocks`, `refs/item_blocks.go`).
 `itemblocks.Split` reads a body as the document parser reads a document (`pmdoc.ParseWithSourceStarts`) and cuts it at its top-level blocks, each block the body's own text from the start of the line where it starts to where the next one starts, less the spaces, tabs and line endings that end it, so its stored text, its excerpt and its identity are what its author wrote, never the canonical rendering.
@@ -5074,6 +5078,7 @@ Every attempt records `requested_by`, the actor whose send opened it (the messag
 kept on a resume; null on a row from before migration 0054), and at most one attempt of a message records `accepted_at` and `accepted_as: "user_turn"`:
 the session it went to took it as its user's own turn, through `POST /api/v1/messages/{id}/deliveries/{attempt}/accept` (its conditions are that route's row in `packages/envoy/cmd/dispatch/AGENTS.md`, whose requester checks read `requested_by`).
 Its `{attempt}` must be a positive number of at most 2147483647, since `message_deliveries.attempt` is an `integer` (`fitsIntegerColumn`): any other is `404 MESSAGE_NOT_FOUND`, the answer for an attempt the message does not have, before any query reads it.
+The `attempt` a session's reply names in its body is held to the same bound before its delivery is read: past it, `POST /api/v1/messages/{id}/reply` answers `404 MESSAGE_NOT_FOUND` and `POST /api/v1/comments/{id}/reply` `404 COMMENT_NOT_FOUND`, each route's answer for an attempt its item does not have.
 What a session does with the answer is `packages/pi-envoy/AGENTS.md`'s.
 
 A human reaches many sessions at once with `POST /api/v1/broadcasts` `{body, delivery, session_ids}`.

@@ -903,6 +903,13 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The attempt is a number message_deliveries keeps in an integer column, so one past that
+	// column (fitsIntegerColumn) is a delivery no message has, answered as the read below answers
+	// one, before any query is made with it.
+	if !fitsIntegerColumn(input.Attempt) {
+		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
+		return
+	}
 	attempt, err := scanMessageDelivery(tx.QueryRow(r.Context(), `
 		select `+messageDeliveryColumns+`
 		from message_deliveries where message_id = $1 and attempt = $2 for update

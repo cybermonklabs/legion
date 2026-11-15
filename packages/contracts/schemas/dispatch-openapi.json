@@ -1434,7 +1434,7 @@
     },
     "/api/v1/artifacts/{id}/changes": {
       "get": {
-        "description": "What changed between two stored versions of one document, ?from=\u003cn\u003e\u0026to=\u003cm\u003e: {artifact_id, from, to, decision_only, sections, blocks}, both versions read from their stored markdown with every ask block cut out, so the block index's deferred pass is never waited for. decision_only is true when the two stored texts differ and cut to the same text; sections and blocks are empty then. sections is each `##` section whose text differs or that moved, by heading and occurrence (0 for the first section of that heading); the text outside every `##` section (the title, what stands above the first `##`, and what follows a later `#` up to the next `##`), joined in document order, is one section of its own with heading \"\" and occurrence 0, so a `##` heading with no words counts from occurrence 1. blocks is each typed block but an ask whose text or any attribute differs, by id and type. Each section and block is marked changed, added or removed, and a section whose text is the same is marked moved when its place among the document's top-level units is another. The units are the `##` sections and each run of text outside every section (one above the first `##`, or one a `#` heading opens); a unit is moved when it stands outside one longest common subsequence of the two versions' orders of the units both hold, and of several that long the one kept holds the later version's earliest units, so of two units that swapped places the later version's second is moved. A run outside it, or one only the later version holds, moves the text outside every section, so a `##` section moved across a `#` heading is named: the section \"\" is marked moved when its joined text is the same, and changed when it differs. A block is never marked moved. Each is listed in the later version's order, a moved section where the later version holds it, then what only the earlier holds. from and to must be positive, at most 2147483647 (the largest version number the store holds), and from below to (400 INVALID_VERSION); a version the document does not have is 404 NOT_FOUND, and a file or an image 400 NOT_DOCUMENT.",
+        "description": "What changed between two stored versions of one document, ?from=\u003cn\u003e\u0026to=\u003cm\u003e: {artifact_id, from, to, decision_only, unchanged, sections, blocks}, both versions read from their stored markdown with every ask block cut out, so the block index's deferred pass is never waited for. Exactly one of three holds: decision_only, true when the two stored texts differ and cut to the same text; unchanged, true when the two differ in nothing any section or block holds (the stored texts are the same, or the cut texts name nothing and are not decision-only); or sections and blocks name at least one item. sections and blocks are empty when decision_only or unchanged is true. sections is each top-level unit whose text differs, that moved, or that one version alone holds: a `##` section by heading and occurrence (0 for the first section of that heading, so a `##` heading with no words counts from occurrence 1), and a run of the text outside every `##` section (the title and what stands above the first `##`, or what follows a `#` heading up to the next `##`) under heading \"\" and occurrence 0 with its place: place before_first_section, or place after_section with after_heading and after_occurrence naming the `##` section directly before the run, in the later version for a changed, added or moved run and in the earlier for a removed one. blocks is each typed block but an ask whose text or any attribute differs, by id and type. Each unit and block is marked changed, added or removed, and a unit whose text is the same is marked moved when its place among the document's top-level units is another: it stands outside one longest common subsequence of the two versions' orders of the units both hold, and of several that long the one kept holds the later version's earliest units, so of two units that swapped places the later version's second is moved. Both versions hold a run when both hold its text at the same occurrence; a run the other version does not hold so pairs with that version's unpaired run at the same place and is marked changed, and a run left unpaired is added or removed. A block is never marked moved. Each list holds the later version's items in its document order, a moved unit where the later version holds it, then what only the earlier holds, in its order. from and to must be positive, at most 2147483647 (the largest version number the store holds), and from below to (400 INVALID_VERSION); a version the document does not have is 404 NOT_FOUND, and a file or an image 400 NOT_DOCUMENT.",
         "operationId": "getApiV1ArtifactsByIdChanges",
         "parameters": [
           {
@@ -7074,7 +7074,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch.",
+        "description": "Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and each count is from 0 to 2147483647 (the largest the store holds) and defaults to 0; a field outside these bounds is 400 RESULT_INPUT, and a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch.",
         "operationId": "postApiV1IssuesByKeyResults",
         "parameters": [
           {
@@ -8228,7 +8228,7 @@
     },
     "/api/v1/me/issues/{key}/state": {
       "put": {
-        "description": "Update the caller's read state for an issue.",
+        "description": "Update the caller's read state for an issue. last_read_seq is from 0 to 2147483647 (the largest event position the store holds); any other is 400 INVALID_STATE.",
         "operationId": "putApiV1MeIssuesByKeyState",
         "parameters": [
           {
@@ -13213,6 +13213,9 @@
           },
           "to": {
             "type": "integer"
+          },
+          "unchanged": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -13220,6 +13223,7 @@
           "from",
           "to",
           "decision_only",
+          "unchanged",
           "sections",
           "blocks"
         ],
@@ -13430,6 +13434,12 @@
       },
       "ArtifactSectionChange": {
         "properties": {
+          "after_heading": {
+            "type": "string"
+          },
+          "after_occurrence": {
+            "type": "integer"
+          },
           "change": {
             "enum": [
               "changed",
@@ -13444,6 +13454,13 @@
           },
           "occurrence": {
             "type": "integer"
+          },
+          "place": {
+            "enum": [
+              "before_first_section",
+              "after_section"
+            ],
+            "type": "string"
           }
         },
         "required": [

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -10,11 +11,12 @@ import (
 
 // GET /api/v1/artifacts/{id}/changes answers what changed between two stored versions of one
 // document, read off their markdown with every decision block cut out: whether the cut is the
-// whole change, each `##` section whose text differs, named by its heading and occurrence - the
-// text outside every `##` section being one section under the heading "" - and each typed block
-// other than an ask whose text or any attribute differs, named by its id. The daemon reads it to
-// tell the session holding an issue what an approved new version changed, so these tests read
-// the answer as that caller reads the JSON, field by field.
+// whole change, whether nothing changed at all, each `##` section whose text differs or that
+// moved, named by its heading and occurrence, each run of the text outside every `##` section
+// that differs or moved, named under the heading "" with the place it stands at, and each typed
+// block other than an ask whose text or any attribute differs, named by its id. The daemon reads
+// it to tell the session holding an issue what an approved new version changed, so these tests
+// read the answer as that caller reads the JSON, field by field.
 
 // servedChanges is the change set as a caller decodes the route's JSON.
 type servedChanges struct {
@@ -22,15 +24,46 @@ type servedChanges struct {
 	From         int              `json:"from"`
 	To           int              `json:"to"`
 	DecisionOnly bool             `json:"decision_only"`
+	Unchanged    bool             `json:"unchanged"`
 	Sections     []servedSection  `json:"sections"`
 	Blocks       []servedBlockRef `json:"blocks"`
 }
 
-// servedSection is one changed section as the route names it.
+// servedSection is one changed section, or one changed run of the text outside every section, as
+// the route names it. The place fields are pointers so that a field the route leaves out reads
+// as absent rather than as "" or 0.
 type servedSection struct {
-	Heading    string `json:"heading"`
-	Occurrence int    `json:"occurrence"`
-	Change     string `json:"change"`
+	Heading         string  `json:"heading"`
+	Occurrence      int     `json:"occurrence"`
+	Change          string  `json:"change"`
+	Place           string  `json:"place,omitempty"`
+	AfterHeading    *string `json:"after_heading,omitempty"`
+	AfterOccurrence *int    `json:"after_occurrence,omitempty"`
+}
+
+// String is the entry as the route's JSON spells it, so a failure prints the place a run stands
+// at rather than the addresses its pointers hold.
+func (section servedSection) String() string {
+	encoded, err := json.Marshal(section)
+	if err != nil {
+		return fmt.Sprintf("unencodable section %q: %v", section.Heading, err)
+	}
+	return string(encoded)
+}
+
+// runBeforeTheFirstSection is the run of text outside every section that stands above the first
+// `##` section, named with change.
+func runBeforeTheFirstSection(change string) servedSection {
+	return servedSection{Heading: "", Occurrence: 0, Change: change, Place: "before_first_section"}
+}
+
+// runAfterSection is the run of text outside every section that stands directly after the `##`
+// section heading, occurrence, named with change.
+func runAfterSection(heading string, occurrence int, change string) servedSection {
+	return servedSection{
+		Heading: "", Occurrence: 0, Change: change,
+		Place: "after_section", AfterHeading: &heading, AfterOccurrence: &occurrence,
+	}
 }
 
 // servedBlockRef is one changed typed block as the route names it.
@@ -61,10 +94,16 @@ func readChanges(t *testing.T, handler http.Handler, artifactID string, from, to
 // i+1, and answers the document's id.
 func uploadVersions(t *testing.T, handler http.Handler, name string, texts ...string) string {
 	t.Helper()
-	issue := createArtifactIssue(t, handler)
+	return uploadVersionsTo(t, handler, createArtifactIssue(t, handler).Key, name, texts...)
+}
+
+// uploadVersionsTo uploads each text in turn as one document of the issue issueKey, which holds
+// no document of that name yet, so text i is version i+1, and answers the document's id.
+func uploadVersionsTo(t *testing.T, handler http.Handler, issueKey, name string, texts ...string) string {
+	t.Helper()
 	var artifactID string
 	for index, text := range texts {
-		uploaded := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, name, text)
+		uploaded := uploadDocument(t, handler, "/api/v1/issues/"+issueKey, name, text)
 		if uploaded.Version.Number != index+1 {
 			t.Fatalf("upload %d of %s = version %d, want %d", index+1, name, uploaded.Version.Number, index+1)
 		}
@@ -73,15 +112,16 @@ func uploadVersions(t *testing.T, handler http.Handler, name string, texts ...st
 	return artifactID
 }
 
-// requireChanges fails t unless the change set names exactly sections and blocks, and is not
-// decision-only.
+// requireChanges fails t unless the change set names exactly sections and blocks, and is neither
+// decision-only nor unchanged.
 func requireChanges(t *testing.T, changes servedChanges, sections []servedSection, blocks []servedBlockRef) {
 	t.Helper()
-	if changes.DecisionOnly {
-		t.Fatalf("decision_only = true, want false: %+v", changes)
+	if changes.DecisionOnly || changes.Unchanged {
+		t.Fatalf("decision_only = %t, unchanged = %t, want both false for a change set that names what changed: %+v",
+			changes.DecisionOnly, changes.Unchanged, changes)
 	}
 	if !reflect.DeepEqual(changes.Sections, sections) {
-		t.Fatalf("sections = %+v, want %+v", changes.Sections, sections)
+		t.Fatalf("sections = %v, want %v", changes.Sections, sections)
 	}
 	if !reflect.DeepEqual(changes.Blocks, blocks) {
 		t.Fatalf("blocks = %+v, want %+v", changes.Blocks, blocks)
@@ -110,9 +150,9 @@ func TestTheChangeSetNamesAChangedSectionByItsHeading(t *testing.T) {
 	}, []servedBlockRef{})
 }
 
-// A change to the text above the first `##` section, and to nothing else, is named: the text
-// outside every `##` section is one section of its own, under the heading "" and occurrence 0,
-// and the `##` section after it, left as it was, is not named.
+// A change to the text above the first `##` section, and to nothing else, is named: that run of
+// the text outside every `##` section is named under the heading "" and occurrence 0, at its
+// place before the first section, and the `##` section after it, left as it was, is not named.
 func TestAChangeBeforeTheFirstSectionNamesTheTextOutsideEverySection(t *testing.T) {
 	handler := newTestHandler(t)
 	artifactID := uploadVersions(t, handler, "plan.md",
@@ -121,7 +161,7 @@ func TestAChangeBeforeTheFirstSectionNamesTheTextOutsideEverySection(t *testing.
 	)
 
 	requireChanges(t, readChanges(t, handler, artifactID, 1, 2),
-		[]servedSection{{Heading: "", Occurrence: 0, Change: "changed"}}, []servedBlockRef{})
+		[]servedSection{runBeforeTheFirstSection("changed")}, []servedBlockRef{})
 }
 
 // A requirement only the later version holds is added, and one only the earlier holds is
@@ -144,7 +184,8 @@ func TestTheChangeSetNamesAnAddedAndARemovedRequirement(t *testing.T) {
 
 // A check whose `run` changed, one whose words changed, and one that names another CI run in its
 // `ci_check` are each named changed; a check left as it was is not. The checks stand outside every
-// `##` section, so the text outside the sections is the one section named.
+// `##` section, and the document has none, so its whole text is one run before the first section,
+// the one section named.
 func TestTheChangeSetNamesACheckWhoseRunOrWordsChanged(t *testing.T) {
 	handler := newTestHandler(t)
 	const ciControl = `negative_control="Break the build and watch the run fail."`
@@ -162,7 +203,7 @@ func TestTheChangeSetNamesACheckWhoseRunOrWordsChanged(t *testing.T) {
 			check("k4", `surface="cli" run="go test ./d/"`, "The list is sorted."),
 	)
 
-	requireChanges(t, readChanges(t, handler, artifactID, 1, 2), []servedSection{{Heading: "", Occurrence: 0, Change: "changed"}}, []servedBlockRef{
+	requireChanges(t, readChanges(t, handler, artifactID, 1, 2), []servedSection{runBeforeTheFirstSection("changed")}, []servedBlockRef{
 		{ID: "k1", Type: "check", Change: "changed"},
 		{ID: "k2", Type: "check", Change: "changed"},
 		{ID: "k3", Type: "check", Change: "changed"},
@@ -305,16 +346,19 @@ func TestTheChangeSetNamesAReorderBesideAnAddedSection(t *testing.T) {
 const appendixRun = "# Appendix\n\nBackground.\n"
 
 // A section's place is among every top-level unit of the document: the `##` sections and each run
-// of text outside every section, which a `#` heading opens. So a `# Appendix` run lifted above a
-// section names the text outside every section moved, its joined text being the same, and
-// changed once its words changed too; lifted to the top, where it joins the title's run, it is a
-// run neither version held before and names that text moved too. A section moved across the
-// heading swaps places with the run, and of the two the one the later version holds second is
-// named: the run when Scope moves above the heading, Scope when it moves below. A swap or a lift
-// of `##` sections beside such a run names the section it names without one. Each case is one
-// pair of consecutive versions of one document, compared on its own.
+// of text outside every section, which a `#` heading opens. Each run is named on its own, at the
+// place it stands. So a `# Appendix` run lifted above a section, its words the same, is that run
+// moved, named after the section the later version holds it after. Lifted to the top, it joins
+// the title's run: that run's text changed before the first section, and the run the earlier
+// version held after Risks is removed. Lifted with its words changed, it shares neither its text
+// nor its place with a run of the earlier version, so it is added where it now stands and the
+// earlier run is removed where it stood. A section moved across the heading swaps places with the
+// run, and of the two the one the later version holds second is named: the run, after Scope, when
+// Scope moves above the heading, and Scope when it moves below. A swap or a lift of `##` sections
+// beside such a run names the section it names without one, and the run keeps its place among the
+// units, so it is not named although another section now stands before it. Each case is one pair
+// of consecutive versions of one document, compared on its own.
 func TestATopLevelHeadingLiftedAboveASectionNamesTheTextOutsideEverySectionMoved(t *testing.T) {
-	outsideMoved := []servedSection{{Heading: "", Occurrence: 0, Change: "moved"}}
 	cases := []struct {
 		name          string
 		before, after string
@@ -336,25 +380,25 @@ func TestATopLevelHeadingLiftedAboveASectionNamesTheTextOutsideEverySectionMoved
 			name:   "a `#` heading lifted above two sections",
 			before: sectionedPlan(goalSection, scopeSection, risksSection, appendixRun),
 			after:  sectionedPlan(goalSection, appendixRun, scopeSection, risksSection),
-			want:   outsideMoved,
+			want:   []servedSection{runAfterSection("Goal", 0, "moved")},
 		},
 		{
 			name:   "a `#` heading lifted to the top, joining the title's run",
 			before: sectionedPlan(goalSection, scopeSection, risksSection, appendixRun),
 			after:  sectionedPlan(appendixRun, goalSection, scopeSection, risksSection),
-			want:   outsideMoved,
+			want:   []servedSection{runBeforeTheFirstSection("changed"), runAfterSection("Risks", 0, "removed")},
 		},
 		{
 			name:   "a `#` heading lifted with its words changed",
 			before: sectionedPlan(goalSection, scopeSection, risksSection, appendixRun),
 			after:  sectionedPlan(goalSection, "# Appendix\n\nMore background.\n", scopeSection, risksSection),
-			want:   []servedSection{{Heading: "", Occurrence: 0, Change: "changed"}},
+			want:   []servedSection{runAfterSection("Goal", 0, "added"), runAfterSection("Risks", 0, "removed")},
 		},
 		{
 			name:   "a section moved above a `#` heading",
 			before: sectionedPlan(goalSection, appendixRun, scopeSection, risksSection),
 			after:  sectionedPlan(goalSection, scopeSection, appendixRun, risksSection),
-			want:   outsideMoved,
+			want:   []servedSection{runAfterSection("Scope", 0, "moved")},
 		},
 		{
 			name:   "a section lifted from last to first beside a `#` heading",
@@ -373,6 +417,173 @@ func TestATopLevelHeadingLiftedAboveASectionNamesTheTextOutsideEverySectionMoved
 	for index, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			requireChanges(t, readChanges(t, handler, artifactID, 2*index+1, 2*index+2), tc.want, []servedBlockRef{})
+		})
+	}
+}
+
+// Each run of text outside every `##` section is named at the place it stands, so a reader is
+// sent to that run and not to the top of the document. A `#` heading whose words changed where it
+// stands is one run changed after the section before it; one added between two sections is added
+// there; one removed is removed after the section the earlier version held it after. Two runs
+// that change at once are each named, in document order: the title's before the first section,
+// then the `#` heading's after its section.
+func TestTheChangeSetNamesEachRunOutsideTheSectionsWhereItStands(t *testing.T) {
+	cases := []struct {
+		name          string
+		before, after string
+		want          []servedSection
+	}{
+		{
+			name:   "a `#` heading's words changed where it stands",
+			before: sectionedPlan(goalSection, appendixRun, scopeSection),
+			after:  sectionedPlan(goalSection, "# Appendix\n\nMore background.\n", scopeSection),
+			want:   []servedSection{runAfterSection("Goal", 0, "changed")},
+		},
+		{
+			name:   "a `#` heading added between two sections",
+			before: sectionedPlan(goalSection, scopeSection),
+			after:  sectionedPlan(goalSection, appendixRun, scopeSection),
+			want:   []servedSection{runAfterSection("Goal", 0, "added")},
+		},
+		{
+			name:   "a `#` heading removed after the last section",
+			before: sectionedPlan(goalSection, scopeSection, appendixRun),
+			after:  sectionedPlan(goalSection, scopeSection),
+			want:   []servedSection{runAfterSection("Scope", 0, "removed")},
+		},
+		{
+			name:   "the title and a `#` heading's words changed together",
+			before: sectionedPlan(goalSection, appendixRun, scopeSection),
+			after:  "# Plan for May\n\n" + goalSection + "\n# Appendix\n\nMore background.\n\n" + scopeSection,
+			want:   []servedSection{runBeforeTheFirstSection("changed"), runAfterSection("Goal", 0, "changed")},
+		},
+	}
+	texts := make([]string, 0, 2*len(cases))
+	for _, tc := range cases {
+		texts = append(texts, tc.before, tc.after)
+	}
+	handler := newTestHandler(t)
+	artifactID := uploadVersions(t, handler, "plan.md", texts...)
+
+	for index, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			requireChanges(t, readChanges(t, handler, artifactID, 2*index+1, 2*index+2), tc.want, []servedBlockRef{})
+		})
+	}
+}
+
+// R2 of dispatch://INFRA-175 sends the session holding the work a task naming what an approved new
+// version changed, read off this change set. decision_only is a change that tells nobody anything
+// of the work, and unchanged is no change at all; neither sends a task. Every other change set
+// must name a section or a block, since one that names neither tells the session the document
+// changed and nothing of where to read. This test drives the route over each kind of pair this
+// tree has met, and holds each to that invariant - exactly one of decision-only, unchanged, and
+// at least one item named - and to the one of the three its case must be. The store renders every
+// upload, so a version that differs from the one before it in blank lines alone is stored as the
+// same text, and is unchanged as an identical version is.
+func TestTheChangeSetEitherNamesWhatChangedOrReportsNoChange(t *testing.T) {
+	const (
+		decisionOnly = "decision-only"
+		unchanged    = "unchanged"
+		named        = "named"
+	)
+	requirements := func(words string) string {
+		return "# Spec\n\n## Requirements\n\n:::requirement{#r1}\n" + words + "\n:::\n"
+	}
+	cases := []struct {
+		name          string
+		before, after string
+		want          string
+	}{
+		{
+			name:   "an identical version",
+			before: sectionedPlan(goalSection, scopeSection, risksSection),
+			after:  sectionedPlan(goalSection, scopeSection, risksSection),
+			want:   unchanged,
+		},
+		{
+			name:   "a version that differs in blank lines alone",
+			before: sectionedPlan(goalSection, scopeSection, risksSection),
+			after:  "# Plan\n\n\n\n" + goalSection + "\n\n\n" + scopeSection + "\n\n" + risksSection + "\n\n\n",
+			want:   unchanged,
+		},
+		{
+			name:   "two sections swapped",
+			before: sectionedPlan(goalSection, scopeSection, risksSection),
+			after:  sectionedPlan(scopeSection, goalSection, risksSection),
+			want:   named,
+		},
+		{
+			name:   "a section lifted to the top",
+			before: sectionedPlan(goalSection, scopeSection, risksSection, rolloutSection),
+			after:  sectionedPlan(rolloutSection, goalSection, scopeSection, risksSection),
+			want:   named,
+		},
+		{
+			name:   "a section moved across a `#` heading",
+			before: sectionedPlan(goalSection, appendixRun, scopeSection, risksSection),
+			after:  sectionedPlan(goalSection, scopeSection, appendixRun, risksSection),
+			want:   named,
+		},
+		{
+			name:   "a `#` heading lifted above two sections",
+			before: sectionedPlan(goalSection, scopeSection, risksSection, appendixRun),
+			after:  sectionedPlan(goalSection, appendixRun, scopeSection, risksSection),
+			want:   named,
+		},
+		{
+			name:   "a `#` heading lifted to the top",
+			before: sectionedPlan(goalSection, scopeSection, risksSection, appendixRun),
+			after:  sectionedPlan(appendixRun, goalSection, scopeSection, risksSection),
+			want:   named,
+		},
+		{
+			name:   "a reworded requirement",
+			before: requirements("The read succeeds."),
+			after:  requirements("The read succeeds at once."),
+			want:   named,
+		},
+		{
+			name:   "an added section",
+			before: sectionedPlan(goalSection, scopeSection),
+			after:  sectionedPlan(goalSection, scopeSection, risksSection),
+			want:   named,
+		},
+	}
+	// state is which of the three a change set is, failing t when it is more than one or none.
+	state := func(t *testing.T, changes servedChanges) string {
+		t.Helper()
+		namesSome := len(changes.Sections)+len(changes.Blocks) > 0
+		switch {
+		case changes.DecisionOnly && (changes.Unchanged || namesSome), changes.Unchanged && namesSome:
+			t.Fatalf("the change set is more than one of decision-only, unchanged and naming what changed: %+v", changes)
+		case changes.DecisionOnly:
+			return decisionOnly
+		case changes.Unchanged:
+			return unchanged
+		case !namesSome:
+			t.Fatalf("the change set is neither decision-only nor unchanged and names no section and no block, so it says the document changed and nothing of where: %+v", changes)
+		}
+		return named
+	}
+	handler := approvalCarryHandler(t)
+	decided := answeredDecisionSpec(t, handler)
+	texts := make([]string, 0, 2*len(cases))
+	for _, tc := range cases {
+		texts = append(texts, tc.before, tc.after)
+	}
+	artifactID := uploadVersionsTo(t, handler, createPlainIssue(t, handler, "CHG"), "plan.md", texts...)
+
+	t.Run("an answered decision block", func(t *testing.T) {
+		if got := state(t, readChanges(t, handler, decided, 1, 2)); got != decisionOnly {
+			t.Fatalf("the change set is %s, want %s", got, decisionOnly)
+		}
+	})
+	for index, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := state(t, readChanges(t, handler, artifactID, 2*index+1, 2*index+2)); got != tc.want {
+				t.Fatalf("the change set is %s, want %s", got, tc.want)
+			}
 		})
 	}
 }

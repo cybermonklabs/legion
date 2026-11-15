@@ -8,4 +8,8 @@ body: |-
   `400 INVALID_STATE`. An attempt of `POST /api/v1/messages/{id}/deliveries/{attempt}/accept`
   answers `404 MESSAGE_NOT_FOUND`, as an attempt the message does not have does. An event list's
   `after` or `before`, on `GET /api/v1/issues/{key}/events` and `GET /api/v1/artifacts/{id}/events`,
-  answers `400 INVALID_QUERY`. Each answered `500` before.
+  answers `400 INVALID_QUERY`. A result's `failed`, `skipped` or `excluded` count on
+  `POST /api/v1/issues/{key}/results` answers `400 RESULT_INPUT`, and a `last_read_seq` on
+  `PUT /api/v1/me/issues/{key}/state` answers `400 INVALID_STATE`. Each answered `500` before. The
+  `attempt` of a reply on `POST /api/v1/messages/{id}/reply` and `POST /api/v1/comments/{id}/reply`
+  is refused before any query, with the `404` each route already answered for it.
