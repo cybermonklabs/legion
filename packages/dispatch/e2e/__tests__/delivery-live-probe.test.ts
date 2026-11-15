@@ -285,22 +285,19 @@ const nothing = {
 // reconnect wait above 0 ms: the error line, the delta line, the second subscribe after a
 // rotation close, the second close line of the zero-spread row, and the snapshot line of the two
 // `--compare` read rows. It is three times the largest time from a row's start to its line,
-// rounded up to the next 100 ms. The largest of 100 readings, 10 runs of each of the five other
-// rows alone and 10 under six busy loops on two CPUs on 2026-11-15, was 1127.1 ms, from the
-// error-line row under load; three times that is 3 381.3 ms. The zero-spread row's largest of 20
-// readings, 10 runs alone and 10 under six busy loops on three CPUs on 2026-11-15, was 591.1 ms,
-// under load. The 3 400 ms is below each of those rows' limits, the least of which is 30 s.
-const lineWithin: LineDeadline = { largestMs: 1127.1, underMs: 3_400 };
+// rounded up to the next 100 ms. The largest of 180 readings, 10 runs of each of the six rows
+// alone and 20 under nine busy loops, three per CPU, on a pod of 3 CPUs on 2026-11-15, was
+// 1142.6 ms, from the delta-line row under load; three times that is 3 427.8 ms. The 3 500 ms is
+// below each of those rows' limits, the least of which is 30 s.
+const lineWithin: LineDeadline = { largestMs: 1142.6, underMs: 3_500 };
 
 // The deadline `lineBy` gives the row that waits for the second subscribe after a restart close,
 // which comes after a reconnect delay the probe draws from the 50 ms spread the row pins with
 // `--reconnect-spread-ms`. It is three times the largest time from the row's start to that
-// subscribe, rounded up to the next 100 ms. The largest of 20 readings, 10 runs alone and 10
-// under six busy loops on two CPUs on 2026-11-15, was 2637.1 ms, under load; three times that is
-// 7 911.3 ms. Those readings were taken at the page's own spread of up to `RECONNECT_SPREAD_MS`
-// (2 s), before the row pinned 50 ms, which only shortens the delay, so the deadline stands as
-// measured. The 8 000 ms is below the row's 30 s limit.
-const reconnectWithin: LineDeadline = { largestMs: 2637.1, underMs: 8_000 };
+// subscribe, rounded up to the next 100 ms. The largest of 30 readings, 10 runs alone and 20
+// under nine busy loops, three per CPU, on a pod of 3 CPUs on 2026-11-15, was 936.4 ms, under
+// load; three times that is 2 809.2 ms. The 2 900 ms is below the row's 30 s limit.
+const reconnectWithin: LineDeadline = { largestMs: 936.4, underMs: 2_900 };
 
 test(
   "the probe writes one line per frame and holds what the page would after them",
@@ -519,9 +516,9 @@ test(
   }
 );
 
-/** A day: far above the rotation row's deadline, `lineWithin`'s 3 400 ms from the row's start, so
+/** A day: far above the rotation row's deadline, `lineWithin`'s 3 500 ms from the row's start, so
  *  a reopen on a timer drawn from it reaches that row's second subscribe before the deadline on at
- *  most about one draw in 25 000 (3.4 s over 24 h). */
+ *  most about one draw in 25 000 (3.5 s over 24 h). */
 const NO_TIMER_SPREAD_MS = 24 * 3_600_000;
 
 // Once the first connection has opened, Dispatch's rotation (4001) is the one close the probe
@@ -642,9 +639,8 @@ test(
   {
     // This row drives the probe across a restart close: it waits for the second subscribe,
     // sends SIGINT, and reads the close line. 30 s is enough because the row waits for the
-    // probe's start, two loopback watches and a reconnect delay of at most `RECONNECT_SPREAD_MS`
-    // (2 s); the wait for the second subscribe ends by name at `reconnectWithin` from the row's
-    // start.
+    // probe's start, two loopback watches and a reconnect delay under the 50 ms spread it pins;
+    // the wait for the second subscribe ends by name at `reconnectWithin` from the row's start.
     timeout: 30_000,
   }
 );
@@ -836,15 +832,15 @@ test(
 // closed, and the row holds the time between to at least half the flag's 1 s and under
 // `heldUnderMs`. The lower bound stands at half the timer rather than at the timer itself
 // because the time between is the timer give or take the scheduling of the probe's dial and of
-// this process's accept and close handlers, so load can shorten it as well as lengthen it: with
-// six busy loops on two CPUs, the lowest of 74 runs of the 1 s timer measured 988.8 ms. The upper
-// bound follows the module's rule, three times the largest reading of its kind under load: the
-// largest accept-to-close of a correct 1 s timer, in 74 runs under six busy loops on two CPUs on
-// 2026-11-14, was 1 031.7 ms, three times which is 3 095.1 ms; the bound is 3 200 ms, which keeps
-// over 100 ms above that. So the row catches a timer set well short, one set several times too
-// long and one left at the 45 s default; it does not catch one set between about 0.5 s and about
-// 3 s, such as 2 s for 1 s, which held 1 987-2 029 ms.
-const heldUnderMs = 3_200;
+// this process's accept and close handlers, so load can shorten it as well as lengthen it: in 30
+// runs of the 1 s timer under nine busy loops, three per CPU, on a pod of 3 CPUs on 2026-11-15,
+// the lowest measured 952.0 ms. The upper bound follows the module's rule, three times the
+// largest reading of its kind under load, rounded up to the next 100 ms: the largest
+// accept-to-close of a correct 1 s timer in those 30 runs was 1 123.0 ms, three times which is
+// 3 369.0 ms, so the bound is 3 400 ms. So the row catches a timer set well short, one set
+// several times too long and one left at the 45 s default; it does not catch one set between
+// about 0.5 s and about 3.4 s, such as 2 s for 1 s, which held 1 987-2 029 ms.
+const heldUnderMs = 3_400;
 
 test(
   "a watch whose socket never opens ends on its own, and not as a clean watch",
@@ -901,7 +897,7 @@ test(
       expect(
         held,
         `the probe held its connection for ${heldUnderMs} ms or longer, more than three times the ` +
-          `largest hold, 1 031.7 ms, that a correct ${openWithinMs} ms timer showed under load, ` +
+          `largest hold, 1 123.0 ms, that a correct ${openWithinMs} ms timer showed under load, ` +
           `against the ${openWithinMs} ms that --open-within gave it`
       ).toBeLessThan(heldUnderMs);
     } finally {
@@ -963,12 +959,12 @@ function compareArgs(url: string, readWithin: string): string[] {
 // where without that bound the probe waits on the read for good. The read starts once SIGINT
 // ends the watch, so the time from SIGINT to the probe's exit is the read's 1 s of silence give
 // or take scheduling, and the row holds it to at least half that 1 s and under `exitUnderMs`:
-// three times the largest such time a correct probe took, 1 049.1 ms in 8 runs under six busy
-// loops on two CPUs on 2026-11-14, rounded up to the next 100 ms. So a read timer set well short
-// or several times too long fails here by name, and not on this row's own clock; one set between
-// about 0.5 s and about 3 s does not, and `silence-read.test.ts` holds the timer to its value on
-// Bun's fake clock.
-const exitUnderMs = 3_200;
+// three times the largest such time a correct probe took, 1 170.4 ms in 20 runs under nine busy
+// loops, three per CPU, on a pod of 3 CPUs on 2026-11-15, rounded up to the next 100 ms. So a
+// read timer set well short or several times too long fails here by name, and not on this row's
+// own clock; one set between about 0.5 s and about 3.6 s does not, and `silence-read.test.ts`
+// holds the timer to its value on Bun's fake clock.
+const exitUnderMs = 3_600;
 
 test(
   "a --compare read that receives nothing fails the probe with exit 1, naming the route",
@@ -991,7 +987,7 @@ test(
     expect(
       code,
       `the probe had not exited ${exitUnderMs} ms after SIGINT, more than three times the largest ` +
-        "time, 1 049.1 ms, a correct probe took to fail a read that --read-within 1 gave 1 s of silence"
+        "time, 1 170.4 ms, a correct probe took to fail a read that --read-within 1 gave 1 s of silence"
     ).not.toBe(pastDeadline);
     expect(
       took,

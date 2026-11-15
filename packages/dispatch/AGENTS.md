@@ -2864,8 +2864,8 @@ change and revisions it holds.
 Each of those two rows reads the `wait_ms` its close line carries, and the two catch different
 things.
 Each also reads `performance.now()` at its start, for one deadline: `lineBy` fails the row, naming
-the second subscribe it waits for, at `lineWithin` (3 400 ms) from that start for the 4001 row and
-at `reconnectWithin` (8 000 ms) for the 1012 row, each three times the largest time a correct probe
+the second subscribe it waits for, at `lineWithin` (3 500 ms) from that start for the 4001 row and
+at `reconnectWithin` (2 900 ms) for the 1012 row, each three times the largest time a correct probe
 took to reach that subscribe in the readings its comment names.
 The 4001 row sends a rotation, which the probe answers at once, so the close line's `wait_ms` is
 null; a probe that answered it on the reconnect timer and reports that wait fails the row's line

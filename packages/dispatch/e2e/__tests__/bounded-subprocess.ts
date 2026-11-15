@@ -35,20 +35,21 @@
  * a child which will never end fails with a name, before its job is killed from outside.
  *
  * The rule for each value: each bound is at least three times the largest reading of its kind.
- * The readings behind `short`, `listing` and `generation` were taken under load in a pod with two
- * CPUs; the reading behind `twoStackBuild` was taken from cold, on a pod with four cores.
+ * The readings behind `short`, `listing` and `generation` are the largest cost lines of two runs
+ * of the whole lane, `bun test --parallel --timeout 60000 e2e/__tests__`, under nine busy loops,
+ * three per CPU, on a pod of 3 CPUs on 2026-11-15, all but the 78.4 s of the first listing in a
+ * fresh checkout; the reading behind `twoStackBuild` was taken from cold, on a pod with four cores.
  *
- * - `short`, against 8.78 s: what the row of `playwright-argv.test.ts`, which runs one
- *   `playwright test --help`, cost under the whole lane. The other short commands, the two
- *   compare-recordings runs, the two `bun --eval` probes, and the harness and import children,
- *   read 2.5 s or less; so do the driver of `replace-blocks-guard.test.ts` and its psql and
- *   tail, at most 1.2 s, 0.48 s and 0.02 s under six busy loops on three CPUs.
- * - `listing`, against 84.85 s for a whole file of listings run alone, and against 78.4 s for the
- *   first listing in a fresh checkout.
+ * - `short`, against 8.74 s: what the one `playwright test --help` of `playwright-argv.test.ts`
+ *   cost. The other short commands, the two compare-recordings runs, the two `bun --eval`
+ *   probes, and the harness and import children, read 4.94 s or less; so do the driver of
+ *   `replace-blocks-guard.test.ts` and its psql and tail, at most 2.41 s, 0.45 s and 0.07 s.
+ * - `listing`, against 76.20 s, the largest of the 22 listings, and against 78.4 s for the first
+ *   listing in a fresh checkout.
  * - `generation`, 30 s above the listings inside it. The `row-map` generation starts two listings
  *   of its own, so the inner bound fires first and the inner message is what the reader sees. The
- *   30 s is the tool's own start and the work it does outside its two listings. The row of
- *   `row-map.test.ts` that waits for the generation cost 33.47 s under the whole lane.
+ *   30 s is the tool's own start and the work it does outside its two listings. The generation
+ *   that `row-map.test.ts` waits for cost 34.66 s.
  * - `twoStackBuild`, against about nine minutes, measured from cold on that four-core pod. That
  *   child builds two stacks, and each stack is a Go build and an initdb.
  *
