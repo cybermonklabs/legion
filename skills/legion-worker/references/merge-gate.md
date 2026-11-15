@@ -154,7 +154,7 @@ as the fingerprint decides (*The reviewer*, below, and
 
   ```bash
   issue=<issue> sid=<your session id> at=<that review's submitted_at>; v=
-  while out=$(dispatch handoff-read --issue "$issue" --phase review ${v:+--version "$v"}); do
+  while out=$(dispatch handoff-read --issue "$issue" --phase review ${v:+--version "$v"}) || { printf '%s\n' "$out"; false; }; do
     line=$(printf '%s\n' "$out" | head -n 1); v=${line#*, version }; v=${v%% *}; written=${line##* at }
     case $line in *" session $sid at "*)
       if [ "$(jq -rn --arg w "$written" --arg a "$at" '$w[0:19] <= $a[0:19]')" = true ]; then
@@ -164,7 +164,10 @@ as the fingerprint decides (*The reviewer*, below, and
   done
   ```
 
-  Where no such handoff stands for that review (it prints `HANDOFF_NOT_FOUND`, or no handoff of this session at or before it, as for a review made outside Legion's workflow), the head is the one full SHA its body names as the head it reviewed or approved, and a confirmation's is the new head it approves.
+  Its last line says which case holds.
+  A full SHA is the head.
+  `no head` (a handoff that names none), `no review handoff of this session at or before …` or `HANDOFF_NOT_FOUND: …` says no handoff names the head for that review, as for a review made outside Legion's workflow: the head is then the one full SHA its body names as the head it reviewed or approved, and a confirmation's is the new head it approves.
+  Any other line, `Dispatch at … is unreachable` or another refusal (in a script `dispatch` prints its refusal on standard output, which the loop prints as it leaves), is Dispatch not answering, never "no handoff": run it again, and while it does not answer there is no head to take the fingerprint at, which is a new round.
   A body that names more than one such SHA and does not say which it read, or names none, leaves no head to take the fingerprint at, which is a new round.
   Equal and that review was
   `APPROVE`: submit one more `APPROVE` naming the new head by SHA, its body naming both SHAs
