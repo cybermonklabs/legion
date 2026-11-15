@@ -16,7 +16,6 @@ import (
 	"net/http/httptrace"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,7 +27,9 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/ctxlock"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 // noCredentialMsg is the exact instruction returned whenever the helper has no machine
@@ -156,8 +157,12 @@ type Broker struct {
 	login   atomic.Pointer[loginState] // most recent login: code, state
 	// credMu is held by whatever changes the held login and its machine file together: a login's
 	// save and install, a start's install, and a refresh from its request to its save and swap, so
-	// a refresh never races a login's install. Every save of the machine file runs under it.
-	credMu sync.Mutex
+	// a refresh never races a login's install. Every save of the machine file runs under it. Every
+	// holder waits for it as long as it must, except a drop (dropOutsideRefresh), which gives up
+	// when its caller's context ends (LockContext): clearOnInvalid's caller is a call a client
+	// waits on, and a refresh holds credMu for the whole of its token request, on the refresh
+	// loop's context, which has no deadline.
+	credMu ctxlock.Mutex
 	// closed, set by Close under credMu, makes every later save of the machine file write nothing.
 	closed bool
 	// stateMu is held by every write of cred, login and dropped, and by LoginStatus while it reads
@@ -217,11 +222,17 @@ type Broker struct {
 // calls carry must be testable without one.
 type SignIns interface {
 	// Current is the launcher credential a session enrolling now acts under, nil where this
-	// box offers none and the machine's own is what it enrols under.
+	// box offers none and the machine's own is what it enrols under. A trade that renews it
+	// runs on its caller's context, which for enrollLoop has no deadline, so a call that finds
+	// one in progress answers an error wrapping ctx's once ctx ends rather than waiting the
+	// trade out: a broker-call op behind it (Server.brokerCall) ends at its bound with that
+	// error, a known failure, since the op has made nothing (enrollAs's retry calls it only
+	// after the broker refused the first request).
 	Current(ctx context.Context) (*brokerclient.Authority, error)
 	// Refused tells it the broker rejected a launcher proof signed with that credential, so
-	// the next Current trades afresh rather than presenting it again.
-	Refused(credentialID string)
+	// the next Current trades afresh rather than presenting it again. It answers ctx's error,
+	// having recorded nothing, when ctx ends while it waits for a Current in progress.
+	Refused(ctx context.Context, credentialID string) error
 }
 
 // BrokerError is a non-success answer, with the contract's code.
@@ -985,18 +996,17 @@ func (b *Broker) redeem(ctx context.Context, cred *machineCredential) (next *Mac
 	return next, "", nil
 }
 
-// retryAfter is the wait a token endpoint answer named in its Retry-After header (whole seconds),
-// or zero when err carries none.
+// retryAfter is the wait a token endpoint answer names, read through serverwait.Read, or zero when
+// err carries none or the answer names none, which retrySchedule.next raises to its retry. The
+// broker's 429s name it in Retry-After alone. A wait of an hour is past next's cap, so next waits
+// maxRetryAfter, a minute.
 func retryAfter(err error) time.Duration {
 	var re *oauth2.RetrieveError
 	if !errors.As(err, &re) || re.Response == nil {
 		return 0
 	}
-	seconds, perr := strconv.Atoi(strings.TrimSpace(re.Response.Header.Get("Retry-After")))
-	if perr != nil || seconds <= 0 {
-		return 0
-	}
-	return time.Duration(seconds) * time.Second
+	wait, _ := serverwait.Read(re.Response.Header, time.Now())
+	return wait
 }
 
 // removeRefusedFile deletes the machine file of a login the broker refused to refresh.
@@ -1111,7 +1121,7 @@ func (b *Broker) watchExpiry(cred *machineCredential) {
 	}
 	select {
 	case <-b.after(cred, time.Until(cred.expiresAt)):
-		b.dropOutsideRefresh(cred, dropExpired, "expires_at", cred.expiresAt.Format(time.RFC3339))
+		b.dropOutsideRefresh(context.Background(), cred, dropExpired, "expires_at", cred.expiresAt.Format(time.RFC3339))
 	case <-cred.gone:
 	}
 }
@@ -1162,12 +1172,16 @@ func (b *Broker) after(cred *machineCredential, d time.Duration) <-chan time.Tim
 // it waits for a refresh in flight to finish, so a refresh that succeeds always ends with the
 // helper holding the refreshed credential. A drop of the credential that refresh replaced then
 // finds it gone and drops nothing. It reports whether it dropped cred and whether the helper holds
-// a credential afterwards.
-func (b *Broker) dropOutsideRefresh(cred *machineCredential, why string, attrs ...any) (dropped, held bool) {
+// a credential afterwards. A ctx that ends while it waits drops nothing either: the refresh it was
+// waiting for settles cred its own way, and a later call the broker refuses under cred drops it
+// then. watchExpiry's wait has no context to end.
+func (b *Broker) dropOutsideRefresh(ctx context.Context, cred *machineCredential, why string, attrs ...any) (dropped, held bool) {
 	if b.testBeforeDrop != nil {
 		b.testBeforeDrop()
 	}
-	b.credMu.Lock()
+	if b.credMu.LockContext(ctx) != nil {
+		return false, b.HasCredential()
+	}
 	defer b.credMu.Unlock()
 	return b.drop(cred, why, attrs...), b.HasCredential()
 }
@@ -1224,19 +1238,27 @@ func isLauncherInvalid(err error) bool {
 // refused call was signed with, and only that one is dropped, after any refresh in flight
 // (dropOutsideRefresh). A refusal of a credential a newer login or a refresh has already replaced
 // drops nothing and is returned as it came: the helper holds a credential, and the caller's retry
-// uses it. A credential it drops is handed to the refresh loop, which refreshes it at once so
-// its machine file is deleted if the broker has ended the login (settleRefused). In identity
-// mode there is no refresh loop and no file: the trade loop is what holds the credential, so
-// the drop wakes it instead (brokerclient.Client.Wake) and it trades again at once. Without
-// that wake the helper would answer NO_CREDENTIAL to every register and sign until the loop's
-// own renewal came round — ten minutes at a 900 s token, fifty-five at an hour's.
-func (b *Broker) clearOnInvalid(cred *machineCredential, err error) error {
+// uses it. A ctx that ends while a refresh in flight holds credMu drops nothing as well, leaving
+// that refresh to settle cred, which it does only when it succeeds or the broker answers
+// invalid_grant: a refresh that fails with a 5xx, a timeout or a 429 settles nothing, and cred
+// stays held until the refresh loop's next refresh settles it or a later call the broker refuses
+// under it drops it, whichever comes first. The refusal is returned as it came while the helper
+// still holds a credential: a broker-call op then ends at its bound with the broker's refusal, a
+// known failure (ENROLL_FAILED, UNENROLL_FAILED), rather than waiting the refresh out until
+// Server.brokerCall's timer answers its outcome unknown. A credential it drops is handed to the
+// refresh loop, which refreshes it at once so its machine file is deleted if the broker has
+// ended the login (settleRefused). In identity mode there is no refresh loop and no file: the
+// trade loop is what holds the credential, so the drop wakes it instead
+// (brokerclient.Client.Wake) and it trades again at once. Without that wake the helper would
+// answer NO_CREDENTIAL to every register and sign until the loop's own renewal came round — ten
+// minutes at a 900 s token, fifty-five at an hour's.
+func (b *Broker) clearOnInvalid(ctx context.Context, cred *machineCredential, err error) error {
 	if !isLauncherInvalid(err) {
 		return err
 	}
 	var be *BrokerError
 	errors.As(err, &be)
-	dropped, held := b.dropOutsideRefresh(cred, dropRefused, "code", be.Code)
+	dropped, held := b.dropOutsideRefresh(ctx, cred, dropRefused, "code", be.Code)
 	if dropped {
 		if b.Identity != nil {
 			b.Identity.Wake()
@@ -1401,7 +1423,10 @@ func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint strin
 	}
 	b.logger().Warn("the broker refused the sign-in's launcher credential; enrolling under whatever authority this box has now",
 		"operator", authority.Operator, "credential_id", authority.CredentialID)
-	b.SignIns.Refused(authority.CredentialID)
+	if err := b.SignIns.Refused(ctx, authority.CredentialID); err != nil {
+		return "", time.Time{}, fmt.Errorf("%s, to drop the credential the broker refused (%s): %w",
+			brokerclient.SignInWaitEnded(authority.Operator, err), authority.CredentialID, err)
+	}
 	if authority, cred, err = b.enrolAuthority(ctx); err != nil {
 		return "", time.Time{}, err
 	}
@@ -1446,7 +1471,7 @@ func (b *Broker) enrollUnder(ctx context.Context, authority *brokerclient.Author
 	if err := b.do(req, []int{http.StatusOK, http.StatusCreated}, &out); err != nil {
 		err = reach.settle(err)
 		if cred != nil {
-			err = b.clearOnInvalid(cred, err)
+			err = b.clearOnInvalid(ctx, cred, err)
 		}
 		if sessionHeld(err) {
 			// The broker refuses the name to the principal this request signed as and to no
@@ -1546,7 +1571,7 @@ func (b *Broker) revokeUnder(ctx context.Context, authority *brokerclient.Author
 		if cred == nil {
 			return err
 		}
-		return b.clearOnInvalid(cred, err)
+		return b.clearOnInvalid(ctx, cred, err)
 	}
 	return nil
 }

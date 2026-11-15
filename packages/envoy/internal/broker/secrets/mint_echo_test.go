@@ -64,7 +64,8 @@ func refreshToken(r *http.Request) string {
 // TestAMintErrorNeverQuotesWhatTheUpstreamEchoes: an upstream that echoes the credential a mint
 // sent, in a status line Go's HTTP client refuses, in the body of a refusal or an outage, or as
 // Google's error_subtype, never gets it into the minter's error, which the broker logs and answers
-// the session with. Each answer still names its class.
+// the session with. Each answer still names its class. Every row mints under a Retry on a clock
+// the test sets, so a failure it retries is asked again and the error is its last attempt's.
 func TestAMintErrorNeverQuotesWhatTheUpstreamEchoes(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
@@ -73,6 +74,7 @@ func TestAMintErrorNeverQuotesWhatTheUpstreamEchoes(t *testing.T) {
 	app := githubAppValue(t, "123456", key)
 	var jwt string
 	recordJWT := func(r *http.Request) string { jwt = appJWT(r); return jwt }
+	retry, _, _ := testRetry(atTheTop)
 	answer := func(status int, body func(*http.Request) string) string {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(status)
@@ -88,42 +90,42 @@ func TestAMintErrorNeverQuotesWhatTheUpstreamEchoes(t *testing.T) {
 	}{
 		"github status line": {
 			mint: func(ctx context.Context) error {
-				_, err := secrets.GitHubApp{Base: echoStatusLine(t, recordJWT)}.Mint(ctx, mintFor(app, "acme"))
+				_, err := secrets.GitHubApp{Base: echoStatusLine(t, recordJWT), Retry: retry}.Mint(ctx, mintFor(app, "acme"))
 				return err
 			},
 			canary: func() string { return jwt }, class: "upstream",
 		},
 		"github refusal body": {
 			mint: func(ctx context.Context) error {
-				_, err := secrets.GitHubApp{Base: answer(http.StatusUnauthorized, recordJWT)}.Mint(ctx, mintFor(app, "acme"))
+				_, err := secrets.GitHubApp{Base: answer(http.StatusUnauthorized, recordJWT), Retry: retry}.Mint(ctx, mintFor(app, "acme"))
 				return err
 			},
 			canary: func() string { return jwt }, class: "refused",
 		},
 		"github outage body": {
 			mint: func(ctx context.Context) error {
-				_, err := secrets.GitHubApp{Base: answer(http.StatusBadGateway, recordJWT)}.Mint(ctx, mintFor(app, "acme"))
+				_, err := secrets.GitHubApp{Base: answer(http.StatusBadGateway, recordJWT), Retry: retry}.Mint(ctx, mintFor(app, "acme"))
 				return err
 			},
 			canary: func() string { return jwt }, class: "upstream",
 		},
 		"google status line": {
 			mint: func(ctx context.Context) error {
-				_, err := secrets.GoogleLogin{TokenURL: echoStatusLine(t, refreshToken)}.Mint(ctx, secrets.MintRequest{Value: googleLoginValue()})
+				_, err := secrets.GoogleLogin{TokenURL: echoStatusLine(t, refreshToken), Retry: retry}.Mint(ctx, secrets.MintRequest{Value: googleLoginValue()})
 				return err
 			},
 			canary: func() string { return googleCanary }, class: "upstream",
 		},
 		"google refusal body": {
 			mint: func(ctx context.Context) error {
-				_, err := secrets.GoogleLogin{TokenURL: answer(http.StatusBadRequest, refreshToken)}.Mint(ctx, secrets.MintRequest{Value: googleLoginValue()})
+				_, err := secrets.GoogleLogin{TokenURL: answer(http.StatusBadRequest, refreshToken), Retry: retry}.Mint(ctx, secrets.MintRequest{Value: googleLoginValue()})
 				return err
 			},
 			canary: func() string { return googleCanary }, class: "refused",
 		},
 		"google outage body": {
 			mint: func(ctx context.Context) error {
-				_, err := secrets.GoogleLogin{TokenURL: answer(http.StatusServiceUnavailable, refreshToken)}.Mint(ctx, secrets.MintRequest{Value: googleLoginValue()})
+				_, err := secrets.GoogleLogin{TokenURL: answer(http.StatusServiceUnavailable, refreshToken), Retry: retry}.Mint(ctx, secrets.MintRequest{Value: googleLoginValue()})
 				return err
 			},
 			canary: func() string { return googleCanary }, class: "upstream",
@@ -134,7 +136,7 @@ func TestAMintErrorNeverQuotesWhatTheUpstreamEchoes(t *testing.T) {
 					reply, _ := json.Marshal(map[string]string{"error": "invalid_grant", "error_subtype": refreshToken(r)})
 					return string(reply)
 				})
-				_, err := secrets.GoogleLogin{TokenURL: url}.Mint(ctx, secrets.MintRequest{Value: googleLoginValue()})
+				_, err := secrets.GoogleLogin{TokenURL: url, Retry: retry}.Mint(ctx, secrets.MintRequest{Value: googleLoginValue()})
 				return err
 			},
 			canary: func() string { return googleCanary }, class: "refused",

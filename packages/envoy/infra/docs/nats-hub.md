@@ -161,6 +161,20 @@ copies than `ENVOY_NATS_REPLICAS` with that update. This hub is one server, whic
 replica count above 1, so the programs that use it run with `ENVOY_NATS_REPLICAS` unset or 1 (the
 hub's own listener sets none), and at 1 neither sends a raise.
 
+The buckets those sets grant are each one `bus.ListenerBuckets()` names, `envoy_interests`,
+`envoy_roles`, `envoy_sessions`, `envoy_known_sessions`, `legion_agents`, `envoy_ci_state` and
+`envoy_dpop_proofs`, with `envoy_webhook_redelivery` for `DispatchPermissions` alone.
+Each is granted to every one of these users, and
+[Permission sets](../README.md#permission-sets) says what that lets a session on a host write.
+A listener whose user's grant does not yet carry `envoy_known_sessions` runs without that bucket
+until the grant reaches it ([Permission sets](../README.md#permission-sets)).
+
+The listener's send route asks whether a session's plugin still holds a NATS connection with one
+core request on the session's relay subject, `notifications.envoy.deliver.<session id>`, answered
+on the request's own reply inbox.
+It needs no rule of its own; [Permission sets](../README.md#permission-sets) names the entries
+that carry it.
+
 The sets of a user no session shares, `ListenerPermissions` and `ListenerHostPermissions`, alone
 hold the session consumers' calls on every consumer of the stream (`$JS.API.CONSUMER.CREATE`,
 `INFO`, `DELETE` and `MSG.NEXT` on `ENVOY_NOTIFICATIONS.*`, the create with a filter subject on
@@ -596,7 +610,13 @@ changes the rendered users of every hub with a `listener`, a `machineId` user or
 `dispatchMachineId` user: moving such a hub to it replaces its VM once, with the outage below, and
 a hub with none of them keeps its VM. It also adds the `listenerMachineId` kind, whose user holds
 those entries beside the plain `notifications.>` subscribe, for a listener whose user no session
-shares; a hub gains it only when its own users name it. The cloud-config is the instance
+shares; a hub gains it only when its own users name it.
+The release that adds `envoy_known_sessions` to `bus.ListenerBuckets()` adds that bucket's calls to
+`ListenerPermissions`, and so to `ListenerHostPermissions`, `HostPermissions` and
+`DispatchPermissions`, which changes the rendered users of every hub with a `listener`, a
+`machineId`, a `listenerMachineId` or a `dispatchMachineId` user: upgrading such a hub to it
+replaces its VM once, with the outage below, and a hub with none of them keeps its VM.
+The cloud-config is the instance
 template's `user-data`, and a template cannot change. The group then replaces its VM at once
 (`PROACTIVE`, minimal action `REPLACE`), deleting it before it creates the next (`RECREATE`, no
 surge, at most one unavailable). NATS is down from the old VM's stop until the new one's `nats`
