@@ -240,12 +240,22 @@ func RateLimited(response *http.Response, body []byte) bool {
 func RateLimitSignals(response *http.Response, body []byte) bool {
 	return response.Header.Get("X-RateLimit-Remaining") == "0" ||
 		response.Header.Get("Retry-After") != "" ||
-		namesSecondaryLimit(string(body))
+		NamesSecondaryLimit(string(body))
 }
 
-// namesSecondaryLimit says whether text, a GitHub answer's body or error message, says it is GitHub's
-// secondary rate limit (secondaryLimitMessages).
-func namesSecondaryLimit(text string) bool {
+// Limit is whether response, whose body is body, is GitHub's rate limit (RateLimited), and the
+// budget the limit spent (spent): the reading this package gives its own answers, for a caller
+// that reads GitHub's answers through another client, as the leak guard reads them through gh.
+func Limit(response *http.Response, body []byte) (bool, Budget) {
+	if !RateLimited(response, body) {
+		return false, ""
+	}
+	return true, spent(response.Header, response.Header.Get("X-RateLimit-Remaining") == "0")
+}
+
+// NamesSecondaryLimit says whether text, a GitHub answer's body or error message, says it is
+// GitHub's secondary rate limit (secondaryLimitMessages).
+func NamesSecondaryLimit(text string) bool {
 	message := strings.ToLower(text)
 	for _, named := range secondaryLimitMessages {
 		if strings.Contains(message, named) {

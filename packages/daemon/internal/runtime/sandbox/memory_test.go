@@ -34,8 +34,8 @@ func memoryMount(dir string) (corev1.Volume, corev1.VolumeMount) {
 
 // memoryRuntime is the test runtime over the operator's pod, which mounts the memory ConfigMap at
 // memoryDir and names roleFiles as role_config_files, given files as the project's memory
-// overlays. A nil list is a daemon whose project names no `memory` block at all, or one at mode
-// off, which the daemon hands none.
+// overlays. A nil list is a daemon whose project names no `memory` block at all, whose arms
+// name no file (memoryVariants).
 func memoryRuntime(t *testing.T, files []string) *Runtime {
 	t.Helper()
 	return runtimeWithOptions(t, func(o *Options) {
@@ -43,15 +43,32 @@ func memoryRuntime(t *testing.T, files []string) *Runtime {
 		o.Pod.Volumes = append(o.Pod.Volumes, volume)
 		o.Pod.VolumeMounts = append(o.Pod.VolumeMounts, mount)
 		o.RoleConfigFiles = roleFiles
-		o.MemoryConfigFiles = files
+		o.ExperimentVariants = memoryVariants(files)
 	})
+}
+
+// memoryVariants are the two arms the `memory` block declares
+// (config.Project.ExperimentsDeclared): memory, carrying the block's overlays and the key the
+// operator wrote them under, and none, carrying nothing, both marked as the block's own
+// (runtime.Variant.MemoryBlock). A nil list stands for a project that names neither the block nor
+// `experiments.memory`: every project declares the memory experiment, and such a project declares
+// it at mode off with two arms that name no file, which add no PI_CONFIG_FILES value and no mount
+// (runtime.RoleOverlayValues), so the runtime is handed nothing it would read.
+func memoryVariants(files []string) []runtime.Variant {
+	if files == nil {
+		return nil
+	}
+	return []runtime.Variant{
+		{Experiment: "memory", Name: "memory", ConfigFiles: files, ConfigFilesField: "projects.LEGION.memory.config_files", MemoryBlock: true},
+		{Experiment: "memory", Name: "none", MemoryBlock: true},
+	}
 }
 
 // memorySpec is a launch for an issue whose tree was drawn into the memory group.
 func memorySpec(t *testing.T) runtime.SpawnSpec {
 	t.Helper()
 	spec := workerSpec(t)
-	spec.Memory = true
+	spec.Variants = []runtime.Variant{{Experiment: "memory", Name: "memory", ConfigFiles: memoryOverlays}}
 	return spec
 }
 
@@ -88,7 +105,7 @@ func TestTheMemoryInstructionsAreTheLastFragmentOfTheSystemPrompt(t *testing.T) 
 		RolePromptPaths:            []string{write("role.md", "You are the tester.\n")},
 		Addressing:                 "Legion addressing: your role topic is `notifications.role.worker`.",
 		DeploymentInstructionsPath: write("instructions.md", "Deployment instructions.\n"),
-		MemoryInstructionsPath:     write("memory.md", "Read the tree's memory.\n\n"),
+		VariantInstructionsPaths:   []string{write("memory.md", "Read the tree's memory.\n\n")},
 	}
 	got, err := systemPrompt(parts)
 	if err != nil {
@@ -98,7 +115,7 @@ func TestTheMemoryInstructionsAreTheLastFragmentOfTheSystemPrompt(t *testing.T) 
 	if got != want {
 		t.Errorf("the memory-group role's system prompt =\n%q\nwant\n%q", got, want)
 	}
-	parts.MemoryInstructionsPath = ""
+	parts.VariantInstructionsPaths = nil
 	if got, err := systemPrompt(parts); err != nil || got != strings.TrimSuffix(want, "\n\nRead the tree's memory.") {
 		t.Errorf("a launch told no memory instructions = %q, %v, want the prompt to end at the deployment's own", got, err)
 	}
@@ -133,8 +150,8 @@ func TestAKeptPodBuiltBeforeTheMemoryMountIsToldNoMemoryOverlay(t *testing.T) {
 			if !slices.Equal(kept.overlays, roleFiles[claim.RoleTester]) {
 				t.Errorf("the kept pod holds the tester's %q, want %q", kept.overlays, roleFiles[claim.RoleTester])
 			}
-			if !slices.Equal(kept.memory, tc.memory) {
-				t.Errorf("the kept pod holds the memory overlays %q, want %q", kept.memory, tc.memory)
+			if !slices.Equal(kept.variantFiles, tc.memory) {
+				t.Errorf("the kept pod holds the memory overlays %q, want %q", kept.variantFiles, tc.memory)
 			}
 			l.kept = &kept
 			if got := envOf(corev1.Container{Env: after.roleOperatorEnv(l)})["PI_CONFIG_FILES"]; got != tc.want {
@@ -160,8 +177,8 @@ func TestAKeptPodHoldingTheMemoryOverlaysTellsALaunchInNoMemoryGroupNone(t *test
 	if !readable {
 		t.Fatal("keptBy could not read the pod's template")
 	}
-	if !slices.Equal(kept.memory, memoryOverlays) {
-		t.Fatalf("the kept pod holds the memory overlays %q, want %q: the launch is told none of a pod that holds them", kept.memory, memoryOverlays)
+	if !slices.Equal(kept.variantFiles, memoryOverlays) {
+		t.Fatalf("the kept pod holds the memory overlays %q, want %q: the launch is told none of a pod that holds them", kept.variantFiles, memoryOverlays)
 	}
 	l.kept = &kept
 	if got := envOf(corev1.Container{Env: r.roleOperatorEnv(l)})["PI_CONFIG_FILES"]; got != own {
@@ -181,7 +198,7 @@ func TestAMovedMemoryOverlaysMountDriftsEveryIssuePodOfTheDeployment(t *testing.
 			volume, mount := memoryMount(dir)
 			o.Pod.Volumes = append(o.Pod.Volumes, volume)
 			o.Pod.VolumeMounts = append(o.Pod.VolumeMounts, mount)
-			o.MemoryConfigFiles = []string{dir + "/memory.yml"}
+			o.ExperimentVariants = memoryVariants([]string{dir + "/memory.yml"})
 		}
 	}
 	before, after := runtimeWithOptions(t, at("/etc/a")), runtimeWithOptions(t, at("/etc/b"))
@@ -198,6 +215,31 @@ func TestAMovedMemoryOverlaysMountDriftsEveryIssuePodOfTheDeployment(t *testing.
 	controller := controllerSpec(t)
 	if got, moved := after.movedRoleOverlays(podOf(t, before, controller), controller.Role); moved {
 		t.Errorf("the controller's pod moved %+v, want no move: it is in no tree and names no memory overlay", got)
+	}
+}
+
+// The `memory` block's own arm keeps the drift's name it had before any experiment was declared,
+// `memory.config_files`, and that name is the block's alone: the same arm declared under
+// `experiments.memory` is no arm of the block (runtime.Variant.MemoryBlock), so its moved overlay
+// is named by the key the operator wrote it under, as every arm of the `experiments` key is.
+func TestAMovedOverlayOfExperimentsMemoryIsNamedByItsOwnKey(t *testing.T) {
+	const field = "projects.LEGION.experiments.memory.variants.memory.config_files"
+	at := func(dir string) func(*Options) {
+		return func(o *Options) {
+			volume, mount := memoryMount(dir)
+			o.Pod.Volumes = append(o.Pod.Volumes, volume)
+			o.Pod.VolumeMounts = append(o.Pod.VolumeMounts, mount)
+			o.ExperimentVariants = []runtime.Variant{
+				{Experiment: "memory", Name: "memory", ConfigFiles: []string{dir + "/memory.yml"}, ConfigFilesField: field},
+				{Experiment: "memory", Name: "none"},
+			}
+		}
+	}
+	before, after := runtimeWithOptions(t, at("/etc/a")), runtimeWithOptions(t, at("/etc/b"))
+	worker := workerSpec(t)
+	got, moved := after.movedRoleOverlays(podOf(t, before, worker), worker.Role)
+	if want := field + " /etc/b/memory.yml"; !moved || got.where != want {
+		t.Errorf("%s: moved %v %+v, want a move of %s", worker.Role, moved, got, want)
 	}
 }
 
@@ -254,8 +296,8 @@ func TestNoMemoryBeforeOrAfterTheBlockBuildsTheSamePod(t *testing.T) {
 func TestConfigureRefusesAMemoryOverlayPIConfigFilesCannotName(t *testing.T) {
 	for _, file := range []string{"memory.yml", "/etc/a:b.yml"} {
 		opts := testOptions()
-		opts.MemoryConfigFiles = []string{file}
-		want := `sandbox runtime: the memory overlay "` + file + `" is not an absolute path PI_CONFIG_FILES can name`
+		opts.ExperimentVariants = memoryVariants([]string{file})
+		want := `sandbox runtime: the overlay "` + file + `" of experiment memory variant memory is not an absolute path PI_CONFIG_FILES can name`
 		if _, err := configure(opts); err == nil || err.Error() != want {
 			t.Errorf("configure with the memory overlay %q = %v, want %q", file, err, want)
 		}
