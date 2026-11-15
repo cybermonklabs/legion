@@ -84,7 +84,8 @@ type Config struct {
 	RepositoryRenames ghrepo.Renames
 	// NoteUnread is told, inside the fact's transaction, of each issue the workflow did not record
 	// because its repository resolved Unread (left out for now, GitHub not answering its
-	// installation read): the daemon takes it into that repository's recovery whatever it resolves
+	// installation read, or its default-branch read past GitHub's rate limit): the daemon takes it
+	// into that repository's recovery whatever it resolves
 	// to by then. It keeps no state of the issue's own. Nil notes none.
 	NoteUnread func(key, resolved string)
 	// ReadMergeState is asked, on the commit of a fact that leaves a review round waiting on
