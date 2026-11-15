@@ -3073,6 +3073,9 @@ jobs:
               - 'skills/legion-architect/references/acceptance.md'
               - 'skills/legion-controller/references/admission.md'
               - 'skills/legion-controller/references/wakes.md'
+              # The third page production_check_rule_test.go:30 holds to the production check's
+              # rule, beside AGENTS.md and concepts.md above.
+              - 'scripts/e2e/README.md'
               # The guide packages/envoy/internal/broker/oauth, packages/daemon/internal/runtime/sandbox
               # and packages/daemon/internal/daemon hold their committed extracts to
               # (internal/textcheck/claims_doc_test.go:36,43, reclaim_doc_test.go:44,167 and

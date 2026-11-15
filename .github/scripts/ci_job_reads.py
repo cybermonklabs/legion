@@ -454,8 +454,8 @@ RULES = {
         for path in files_but_tests(f"{DAEMON}/internal/stream")],
     f"{DAEMON}/internal/intake/redelivered_test.go": [
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
-    f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:802 globs it and :808 reads each file; :902 reads one")),
-    f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
+    f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:855 globs it and reads each file; :955 reads one")),
+    f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:202")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
         ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),
         ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:689")),
@@ -480,6 +480,14 @@ RULES = {
     f"{DAEMON}/internal/textcheck/classify_imports_test.go": [
         Read(path, "internal/textcheck/classify_imports_test.go:19 globs ../classify/*.go, and :29 parses each file it finds but the test files (:26)")
         for path in files_but_tests(f"{DAEMON}/internal/classify")],
+    # main's #4092 read these three pages in internal/prompts's production-check test; that half
+    # moved here, so an edit of one of them alone starts the text checks and not the daemon's lane
+    # (dispatch://INFRA-1413).
+    f"{DAEMON}/internal/textcheck/production_check_rule_test.go": reads(
+        ("AGENTS.md", "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../.."),
+        ("scripts/e2e/README.md", "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../.."),
+        ("docs/site/src/content/docs/legion/concepts.md",
+         "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../..")),
     f"{DAEMON}/internal/textcheck/reclaim_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/reclaim_doc_test.go:44,167 reads it under ../../../.."),
         (f"{DAEMON}/internal/runtime/sandbox/reclaim_doc_extract.txt",
