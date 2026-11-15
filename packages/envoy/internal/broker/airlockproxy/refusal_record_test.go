@@ -445,8 +445,8 @@ func TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames(t *
 
 // TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote: a refusal's line, a call's line, a joined
 // connection's line, an upstream failure's line and net/http's own line on the proxy port each fit
-// one Cloud Logging entry, 262,144 bytes, whatever the caller sends, because each text field of
-// them is cut to its first 256 bytes where it enters the line (answer.ClipFields;
+// one Cloud Logging entry, 262,144 bytes, whatever the caller sends, because each text field the
+// caller wrote is cut to its first 256 bytes where it enters the line (answer.ClipFields;
 // ca-refusal-record, Verification v19). Each row sends, through one field the caller chose, text
 // that writes that line at about 300 KB uncut, on the real proxy of the rig:
 //
@@ -664,8 +664,8 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 				// handler panicked with beside it.
 				panicError = fmt.Sprintf("http: panic serving %s: %s", conn.LocalAddr(), panicked)
 				client := tls.Client(conn, &tls.Config{ServerName: boundHost, RootCAs: r.trust})
-				// A call the rules allow: serveBound reads the grant, decides, and asks for the
-				// grant's values, whose first read of the clock panics.
+				// A call to the bound host: serveBound reads the grant, chooses the name the call is
+				// for (choosePair) and asks for the grant's values, whose first read of the clock panics.
 				call := "GET /v1/things HTTP/1.1\r\nHost: " + boundHost + "\r\nAuthorization: Bearer " + workerPlaceholder + "\r\n\r\n"
 				if _, err := client.Write([]byte(call)); err != nil {
 					t.Fatalf("write the call on the bound connection: %v", err)

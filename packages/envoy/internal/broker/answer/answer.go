@@ -684,10 +684,10 @@ func CorrelationID(r *http.Request) string {
 	return string(kept)
 }
 
-// clip cuts caller-written text to its first fieldBytes and drops every invalid UTF-8 run in the
-// bytes it keeps (strings.ToValidUTF8), a rune the cut splits among them: what a line written for
-// an answer keeps of each text field (ClipFields), and a refusal's line of each secret name
-// (SecretNames).
+// clip keeps caller-written text of at most fieldBytes as it came, and cuts longer text to its
+// first fieldBytes, dropping every invalid UTF-8 run in the bytes it keeps (strings.ToValidUTF8),
+// a rune the cut splits among them: what a line written for an answer keeps of each text field
+// (ClipFields), and a refusal's line of each secret name (SecretNames).
 func clip(text string) string {
 	if len(text) <= fieldBytes {
 		return text
@@ -703,7 +703,9 @@ func clip(text string) string {
 // or a provider's error pass their whole list through it. So each text field - the method, the
 // path, the host, a reason or an error that quotes the host or its address, the correlation id,
 // and any field a line adds later - is at most fieldBytes, and the line stays under the 262,144
-// bytes of one Cloud Logging entry whatever the caller sends.
+// bytes of one Cloud Logging entry whatever the caller sends. The net/http line passes only its
+// error through it; the stack of a recovered panic, the server's own text, is added after the cut
+// and kept whole (airlockproxy's slogWriter).
 //
 // It reads the list as slog does, so that what it cuts is what the line writes: a string is a
 // key and the value after it, a string with no value after it is written as the value of
