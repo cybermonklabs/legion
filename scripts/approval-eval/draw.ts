@@ -69,15 +69,16 @@ import { RESERVE_VARIABLE, readReferenceOf, reserveOf } from "./reserve";
  * case of this corpus carries the option the person chose, so one that does not is the corpus
  * read wrongly and not a case to pass over.
  *
- * The report slice is the final test (`analyze.ts`: every reported number is read from it), and
- * the rule of INFRA-2897's next final test (`reserve.ts`, item 4) draws that test from the
- * reserved requests only, its development and calibration sets from all others. So a draw over
- * a corpus read under a registered read of the reserve puts a group into report only when the
- * reserve holds every case of it after the cut, counting the cases the draw leaves out, and such
- * a group tries report before the other slices. A group holding one case the reserve does not
- * hold, which a live scorer may have read, never goes into report: it goes to a development
- * slice whole, and the reserved cases it holds are counted and named there. A draw that reads no
- * reserve draws as before, and `draw.json` records that its report slice is no final test.
+ * The report slice is the final test (`analyze.ts` calls it "the test set"), and the rule of
+ * INFRA-2897's next final test (`reserve.ts`, item 4) draws that test from the reserved requests
+ * only, its development and calibration sets from all others. So a draw over a corpus read under
+ * a registered read of the reserve puts a group into report only when the reserve holds every
+ * case of it after the cut, counting the cases the draw leaves out, and such a group tries report
+ * before the other slices. A group holding one case the reserve does not hold, which a live
+ * scorer may have read, never goes into report: it goes to a development slice whole, and the
+ * reserved cases it holds are named there. A reserved case the draw leaves out is counted where
+ * every left-out case is. A draw that reads no reserve draws as before, and `draw.json` records
+ * that its report slice is no final test.
  *
  * What is pinned and what is live. The cases are the corpus's, and each document is read at the
  * version the corpus pins, so those are the same bytes on every run. The one live reading is
@@ -104,8 +105,9 @@ const USAGE = `usage: bun scripts/approval-eval/draw.ts --corpus <dir> --cut <da
   [--seed <n>] [--backlog-roots <file>] [--cache <dir>]
 
 Draws the post-cut cases of a corpus into the fit, report, anchor and reserve slices. Under a
-registered read of INFRA-2897's reserve (APPROVAL_EVAL_RESERVE, claim.ts), report, the final
-test, takes only the groups the reserve holds whole, and they try it first.
+registered read of INFRA-2897's reserve (APPROVAL_EVAL_RESERVE, claim.ts), which takes the
+--seed its registration names, report, the final test, takes only the groups the reserve holds
+whole, and they try it first.
 
 Options:
   --corpus <dir>          Required. A directory holding corpus.jsonl and snapshot.json.

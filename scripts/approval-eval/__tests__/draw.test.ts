@@ -360,6 +360,13 @@ describe("drawSlices under a read of the reserve", () => {
     expect(draw.slices.report).toEqual([]);
     expect(draw.finalTest?.groups).toBe(0);
   });
+
+  test("the registered seed draws the same final test whatever order the cases come in", () => {
+    const cases = [...corpus(), ...reserved(90)];
+    const draw = drawSlices(cases, 12345, source);
+    expect(drawSlices([...cases].reverse(), 12345, source).slices).toEqual(draw.slices);
+    expect(drawSlices(cases, 12346, source).slices.report).not.toEqual(draw.slices.report);
+  });
 });
 
 /**

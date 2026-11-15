@@ -109,7 +109,8 @@ export interface FinalTestDraw {
   /**
    * The cases the reserve holds that went to another slice than report: their group holds a case
    * the reserve does not hold, which a scorer may have read, or report had no room for the group.
-   * A group goes into one slice whole, so such a case is development data from this draw on.
+   * A group goes into one slice whole, so such a case is development data from this draw on. A
+   * reserved case the draw left out of every slice is under `excluded`, as every such case is.
    */
   heldOutsideReport: { total: number; cases: string[] };
 }
