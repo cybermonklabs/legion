@@ -1,7 +1,6 @@
 kind: Fixed
 body: |-
-  The dispatch skill now says that markdown, a draft, a report or a record, goes to Dispatch as a
-  document under a `.md` name, whatever the local file is called
-  (`dispatch artifact --name <name>.md --content-file <file>`), because Dispatch previews a `.md`
-  document and not a `.txt` file; a `.txt` name is only for plain text that is not markdown, and a
-  log keeps its `.log` name.
+  The dispatch skill now says that markdown uploads to Dispatch as a `.md` document whatever its
+  local name, never as `.txt`, which Dispatch stores as plain text and does not preview. To keep
+  the three Dispatch skills inside their word bound, the stop-work bullet no longer repeats that a
+  wait on a person goes in an ask, which `dispatch-first` already says.
