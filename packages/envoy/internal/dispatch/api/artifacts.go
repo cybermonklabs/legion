@@ -339,23 +339,26 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 
 // multipartJSONField reads one JSON object a multipart upload sends as a form field - its
 // `actor`, its `precondition` - as the JSON body's decoder reads the same object: a member no
-// field of the type names is refused rather than dropped, so a key misspelled in a form is
-// refused as it is in a body (jsonArtifactUpload's DisallowUnknownFields), and so is a field
-// holding more than one JSON value. A field the form does not carry, or carries empty, is no
-// field at all and answers nil. Every refusal is written here, naming the field, so a caller
-// reading false returns.
+// field of the type names is ignored and logged at debug with the route, as `decodeJSON` and
+// `jsonArtifactUpload` do it, so one build of a fleet takes an upload another build's member
+// rides in (#2461). What a misspelled key cannot do is pass as the key it misspells: a
+// precondition left naming nothing is refused `400 INVALID_PRECONDITION` by its own shape check
+// (`docs.checkUploadPrecondition`), and an actor naming no kind is refused the same way. A field
+// holding more than one JSON value is refused, and a field the form does not carry, or carries
+// empty, is no field at all and answers nil. Every refusal is written here, naming the field, so
+// a caller reading false returns.
 func multipartJSONField[T any](s *server, w http.ResponseWriter, r *http.Request, field string) (*T, bool) {
 	raw := r.FormValue(field)
 	if raw == "" {
 		return nil, true
 	}
 	decoder := json.NewDecoder(strings.NewReader(raw))
-	decoder.DisallowUnknownFields()
 	var read T
 	if err := decoder.Decode(&read); err != nil {
 		writeError(w, "INVALID_JSON", http.StatusBadRequest, "invalid multipart "+field)
 		return nil, false
 	}
+	logUndeclaredMembers(r, &read, []byte(raw))
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		writeError(w, "INVALID_JSON", http.StatusBadRequest, "multipart "+field+" must contain one JSON value")
 		return nil, false

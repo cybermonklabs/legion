@@ -179,48 +179,65 @@ func TestMultipartUploadNamesItsBaseInItsForm(t *testing.T) {
 	}
 }
 
-// A multipart form's JSON fields are read as strictly as the JSON body is: a member no field of
-// the object names is refused rather than dropped, so a key misspelled in a form is told about
-// rather than silently ignored, and the upload writes nothing. The JSON body of the same upload
-// refuses the same object, which is the parity this holds.
-func TestMultipartUploadRefusesAJSONFieldNamingWhatTheObjectDoesNot(t *testing.T) {
+// A member neither shape declares is ignored by both, as every Dispatch route reads a body since
+// #2461, so one build of a fleet takes an upload another build's member rides in. What a
+// misspelled key cannot do is pass as the key it misspells: a precondition left naming nothing is
+// refused by its own shape, in a form field as in a body, and that upload writes nothing.
+func TestAMemberNeitherUploadShapeDeclaresIsIgnoredAndAMisspelledTokenIsRefused(t *testing.T) {
 	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
 	target := "/api/v1/issues/" + issue.Key + "/artifacts"
+
+	// The form's own base, with a member no field of the object names beside the token it does
+	// name: the upload is taken, and the version it writes is the one the token allowed.
 	base := uploadBase(t, handler, artifactID)
 	versionsBefore := uploadedVersionCount(t, database, artifactID)
 	strayBase := fmt.Sprintf(`{"document":%q,"blocks_":[]}`, base["document"])
-
-	for _, test := range []struct{ name, field, value string }{
-		{name: "the base", field: "precondition", value: strayBase},
-		{name: "the actor", field: "actor", value: `{"kind":"session","id":"session-0123456789abcdef","login":"alice"}`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			refused := multipartRequest(t, handler, target, map[string]string{"name": "notes.md", test.field: test.value},
-				"notes.md", "text/markdown", []byte("# Notes\n\nafter\n"), "alice")
-			code, text := refusalOf(t, refused)
-			if refused.Code != http.StatusBadRequest || code != "INVALID_JSON" || !strings.Contains(text, test.field) {
-				t.Fatalf("multipart %s holding a member it does not name = %d %q %q, want 400 INVALID_JSON naming the field: %s",
-					test.field, refused.Code, code, text, refused.Body.String())
-			}
-			if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore {
-				t.Fatalf("the refused multipart upload wrote: %d versions, want the %d standing before it", after, versionsBefore)
-			}
-		})
+	taken := multipartRequest(t, handler, target, map[string]string{"name": "notes.md", "precondition": strayBase},
+		"notes.md", "text/markdown", []byte("# Notes\n\nafter\n"), "alice")
+	if taken.Code != http.StatusCreated {
+		t.Fatalf("multipart base holding a member it does not name = %d, want 201: %s", taken.Code, taken.Body.String())
+	}
+	if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore+1 {
+		t.Fatalf("the taken multipart upload wrote: %d versions, want %d", after, versionsBefore+1)
 	}
 
-	// The same object in the JSON body is refused too, which is what the form is held to.
-	refused := postUpload(t, handler, issue.Key, map[string]any{
-		"name": "notes.md", "content": "# Notes\n\nafter\n",
-		"precondition": map[string]any{"document": base["document"], "blocks_": []any{}},
+	// The same object in the JSON body is taken too, which is the parity this holds.
+	body := uploadBase(t, handler, artifactID)
+	versionsBefore = uploadedVersionCount(t, database, artifactID)
+	stored := postUpload(t, handler, issue.Key, map[string]any{
+		"name": "notes.md", "content": "# Notes\n\nagain\n",
+		"precondition": map[string]any{"document": body["document"], "blocks_": []any{}},
 	})
-	if code, _ := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "INVALID_JSON" {
-		t.Fatalf("a JSON body whose base holds a member it does not name = %d %q, want 400 INVALID_JSON: %s",
-			refused.Code, code, refused.Body.String())
+	if stored.Code != http.StatusCreated {
+		t.Fatalf("a JSON body whose base holds a member it does not name = %d, want 201: %s", stored.Code, stored.Body.String())
+	}
+	if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore+1 {
+		t.Fatalf("the taken JSON upload wrote: %d versions, want %d", after, versionsBefore+1)
+	}
+
+	// A token whose key is misspelled names nothing, so neither shape reads it as a token: each
+	// upload is refused by the precondition's own shape and writes nothing.
+	misspelled := uploadBase(t, handler, artifactID)
+	versionsBefore = uploadedVersionCount(t, database, artifactID)
+	strayKey := fmt.Sprintf(`{"document_":%q}`, misspelled["document"])
+	refusedForm := multipartRequest(t, handler, target, map[string]string{"name": "notes.md", "precondition": strayKey},
+		"notes.md", "text/markdown", []byte("# Notes\n\nnever\n"), "alice")
+	if code, text := refusalOf(t, refusedForm); refusedForm.Code != http.StatusBadRequest || code != "INVALID_PRECONDITION" {
+		t.Fatalf("multipart base naming no token = %d %q %q, want 400 INVALID_PRECONDITION: %s",
+			refusedForm.Code, code, text, refusedForm.Body.String())
+	}
+	refusedBody := postUpload(t, handler, issue.Key, map[string]any{
+		"name": "notes.md", "content": "# Notes\n\nnever\n",
+		"precondition": map[string]any{"document_": misspelled["document"]},
+	})
+	if code, text := refusalOf(t, refusedBody); refusedBody.Code != http.StatusBadRequest || code != "INVALID_PRECONDITION" {
+		t.Fatalf("a JSON base naming no token = %d %q %q, want 400 INVALID_PRECONDITION: %s",
+			refusedBody.Code, code, text, refusedBody.Body.String())
 	}
 	if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore {
-		t.Fatalf("the refused JSON upload wrote: %d versions, want the %d standing before it", after, versionsBefore)
+		t.Fatalf("a refused upload wrote: %d versions, want the %d standing before it", after, versionsBefore)
 	}
 }
 
