@@ -28,10 +28,16 @@ const PROJECT = "DGATE";
 const FIRST_TREE = "GATEA";
 const SECOND_TREE = "GATEB";
 
-/** The second sentence of a superseded-approval line, printed whether a gate records the document
- *  or not. */
+/** The second sentence of a superseded-approval line for a person's approval, printed whether a
+ *  gate records the document or not. */
 const NEXT_STEP =
   "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan.";
+
+/** The second sentence for a plan, which its plan review approves and no person can: the
+ *  command that records that review's approval of the version the write stored. */
+function planNextStep(issue: string, version: number): string {
+  return `A plan is approved by its plan review, and Dispatch refuses a request for a person's approval of a plan. Once a plan review approves version ${version}, record it with \`dispatch plan-approve --issue ${issue} --version ${version}\`.`;
+}
 
 /** The first sentence: the version this write stored and the approval it staled. */
 function storedSentence(version: number, approvedBy: string): string {
@@ -123,7 +129,10 @@ describe.skipIf(!dispatchStackEnabled)(
 
       const printed = await docEdit(issue.key, plan.artifact.id, "One more task.");
 
-      expect(printed).toEndWith(`${storedSentence(plan.version.number + 1, SESSION)} ${NEXT_STEP}`);
+      const stored = plan.version.number + 1;
+      expect(printed).toEndWith(
+        `${storedSentence(stored, SESSION)} ${planNextStep(issue.key, stored)}`
+      );
       expect(printed).not.toContain("design gate");
     }, 120_000);
 

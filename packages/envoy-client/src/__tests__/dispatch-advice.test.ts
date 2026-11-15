@@ -1197,6 +1197,18 @@ describe("a document write that superseded a person's approval", () => {
     expect(result.text).not.toContain("design gate");
   });
 
+  // The other rows of a person's approval send no `kind`, as an older Dispatch does. A Dispatch
+  // that names the kind sends `person`, and that approval comes back through a request as before.
+  test("a person's approval the server names as such keeps the request-approval clause", async () => {
+    const result = await executeWrite(
+      "dispatch_doc_edit",
+      editArgs,
+      advice({ superseded_approval: { ...superseded, kind: "person" } })
+    );
+
+    expect(result.text).toEndWith(supersededLine);
+  });
+
   test("a record that names no gate prints the line without the clause", async () => {
     const result = await editWithGates([]);
 
