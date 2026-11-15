@@ -1,6 +1,25 @@
-import { getAsk, setAgentStreamResponder } from "./api";
-import { attachShot, drawer, seedAsk } from "./inbox-drawer";
-import { expect, test } from "./test";
+import {
+  createAsk,
+  createIssue,
+  createProject,
+  getAsk,
+  getIssue,
+  patchIssue,
+  setAgentStreamResponder,
+} from "./api";
+import { attachShot, drawer, peekTrigger, seedAsk, session } from "./inbox-drawer";
+import {
+  detailRead,
+  expectReadWhileHeld,
+  holdIssuePatches,
+  inboxRead,
+  lastEventSeq,
+  logReads,
+  savesEnded,
+  storedValues,
+  watchShown,
+} from "./pick-writes";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -44,6 +63,139 @@ test("a half-typed message in a live conversation survives opening the drawer, a
     // The conversation underneath was never unmounted: same route, same draft.
     await expect(page).toHaveURL(new RegExp(`/agents/${sessionID}/live$`));
     await expect(composer).toHaveValue("half a thought about the rollout");
+  } finally {
+    await context.close();
+  }
+});
+
+// The rows of dispatch://INFRA-299 where the Inbox drawer opens over an issue page: the drawer's
+// card rows carry a priority picker of their own (`InboxDrawer`, `pane={false}`), so the issue's
+// priority has a second picker beside the page's own, and the drawer lists the reader's own rows,
+// so an assignee picked on the page decides whether the issue's row is listed there. The drawer
+// is modal: the page under it is not pressed while it is open. Each save is held by Playwright's
+// route control at least `PICK_HOLD_MS` (`holdIssuePatches`), what the server received is read
+// from the issue's own events (`storedValues`), and the value stored from a fresh read once
+// every save has ended.
+
+/** A project, and an issue of it at P3 that `assignee` holds, with a question open on it, so it
+ *  has a row in the Inbox of whoever it waits on. */
+async function issueWithQuestion(assignee: string): Promise<string> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Picked under a held save" });
+  await patchIssue(issue.key, { assignee, priority: 3 });
+  await createAsk(
+    issue.key,
+    { options: [{ label: "Yes" }, { label: "No" }], question: "Ship it behind a flag?" },
+    session
+  );
+  return issue.key;
+}
+
+/** The issue page's own picker named `name`: the drawer draws outside `main`. */
+function pagePicker(page: Page, name: string) {
+  return page.getByRole("main").getByRole("combobox", { name });
+}
+
+// SLOW(>=2s): two saves each held three seconds, with the drawer opened over the issue page.
+test("picker keeps the newest pick: a pick in the Inbox drawer's row after two in the issue page's own picker is the one the server stores last", async ({
+  browser,
+}) => {
+  const key = await issueWithQuestion("alice");
+  const seq = await lastEventSeq(key);
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const held = await holdIssuePatches(page, key);
+    const headerPicker = pagePicker(page, `Priority of ${key}`);
+    await page.goto(`/issues/${key}`);
+    await expect(headerPicker).toHaveValue("3");
+
+    await headerPicker.selectOption("1");
+    await expect.poll(() => held.sent.length).toBe(1);
+    // P1 is out, held: P2 waits its turn in the store's line, and P0, made in the other picker
+    // of the same field, takes it out.
+    await headerPicker.selectOption("2");
+    await expect(headerPicker).toHaveValue("2");
+    await peekTrigger(page).click();
+    const rowPicker = drawer(page).getByRole("combobox", { name: `Priority of ${key}` });
+    await expect(rowPicker).toHaveValue("2");
+    await rowPicker.selectOption("0");
+    await expect(rowPicker).toHaveValue("0");
+    expect(
+      held.sent.map((patch) => patch.body),
+      "P1 is still the only save out"
+    ).toEqual([{ priority: 1 }]);
+    held.release();
+    await savesEnded(page, held);
+
+    expect(
+      await storedValues(key, "priority", seq),
+      `the server received the picks in this order; the route passed on ${JSON.stringify(held.forwarded)}`
+    ).toEqual([1, 0]);
+    expect(await getIssue(key)).toMatchObject({ priority: 0 });
+    await expect(headerPicker).toHaveValue("0");
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): a save held three seconds while the issue and the Inbox are read again.
+test("picker keeps a pick on screen: the assignee on the issue page and on its Inbox row, over reads that answer while its save is out", async ({
+  browser,
+}) => {
+  const key = await issueWithQuestion("bob");
+  const renamed = "Picked under a held save, renamed while it is out";
+  const inDrawer = '[role="dialog"][aria-label="Inbox"]';
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shownOnPage = await watchShown(page, `Assignee of ${key}`, "main");
+    // The drawer lists the reader's own rows: the issue's row is listed, and draws its priority
+    // picker, while the issue's question waits on her - while she is its assignee.
+    const shownInDrawer = await watchShown(page, `Priority of ${key}`, inDrawer);
+    const held = await holdIssuePatches(page, key);
+    const detailReads = logReads(page, detailRead(key));
+    const inboxReads = logReads(page, inboxRead);
+    const picker = pagePicker(page, `Assignee of ${key}`);
+    await page.goto(`/issues/${key}`);
+    await expect(picker).toHaveValue("bob");
+
+    // Its people are read once the reader reaches for the control.
+    await picker.focus();
+    await picker.selectOption("alice");
+    await expect.poll(() => shownOnPage.values.at(-1)).toBe("alice");
+    const fromPick = shownOnPage.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    // A rename of the issue, straight to the server: its live event has the page read the issue
+    // and its Inbox rows again, and each answer, carrying bob, lands while the save is held.
+    const renamedAt = Date.now();
+    await patchIssue(key, { title: renamed });
+    await expect(page.getByRole("heading", { name: renamed })).toBeVisible();
+    await peekTrigger(page).click();
+    await expect(drawer(page).getByRole("combobox", { name: `Priority of ${key}` })).toBeVisible();
+    await expect.poll(() => shownInDrawer.values.at(-1)).toBe("3");
+    const fromListed = shownInDrawer.values.length - 1;
+    await expect
+      .poll(() =>
+        inboxReads.some((read) => read.sentAt >= renamedAt && read.answeredAt !== undefined)
+      )
+      .toBe(true);
+    held.release();
+    await savesEnded(page, held);
+
+    expectReadWhileHeld(detailReads, held, renamedAt);
+    expectReadWhileHeld(inboxReads, held, renamedAt);
+
+    expect(
+      shownOnPage.values.slice(fromPick),
+      "every assignee the page showed from the pick on"
+    ).toEqual(["alice"]);
+    expect(
+      shownInDrawer.values.slice(fromListed),
+      "the drawer's row of the issue from its listing on: `(none)` is the row gone"
+    ).toEqual(["3"]);
+    expect(await getIssue(key)).toMatchObject({ assignee: "alice", title: renamed });
+    await expect(picker).toHaveValue("alice");
   } finally {
     await context.close();
   }

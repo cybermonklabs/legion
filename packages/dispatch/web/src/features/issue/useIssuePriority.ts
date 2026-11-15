@@ -5,8 +5,9 @@ export interface IssuePriorityWrite {
   /** True after a save failed until the next attempt starts. */
   failed: boolean;
   pending: boolean;
-  /** Repeats the refused save; a no-op while nothing is refused. */
-  retry: () => void;
+  /** Repeats the refused save; undefined while nothing is refused, and for a refused save with a
+   *  newer live write of the priority, which the screen shows and Dispatch stores last. */
+  retry: (() => void) | undefined;
   /** Saves `priority`: a pick of the page's write store, joined to the issue's line as it is
    *  made, which takes out a pick of the priority still waiting there unsent; the newest is the
    *  one saved. */

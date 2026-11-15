@@ -6,10 +6,21 @@ import {
   getIssue,
   patchIssue,
   putIssueState,
+  putRepoProject,
 } from "./api";
 import { filterPicker, pickFilterOption } from "./filters";
+import {
+  detailRead,
+  expectReadWhileHeld,
+  holdIssuePatches,
+  lastEventSeq,
+  logReads,
+  savesEnded,
+  storedValues,
+  watchShown,
+} from "./pick-writes";
 import { navigateInApp } from "./sends";
-import { expect, test } from "./test";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -134,6 +145,283 @@ test("project table filters narrow issues; documents stay scoped to the project"
     await expect(page.getByRole("link", { name: "Design notes", exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("project-documents.png"), fullPage: true });
     await expect(page.getByText("Issue-only document", { exact: true })).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
+
+// The rows of dispatch://INFRA-299 on the issue page of an issue of the project: each pick of a
+// priority or a repository is the page's write store's from its press, on the issue's line
+// (`issue:<KEY>`), so the server stores the newest pick last, and while a pick is live the page
+// shows it over every answer of a read. Each save is held by Playwright's route control at least
+// `PICK_HOLD_MS` (`holdIssuePatches`), what the server received is read from the issue's own
+// events (`storedValues`), and the value stored from a fresh read once every save has ended.
+
+/** A project, and an issue of it at P3, which the server keeps while the row holds its saves:
+ *  a value that reaches the screen from the server shows as P3, never one of the row's picks. */
+async function issueAtP3(): Promise<string> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
+  await patchIssue(issue.key, { priority: 3 });
+  return issue.key;
+}
+
+/** The issue page's own picker of `field` of `issueKey`, by its accessible name: the Inbox drawer
+ *  draws outside `main`. */
+function issuePicker(page: Page, field: "Priority" | "Repository", issueKey: string) {
+  return page.getByRole("main").getByRole("combobox", { name: `${field} of ${issueKey}` });
+}
+
+// SLOW(>=2s): two saves each held three seconds, around a reload.
+test("picker keeps the newest pick: a reload before the saves end sends both picks, and the server stores the last", async ({
+  browser,
+}) => {
+  const key = await issueAtP3();
+  const seq = await lastEventSeq(key);
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const held = await holdIssuePatches(page, key);
+    const picker = issuePicker(page, "Priority", key);
+    await page.goto(`/issues/${key}`);
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => held.sent.length).toBe(1);
+    // P1 is out, held: P2 waits its turn in the store's line, kept for a reload.
+    await picker.selectOption("2");
+    await expect(picker).toHaveValue("2");
+    await page.reload();
+    await expect(picker).toBeVisible();
+    held.release();
+    await savesEnded(page, held);
+
+    expect(
+      await storedValues(key, "priority", seq),
+      `the server received the picks in this order; the route passed on ${JSON.stringify(held.forwarded)}`
+    ).toEqual([1, 2]);
+    expect(await getIssue(key)).toMatchObject({ priority: 2 });
+    await expect(picker).toHaveValue("2");
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): two saves each held three seconds, around four in-app navigations.
+test("picker keeps the newest pick: a pick made after leaving and coming back is stored last, and the waiting pick it replaces is never sent", async ({
+  browser,
+}) => {
+  const key = await issueAtP3();
+  const other = await createIssue({ project: "CORE", title: "Another issue of the project" });
+  const seq = await lastEventSeq(key);
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const held = await holdIssuePatches(page, key);
+    const picker = issuePicker(page, "Priority", key);
+    await page.goto(`/issues/${key}`);
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("0");
+    await expect.poll(() => held.sent.length).toBe(1);
+    await picker.selectOption("1");
+    await expect(picker).toHaveValue("1");
+
+    // Another issue and back: the picker that made P1 is gone, and P2 is made on the one the
+    // return mounts, while P0 is still out.
+    await navigateInApp(page, `/issues/${other.key}`);
+    await expect(issuePicker(page, "Priority", other.key)).toBeVisible();
+    await navigateInApp(page, `/issues/${key}`);
+    await expect(picker).toHaveValue("1");
+    await picker.selectOption("2");
+    await expect(picker).toHaveValue("2");
+    expect(
+      held.sent.map((patch) => patch.body),
+      "P0 is still the only save out"
+    ).toEqual([{ priority: 0 }]);
+    held.release();
+    await savesEnded(page, held);
+
+    expect(
+      await storedValues(key, "priority", seq),
+      `the server received the picks in this order; the route passed on ${JSON.stringify(held.forwarded)}`
+    ).toEqual([0, 2]);
+    expect(await getIssue(key)).toMatchObject({ priority: 2 });
+    await expect(picker).toHaveValue("2");
+  } finally {
+    await context.close();
+  }
+});
+
+// Two picks made while one save is out are one request, the newest, and the badge shows the
+// newest from its pick until every save has ended - through the moment the first save ends while
+// the newest is still out, which is where a picker that kept its own queue fell back to the first.
+// SLOW(>=2s): two saves each held three seconds.
+test("picker keeps the newest pick: two picks made while a save is out send only the newest, which the badge shows until every save ends", async ({
+  browser,
+}) => {
+  const key = await issueAtP3();
+  const seq = await lastEventSeq(key);
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Priority of ${key}`, "main");
+    const held = await holdIssuePatches(page, key);
+    const picker = issuePicker(page, "Priority", key);
+    await page.goto(`/issues/${key}`);
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => held.sent.length).toBe(1);
+    await picker.selectOption("2");
+    await picker.selectOption("0");
+    await expect.poll(() => shown.values.at(-1)).toBe("0");
+    const fromNewest = shown.values.length - 1;
+    held.release();
+    await savesEnded(page, held);
+
+    expect(
+      held.sent.map((patch) => patch.body),
+      "P0 went out once P1's save had ended"
+    ).toEqual([{ priority: 1 }, { priority: 0 }]);
+    expect(
+      shown.values.slice(fromNewest),
+      "every value the badge showed from the pick of P0 until every save ended"
+    ).toEqual(["0"]);
+
+    expect(
+      await storedValues(key, "priority", seq),
+      `the server received the picks in this order; the route passed on ${JSON.stringify(held.forwarded)}`
+    ).toEqual([1, 0]);
+    expect(await getIssue(key)).toMatchObject({ priority: 0 });
+    await expect(picker).toHaveValue("0");
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): a save held three seconds while the issue page reads the issue again.
+test("picker keeps a pick on screen: the priority on the issue page, over a read that answers while its save is out", async ({
+  browser,
+}) => {
+  const key = await issueAtP3();
+  const renamed = "Priority under a held save, renamed while it is out";
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Priority of ${key}`, "main");
+    const held = await holdIssuePatches(page, key);
+    const reads = logReads(page, detailRead(key));
+    const picker = issuePicker(page, "Priority", key);
+    await page.goto(`/issues/${key}`);
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    const fromPick = shown.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    // A rename of the issue, straight to the server: its live event has the page read the issue
+    // again, and the answer, carrying P3, lands while the pick's save is held.
+    const renamedAt = Date.now();
+    await patchIssue(key, { title: renamed });
+    await expect(page.getByRole("heading", { name: renamed })).toBeVisible();
+    held.release();
+    await savesEnded(page, held);
+
+    expectReadWhileHeld(reads, held, renamedAt);
+
+    expect(shown.values.slice(fromPick), "every value the page showed from the pick on").toEqual([
+      "1",
+    ]);
+    expect(await getIssue(key)).toMatchObject({ priority: 1, title: renamed });
+    await expect(picker).toHaveValue("1");
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): a save held three seconds while the issue page reads the issue again.
+test("picker keeps a pick on screen: the repository on the issue page, over a read that answers while its save is out", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
+  await putRepoProject("acme/gadgets", { project: "CORE" });
+  const issue = await createIssue({ project: "CORE", title: "Repository under a held save" });
+  await patchIssue(issue.key, { repo: "acme/widgets" });
+  const renamed = "Repository under a held save, renamed while it is out";
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Repository of ${issue.key}`, "main");
+    const held = await holdIssuePatches(page, issue.key);
+    const reads = logReads(page, detailRead(issue.key));
+    const picker = issuePicker(page, "Repository", issue.key);
+    await page.goto(`/issues/${issue.key}`);
+    await expect(picker).toHaveValue("acme/widgets");
+
+    // Its project's mappings are read once the reader reaches for the control.
+    await picker.focus();
+    await picker.selectOption("acme/gadgets");
+    await expect.poll(() => shown.values.at(-1)).toBe("acme/gadgets");
+    const fromPick = shown.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    // A rename of the issue, straight to the server: its live event has the page read the issue
+    // again, and the answer, carrying acme/widgets, lands while the pick's save is held.
+    const renamedAt = Date.now();
+    await patchIssue(issue.key, { title: renamed });
+    await expect(page.getByRole("heading", { name: renamed })).toBeVisible();
+    held.release();
+    await savesEnded(page, held);
+
+    expectReadWhileHeld(reads, held, renamedAt);
+
+    expect(shown.values.slice(fromPick), "every value the page showed from the pick on").toEqual([
+      "acme/gadgets",
+    ]);
+    expect(await getIssue(issue.key)).toMatchObject({ repo: "acme/gadgets", title: renamed });
+    await expect(picker).toHaveValue("acme/gadgets");
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): two saves each held three seconds, around a reload.
+test("picker keeps a pick on screen: a reload shows the newest pick from its first paint until the saves end", async ({
+  browser,
+}) => {
+  const key = await issueAtP3();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Priority of ${key}`, "main");
+    const held = await holdIssuePatches(page, key);
+    const reads = logReads(page, detailRead(key));
+    const picker = issuePicker(page, "Priority", key);
+    await page.goto(`/issues/${key}`);
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => held.sent.length).toBe(1);
+    await picker.selectOption("2");
+    await expect.poll(() => shown.values.at(-1)).toBe("2");
+    const beforeReload = shown.values.length;
+    const reloadedAt = Date.now();
+    await page.reload();
+    await expect(picker).toBeVisible();
+    held.release();
+    await savesEnded(page, held);
+
+    // The reloaded page read the issue while the first save was still out.
+    expectReadWhileHeld(reads, held, reloadedAt);
+
+    // From the reloaded document's first frame: no picker until the page draws one, and then P2
+    // alone, the pick the store sends last.
+    expect(
+      [...new Set(shown.values.slice(beforeReload).filter((value) => value !== "(none)"))],
+      `every value the badge showed from the reload on: ${JSON.stringify(shown.values.slice(beforeReload))}`
+    ).toEqual(["2"]);
+    expect(await getIssue(key)).toMatchObject({ priority: 2 });
   } finally {
     await context.close();
   }

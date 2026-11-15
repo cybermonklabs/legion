@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { newSendKey } from "../../lib/send-key";
 import { retriesUnderItsKey, WriteDiscardedError } from "../writes/keyed-write";
@@ -22,16 +22,21 @@ export interface IssueFieldWrite<Value> {
   /** True while a pick made here is in the store, not yet landed, refused or taken out. */
   pending: boolean;
   /** Makes the refused pick again, under its own key where Dispatch never decided it
-   *  (`retriesUnderItsKey`); a no-op while nothing is refused. */
-  retry: () => void;
+   *  (`retriesUnderItsKey`). Undefined while nothing is refused, and for a refused pick with a
+   *  newer live write of its field, which the screen shows and Dispatch stores last. */
+  retry: (() => void) | undefined;
   /** Picks `value`: one write of the page's store on the issue's line, which takes out every
    *  other pick of the field still waiting there unsent, so the newest is the one saved. */
   submit: (value: Value) => void;
 }
 
-/** A refused pick as the picker reports it: the server's reason, and the value to pick again. */
+/** A refused pick as the picker reports it: the server's reason, the value to pick again, its
+ *  place in its line, and whether Retry may pick it - not where a newer live write of its field
+ *  is left, whose landing then ends the report. */
 interface Refused<Value> {
+  readonly joined: number;
   readonly message: string;
+  readonly retryable: boolean;
   readonly value: Value;
 }
 
@@ -61,10 +66,11 @@ function picksOf(writes: Writes, of: Pick<IssueFieldPick, "field" | "issueKey">)
  *
  * The picker shows its own refusal (`inline`), so the shell's indicator shows the write only
  * while it is out. A refused pick with no newer live write of its field - a pick, a board move to
- * another lane - shows the server's reason with Retry; one with a newer live write shows nothing,
- * since the screen shows that newer write and a Retry would join behind it and be stored last. A
- * pick of the value the reader stopped is that press made again under its key, so Dispatch
- * answers it with what it did.
+ * another lane - shows the server's reason with Retry; one with a newer live write shows the
+ * reason with no Retry, since the screen shows that newer write and a Retry would join behind it
+ * and be stored last, until a write of the issue's line that joined after it lands or the reader
+ * picks again. A pick of the value the reader stopped is that press made again under its key, so
+ * Dispatch answers it with what it did.
  */
 export function useIssueFieldWrite<F extends IssueField>(
   issueKey: string,
@@ -107,9 +113,14 @@ export function useIssueFieldWrite<F extends IssueField>(
         if (error instanceof WriteDiscardedError) return;
         const refusal = error instanceof Error ? error : new Error(String(error));
         if (retriesUnderItsKey(refusal)) stopped.current = { key, value };
-        // A newer live write of the field is left in the line, and the screen shows it.
-        if (newerWriteOf(writes, joined)) return;
-        setRefused({ message: refusal.message, value });
+        // A newer live write of the field is left in the line, and the screen shows it: the
+        // refusal is reported, with no Retry to join behind it.
+        setRefused({
+          joined: joined.joined,
+          message: refusal.message,
+          retryable: !newerWriteOf(writes, joined),
+          value,
+        });
       }
     );
   };
@@ -128,13 +139,26 @@ export function useIssueFieldWrite<F extends IssueField>(
     // the pick moves out of the Unassigned filter) has said so by then.
     queueMicrotask(() => join(pick, key, value));
   };
+  // A refusal reported with no Retry stands for the newer write the screen shows: once a write of
+  // the issue's line that joined after it lands, Dispatch holds that newer value and the report
+  // has nothing left to say.
+  useEffect(() => {
+    if (refused === undefined || refused.retryable) return undefined;
+    return writes.onOutcome((outcome) => {
+      if (
+        outcome.kind === "landed" &&
+        outcome.write.target === `issue:${issueKey}` &&
+        outcome.write.joined > refused.joined
+      ) {
+        setRefused((current) => (current === refused ? undefined : current));
+      }
+    });
+  }, [issueKey, refused, writes]);
   return {
     error: refused?.message,
     failed: refused !== undefined,
     pending: out > 0,
-    retry: () => {
-      if (refused !== undefined) submit(refused.value);
-    },
+    retry: refused?.retryable === true ? () => submit(refused.value) : undefined,
     submit,
   };
 }

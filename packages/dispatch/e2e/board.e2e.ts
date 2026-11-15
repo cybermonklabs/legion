@@ -3,6 +3,17 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { createIssue, createProject, getIssue, listIssues, patchIssue, putIssueState } from "./api";
 import { pickFilterOption } from "./filters";
 import { nextFrames } from "./frames";
+import {
+  expectReadWhileHeld,
+  holdIssuePatches,
+  lastEventSeq,
+  listRead,
+  logReads,
+  savesEnded,
+  storedValues,
+  watchShown,
+} from "./pick-writes";
+import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { centerOf, pressFinger, touchDrag, touchHold } from "./touch";
 import { asUser } from "./users";
@@ -1081,6 +1092,189 @@ test("the board's view, lanes and edge toggles keep touch-sized targets @phone @
     for (const name of ["Show lanes", "Show Icebox & Done"]) {
       await expect(page.getByRole("button", { name })).toHaveCSS("min-height", "44px");
     }
+  } finally {
+    await context.close();
+  }
+});
+
+// The rows of dispatch://INFRA-299 on the board: while a pick is live - held by Playwright's
+// route control at least `PICK_HOLD_MS` (`holdIssuePatches`) - the card shows it over every
+// answer of the project's list, whose read a rename of another issue starts (every event of an
+// issue reads its project's list again, `api/event-refresh.ts`), and after the picker that made
+// it has left the screen. Each row records every value the card's picker shows, at every
+// animation frame (`watchShown`), from the pick until the saves end.
+
+/** A project with an issue at P3 to pick on and another issue whose rename reads the list. */
+async function boardWithIssueAtP3(): Promise<{ key: string; other: string }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
+  const other = await createIssue({ project: "CORE", title: "Another issue of the project" });
+  await Promise.all([
+    patchIssue(issue.key, { priority: 3, status: "todo" }),
+    patchIssue(other.key, { status: "todo" }),
+  ]);
+  return { key: issue.key, other: other.key };
+}
+
+/** The project's issues as the Board view, read from the server. */
+async function openBoard(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "Board" }).click();
+  await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
+}
+
+// SLOW(>=2s): a save held three seconds while the board reads its list again.
+test("picker keeps a pick on screen: the priority on the project board, over a list read that answers while its save is out", async ({
+  browser,
+}) => {
+  const { key, other } = await boardWithIssueAtP3();
+  const renamed = "Another issue, renamed while a save is out";
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Priority of ${key}`);
+    const held = await holdIssuePatches(page, key);
+    const reads = logReads(page, listRead("project", "CORE"));
+    await page.goto("/projects/CORE");
+    await openBoard(page);
+    const picker = page.getByRole("combobox", { name: `Priority of ${key}` });
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    const fromPick = shown.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    // A rename of another issue, straight to the server: its live event has the board read the
+    // project's list again, and the answer, carrying P3, lands while the pick's save is held.
+    const renamedAt = Date.now();
+    await patchIssue(other, { title: renamed });
+    await expect(page.getByRole("article", { name: `${other} ${renamed}` })).toBeVisible();
+    held.release();
+    await savesEnded(page, held);
+
+    expectReadWhileHeld(reads, held, renamedAt);
+
+    expect(shown.values.slice(fromPick), "every value the card showed from the pick on").toEqual([
+      "1",
+    ]);
+    expect(await getIssue(key)).toMatchObject({ priority: 1 });
+    await expect(picker).toHaveValue("1");
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): a pick's save held three seconds, a drag across lanes behind it, and dnd-kit's
+// landing.
+test("picker keeps a pick on screen: a card dragged to another priority lane while its pick is out stays in that lane", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const anchor = await createIssue({ project: "CORE", title: "P0 card" });
+  const issue = await createIssue({ project: "CORE", title: "Picked card" });
+  await Promise.all([
+    patchIssue(anchor.key, { priority: 0, status: "todo" }),
+    patchIssue(issue.key, { priority: 3, status: "todo" }),
+  ]);
+  const seq = await lastEventSeq(issue.key);
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 1920, height: 900 });
+  try {
+    const shown = await watchShown(page, `Priority of ${issue.key}`);
+    const held = await holdIssuePatches(page, issue.key);
+    const reads = logReads(page, listRead("project", "CORE"));
+    await page.goto("/projects/CORE");
+    await openBoard(page);
+    await page.getByRole("button", { name: "Show lanes" }).click();
+    const card = page.getByRole("article", { name: `${issue.key} Picked card` });
+    const picker = card.getByRole("combobox", { name: `Priority of ${issue.key}` });
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    const fromPick = shown.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    const p1Lane = page.getByRole("region", { name: "P1 lane" });
+    await expect(p1Lane.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    // A rename of the other card, straight to the server: its live event has the board read the
+    // project's list again, and the answer, carrying P3, lands while the pick's save is held. A
+    // read that starts once the move below is made waits for the move (`boardMovesSettled`).
+    const renamedAt = Date.now();
+    await patchIssue(anchor.key, { title: "P0 card, renamed while a save is out" });
+    await expect(
+      page.getByRole("article", { name: `${anchor.key} P0 card, renamed while a save is out` })
+    ).toBeVisible();
+
+    // The pick is still out when the card is dragged into the P0 lane: the move joins the
+    // issue's line behind it, and the server will store the move's priority last.
+    const p0Todo = page.getByRole("region", { name: "P0 lane" }).getByRole("region", {
+      name: "Todo",
+    });
+    await mouseDrag(page, card, p0Todo.getByRole("article").first());
+    await expect.poll(() => shown.values.at(-1)).toBe("0");
+    const fromDrop = shown.values.length - 1;
+    await expect(p0Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    held.release();
+    await savesEnded(page, held);
+
+    expectReadWhileHeld(reads, held, renamedAt);
+    expect(
+      shown.values.slice(fromPick, fromDrop).some((value) => value.split("|").includes("3")),
+      `every value the card showed from the pick to the drop: ${JSON.stringify(shown.values.slice(fromPick, fromDrop))}`
+    ).toBe(false);
+
+    expect(shown.values.slice(fromDrop), "every value the card showed from the drop on").toEqual([
+      "0",
+    ]);
+    await expect(p0Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    expect(await storedValues(issue.key, "priority", seq)).toEqual([1, 0]);
+    expect(await getIssue(issue.key)).toMatchObject({ priority: 0 });
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): a save held three seconds while the project's board is opened and read.
+test("picker keeps a pick on screen: a pick made on the issue page shows on the board opened while its save is out", async ({
+  browser,
+}) => {
+  const { key } = await boardWithIssueAtP3();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Priority of ${key}`);
+    const held = await holdIssuePatches(page, key);
+    const reads = logReads(page, listRead("project", "CORE"));
+    await page.goto(`/issues/${key}`);
+    const picker = page.getByRole("main").getByRole("combobox", { name: `Priority of ${key}` });
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    const fromPick = shown.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    // The picker leaves the screen with its save still out, and the project's list is read
+    // from the server, which still holds P3.
+    const leftAt = Date.now();
+    await navigateInApp(page, "/projects/CORE");
+    await openBoard(page);
+    const card = page.getByRole("article", { name: `${key} Priority under a held save` });
+    await expect(card.getByRole("combobox", { name: `Priority of ${key}` })).toHaveValue("1");
+    await expect.poll(() => reads.some((read) => read.answeredAt !== undefined)).toBe(true);
+    await nextFrames(page);
+    held.release();
+    await savesEnded(page, held);
+
+    expectReadWhileHeld(reads, held, leftAt);
+
+    // The issue page's picker, then the table's row and the board's card, with no picker drawn
+    // between them (`(none)`): each shows the pick.
+    expect(
+      [...new Set(shown.values.slice(fromPick).filter((value) => value !== "(none)"))],
+      `every value shown from the pick on: ${JSON.stringify(shown.values.slice(fromPick))}`
+    ).toEqual(["1"]);
+    expect(await getIssue(key)).toMatchObject({ priority: 1 });
+    await expect(card.getByRole("combobox", { name: `Priority of ${key}` })).toHaveValue("1");
   } finally {
     await context.close();
   }

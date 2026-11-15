@@ -35,6 +35,7 @@ import { AssigneeControl } from "./AssigneeControl";
 import { issuePriority } from "./issue-priority";
 import { PriorityControl } from "./PriorityControl";
 import { RepoControl } from "./RepoControl";
+import { useIssueFieldWrite } from "./useIssueFieldWrite";
 
 // The rows of dispatch://INFRA-299: every pick of a priority, an assignee or a repository joins
 // the page's write store as it is made, on its issue's line, and the pick's write - not the
@@ -389,6 +390,86 @@ test("two pickers of one field share one line: a pick in either takes out the ot
   }
 });
 
+// A pick takes out only the waiting picks of its own field: every other write of the issue that
+// waits in its line - its status, its labels, a board move, a pick of another field - is sent.
+test("a pick takes out no waiting write of the issue but a pick of its own field", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementation(stores);
+  const client = signedIn();
+  const reads = dispatchReads();
+  const view = renderIn(client, <CachedPriority reads={reads} />);
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const board = renderHook(() => useBoardMoves(issue.project), { wrapper });
+  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee"), { wrapper });
+  const plain = (label: string, input: UpdateIssueInput) =>
+    act(() => {
+      void writesOf(client)
+        .run({
+          detail: null,
+          kind: plainWrite,
+          label,
+          presentation: "indicator",
+          request: issuePatchRequest(issue.key, input),
+          target: `issue:${issue.key}`,
+        })
+        .catch(() => undefined);
+    });
+  const user = userEvent.setup();
+  try {
+    const select = () => prioritySelects()[0] as HTMLSelectElement;
+    await user.selectOptions(select(), "0");
+    await user.selectOptions(select(), "3");
+    plain("CORE-1 set to done", { status: "done" });
+    plain("Labels of CORE-1", { labels: ["ui"] });
+    act(() => {
+      void board.result.current.moveCardToLane(issue.key, "todo", 2, 0).catch(() => undefined);
+    });
+    await act(async () => {
+      assignee.result.current.submit("bob");
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toHaveLength(6));
+    await user.selectOptions(select(), "1");
+    expect(
+      writesOf(client)
+        .rows()
+        .map((row) => [row.label, row.status])
+    ).toEqual([
+      ["CORE-1 set to P0", "sending"],
+      ["CORE-1 set to done", "queued"],
+      ["Labels of CORE-1", "queued"],
+      ["CORE-1 moved on the board", "queued"],
+      ["CORE-1 assigned to bob", "queued"],
+      ["CORE-1 set to P1", "queued"],
+    ]);
+
+    await act(async () => {
+      first.resolve({ ...issue, priority: 0 });
+      await first.promise;
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    expect(bodies(patchIssue)).toEqual([
+      { priority: 0 },
+      { status: "done" },
+      { labels: ["ui"] },
+      expect.objectContaining({ priority: 2 }),
+      { assignee: "bob" },
+      { priority: 1 },
+    ]);
+    expect(select().value).toBe("1");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    assignee.unmount();
+    board.unmount();
+    view.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
 test("a refused pick shows Dispatch's reason with Retry and puts back the assignee Dispatch last confirmed, after an earlier pick landed", async () => {
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
     { login: "alice" },
@@ -446,9 +527,9 @@ test("a refused pick shows Dispatch's reason with Retry and puts back the assign
   }
 });
 
-// The screen shows the newer pick, which Dispatch will store last, so the older one's refusal
-// shows nothing and offers no Retry: a Retry would join the back of the line and be stored last.
-test("an older pick refused while a newer one is live keeps the newer one on screen and shows no error", async () => {
+// The screen shows the newer pick, which Dispatch will store last, so the older one's refusal is
+// reported with no Retry: a Retry would join the back of the line and be stored last.
+test("an older pick refused while a newer one is live keeps the newer one on screen and reports the refusal with no Retry until the newer one lands", async () => {
   const first = Promise.withResolvers<Issue>();
   const second = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches()
@@ -467,7 +548,9 @@ test("an older pick refused while a newer one is live keeps the newer one on scr
       await first.promise.catch(() => undefined);
     });
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 0 }, { priority: 2 }]));
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
+    expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(select().value).toBe("2");
     expect(cachedPriorities(client)).toEqual({ detail: 2, inbox: 2, list: 2 });
 
@@ -477,7 +560,9 @@ test("an older pick refused while a newer one is live keeps the newer one on scr
       await second.promise;
     });
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(bodies(patchIssue)).toEqual([{ priority: 0 }, { priority: 2 }]);
+    // Dispatch holds the newer pick now: the refusal has nothing left to report.
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(select().value).toBe("2");
   } finally {
     view.unmount();

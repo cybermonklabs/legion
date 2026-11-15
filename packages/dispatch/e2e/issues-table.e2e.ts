@@ -4,6 +4,7 @@ import { setLiveSessions } from "./agents";
 import {
   createIssue,
   createMessage,
+  createPriority,
   createProject,
   getIssue,
   listIssueMessages,
@@ -11,7 +12,16 @@ import {
   patchIssue,
 } from "./api";
 import { filterPicker } from "./filters";
+import { nextFrames } from "./frames";
 import { dropFirstAnswer, watchWrites } from "./keyed-writes";
+import {
+  expectReadWhileHeld,
+  holdIssuePatches,
+  listRead,
+  logReads,
+  savesEnded,
+  watchShown,
+} from "./pick-writes";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -1156,6 +1166,107 @@ test("Escape closes a panel after a click on its own text", async ({ browser }) 
     await page.keyboard.press("Escape");
     await expect(hint).toHaveCount(0);
     await expect(heading.getByRole("button", { name: "Epic actions ▾" })).toBeFocused();
+  } finally {
+    await context.close();
+  }
+});
+
+// The rows of dispatch://INFRA-299 on the issues table, the project's and the one of an item of
+// the Priorities view (`/priorities/<id>`): while a pick is live - held by Playwright's route
+// control at least `PICK_HOLD_MS` (`holdIssuePatches`) - its row shows it over every answer of the
+// table's list, whose read another issue's write starts (`api/event-refresh.ts`: every event of
+// an issue reads its project's list again; a status move reads the work under each priority).
+// Each row records every value the row's picker shows, at every animation frame
+// (`watchShown`), from the pick until the save ends.
+
+// SLOW(>=2s): a save held three seconds while the table reads its list again.
+test("picker keeps a pick on screen: the priority on the project table, over a list read that answers while its save is out", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
+  const other = await createIssue({ project: "CORE", title: "Another issue of the project" });
+  await patchIssue(issue.key, { priority: 3 });
+  const renamed = "Another issue, renamed while a save is out";
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Priority of ${issue.key}`);
+    const held = await holdIssuePatches(page, issue.key);
+    const reads = logReads(page, listRead("project", "CORE"));
+    await page.goto("/projects/CORE");
+    const picker = page.getByRole("combobox", { name: `Priority of ${issue.key}` });
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    const fromPick = shown.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    // A rename of another issue, straight to the server: its live event has the table read the
+    // project's list again, and the answer, carrying P3, lands while the pick's save is held.
+    const renamedAt = Date.now();
+    await patchIssue(other.key, { title: renamed });
+    await expect(page.getByRole("link", { name: renamed })).toBeVisible();
+    held.release();
+    await savesEnded(page, held);
+
+    expectReadWhileHeld(reads, held, renamedAt);
+
+    expect(shown.values.slice(fromPick), "every value the row showed from the pick on").toEqual([
+      "1",
+    ]);
+    expect(await getIssue(issue.key)).toMatchObject({ priority: 1 });
+    await expect(picker).toHaveValue("1");
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): a save held three seconds while the table reads the work under the priority again.
+test("picker keeps a pick on screen: the priority on the table of an item of the Priorities view, over a read that answers while its save is out", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const item = await createPriority({ owner: "alice", title: "Ship the release" });
+  const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
+  const other = await createIssue({ project: "CORE", title: "Another issue of the item" });
+  await Promise.all([
+    patchIssue(issue.key, { advances: [item.id], priority: 3, status: "in_progress" }),
+    patchIssue(other.key, { advances: [item.id], status: "in_progress" }),
+  ]);
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Priority of ${issue.key}`);
+    const held = await holdIssuePatches(page, issue.key);
+    const reads = logReads(page, listRead("advances", item.id));
+    await page.goto(`/priorities/${item.id}`);
+    const picker = page.getByRole("combobox", { name: `Priority of ${issue.key}` });
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    const fromPick = shown.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    // A status move of the item's other issue, straight to the server: its live event has the
+    // table read the work under the item again, and the answer, carrying P3, lands while the
+    // pick's save is held.
+    const movedAt = Date.now();
+    await patchIssue(other.key, { status: "testing" });
+    await expect
+      .poll(() => reads.some((read) => read.sentAt >= movedAt && read.answeredAt !== undefined))
+      .toBe(true);
+    await nextFrames(page);
+    held.release();
+    await savesEnded(page, held);
+
+    expectReadWhileHeld(reads, held, movedAt);
+
+    expect(shown.values.slice(fromPick), "every value the row showed from the pick on").toEqual([
+      "1",
+    ]);
+    expect(await getIssue(issue.key)).toMatchObject({ priority: 1 });
+    await expect(picker).toHaveValue("1");
   } finally {
     await context.close();
   }
