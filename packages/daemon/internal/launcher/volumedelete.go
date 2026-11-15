@@ -255,7 +255,7 @@ func (r *containedRemover) removeAll(dir *sweepDir, name string) error {
 	if !held {
 		// A directory the listing did not open, which no sweep asks for: the deleter holds no
 		// descriptor for it, and naming it by path is exactly what this change exists to stop.
-		return fmt.Errorf("%s was not among the directories the listing opened", filepath.Join(dir.root.Path, dir.shard))
+		return fmt.Errorf("%q was not among the directories the listing opened", filepath.Join(dir.root.Path, dir.shard))
 	}
 	if _, err := fmt.Fprintf(r.requests, "%d %s\n", at, strconv.Quote(name)); err != nil {
 		return r.ended(err)

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -37,7 +36,7 @@ const volumeOpenFlags = syscall.O_RDONLY | syscall.O_NOFOLLOW | syscall.O_NONBLO
 func openVolumeDir(path string) (*dirHandle, error) {
 	clean := filepath.Clean(path)
 	if !filepath.IsAbs(clean) {
-		return nil, &fs.PathError{Op: "open", Path: path, Err: syscall.EINVAL}
+		return nil, &quotedPathError{op: "open", path: path, err: syscall.EINVAL}
 	}
 	// The root of the filesystem is the one name no role can be between: it is never a link and
 	// never anything but a directory, and every element after it is opened from a descriptor.
@@ -45,7 +44,7 @@ func openVolumeDir(path string) (*dirHandle, error) {
 		return unix.Open("/", volumeOpenFlags|syscall.O_DIRECTORY, 0)
 	})
 	if err != nil {
-		return nil, &fs.PathError{Op: "open", Path: "/", Err: err}
+		return nil, &quotedPathError{op: "open", path: "/", err: err}
 	}
 	at := "/"
 	for _, element := range strings.Split(strings.Trim(clean, "/"), "/") {

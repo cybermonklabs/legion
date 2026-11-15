@@ -868,7 +868,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",
 				UsedBytes: 48 << 30, FreeBytes: 2 << 30, FreedBytes: 1 << 30,
 				StopReason: "nothing left older than the minimum age", RefusedReads: []string{"pid 42"},
-				Sizes:   []VolumeSize{{Path: "caches/uv", Bytes: 12 << 30, BytesOverHour: 11 << 30, BytesOverDay: 9 << 30}},
+				Sizes: []VolumeSize{{Path: "caches/uv", Bytes: 12 << 30, BytesOverHour: 11 << 30, BytesOverDay: 9 << 30,
+					Refused: "caches/uv/.../locked (depth 2)", Refusals: 3}},
 				SizesAt: answered, SizesPartial: true, SizesMissing: []string{"workspaces/LEGION-209"},
 				Faults: []string{"read the volume: panic: runtime error\nmain.go:1"}}},
 	}

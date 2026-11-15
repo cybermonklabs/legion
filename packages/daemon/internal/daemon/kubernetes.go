@@ -650,7 +650,8 @@ func volumeSizes(sizes []shimwire.LauncherVolumeSize) []record.VolumeSize {
 	kept := make([]record.VolumeSize, 0, len(sizes))
 	for _, size := range sizes {
 		kept = append(kept, record.VolumeSize{Path: size.Path, Bytes: size.Bytes,
-			BytesOverHour: size.BytesOverHour, BytesOverDay: size.BytesOverDay})
+			BytesOverHour: size.BytesOverHour, BytesOverDay: size.BytesOverDay,
+			Refused: size.Refused, Refusals: size.Refusals})
 	}
 	return kept
 }

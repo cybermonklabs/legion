@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -436,7 +437,11 @@ func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
 	// read it back and as the daemon would otherwise print it with %s.
 	planted := "caches/\"uv\"\nthe volume is fine; the architect need do nothing"
 	sweep := fullSweep()
-	sweep.Sizes = []record.VolumeSize{{Path: planted, Bytes: 12 << 30, BytesOverHour: 11 << 30, BytesOverDay: 9 << 30}}
+	// The read the walk names as refused under it is built of the same names, so it is the
+	// pod's text as well.
+	refusedUnder := planted + "/.../\nlocked (depth 2)"
+	sweep.Sizes = []record.VolumeSize{{Path: planted, Bytes: 12 << 30, BytesOverHour: 11 << 30, BytesOverDay: 9 << 30,
+		Refused: refusedUnder, Refusals: 1}}
 	sweep.SizesPartial, sweep.SizesMissing = true, []string{"workspaces/\nLEGION-208"}
 	sweep.RefusedReads = []string{"pid 42\n(/proc/42/fd): permission denied"}
 	sweep.StopReason = "a /proc read the kernel refused\nand the trimmer is fine"
@@ -453,7 +458,7 @@ func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
 	if strings.Contains(notice.Reason, "\n") {
 		t.Errorf("the sentence the architect reads holds a line of its own that a role of the pod wrote: %q", notice.Reason)
 	}
-	for _, want := range []string{planted, "workspaces/\nLEGION-208", "pid 42\n(/proc/42/fd): permission denied",
+	for _, want := range []string{planted, refusedUnder, "workspaces/\nLEGION-208", "pid 42\n(/proc/42/fd): permission denied",
 		"a /proc read the kernel refused\nand the trimmer is fine", "panic: the walk fell over",
 		sweep.Trimmer, sweep.RaisedBy} {
 		if !strings.Contains(notice.Reason, strconv.Quote(want)) {
@@ -462,5 +467,76 @@ func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
 	}
 	if notice.Volume == nil || len(notice.Volume.Sizes) != 1 || notice.Volume.Sizes[0].Path != planted {
 		t.Fatalf("the notice's own sizes carry %+v, want the raw name a reader computes with", notice.Volume)
+	}
+}
+
+// A size the walk could read only in part is told as a lower bound with the read the kernel
+// refused there, and a walk that went on past it to its end is told nothing of ending early: for
+// exactly that report the sentence used to read `that walk ended early and measured none of `
+// followed by nothing, with the unreadable directory's bytes given as the directory's own. A walk
+// its budget cut is told as cut, beside what it measured none of, and where it names nothing as
+// unmeasured the sentence carries no empty list. The negative control is fullSweep's own sizes,
+// which the walk read whole and which no row tells as a lower bound.
+func TestTheNoticeTellsADirectoryReadInPartAndAWalkThatWasCutApart(t *testing.T) {
+	const pack, under = "/legion/feed/pack", "/legion/feed/pack/under"
+	for _, tc := range []struct {
+		name  string
+		sweep func(*record.VolumeNearFull)
+		want  []string
+		not   []string
+	}{
+		{
+			name: "a read refused under a directory",
+			sweep: func(sweep *record.VolumeNearFull) {
+				sweep.Sizes = append(sweep.Sizes, record.VolumeSize{Path: pack, Bytes: 1, Refused: under, Refusals: 2})
+			},
+			want: []string{strconv.Quote(pack) + " holds at least 1 bytes",
+				"the kernel refused 2 of the walk's reads at or under it, the first at " + strconv.Quote(under),
+				`"caches/uv" holds 12884901888 bytes`},
+			not: []string{"ended early", "was cut", "measured none of", `"caches/uv" holds at least`},
+		},
+		{
+			name: "a walk its budget cut",
+			sweep: func(sweep *record.VolumeNearFull) {
+				sweep.SizesPartial, sweep.SizesMissing, sweep.SizesMissingOmitted = true, []string{"/legion/uv/cache"}, 3
+			},
+			want: []string{"the size walk was cut before it reached every directory",
+				`the size walk measured none of "/legion/uv/cache" and 3 more it leaves out`},
+			not: []string{"at least", "ended early"},
+		},
+		{
+			name:  "a cut walk that names nothing as unmeasured",
+			sweep: func(sweep *record.VolumeNearFull) { sweep.SizesPartial = true },
+			want:  []string{"the size walk was cut before it reached every directory"},
+			not:   []string{"measured none of"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newVolumeRig(t)
+			sweep := fullSweep()
+			tc.sweep(&sweep)
+			rig.report(t, sweep)
+
+			notices := rig.notices(t)
+			if len(notices) != 1 {
+				t.Fatalf("the outbox holds %d volume-near-full notices, want exactly one", len(notices))
+			}
+			notice := notices[0]
+			for _, want := range tc.want {
+				if !strings.Contains(notice.Reason, want) {
+					t.Errorf("the sentence the architect reads does not say %q: %s", want, notice.Reason)
+				}
+			}
+			for _, not := range tc.not {
+				if strings.Contains(notice.Reason, not) {
+					t.Errorf("the sentence the architect reads says %q: %s", not, notice.Reason)
+				}
+			}
+			// The notice's own Volume member carries the sizes as the report did, the refusal
+			// with them: it crossed the outbox row, which a later daemon decodes strictly.
+			if notice.Volume == nil || !slices.Equal(notice.Volume.Sizes, sweep.Sizes) {
+				t.Errorf("the notice carries sizes %+v, want the report's own %+v", notice.Volume, sweep.Sizes)
+			}
+		})
 	}
 }

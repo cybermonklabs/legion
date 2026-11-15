@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -61,7 +62,12 @@ type walkResult struct {
 	Sizes []shimwire.LauncherVolumeSize
 	// At is when the walk was made, which a report between walks carries with the last walk's
 	// numbers.
-	At      time.Time
+	At time.Time
+	// Partial is a walk its budget or the container's stop cut before it reached every target,
+	// which is the one way a walk ends early: Missing then holds the target it was cut in and
+	// every one after it. A directory the walk could not open or list, and one it could read
+	// only in part (LauncherVolumeSize.Refused), end nothing, so a walk that met only those
+	// reached its end and is not partial.
 	Partial bool
 	// Missing is what the walk did not measure: a directory it could not list or could not
 	// open, and everything it had not reached when the budget or the container's stop cut it.
@@ -77,10 +83,21 @@ type measured struct {
 	// number is not the whole of the directory, so the walk reports it as missing rather than
 	// as a size a reader would take for the directory's own.
 	cut bool
-	// refused is a read beneath the directory the kernel refused, which makes the reading
-	// partial and ends nothing: /legion/feed is a read-only mount inside the same claim, so the
-	// walk reaches it and its bytes are already in the statfs reading the marks are taken from.
-	refused bool
+	// refused is how many reads at or beneath the directory the kernel refused, and
+	// refusedName and refusedDepth the first of them: the name refused and how many levels
+	// below the directory it lay, 0 for the directory itself (refuse). A refusal makes the
+	// reading a lower bound of the directory and ends nothing: /legion/feed is a read-only
+	// mount inside the same claim, so the walk reaches it and its bytes are already in the
+	// statfs reading the marks are taken from. run carries them on the size (refusedPath),
+	// where a reader is told the number is at least that many bytes and where the read was
+	// refused.
+	refused      int
+	refusedName  string
+	refusedDepth int
+	// depth is how many levels below the directory the one being read lies: the
+	// measurement's own scratch, which is all a refusal needs of where it is, so that no path
+	// below the directory is built or kept whatever the depth of the tree.
+	depth int
 }
 
 // walkTarget is one directory the walk measures, named the way every read of it is made: the
@@ -156,8 +173,9 @@ func (w sizeWalk) run(ctx context.Context) walkResult {
 	handle, err := openVolumeDir(w.root)
 	if err != nil {
 		// Nothing can be measured at all, as for a root that cannot be listed (targets): the
-		// report still goes, with the volume root named as what was not measured.
-		return walkResult{At: w.now(), Partial: true, Missing: []string{w.root}}
+		// report still goes, with the volume root named as what was not measured. Nothing cut
+		// the walk, so it is not partial (walkResult.Partial).
+		return walkResult{At: w.now(), Missing: []string{w.root}}
 	}
 	defer func() { _ = handle.Close() }()
 	targets, result := w.targets(handle)
@@ -188,7 +206,6 @@ func (w sizeWalk) run(ctx context.Context) walkResult {
 			// The child the target lies in is gone, or is no longer a directory this walk may
 			// read through the handle it holds on the root. It is named as unmeasured and the
 			// walk goes on, as a directory it cannot list is (targets).
-			result.Partial = true
 			result.Missing = append(result.Missing, w.pathOf(target))
 			continue
 		}
@@ -204,10 +221,11 @@ func (w sizeWalk) run(ctx context.Context) walkResult {
 			return result
 		}
 		one.size.Path = w.pathOf(target)
-		result.Sizes = append(result.Sizes, one.size)
-		if one.refused {
-			result.Partial = true
+		if one.refused > 0 {
+			one.size.Refused = refusedPath(one.size.Path, one.refusedName, one.refusedDepth)
+			one.size.Refusals = one.refused
 		}
+		result.Sizes = append(result.Sizes, one.size)
 	}
 	return result
 }
@@ -267,7 +285,6 @@ func (w sizeWalk) targets(handle *dirHandle) ([]walkTarget, walkResult) {
 		// Nothing can be measured at all. The report still goes, with the volume root named as
 		// what was not measured: a sweep that ran is worth telling the daemon about whether or
 		// not the walk could say where the bytes are.
-		result.Partial = true
 		result.Missing = []string{w.root}
 		return nil, result
 	}
@@ -286,7 +303,6 @@ func (w sizeWalk) targets(handle *dirHandle) ([]walkTarget, walkResult) {
 		}
 		inside, err := w.readChild(handle, child.Name())
 		if err != nil {
-			result.Partial = true
 			result.Missing = append(result.Missing, w.pathOf(walkTarget{child: child.Name()}))
 			continue
 		}
@@ -334,17 +350,16 @@ func (w sizeWalk) readChild(handle *dirHandle, name string) ([]os.DirEntry, erro
 //
 // It follows no symbolic link and counts no directory's own blocks, so what it reports is the
 // bytes a deletion of the tree would free, which is the number a reader of a trim report is
-// after. A read the kernel refuses makes the reading partial and ends nothing, and a file that
-// is gone by the time it is stat'ed is nothing at all: the sweep that made this report was
-// deleting in these very directories moments ago.
+// after. A read the kernel refuses makes the reading a lower bound, counted and the first of
+// them named (refuse), and ends nothing, and a file that is gone by the time it is stat'ed is
+// nothing at all: the sweep that made this report was deleting in these very directories
+// moments ago.
 func measureTree(ctx context.Context, dir *dirHandle, name string, at time.Time) measured {
 	out := measured{}
 	hour, day := at.Add(-volumeSizeHour), at.Add(-volumeSizeDay)
 	info, err := dir.Lstat(name)
 	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			out.refused = true
-		}
+		out.refuse(err, name, 0)
 		return out
 	}
 	if !info.IsDir() {
@@ -377,17 +392,13 @@ func measureTree(ctx context.Context, dir *dirHandle, name string, at time.Time)
 func measureUnder(ctx context.Context, dir *dirHandle, name string, hour, day time.Time, out *measured) {
 	under, err := dir.open(name)
 	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			out.refused = true
-		}
+		out.refuse(err, name, out.depth)
 		return
 	}
 	defer func() { _ = under.Close() }()
 	entries, err := under.ReadDir()
 	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			out.refused = true
-		}
+		out.refuse(err, name, out.depth)
 		return
 	}
 	for _, entry := range entries {
@@ -398,7 +409,9 @@ func measureUnder(ctx context.Context, dir *dirHandle, name string, hour, day ti
 		default:
 		}
 		if entry.IsDir() {
+			out.depth++
 			measureUnder(ctx, under, entry.Name(), hour, day, out)
+			out.depth--
 			if out.cut {
 				return
 			}
@@ -406,13 +419,42 @@ func measureUnder(ctx context.Context, dir *dirHandle, name string, hour, day ti
 		}
 		info, err := entry.Info()
 		if err != nil {
-			if !errors.Is(err, fs.ErrNotExist) {
-				out.refused = true
-			}
+			out.refuse(err, entry.Name(), out.depth+1)
 			continue
 		}
 		countFile(out, info, hour, day)
 	}
+}
+
+// refuse counts one read the kernel refused at or beneath the directory measured, and keeps the
+// first of them: the name refused and how many levels below the directory it lay, 0 for the
+// directory itself. A name that is gone by the time it is read is no refusal, for the reason a
+// file that is gone is nothing at all (measureTree).
+func (out *measured) refuse(err error, name string, depth int) {
+	if errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	if out.refused == 0 {
+		out.refusedName, out.refusedDepth = name, depth
+	}
+	out.refused++
+}
+
+// refusedPath is how a size names the first read refused at or beneath it, as the deleter's
+// removal failure names what it failed on (removalFailure, volumedir_linux.go): the directory
+// measured, the name refused and how many levels below the directory that name lay, with the
+// levels between written as "..." where there are any, and never the path between them. So a
+// refusal at the foot of a chain of directories thousands deep, which a role can make under
+// /legion/scratch, is a string of a size set by two names and not by the depth of the chain,
+// and the walk keeps it for the hour its numbers are reported (trimmer.sizes).
+func refusedPath(dir, name string, depth int) string {
+	switch depth {
+	case 0:
+		return dir
+	case 1:
+		return dir + "/" + name
+	}
+	return dir + "/.../" + name + " (depth " + strconv.Itoa(depth) + ")"
 }
 
 // countFile adds one file's bytes to out, and its bytes to each age split it falls in. A file

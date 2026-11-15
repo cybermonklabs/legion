@@ -406,11 +406,15 @@ type Notice struct {
 //
 // Sizes are the directories two levels under the volume root with their two age splits, SizesAt
 // when they were measured — a report made between walks carries the last walk's numbers with
-// that walk's time — SizesPartial a walk that ended early and SizesMissing what it did not
-// measure. Faults are the panics the trimmer recovered from, each with its stack, and
-// SwitchedOff the report no sweep produces: the trimmer has stopped itself after three faults,
-// and the daemon sends that one whatever its bounds stand at, since the protection this notice
-// exists for has stopped on exactly the pod that has been reporting.
+// that walk's time — SizesPartial a walk its budget or the container's stop cut before it reached
+// every directory, which is the one way a walk ends early, and SizesMissing every directory the
+// walk did not measure at all: one it could not open or list, and, of a walk that was cut, the
+// one it was cut in and every one after it. A directory the walk could read only in part is a
+// size that names the read the kernel refused (VolumeSize). Faults are the panics the trimmer
+// recovered from, each with its stack, and SwitchedOff the report no sweep produces: the trimmer
+// has stopped itself after three faults, and the daemon sends that one whatever its bounds stand
+// at, since the protection this notice exists for has stopped on exactly the pod that has been
+// reporting.
 //
 // The four Omitted counts are how many entries the launcher's own bound left out of each list,
 // which it cuts because a path two levels under /legion is a name a role of the pod chose and a
@@ -445,12 +449,18 @@ type VolumeNearFull struct {
 // VolumeSize is one directory two levels under the pod's volume root as the trimmer's size walk
 // measured it: the bytes under it, and of those the bytes whose newest modification time is more
 // than an hour old and more than a day old, which are what tell a reader a working set from cold
-// bytes.
+// bytes. Refused names the first read at or under Path the kernel refused — Path itself where
+// the walk could read nothing of it, Path/<name> for a name in it and Path/.../<name> (depth N)
+// for a name N levels below it — and Refusals is how many of the walk's reads there it refused in
+// all: a size that carries them is a lower bound of the directory's own, never the whole of it
+// (shimwire.LauncherVolumeSize).
 type VolumeSize struct {
 	Path          string `json:"path"`
 	Bytes         int64  `json:"bytes"`
 	BytesOverHour int64  `json:"bytesOverHour"`
 	BytesOverDay  int64  `json:"bytesOverDay"`
+	Refused       string `json:"refused,omitempty"`
+	Refusals      int    `json:"refusals,omitempty"`
 }
 
 // MarshalJSON keeps `sizes` an array on the wire, empty rather than `null`, exactly as

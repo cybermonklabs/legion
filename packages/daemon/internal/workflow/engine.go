@@ -1168,14 +1168,27 @@ func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
 		}
 	}
 	for _, size := range report.Sizes {
-		fmt.Fprintf(&out, "; %q holds %d bytes (%d older than an hour, %d older than a day)",
-			size.Path, size.Bytes, size.BytesOverHour, size.BytesOverDay)
+		if size.Refused == "" {
+			fmt.Fprintf(&out, "; %q holds %d bytes (%d older than an hour, %d older than a day)",
+				size.Path, size.Bytes, size.BytesOverHour, size.BytesOverDay)
+			continue
+		}
+		// A size the kernel let the walk read only in part is what the walk could read and no
+		// more, so it is told as a lower bound with the read that was refused, which is where a
+		// reader looks for the rest (record.VolumeSize).
+		fmt.Fprintf(&out, "; %q holds at least %d bytes (%d older than an hour, %d older than a day, of what the walk could read): the kernel refused %d of the walk's reads at or under it, the first at %q",
+			size.Path, size.Bytes, size.BytesOverHour, size.BytesOverDay, size.Refusals, size.Refused)
 	}
 	if report.SizesOmitted > 0 {
 		fmt.Fprintf(&out, "; %d more measured directories are left out of this report", report.SizesOmitted)
 	}
+	// Two facts and not one: a walk that was cut ended early, and a directory the walk measured
+	// none of may be one it could not open while it went on to its end (record.VolumeNearFull).
 	if report.SizesPartial {
-		fmt.Fprintf(&out, "; that walk ended early and measured none of %s", quotedList(report.SizesMissing))
+		out.WriteString("; the size walk was cut before it reached every directory")
+	}
+	if len(report.SizesMissing) > 0 {
+		fmt.Fprintf(&out, "; the size walk measured none of %s", quotedList(report.SizesMissing))
 		if report.SizesMissingOmitted > 0 {
 			fmt.Fprintf(&out, " and %d more it leaves out", report.SizesMissingOmitted)
 		}

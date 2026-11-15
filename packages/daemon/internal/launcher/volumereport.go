@@ -176,10 +176,11 @@ func (t *trimmer) report(ctx context.Context, out sweepOutcome) shimwire.Launche
 // that hour would carry the same oversized walk — the trimmer would go permanently silent on
 // exactly the pod the notice exists to describe.
 const (
-	// volumeReportPathRunes bounds each path of Sizes and of SizesMissing. The longest this
-	// layout makes is `/legion/scratch/bun`, and the paths a reader acts on are of that order,
-	// while one directory component may be 255 bytes and a role may make it: a few hundred
-	// runes keeps every real path whole and cuts a made-up one.
+	// volumeReportPathRunes bounds each path of Sizes, the read each names as refused
+	// (LauncherVolumeSize.Refused) and each path of SizesMissing. The longest this layout makes
+	// is `/legion/scratch/bun`, and the paths a reader acts on are of that order, while one
+	// directory component may be 255 bytes and a role may make it: a few hundred runes keeps
+	// every real path whole and cuts a made-up one.
 	volumeReportPathRunes = 200
 	// volumeReportSizes is how many measured directories a report carries. The walk measures
 	// every directory two levels under the volume root in a deliberate order — the scratch
@@ -242,6 +243,7 @@ func (t *trimmer) bound(report shimwire.LauncherVolumeReport) shimwire.LauncherV
 		report.Sizes = make([]shimwire.LauncherVolumeSize, len(sizes))
 		for at, size := range sizes {
 			size.Path = cutRunes(size.Path, volumeReportPathRunes)
+			size.Refused = cutRunes(size.Refused, volumeReportPathRunes)
 			report.Sizes[at] = size
 		}
 	}

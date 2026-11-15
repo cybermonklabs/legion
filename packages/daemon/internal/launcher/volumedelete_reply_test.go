@@ -70,6 +70,24 @@ func TestADeletersReplyAtItsBoundIsKeptWholeAndOneByteMoreIsCut(t *testing.T) {
 	}
 }
 
+// A removal asked of a directory the listing did not open is refused by the path that directory
+// stands at, quoted: a shard is a name a role chose under the build cache, and a name holding a
+// newline would otherwise begin a line of its own in the pod's log.
+func TestARemovalAskedOfADirectoryTheListingDidNotOpenNamesItQuoted(t *testing.T) {
+	const shard = "0f\nthe sweep is fine"
+	dir := &sweepDir{root: ReclaimableRoot{Path: "/legion/go/build"}, shard: shard}
+	remover := &containedRemover{requests: discardRequests{}, replies: newDeleterReplies(strings.NewReader("")),
+		at: map[*sweepDir]int{}, said: &saidBuffer{}}
+
+	err := remover.removeAll(dir, "entry")
+	if err == nil {
+		t.Fatal("the remover took a request for a directory the listing never opened")
+	}
+	if strings.Contains(err.Error(), "\n") || !strings.Contains(err.Error(), strconv.Quote("/legion/go/build/"+shard)) {
+		t.Errorf("the remover answered %q, want the directory's path quoted and on one line", err)
+	}
+}
+
 // discardRequests is a deleter's request pipe that goes nowhere, for a case that writes its
 // replies itself.
 type discardRequests struct{}

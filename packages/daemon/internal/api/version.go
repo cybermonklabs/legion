@@ -1735,7 +1735,12 @@ package api
 // `volume-near-full` notice to the issue's architect, since the daemon's own bounds decide which
 // reports are told. That frame carries, beside the sweep's own numbers, how many
 // entries the launcher's own bound left out of each of its lists (`sizesOmitted` and its three
-// siblings), so a reader never takes a cut list for the whole of what the trimmer measured.
+// siblings), so a reader never takes a cut list for the whole of what the trimmer measured, and
+// two optional members of each size, `refused` and `refusals`: the first read the kernel refused
+// at or under that directory, named by the directory, the name refused and its depth, and how
+// many it refused there, so a size the walk could read only in part is told as a lower bound
+// and never as the directory's whole. Its `sizesPartial` is a walk its budget or the container's
+// stop cut, and nothing else.
 //
 // The skew is safe in both directions, and this entry records why, because that is what a
 // reader of it needs. A new worker image under an older daemon reads the member absent, which

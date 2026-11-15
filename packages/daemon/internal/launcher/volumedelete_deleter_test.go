@@ -143,60 +143,82 @@ func TestARemovalOfADirectoryStillBeingWrittenInNamesTheErrorItMet(t *testing.T)
 // Among the names of one directory a subdirectory still being written in is no more the answer
 // than it is within one: an entry holding such a subdirectory beside a name whose removal fails
 // for a reason of its own is answered with that reason, whichever of the two the directory lists
-// first. Here the entry lists first the subdirectory a writer keeps filling, whose removal
-// answers errStillFilling, and beside it holds a directory made 0500 holding a file, whose unlink
-// fails with EACCES. The negative control is empty answering the first error its pass met, which
-// was the filling subdirectory's.
+// first, so the case runs once with each order. The subdirectory a writer keeps filling answers
+// errStillFilling, and beside it a directory made 0500 holding a file fails its unlink with
+// EACCES. Each order is the negative control of one way to get the choice wrong: with the
+// filling subdirectory listed first, empty keeping the first error its pass met answers
+// errStillFilling, and with it listed last, empty keeping the last error it met does.
 func TestARemovalNamesASiblingsErrorBeforeASubdirectoryStillFilling(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root unlinks in a directory whatever its mode, so a directory made 0500 is no failure that lasts for it")
 	}
-	dir := t.TempDir()
-	held, err := os.Open(dir)
-	if err != nil {
-		t.Fatal(err)
+	for _, order := range []struct {
+		name         string
+		fillingFirst bool
+	}{
+		{"filling listed first", true},
+		{"filling listed last", false},
+	} {
+		t.Run(order.name, func(t *testing.T) {
+			dir := t.TempDir()
+			held, err := os.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer held.Close()
+			entry := filepath.Join(dir, "entry")
+			locked := filepath.Join(entry, "locked")
+			filling := stageListedPair(t, entry, locked, order.fillingFirst)
+			if err := os.WriteFile(filepath.Join(locked, "kept"), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(locked, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+			if listed := listedNames(t, entry); (listed[0] == filepath.Base(filling)) != order.fillingFirst {
+				t.Fatalf("%s lists %q, which is not the order %q stages", entry, listed, order.name)
+			}
+
+			removal := removeWhileFilling(t, held, filling)
+			if !errors.Is(removal, syscall.EACCES) {
+				t.Fatalf("the removal answered %v, want the %v its sibling's unremovable name failed with", removal, syscall.EACCES)
+			}
+			if !strings.Contains(removal.Error(), "kept") {
+				t.Errorf("the removal answered %q, want it to name kept, the name that could not be removed", removal)
+			}
+		})
 	}
-	defer held.Close()
-	// The filling subdirectory must be the name the entry's getdents lists first, which is the
-	// order removeEntryAt reads them in. A directory lists its names in its filesystem's own
-	// order — the order they were made in on some, a hash of the name on others — so the pair
-	// is made under fresh names until the entry lists the filling one first.
-	entry := filepath.Join(dir, "entry")
-	locked := filepath.Join(entry, "locked")
-	filling := ""
-	for try := 0; filling == "" && try < 64; try++ {
+}
+
+// stageListedPair makes locked and a subdirectory of a fresh name in entry, and answers that
+// subdirectory once entry's getdents lists it where fillingFirst says: before locked, or after
+// it, which is the order removeEntryAt reads them in. A directory lists its names in its
+// filesystem's own order — the order they were made in on some, an order of the names on
+// others, as this pod's /legion, a 9p mount, does (measured in an issue pod of this deployment
+// on 2026-11-15: `mkdir zz locked filling-9 aa` and then `ls -f` listed `filling-9 zz aa
+// locked`) — so the pair is made again under a fresh name, each time in the other order of
+// making, until the entry lists it as the case asks, 64 times at most.
+func stageListedPair(t *testing.T, entry, locked string, fillingFirst bool) string {
+	t.Helper()
+	for try := range 64 {
 		candidate := filepath.Join(entry, fmt.Sprintf("filling-%d", try))
-		mkdirFixture(t, candidate)
-		mkdirFixture(t, locked)
-		if listed := listedNames(t, entry); listed[0] == filepath.Base(candidate) {
-			filling = candidate
-			continue
+		made := []string{candidate, locked}
+		if try%2 == 1 {
+			made = []string{locked, candidate}
+		}
+		for _, dir := range made {
+			mkdirFixture(t, dir)
+		}
+		if listed := listedNames(t, entry); (listed[0] == filepath.Base(candidate)) == fillingFirst {
+			return candidate
 		}
 		if err := os.RemoveAll(entry); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if filling == "" {
-		t.Fatalf("no pair of names made %s list its filling subdirectory first, so the case would stage nothing", entry)
-	}
-	if err := os.WriteFile(filepath.Join(locked, "kept"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(locked, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
-	if listed := listedNames(t, entry); listed[0] != filepath.Base(filling) {
-		t.Fatalf("%s lists %q, want %s first", entry, listed, filepath.Base(filling))
-	}
-
-	removal := removeWhileFilling(t, held, filling)
-	if !errors.Is(removal, syscall.EACCES) {
-		t.Fatalf("the removal answered %v, want the %v its sibling's unremovable name failed with", removal, syscall.EACCES)
-	}
-	if !strings.Contains(removal.Error(), "kept") {
-		t.Errorf("the removal answered %q, want it to name kept, the name that could not be removed", removal)
-	}
+	t.Fatalf("no pair of names made %s list its filling subdirectory where the case needs it (first: %t), so the case would stage nothing", entry, fillingFirst)
+	return ""
 }
 
 // listedNames is the names of dir in the order its getdents lists them.

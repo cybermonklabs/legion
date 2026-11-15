@@ -656,20 +656,69 @@ func (t *trimmer) sizes(ctx context.Context) walkResult {
 		budget:  volumeWalkBudget,
 		measure: t.measure,
 	}.run(ctx)
-	if t.walk.Partial {
-		// The names are the pod's own: a role may make a directory of any name two levels under
-		// the volume root, so this line takes the same bounds the frame takes (bound) rather
-		// than joining a list of a size and a content nothing here chose. A reader who needs
-		// the whole list has the report's own SizesMissing, bounded the same way.
-		missing := cutEach(t.walk.Missing, volumeReportPathRunes)
-		left := 0
-		if len(missing) > volumeReportSizesMissing {
-			left, missing = len(missing)-volumeReportSizesMissing, missing[:volumeReportSizesMissing]
-		}
-		t.logf(volumeTrimLog+"the size walk ended early: it measured %d directories and left %d unmeasured (%q, and %d more)",
-			len(t.walk.Sizes), len(t.walk.Missing), missing, left)
+	if line := walkShortfall(t.walk); line != "" {
+		t.logf(volumeTrimLog+"%s", line)
 	}
 	return t.walk
+}
+
+// walkShortfall is the line a walk that measured less than the whole volume writes, and "" for
+// one that measured all of it. It says each of three facts only where the walk met it, since
+// they are three different things to a person reading the pod's log: a walk its budget or the
+// container's stop cut (walkResult.Partial), each directory it could read only in part, named
+// with the first read the kernel refused there (LauncherVolumeSize.Refused), and each directory
+// it measured none of (walkResult.Missing).
+//
+// The names are the pod's own: a role may make a directory of any name two levels under the
+// volume root, and any number of them, so each list takes the bound the frame takes (bound) and
+// each path is quoted, rather than joining a list of a size and a content nothing here chose. A
+// reader who needs the whole of either list has the report's own, bounded the same way.
+func walkShortfall(walk walkResult) string {
+	var partly []string
+	partlyLeft := 0
+	for _, size := range walk.Sizes {
+		switch {
+		case size.Refused == "":
+		case len(partly) == volumeReportSizes:
+			partlyLeft++
+		default:
+			partly = append(partly, fmt.Sprintf("%q at %q",
+				cutRunes(size.Path, volumeReportPathRunes), cutRunes(size.Refused, volumeReportPathRunes)))
+		}
+	}
+	if !walk.Partial && len(partly) == 0 && len(walk.Missing) == 0 {
+		return ""
+	}
+	var line strings.Builder
+	line.WriteString("the size walk ")
+	if walk.Partial {
+		line.WriteString("was cut by its budget or the container's stop before it reached every directory: it ")
+	}
+	fmt.Fprintf(&line, "measured %d directories", len(walk.Sizes))
+	if len(partly) > 0 {
+		fmt.Fprintf(&line, ", %d of them only in part, the kernel having refused a read under each (%s",
+			len(partly)+partlyLeft, strings.Join(partly, ", "))
+		if partlyLeft > 0 {
+			fmt.Fprintf(&line, ", and %d more", partlyLeft)
+		}
+		line.WriteString(")")
+	}
+	if len(walk.Missing) > 0 {
+		missing, missingLeft := walk.Missing, 0
+		if len(missing) > volumeReportSizesMissing {
+			missing, missingLeft = missing[:volumeReportSizesMissing], len(missing)-volumeReportSizesMissing
+		}
+		and := " and"
+		if len(partly) > 0 {
+			and = ", and"
+		}
+		fmt.Fprintf(&line, "%s left %d unmeasured (%q", and, len(walk.Missing), cutEach(missing, volumeReportPathRunes))
+		if missingLeft > 0 {
+			fmt.Fprintf(&line, ", and %d more", missingLeft)
+		}
+		line.WriteString(")")
+	}
+	return line.String()
 }
 
 // sweepOutcome is one sweep as the interval reads it.

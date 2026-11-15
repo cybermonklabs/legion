@@ -4,12 +4,17 @@ package launcher
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -211,47 +216,114 @@ func TestTheWalkEndsOnItsBudgetAgainstAWalkerThatBlocks(t *testing.T) {
 	}
 }
 
-// A read the kernel refuses beneath a directory names a partial reading and ends nothing: the
-// pod's feed is a read-only mount inside the same claim, so the walk reaches it and its bytes
-// are already in the statfs reading the marks are taken from. A directory the walk cannot list
-// at all is named as missing, and neither stops the walk or the report.
-func TestARefusedReadMakesTheWalkPartialAndEndsNothing(t *testing.T) {
+// A read the kernel refuses under a target ends nothing and is no early end: the pod's feed is a
+// read-only mount inside the same claim, so the walk reaches it and its bytes are already in the
+// statfs reading the marks are taken from. The walk goes on to its end, so it is not partial,
+// and each directory it could read only in part is a size that names the first read refused
+// there and how many were, so that its bytes are never read as the directory's whole. Four
+// shapes are staged: two mode-0000 directories under the feed's own directory, which the walk
+// reads the rest of; a mode-0000 directory at the foot of a chain thirty directories deep, which
+// is named by the target, its own name and its depth and never by the path between, as the
+// deleter's removal failure is (removalFailure); a target that is itself mode 0000, whose lstat
+// in its readable parent succeeds and whose open is refused, so the walk reads nothing of it;
+// and an immediate child of the root that is mode 0000, which the walk cannot list and names as
+// missing. The negative control is every other target of the tree, which carries no refusal.
+func TestARefusedReadUnderATargetIsNamedOnItsSizeAndIsNoEarlyEnd(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("the test process is root, which reads a mode-000 directory: a refused read cannot be staged for it")
 	}
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := walkTree(t, clock.at.Add(-2*time.Hour))
 	// The feed as workspace-fetch writes it: a directory of its own under the mount, which is
-	// what the walk measures, with a directory under that the reader is refused.
+	// what the walk measures, with two directories under that the reader is refused.
 	feed := filepath.Join(root, "feed", "pack")
 	mkdirFixture(t, feed)
 	writeAged(t, filepath.Join(feed, "issue.json"), clock.at.Add(-2*time.Hour))
-	refused := filepath.Join(feed, "under")
-	mkdirFixture(t, refused)
-	writeAged(t, filepath.Join(refused, "two"), clock.at.Add(-2*time.Hour))
-	if err := os.Chmod(refused, 0); err != nil {
-		t.Fatal(err)
+	first, second := filepath.Join(feed, "a-locked"), filepath.Join(feed, "b-locked")
+	locked := filepath.Join(root, "workspaces", "locked")
+	sealed := filepath.Join(root, "sealed")
+	// The chain a role can make under any target: thirty levels of 100-byte names, which the
+	// walk descends by handle, and a refused directory at its foot.
+	deep := filepath.Join(root, "uv", "deep")
+	foot := deep
+	for level := range 30 {
+		foot = filepath.Join(foot, fmt.Sprintf("%02d", level)+strings.Repeat("d", 98))
 	}
-	t.Cleanup(func() { _ = os.Chmod(refused, 0o755) })
+	footLocked := filepath.Join(foot, "locked")
+	for _, dir := range []string{first, second, locked, sealed, footLocked} {
+		mkdirFixture(t, dir)
+		writeAged(t, filepath.Join(dir, "two"), clock.at.Add(-2*time.Hour))
+		if err := os.Chmod(dir, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	}
 
 	result := walkOf(root, clock, &fakeTicks{}, measureTree).run(context.Background())
 
-	if !result.Partial {
-		t.Error("a walk that was refused a read is not marked partial")
+	if result.Partial {
+		t.Error("a walk that went on past every refusal to its end is marked partial, which a reader reads as a walk that ended early")
 	}
-	if len(result.Sizes) == 0 {
-		t.Fatal("the walk produced no sizes at all, want the refusal to end nothing")
+	if !slices.Equal(result.Missing, []string{sealed}) {
+		t.Errorf("the walk named %q as missing, want only %s, the child it could not list", result.Missing, sealed)
 	}
-	at := slices.IndexFunc(result.Sizes, func(size shimwire.LauncherVolumeSize) bool { return size.Path == feed })
-	if at < 0 {
-		t.Errorf("the walk did not measure the feed at %s: %+v", feed, result.Sizes)
-	} else if result.Sizes[at].Bytes == 0 {
-		t.Errorf("the walk measured the feed at no bytes, want what it could read of it")
+	sizeOf := func(path string) (shimwire.LauncherVolumeSize, bool) {
+		at := slices.IndexFunc(result.Sizes, func(size shimwire.LauncherVolumeSize) bool { return size.Path == path })
+		if at < 0 {
+			t.Errorf("the walk did not measure %s: %+v", path, result.Sizes)
+			return shimwire.LauncherVolumeSize{}, false
+		}
+		return result.Sizes[at], true
 	}
-	// Everything after the refusal was still measured: the walk went on.
+	if size, ok := sizeOf(feed); ok && (size.Bytes != 1 || size.Refused != first || size.Refusals != 2) {
+		t.Errorf("the walk measured the feed as %+v, want the 1 B it could read, refused first at %s and 2 refusals in all", size, first)
+	}
+	if size, ok := sizeOf(locked); ok && (size.Bytes != 0 || size.Refused != locked || size.Refusals != 1) {
+		t.Errorf("the walk measured the directory it could not open as %+v, want 0 B read, refused at itself, 1 refusal", size)
+	}
+	if size, ok := sizeOf(deep); ok {
+		want := deep + "/.../locked (depth 31)"
+		if size.Refused != want || size.Refusals != 1 {
+			t.Errorf("the walk names the refusal at the foot of a chain 31 levels deep as %q (%d bytes) with %d refusals, want %q, 1 refusal: the target, the name and the depth, and never the %d-byte path between",
+				size.Refused, len(size.Refused), size.Refusals, want, len(footLocked))
+		}
+	}
+	for _, size := range result.Sizes {
+		if size.Path != feed && size.Path != locked && size.Path != deep && (size.Refused != "" || size.Refusals != 0) {
+			t.Errorf("the walk marks %s, which it read whole, as read in part: %+v", size.Path, size)
+		}
+	}
+	// Everything after the refusals was still measured: the walk went on.
 	last := filepath.Join(root, "workspaces", "cybermonklabs")
 	if !slices.ContainsFunc(result.Sizes, func(size shimwire.LauncherVolumeSize) bool { return size.Path == last }) {
 		t.Errorf("the walk stopped at the refusal: it never measured %s", last)
+	}
+}
+
+// A volume root the walk cannot open is named as what it did not measure, and nothing cut the
+// walk, so it is not partial: the report still goes, and a reader is not told the walk ended
+// early when it never began.
+func TestAVolumeRootTheWalkCannotOpenIsNamedMissingAndIsNoEarlyEnd(t *testing.T) {
+	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
+	root := filepath.Join(t.TempDir(), "gone")
+	result := walkOf(root, clock, &fakeTicks{}, measureTree).run(context.Background())
+	if result.Partial || !slices.Equal(result.Missing, []string{root}) || len(result.Sizes) != 0 {
+		t.Errorf("the walk of a root that is not there is partial %t, missing %q, with %d sizes; want not partial, missing %s alone, and no size",
+			result.Partial, result.Missing, len(result.Sizes), root)
+	}
+}
+
+// A path openVolumeDir refuses is quoted in its error, as every error of the trimmer's that
+// names a path is (quotedPathText): a name holding a newline would otherwise begin a line of its
+// own in the pod's log.
+func TestAPathOpenVolumeDirRefusesIsQuotedInItsError(t *testing.T) {
+	const relative = "scratch\nthe trimmer is fine"
+	_, err := openVolumeDir(relative)
+	if !errors.Is(err, syscall.EINVAL) {
+		t.Fatalf("openVolumeDir(%q) answered %v, want %v for a path that is not absolute", relative, err, syscall.EINVAL)
+	}
+	if want := "open " + strconv.Quote(relative) + ": " + syscall.EINVAL.Error(); err.Error() != want {
+		t.Errorf("openVolumeDir(%q) answered %q, want %q", relative, err, want)
 	}
 }
 
@@ -359,8 +431,8 @@ func TestTheWalkMeasuresNothingThroughAChildSwappedForARelativeLinkCrossingAnAbs
 		t.Errorf("the walk measured %d B over %d directories, and every file the volume itself holds is one byte: it read the %d B tree the links lead to",
 			measured, len(result.Sizes), baitBytes)
 	}
-	if !result.Partial {
-		t.Error("a walk whose targets it could no longer reach is not marked partial")
+	if result.Partial {
+		t.Error("a walk that named the targets it could no longer reach as missing and went on to its end is marked partial, which a reader reads as a walk that ended early")
 	}
 }
 
@@ -405,6 +477,175 @@ func TestNoSecondWalkIsMadeInsideTheHour(t *testing.T) {
 	}
 	if third.At.Equal(first.At) {
 		t.Errorf("the walk an hour later was read at %s, the same as the first: it is the same measurement", third.At)
+	}
+}
+
+// walkLines is every line the trimmer wrote of a size walk.
+func walkLines(f *trimFixture) []string {
+	var lines []string
+	for _, line := range f.linesWritten() {
+		if strings.Contains(line, "the size walk") {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// lockedUnder makes a directory of the case's tree mode 0000, with one file in it, and gives it
+// back its mode when the case ends, so the tree can be removed.
+func lockedUnder(t *testing.T, dir string, at time.Time) {
+	t.Helper()
+	mkdirFixture(t, dir)
+	writeAged(t, filepath.Join(dir, "two"), at)
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+}
+
+// The report and the log line of a walk that met a refused read say what it met and no more.
+// The walk reached its end, so neither says that it ended early, and the directory it read only
+// in part is named in both with the read refused there, its bytes given as what the walk could
+// read. Nothing went unmeasured, so neither carries a list of unmeasured directories: the line
+// used to say `ended early` and `left 0 unmeasured ([], and 0 more)` of exactly this walk, and
+// named the unreadable directory nowhere.
+func TestAWalkThatMetARefusedReadSaysWhereAndNotThatItEndedEarly(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("the test process is root, which reads a mode-000 directory: a refused read cannot be staged for it")
+	}
+	f := newTrimFixture(t, 1)
+	pack := filepath.Join(f.root, "feed", "pack")
+	refused := filepath.Join(pack, "under")
+	mkdirFixture(t, pack)
+	writeAged(t, filepath.Join(pack, "issue.json"), f.clock.at)
+	lockedUnder(t, refused, f.clock.at)
+	tr := f.trimmer()
+
+	report := tr.report(context.Background(), sweepOutcome{reason: "the sweep this walk's report goes with"})
+
+	if report.SizesPartial || len(report.SizesMissing) != 0 || report.SizesMissingOmitted != 0 {
+		t.Errorf("the report of a walk that reached its end is partial %t and names %q and %d more as unmeasured, want neither",
+			report.SizesPartial, report.SizesMissing, report.SizesMissingOmitted)
+	}
+	partly := 0
+	for _, size := range report.Sizes {
+		if size.Refused == "" && size.Refusals == 0 {
+			continue
+		}
+		partly++
+		if size.Path != pack || size.Refused != refused || size.Refusals != 1 || size.Bytes != 1 {
+			t.Errorf("the report carries %+v, want %s at the 1 B the walk could read, refused once at %s", size, pack, refused)
+		}
+	}
+	if partly != 1 {
+		t.Errorf("the report marks %d sizes as read in part, want the one under which a read was refused: %+v", partly, report.Sizes)
+	}
+	lines := walkLines(f)
+	if len(lines) != 1 {
+		t.Fatalf("the trimmer wrote %d lines of the walk, want one naming the directory it read in part: %q", len(lines), f.linesWritten())
+	}
+	for _, want := range []string{"measured", "only in part", strconv.Quote(pack) + " at " + strconv.Quote(refused)} {
+		if !strings.Contains(lines[0], want) {
+			t.Errorf("the walk's line does not say %q: %s", want, lines[0])
+		}
+	}
+	for _, not := range []string{"ended early", "was cut", "unmeasured", "[]"} {
+		if strings.Contains(lines[0], not) {
+			t.Errorf("the walk's line says %q of a walk that reached its end with nothing unmeasured: %s", not, lines[0])
+		}
+	}
+}
+
+// A walk its budget cut is the one that ended early, and its report and its log line say so,
+// with what it did not reach: the target it was cut in and every one after it.
+func TestAWalkThatWasCutSaysSoWithWhatItDidNotReach(t *testing.T) {
+	f := newTrimFixture(t, 1)
+	tr := f.trimmer()
+	calls := 0
+	tr.measure = func(ctx context.Context, dir *dirHandle, name string, at time.Time) measured {
+		calls++
+		if calls > 2 {
+			return measured{cut: true}
+		}
+		return measureTree(ctx, dir, name, at)
+	}
+
+	report := tr.report(context.Background(), sweepOutcome{reason: "the sweep this walk's report goes with"})
+
+	if !report.SizesPartial || len(report.Sizes) != 2 || len(report.SizesMissing) == 0 {
+		t.Fatalf("the report of a walk cut at its third target is partial %t with %d sizes and %q unmeasured, want partial, the two it measured and the rest named",
+			report.SizesPartial, len(report.Sizes), report.SizesMissing)
+	}
+	lines := walkLines(f)
+	if len(lines) != 1 {
+		t.Fatalf("the trimmer wrote %d lines of the walk, want one: %q", len(lines), f.linesWritten())
+	}
+	for _, want := range []string{"was cut by its budget or the container's stop before it reached every directory",
+		"measured 2 directories", fmt.Sprintf("left %d unmeasured", len(report.SizesMissing)), strconv.Quote(report.SizesMissing[0])} {
+		if !strings.Contains(lines[0], want) {
+			t.Errorf("the walk's line does not say %q: %s", want, lines[0])
+		}
+	}
+	if strings.Contains(lines[0], "only in part") {
+		t.Errorf("the walk's line says a directory was read in part, and no read was refused: %s", lines[0])
+	}
+}
+
+// A role can make any number of directories under /legion/scratch, and each can hold one the
+// walk is refused: the report carries each refused read under this launcher's bound on a path,
+// and the log line names no more of them than a report carries sizes, saying how many it left
+// out. The names are the 255 bytes a directory component allows, so an unbounded line or path
+// is one a role sets the size of.
+func TestDirectoriesReadInPartAreBoundedInTheReportAndTheLog(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("the test process is root, which reads a mode-000 directory: a refused read cannot be staged for it")
+	}
+	f := newTrimFixture(t, 1)
+	scratch := filepath.Join(f.root, "scratch")
+	const planted = 2 * volumeReportSizes
+	plantWalkTargets(t, scratch, planted)
+	entries, err := os.ReadDir(scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusedName := strings.Repeat("r", 255)
+	locked := 0
+	for _, entry := range entries {
+		if len(entry.Name()) == 255 {
+			lockedUnder(t, filepath.Join(scratch, entry.Name(), refusedName), f.clock.at)
+			locked++
+		}
+	}
+	if locked != planted {
+		t.Fatalf("the case locked a directory under %d of the %d it planted", locked, planted)
+	}
+	tr := f.trimmer()
+
+	report := tr.report(context.Background(), sweepOutcome{reason: "the sweep this walk's report goes with"})
+
+	if len(report.Sizes) != volumeReportSizes {
+		t.Fatalf("the report carries %d sizes, want the %d this launcher bounds it to", len(report.Sizes), volumeReportSizes)
+	}
+	for _, size := range report.Sizes {
+		if size.Refused == "" {
+			continue
+		}
+		if runes := utf8.RuneCountInString(size.Refused); runes > volumeReportPathRunes || !strings.HasSuffix(size.Refused, "…") {
+			t.Errorf("the report names a refused read of %d runes, %q, want it cut at the %d bound with an ellipsis", runes, size.Refused, volumeReportPathRunes)
+		}
+	}
+	lines := walkLines(f)
+	if len(lines) != 1 {
+		t.Fatalf("the trimmer wrote %d lines of the walk, want one: %q", len(lines), f.linesWritten())
+	}
+	if listed := strings.Count(lines[0], `" at "`); listed != volumeReportSizes {
+		t.Errorf("the walk's line names %d directories read in part, want the %d a report carries", listed, volumeReportSizes)
+	}
+	if want := fmt.Sprintf("%d of them only in part", planted); !strings.Contains(lines[0], want) {
+		t.Errorf("the walk's line does not say %q: %.400s", want, lines[0])
+	}
+	if want := fmt.Sprintf(", and %d more)", planted-volumeReportSizes); !strings.Contains(lines[0], want) {
+		t.Errorf("the walk's line does not say %q, how many it left out: %.400s", want, lines[0])
 	}
 }
 

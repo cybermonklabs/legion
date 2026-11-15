@@ -70,8 +70,9 @@ func TestAVolumeReportThroughTheDaemonsGlueReachesTheArchitectEverySweep(t *test
 	sweep := shimwire.LauncherVolumeReport{Trimmer: "trim-1", Episode: 1, RaisedBy: shimwire.VolumeEpisodeFirst,
 		UsedBytes: 46_000_000_000, FreeBytes: 3_000_000_000, FreedBytes: 0,
 		StopReason: "no entry is eligible",
-		Sizes:      []shimwire.LauncherVolumeSize{{Path: "/legion/scratch/tmp", Bytes: 21_000_000_000}},
-		SizesAt:    now}
+		Sizes: []shimwire.LauncherVolumeSize{{Path: "/legion/scratch/tmp", Bytes: 21_000_000_000,
+			Refused: "/legion/scratch/tmp/locked", Refusals: 1}},
+		SizesAt: now}
 
 	notices := func() []record.Notice {
 		t.Helper()
@@ -103,10 +104,16 @@ func TestAVolumeReportThroughTheDaemonsGlueReachesTheArchitectEverySweep(t *test
 	if len(first) != 1 {
 		t.Fatalf("the architect has %d volume-near-full notices after one report through the daemon's glue, want 1: a report the glue does not apply never reaches the architect", len(first))
 	}
-	for _, want := range []string{"pod-uid-1", "trim-1", "46000000000", "/legion/scratch/tmp"} {
+	for _, want := range []string{"pod-uid-1", "trim-1", "46000000000", "/legion/scratch/tmp", `at least 21000000000 bytes`, `"/legion/scratch/tmp/locked"`} {
 		if !strings.Contains(first[0].Reason, want) {
 			t.Errorf("the notice the architect reads does not carry %q of what the launcher reported: %q", want, first[0].Reason)
 		}
+	}
+	// The size's refused read crosses the glue with it, so the notice never tells a size the
+	// launcher could read only in part as the directory's whole (volumeSizes).
+	if volume := first[0].Volume; volume == nil || len(volume.Sizes) != 1 ||
+		volume.Sizes[0] != (record.VolumeSize{Path: "/legion/scratch/tmp", Bytes: 21_000_000_000, Refused: "/legion/scratch/tmp/locked", Refusals: 1}) {
+		t.Errorf("the notice carries sizes %+v, want the launcher's own size with its refused read", volume)
 	}
 
 	// The same volume an hour and more later, still full and not changing: the same numbers,

@@ -246,11 +246,21 @@ const (
 // size walk measured it: the bytes under it, and of those the bytes whose newest modification
 // time is more than an hour old and more than a day old, which are what tell a reader a working
 // set from cold bytes.
+//
+// Refused names the first read at or under Path the kernel refused, and Refusals is how many of
+// the walk's reads there it refused in all. It is Path itself where the walk could read nothing
+// of it, Path/<name> for a name in it, and Path/.../<name> (depth N) for a name N levels below
+// it, so its size is set by two names and never by the depth of the tree. A size that carries
+// them is what the walk could read under Path and no more: Bytes and its two splits are a lower
+// bound of the directory's own, never the whole of it. The walk went on past each refusal, so
+// neither makes the walk partial (LauncherVolumeReport.SizesPartial).
 type LauncherVolumeSize struct {
 	Path          string `json:"path"`
 	Bytes         int64  `json:"bytes"`
 	BytesOverHour int64  `json:"bytesOverHour"`
 	BytesOverDay  int64  `json:"bytesOverDay"`
+	Refused       string `json:"refused,omitempty"`
+	Refusals      int    `json:"refusals,omitempty"`
 }
 
 // The three things that raise an episode, which a report's RaisedBy names. An episode is the run
@@ -288,7 +298,11 @@ const (
 // Sizes are the directories two levels under the volume root and SizesAt when they were
 // measured: a report made between walks carries the last walk's numbers with that walk's time,
 // so a reader never reads a stale measurement as this sweep's. SizesPartial is a walk that ended
-// early, and SizesMissing what such a walk did not measure.
+// early, which is a walk its budget or the container's stop cut before it reached every
+// directory. SizesMissing is every directory the walk did not measure at all: one it could not
+// open or list, which ends nothing, and, of a walk that was cut, the one it was cut in and every
+// one after it. A directory the walk could read only in part is a size of its own, which names
+// the read the kernel refused (LauncherVolumeSize.Refused).
 //
 // Faults are the panics the trimmer recovered from, each with its stack, and SwitchedOff the one
 // report no sweep produces: the trimmer has stopped itself after three faults in a row, and this
