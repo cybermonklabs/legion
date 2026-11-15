@@ -715,8 +715,11 @@ func volumeFillName(volumes []corev1.Volume, name string) string {
 // would carry, so no pod outlives a change of store; ok is whether they differ. A generation
 // started under a database store names a URL file no pod created under another store has: the
 // providers volume's projection of the Secret key under postgres, the proxy the pod's launcher
-// serves under cloudsql-iam. A pod created under another store or key is replaced by its relaunch
-// rather than start a generation whose Oh My Pi would refuse the URL file it cannot read. Under
+// serves under cloudsql-iam. A pod created under another store or key is drift (driftedInPod): an
+// issue pod is replaced by its update round, and a launch into it before that keeps the pod and
+// tells its generation the store the pod itself carries (keptPod), so no generation starts against
+// a URL file its Oh My Pi cannot read; the controller's pod, which no round covers (roundCovers),
+// is replaced at the next launch into it. Under
 // cloudsql-iam the instance, the database, the login and the service account the launcher
 // impersonates are all compared — an account named where the pod has none, none where it has one,
 // or another one — since the pod's launcher was told them once, at its creation, and signs in to
