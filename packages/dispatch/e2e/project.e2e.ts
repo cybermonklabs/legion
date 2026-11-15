@@ -254,8 +254,9 @@ test("picker keeps the newest pick: a pick made after leaving and coming back is
 });
 
 // Two picks made while one save is out are one request, the newest, and the badge shows the
-// newest from its pick until every save has ended - through the moment the first save ends while
-// the newest is still out, which is where a picker that kept its own queue fell back to the first.
+// newest pick from each pick until every save has ended - through the moment the first save ends
+// while the newest is still out, which is where a picker that kept its own queue fell back to the
+// first.
 // SLOW(>=2s): two saves each held three seconds.
 test("picker keeps the newest pick: two picks made while a save is out send only the newest, which the badge shows until every save ends", async ({
   browser,
@@ -270,13 +271,18 @@ test("picker keeps the newest pick: two picks made while a save is out send only
     const picker = issuePicker(page, "Priority", key);
     await page.goto(`/issues/${key}`);
     await expect(picker).toHaveValue("3");
+    await expect.poll(() => shown.values.at(-1)).toBe("3");
+    const fromFirst = shown.values.length;
 
+    // Each pick shows before the next is made, so the badge's record from the first pick on is
+    // the newest pick at each moment, and nothing else.
     await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
     await expect.poll(() => held.sent.length).toBe(1);
     await picker.selectOption("2");
+    await expect.poll(() => shown.values.at(-1)).toBe("2");
     await picker.selectOption("0");
     await expect.poll(() => shown.values.at(-1)).toBe("0");
-    const fromNewest = shown.values.length - 1;
     held.release();
     await savesEnded(page, held);
 
@@ -285,9 +291,9 @@ test("picker keeps the newest pick: two picks made while a save is out send only
       "P0 went out once P1's save had ended"
     ).toEqual([{ priority: 1 }, { priority: 0 }]);
     expect(
-      shown.values.slice(fromNewest),
-      "every value the badge showed from the pick of P0 until every save ended"
-    ).toEqual(["0"]);
+      shown.values.slice(fromFirst),
+      "every value the badge showed from the pick of P1 until every save ended"
+    ).toEqual(["1", "2", "0"]);
 
     expect(
       await storedValues(key, "priority", seq),
@@ -422,6 +428,7 @@ test("picker keeps a pick on screen: a reload shows the newest pick from its fir
       `every value the badge showed from the reload on: ${JSON.stringify(shown.values.slice(beforeReload))}`
     ).toEqual(["2"]);
     expect(await getIssue(key)).toMatchObject({ priority: 2 });
+    await expect(picker).toHaveValue("2");
   } finally {
     await context.close();
   }

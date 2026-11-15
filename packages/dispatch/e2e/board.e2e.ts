@@ -1234,11 +1234,13 @@ test("picker keeps a pick on screen: a card dragged to another priority lane whi
   }
 });
 
-// SLOW(>=2s): a save held three seconds while the project's board is opened and read.
+// SLOW(>=2s): a save held three seconds while the project's board is opened and read, and read
+// again for a rename of another issue.
 test("picker keeps a pick on screen: a pick made on the issue page shows on the board opened while its save is out", async ({
   browser,
 }) => {
-  const { key } = await boardWithIssueAtP3();
+  const { key, other } = await boardWithIssueAtP3();
+  const renamed = "Another issue, renamed while the board shows the pick";
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -1261,11 +1263,22 @@ test("picker keeps a pick on screen: a pick made on the issue page shows on the 
     const card = page.getByRole("article", { name: `${key} Priority under a held save` });
     await expect(card.getByRole("combobox", { name: `Priority of ${key}` })).toHaveValue("1");
     await expect.poll(() => reads.some((read) => read.answeredAt !== undefined)).toBe(true);
+    // A rename of another issue of the project, straight to the server, with the save still
+    // held: its live event has the board read the project's list again, and the answer, carrying
+    // P3, lands while the save is out.
+    const renamedAt = Date.now();
+    await patchIssue(other, { title: renamed });
+    await expect(page.getByRole("article", { name: `${other} ${renamed}` })).toBeVisible();
+    await expect
+      .poll(() => reads.some((read) => read.sentAt >= renamedAt && read.answeredAt !== undefined))
+      .toBe(true);
     await nextFrames(page);
+    await expect(card.getByRole("combobox", { name: `Priority of ${key}` })).toHaveValue("1");
     held.release();
     await savesEnded(page, held);
 
     expectReadWhileHeld(reads, held, leftAt);
+    expectReadWhileHeld(reads, held, renamedAt);
 
     // The issue page's picker, then the table's row and the board's card, with no picker drawn
     // between them (`(none)`): each shows the pick.

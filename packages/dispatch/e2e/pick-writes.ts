@@ -1,9 +1,9 @@
 /** What the browser rows of dispatch://INFRA-299 ("picker keeps the newest pick", "picker keeps a
  *  pick on screen") hold, log and read: each save of an issue held by Playwright's route control
  *  with the window it was held in, each read of a list or of the issue with when it was sent and
- *  answered, what the server stored from the issue's own events, and every value a control shows
- *  at every animation frame. The rows live in the spec files of the pages they drive
- *  (`project.e2e.ts`, `board.e2e.ts`, `issues-table.e2e.ts`, `inbox-drawer.e2e.ts`,
+ *  answered, what the server stored from the issue's own events, and every value a control or a
+ *  table's cell shows at every animation frame. The rows live in the spec files of the pages they
+ *  drive (`project.e2e.ts`, `board.e2e.ts`, `issues-table.e2e.ts`, `inbox-drawer.e2e.ts`,
  *  `inbox-reading-pane.e2e.ts`); this module holds no row. */
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -232,6 +232,49 @@ export async function watchShown(page: Page, name: string, within = ":root"): Pr
       requestAnimationFrame(sample);
     },
     { binding, name, within }
+  );
+  return { values };
+}
+
+/**
+ * Records every text the cell of the column headed `column` (such as `Assignee`) shows in the row
+ * of `issueKey` of an issues table (`[data-issue-row="<KEY>"]`), read at every animation frame of
+ * every document the page loads from now on, as `watchShown` reads a control: for a field a table
+ * draws as plain text, with no name of its own. The cell is the one under the header whose button
+ * reads `column`, in the row's own table; `(none)` while no such row, or no such column, is
+ * drawn. Call it before the page loads the document a row watches.
+ */
+export async function watchCell(page: Page, issueKey: string, column: string): Promise<Shown> {
+  const values: string[] = [];
+  watchedNames += 1;
+  const binding = `__dispatchShown${watchedNames}`;
+  await page.exposeBinding(binding, (_source, value: string) => {
+    if (values.at(-1) !== value) values.push(value);
+  });
+  await page.addInitScript(
+    ({ binding, column, issueKey }: { binding: string; column: string; issueKey: string }) => {
+      const report = Reflect.get(window, binding) as (value: string) => Promise<void>;
+      const selector = `tr[data-issue-row="${CSS.escape(issueKey)}"]`;
+      let last: string | undefined;
+      const read = (row: HTMLTableRowElement): string => {
+        const headers = [...(row.closest("table")?.tHead?.rows[0]?.cells ?? [])];
+        const index = headers.findIndex(
+          (header) => header.querySelector("button")?.textContent?.trim() === column
+        );
+        return index < 0 ? "(none)" : (row.cells[index]?.textContent ?? "(none)");
+      };
+      const sample = () => {
+        const rows = [...document.querySelectorAll<HTMLTableRowElement>(selector)];
+        const value = rows.length === 0 ? "(none)" : rows.map(read).join("|");
+        if (value !== last) {
+          last = value;
+          void report(value);
+        }
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    },
+    { binding, column, issueKey }
   );
   return { values };
 }

@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import {
   act,
@@ -486,9 +486,13 @@ test("a refused pick shows Dispatch's reason with Retry and puts back the assign
     )
     .mockResolvedValueOnce({ ...issue, assignee: "carol", last_seq: 3 });
   const client = signedIn();
+  // The issue's read, which the test seeds: the one asked of it is the issue read again.
+  const detailRead = mock(() =>
+    Promise.reject<IssueDetails>(new Error("the test seeds this query"))
+  );
   function CachedAssignee(): ReactNode {
     const cached = useQuery<IssueDetails>({
-      queryFn: () => Promise.reject(new Error("the test seeds this query")),
+      queryFn: detailRead,
       queryKey: detailKey,
       staleTime: Number.POSITIVE_INFINITY,
     });
@@ -504,10 +508,14 @@ test("a refused pick shows Dispatch's reason with Retry and puts back the assign
     await waitFor(() => expect(select().options.length).toBe(4));
     await user.selectOptions(select(), "bob");
     await waitFor(() => expect(client.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2));
+    // The landing has the issue read again, as Dispatch now holds it.
+    await waitFor(() => expect(detailRead).toHaveBeenCalledTimes(1));
     await user.selectOptions(select(), "carol");
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent('"carol" has not signed in to Dispatch');
     expect(within(alert).getByRole("button", { name: "Retry" })).toBeTruthy();
+    // So does the refusal.
+    await waitFor(() => expect(detailRead).toHaveBeenCalledTimes(2));
     // Back on the assignee Dispatch stored last, which the landing answered: not the one the
     // issue had before the first pick.
     expect(select().value).toBe("bob");
@@ -564,6 +572,54 @@ test("an older pick refused while a newer one is live keeps the newer one on scr
     // Dispatch holds the newer pick now: the refusal has nothing left to report.
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(select().value).toBe("2");
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// The other way the report ends: the person picks again while the newer pick is still out. The
+// new pick is the one the screen shows and Dispatch stores last, so the older refusal has nothing
+// left to report.
+test("an older pick refused while a newer one is live reports the refusal with no Retry until the person picks again", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const second = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise)
+    .mockImplementation(stores);
+  const client = signedIn();
+  const reads = dispatchReads();
+  const view = renderIn(client, <CachedPriority reads={reads} />);
+  const user = userEvent.setup();
+  try {
+    const select = () => prioritySelects()[0] as HTMLSelectElement;
+    await user.selectOptions(select(), "0");
+    await user.selectOptions(select(), "2");
+    await act(async () => {
+      first.reject(new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-1 is closed" }));
+      await first.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 0 }, { priority: 2 }]));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
+    expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+
+    // P2 is still out when the person picks P3: the report clears with the press.
+    await user.selectOptions(select(), "3");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(select().value).toBe("3");
+    expect(cachedPriorities(client)).toEqual({ detail: 3, inbox: 3, list: 3 });
+
+    reads.store(3);
+    await act(async () => {
+      second.resolve({ ...issue, priority: 2 });
+      await second.promise;
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    expect(bodies(patchIssue)).toEqual([{ priority: 0 }, { priority: 2 }, { priority: 3 }]);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(select().value).toBe("3");
   } finally {
     view.unmount();
     patchIssue.mockRestore();
@@ -749,7 +805,9 @@ test("a refused priority pick with no newer live pick puts back the confirmed pr
     new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-1 is closed" })
   );
   const client = signedIn();
-  const view = renderIn(client, <CachedPriority reads={dispatchReads()} />);
+  const reads = dispatchReads();
+  const detailRead = mock(reads.detail);
+  const view = renderIn(client, <CachedPriority reads={{ ...reads, detail: detailRead }} />);
   const user = userEvent.setup();
   try {
     await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
@@ -758,6 +816,80 @@ test("a refused priority pick with no newer live pick puts back the confirmed pr
     expect(within(alert).getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(cachedPriorities(client)).toEqual({ detail: 1, inbox: 1, list: 1 });
     expect((prioritySelects()[0] as HTMLSelectElement).value).toBe("1");
+    // The issue is read again, as Dispatch holds it.
+    await waitFor(() => expect(detailRead).toHaveBeenCalledTimes(1));
+    expect((prioritySelects()[0] as HTMLSelectElement).value).toBe("1");
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// The sequence that tells the value Dispatch last confirmed from the value before a pick: P1
+// goes out, P2 waits behind it, P1 is refused while P2 is live, then P2 is refused. The value on
+// screen before the pick of P2 was P1, which Dispatch never stored; what it last confirmed is the
+// P3 the issue showed at the first pick.
+test("a refused pick whose older pick was refused before it puts back the priority shown at the first pick, not the older pick, with the fixed line and Retry, and reads the issue again", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const second = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  const client = signedIn();
+  client.setQueryData(detailKey, { ...details, priority: 3 });
+  client.setQueryData(listKey, [{ ...summary, priority: 3 }]);
+  client.setQueryData(inboxKey, [{ ...inboxRow, priority: 3 }]);
+  const reads = dispatchReads();
+  reads.store(3);
+  const detailRead = mock(reads.detail);
+  const view = renderIn(client, <CachedPriority reads={{ ...reads, detail: detailRead }} />);
+  const user = userEvent.setup();
+  try {
+    const select = () => prioritySelects()[0] as HTMLSelectElement;
+    await user.selectOptions(select(), "1");
+    await user.selectOptions(select(), "2");
+    expect(
+      writesOf(client)
+        .rows()
+        .map((row) => [row.label, row.status])
+    ).toEqual([
+      ["CORE-1 set to P1", "sending"],
+      ["CORE-1 set to P2", "queued"],
+    ]);
+
+    // P1 is refused with P2 live: P2 stays on screen, and the refusal is reported with no Retry.
+    await act(async () => {
+      first.reject(new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-1 is closed" }));
+      await first.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 1 }, { priority: 2 }]));
+    const reported = await screen.findByRole("alert");
+    expect(reported).toHaveTextContent("Could not update the priority of CORE-1.");
+    expect(within(reported).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(select().value).toBe("2");
+    expect(cachedPriorities(client)).toEqual({ detail: 2, inbox: 2, list: 2 });
+    const readsBefore = detailRead.mock.calls.length;
+    // The issue's read again is held until the roll-back is checked, so what shows is the
+    // roll-back's alone.
+    const answerReads = reads.hold();
+
+    // P2 is refused with no newer live pick: back on P3, the value Dispatch last confirmed.
+    await act(async () => {
+      second.reject(new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-1 is closed" }));
+      await second.promise.catch(() => undefined);
+    });
+    const alert = await screen.findByRole("alert");
+    await waitFor(() =>
+      expect(within(alert).getByRole("button", { name: "Retry" })).toBeInTheDocument()
+    );
+    expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
+    expect(select().value).toBe("3");
+    expect(cachedPriorities(client)).toEqual({ detail: 3, inbox: 3, list: 3 });
+    // The issue is read again, as Dispatch holds it.
+    await waitFor(() => expect(detailRead.mock.calls.length).toBeGreaterThan(readsBefore));
+    await act(async () => answerReads());
+    expect(select().value).toBe("3");
+    expect(bodies(patchIssue)).toEqual([{ priority: 1 }, { priority: 2 }]);
   } finally {
     view.unmount();
     patchIssue.mockRestore();
@@ -777,12 +909,16 @@ const mappings: RepoProject[] = ["acme/widgets", "acme/gadgets"].map((repo) => (
  *  `resolved`, with the project's mappings read. */
 function renderRepo(repo: string | null, resolved: string | null) {
   const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue(mappings);
+  // The issue's read, which the test seeds: the one asked of it is the issue read again.
+  const detailRead = mock(() =>
+    Promise.reject<IssueDetails>(new Error("the test seeds this query"))
+  );
   const client = signedIn();
   client.setQueryData(detailKey, { ...details, repo, resolved_repo: resolved });
   client.setQueryData(listKey, [{ ...summary, repo, resolved_repo: resolved }]);
   function CachedRepo(): ReactNode {
     const cached = useQuery<IssueDetails>({
-      queryFn: () => Promise.reject(new Error("the test seeds this query")),
+      queryFn: detailRead,
       queryKey: detailKey,
       staleTime: Number.POSITIVE_INFINITY,
     });
@@ -805,6 +941,7 @@ function renderRepo(repo: string | null, resolved: string | null) {
   return {
     client,
     described,
+    detailRead,
     select,
     unmount: () => {
       view.unmount();
@@ -817,7 +954,7 @@ test("a refused repository pick puts back the repository Dispatch last confirmed
   const patchIssue = answerIssuePatches().mockRejectedValueOnce(
     new ApiError(400, { code: "REPO_NOT_MAPPED", error: "acme/gadgets is not mapped to CORE" })
   );
-  const { client, described, select, unmount } = renderRepo(null, "acme/widgets");
+  const { client, described, detailRead, select, unmount } = renderRepo(null, "acme/widgets");
   const user = userEvent.setup();
   try {
     await user.hover(select());
@@ -830,6 +967,8 @@ test("a refused repository pick puts back the repository Dispatch last confirmed
     expect(described()).toBe("acme/widgets, inherited or the project's default");
     const [row] = client.getQueryData<IssueSummary[]>(listKey) ?? [];
     expect([row?.repo, row?.resolved_repo]).toEqual([null, "acme/widgets"]);
+    // The issue is read again, as Dispatch holds it.
+    await waitFor(() => expect(detailRead).toHaveBeenCalledTimes(1));
   } finally {
     unmount();
     patchIssue.mockRestore();

@@ -151,8 +151,10 @@ test("picker keeps a pick on screen: the assignee on the issue page and on its I
     const page = await context.newPage();
     const shownOnPage = await watchShown(page, `Assignee of ${key}`, "main");
     // The drawer lists the reader's own rows: the issue's row is listed, and draws its priority
-    // picker, while the issue's question waits on her - while she is its assignee.
+    // picker, while the issue's question waits on her - while she is its assignee. Its card names
+    // the person it waits on in its hand-on picker, which shows the assignee picked.
     const shownInDrawer = await watchShown(page, `Priority of ${key}`, inDrawer);
+    const waitingInDrawer = await watchShown(page, "Hand this question to", inDrawer);
     const held = await holdIssuePatches(page, key);
     const detailReads = logReads(page, detailRead(key));
     const inboxReads = logReads(page, inboxRead);
@@ -194,6 +196,12 @@ test("picker keeps a pick on screen: the assignee on the issue page and on its I
       shownInDrawer.values.slice(fromListed),
       "the drawer's row of the issue from its listing on: `(none)` is the row gone"
     ).toEqual(["3"]);
+    // From the drawer's first paint of the row on, it waits on alice alone, never on bob.
+    const fromDrawn = waitingInDrawer.values.findIndex((value) => value !== "(none)");
+    expect(
+      waitingInDrawer.values.slice(fromDrawn),
+      `the person the drawer's row waits on, from its first paint: ${JSON.stringify(waitingInDrawer.values)}`
+    ).toEqual(["alice"]);
     expect(await getIssue(key)).toMatchObject({ assignee: "alice", title: renamed });
     await expect(picker).toHaveValue("alice");
   } finally {
