@@ -101,6 +101,13 @@ func fleetServesFilesFromRows(ctx context.Context, db processes.Querier) (bool, 
 	return len(bucketless) > 0, nil
 }
 
+const (
+	// versionCacheControl lets a browser keep a version's bytes, which never change, for a year.
+	versionCacheControl = "private, max-age=31536000, immutable"
+	// downloadCacheControl makes a browser ask again, so the saved name is the current one.
+	downloadCacheControl = "private, no-cache"
+)
+
 // serveFileVersion answers a file version's download from what its row holds: a row holding
 // bytes is served from the row, whatever store is configured; a row the backfill cleared, or that
 // an upload wrote with a store, names its object by hash and is streamed from the store.
@@ -125,9 +132,9 @@ func (s *server) serveFileVersion(w http.ResponseWriter, r *http.Request, artifa
 			w.Header().Set("ETag", *sha)
 		}
 		if download {
-			w.Header().Set("Cache-Control", "private, no-cache")
+			w.Header().Set("Cache-Control", downloadCacheControl)
 		} else {
-			w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+			w.Header().Set("Cache-Control", versionCacheControl)
 		}
 		w.Header().Set("Content-Disposition", attachmentDisposition(filename))
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -236,15 +243,12 @@ func safeFilename(name string) string {
 // RFC 9110's quoted-string allows, because curl -OJ saves an answer whose `filename` holds `\"`
 // under the address's last segment rather than under the name.
 func plainFilename(name string) string {
-	plain := make([]byte, 0, len(name))
-	for _, char := range name {
+	return strings.Map(func(char rune) rune {
 		if char < 0x20 || char > 0x7e || char == '"' || char == '\\' {
-			plain = append(plain, '_')
-			continue
+			return '_'
 		}
-		plain = append(plain, byte(char))
-	}
-	return string(plain)
+		return char
+	}, name)
 }
 
 // percentEncodeFilename is name as a `filename*` parameter's value, the text after its charset

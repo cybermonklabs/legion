@@ -24,8 +24,15 @@ import { expect, type Locator, type Page, test } from "./test";
 // once, which only an engine that asks the server again can save. A picture keeps the version
 // address, which a browser may cache for a year.
 
+/** A file to upload, in the shape Playwright's multipart writes and file inputs take. */
+interface UploadFile {
+  buffer: Buffer;
+  mimeType: string;
+  name: string;
+}
+
 /** A file the server stores as a file and not a picture: `%PDF-` is no picture's signature. */
-function pdf(name: string, text: string) {
+function pdf(name: string, text: string): UploadFile {
   return { buffer: Buffer.from(`%PDF-1.4\n% ${text}\n`), mimeType: "application/pdf", name };
 }
 
@@ -35,7 +42,7 @@ function pdf(name: string, text: string) {
 async function upload(
   page: Page,
   path: string,
-  file: { buffer: Buffer; mimeType: string; name: string }
+  file: UploadFile
 ): Promise<ArtifactUploadResponse["artifact"]> {
   const answer = await page.request.post(path, {
     headers: { Origin: dashboardOrigin },
@@ -47,10 +54,7 @@ async function upload(
 
 /** Picks `file` in the Artifacts tab's own upload control and confirms it, as a person does:
  *  choosing a file only stages it until the row's "Upload" is pressed. */
-async function uploadOnTab(
-  page: Page,
-  file: { buffer: Buffer; mimeType: string; name: string }
-): Promise<void> {
+async function uploadOnTab(page: Page, file: UploadFile): Promise<void> {
   await page.getByLabel("Upload artifact").setInputFiles(file);
   await page.getByRole("button", { exact: true, name: "Upload" }).click();
 }

@@ -1021,12 +1021,13 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The file name is the artifact's name as this read finds it, so a renamed document downloads
-	// under its new name, and an older version's carries its number (versionFilename).
 	latest := 0
 	for _, version := range artifact.Versions {
 		latest = max(latest, version.Number)
 	}
+	// The file name is the artifact's name as this read finds it, so a renamed artifact downloads
+	// under its new name, and an older version's carries its number (versionFilename).
+	filename := versionFilename(artifact.Name, artifact.Kind, number, latest)
 	if artifact.Kind == "doc" {
 		var markdown string
 		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number, &markdown)
@@ -1036,12 +1037,11 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		}
 		if download {
 			// The download is the Markdown file itself, not the JSON that wraps it: the text the
-			// JSON's `markdown` field holds, with no display tree read. `no-cache`, as a file
-			// version's download answers, so a saved copy takes the name of the moment.
+			// JSON's `markdown` field holds, with no display tree read.
 			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 			w.Header().Set("X-Content-Type-Options", "nosniff")
-			w.Header().Set("Content-Disposition", attachmentDisposition(versionFilename(artifact.Name, "doc", number, latest)))
-			w.Header().Set("Cache-Control", "private, no-cache")
+			w.Header().Set("Content-Disposition", attachmentDisposition(filename))
+			w.Header().Set("Cache-Control", downloadCacheControl)
 			w.Header().Set("Content-Length", strconv.Itoa(len(markdown)))
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, markdown)
@@ -1075,7 +1075,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.serveFileVersion(w, r, artifact.ID, versionFilename(artifact.Name, artifact.Kind, number, latest), number, download, content, contentType, sha, size)
+	s.serveFileVersion(w, r, artifact.ID, filename, number, download, content, contentType, sha, size)
 }
 
 // deref is the string a nullable column holds, or "".
