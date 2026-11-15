@@ -14,6 +14,11 @@ import (
 // and every issue under it carry.
 var memoryDrawnAt = time.Date(2026, 9, 20, 11, 4, 5, 0, time.UTC)
 
+// planDrawnAt is the instant each issue of that tree was drawn for `plan-length`, the fixture's
+// issue experiment: a draw of its own, made when the issue was opened rather than when its tree
+// was, so the two instants differ as the units do.
+var planDrawnAt = time.Date(2026, 9, 21, 18, 42, 11, 0, time.UTC)
+
 // The state the fixture builds carries one drawn tree (populatedState): the root LEGION-208 and
 // LEGION-209, a child of it, both showing the root's draw as internal/projection fills them, beside
 // the issues no draw has reached. Its claim views carry the pod's update round, the record of what
@@ -27,12 +32,13 @@ var memoryDrawnAt = time.Date(2026, 9, 20, 11, 4, 5, 0, time.UTC)
 // its admission line carry their place in it with the line's own fields beside that place, every
 // issue of it that is not working now carries its answer under `why`, each issue whose current
 // phase names a phase worker role carries the entry that role stands on and the entry it was given,
-// each reviewing root of it carries what its round waits on from GitHub, and every issue of a live
-// tree carries that tree's quiet time, so one state proves every downgrade of stateNarrowings but
-// waitingOnIssueContract's, and that they compose; it stands no member of the line of the kind that
-// contract added, whose downgrade waiting_on_issue_test.go proves. What the quiet-time band is
-// measured on in finer grain — both halves on each member of one tree, and neither on an issue
-// whose tree has left the workflow — is quiet_time_test.go's state of its own.
+// each reviewing root of it carries what its round waits on from GitHub, every issue of a live tree
+// carries that tree's quiet time, and the issues of its drawn tree carry the experiment answers they
+// hold, so one state proves every downgrade of stateNarrowings but waitingOnIssueContract's, and
+// that they compose; it stands no member of the line of the kind that contract added, whose
+// downgrade waiting_on_issue_test.go proves. What the quiet-time band is measured on in finer grain
+// — both halves on each member of one tree, and neither on an issue whose tree has left the
+// workflow — is quiet_time_test.go's state of its own.
 
 // issueViews is every issue of a state body, decoded as the plugin's reader sees it, by key.
 func issueViews(t *testing.T, body []byte) map[string]map[string]any {
@@ -110,13 +116,13 @@ var (
 // row of stateNarrowings strips, a pod in a band is served the keys of every row at or below that
 // band's contract and none of a later row's, and a pod at this daemon's declared contract
 // (DaemonAPIVersion), a pod whose claims record no contract and a caller in no pod — the operator's
-// `legion state`, whose memory line reads the draws, whose queue line reads the wakes, whose
-// tool-call line reads the step records and whose merge-wait line reads the waits — are served all
-// of them.
+// `legion state`, whose memory line reads the draws, whose experiment lines read the assignments,
+// whose queue line reads the wakes, whose tool-call line reads the step records and whose
+// merge-wait line reads the waits — are served all of them.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
-	fields := []string{"memoryGroup", "updateRound", "gatedSteps", "waitingLine", "leakCheckCause", TreeMovedAtField, QuietHoursField}
+	fields := []string{"memoryGroup", "updateRound", "gatedSteps", "waitingLine", "leakCheckCause", TreeMovedAtField, QuietHoursField, "assignments"}
 	for _, field := range append(fields, recordFieldKeys...) {
 		field := `"` + field + `"`
 		if !strings.Contains(string(full), field) {
@@ -163,6 +169,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// name recordFieldsContract rather than DaemonAPIVersion: a pod recording less than it
 		// is served none of the nine, whatever this daemon declares.
 		failure bool
+		// assigned is whether the caller is served each issue's experiment assignments
+		// (assignmentsContract), this daemon's own contract, so a pod at it is served them and
+		// a pod still running an older plugin is not.
+		assigned bool
 		// answers is whether the caller is served each issue's one rendered answer and the
 		// waiting line's own fields beside each member's place (whyAndLineFieldsContract, 85):
 		// one strip takes both, so a pod below it reads every member with its `place` and its
@@ -182,8 +192,8 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// at 98 or above is served the list and every older pod is not.
 		held bool
 		// quiet is whether the caller is served each issue's measure of its tree's quiet time,
-		// `treeMovedAt` and `quietHours` (quietTimeContract, 111), so a pod at 111 or above is
-		// served the measure and every older pod is not. The two arrive and leave together
+		// `treeMovedAt` and `quietHours` (quietTimeContract), so a pod at it or above is served
+		// the measure and every older pod is not. The two arrive and leave together
 		// (withoutQuietTime), so one column answers for both.
 		quiet bool
 		// wait is whether the caller is served what each reviewing issue's round waits on from
@@ -248,13 +258,17 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band from quietTimeContract to below waitingOnIssueContract: the tree quiet time is
 		// served too, and every key a later row of stateNarrowings adds is held back.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true},
-		// The band from waitingOnIssueContract to below mergeWaitContract, the last band under the
-		// declared contract: the fixture stands nothing waitingOnIssueContract's row takes, so it
-		// reads as the band below it, and `mergeWait` is still held back.
+		// The band from waitingOnIssueContract to below mergeWaitContract: the fixture stands
+		// nothing waitingOnIssueContract's row takes, so it reads as the band below it, and
+		// `mergeWait` and the assignments are still held back.
 		{name: "a pod at waitingOnIssueContract", remote: statePodAddr + ":41000", claims: podClaims(waitingOnIssueContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true},
-		{name: "a pod at mergeWaitContract, the newest the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
+		// The band from mergeWaitContract to below assignmentsContract, the last band under the
+		// declared contract: `mergeWait` is served too, and the assignments are the one key held
+		// back.
+		{name: "a pod at mergeWaitContract", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
+		{name: "a pod at this contract, the newest the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -274,6 +288,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			gated := map[string]bool{"LEGION-207": true, "LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true, "LEGION-218": true, "LEGION-219": true}
 			lined := map[string]bool{"LEGION-211": true, "LEGION-212": true}
 			measured := map[string]bool{"LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true, "LEGION-218": true, "LEGION-219": true}
+			// The issues the fixture holds an experiment answer for: the drawn tree's root and
+			// its child, each under two experiments, and LEGION-210, whose hand-over settled it
+			// at no arm, which is an answer and so a row.
+			assigned := map[string]bool{"LEGION-208": true, "LEGION-209": true, "LEGION-210": true}
 			// The issues whose current phase names a phase worker role carry the entry numbers
 			// (entried below): LEGION-208, whose implementer holds the work its row names,
 			// LEGION-211, whose implementer is behind it, and the reviewing roots LEGION-218 and
@@ -291,6 +309,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				}
 				if carries, want := view["waitingLine"] != nil, tc.line && lined[key]; carries != want {
 					t.Errorf("issue %s of %s carries a place in the waiting line = %v, want %v", key, body, carries, want)
+				}
+				if carries, want := view["assignments"] != nil, tc.assigned && assigned[key]; carries != want {
+					t.Errorf("issue %s of %s carries its experiment assignments = %v, want %v", key, body, carries, want)
 				}
 				carriesEntries := view["phaseEntry"] != nil || view["givenEntry"] != nil
 				if want := tc.entries && entried[key]; carriesEntries != want {
@@ -373,7 +394,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				delete(want["admission"].(map[string]any), "trees")
 			}
 			// A pod below heldContract is served no `admission.held`, the one key that contract
-			// added (api's withoutHeld), which is every pod of every band below this one.
+			// added (api's withoutHeld), which is every pod of every band below heldContract's.
 			if !tc.held {
 				delete(want["admission"].(map[string]any), "held")
 			}
@@ -399,6 +420,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 					for _, key := range recordFieldIssueKeys {
 						delete(issue, key)
 					}
+				}
+				if !tc.assigned {
+					delete(issue, "assignments")
 				}
 				// The issues' answer and the line's own fields are one contract and one
 				// strip, which state_caller_test's stripAnswerKeys states and this reads:

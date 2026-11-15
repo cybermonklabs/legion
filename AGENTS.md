@@ -378,7 +378,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 - `legion gh`'s visibility guard, rate-limit wait and call log
 
   the guard keeps public repository visibility answers for the pod and reads private or internal visibility on every call;
-  where GitHub says its rate limit is spent, it waits once only when the stated reset is at most two minutes away, otherwise refusing with that reset in UTC;
+  where GitHub refuses the REST read for a rate limit (read with `internal/githubrest`'s model: a 429, or a 403 with no requests left, a `Retry-After`, or a message naming the secondary limit or its abuse detection mechanism), it waits once only when the wait GitHub asks for (until a core limit's reset, or a secondary limit's `Retry-After`, never its `X-RateLimit-Reset`) is at most two minutes and the caller's bound leaves room for it and the reads after it; a secondary limit not waited for, or still refused after the wait, goes to an unauthenticated `git ls-remote`, whose exit 0 alone reads public, and never to GraphQL, which shares that limit; a core limit not waited for, or still refused, is read through GitHub's GraphQL API with the repository's own token, taking its public, private or internal, and only where GraphQL's own limit is spent too through that `git ls-remote`; any other outcome refuses the call, naming the limit and its reset in UTC;
+  `legion gh` answers the shared check's own visibility read (`gh api --hostname github.com repos/<slug> --jq .visibility` with `PUBLIC_LEAK_CHECK_VISIBILITY_READ`) itself by that same rule, read fresh: it neither takes nor keeps the guard's kept public, because the check counts the commits of another remote it reads public as held and does not scan them, so for that read a false public is the leak; it prints the word with exit 0, or nothing with exit 1, which the check reads as an unknown visibility;
   the exact `gh api rate_limit` read bypasses that guard, while a different endpoint or any option remains guarded;
   each user-initiated wrapped call appends a line to a 1 MiB-bounded log, `$XDG_STATE_HOME/legion-gh/calls.log` (`appendGhCallLog`, `packages/daemon/cmd/legion/gh.go`), serializing append and rotation across processes, with its time, role, issue, resolved repository, command path, visibility source and exit status, never argument text or a response body
 
@@ -431,6 +432,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   The Legion daemon and CLI (LEGION-208): these subcommands
 
   - version
+
+  - config-reference
 
   - start
 
