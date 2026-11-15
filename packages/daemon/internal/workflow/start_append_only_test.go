@@ -157,8 +157,10 @@ func TestASecondTransitionBeforeTheSlotKeepsTheIssuesPlaceInTheWaitingLine(t *te
 	}
 }
 
-// waitingLine is the keys of the admission waiting line, read through the two statements the
-// real pass reads it through (record.Waiting over record.ReadLineFacts).
+// waitingLine is the keys of the admission waiting line, built by record.Waiting over
+// record.ReadLineFacts from the stored state. The real pass judges the line through
+// blockers.JudgeLine, which also fills the held set and the waits (record.LineFacts.Held,
+// ChildWaits and Waits); this leaves them empty.
 func waitingLine(t *testing.T, pool *pgxpool.Pool, engine *Engine) []string {
 	t.Helper()
 	var keys []string

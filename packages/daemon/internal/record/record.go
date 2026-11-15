@@ -188,6 +188,16 @@ type Issue struct {
 	MemoryGroup    string
 	MemoryDrawMode string
 	MemoryDrawnAt  *time.Time
+	// ReleasedForWaitAt is when the daemon took the issue's admission slot away because the issue
+	// waits on another issue — a Dispatch blocker of it that is not done, or an open child its own
+	// first phase waits for — and nil for every other record. It is the mark that stands an issue
+	// whose row was taken away for a wait in the waiting line at the moment it lost that row
+	// (Waiting). The row and the mark are written together, so no pass reads a mark beside a row:
+	// only Store.ReleaseSlotForWait writes it, with the delete of the row in one statement. Three
+	// writes clear it (Store.ClearReleasedForWait): the grant of a slot, the ordinary release of
+	// a row for good, and the issue's departure from the workflow, which the release's own read
+	// of the live issues no longer reaches (workflow's leave). PutIssue keeps the stored value.
+	ReleasedForWaitAt *time.Time
 	// MovedAt is when the daemon last saw the issue move: the time of the newest fact it recorded
 	// that meant the issue's own record changed — a Dispatch event of the issue, a GitHub event of
 	// its pull request, a phase change, a recorded handoff, a start or a completion (the write
@@ -258,8 +268,8 @@ const HoldEscalated HoldReason = "escalated"
 // version and reason of the review); and where on Dispatch the wait began (Since): the newest
 // hand-back the architect made since it was last given work (Issue.DeclaredSeq). It is a snapshot
 // of the wait's subject; what else is still with the person is the root's asks (RootAsk). A
-// person's act Dispatch recorded at or before Since never answers the wait. An answered root waits
-// for a slot ahead of every root that never ran (Waiting).
+// person's act Dispatch recorded at or before Since never answers the wait. An answered root
+// stands in the line's returned part (Waiting) and resumes on the slot it holds.
 type Awaiting struct {
 	Ask            string
 	GateVersion    int
@@ -695,15 +705,50 @@ type PullRequest struct {
 	// nullable `mergeable` field: MergeabilityUnknown while GitHub is still computing it (never a
 	// transient conflict - GitHub reports no checks run on a mergeability GitHub has not computed
 	// yet, either), MergeabilityMergeable once GitHub can merge the head automatically, and
-	// MergeabilityConflicting once it cannot. "" means the read has never run.
+	// MergeabilityConflicting once it cannot. "" means the record holds none for this head
+	// (StateReadAt below says when that is).
 	Mergeability Mergeability
 	// MergeState is GitHub's own merge state for this head, read from `mergeable_state` on the
 	// same /pulls/{number} answer Mergeability is decoded from (daemon.readIssuePullRequest), in
-	// GitHub's lowercase spelling; "" means the read has never run. It is kept beside
+	// GitHub's lowercase spelling; "" means the record holds none for this head (StateReadAt below
+	// says when that is). It is kept beside
 	// Mergeability because the tri-state cannot tell a head GitHub holds on the repository's own
 	// required checks or reviews (MergeStateBlocked) from one GitHub would merge now
 	// (MergeStateClean): GitHub answers `mergeable: true` for both.
 	MergeState MergeState
+	// StateReadAt is the moment the daemon last got GitHub's answer about the merge state of the
+	// head this record stands at, taken from the reader's own clock when that answer was in hand.
+	// This is the one full account of the stamp; every other comment that needs part of it points
+	// here.
+	//
+	// Who stamps it: both readers of the pull request, the per-issue read (daemon's
+	// readIssuePullRequest) and the merge-state ladder (daemon's readMergeState), each through the
+	// mergeability fact (workflow's mergeability). An answer about a head the record has moved past
+	// is dropped with its time. A read that only confirms what is recorded moves the stamp exactly
+	// as one that changes something does: it is the age of the knowledge, not of the last change to
+	// it, and that is what tells a head read a minute ago from one nothing has read for a day. No
+	// webhook stamps it, and a fact with no read time behind it writes none and erases none.
+	//
+	// What clears it, always with MergeState and Mergeability: any fact that moves the head
+	// (classify's advance: a synchronize, a reopen or a close at another head), because the stamp
+	// would then be the time of a read about the head before; and a reopen at any head, which
+	// builds the record afresh (workflow's pullRequestOpened).
+	//
+	// What carries it: a replay of the head run moves it with MergeState and Mergeability
+	// (classify's replayRun and withJudgement), so a replay never pairs one read's state with
+	// another read's time. withJudgement decides on MergeState and not on the stamp: wherever the
+	// record holds no state, a replay puts in place of the record's pair the one the replayed run
+	// ends with, which is the anchor's pair as the run's steps leave it, a head step among them
+	// clearing it (advance). So a stamp held beside no state can go with no head move of the record
+	// and no reopen. A run anchored before migration 20261112070503 holds a state with no stamp,
+	// and a replay gives that pair back as it is.
+	//
+	// What the zero time means, after any of those: the record holds no read time for its head.
+	// Beside a recorded MergeState it is a state whose read time the record does not hold, a row
+	// written before migration 20261112070503 or a pair a replay gave back from an anchor that
+	// predates it; beside MergeState's "" the record holds no read of its head at all. Neither says
+	// when GitHub was last asked.
+	StateReadAt time.Time
 	// ConflictingHead is the head the daemon last judged conflicting with its base, written by
 	// whichever read made that judgement: the daemon's read of the pull request finding GitHub's
 	// CONFLICTING for this head (workflow's mergeability), and the merge queue reporting its entry
@@ -753,7 +798,8 @@ type Named struct {
 }
 
 // Judgement is the part of a pull request a head run replays: its head, its CI settlement, the
-// moves it has made, and GitHub's verdict on merging the head it stood at.
+// moves it has made, and GitHub's verdict on merging the head it stood at with the time that
+// verdict was read.
 //
 // The verdict is the anchor's alone to give back, and only to a record that holds none: a move no
 // push links yet takes the verdict with it (classify's advance), and the push that links the move
@@ -772,6 +818,10 @@ type Judgement struct {
 	Moves        []Move       `json:"moves,omitempty"`
 	Mergeability Mergeability `json:"mergeability,omitempty"`
 	MergeState   MergeState   `json:"mergeState,omitempty"`
+	// omitzero, as HeadRun.Since and Named.At are: omitempty leaves a zero time in the JSON. A run
+	// anchored before any read answered carries none, and so does one anchored before migration
+	// 20261112070503 (PullRequest.StateReadAt says what that means).
+	StateReadAt time.Time `json:"stateReadAt,omitzero"`
 }
 
 // Move is a move from the head Before to the head SHA, which a push with the same two heads makes.
@@ -855,9 +905,10 @@ func LetsImplementationMove(pr *PullRequest) bool {
 	return pr != nil && slices.Contains(implementationMoveStates, pr.State)
 }
 
-// Mergeability is GitHub's lazily computed verdict for whether a pull request's head can be
-// merged into its base without a conflict, decoded from GitHub's nullable `mergeable` field
-// (daemon.readIssuePullRequest). "" (the zero value) means the daemon has never read it.
+// Mergeability is GitHub's lazily computed verdict for whether a pull request's head can be merged
+// into its base without a conflict, decoded from GitHub's nullable `mergeable` field
+// (daemon.readIssuePullRequest). "" (the zero value) means the record holds no verdict for its
+// head; PullRequest.StateReadAt's doc says when that is.
 type Mergeability string
 
 const (
@@ -868,9 +919,10 @@ const (
 
 // MergeState is GitHub's merge state for a pull request's head, read from `mergeable_state` on
 // GitHub's /pulls/{number} answer (daemon.readIssuePullRequest). It is kept in GitHub's own
-// lowercase spelling rather than one of the daemon's: the state is GitHub's judgement, weighing
-// the repository's required checks and reviews, and the daemon only records what it read.
-// "" (the zero value) means the daemon has never read it, which no GitHub answer ever spells.
+// lowercase spelling rather than one of the daemon's: the state is GitHub's judgement, weighing the
+// repository's required checks and reviews, and the daemon only records what it read. "" (the zero
+// value) means the record holds no merge state for its head; PullRequest.StateReadAt's doc says
+// what that means beside a read time and beside none.
 type MergeState string
 
 // The eight states GitHub spells in `mergeable_state`: clean, which GitHub would merge now;
@@ -1393,11 +1445,13 @@ type Store interface {
 	PutDispatchClaim(ctx context.Context, tx pgx.Tx, key, holder string, seq int64) error
 	// DispatchIssues is every mirrored row of the Dispatch project key project, by key.
 	DispatchIssues(ctx context.Context, tx pgx.Tx, project string) ([]DispatchIssueRow, error)
-	// DispatchIssuesOf is the mirrored row of each of keys in project and the row of each issue
-	// those rows say they wait on, by key, read by primary key: what a judgement of keys reads
+	// DispatchIssuesOf is the mirrored row of each of keys and the row of each issue those rows
+	// say they wait on, by key, read by primary key: what a judgement of keys reads
 	// (blockers.Load), whatever the number of rows the project's mirror holds. No keys read
-	// nothing.
-	DispatchIssuesOf(ctx context.Context, tx pgx.Tx, project string, keys []string) ([]DispatchIssueRow, error)
+	// nothing. It names no project: a key is read whatever project it is in, since an issue may
+	// wait on an issue of another project and a blocker whose row the judgement cannot read
+	// counts as unfinished for ever.
+	DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []string) ([]DispatchIssueRow, error)
 	// DispatchChildren is every mirrored issue of the Dispatch project key project whose parent is
 	// one of parents, grouped by parent and in key order within each group; a parent with no
 	// children has no entry, and no parents reads nothing. A later step reads it to decide whether
@@ -1627,6 +1681,14 @@ type Store interface {
 	Slots(ctx context.Context, tx pgx.Tx) ([]Slot, error)
 	PutSlot(ctx context.Context, tx pgx.Tx, slot Slot) error
 	ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) error
+	// ReleaseSlotForWait takes issue's slot away because it waits on another issue and records
+	// that it did, in one statement: the row is deleted and Issue.ReleasedForWaitAt set to at, so
+	// no pass can ever read a row gone with no mark, which would say the issue never started, or
+	// a mark beside a row, which would say it waits while it holds its place against the cap.
+	ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue string, at time.Time) error
+	// ClearReleasedForWait sets Issue.ReleasedForWaitAt back to null: the issue holds a slot
+	// again, or holds none for a reason that is not a wait.
+	ClearReleasedForWait(ctx context.Context, tx pgx.Tx, issue string) error
 	// OpenTreeLifecycle binds an admission fact's root start rows to one durable tree epoch before
 	// the fact commits. A reserved cleanup returns treelifecycle.ErrCleanupReserved without
 	// admitting work.
@@ -1991,8 +2053,9 @@ func (i Issue) Standing() pods.Standing {
 // its tree's linger, say) has no run to carry — carried at done, its new root would take a slot
 // and start an architect with nothing to run. Every path that moves a child to a tree of its own
 // asks it: a hand-over's event, the outbox's direct consumption, and a person's labelling of an
-// orphan. And work already under way is never stopped and never re-checked, so a candidate that
-// carries a run waits on nothing, whatever its links say (blockers.Exempt).
+// orphan. And the promotion never holds a candidate that carries a run by its links, whatever
+// they say (blockers.Exempt); once it holds a slot, blockers.waitsOf reads its links like any
+// other issue's.
 func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase != phase.Done }
 
 // PhaseHolds says whether a task queued for phase queuedFor on run generation is still the work

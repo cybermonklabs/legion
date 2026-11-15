@@ -11,7 +11,7 @@ Read the plan first: it is the issue's `plan.md` at the newest version the plan 
 
 Open the PR from the bash tool (`gh pr create`); write the PR body from the exact template in `skill://legion-worker/references/pr-body.md` as you go. Write its `## For the reviewer` block — `Outcome`, `Why`, `Change`, `Proven by`, `Size` — when the PR opens, and keep it true after every push. Write the `Checks` block yourself when the PR opens, one line per check. A wording nit, and any clear fix in a file this pull request touches, is made in the running round, because a later round costs a CI pass and a re-read of the whole change. The `Fast-follow:` line reads `none`, or names only cleanup in files this pull request does not touch.
 
-A root whose code all lands through its children has no code of its own, and GitHub opens no pull request for a branch with no commits ahead of its base. Push one empty commit for it — `jj -R "$LEGION_WORKSPACE" new @- -m '<issue>: the root of its children; no code of its own'`, then `jj -R "$LEGION_WORKSPACE" new` to move off it, then the push the daemon part below gives, with no trailer — and open the pull request on that commit. Its push starts the required checks like any other.
+A root whose code all lands through its children has no code of its own, and GitHub opens no pull request for a branch with no commits ahead of its base. Push one empty commit for it, and write no trailer yourself: `jj -R "$LEGION_WORKSPACE" new @- -m '<issue>: the root of its children; no code of its own'`, then `jj -R "$LEGION_WORKSPACE" new` to move off it, then the push the daemon part below gives. Then open the pull request on that commit. That push starts the required checks like any other.
 
 ## Delegating the code
 

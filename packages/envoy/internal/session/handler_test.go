@@ -26,7 +26,7 @@ func TestHandleAgentMessage_UnknownSession(t *testing.T) {
 
 	result := session.HandleAgentMessage(
 		newTestEnvelope("agent", "notifications.agent.ses_unknown", "test"),
-		"ses_unknown", "test-machine", nil, nil, 0,
+		"ses_unknown", "test-machine", nil, nil, 0, true,
 	)
 
 	if result.Relayed {
@@ -55,7 +55,7 @@ func TestHandleAgentMessage_StoredInterestOnAnotherMachine(t *testing.T) {
 
 	result := session.HandleAgentMessage(
 		newTestEnvelope("agent", "notifications.agent.ses_target", "test"),
-		"ses_target", "test-machine", interest, resolvedEntry(t, sessions, "ses_target"), 0,
+		"ses_target", "test-machine", interest, resolvedEntry(t, sessions, "ses_target"), 0, true,
 	)
 
 	if !result.OwnedElsewhere || result.Relayed || result.Err != nil {

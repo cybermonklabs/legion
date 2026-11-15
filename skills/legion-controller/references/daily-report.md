@@ -71,6 +71,13 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own
   merge) or its link is taken off (by a person or the tree's architect), and a children-first wait
   ends when the last open child leaves the workflow, so take nothing for them.
+  Of the issues here, say of each whose `issues.<KEY>.waitingLine.kind` is `waiting_on_issue`
+  that it holds no admission slot while it waits,
+  that nothing of its work has stopped,
+  and that it takes one again by itself
+  ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)).
+  That kind is the one reading that says the daemon started the issue and it gave its slot back:
+  the state gives it to no issue Legion has not started.
 - **What nothing starts.** Each issue in `admission.held`, grouped by its `reason`, with the
   issues `heldBy` names: each group's count and its issues. Say for each
   group what ends the hold, from the table in
