@@ -1233,6 +1233,106 @@ describe("a document write that superseded a person's approval", () => {
     expect(result.text).not.toContain("design gate");
     expect(result.text).not.toContain("superseding version");
   });
+
+  // A plan is approved by its plan review, never by a person: Dispatch refuses an approval request
+  // on a plan with 409 PLAN_APPROVED_BY_REVIEW, and `dispatch plan-approve` records the plan
+  // review's approval of the new version. So a write that made a plan's approval stale names
+  // `dispatch plan-approve` as the way to approve it again, and never `dispatch request-approval`.
+  // Each answer below is the one Dispatch gives for an issue's plan.md today: role `plan`, slug
+  // `plan-md`, and a `superseded_approval` whose approver is the plan review's session.
+  test.each([
+    [
+      "dispatch_artifact",
+      { issue: "DSP-42", name: "plan.md", content: "# Plan\n\nTwo.\n", force: true },
+    ],
+    [
+      "dispatch_doc_edit",
+      {
+        issue: "DSP-42",
+        artifact: "plan.md",
+        ops: [{ op: "replace", find: "One.", with: "Two." }],
+      },
+    ],
+  ])("%s on a plan names dispatch plan-approve, not dispatch request-approval", async (tool, args) => {
+    const session = "01a1b464-9df7-7298-a78f-4ff4f8284ce7";
+    const plan = {
+      id: "artifact-43",
+      issue_key: "DSP-42",
+      project: "DSP",
+      name: "plan.md",
+      slug: "plan-md",
+      role: "plan",
+      primary: false,
+    };
+    const staled = advice({
+      superseded_approval: { approved_version: 1, version: 2, approved_by: session },
+    });
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const target = new URL(String(url));
+      const method = init?.method ?? "GET";
+      const body = init?.body === undefined ? {} : JSON.parse(String(init.body));
+      if (target.pathname === "/api/v1/issues/DSP-42" && method === "GET") {
+        return response({
+          key: "DSP-42",
+          title: "Original title",
+          status: "in_progress",
+          labels: [],
+          route: null,
+          parent: null,
+          external_links: [],
+          primary_artifact_id: "artifact-42",
+          artifacts: [
+            {
+              id: "artifact-42",
+              issue_key: "DSP-42",
+              project: "DSP",
+              name: "spec.md",
+              slug: "spec",
+              primary: true,
+            },
+            plan,
+          ],
+        });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "GET") {
+        return response([plan]);
+      }
+      if (target.pathname === "/api/v1/markdown/round-trip" && method === "POST") {
+        return response({ markdown: body.markdown });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "POST") {
+        return response(withAdvice({ artifact: plan, version: { number: 2 } }, staled));
+      }
+      if (target.pathname === "/api/v1/artifacts/artifact-43/edits" && method === "POST") {
+        return response(
+          withAdvice({ applied: 1, version: { number: 2 }, token: "sha256:edited" }, staled)
+        );
+      }
+      if (target.pathname === "/api/v1/projects/DSP/architecture-sources" && method === "GET") {
+        return new Response("[]", { headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected request: ${method} ${target.pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool,
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec(),
+      fetchImpl: fetchImpl as typeof fetch,
+      subscriptions: async () => [],
+    });
+
+    expect(result.text).toContain(
+      `Stored version 2, superseding version 1, which ${session} approved.`
+    );
+    expect(result.text).toContain("dispatch plan-approve");
+    expect(result.text).not.toContain("dispatch request-approval");
+  });
 });
 
 // The server sends `moved_approval_request` only on a write whose version took an open approval
