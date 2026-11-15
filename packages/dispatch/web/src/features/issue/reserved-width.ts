@@ -17,8 +17,8 @@
  *
  * Both start at `sm`, because below it the header has no room for them: measured in this pod
  * at 390 px, the state row holds Status, the priority, the assignee and Close in 316 px with
- * 42 px to spare, and the assignee's fourteen characters alone want more than that (85 px past
- * an unset assignee's badge in DejaVu Sans), which would push Close issue onto a row of its own
+ * 42 px to spare, and the two reservations together want more than that (about 72 px past the
+ * natural badges, measured in DejaVu Sans), which would push Close issue onto a row of its own
  * — the one thing dispatch://INFRA-299/spec#b-r3 says that width must not do. Below `sm` these
  * controls keep the boxes they have today, so a pick there still moves what follows it; from
  * `sm` up, where the row has the width, none of them does.
