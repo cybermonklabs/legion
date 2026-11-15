@@ -584,6 +584,14 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "only documents can be approved")
 		return
 	}
+	// A closed owner takes no approval of any kind, a plan review included (createArtifactPlanReview),
+	// so it is refused before the refusals that name another route: the answer names the real
+	// blocker rather than a command that would be refused too.
+	owner := ownerForArtifact(artifact)
+	if err := s.requireOpenOwner(r.Context(), tx, owner); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if documentPlays(artifact, model.ArtifactRolePlan) {
 		writeError(w, "PLAN_APPROVED_BY_REVIEW", http.StatusConflict,
 			"a plan is approved by its plan review, not by a person: record it with dispatch plan-approve (POST /api/v1/artifacts/{id}/plan-reviews)")
@@ -596,11 +604,6 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	if input.IncludeVerification && !isSpecDocument(artifact) {
 		writeError(w, "NOT_SPEC_DOCUMENT", http.StatusConflict,
 			"include_verification asks for the issue's spec and its Verification document together, and this document is not the issue's spec: request approval of it alone")
-		return
-	}
-	owner := ownerForArtifact(artifact)
-	if err := s.requireOpenOwner(r.Context(), tx, owner); err != nil {
-		s.writeHandlerError(w, err)
 		return
 	}
 	version, err := settledVersionNumber(r.Context(), tx, artifact.ID)
