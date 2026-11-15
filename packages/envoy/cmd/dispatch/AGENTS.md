@@ -924,19 +924,25 @@ messages and the page admission's transition) start one Dispatch server of an ea
 and one of this tree on one Postgres and one NATS, as a rolling release runs them: each build's CLI
 against the other's server, each build's corpus documents read, edited, approved and opened on the
 other's document socket, outbox events, GitHub messages and the stream and consumer settings
-across a stop and restart of each build, and a page of this tree held read-only while the earlier
-build's process is live and admitted writable on its next socket once that process has left the
-registry. They build only under the `twobuild` tag and run in their
+across a stop and restart of each build, and the page admission across the earlier build's
+departure. A page of this tree is held read-only while a release that registers no schema numbers
+is live, and is admitted writable on its next socket once that process has left the registry.
+Beside the previous release, the page is admitted by that release's numbers, and it stays writable
+throughout when they are this tree's own. They build only under the `twobuild` tag and run in their
 own CI job, `dispatch-two-builds` in `.github/workflows/ci.yaml`, which builds the previous
-release and caches that build by its commit. The earlier build is a directory
-`packages/envoy/scripts/build-dispatch-build.sh`
-writes, named by `DISPATCH_PREVIOUS_BUILD`: the suite skips when that variable is unset, and fails
-when the directory lacks a part it reads. The helpers both process suites share are in
-`processes_test.go`, beside those every build of the tests shares in `nats_unreachable_test.go`.
+release and the first-rollout release and caches each build by its commit. The earlier build is a
+directory `packages/envoy/scripts/build-dispatch-build.sh`
+writes, named by `DISPATCH_PREVIOUS_BUILD`, and the first-rollout row's is named by
+`DISPATCH_FIRST_ROLLOUT_BUILD` (`firstRolloutRelease` in `twobuild_harness_test.go`, the newest
+release before the first that registers its schema numbers): a row skips when its variable is
+unset, and fails when the directory lacks a part it reads. The helpers both process suites share
+are in `processes_test.go`, beside those every build of the tests shares in
+`nats_unreachable_test.go`.
 
 ```sh
 bash packages/envoy/scripts/build-dispatch-build.sh --previous-release --out "$TMPDIR/dispatch-previous"   # from the repository root
-env DISPATCH_TEST_DATABASE_URL=… DISPATCH_PREVIOUS_BUILD="$TMPDIR/dispatch-previous" go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch
+bash packages/envoy/scripts/build-dispatch-build.sh --commit legion-envoy-v30.20.2 --out "$TMPDIR/dispatch-first-rollout"
+env DISPATCH_TEST_DATABASE_URL=… DISPATCH_PREVIOUS_BUILD="$TMPDIR/dispatch-previous" DISPATCH_FIRST_ROLLOUT_BUILD="$TMPDIR/dispatch-first-rollout" go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch
 ```
 
 A developer who runs only the block above runs none of the tagged suites, which is why each is

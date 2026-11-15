@@ -5680,11 +5680,34 @@ jobs:
           PREVIOUS_COMMIT: ${{ steps.previous.outputs.commit }}
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
         run: packages/envoy/scripts/build-dispatch-build.sh --commit "$PREVIOUS_COMMIT" --out "$DISPATCH_PREVIOUS_BUILD"
+      # The first-rollout build: the newest release before the first that registers its schema
+      # numbers (firstRolloutRelease in packages/envoy/cmd/dispatch/twobuild_harness_test.go, which
+      # names the same tag). The transition row that drives the fleet's first rollout runs it as its
+      # earlier build, since every previous release from legion-envoy-v30.21.0 on registers its
+      # numbers. The release is pinned, so its cache entry is written once and restored after that.
+      - name: Resolve the first-rollout build's commit
+        id: first-rollout
+        run: |
+          commit=$(packages/envoy/scripts/build-dispatch-build.sh --commit legion-envoy-v30.20.2 --resolve)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - name: Cache the first-rollout build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-first-rollout
+            !${{ runner.temp }}/dispatch-first-rollout/src
+          key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.first-rollout.outputs.commit }}
+      - name: Build the first-rollout build
+        env:
+          FIRST_ROLLOUT_COMMIT: ${{ steps.first-rollout.outputs.commit }}
+          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
+        run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Two-build tests of the Dispatch server
         env:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
+          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
         run: go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch
         working-directory: packages/envoy
       - name: Build contracts for dispatch e2e
@@ -5717,6 +5740,22 @@ jobs:
           psql "postgres://postgres:ci@localhost:5432/postgres" -c 'create database dispatch_cross_build'
           DISPATCH_E2E_BINARY_B="$DISPATCH_PREVIOUS_BUILD/envoy-dispatch" \
             DISPATCH_E2E_WEB_DIST_B="$DISPATCH_PREVIOUS_BUILD/web" \
+            bun run e2e:multiprocess -- cross-build.multiprocess
+        working-directory: packages/dispatch
+      # The same rows with B the first-rollout build, a release before the fleet columns, which
+      # registers no schema numbers: a page of either build is read-only on A's server while it is
+      # live, which the previous release, registering its numbers, no longer shows. The spec reads
+      # which of the two B is from the live registry (pageWritable). The database is made again,
+      # so this run starts from what the step above started from.
+      - name: Browser-test each build's page against the first-rollout build's server
+        env:
+          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
+        run: |
+          psql "postgres://postgres:ci@localhost:5432/postgres" \
+            -c 'drop database dispatch_cross_build with (force)' \
+            -c 'create database dispatch_cross_build'
+          DISPATCH_E2E_BINARY_B="$DISPATCH_FIRST_ROLLOUT_BUILD/envoy-dispatch" \
+            DISPATCH_E2E_WEB_DIST_B="$DISPATCH_FIRST_ROLLOUT_BUILD/web" \
             bun run e2e:multiprocess -- cross-build.multiprocess
         working-directory: packages/dispatch
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
