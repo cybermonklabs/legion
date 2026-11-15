@@ -307,9 +307,10 @@ again, naming what changed since your approval. Work already in flight carries o
 is closed, and of that work only the merge waits until you approve the new version. When you
 approve it, each worker that holds an affected issue gets a task that names the sections and
 checks that changed, and decides whether its work still matches. A worker whose work is stale
-moves its issue back. The daemon moves no issue and stops no turn itself, and an issue whose pull
-request has merged never moves back. The daemon only reads approvals; nothing in Legion approves a
-spec on a person's behalf, and the approval Dispatch records at your answer is yours, in your name.
+moves its issue back, and a planner revises its plan instead and runs the plan review again. The
+daemon moves no issue and stops no turn itself, and an issue whose pull request has merged never
+moves back. The daemon only reads approvals; nothing in Legion approves a spec on a person's
+behalf, and the approval Dispatch records at your answer is yours, in your name.
 
 `gates.design` is a list, so a deployment can ask for more than one document of the root issue:
 `decisions` is the issue's decisions document, `criteria` its Verification document, and `spec`
@@ -317,9 +318,9 @@ its primary document. The daemon keeps one gate record for each step listed, and
 only once a person has approved every one of them; each closes on its own document's next
 version. Under a list that names `spec` and not `criteria`, the default among them, the architect
 can also register the root's Verification document as `criteria`: that tree then waits for both
-documents, and one approval request made with `--include-verification` opens both. A deployment
-that does not want the gate sets `gates.design: []`, and the tree starts as soon as the architect
-has written its spec.
+documents, and one approval of a request made with `--include-verification` opens both. A
+deployment that does not want the gate sets `gates.design: []`, and the tree starts as soon as the
+architect has written its spec.
 
 ## Handoffs on the Dispatch issue
 

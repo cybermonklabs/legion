@@ -485,8 +485,10 @@ mention's URL, its text and the issue key you checked. Never build a role token 
 issue reference, because a wrong token reaches nobody.
 
 A person who asks how to let a root past its design gate approves, in Dispatch, the document of
-each step the deployment gates, which your system prompt's `Design gate steps:` sentence names:
-the `Approve` control in that document's header, or the approval question the architect's request
-opened in the Inbox. The root's work starts when every one of those steps is approved. No
-operator command opens a gate; a project that wants no gate sets `gates.design` to the empty list
-(`design: []`) in `legion.yaml`.
+each step that holds the tree. Those are the steps your system prompt's `Design gate steps:`
+sentence names, and `criteria` where the root registered it, because any step a root registers
+holds its tree. `issues.<root>.gatedSteps` in `read_state` lists each one. The person approves
+with the `Approve` control in that document's header, or with the approval question the
+architect's request opened in the Inbox. The root's work starts when every one of those steps is
+approved. No operator command opens a gate. A project that wants no gate sets `gates.design` to
+the empty list (`design: []`) in `legion.yaml`.

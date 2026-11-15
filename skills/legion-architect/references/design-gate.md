@@ -151,9 +151,9 @@ a child issue has no such sentence and never runs the gate.
 The line names the steps every root must register, and any step a root registers holds its tree
 too. A line that names `spec` and not `criteria` says so in a second sentence:
 ``Design gate steps: `spec`. A root that registers its Verification document as `criteria` is held on that step too.``
-Under such a line, register a root's Verification document as `criteria` as well. One
-`--include-verification` request then opens both steps, and a new version of either document
-closes the gate.
+Under such a line, register a root's Verification document as `criteria` as well. One approval of
+a request made with `--include-verification` then opens both steps, and a new version of either
+document closes the gate.
 
 Each step is one document of the root issue, and the daemon keeps one gate record for each step:
 
@@ -240,16 +240,17 @@ and the `spec` step together (step 4), and each of them is registered on its own
 
    Copy `artifactId` from what `dispatch request-approval` printed, and each document's `version`
    from the question it prints (`… (version N)`), or the document's current version when the
-   request answers that both are already approved. The daemon registers at Dispatch's latest
-   version in any case, the greater of the two. The document id is
+   request answers that both are already approved. The daemon records the greater of two
+   versions: the version you register, and Dispatch's latest version. The document id is
    never the slug or file name you passed in (`spec`, `spec.md`): the daemon recognizes the
    document's approval events by that id alone; the `legion` tool looks a slug or file name up in
    Dispatch and hands the daemon the id.
 
    Each step records its own document, so register the spec's id and version under `step: "spec"`
-   and the Verification document's under `step: "criteria"`: the request that named both sent an
-   `artifact.approved` event for each, and each step opens on its own document's alone. Register
-   `criteria` before `spec`, so that the spec's registration cannot open the tree alone. Leave
+   and the Verification document's under `step: "criteria"`: the approval of the request that
+   named both sent an `artifact.approved` event for each, and each step opens on its own
+   document's alone. Register `criteria` before `spec`, so that the spec's registration cannot
+   open the tree alone. Leave
    `step` out only for the one step a one-step line names. Register no step your line does not
    name, with one exception: where the line names `spec` and not `criteria`, register the
    Verification document under `step: "criteria"` too. Any other step the deployment does not gate
@@ -360,8 +361,8 @@ to the version it writes. Once they have answered:
   changed since the earlier approval, then the reviews' sentence (the card shows `Approved at
   version N on <date> by <who>.`, and its `Show diff` control carries the detail). The rewrite
   closes the gate until they approve. Release no further child until the `design-approved` after
-  it; work already in flight, including what the daemon started at the answer, continues through
-  its merge.
+  it. Work already in flight, including what the daemon started at the answer, carries on while
+  the gate is closed, and of that work only the merge waits until they approve the new version.
 
 A settled decision is the human's. A plan that would overturn one goes back to the planner with the
 decision kept, unless the planner brings evidence the human did not weigh that would change it

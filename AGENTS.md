@@ -949,11 +949,17 @@ Nothing else wakes a check: no deploy run, no Dispatch `issue.deployed`, no Disp
 `fail` for a defect, recorded as a failing result, never an issue the checking role files:
 a defect with a clear fix goes to the controller, which gives it to the running tree whose code it is and files a Legion root only when none does, and one that needs a decision is a `dispatch ask` on the controller's report issue whose reference goes to the controller;
 either names the issue, the pull request, the merge commit, what was driven and what failed, and the result names the message or the ask.
+A look at an issue whose Verification document holds no `after_merge` check has no check to record against.
+It records no result and writes no check, since a closed issue refuses every new document.
+It names the gap in its pull-request comment and in its report, as a named gap and never a failure, and its verdict follows the rest of the look.
 A completion is a report on a look when the caller's own live assignment is that look, and a phase completion otherwise, so a phase verdict a close outlived is never read as a verdict on production; a completion of a `done` issue, which runs no phase, from a session working no look is neither and is refused `CHECK_LOOK_NOT_SERVED`, recording nothing, with the look's own task named as the turn its report belongs to.
 A report is refused when the issue has no open check, or the one it has is not the check the look belongs to (`CHECK_NOT_OPEN`), when the look has ended (`CHECK_LOOK_NOT_OPEN`), when the verdict is none of the three (`CHECK_VERDICT_REQUIRED`), when the reporting role is not the check's (`CHECK_ROLE_MISMATCH`), when a `pending` on a look that is not the last carries no `wake_at` (`CHECK_WAKE_REQUIRED`, which records nothing and leaves the look open, so the same report with a time is taken), and when a `wake_at` rides a `pass`, a `fail` or a `pending` on the last look (`CHECK_WAKE_UNEXPECTED`, which the daemon also answers a phase completion that carries a `wake_at`).
 Each look is bounded at 2 hours, and a look nobody reported — its 2 hours, an operator's hold, or a claim that failed to start — starts the next look two hours later; on the last look it closes the check as `not_run`.
 The check is bounded at `production_check_hours` (336 by default) from the close, and its last look starts at that bound.
 The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message, and refuses every other write; `legion state` prints `open production checks: …`, whose line names the role working the oldest check and that check's next look.
+Every architect's addressing ends with a `Production check: <role>.` or `Production check: off.` line from `projects.<KEY>.production_check` (`daemon.ProductionCheckFragment`): after the `Design gate steps:` line for a root architect, and at the end of the addressing for a sub-architect.
+Where the line names a role, the architect writes one `after_merge` check for the production check in each Verification document it writes, with the spec and while the issue is open.
+Under `off`, it writes none.
 
 Statuses above are native Dispatch issue statuses, not GitHub labels
 — the daemon writes `in_progress`/`testing`/`needs_review`/`retro` through its outbox (a `dispatch_status` row it delivers to Dispatch) for the issues it runs, and a human may set any lifecycle status from the Dispatch dashboard.
@@ -1151,16 +1157,20 @@ The machinery's notices to a stopped tree (a child's status or close, a dead wor
 `decisions` the issue's decisions document, `criteria` its Verification document, `spec` its primary document.
 The default is the single step `spec`, which the word `root-issues` also means, and the empty list, which the word `off` also means, gates nothing.
 The daemon keeps one gate record per step, and every configured step holds the tree's work, the merger's start and the start of a released child until a person approves that step's document.
-`gates.design` names the steps every root must register, and a list that names `spec` and not `criteria`, `root-issues` among them, also takes `criteria` for the root's Verification document:
-a tree whose architect registered that row is held on it as on the spec, and a tree without one is held on `spec` alone (`record.TreeSteps`).
+`gates.design` names the steps every root must register.
+A list that names `spec` but not `criteria`, such as `root-issues`, also accepts `criteria` for the root's Verification document.
+A tree whose architect registered that row is held on it as on the spec, and a tree without one is held on `spec` alone (`record.TreeSteps`).
 Once the spec's decision blocks are settled and the human has agreed to every point in it, the architect requests the approval with `dispatch request-approval` and a summary of what the human is approving, and registers the step, the document id and the version with the daemon, and the daemon opens that step on the `artifact.approved` event for that document at its current version
 — or at registration itself, when Dispatch already shows the human approved that version before the architect registered (the daemon reads the approval; it never writes one).
 One request with `--include-verification` covers the spec and the Verification document, so one approval opens the `criteria` and the `spec` step together, each registered on its own document, under a list that names `spec` and not `criteria` as under one that names both.
 A later version of a step's document closes that step until someone approves the new version, which Dispatch does in the human's own name when the version is his answer to a decision block and that answer is the whole change since the version he approved (it records an `approved` review pinned to the new version and emits `artifact.approved`, and the step reopens on that event), and a `changes_requested` review closes it with the reviewer's reason.
 When a person approves a new version of a gated document, each worker holding an affected issue's phase gets a task, sent between its turns, that names the version its phase last took, the new version, and the `##` sections, requirements and checks that changed:
-a `spec` or `decisions` version affects every issue of the tree, a `criteria` version the root alone, and a version whose only change is to decision blocks sends no list of changes.
+a `spec` or `decisions` version affects every issue of the tree, and a `criteria` version the root alone.
+A version that changes only decision blocks sends no task, except at an opening, where the task says that nothing changed.
 The tree's root architect gets one task that names every issue of the tree and what it is told, and an issue in `accepting` is told through the architect that owns it.
-The worker reads the change and, when its work is stale, moves its issue back with `request_backward_move`.
+The worker reads the change.
+When its work is stale, it moves its issue back with `request_backward_move`.
+A planner revises `plan.md` instead and runs the plan review again.
 The daemon moves no issue and stops no turn for it.
 An issue whose pull request has merged gets no such task and never moves back: `request_backward_move` on it answers `BACKWARD_REFUSED`.
 The change set comes from Dispatch's `GET /api/v1/artifacts/{id}/changes` and is kept in `design_changes`, and `design_news_told` keeps what each holder confirmed taking, so news a holder did not confirm stays owed and goes with its next start or the sweep.

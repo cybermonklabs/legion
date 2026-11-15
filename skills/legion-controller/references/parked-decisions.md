@@ -130,7 +130,8 @@ document that is not the root's primary one.
 4. **Judge the words, not the kind.** Read the decision (`dispatch read --ref <ref>` for an ask or
    a reply; for a request for changes, the notice's `reason` or the issue's `Spec approval:` line;
    for an approval, `issues.<root>.designGate` and `issues.<root>.gatedSteps` beside it, which
-   carries one entry for each design gate step the deployment gates, with that step's
+   carries one entry for each step that holds the tree: each design gate step the deployment
+   gates, and `criteria` where the root registered it. Each entry names that step's
    `artifactId`, `currentVersion`, `approvedVersion` and `status`). An approval or a request for
    changes is two
    events at one time, the approval request's `ask.answered` and `artifact.approved` or

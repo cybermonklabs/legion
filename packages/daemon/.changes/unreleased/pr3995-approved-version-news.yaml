@@ -6,11 +6,12 @@ body: |-
   issue's phase gets a task. The task names the version its phase last took, the new version, the
   `##` sections, the text outside them by where it stands, and the requirements or checks that
   changed, and the `dispatch doc-read` command that prints the new version. A `spec` or `decisions`
-  version affects every issue of the tree, a `criteria` version the root alone, and a version that
-  changes only decision blocks, or holds the same text as the version before, sends no list of
-  changes. The tree's root architect gets one task that names every issue of the tree and what
-  it is told, an issue whose holder holds a task it has not taken yet named as waiting for that
-  task, and an issue in `accepting` is told through the architect that owns it. The daemon
+  version affects every issue of the tree, and a `criteria` version the root alone. A version that
+  changes only decision blocks, or holds the same text as the version before, sends no task,
+  except at an opening, where the task says that nothing changed. The tree's root architect gets
+  one task that names every issue of the tree and what it is told, an issue whose holder holds a
+  task it has not taken yet named as waiting for that task, and an issue in `accepting` is told
+  through the architect that owns it. The daemon
   moves no issue and stops no turn: a running worker gets the task between its turns, and news that
   a worker did not confirm goes with its next start or with the entry sweep. The daemon's own
   message of what a relaunch ended is not a task the worker has not taken: a task with news takes
@@ -42,4 +43,13 @@ body: |-
   task's news, and every other holder gets the opened message, which now says, where the record
   shows it, that nothing its issue holds changed. Migration `20261114082752_design_news` adds the
   tables `design_news_told`, `design_changes` and `design_history_unread`, and the column
-  `pending_task_deliveries.design_news`. A rollback needs no schema restore.
+  `pending_task_deliveries.design_news`.
+
+  A rollback to the release before this one needs no schema restore, but it needs three statements
+  first, because that release refuses an outbox payload member it does not know. Stop this
+  release's daemon, run the three statements in the comment of `20261114082752_design_news.up.sql`,
+  and then start the release before it. The first deletes each queued start that carries news
+  alone. The second takes `holds` out of each queued design-gates publish. The third takes the news
+  off each task delivery that is still pending. The news stays owed in `design_news_told`, so this
+  release sends it again after the roll forward. `docs/kubernetes.md` gives the statements and why
+  each is needed, in "Rolling back the release that tells a holder of an approved new version".

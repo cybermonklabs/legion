@@ -304,14 +304,15 @@ it there until that answer comes clean.
     worker can do — a repository setting or an App permission only a person can change — with
     GitHub's own answer quoted. The repository's required reviews and checks decide what may
     merge: Legion bypasses none, and a review only a person can give is waited for.
-- **The root's design gate holds the merge.** While the gate is closed the merger merges nothing,
-  enqueues nothing, takes a queued pull request back out of the merge queue and does not complete.
-  It ends each turn of that wait with a WAITING line that names the opening, because the daemon
-  sends a task only between turns. The opening comes as the message
-  `The design gate of <tree> opened: …`, or as a news task that starts with those words and then
-  names what changed in the approved design for the issue. A start task can carry such news too,
-  after a blank line. The merger reads that news before it merges. Then it merges from the first
-  step, or moves the issue back with `request_backward_move` when the change makes the head stale.
+- **The root's design gate holds the merge.** While the gate is closed, the merger merges nothing.
+  It enqueues nothing. It takes a queued pull request back out of the merge queue. It does not
+  complete. It ends each turn of that wait with a WAITING line that names the opening, because the
+  daemon sends a task only between turns. The opening comes as the message
+  `The design gate of <tree> opened: …`, or as a news task that starts with those words. That task
+  then names what changed in the approved design for the issue, or says that nothing the issue
+  holds changed. A start task can carry such news too, after a blank line. The merger reads that
+  news before it merges. Then it merges from the first step, or moves the issue back with
+  `request_backward_move` when the change makes the head stale.
 - *The completion* is `handoff_complete` with the ordinary two-sentence `summary`, which names the
   pull request, the head merged and the merge commit. It records the merger's phase row and moves
   nothing: no Dispatch message, no publish, no phase. What moves the issue is the daemon's own
@@ -378,8 +379,9 @@ it there until that answer comes clean.
   has no check to record against. Record no result and write no check, since a closed issue
   refuses every new document. Name the gap in your pull-request comment and in your report, as a
   named gap, never a failure: the gap alone never makes the verdict `fail`. The verdict follows
-  the rest of the look: `pass` once production carries the merge and you drove each requirement
-  only the deploy can show and saw it met. `pending` and `fail` follow the rules above.
+  the rest of the look: `pass` once production carries the merge, and you drove the changed path
+  and each requirement only the deploy can show, and saw each met. `pending` and `fail` follow the
+  rules above.
 - **Numbers the daemon holds are read with the `legion` tool.** Where the verdict rests on what a
   deployment's idle release has done, `read_release_records` answers a window of the daemon's own
   records of its releases, resumes and holds: its one argument `since` is the RFC 3339 instant

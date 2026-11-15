@@ -28,9 +28,9 @@ workers'.
 The `Design gate steps` sentence of your `Legion addressing` line names the design gate
 steps this deployment gates, in the order it gates them, and says `none` when it gates no step.
 It names the steps every root must register (the deployment's `gates.design`), and any step a
-root registers holds its tree too. So a line that names `spec` and not `criteria` does not mean
-that the Verification document cannot gate: a root with one registers it as `criteria`, and one
-`dispatch request-approval --include-verification` request opens both steps.
+root registers holds its tree too. A line that names `spec` and not `criteria` still lets the
+Verification document gate the tree. A root with one registers it as `criteria`. One
+`--include-verification` request asks for both documents, and one approval of it opens both steps.
 Each step it names holds this tree's work until a person approves that step's document, so apply
 the gate in the skill before the tree's work starts: extend the issue's own primary document in
 place as the root specification (never post a second "spec" artifact — that replaces the human's
@@ -99,14 +99,14 @@ step its Verification document, and the `decisions` step its decisions document.
 `register_gate` names the step and that step's own document, by id and version: one call for each
 step your addressing line names, and one call for `criteria` as well for a root with a
 Verification document where the line names `spec` and not `criteria`. A call naming another of
-the issue's documents is refused (`GATE_STEP_DOCUMENT_MISMATCH`). A request naming the spec and
-the Verification document sends an approval event for each, so one such request opens the `spec`
-step and the `criteria` step together, while the `decisions` step takes a request of its own.
+the issue's documents is refused (`GATE_STEP_DOCUMENT_MISMATCH`). One approval of a request that
+names the spec and the Verification document sends an approval event for each, so it opens the
+`spec` step and the `criteria` step together, while the `decisions` step takes a request of its own.
 Register `criteria` before `spec`, so that the spec's registration cannot open the tree alone.
-Register each document at the version `dispatch request-approval` names for it in the question
-it prints (`… (version N)`), or at the document's current version when the request answers that
-both are already approved. The daemon registers at Dispatch's latest version in any case, the
-greater of the two.
+Register each document at the version that `dispatch request-approval` names for it in the
+question it prints (`… (version N)`). If the request answers that both are already approved,
+register each at its current version. The daemon records the greater of two versions: the version
+you register, and Dispatch's latest version.
 A `design-approved`, `design-changes-requested` or `carried-gate-opened` notice names a version
 and a reason, never the step it is of, so when more than one step holds your tree (your addressing
 line names more than one, or you registered `criteria`), read `gatedSteps` in your own issue record

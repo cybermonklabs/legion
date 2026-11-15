@@ -1941,6 +1941,42 @@ So after the rollback a merger learns of a removal only when it reads the pull r
 The kind check keeps both names after the rollback, and the rollback needs no statement for it: an earlier release never writes either kind, so the check refuses nothing that release writes.
 This release's one-time start of the mergers that the `awaiting_merge` cutover left stopped ([Idle release](#idle-release)) adds no outbox kind and no payload field, and its one `processed_events` row is harmless to a rollback.
 
+#### Rolling back the release that tells a holder of an approved new version
+
+This release's migration `20261114082752_design_news` adds the tables `design_news_told`, `design_changes` and `design_history_unread`, the column `pending_task_deliveries.design_news`, the function `design_news_raised`, and the outbox kind `design_changes`.
+The release before this one names none of the three tables and not the new column in any statement, and the kind list it set is a subset of this one, so the schema needs no restore.
+A `design_changes` row that this release queued waits in the outbox under the earlier daemon, which runs no lane of that kind, and it runs once this release is back.
+
+**Three statements must run before the earlier image is pinned.**
+The earlier release decodes each outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields` in `record/outbox.go`), and it does not know two members that this release adds to a payload.
+It refuses on every attempt a `supervise` row that carries `news`, which is a news-only start.
+Such a start waits while its claim works a turn, and a merger's start waits while its design gate is closed.
+It also refuses on every attempt a `design_gates_publish` row that carries `holds`, which is every such row this release queued.
+Its `RoleRuns` decodes each supervise row of the issues it reads, so each admission pass that reads such an issue fails too.
+Its `pending_task_deliveries` upsert names only its own columns, and its `on conflict ... do update` leaves `design_news` as this release wrote it.
+So a delivery that it writes over keeps the news of the task it replaced, and after a roll forward this release would raise that news in `design_news_told` at that delivery's confirmation.
+Stop this release's daemon, run these three statements, and then start the release before it:
+
+```sql
+delete from outbox where kind = 'supervise' and payload ? 'news';
+update outbox set payload = jsonb_set(payload, '{gates}',
+    (select coalesce(jsonb_agg(gate - 'holds' order by position), '[]'::jsonb)
+      from jsonb_array_elements(payload -> 'gates') with ordinality as entry (gate, position)))
+  where kind = 'design_gates_publish' and jsonb_typeof(payload -> 'gates') = 'array';
+update pending_task_deliveries set design_news = null where design_news is not null;
+```
+
+The first statement deletes each news-only start.
+The news that such a start carries stays owed in `design_news_told`, so this release sends it again after the roll forward.
+The second statement takes `holds` out of each entry of a design-gates publish, and it leaves the step and the document, which the release before sends too.
+The third statement takes the news off each task delivery that is still pending.
+The task's text still holds that news, and the confirmation of a delivery that carries no news raises nothing, so this release tells that news again after the roll forward.
+These statements are also in the comment of `store/migrations/20261114082752_design_news.up.sql`.
+
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `outbox` and `pending_task_deliveries` are one table each for all of them, so the statements act on the rows of every project.
+Roll back every daemon of one database in the same change, and run the statements only when all of those daemons are stopped.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
@@ -4876,6 +4912,9 @@ The wakes are these:
 
 The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.
 While the root's design gate is closed, that message wakes no released merger, and it waits for the gate to open.
+It also waits while the merger is owed news of an approved new version whose change the daemon has not recorded yet.
+It wakes the merger only once the gate is open and that change is recorded (`mergerWaitsForTheDesignGate` in `internal/daemon/outbox.go` reads `mergerNewsUnrecorded` in `internal/daemon/design_news.go`).
+That wait has a bound: after the reconcile's bounded attempts, the daemon records a change that Dispatch cannot read as unavailable, and a review history that it cannot read as unread.
 The message can also wait for a merger that has no claim yet, because the merger's start is still owed.
 The message wakes no merger that an operator suspended, since a wake acts only on a released claim (`wakeForDelivery`, `internal/daemon/wake.go`).
 It waits for that merger too, and it reaches the merger when the operator resumes the claim.

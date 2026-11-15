@@ -140,8 +140,11 @@ The daemon keeps this order from its fixed table; you start none of its steps:
 5. The merge lands under the repository's rules, the daemon reads it and closes the issue; a
    root's close waits until the rest of its tree has left the workflow.
 
-A person's request after your sign-off is a requirement of this issue, filed nowhere else: in
-`retro` or `merging` the role holding the phase makes the `request_backward_move`.
+You file no new issue for a person's request after your sign-off. Before the pull request
+merges, the request is a requirement of this issue, and the role holding `retro` or `merging`
+makes the `request_backward_move`. After the merge, the issue never moves back, and the daemon
+refuses that move. The work then goes to an issue of the tree whose pull request is still open.
+Where none is, `dispatch ask` the person on the root.
 A merge the merger cannot make arrives while the merger holds `merging`, so the merger makes the
 move and you tell it which; from `accepting` you send an issue back only to `planning`,
 `implementing` or `testing`.
