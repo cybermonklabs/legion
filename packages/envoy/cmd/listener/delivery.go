@@ -699,8 +699,8 @@ const deliverySessionReadTimeout = 2 * time.Second
 // (notifications.agent.<session>), which takes the message from its own consumer, relayed by the
 // listener that owns the session, as session.HandleAgentMessage decides. A session another
 // listener owns is that listener's to deliver, so this one acknowledges the message silently; a
-// session that records no way of receiving at all is held and retried, then given up
-// (unplaceableAgentDelivery).
+// session with no record, and one this listener answers for that records no way of receiving at
+// all, is held and retried, then given up with a wake report (unplaceableAgentDelivery).
 func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
 	sessionID := strings.TrimPrefix(item.Topic, contracts.AgentTopicPrefix)
 	// The JetStream metadata the durable's handler read carries everything unplaceableAgentDelivery
@@ -753,11 +753,12 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	// nats.ErrKeyNotFound is the bucket's own word that no record exists; any other error is a
 	// read that did not answer, which is no evidence of absence at all - the bucket was never
 	// consulted, so nothing about this session was learned, and an attempt that learned nothing
-	// can never be the ground for giving a message up. Neither needs to be told from the other
-	// below: both leave this delivery with no entry to deliver through, and an attempt with no
-	// entry is held and retried for the whole window before it is given up
-	// (unplaceableAgentDelivery), while the interest path's own failures NAK with an error
-	// instead and never reach that branch.
+	// can never be the ground for giving a message up. Both leave this delivery with no entry to
+	// deliver through, and with no interest naming this listener an attempt with no entry is held
+	// and retried for the whole window before it is given up (unplaceableAgentDelivery). The
+	// interest path tells the two apart: a session with no record is held and given up the same
+	// way, with the wake that brings a released session back, while a read that did not answer
+	// fails and is NAKed.
 	entry, _, entryErr := liveSessionEntry(context.Background(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone)
 	var entryPtr *session.SessionEntry
 	if entryErr == nil {
@@ -768,8 +769,8 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	// The durable path's message carries the stream sequence that says whether the session's
 	// consumer already holds it, and the core path's message is in no consumer (storedSeq 0). The
 	// capture is the deployed stream's, which the session's consumer filter is judged on too.
-	result := session.HandleAgentMessage(item, sessionID, cfg.machineID, interestPtr, entryPtr, message.storedSeq(),
-		cfg.client.DeployedStreamCaptures(item.Topic))
+	result := session.HandleAgentMessage(item, sessionID, cfg.machineID, interestPtr, entryPtr,
+		errors.Is(entryErr, nats.ErrKeyNotFound), message.storedSeq(), cfg.client.DeployedStreamCaptures(item.Topic))
 	if result.Relayed {
 		// The session's own consumer holds this message and the relay of that consumer delivers it
 		// (session.SessionEntry.ConsumerRelaysStored), as on the fan-out path below. The attempt
@@ -794,7 +795,8 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 		return
 	}
 	if result.Err != nil {
-		// The interest path's resolution failed, which is the one outcome this delivery NAKs:
+		// The interest path's resolution failed - a record that names no way of receiving, or no
+		// record from a read that did not answer - which is the one outcome this delivery NAKs:
 		// the message is reported as a delivery exception and redelivered. The attempt recorded
 		// above is rolled back, since the redelivery must not be skipped as one already on its
 		// way.
@@ -814,10 +816,12 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 		return
 	}
 	// The resolution found no way the session receives this message and reported no error of
-	// its own, so there is nothing to deliver and nothing to report: the message is held and
-	// retried for the whole window before it is given up. A delivery of its own is no longer
-	// an outcome here - a session's own consumer is the one way a message reaches it, and
-	// the relay of that consumer carries it, which the Relayed branch above answers.
+	// its own: the session has no record, or no interest names its owner and its read did not
+	// answer or its record names no way of receiving. There is nothing to deliver and nothing
+	// to report yet: the message is held and retried for the whole window before it is given
+	// up, with the wake that brings a released session back. A delivery of its own is no
+	// longer an outcome here - a session's own consumer is the one way a message reaches it,
+	// and the relay of that consumer carries it, which the Relayed branch above answers.
 	unplaceableAgentDelivery(cfg, message, item, sessionID, metadata)
 }
 
