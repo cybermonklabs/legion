@@ -62,6 +62,8 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Race-test the Dispatch API
         run: go test -count=1 -race -timeout 30m ./internal/dispatch/api/
         working-directory: packages/envoy

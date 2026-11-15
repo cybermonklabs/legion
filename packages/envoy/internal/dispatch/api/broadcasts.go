@@ -137,6 +137,11 @@ type createBroadcastInput struct {
 	Body       string   `json:"body" required:"true"`
 	Delivery   string   `json:"delivery" required:"true"`
 	SessionIDs []string `json:"session_ids" required:"true"`
+	// `idempotency_key` stays declared, though the key is the Idempotency-Key header now,
+	// so that a body still carrying one - a tab opened before the cutover, which sends the
+	// member and no header - is refused by name rather than ignored: a send whose key was
+	// dropped would be sent a second time by the press that meant to replay the first.
+	IdempotencyKey json.RawMessage `json:"idempotency_key"`
 }
 
 // POST /api/v1/broadcasts. A send under an Idempotency-Key commits its broadcast as the key's
@@ -151,6 +156,11 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	var input createBroadcastInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	if input.IdempotencyKey != nil {
+		writeError(w, "INVALID_JSON", http.StatusBadRequest,
+			"idempotency_key is the Idempotency-Key header, not a body member")
 		return
 	}
 	requested, err := validateBroadcastInput(input.Body, input.Delivery, input.SessionIDs)
