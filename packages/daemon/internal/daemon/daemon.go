@@ -1537,7 +1537,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 //
 // The read and the delete share one budget, cleanSessionStopBudget, so a listener that never
 // answers does not leave the stop in flight for as long as it likes, and supervision's own end
-// ends it too.
+// ends it too. A stop that end abandons is the daemon's own stop, not a listener's failure, so
+// it sends nothing more and is logged at Info (send says why that costs the session nothing).
 //
 // A listener that refuses the delete, keeps the registration, or cannot be reached costs the
 // session nothing beyond the wait it already had: the registration lapses on its own at the
@@ -1583,11 +1584,27 @@ type sessionStop struct {
 // where the entry changed between the two the line cannot say whose write refused it; where it
 // did not, it tells a stop refused for a successor's registration from one refused for the ended
 // process's own last heartbeat without asking the listener anything.
+//
+// A stop supervision's end abandons — supervising already ended when it starts, or ended under
+// its read or its delete — sends nothing more and logs one Info line (abandoned) in place of the
+// listener's failure. Only an operator's suspension an API route decided can land in the API's
+// drain, after the halt has ended supervising (supervision.halt); a release's decision runs on
+// the machines' context, which the halt cancels before anything waits. No wake acts on a claim an
+// operator or the daemon suspended, so its registration lapsing on its own costs it nothing it
+// did not already cost, and the daemon's stop spends none of its budget on the listener.
 func (s sessionStop) send(supervising context.Context, session string, goneAt time.Time) {
+	if supervising.Err() != nil {
+		s.abandoned(session)
+		return
+	}
 	ctx, cancel := context.WithTimeout(supervising, cleanSessionStopBudget)
 	defer cancel()
 	registration, err := s.sessions.ReadSessionRegistration(ctx, session)
 	if err != nil {
+		if supervising.Err() != nil {
+			s.abandoned(session)
+			return
+		}
 		s.log.Warn("the Envoy listener did not answer what a dead role's session registration is, so no clean stop was sent",
 			"session", session, "error", err)
 		return
@@ -1601,6 +1618,10 @@ func (s sessionStop) send(supervising context.Context, session string, goneAt ti
 		NotRegisteredAfter: goneAt,
 	})
 	if err != nil {
+		if supervising.Err() != nil {
+			s.abandoned(session)
+			return
+		}
 		s.log.Warn("the Envoy listener did not take the clean stop of a dead role's session", "session", session, "error", err)
 		return
 	}
@@ -1612,6 +1633,13 @@ func (s sessionStop) send(supervising context.Context, session string, goneAt ti
 		return
 	}
 	s.log.Info("the Envoy session of a role whose process is gone was stopped", "session", session)
+}
+
+// abandoned reports a stop supervision's end cut short, at Info: it is the daemon's own stop and
+// not the listener's failure (send says why).
+func (s sessionStop) abandoned(session string) {
+	s.log.Info("the daemon is stopping, so the clean stop of a role's session was abandoned; a registration it did not remove lapses on its own",
+		"session", session)
 }
 
 // start supervises every claim the store holds. A claim with a live locator is re-adopted — its

@@ -379,28 +379,49 @@ func TestCleanSessionStopSendsNoDeleteWhenTheListenerRefusesTheRead(t *testing.T
 }
 
 // A listener that never answers does not leave the stop in flight for as long as it likes: the
-// work is bounded, by cleanSessionStopBudget and by supervision's own end, and the stop that is
-// abandoned there sends no delete either.
+// work is bounded, by cleanSessionStopBudget and by supervision's own end. A stop that end
+// abandons — under its read, or before it starts, as an operator's suspension decided in the
+// daemon's drain is — is the daemon's own stop: it sends no delete, and it is reported at Info,
+// not as the listener's failure, which a daemon's stop that must stay quiet would log as a WARN.
 func TestCleanSessionStopIsAbandonedWhenSupervisionEnds(t *testing.T) {
-	arrived := make(chan struct{})
-	listener := &listenerRecorder{hangRead: true, arrived: arrived}
-	server := listener.server(t)
-	supervising, endSupervision := context.WithCancel(context.Background())
-	defer endSupervision()
-	go func() {
-		<-arrived
-		endSupervision()
-	}()
-	var logged bytes.Buffer
-	stop := sessionStop{sessions: notify.New(server.URL, ""), log: bufferedLogger(&logged)}
+	for _, tc := range []struct {
+		name string
+		// endedBefore is supervision ended before the stop starts; otherwise it ends once the
+		// stop's read has reached the listener, which never answers it.
+		endedBefore bool
+		reads       int
+	}{
+		{name: "under a read the listener never answers", reads: 1},
+		{name: "before the stop starts", endedBefore: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			arrived := make(chan struct{})
+			listener := &listenerRecorder{hangRead: true, arrived: arrived}
+			server := listener.server(t)
+			supervising, endSupervision := context.WithCancel(context.Background())
+			defer endSupervision()
+			if tc.endedBefore {
+				endSupervision()
+			} else {
+				go func() {
+					<-arrived
+					endSupervision()
+				}()
+			}
+			var logged bytes.Buffer
+			stop := sessionStop{sessions: notify.New(server.URL, ""), log: bufferedLogger(&logged)}
 
-	stop.send(supervising, "ses_hung", time.Now())
+			stop.send(supervising, "ses_hung", time.Now())
 
-	if listener.delete.requests != 0 {
-		t.Fatalf("the listener was asked %d deletes, want none from a stop whose read never answered", listener.delete.requests)
-	}
-	if !strings.Contains(logged.String(), "the Envoy listener did not answer what a dead role's session registration is") {
-		t.Fatalf("logged %q, want the abandoned stop reported", logged.String())
+			if listener.read.requests != tc.reads || listener.delete.requests != 0 {
+				t.Fatalf("the listener was asked %d reads and %d deletes, want %d reads and no delete from a stop supervision's end abandoned",
+					listener.read.requests, listener.delete.requests, tc.reads)
+			}
+			if !strings.Contains(logged.String(), "the daemon is stopping, so the clean stop of a role's session was abandoned") ||
+				strings.Contains(logged.String(), "level=WARN") {
+				t.Fatalf("logged %q, want the abandoned stop reported at Info and no WARN", logged.String())
+			}
+		})
 	}
 }
 
