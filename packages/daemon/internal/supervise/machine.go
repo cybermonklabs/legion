@@ -2646,9 +2646,11 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// of when this death fails it — here, or where the relaunch it raises finds the launch budget
 	// spent (relaunchAfterFailure) — names the cause the role never chose, and so does the boot's
 	// replay of that failure after a daemon restart (Claim.PodEnd). Each report writes its own, an
-	// empty one included, so the pod end and the account above are always one report's. It is
-	// written before any branch below returns: each of them persists the claim or leaves it to
-	// the next decision's write, and every path out of here has had the end recorded.
+	// empty one included, so where died wrote them the pod end and the account above are one
+	// report's; a suspension over a dead process writes the account alone
+	// (suspendOverADeadProcess). It is written before any branch below returns: each of them
+	// persists the claim or leaves it to the next decision's write, and every path out of here has
+	// had the end recorded.
 	m.claim.PodEnd = observation.PodEnd
 	ended := endDied(m.claim.LastDeathCause)
 	m.recordGoneEnd(ctx, ended)

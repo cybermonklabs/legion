@@ -974,9 +974,12 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 // chose — an eviction for ephemeral storage above all — or, where the claim holds no pod end and
 // failed because its process died, the first line of the runtime's account of that death
 // (supervise.Claim.LastDeathCause, intake.ClaimFailed.Death). They are joined with "; ", and any
-// of them the fact does not hold is left out. The sentence is made one line and cut to a bound
-// (deathSentence) and the death's first line is quoted (deathFirstLine), so neither a provider's
-// message nor a role's log writes a line of its own into the reason; the pod end is the
+// of them the fact does not hold is left out. The sentence is made one line (deathSentence) and
+// the death's first line is taken without its log tail (deathFirstLine), and each is written
+// quoted and cut to a bound (quoteBounded), so neither a provider's message nor a role's log
+// writes a line of its own into the reason, nor a tab, an escape or a clause that reads as this
+// function's own — `; the pod ended: Evicted: …` at the end of a provider's message stays inside
+// the sentence's quotes — and the reason's size is one this package chose; the pod end is the
 // kubelet's reason and message, bounded where it is built (runtime.PodEnd). All three are
 // persisted on the claim, so the boot's replay of a failure no daemon applied says the same thing
 // (the daemon's replayTerminal).
@@ -1021,32 +1024,44 @@ func deathReason(fact intake.ClaimFailed, failureCarried bool) string {
 	case fact.PodEnd != "":
 		said = append(said, "the pod ended: "+fact.PodEnd)
 	case !failureCarried && fact.Cause == supervise.CauseDied && fact.Death != "":
-		said = append(said, fmt.Sprintf("the process was last found %q", deathFirstLine(fact.Death)))
+		said = append(said, "the process was last found "+quoteBounded(deathFirstLine(fact.Death), false))
 	}
 	return strings.Join(said, "; ")
 }
 
-// deathSentenceCut ends a supervisor's sentence deathSentence cut.
-const deathSentenceCut = "… (cut)"
+// deathReasonCut follows the closing quote of a part of a worker-died's reason that quoteBounded
+// cut, so a reader sees both where the quoted text ends and that it was cut.
+const deathReasonCut = "… (cut)"
 
 // deathSentence is the supervisor's sentence as a worker-died's reason carries it: each run of
-// line breaks between two pieces of its text written as " / " and any at either end dropped, and
-// the whole cut to runtime.PodEndRunes runes, the bound the pod end beside it is cut to, ending in
-// deathSentenceCut where it was longer. For a run of refused turns the sentence holds the
+// line breaks between two pieces of its text written as " / " and any at either end dropped, then
+// quoted and cut as quoteBounded writes it. For a run of refused turns the sentence holds the
 // provider's message as the role's own plugin posted it (supervise's refusalCause, api's
 // turn-outcome route), which can run to a mebibyte over many lines; the claim and a failure
-// record's `detail` keep it whole (noticeFailure).
+// record's `detail` keep it whole (noticeFailure). The sentence is cut at runtime.PodEndRunes
+// runes before its line breaks are written, so no more of a mebibyte is read than the bound
+// keeps.
 func deathSentence(sentence string) string {
 	cut := false
 	if at := runeOffset(sentence, runtime.PodEndRunes); at < len(sentence) {
 		sentence, cut = sentence[:at], true
 	}
-	line := strings.Join(strings.FieldsFunc(sentence, isLineBreak), " / ")
-	if !cut && utf8.RuneCountInString(line) <= runtime.PodEndRunes {
-		return line
+	return quoteBounded(strings.Join(strings.FieldsFunc(sentence, isLineBreak), " / "), cut)
+}
+
+// quoteBounded is one part of a worker-died's reason that the daemon did not write itself — the
+// supervisor's sentence, the first line of the runtime's account of a death — as the reason
+// carries it: quoted with %q, so a line break, a tab, an escape or a quote in it is written
+// escaped and nothing in it reads as the reason's own words, and cut to runtime.PodEndRunes
+// runes, the bound the pod end beside it is cut to, where it was longer or cut says it was cut
+// already: the text is then cut to that bound less deathReasonCut's runes, quoted, and followed
+// by deathReasonCut after its closing quote.
+func quoteBounded(text string, cut bool) string {
+	if !cut && runeOffset(text, runtime.PodEndRunes) == len(text) {
+		return strconv.Quote(text)
 	}
-	keep := runtime.PodEndRunes - utf8.RuneCountInString(deathSentenceCut)
-	return line[:runeOffset(line, keep)] + deathSentenceCut
+	keep := runtime.PodEndRunes - utf8.RuneCountInString(deathReasonCut)
+	return strconv.Quote(text[:runeOffset(text, keep)]) + deathReasonCut
 }
 
 // isLineBreak is whether r ends a line where the reason is read: a line feed, a carriage return,
@@ -1077,8 +1092,10 @@ func runeOffset(s string, n int) int {
 // carried whole, each of those became a line of the architect's notice. The whole account stays
 // on the claim (supervise.Claim.LastDeathCause), where an operator reads it, and in the `death`
 // of the failure record a notice carries when the fact names a cause (noticeFailure). The line
-// is quoted where it is written (deathReason), so whatever else is in it stays inside the
-// reason's one line.
+// itself can run long — for a pod left unscheduled past the boot timeout it holds the
+// scheduler's message and the pod's events joined (sandbox's Runtime.verdict) — so it is quoted
+// and cut where it is written (deathReason, quoteBounded), and whatever else is in it stays
+// inside the reason's one line.
 func deathFirstLine(death string) string {
 	first, _, cut := strings.Cut(death, "\n")
 	if at := strings.LastIndex(first, "; last lines of "); cut && at >= 0 && strings.HasSuffix(first, ":") {
@@ -1283,14 +1300,15 @@ func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
 				size.Path, size.Bytes, size.BytesOverHour, size.BytesOverDay)
 			continue
 		}
-		// A size the kernel let the walk read only in part is what the walk could read and no
-		// more, so it is told as a lower bound with the read that was refused, which is where a
-		// reader looks for the rest (record.VolumeSize).
-		fmt.Fprintf(&out, "; %q holds at least %d bytes (%d older than an hour, %d older than a day, of what the walk could read): the kernel refused %d of the walk's reads under it, the first at %q",
+		// A size the walk could read only in part — the kernel refused a read under it, or it
+		// holds a directory deeper than the walk descends — is what the walk could read and no
+		// more, so it is told as a lower bound with the first read the walk did not make, which
+		// is where a reader looks for the rest (record.VolumeSize).
+		fmt.Fprintf(&out, "; %q holds at least %d bytes (%d older than an hour, %d older than a day, of what the walk could read): the walk could not make %d of its reads under it, the first at %q",
 			size.Path, size.Bytes, size.BytesOverHour, size.BytesOverDay, size.Refusals, size.Refused)
 	}
 	if report.SizesOmitted > 0 {
-		fmt.Fprintf(&out, "; %d more measured directories are left out of this report", report.SizesOmitted)
+		fmt.Fprintf(&out, "; %d more sizes are left out of this report", report.SizesOmitted)
 	}
 	// Two facts and not one: a walk that was cut ended early, and a directory the walk measured
 	// none of may be one it could not open while it went on to its end, which is told with the

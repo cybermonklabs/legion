@@ -92,9 +92,10 @@ const (
 	// interval reading continues through the pause, because it is what ends an episode
 	// (episodeOf).
 	//
-	// The pause follows every sweep that freed under a point, whatever stopped it, and so it
-	// follows each sweep that deleted nothing at all: one whose deleter would not start, one a
-	// refused first /proc read stopped, and one whose listing its budget cut (sweep). The last
+	// The pause follows every sweep that freed under a point, but one the settings stopped,
+	// which returns the trimmer to its wait and sets no pause (tick); and so it follows each
+	// sweep that deleted nothing at all: one whose deleter would not start, one a refused first
+	// /proc read stopped, and one whose listing its budget cut (sweep). The last
 	// sets a limit nothing else states: a listing reads every name of every entry's tree under
 	// the roots (newestModTime), so a sweep whose reclaimable roots hold more names than the
 	// listing reads in volumeSweepBudget is cut while it lists, deletes nothing, pauses, and is
@@ -665,8 +666,8 @@ func cutEach(list []string, runes int) []string {
 }
 
 // cutRunes is s cut to at most bound runes with an ellipsis where it was cut, as runtime.PodEnd
-// cuts a kubelet's message at runtime.PodEndRunes: "its size must be one this package chose
-// rather than one a node's message happened to have".
+// cuts a kubelet's message at runtime.PodEndRunes, so its size is one this package chose rather
+// than one the pod's roles happened to give it.
 func cutRunes(s string, bound int) string {
 	runes := []rune(s)
 	if len(runes) <= bound {
@@ -699,28 +700,28 @@ func (t *trimmer) sizes(ctx context.Context) walkResult {
 // walkShortfall is the line a walk that measured less than the whole volume writes, and "" for
 // one that measured all of it. It says each of three facts only where the walk met it, since
 // they are three different things to a person reading the pod's log: a walk its budget or the
-// container's stop cut (walkResult.Partial), each directory it could read only in part, named
-// with the first read the kernel refused there (LauncherVolumeSize.Refused), and each directory
-// it measured none of, with the read the kernel refused where there was one (walkResult.Missing).
+// container's stop cut (walkResult.Partial), each size it could read only in part, named with
+// the first read under it the walk did not make — one the kernel refused, or a directory deeper
+// than the walk descends (LauncherVolumeSize.Refused) — and each target it measured none of,
+// with the read the kernel refused where there was one (walkResult.Missing). How many sizes it
+// measured, and how many of them only in part, count the sizes the walk dropped from its fifty
+// too (walkResult.SizesOmitted, PartlyOmitted).
 //
 // The names are the pod's own: a role may make a directory of any name two levels under the
 // volume root, and any number of them, so each list takes the bound the frame takes (bound) and
 // each path is quoted, rather than joining a list of a size and a content nothing here chose. A
 // reader who needs the whole of either list has the report's own, bounded the same way.
 func walkShortfall(walk walkResult) string {
+	// The walk keeps no more sizes than a report carries (walkResult.keep).
 	var partly []string
-	partlyLeft := 0
 	for _, size := range walk.Sizes {
-		switch {
-		case size.Refused == "":
-		case len(partly) == shimwire.VolumeReportSizes:
-			partlyLeft++
-		default:
+		if size.Refused != "" {
 			partly = append(partly, fmt.Sprintf("%q at %q",
 				cutRunes(size.Path, volumeReportPathRunes), cutRunes(size.Refused, volumeReportPathRunes)))
 		}
 	}
-	if !walk.Partial && len(partly) == 0 && len(walk.Missing) == 0 {
+	partlyAll := len(partly) + walk.PartlyOmitted
+	if !walk.Partial && partlyAll == 0 && len(walk.Missing) == 0 {
 		return ""
 	}
 	var line strings.Builder
@@ -728,14 +729,16 @@ func walkShortfall(walk walkResult) string {
 	if walk.Partial {
 		line.WriteString("was cut by its budget or the container's stop before it reached every directory: it ")
 	}
-	fmt.Fprintf(&line, "measured %d directories", len(walk.Sizes))
-	if len(partly) > 0 {
-		fmt.Fprintf(&line, ", %d of them only in part, the kernel having refused a read under each (%s",
-			len(partly)+partlyLeft, strings.Join(partly, ", "))
-		if partlyLeft > 0 {
-			fmt.Fprintf(&line, ", and %d more", partlyLeft)
+	fmt.Fprintf(&line, "measured %d sizes", len(walk.Sizes)+walk.SizesOmitted)
+	if partlyAll > 0 {
+		fmt.Fprintf(&line, ", %d of them only in part, a read under each refused by the kernel or deeper than the walk descends", partlyAll)
+		if len(partly) > 0 {
+			fmt.Fprintf(&line, " (%s", strings.Join(partly, ", "))
+			if walk.PartlyOmitted > 0 {
+				fmt.Fprintf(&line, ", and %d more", walk.PartlyOmitted)
+			}
+			line.WriteString(")")
 		}
-		line.WriteString(")")
 	}
 	if len(walk.Missing) > 0 {
 		// The walk keeps no more of the list than a report names (walkResult.miss).
@@ -747,7 +750,7 @@ func walkShortfall(walk walkResult) string {
 			}
 		}
 		and := " and"
-		if len(partly) > 0 {
+		if partlyAll > 0 {
 			and = ", and"
 		}
 		fmt.Fprintf(&line, "%s left %d unmeasured (%s", and, len(walk.Missing)+walk.MissingOmitted, strings.Join(missing, ", "))

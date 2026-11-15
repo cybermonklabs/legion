@@ -1,7 +1,6 @@
 package launcher
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -35,24 +34,33 @@ func (t *trimmer) flush() {
 // failed too: the daemon counts episodes and not reports, and of two reports of the same episode
 // the newer reading is the one worth carrying. What only the older one carries — the faults and
 // the refused /proc reads the trimmer handed it and cleared from itself (report, switchOff) — is
-// carried into the newer one first, so the replacement loses none of it and R1's fault and R3's
-// refused read still reach the next report sent. A newer report that is sent leaves the older
-// one held, to be tried at the next attempt with its own faults and refused reads.
+// carried into the newer one first, and the bound that follows keeps the newest
+// shimwire.VolumeReportFaults faults and the first shimwire.VolumeReportRefusedReads refused
+// reads and counts the rest, so the replacement drops none of it without counting it: R1's
+// fault and R3's refused read reach the next report sent, kept or counted. A newer report that
+// is sent leaves the older one held, to be tried at the next attempt with its own faults and
+// refused reads.
+//
+// For each report it is given it writes at most one line of what the bound left out, of the
+// report as it is sent or held (saidLeftOut): a report that replaces a held one is bounded
+// twice, once where it is made and once with the held one's faults and refused reads in it, and
+// its line is written once, with the counts of the second.
 func (t *trimmer) deliver(report shimwire.LauncherVolumeReport) {
 	t.flush()
 	err := t.send(report)
 	switch {
 	case err == nil:
-		return
 	case t.held == nil:
 		t.logf(volumeTrimLog+"the report could not be sent (%v); holding it for the next attempt", err)
+		t.held = &report
 	default:
 		held := *t.held
 		report = t.bound(carryHeld(held, report))
-		t.logf(volumeTrimLog+"the report could not be sent (%v); it replaces the held report, carrying that report's %d recovered faults and %d refused /proc reads with its own, and is held for the next attempt",
+		t.logf(volumeTrimLog+"the report could not be sent (%v); it replaces the held report, taking in that report's %d recovered faults and %d refused /proc reads with its own, each kept or counted under the report's bound, and is held for the next attempt",
 			err, len(held.Faults)+held.FaultsOmitted, len(held.RefusedReads)+held.RefusedReadsOmitted)
+		t.held = &report
 	}
-	t.held = &report
+	t.saidLeftOut(report)
 }
 
 // carryHeld is report with the faults and the refused /proc reads of held put into it, before
@@ -189,6 +197,7 @@ func (t *trimmer) report(ctx context.Context, out sweepOutcome) shimwire.Launche
 		RefusedReads:        refused,
 		RefusedReadsOmitted: refusedDropped,
 		Sizes:               walk.Sizes,
+		SizesOmitted:        walk.SizesOmitted,
 		SizesAt:             walk.At,
 		SizesPartial:        walk.Partial,
 		SizesMissing:        walk.Missing,
@@ -226,8 +235,10 @@ const (
 	// volumeReportStopReasonRunes bounds the sweep's own reason, which names at most the first
 	// shimwire.VolumeReportRefusedReads refused /proc reads and how many more there were
 	// (refusalsSaid, volumetrim.go). It is the same few hundred runes runtime.PodEndRunes gives a
-	// kubelet's reason and message, and for the same reason: the sentence is stored in an outbox
-	// row and published to a role topic.
+	// kubelet's reason and message, and for a like reason: that bound is there because a
+	// worker-died's reason names the pod end whole on its one line (internal/workflow's
+	// deathReason), and the volume-near-full notice's sentence quotes this reason whole on its
+	// one line (internal/workflow's volumeNoticeReason).
 	volumeReportStopReasonRunes = 400
 	// volumeReportFaultRunes bounds each fault. A fault is a recovered panic with the whole
 	// stack of this goroutine behind it, and the frames that name where it fell over are the
@@ -254,14 +265,17 @@ const (
 // (volumeReportTrimmerRunes). It bounds both reports — a sweep's (report) and the switched-off
 // trimmer's (switchOff) — and again a report that replaced a held one and took on its faults and
 // refused reads (deliver, carryHeld); it copies rather than cutting in place, because the sizes
-// belong to the walk the trimmer keeps for the hour.
-//
-// One line says what it cut, so a person reading the pod's log knows the report the daemon got
-// is not the whole of what the trimmer measured.
+// belong to the walk the trimmer keeps for the hour. A walk keeps no more sizes than the cap
+// already (walkResult.keep), and a list of sizes past it is cut by that same rule, the largest
+// kept in the order they came.
 func (t *trimmer) bound(report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
 	sizes := report.Sizes
-	if over := len(sizes) - shimwire.VolumeReportSizes; over > 0 {
-		sizes, report.SizesOmitted = largestSizes(sizes, shimwire.VolumeReportSizes), report.SizesOmitted+over
+	if len(sizes) > shimwire.VolumeReportSizes {
+		var largest walkResult
+		for _, size := range sizes {
+			largest.keep(size)
+		}
+		sizes, report.SizesOmitted = largest.Sizes, report.SizesOmitted+largest.SizesOmitted
 	}
 	report.Sizes = nil
 	if len(sizes) > 0 {
@@ -301,20 +315,26 @@ func (t *trimmer) bound(report shimwire.LauncherVolumeReport) shimwire.LauncherV
 	faults := report.Faults
 	if over := len(faults) - shimwire.VolumeReportFaults; over > 0 {
 		// The newest, where the two lists above keep their first: the walk's unmeasured
-		// directories are in the order a reader acts on (volumewalk.go's targets) and the
+		// paths are in the order a reader acts on (volumewalk.go's targets) and the
 		// refused reads in the order they were met, while of the faults it is the run that
 		// stopped the trimmer that says why it stopped.
 		faults, report.FaultsOmitted = faults[over:], report.FaultsOmitted+over
 	}
 	report.Faults = cutEach(faults, volumeReportFaultRunes)
+	return report
+}
 
+// saidLeftOut writes the one line of what a report leaves out, so a person reading the pod's log
+// knows the report the daemon got is not the whole of what the trimmer measured. deliver writes
+// it once for each report it is given, of the report as it is sent or held.
+func (t *trimmer) saidLeftOut(report shimwire.LauncherVolumeReport) {
 	var cuts []string
 	for _, cut := range []struct {
 		omitted int
 		what    string
 	}{
-		{report.SizesOmitted, "measured directories"},
-		{report.SizesMissingOmitted, "unmeasured directories"},
+		{report.SizesOmitted, "measured sizes"},
+		{report.SizesMissingOmitted, "unmeasured paths"},
 		{report.RefusedReadsOmitted, "refused /proc reads"},
 		{report.FaultsOmitted, "recovered faults"},
 	} {
@@ -326,25 +346,4 @@ func (t *trimmer) bound(report shimwire.LauncherVolumeReport) shimwire.LauncherV
 		t.logf(volumeTrimLog+"the report the daemon is sent leaves out %s, and every path, reason and stack in it is cut at this launcher's own bound: a frame over %d bytes is refused by the connection",
 			strings.Join(cuts, ", "), shimwire.MaxFrameBytes)
 	}
-	return report
-}
-
-// largestSizes is the keep sizes of the most bytes, in the order the walk measured them, where
-// sizes holds more than keep: a size the walk reached late is a size like any other to a reader
-// looking for what filled the volume, and a role that makes fifty empty directories under
-// /legion/scratch, which the walk measures before /legion/go, must not push the build cache out
-// of the report. Of sizes of equal bytes the one measured first is kept.
-func largestSizes(sizes []shimwire.LauncherVolumeSize, keep int) []shimwire.LauncherVolumeSize {
-	order := make([]int, len(sizes))
-	for at := range order {
-		order[at] = at
-	}
-	slices.SortStableFunc(order, func(a, b int) int { return cmp.Compare(sizes[b].Bytes, sizes[a].Bytes) })
-	kept := order[:keep]
-	slices.Sort(kept)
-	out := make([]shimwire.LauncherVolumeSize, keep)
-	for at, from := range kept {
-		out[at] = sizes[from]
-	}
-	return out
 }

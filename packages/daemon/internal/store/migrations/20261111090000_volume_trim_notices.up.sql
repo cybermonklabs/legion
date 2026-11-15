@@ -1,14 +1,15 @@
 -- 20261111090000_volume_trim_notices.up.sql — what the daemon has told an issue's architect about
 -- the volume its pod's roles share, so it can tell it again without telling it endlessly.
 --
--- The cache trimmer in each issue pod's launcher process reports every sweep that ends with the
--- volume still above its low mark (shimwire.LauncherVolumeReport). A pod that is filling reports
--- one a minute, and nothing else in Legion sees that volume at all, so the daemon's answer is a
--- notice to the issue's architect under bounds: at most three for one trimmer and episode, and at
--- most one an hour for one pod. Those bounds are counted here rather than in the daemon's memory,
--- because a daemon that restarts in the middle of a filling pod's episode would otherwise start
--- the count over and tell that architect three more times, which is exactly the pod already
--- reporting every minute (INFRA-2009).
+-- The cache trimmer in each issue pod's launcher process reports a sweep that ends with the volume
+-- still above its low mark, unless the settings stopped it (shimwire.LauncherVolumeReport). A pod
+-- that is filling can report at every interval it sweeps in — one a minute by default, and the
+-- eleventh interval after a sweep that freed under one point — and nothing else in Legion sees that
+-- volume at all, so the daemon's answer is a notice to the issue's architect under bounds: at
+-- most three for one trimmer and episode, and at most one an hour for one pod. Those bounds are
+-- counted here rather than in the daemon's memory, because a daemon that restarts in the middle
+-- of a filling pod's episode would otherwise start the count over and tell that architect three
+-- more times, which is exactly the pod already reporting at every sweep (INFRA-2009).
 --
 -- One row per project, issue, pod uid, trimmer and episode, shaped as pod_holds is
 -- (20261102002500_pod_release_records.up.sql): a counted streak rather than a row per report,

@@ -998,16 +998,20 @@ func (f CloseRoot) Message() string {
 // why the claim's process was last found gone and StartFailure why its last start did not produce
 // a running agent, each as the runtime said it and empty when the claim has none: the two answer
 // different questions — a worker that kept dying and a worker that could never start — and the
-// notices this fact sends name both, since the architect reading them has no other way to learn
-// either (dispatch://INFRA-714 R6).
+// failure record a notice of this fact carries, where the fact names a Cause, holds both whole,
+// since the architect reading it has no other way to learn either (dispatch://INFRA-714 R6;
+// workflow's noticeFailure). A worker-died's reason names neither whole: it names the first line
+// of Death only where its notice carries no failure record, Cause is supervise.CauseDied and no
+// PodEnd was read, which is the tree architect's notice alone, and StartFailure nowhere
+// (workflow's deathReason).
 //
 // PodEnd is the pod end the claim's process was last observed to have died of, as the runtime
 // read it off the pod itself and the claim kept it (supervise.Claim.PodEnd,
 // runtime.Observation.PodEnd): `Evicted: The node was low on resource: ephemeral-storage. ...`
 // and nothing of the role's own log. It is carried beside Reason and never folded into it,
 // because the two say different things — Reason is what the supervisor decided, PodEnd what the
-// cluster did — and because it is persisted on the claim, so a daemon that restarts between the
-// pod's death and the moment the relaunch budget runs out reports the same end.
+// cluster did — and because it is persisted on the claim, so the boot's replay of a failure no
+// daemon applied reports the same end (the daemon's replayTerminal).
 type ClaimFailed struct {
 	Issue        string
 	Role         claim.Role

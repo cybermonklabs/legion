@@ -1740,11 +1740,18 @@ package api
 // them. That frame carries, beside the sweep's own numbers, how many
 // entries the launcher's own bound left out of each of its lists (`sizesOmitted` and its three
 // siblings), so a reader never takes a cut list for the whole of what the trimmer measured, and
-// two optional members of each size, `refused` and `refusals`: the first read the kernel refused
-// under that directory, named by the directory, the name refused and its depth, and how
-// many it refused there, so a size the walk could read only in part is told as a lower bound
-// and never as the directory's whole. Its `sizesPartial` is a walk its budget or the container's
-// stop cut, and nothing else. The state body's `settings.runtime.kubernetes` gains
+// two optional members of each size, `refused` and `refusals`: the first read under that target
+// the walk did not make — one the kernel refused, or a directory more than 64 levels below the
+// target, which the walk does not open — named by the target, the name and its depth, and how
+// many such reads there were, so a size the walk could read only in part is told as a lower
+// bound and never as the target's whole. Each size measures a directory two levels under the
+// volume root, a regular file beside such directories in an immediate child of the root, or an
+// immediate child that holds no directory of its own. The frame's `sizesPartial` is a walk its
+// budget or the container's stop cut, and nothing else, and its own rule
+// (`shimwire.LauncherVolumeReport.Validate`) refuses a report holding more entries in any list
+// than that list's cap (`shimwire.VolumeReportSizes` and the three beside it), since the daemon
+// renders every entry it is given into a notice and the launcher's own cut runs only where the
+// sender is that launcher. The state body's `settings.runtime.kubernetes` gains
 // `volume_trim` (`enabled`, `high_percent`, `low_percent`, `min_age_minutes` and
 // `interval_seconds`, api.VolumeTrimSettings): the settled block, `enabled` false where the
 // deployment switched the trimmer off, which the contracts' state fixture

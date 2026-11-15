@@ -470,15 +470,15 @@ func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
 	}
 }
 
-// A size the walk could read only in part is told as a lower bound with the read the kernel
-// refused there, and a walk that went on past it to its end is told nothing of ending early: for
-// exactly that report the sentence used to read `that walk ended early and measured none of `
-// followed by nothing, with the unreadable directory's bytes given as the directory's own. A
-// directory the walk could not open is told as one it measured none of, with the read the kernel
-// refused, and as no size. A walk its budget cut is told as cut, beside what it measured none of,
-// and where it names nothing as unmeasured the sentence carries no empty list. The negative
-// control is fullSweep's own sizes, which the walk read whole and which no row tells as a lower
-// bound.
+// A size the walk could read only in part is told as a lower bound with the first read the walk
+// did not make there, and a walk that went on past it to its end is told nothing of ending
+// early: for exactly that report the sentence used to read `that walk ended early and measured
+// none of ` followed by nothing, with the unreadable directory's bytes given as the directory's
+// own. A directory the walk could not open is told as one it measured none of, with the read the
+// kernel refused, and as no size. A walk its budget cut is told as cut, beside what it measured
+// none of, and where it names nothing as unmeasured the sentence carries no empty list. The
+// negative control is fullSweep's own sizes, which the walk read whole and which no row tells as
+// a lower bound.
 func TestTheNoticeTellsADirectoryReadInPartAndAWalkThatWasCutApart(t *testing.T) {
 	const pack, under = "/legion/feed/pack", "/legion/feed/pack/under"
 	for _, tc := range []struct {
@@ -493,7 +493,7 @@ func TestTheNoticeTellsADirectoryReadInPartAndAWalkThatWasCutApart(t *testing.T)
 				sweep.Sizes = append(sweep.Sizes, record.VolumeSize{Path: pack, Bytes: 1, Refused: under, Refusals: 2})
 			},
 			want: []string{strconv.Quote(pack) + " holds at least 1 bytes",
-				"the kernel refused 2 of the walk's reads under it, the first at " + strconv.Quote(under),
+				"the walk could not make 2 of its reads under it, the first at " + strconv.Quote(under),
 				`"caches/uv" holds 12884901888 bytes`},
 			not: []string{"ended early", "was cut", "measured none of", `"caches/uv" holds at least`},
 		},

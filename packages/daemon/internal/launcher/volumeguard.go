@@ -195,12 +195,13 @@ func (p *procProcess) link(what, path string) string {
 }
 
 // descriptors adds every file the process has open, and keeps a descriptor on a root itself as
-// a hold of that root (Holds). A descriptor closed between the listing and the reading of its
-// link is gone rather than refused (refuse).
+// a hold of that root (Holds), once per root however many descriptors the process holds on it,
+// so held grows by at most one entry per root for each process. A descriptor closed between the
+// listing and the reading of its link is gone rather than refused (refuse).
 func (p *procProcess) descriptors() {
 	dir := filepath.Join(p.dir, "fd")
 	if err := eachName(dir, func(name string) {
-		if kept := p.link("fd/"+name, filepath.Join(dir, name)); slices.Contains(p.under, kept) {
+		if kept := p.link("fd/"+name, filepath.Join(dir, name)); slices.Contains(p.under, kept) && !slices.Contains(p.held, kept) {
 			p.held = append(p.held, kept)
 		}
 	}); err != nil {
@@ -440,17 +441,21 @@ func newerThan(dir *dirHandle, name string, cutoff time.Time, halt func() error)
 //
 // A level is listed walkEntriesBatch names at a time, as eachName reads a process's
 // descriptors, and the names of one batch are visited in the order they sort, which for a
-// directory of no more names than that is the order every name of it sorts in. A level of N
-// names costs the walk a batch of them and not all N: a role may make a cache entry with a
-// directory of any number of names, and the walk runs in PID 1 on every sweep.
+// directory of no more names than that is the order every name of it sorts in (nextBatch). A
+// level of N names costs the walk a batch of them and not all N: a role may make a cache entry
+// with a directory of any number of names, and the walk runs in PID 1 on every sweep.
 //
 // It holds one handle per level of the tree until that level is done, which is three
 // descriptors — the handle's two and the listing's own — and a batch of names, and no path: a
 // handle keeps the one above it and its own name (dirHandle.path). A cache entry is shallow —
 // Go's own build trees and bun's install cache are two or three levels — but a role may make one
-// of any depth, and the pod's limit is 1048576 descriptors (`ulimit -n`, measured in an issue
-// pod of this deployment at 2026-11-12T06:30Z); a level the kernel refuses for that or any
-// other reason is the error the guard answers with, and the entry is passed over.
+// of any depth, and every descriptor the walk holds counts against the one limit every open of
+// PID 1 shares, a role's start among them. So it descends no more than volumeWalkDepth levels
+// below name, as the size walk descends below a target, and holds sixty-five levels open at
+// most: a directory deeper than that is not opened, and is the error the guard answers with
+// (errWalkTooDeep), as a level the kernel refuses for any reason is. Either way the entry's age
+// is not read, and the sweep passes the entry over for this sweep and deletes nothing of it
+// (trimmer.list, trimmer.remove).
 //
 // That error names what failed from name, as the deleter's removal names what it failed on from
 // the entry (treeRemoval.remove): name itself where its own open or listing failed, and
@@ -461,6 +466,11 @@ func newerThan(dir *dirHandle, name string, cutoff time.Time, halt func() error)
 // (TestAnAgeThatCannotBeReadIsLoggedAtASizeItsDepthDoesNotSet). A halt's error and a visit's
 // errWalkDone are answered as they are.
 func walkEntries(dir *dirHandle, name string, halt func() error, visit func(info os.FileInfo) error) error {
+	return walkLevel(dir, name, 0, halt, visit)
+}
+
+// walkLevel is walkEntries for name, which lies depth levels below the name the walk began at.
+func walkLevel(dir *dirHandle, name string, depth int, halt func() error, visit func(info os.FileInfo) error) error {
 	if halt != nil {
 		if err := halt(); err != nil {
 			return err
@@ -479,8 +489,7 @@ func walkEntries(dir *dirHandle, name string, halt func() error, visit func(info
 	}
 	defer func() { _ = listing.Close() }()
 	for {
-		entries, read := listing.ReadDir(walkEntriesBatch)
-		slices.SortFunc(entries, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+		entries, read := nextBatch(listing)
 		for _, entry := range entries {
 			info, err := entry.Info()
 			if err != nil {
@@ -497,10 +506,14 @@ func walkEntries(dir *dirHandle, name string, halt func() error, visit func(info
 			if err := visit(info); err != nil {
 				return err
 			}
-			if entry.IsDir() {
-				if err := walkEntries(level, entry.Name(), halt, visit); err != nil {
-					return under(name, err)
-				}
+			if !entry.IsDir() {
+				continue
+			}
+			if depth+1 > volumeWalkDepth {
+				return under(name, &quotedPathError{op: "walk", path: entry.Name(), err: errWalkTooDeep})
+			}
+			if err := walkLevel(level, entry.Name(), depth+1, halt, visit); err != nil {
+				return under(name, err)
 			}
 		}
 		switch {
@@ -512,9 +525,17 @@ func walkEntries(dir *dirHandle, name string, halt func() error, visit func(info
 	}
 }
 
-// walkEntriesBatch is how many names of one level walkEntries reads at a time: procNamesBatch,
-// the batch eachName reads a process's descriptors in.
+// walkEntriesBatch is how many names of one level walkEntries and the size walk's measureUnder
+// read at a time: procNamesBatch, the batch eachName reads a process's descriptors in.
 const walkEntriesBatch = procNamesBatch
+
+// nextBatch is the next walkEntriesBatch names of one level's listing, in the order they sort,
+// and the error the read answered beside them: io.EOF once the listing has no more.
+func nextBatch(listing *os.File) ([]os.DirEntry, error) {
+	entries, err := listing.ReadDir(walkEntriesBatch)
+	slices.SortFunc(entries, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+	return entries, err
+}
 
 // errWalkDone ends a walk from inside a visit, as fs.SkipAll ended the walk this replaced.
 var errWalkDone = errors.New("the walk has what it was asked for")

@@ -227,7 +227,8 @@ cache or its Pythons, and no clone, toolchain or database you wrote under `$TMPD
 It skips anything a process of the pod held open, mapped or stood in at its latest read of
 `/proc`, which it takes again before an entry once the last read is a second old; anything that
 was modified, or holds something modified, inside the minimum age, fifteen minutes by default;
-and anything that is not the kind of file its row names.
+anything holding a directory more than 64 levels below it, which it does not open, so it never
+reads that thing's age; and anything that is not the kind of file its row names.
 A `-a` or `-d` entry of the Go build cache has an hour more than that: Go moves such an entry's
 modification time on use at most once an hour, so one a build used a minute ago can read
 fifty-nine minutes old, and the trimmer takes it only once it is older than the minimum age and

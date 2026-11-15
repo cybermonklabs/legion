@@ -3,6 +3,7 @@
 package launcher
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -290,6 +292,40 @@ func TestTheUsedPathSetNamesEveryProcessWhoseProcWasRefused(t *testing.T) {
 				t.Errorf("Covers(%s) = false, want the readable process's own handle", gone)
 			}
 		})
+	}
+}
+
+// A process's descriptors on a root are one hold of that root however many there are: the set is
+// read again as often as once a second while a sweep deletes, and a process holding hundreds of
+// descriptors on one root added hundreds of entries to the roots it holds, sorted and compacted
+// only after the whole /proc pass. The case gives one process 300 descriptors on bun's install
+// cache root and two on the Go build cache's, beside one on an entry under it, and reads the
+// process alone, then the whole set. The negative control is descriptors keeping an entry per
+// descriptor, as it did at 8a30be78, which held 302.
+func TestAProcessHoldsEachRootOnceHoweverManyDescriptorsItHasOnIt(t *testing.T) {
+	roots := reclaimableRootPaths()
+	tmp, build, bun := roots[0], roots[1], roots[3]
+	process := fixtureProcess{pid: 101}
+	for range 300 {
+		process.fds = append(process.fds, bun)
+	}
+	process.fds = append(process.fds, build, build, build+"/ab/abcdef-a")
+	proc, pids := writeProcFixture(t, process)
+
+	read := procProcess{dir: filepath.Join(proc, strconv.Itoa(pids[0])), pid: pids[0], under: roots,
+		lines: bufio.NewReaderSize(nil, procMapsReadBytes)}
+	read.read()
+	if read.refusal != "" {
+		t.Fatalf("the fixture's process was refused: %s", read.refusal)
+	}
+	held := slices.Compact(slices.Sorted(slices.Values(read.held)))
+	if want := []string{build, bun}; len(read.held) != len(want) || !slices.Equal(held, want) {
+		t.Errorf("the process holds %d roots, %q among them, want each root it has a descriptor on once: %q", len(read.held), held, want)
+	}
+	used := readUsedPaths(proc, roots, os.Getpid())
+	if !used.Holds(bun) || !used.Holds(build) || used.Holds(tmp) {
+		t.Errorf("Holds answers %t for %s, %t for %s and %t for %s, want the two roots the process holds and not the third",
+			used.Holds(bun), bun, used.Holds(build), build, used.Holds(tmp), tmp)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -209,14 +210,14 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 		}
 	})
 
-	t.Run("a tree architect's claim names no failure record and its reason names the sentence", func(t *testing.T) {
+	t.Run("a tree architect's claim names no failure record and its reason names the sentence, quoted", func(t *testing.T) {
 		pool := migratedPool(t)
 		seedIssue(t, pool, root)
 
 		if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "architect-failed", failed(root.Key, claim.RoleArchitect), testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 			t.Fatalf("ApplyFact the architect's failed claim: %v", err)
 		}
-		died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning, Reason: sentence}
+		died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning, Reason: strconv.Quote(sentence)}
 		if got, want := noticeRows(t, pool), []record.OutboxPayload{died, record.ControllerNotice(died)}; !sameNotices(got, want) {
 			t.Fatalf("notice rows = %+v, want %+v, naming no failure record and the sentence as the reason", got, want)
 		}

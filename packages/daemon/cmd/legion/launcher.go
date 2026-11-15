@@ -27,9 +27,11 @@ func (l *roleList) Set(value string) error {
 // runLauncher is PID 1 of an issue pod's one container, which serves every resident role, or of
 // the controller pod's one container, which serves its one role. It has no workflow policy: it
 // only authenticates to the daemon, once per role, and starts or stops that role's worker-shim
-// on daemon commands. It has two hidden subcommands of its own, which nothing but this binary
-// runs: `role-init`, the init of a role's namespaces, and `volume-trim-delete`, the deleter one
-// sweep of the pod's cache trimmer makes its removals through.
+// on daemon commands. It has two hidden subcommands of its own, which `legion launcher --help`
+// does not offer and which this binary starts itself: `role-init`, the init of a role's
+// namespaces, and `volume-trim-delete`, the deleter one sweep of the pod's cache trimmer makes its
+// removals through. Run by hand, each refuses unless it is the init of a PID namespace of its own
+// (runRoleInit, runVolumeTrimDelete).
 func runLauncher(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
 		switch args[0] {
@@ -137,7 +139,7 @@ func runRoleInit(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	return 0
 }
 
-const volumeTrimDeleteUsage = "usage: legion launcher volume-trim-delete --roles-dir <dir> [--home <dir>] [--home-mounts <dir>] [--fixed-root <dir>] (the cache trimmer's own deleter: the daemon's launcher runs it, never a person)"
+const volumeTrimDeleteUsage = "usage: legion launcher volume-trim-delete --roles-dir <dir> [--home <dir>] [--home-mounts <dir>] [--fixed-root <dir>] (the cache trimmer's own deleter, which the launcher starts: run by hand, it refuses unless it is the init of a PID namespace of its own)"
 
 // runVolumeTrimDelete is `legion launcher volume-trim-delete`, the launcher's second hidden
 // subcommand: the process one sweep of the pod's cache trimmer makes every one of its removals

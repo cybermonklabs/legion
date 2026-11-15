@@ -258,7 +258,8 @@ func TestASweepNamesTenEntriesOfARootItPassesOverAndCountsTheRest(t *testing.T) 
 // read permission off the last one. The line is of a size set by the names in it and not by the
 // depth, as the deleter's refusal of a removal is (removalFailure): the walk is a minute's work
 // for every sweep, and each such line is written again on every sweep. The case reads the line at
-// two depths of the same names, and the deeper one may be longer only by the digits of its depth.
+// two depths of the same names, the deeper one the deepest the guards' walk opens
+// (volumeWalkDepth), and the deeper line may be longer only by the digits of its depth.
 // Measured on this code at eaf96c43 in an issue pod: a chain 1000 deep of 250-byte names wrote a
 // line of 251307 bytes on every sweep, against 2813 bytes at 10 deep.
 func TestAnAgeThatCannotBeReadIsLoggedAtASizeItsDepthDoesNotSet(t *testing.T) {
@@ -297,10 +298,60 @@ func TestAnAgeThatCannotBeReadIsLoggedAtASizeItsDepthDoesNotSet(t *testing.T) {
 		return said[0]
 	}
 
-	shallow, deep := line(2), line(300)
+	shallow, deep := line(2), line(volumeWalkDepth-1)
 	if grown := len(deep) - len(shallow); grown > 16 {
-		t.Errorf("the line for an entry 300 deep is %d bytes, %d more than the %d of one 2 deep: its size is set by the depth a role made, not by the names in it: %.200s…",
-			len(deep), grown, len(shallow), deep)
+		t.Errorf("the line for an entry %d deep is %d bytes, %d more than the %d of one 2 deep: its size is set by the depth a role made, not by the names in it: %.200s…",
+			volumeWalkDepth-1, len(deep), grown, len(shallow), deep)
+	}
+}
+
+// The guards' walk descends no more than volumeWalkDepth levels below an entry, as the size walk
+// descends below a target: each level it opens holds a handle and its listing, three
+// descriptors, in PID 1, whose one descriptor limit every open of the launcher shares, a role's
+// start among them, and the walk runs on every sweep, in the listing and again before each
+// delete. A directory deeper than that is not opened: it is the error the guard answers with, so
+// the entry's age is not read and the sweep passes the entry over and deletes nothing of it. The
+// case stands two entries of bun's install cache with every time in them three hours old: a
+// chain of volumeWalkDepth directories, which the sweep deletes, and a chain one level deeper,
+// which it passes over, naming the directory past the depth by the entry's name, its own and its
+// depth. The negative control is the walk with no bound on its descent, as it stood at
+// 8a30be78, which opened all sixty-five levels and deleted both.
+func TestTheGuardWalkDescendsNoDeeperThanTheWalkDepthAndTheEntryIsPassedOver(t *testing.T) {
+	f := newTrimFixture(t, 0)
+	bun := f.roots[3]
+	if bun.Entry != ImmediateChildren {
+		t.Fatalf("the fourth reclaimable root is %+v, want bun's install cache", bun)
+	}
+	old := f.clock.at.Add(-3 * time.Hour)
+	chain := func(name string, depth int) string {
+		levels := []string{filepath.Join(bun.Path, name)}
+		for level := 1; level <= depth; level++ {
+			levels = append(levels, filepath.Join(levels[len(levels)-1], fmt.Sprintf("d%02d", level)))
+		}
+		mkdirFixture(t, levels[len(levels)-1])
+		writeAged(t, filepath.Join(levels[len(levels)-1], "out"), old)
+		for _, level := range slices.Backward(levels) {
+			if err := os.Chtimes(level, old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return levels[0]
+	}
+	reached, past := chain("reached-tool", volumeWalkDepth), chain("past-tool", volumeWalkDepth+1)
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+
+	f.trimmer().sweep(context.Background(), *trimSettings(), steady(90)(0))
+
+	if f.exists(reached) {
+		t.Errorf("the sweep left %s, %d levels deep and every time in it old: the walk must reach its foot", reached, volumeWalkDepth)
+	}
+	if !f.exists(past) {
+		t.Errorf("the sweep deleted %s, a level deeper than the guards' walk descends: its age was never read whole", past)
+	}
+	failed := fmt.Sprintf("walk %q (depth %d): %v", fmt.Sprintf("past-tool/.../d%02d", volumeWalkDepth+1), volumeWalkDepth+1, errWalkTooDeep)
+	if said := f.logged(fmt.Sprintf("the age of %q could not be read and it is passed over: %s", past, failed)); said != 1 {
+		t.Errorf("the sweep wrote %d lines passing %s over for the directory past the depth, want one ending %q: %q", said, past, failed, f.linesWritten())
 	}
 }
 

@@ -81,10 +81,11 @@ func TestAClaimsPodEndIsTheEndThatLastKilledIt(t *testing.T) {
 }
 
 // Each report of a death writes the pod end that report read, whatever an earlier report of the
-// same dead process wrote, so the claim's pod end and its account of the death
-// (Claim.LastDeathCause) are always one report's: the workflow names that account only where the
-// pod end is empty (workflow's deathReason), and a pod end kept from an earlier report beside a
-// later report's account would pair two reads. The two reports here have no launch between them:
+// same dead process wrote, so where died wrote them the claim's pod end and its account of the
+// death (Claim.LastDeathCause) are one report's — a suspension over a dead process writes the
+// account alone (suspendOverADeadProcess): the workflow names that account only where the pod
+// end is empty (workflow's deathReason), and a pod end kept from an earlier report beside a later
+// report's account would pair two reads. The two reports here have no launch between them:
 // the lifecycle recheck the store will not answer refuses the relaunch each raises, which keeps
 // the claim over its dead process (relaunchRefused), so it is died and not a launch that replaces
 // what the first wrote. The negative control is died keeping an earlier pod end: both rows then

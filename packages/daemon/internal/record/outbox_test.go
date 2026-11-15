@@ -864,7 +864,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
-			Reason: "the volume LEGION-208's roles share on pod pod-uid is still above its low mark after a sweep",
+			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",
 				UsedBytes: 48 << 30, FreeBytes: 2 << 30, FreedBytes: 1 << 30,
 				StopReason: "nothing left older than the minimum age", RefusedReads: []string{"pid 42"},

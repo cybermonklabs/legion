@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -664,7 +665,7 @@ func TestAWalkThatWasCutSaysSoWithWhatItDidNotReach(t *testing.T) {
 		t.Fatalf("the trimmer wrote %d lines of the walk, want one: %q", len(lines), f.linesWritten())
 	}
 	for _, want := range []string{"was cut by its budget or the container's stop before it reached every directory",
-		"measured 2 directories", fmt.Sprintf("left %d unmeasured", len(report.SizesMissing)), strconv.Quote(report.SizesMissing[0].Path)} {
+		"measured 2 sizes", fmt.Sprintf("left %d unmeasured", len(report.SizesMissing)), strconv.Quote(report.SizesMissing[0].Path)} {
 		if !strings.Contains(lines[0], want) {
 			t.Errorf("the walk's line does not say %q: %s", want, lines[0])
 		}
@@ -678,7 +679,9 @@ func TestAWalkThatWasCutSaysSoWithWhatItDidNotReach(t *testing.T) {
 // walk is refused: the report carries each refused read under this launcher's bound on a path,
 // and the log line names no more of them than a report carries sizes, saying how many it left
 // out. The names are the 255 bytes a directory component allows, so an unbounded line or path
-// is one a role sets the size of.
+// is one a role sets the size of. Each planted directory holds a 1 MiB file beside the one it is
+// refused, so the fifty sizes the walk keeps (walkResult.keep) are planted ones and not the
+// fixture's own few bytes.
 func TestDirectoriesReadInPartAreBoundedInTheReportAndTheLog(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("the test process is root, which reads a mode-000 directory: a refused read cannot be staged for it")
@@ -695,6 +698,7 @@ func TestDirectoriesReadInPartAreBoundedInTheReportAndTheLog(t *testing.T) {
 	locked := 0
 	for _, entry := range entries {
 		if len(entry.Name()) == 255 {
+			sizedFile(t, filepath.Join(scratch, entry.Name(), "bulk"), 1<<20, f.clock.at)
 			lockedUnder(t, filepath.Join(scratch, entry.Name(), refusedName), f.clock.at)
 			locked++
 		}
@@ -766,14 +770,19 @@ func sizedFile(t *testing.T, path string, size int64, at time.Time) {
 	}
 }
 
-// A report keeps the largest sizes the walk measured, in the order it measured them, and not the
-// first: the walk measures the scratch children before the go children, and a role can make any
-// number of directories under /legion/scratch, so fifty empty ones pushed the build cache out of
-// the report. The case stands fifty-five empty directories under scratch and a 5 MiB file under
-// go/build, and the report must carry go/build and forty-nine of the empty ones, those the walk
-// measured first, in walk order. The negative control is the cut as it stood at b7085e21, the
-// first fifty, which carried fifty empty directories and left go/build out.
-func TestTheReportKeepsTheLargestSizesInTheOrderTheWalkMeasuredThem(t *testing.T) {
+// The walk keeps the largest sizes it measured, in the order it measured them, and no more of
+// them than a report carries, counting the rest: the trimmer keeps a walk for the hour its
+// numbers are reported (trimmer.sizes), and a role can make any number of directories under
+// /legion/scratch, each a target, so a walk that kept every size held all of a role's for the
+// hour and sorted them all at every report of it. It keeps the largest and not the first: the
+// walk measures the scratch children before the go children, and fifty empty ones must not push
+// the build cache out of the report. The case stands fifty-five empty directories under scratch
+// and a 5 MiB file under go/build, and the walk the trimmer keeps must hold go/build and the
+// forty-nine empty ones it measured first, in walk order, and the report carry those and say six
+// were left out. The negative controls are the walk as it stood at 8a30be78, which kept all
+// fifty-six for the hour and left the cut to the report's bound, and the cut as it stood at
+// b7085e21, the first fifty, which carried fifty empty directories and left go/build out.
+func TestTheWalkKeepsTheLargestSizesInTheOrderItMeasuredThem(t *testing.T) {
 	const empty, build = 55, 5 << 20
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := t.TempDir()
@@ -782,27 +791,89 @@ func TestTheReportKeepsTheLargestSizesInTheOrderTheWalkMeasuredThem(t *testing.T
 	}
 	cache := filepath.Join(root, "go", "build")
 	sizedFile(t, filepath.Join(cache, "ab", "abcdef-a"), build, clock.at.Add(-2*time.Hour))
-	walk := walkOf(root, clock, &fakeTicks{}, measureTree).run(context.Background())
-	if len(walk.Sizes) != empty+1 {
-		t.Fatalf("the walk measured %d targets, want the %d empty directories and the build cache", len(walk.Sizes), empty+1)
-	}
+	tr := newTrimFixture(t, 0).trimmer()
+	tr.volumeRoot, tr.now = root, clock.now
 
-	report := newTrimFixture(t, 0).trimmer().bound(shimwire.LauncherVolumeReport{Trimmer: "trim-1", Episode: 1, Sizes: walk.Sizes})
+	report := tr.report(context.Background(), sweepOutcome{reason: "the sweep this walk's report goes with"})
 
-	if len(report.Sizes) != shimwire.VolumeReportSizes || report.SizesOmitted != empty+1-shimwire.VolumeReportSizes {
-		t.Fatalf("the report carries %d sizes and counts %d left out, want %d and %d", len(report.Sizes), report.SizesOmitted, shimwire.VolumeReportSizes, empty+1-shimwire.VolumeReportSizes)
-	}
 	var want []string
 	for at := range shimwire.VolumeReportSizes - 1 {
 		want = append(want, filepath.Join(root, "scratch", fmt.Sprintf("empty-%02d", at)))
 	}
 	want = append(want, cache)
-	if got := pathsOf(report.Sizes); !slices.Equal(got, want) {
-		t.Errorf("the report carries\n%v\nwant the build cache and the first %d empty directories, in walk order:\n%v", got, shimwire.VolumeReportSizes-1, want)
+	if got := pathsOf(tr.walk.Sizes); !slices.Equal(got, want) {
+		t.Errorf("the walk the trimmer keeps for the hour holds %d sizes:\n%v\nwant the build cache and the first %d empty directories, in walk order:\n%v",
+			len(got), got, shimwire.VolumeReportSizes-1, want)
+	}
+	if got := pathsOf(report.Sizes); !slices.Equal(got, want) || report.SizesOmitted != empty+1-shimwire.VolumeReportSizes {
+		t.Errorf("the report carries\n%v\nand counts %d left out, want\n%v\nand %d", got, report.SizesOmitted, want, empty+1-shimwire.VolumeReportSizes)
 	}
 	if last := report.Sizes[len(report.Sizes)-1]; last.Bytes != build {
 		t.Errorf("the report carries the build cache at %d bytes, want %d", last.Bytes, build)
 	}
+}
+
+// The size walk holds a batch of one level's names at a time and not the whole level, as the
+// guards' walk does (walkEntries): a role may make a directory of any number of names under
+// /legion/scratch, and the walk runs in PID 1 below every target. The case measures a target
+// whose one directory holds twenty thousand names of two hundred bytes, and reads the live heap
+// after a collection at every two thousandth entry, through the walk's own question of its
+// context before each entry it reads: it may rise by no more than a megabyte over the heap
+// before the walk. The negative control is the level read whole, as fs.ReadDir read it at
+// 8a30be78, which held every name's entry and lstat for as long as the walk was below that
+// level.
+func TestTheSizeWalkHoldsABatchOfALevelsNamesAndNotAllOfThem(t *testing.T) {
+	const names, sample, bound = 20000, 2000, 1 << 20
+	dir := t.TempDir()
+	wide := filepath.Join(dir, "target", "wide")
+	mkdirFixture(t, wide)
+	for at := range names {
+		if err := os.WriteFile(filepath.Join(wide, fmt.Sprintf("%05d", at)+strings.Repeat("n", 195)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held, err := openVolumeDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+
+	live := func() uint64 {
+		runtime.GC()
+		var stats runtime.MemStats
+		runtime.ReadMemStats(&stats)
+		return stats.HeapAlloc
+	}
+	before := live()
+	asked, peak := 0, before
+	ctx := askedContext{Context: context.Background(), asked: func() {
+		asked++
+		if asked%sample == 0 {
+			peak = max(peak, live())
+		}
+	}}
+	out := measureTree(ctx, held, "target", time.Now())
+	if out.unread != "" || out.refused != 0 || out.cut || out.size.Bytes != names {
+		t.Fatalf("the walk read %+v, want the %d bytes of the %d files whole", out, names, names)
+	}
+	if asked != names+1 {
+		t.Fatalf("the walk asked its context %d times, want once for the directory and once for each of its %d names", asked, names)
+	}
+	if rise := peak - before; rise > bound {
+		t.Errorf("the live heap rose %d bytes over the walk of a directory of %d names, want no more than %d: the walk held the level whole", rise, names, bound)
+	}
+}
+
+// askedContext is a context that calls asked whenever its Done is asked for, which the size walk
+// does before each entry it reads (measureUnder): a case's one hook inside a walk.
+type askedContext struct {
+	context.Context
+	asked func()
+}
+
+func (c askedContext) Done() <-chan struct{} {
+	c.asked()
+	return c.Context.Done()
 }
 
 // A regular file directly in an immediate child of the volume root that also holds directories

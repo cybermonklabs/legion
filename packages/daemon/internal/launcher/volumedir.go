@@ -148,14 +148,8 @@ func (d *dirHandle) Lstat(name string) (os.FileInfo, error) {
 // The entries come back in the order their names sort, which is what fs.ReadDir answers and
 // what os.ReadDir answered before the handles.
 func (d *dirHandle) ReadDir() ([]os.DirEntry, error) {
-	entries, err := d.readDir()
+	entries, err := fs.ReadDir(d.root.FS(), ".")
 	return entries, d.named(err, "")
-}
-
-// readDir is ReadDir with the error os.Root raised against the descriptor path, for a walk below
-// an entry or a target, which names it by no path of its own (within).
-func (d *dirHandle) readDir() ([]os.DirEntry, error) {
-	return fs.ReadDir(d.root.FS(), ".")
 }
 
 // named is err with the descriptor path os.Root raises it against replaced by the path this

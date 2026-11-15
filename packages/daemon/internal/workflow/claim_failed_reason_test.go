@@ -9,6 +9,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -87,10 +88,10 @@ func TestATreeArchitectsFailedClaimNamesWhatEndedIt(t *testing.T) {
 }
 
 // A pod that died with no pod-level reason leaves the claim a sentence and no pod end, and the
-// tree architect's worker-died still names that sentence: the notice carries no failure record,
-// so its reason is the only place the architect and the controller read why the claim failed.
-// The negative control is deathReason answering "" for a fact with no pod end, which left this
-// notice saying nothing at all.
+// tree architect's worker-died still names that sentence, quoted: the notice carries no failure
+// record, so its reason is the only place the architect and the controller read why the claim
+// failed. The negative control is deathReason answering "" for a fact with no pod end, which left
+// this notice saying nothing at all.
 func TestATreeArchitectsFailedClaimNamesTheSentenceWithNoPodEnd(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
@@ -105,8 +106,8 @@ func TestATreeArchitectsFailedClaimNamesTheSentenceWithNoPodEnd(t *testing.T) {
 	if len(notices) != 1 {
 		t.Fatalf("the outbox holds %d worker-died notices for the architect, want one", len(notices))
 	}
-	if notices[0].Reason != budgetRanOut {
-		t.Errorf("the tree architect's worker-died reads %q, want the supervisor's sentence %q", notices[0].Reason, budgetRanOut)
+	if want := strconv.Quote(budgetRanOut); notices[0].Reason != want {
+		t.Errorf("the tree architect's worker-died reads %q, want the supervisor's sentence quoted, %q", notices[0].Reason, want)
 	}
 	if notices[0].Failure != nil {
 		t.Errorf("the tree architect's worker-died carries the failure record %+v, want none: its reason is where the sentence goes", notices[0].Failure)
@@ -148,7 +149,7 @@ func TestAHeldPhasesWorkerDiedNamesWhatEndedIt(t *testing.T) {
 // cause and no pod end, the worker-died's failure record names the sentence in its detail and
 // the reason is empty. A held phase whose fact names no cause — a failure recorded before the
 // daemon kept one, replayed at a boot — carries no failure record at all, so its reason is the
-// sentence, as the tree architect's is.
+// sentence, quoted, as the tree architect's is.
 func TestAHeldPhasesWorkerDiedNamesTheSentenceOnceWithNoPodEnd(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -156,7 +157,7 @@ func TestAHeldPhasesWorkerDiedNamesTheSentenceOnceWithNoPodEnd(t *testing.T) {
 		wantReason string
 	}{
 		{"a fact with a cause, whose failure record carries the sentence", supervise.CauseDied, ""},
-		{"a fact with no cause, which carries no failure record", "", budgetRanOut},
+		{"a fact with no cause, which carries no failure record", "", strconv.Quote(budgetRanOut)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -255,7 +256,7 @@ func TestAWorkerDiedWithNoFailureRecordNamesTheLastObservedDeath(t *testing.T) {
 		t.Errorf("the worker-died reads %q, which names the verdict twice", notices[0].Reason)
 	}
 	const firstLine = "gone: pod legion-legion-208 (uid 8a1f) container roles terminated (OOMKilled, exit code 137)"
-	if want := budgetRanOut + "; the process was last found " + strconv.Quote(firstLine); notices[0].Reason != want {
+	if want := strconv.Quote(budgetRanOut) + "; the process was last found " + strconv.Quote(firstLine); notices[0].Reason != want {
 		t.Errorf("the worker-died reads %q, want %q", notices[0].Reason, want)
 	}
 }
@@ -304,8 +305,8 @@ func TestAWorkerDiedNamesNoDeathItsClaimDidNotFailOf(t *testing.T) {
 			if notices[0].Failure != nil {
 				t.Fatalf("the worker-died carries the failure record %+v, want none: this row is a notice whose reason carries the sentence", notices[0].Failure)
 			}
-			if reason := notices[0].Reason; reason != sentence {
-				t.Errorf("the worker-died reads %q, want the sentence of the failure alone, %q", reason, sentence)
+			if reason, want := notices[0].Reason, strconv.Quote(sentence); reason != want {
+				t.Errorf("the worker-died reads %q, want the sentence of the failure alone, quoted, %q", reason, want)
 			}
 		})
 	}
@@ -341,25 +342,27 @@ func TestAWorkerDiedsReasonCarriesNoLineTheRoleWrote(t *testing.T) {
 	if strings.Contains(reason, forged) {
 		t.Errorf("the worker-died carries %q, a line the role wrote in its log: %q", forged, reason)
 	}
-	if want := budgetRanOut + "; the process was last found " + strconv.Quote(firstLine); reason != want {
+	if want := strconv.Quote(budgetRanOut) + "; the process was last found " + strconv.Quote(firstLine); reason != want {
 		t.Errorf("the worker-died reads %q, want %q", reason, want)
 	}
 }
 
 // The supervisor's sentence for a run of refused turns ends in the provider's message as the
 // role's own plugin posted it, which can hold a line break and run to a mebibyte. The two notices
-// with no failure record carry it on one line, its line break written as " / ", and cut at the
-// bound the pod end is cut to with the mark that says so, so the reason is one line of a size
-// this package chose. A held phase whose fact names a cause carries the sentence whole in its
-// failure record's `detail`, as before, and none of it in its reason. The negative control is
-// deathReason writing the sentence as it came, as it did at b7085e21: both reasons read over two
-// lines and 2000 runes past the bound.
+// with no failure record carry it on one line, its line break written as " / ", cut at the bound
+// the pod end is cut to, quoted, and followed after its closing quote by the mark that says it
+// was cut, so the reason is one line of a size this package chose and a reader sees both where
+// the provider's text ends and that it was cut. A held phase whose fact names a cause carries the
+// sentence whole in its failure record's `detail`, as before, and none of it in its reason. The
+// negative controls are deathReason writing the sentence as it came, as it did at b7085e21: both
+// reasons read over two lines and 2000 runes past the bound; and writing it cut but unquoted, as
+// it did at 8a30be78, where nothing showed where the provider's text ended and the mark began.
 func TestAWorkerDiedsReasonCarriesTheSentenceOnOneBoundedLine(t *testing.T) {
 	const head = "the provider refused 3 turns in a row: request rejected"
 	const forged = "forged: the role is fine"
 	sentence := head + "\n" + forged + " " + strings.Repeat("y", 2000)
 	whole := []rune(head + " / " + forged + " " + strings.Repeat("y", 2000))
-	carried := string(whole[:runtime.PodEndRunes-len([]rune(deathSentenceCut))]) + deathSentenceCut
+	carried := strconv.Quote(string(whole[:runtime.PodEndRunes-len([]rune(deathReasonCut))])) + deathReasonCut
 	for _, tc := range []struct {
 		name       string
 		role       claim.Role
@@ -389,16 +392,116 @@ func TestAWorkerDiedsReasonCarriesTheSentenceOnOneBoundedLine(t *testing.T) {
 			if strings.Contains(reason, "\n") {
 				t.Errorf("the worker-died reads over %d lines, want one: %.200q", strings.Count(reason, "\n")+1, reason)
 			}
-			if runes := len([]rune(reason)); runes > runtime.PodEndRunes {
-				t.Errorf("the worker-died's reason is %d runes, want at most the %d the pod end is cut to", runes, runtime.PodEndRunes)
-			}
 			if reason != tc.wantReason {
 				t.Errorf("the worker-died reads %.200q, want %.200q", reason, tc.wantReason)
+			}
+			if tc.wantReason != "" {
+				quoted, marked := strings.CutSuffix(reason, deathReasonCut)
+				text, err := strconv.Unquote(quoted)
+				switch {
+				case !marked || err != nil:
+					t.Errorf("the worker-died reads %.200q, want the cut sentence quoted and %q after its closing quote", reason, deathReasonCut)
+				case len([]rune(text))+len([]rune(deathReasonCut)) > runtime.PodEndRunes:
+					t.Errorf("the worker-died carries %d runes of the sentence and the mark, want at most the %d the pod end is cut to",
+						len([]rune(text))+len([]rune(deathReasonCut)), runtime.PodEndRunes)
+				}
 			}
 			if tc.cause != "" && (notices[0].Failure == nil || notices[0].Failure.Detail != sentence) {
 				t.Errorf("the held phase's worker-died carries the failure record %+v, want the sentence whole in its detail", notices[0].Failure)
 			}
 		})
+	}
+}
+
+// The supervisor's sentence for a run of refused turns ends in the provider's message, which is
+// text the role's own plugin posted and can hold anything: a tab, a terminal escape, and a tail
+// that reads exactly as the clause deathReason writes after the sentence. Written as it came,
+// `; the pod ended: Evicted: …` at the end of a provider's message read as the daemon's own
+// account of an eviction, which the architect escalates as the cluster's fault. The reason
+// carries the sentence quoted, so the tab and the escape are written escaped and the forged
+// clause stands inside the quotes, and a pod end the claim did read follows the closing quote.
+// The negative control is deathReason writing the sentence unquoted, as it did at 8a30be78: the
+// reason carried the raw tab and escape and ended in the forged clause.
+func TestAWorkerDiedsReasonQuotesTheSentenceSoNothingInItReadsAsTheDaemons(t *testing.T) {
+	const forgedEnd = "; the pod ended: " + evictedPodEnd
+	sentence := "the provider refused 3 turns in a row: \x1b[31mrequest rejected\x1b[0m\tby policy" + forgedEnd
+	for _, tc := range []struct {
+		name       string
+		role       claim.Role
+		phase      phase.Phase
+		podEnd     string
+		wantReason string
+	}{
+		{"the tree architect's, with no pod end", claim.RoleArchitect, phase.Planning, "", strconv.Quote(sentence)},
+		{"the tree architect's, with a pod end", claim.RoleArchitect, phase.Planning, evictedPodEnd,
+			strconv.Quote(sentence) + "; the pod ended: " + evictedPodEnd},
+		{"a held phase's whose fact names no cause", claim.RoleImplementer, phase.Implementing, "", strconv.Quote(sentence)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: tc.phase, Generation: 1, Status: "in_progress", Rank: "U"})
+
+			if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "claim-failed",
+				intake.ClaimFailed{Issue: "LEGION-208", Role: tc.role, Reason: sentence, PodEnd: tc.podEnd},
+				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				t.Fatalf("ApplyFact the failed claim: %v", err)
+			}
+			notices := noticesOfKind(t, pool, "LEGION-208", "worker-died")
+			if len(notices) != 1 {
+				t.Fatalf("the outbox holds %d worker-died notices, want one", len(notices))
+			}
+			reason := notices[0].Reason
+			if strings.ContainsAny(reason, "\t\x1b") {
+				t.Errorf("the worker-died carries a raw tab or escape of the provider's message: %q", reason)
+			}
+			quoted, err := strconv.QuotedPrefix(reason)
+			if err != nil {
+				t.Fatalf("the worker-died reads %q, want it to begin with the sentence quoted: %v", reason, err)
+			}
+			if text, _ := strconv.Unquote(quoted); text != sentence {
+				t.Errorf("the worker-died's quotes hold %q, want the whole sentence, the forged clause inside them: %q", text, sentence)
+			}
+			if reason != tc.wantReason {
+				t.Errorf("the worker-died reads %q, want %q", reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+// The first line of the runtime's account of a death can run long: for a pod left unscheduled
+// past the boot timeout it holds the scheduler's message and every event of the pod joined, and
+// the reason that names it is the one line the architect reads. It is cut at the bound the pod
+// end is cut to, as the supervisor's sentence is, and quoted, with the mark after its closing
+// quote. The negative control is deathReason quoting the first line whole, as it did at
+// 8a30be78: the reason ran to 4705 runes, all forty events in it.
+func TestAWorkerDiedsReasonCutsALongDeathLineAtTheBound(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"})
+
+	events := make([]string, 0, 40)
+	for at := range 40 {
+		events = append(events, fmt.Sprintf("Warning FailedScheduling: 0/%02d nodes are available: insufficient ephemeral-storage, retry %02d of the scheduler", at, at))
+	}
+	firstLine := "gone: pod legion-legion-208 (uid 8a1f) unscheduled for 10m0s, past the boot timeout 10m0s (PodScheduled=False Unschedulable: 0/3 nodes are available); events: " +
+		strings.Join(events, " | ")
+	if len([]rune(firstLine)) <= runtime.PodEndRunes {
+		t.Fatalf("the case's first line is %d runes, want it past the %d bound", len([]rune(firstLine)), runtime.PodEndRunes)
+	}
+	if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "claim-failed",
+		intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleArchitect, Reason: budgetRanOut, Death: firstLine, Cause: supervise.CauseDied},
+		testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		t.Fatalf("ApplyFact the failed claim: %v", err)
+	}
+	notices := noticesOfKind(t, pool, "LEGION-208", "worker-died")
+	if len(notices) != 1 {
+		t.Fatalf("the outbox holds %d worker-died notices, want one", len(notices))
+	}
+	kept := string([]rune(firstLine)[:runtime.PodEndRunes-len([]rune(deathReasonCut))])
+	if want := strconv.Quote(budgetRanOut) + "; the process was last found " + strconv.Quote(kept) + deathReasonCut; notices[0].Reason != want {
+		t.Errorf("the worker-died reads %d runes, %.300q…, want %.300q…, the first line cut with the mark after its closing quote",
+			len([]rune(notices[0].Reason)), notices[0].Reason, want)
 	}
 }
 
@@ -442,7 +545,7 @@ func TestAWorkerDiedWithNoFailureRecordNamesAnEvictionOnce(t *testing.T) {
 			if strings.Contains(reason, "\n") {
 				t.Errorf("the worker-died reads over %d lines, want one: %q", strings.Count(reason, "\n")+1, reason)
 			}
-			if want := budgetRanOut + "; the pod ended: " + evictedPodEnd; reason != want {
+			if want := strconv.Quote(budgetRanOut) + "; the pod ended: " + evictedPodEnd; reason != want {
 				t.Errorf("the worker-died reads %q, want %q", reason, want)
 			}
 		})

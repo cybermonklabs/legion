@@ -3835,7 +3835,7 @@ func TestAReportThatReplacesAHeldOneCarriesItsFaultsAndRefusedReads(t *testing.T
 	if tr.held == nil || tr.held.StopReason != "B" {
 		t.Fatalf("the trimmer holds %+v after two failed sends, want report B in place of A", tr.held)
 	}
-	if f.logged("holding it for the next attempt") != 1 || f.logged("it replaces the held report, carrying that report's 1 recovered faults and 1 refused /proc reads") != 1 {
+	if f.logged("holding it for the next attempt") != 1 || f.logged("it replaces the held report, taking in that report's 1 recovered faults and 1 refused /proc reads with its own, each kept or counted under the report's bound") != 1 {
 		t.Errorf("the trimmer wrote %q, want A held once and B said to replace it with A's fault and refused read", f.linesWritten())
 	}
 	if flushed := f.logged("the held report could not be sent either"); flushed != 1 || f.logged("either (the bound connection is gone); holding it for the next attempt") != 0 {
@@ -3863,6 +3863,32 @@ func TestAReportThatReplacesAHeldOneCarriesItsFaultsAndRefusedReads(t *testing.T
 	}
 	if tr.held != nil {
 		t.Errorf("the trimmer still holds %+v after the connection took it", tr.held)
+	}
+}
+
+// A report that replaces a held one is bounded twice — where it is made, and again with the held
+// report's faults and refused reads in it — and the pod's log says once what it leaves out, with
+// the counts of the report as it is held: a person counting those lines counts reports. The case
+// makes two reports past the cap on sizes, A and B, whose sends both fail, so B replaces A, and
+// the log must hold one line of what each leaves out. The negative control is the line written
+// by the bound itself, as at 8a30be78, which wrote B's twice: three lines for two reports.
+func TestAReportThatReplacesAHeldOneSaysOnceWhatItLeavesOut(t *testing.T) {
+	f := newTrimFixture(t, 0)
+	tr := f.trimmer()
+	f.refuseSends(errors.New("the bound connection is gone"))
+	over := func(reason string) shimwire.LauncherVolumeReport {
+		return shimwire.LauncherVolumeReport{Trimmer: tr.id, Episode: 1, RaisedBy: shimwire.VolumeEpisodeFirst, StopReason: reason,
+			Sizes: make([]shimwire.LauncherVolumeSize, shimwire.VolumeReportSizes+2)}
+	}
+
+	tr.deliver(tr.bound(over("A")))
+	tr.deliver(tr.bound(over("B")))
+
+	if tr.held == nil || tr.held.StopReason != "B" || tr.held.SizesOmitted != 2 {
+		t.Fatalf("the trimmer holds %+v after two failed sends, want report B in place of A, two sizes left out", tr.held)
+	}
+	if said := f.logged("leaves out"); said != 2 {
+		t.Errorf("the trimmer wrote %d lines of what a report leaves out, want one for A and one for B: %q", said, f.linesWritten())
 	}
 }
 
@@ -3942,9 +3968,9 @@ func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t 
 
 	switch {
 	case len(report.Sizes) != shimwire.VolumeReportSizes:
-		t.Errorf("the report carries %d measured directories, want the %d this launcher bounds it to", len(report.Sizes), shimwire.VolumeReportSizes)
+		t.Errorf("the report carries %d sizes, want the %d this launcher bounds it to", len(report.Sizes), shimwire.VolumeReportSizes)
 	case len(report.Sizes)+report.SizesOmitted != walkedTargets:
-		t.Errorf("the report carries %d measured directories and says %d were left out, want the %d the walk measured",
+		t.Errorf("the report carries %d sizes and says %d were left out, want the %d the walk measured",
 			len(report.Sizes), report.SizesOmitted, walkedTargets)
 	case len(report.SizesMissing) != shimwire.VolumeReportSizesMissing:
 		t.Errorf("the report names %d unmeasured directories, want the %d this launcher bounds it to", len(report.SizesMissing), shimwire.VolumeReportSizesMissing)
