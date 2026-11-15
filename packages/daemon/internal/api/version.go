@@ -1858,7 +1858,7 @@ package api
 // that brought main in at 7baa398b, main declared 137, #4046's own, below 141, so the number
 // held.)
 //
-// 140: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
+// 148: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
 // the launcher wire and one member of `GET /legion/v1/state`. The daemon's answer to a
 // launcher's hello carries the settings the trimmer runs by, as one optional member of
 // `shimwire.LauncherHelloAck` (`volumeTrim`: the two marks, the minimum age and the interval,
@@ -1990,9 +1990,13 @@ package api
 // and 138 (#3712 and #3993), so 139 was the lowest number above main's 133 that no open head
 // declared. Read again immediately before the push, #4017 had moved to 138 and #3993 to 139,
 // so 140 was the lowest number above main's 133 that no open head declared. At the forward merge
-// of 2026-11-15 that brought in c69be928, main had moved to 137 (INFRA-3621, the entry above),
-// and the open heads above it declared 138 (#4017 and #4049), 139 (#2731 and #3993), 141
-// (#3575), 142 (#3712), 143 (#3730), 144 (#4021), 145 (#3659) and 146 (#3711), so 140 is still
-// the lowest number above main's 137 that no open head declares. It is held under the same rule:
-// move it only when main's own number or another open head's reaches 140.)
-const DaemonAPIVersion = 142
+// of 2026-11-15 that brought in c69be928, main had moved to 137 (INFRA-3621's entry), and the
+// open heads above it declared 138 (#4017 and #4049), 139 (#2731 and #3993), 141 (#3575), 142
+// (#3712), 143 (#3730), 144 (#4021), 145 (#3659) and 146 (#3711), so 140 was still the lowest
+// number above main's 137 that no open head declared. At the forward merge of round 25, which
+// brought in 7ed02373, main had moved to 141 (#3575, INFRA-2566's entry above), above 140, and
+// the open heads above main's declared 142 (#3712), 143 (#3730), 144 (#4021), 145 (#3659), 146
+// (#3711) and 147 (#4017), so 148 is the lowest number above main's 141 that no open head
+// declares. It is held under the same rule: move it only when main's own number or another open
+// head's reaches 148.)
+const DaemonAPIVersion = 148
