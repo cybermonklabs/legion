@@ -218,7 +218,7 @@ func (n TreeNews) Member(issue string) (MemberNews, bool) {
 // says why: the root architect's summary, which names it as the member's state (the daemon's
 // untoldReason), and the opened message, which adds that nothing the member's issue holds changed
 // only for a member whose holder took every approved version that concerns it (workflow's
-// openingDelivery). So a new phase with no holder, or a change to StepConcerns, is made here once.
+// openingDelivery). So a new phase with no holder, or a change to stepConcerns, is made here once.
 type UntoldReason string
 
 const (
@@ -227,7 +227,7 @@ const (
 	UntoldTaken UntoldReason = "taken"
 	// UntoldNotConcerned is a member whose holder took every approved version that concerns it,
 	// and some it has not taken are of a step that does not: criteria, whose checks are the tree
-	// root's alone (StepConcerns).
+	// root's alone (stepConcerns).
 	UntoldNotConcerned UntoldReason = "not-concerned"
 	// UntoldMerged is a member whose pull request has merged, in whatever phase it stands, and
 	// merged work never moves back.
@@ -292,12 +292,12 @@ func (i NewsItem) Question() DesignHistoryQuestion {
 	return DesignHistoryQuestion{ArtifactID: i.ArtifactID, To: i.To}
 }
 
-// StepConcerns says whether step concerns issue, a member of tree: spec and decisions concern
+// stepConcerns says whether step concerns issue, a member of tree: spec and decisions concern
 // every member, and criteria the tree root alone, since its checks are the root's to prove. It is
 // the one statement of that rule, read by what a member is owed and by why it is owed nothing
 // (OwedNews, UntoldNotConcerned), which the opened message's clause and the root architect's
 // summary read in turn, so a holder is never told that nothing changed while it is owed news.
-func StepConcerns(step DesignStep, issue, tree string) bool {
+func stepConcerns(step DesignStep, issue, tree string) bool {
 	return step != DesignStepCriteria || claim.IsTreeRoot(issue, tree)
 }
 
@@ -310,7 +310,7 @@ func StepConcerns(step DesignStep, issue, tree string) bool {
 //     facts of one answer tells nothing and the second tells once;
 //   - the step's approved version is above the version the member's holder took, or the record
 //     does not know that version (DesignTold.Took);
-//   - the step concerns the member (StepConcerns): spec and decisions concern every member, and
+//   - the step concerns the member (stepConcerns): spec and decisions concern every member, and
 //     criteria the tree root alone, since its checks are the root's to prove;
 //   - the member is in the workflow (InWorkflow), its tree does not linger (Issue.Lingers on the
 //     tree's root, as TreeLingers reads it), and its phase has a holder (phase.RoleFor): not
@@ -363,10 +363,12 @@ func OwedNews(facts NewsFacts) TreeNews {
 	var news TreeNews
 	for _, member := range facts.Members {
 		untaken := owedItems(steps, facts.Gates, holders[member.Key])
+		// DeleteFunc rewrites untaken's elements in place, so how many there were is read first.
+		owedAll := len(untaken)
 		items := slices.DeleteFunc(untaken, func(item NewsItem) bool {
-			return !StepConcerns(item.Step, member.Key, member.Tree)
+			return !stepConcerns(item.Step, member.Key, member.Tree)
 		})
-		other := len(items) < len(untaken)
+		other := len(items) < owedAll
 		if reason := untold(member, facts.Merged[member.Key], heldBack, len(items) > 0, other); reason != "" {
 			if news.Untold == nil {
 				news.Untold = map[string]UntoldReason{}
@@ -414,7 +416,7 @@ func untold(member Issue, merged, heldBack, owes, other bool) UntoldReason {
 // owedItems is each of steps whose approved version in gates is news to the audience whose row is
 // told: above the version it took, or a version it took that the record does not know. A step the
 // gate holds no approval of names nothing. Which of them concern a member is its caller's to weigh
-// (StepConcerns); every one concerns the root architect.
+// (stepConcerns); every one concerns the root architect.
 func owedItems(steps []DesignStep, gates map[DesignStep]DesignGate, told DesignTold) []NewsItem {
 	var items []NewsItem
 	for _, step := range steps {

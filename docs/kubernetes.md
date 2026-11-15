@@ -1965,18 +1965,20 @@ This release's one-time start of the mergers that the `awaiting_merge` cutover l
 #### Rolling back the release that tells a holder of an approved new version
 
 This release's migration `20261114082752_design_news` adds the tables `design_news_told`, `design_changes` and `design_history_unread`, the column `pending_task_deliveries.design_news`, the function `design_news_raised`, and the outbox kind `design_changes`.
-The release before this one names none of the three tables and not the new column in any statement, and the kind list it set is a subset of this one, so the schema needs no restore.
+No statement of the release before this one names the three tables or the new column, and the kind list it set is a subset of this one, so the schema needs no restore.
 A `design_changes` row that this release queued waits in the outbox under the earlier daemon, which runs no lane of that kind, and it runs once this release is back.
 
-**Three statements must run before the earlier image is pinned.**
+**Four statements must run before the earlier image is pinned.**
 The earlier release decodes each outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields` in `record/outbox.go`), and it does not know two members that this release adds to a payload.
 It refuses on every attempt a `supervise` row that carries `news`, which is a news-only start.
 Such a start waits while its claim works a turn, and a merger's start waits while its design gate is closed.
 It also refuses on every attempt a `design_gates_publish` row that carries `holds`, which is every such row this release queued.
-Its `RoleRuns` decodes each supervise row of the issues it reads, so each admission pass that reads such an issue fails too.
+Its `RoleRuns` decodes each queued supervise row of the role and generation it reads, so each admission pass that reads that role's run fails too.
 Its `pending_task_deliveries` upsert names only its own columns, and its `on conflict ... do update` leaves `design_news` as this release wrote it.
 So a delivery that it writes over keeps the news of the task it replaced, and after a roll forward this release would raise that news in `design_news_told` at that delivery's confirmation.
-Stop this release's daemon, run these three statements, and then start the release before it:
+This release marks a pending task that it queued for news alone only inside `design_news`, as its `news_only` member, and the earlier release reads no such mark.
+So the earlier release reads such a task as its claim's phase task.
+Stop this release's daemon, run these four statements, and then start the release before it:
 
 ```sql
 delete from outbox where kind = 'supervise' and payload ? 'news';
@@ -1984,15 +1986,19 @@ update outbox set payload = jsonb_set(payload, '{gates}',
     (select coalesce(jsonb_agg(gate - 'holds' order by position), '[]'::jsonb)
       from jsonb_array_elements(payload -> 'gates') with ordinality as entry (gate, position)))
   where kind = 'design_gates_publish' and jsonb_typeof(payload -> 'gates') = 'array';
+delete from pending_task_deliveries where (design_news ->> 'news_only')::boolean;
 update pending_task_deliveries set design_news = null where design_news is not null;
 ```
 
 The first statement deletes each news-only start.
-The news that such a start carries stays owed in `design_news_told`, so this release sends it again after the roll forward.
+The news that such a start would tell stays owed in `design_news_told`, so this release sends it again after the roll forward.
 The second statement takes `holds` out of each entry of a design-gates publish, and it leaves the step and the document, which the release before sends too.
-The third statement takes the news off each task delivery that is still pending.
+The third statement deletes each pending task that was queued for news alone.
+Such a task has no entry and no kept decisions, and its claim refers to it by no column, so the claim then holds no pending task, as it does once a task it worked is retired.
+The earlier release then gives that claim its phase task where one is owed, and never takes the news task for it.
+A turn that took the task already raised its news in `design_news_told`, and an untaken task's news stays owed there, since only a confirmation raises it, so this release sends that news again after the roll forward.
+The fourth statement takes the news off each task delivery that is still pending, which is now a phase task.
 The task's text still holds that news, and the confirmation of a delivery that carries no news raises nothing, so this release tells that news again after the roll forward.
-These statements are also in the comment of `store/migrations/20261114082752_design_news.up.sql`.
 
 **Every daemon sharing the database moves together.**
 Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `outbox` and `pending_task_deliveries` are one table each for all of them, so the statements act on the rows of every project.

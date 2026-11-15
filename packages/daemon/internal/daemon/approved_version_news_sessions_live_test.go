@@ -158,11 +158,12 @@ const (
 	// sessionsPassed is a run whose assertion held.
 	sessionsPassed sessionsOutcome = "PASS"
 	// sessionsFailed is a run whose assertion did not hold: the sessions did not do what the step
-	// asks of the arm's prompts.
+	// asks of the arm's prompts. An architect that did not write the version the operator's task
+	// asks for is such a run, since it ran on its arm's own prompts.
 	sessionsFailed sessionsOutcome = "FAIL"
-	// sessionsSetup is a run that stopped before its assertion, on what the step needs first: a
-	// holder that did not end its start turn in the run's bound, an architect that did not write
-	// the version the operator's task asks for, or a reviewer the daemon never gave its news.
+	// sessionsSetup is a run that stopped before its assertion, on what the step needs first and
+	// both arms share: a holder that did not end its start turn in the run's bound, or a reviewer
+	// the daemon never gave its news.
 	sessionsSetup sessionsOutcome = "SETUP"
 	// sessionsHarness is a run the harness failed, which ends the proof in either arm.
 	sessionsHarness sessionsOutcome = "HARNESS"
@@ -181,8 +182,8 @@ const sessionsSettle = 20 * time.Second
 // message one of them sent to show in its recipient's transcript.
 const sessionsGrace = 30 * time.Second
 
-// The words each document is written with and changed to, and the id of the one check of A4's
-// child.
+// The words each document is written with and changed to. The id of the one check of A4's child,
+// sessionsCheckID, is beside the reads of a transcript (approved_version_news_transcript_test.go).
 const (
 	sessionsDesign      = "The reader takes one page at a time."
 	sessionsDesignAgain = "The reader takes two pages at a time, and keeps the second for the next read."
@@ -190,17 +191,6 @@ const (
 	sessionsLaterAgain  = "A later issue, not this one, adds an export of the pages to CSV and to JSON."
 	sessionsCheck       = "The read answers 200."
 	sessionsCheckAgain  = "The read answers 200 with the page it read."
-	sessionsCheckID     = "c-reader-pages"
-)
-
-// The words a message must name of each step's change, any one of them, beside version 2.
-var (
-	// sessionsChecksChange is A4's: the changed check, or its new words.
-	sessionsChecksChange = []string{sessionsCheckID, "with the page it read"}
-	// sessionsSpecChange is the off step's: the new words, or the changed section's heading as the
-	// news names it (`"Design"`) or as the spec writes it (`## Design`). The heading's word alone
-	// names nothing, since "the approved design" holds it too.
-	sessionsSpecChange = []string{`"Design"`, "## Design", "two pages"}
 )
 
 // The sentence of each arm's prompt the run reads back from a pane's own command line: the head's
@@ -211,9 +201,6 @@ const (
 	sessionsArchitectMark = "Send that news yourself once you write such a version"
 	sessionsWorkerMark    = "A news task tells you that a person approved a new version of your tree's design."
 )
-
-// sessionsVersion2 is a text naming version 2 of a document as a word of its own.
-var sessionsVersion2 = regexp.MustCompile(`(?i)\b(version\s*2|v2)\b`)
 
 // sessionsLive is what every run of part two shares: the broker, the listener and Dispatch, the
 // `legion` and the Oh My Pi profile every pane runs, the model's way in, and the base prompts.
@@ -1018,23 +1005,6 @@ func (r *sessionsRun) until(until time.Time, ready func() bool) bool {
 	}
 }
 
-// sessionsTranscript is what one session's own transcript holds, as this proof reads it: the text
-// of each Envoy message card, of each prompt it was given, and each tool call its model made.
-type sessionsTranscript struct {
-	envoy []string
-	user  []string
-	calls []sessionsCall
-}
-
-// sessionsCall is one tool call: the tool, its arguments, and the call as its transcript writes it.
-// A call through the tool's xd:// device is the tool's own; eval code is the tool `eval`, whose
-// code is its text.
-type sessionsCall struct {
-	name string
-	args map[string]any
-	text string
-}
-
 // transcript reads the session file token's pane registered, which is empty until the session
 // writes it.
 func (r *sessionsRun) transcript(member *sessionsMember, role claim.Role) sessionsTranscript {
@@ -1050,89 +1020,6 @@ func (r *sessionsRun) transcript(member *sessionsMember, role claim.Role) sessio
 	return sessionsReadTranscript(body)
 }
 
-// sessionsReadTranscript is what body, a session file of Oh My Pi's, holds as this proof reads it:
-// one JSON entry a line, and a line that is no entry skipped.
-func sessionsReadTranscript(body []byte) sessionsTranscript {
-	var read sessionsTranscript
-	for _, line := range bytes.Split(body, []byte("\n")) {
-		var entry struct {
-			Type       string          `json:"type"`
-			CustomType string          `json:"customType"`
-			Content    json.RawMessage `json:"content"`
-			Message    *struct {
-				Role    string          `json:"role"`
-				Content json.RawMessage `json:"content"`
-			} `json:"message"`
-		}
-		if json.Unmarshal(line, &entry) != nil {
-			continue
-		}
-		switch {
-		case entry.Type == "custom_message" && entry.CustomType == "envoy-message":
-			read.envoy = append(read.envoy, sessionsText(entry.Content))
-		case entry.Type == "message" && entry.Message != nil && entry.Message.Role == "user":
-			read.user = append(read.user, sessionsText(entry.Message.Content))
-		case entry.Type == "message" && entry.Message != nil && entry.Message.Role == "assistant":
-			var parts []struct {
-				Type      string          `json:"type"`
-				Name      string          `json:"name"`
-				Arguments json.RawMessage `json:"arguments"`
-			}
-			_ = json.Unmarshal(entry.Message.Content, &parts)
-			for _, part := range parts {
-				if part.Type == "toolCall" {
-					read.calls = append(read.calls, sessionsToolCall(part.Name, part.Arguments))
-				}
-			}
-		}
-	}
-	return read
-}
-
-// sessionsText is a message's content as text: the string itself, or its text parts joined.
-func sessionsText(content json.RawMessage) string {
-	var text string
-	if json.Unmarshal(content, &text) == nil {
-		return text
-	}
-	var parts []struct {
-		Text string `json:"text"`
-	}
-	_ = json.Unmarshal(content, &parts)
-	said := make([]string, 0, len(parts))
-	for _, part := range parts {
-		said = append(said, part.Text)
-	}
-	return strings.Join(said, "\n")
-}
-
-// sessionsToolCall is one call as this proof reads it, a device write read as its tool's call.
-func sessionsToolCall(name string, raw json.RawMessage) sessionsCall {
-	var args map[string]any
-	_ = json.Unmarshal(raw, &args)
-	if path, _ := args["path"].(string); name == "write" && strings.HasPrefix(strings.TrimSpace(path), "xd://") {
-		content, _ := args["content"].(string)
-		var inner map[string]any
-		_ = json.Unmarshal([]byte(content), &inner)
-		return sessionsCall{name: strings.TrimPrefix(strings.TrimSpace(path), "xd://"), args: inner, text: content}
-	}
-	if code, _ := args["code"].(string); name == "eval" {
-		return sessionsCall{name: name, args: args, text: code}
-	}
-	return sessionsCall{name: name, args: args, text: string(raw)}
-}
-
-// calling is every call of tool, by itself, its device, or eval code that names it.
-func (read sessionsTranscript) calling(tool string) []sessionsCall {
-	var found []sessionsCall
-	for _, call := range read.calls {
-		if call.name == tool || (call.name == "eval" && strings.Contains(call.text, tool)) {
-			found = append(found, call)
-		}
-	}
-	return found
-}
-
 // bash is every bash command whose text holds words.
 func (read sessionsTranscript) bash(words string) []sessionsCall {
 	var found []sessionsCall
@@ -1142,52 +1029,6 @@ func (read sessionsTranscript) bash(words string) []sessionsCall {
 		}
 	}
 	return found
-}
-
-// toldOf is the first Envoy message card that names version 2 and any of change, and "" when none
-// does. A card says nothing of who sent it or how: publishedTo reads that from the sender's own
-// transcript.
-func (read sessionsTranscript) toldOf(change ...string) string {
-	for _, card := range read.envoy {
-		if sessionsNamesChange(card, change...) {
-			return card
-		}
-	}
-	return ""
-}
-
-// publishedTo is the first envoy_publish call to topic whose message names version 2 and any of
-// change, and false when none does. A call of the tool or of its xd:// device is read by its
-// arguments, `topic` and `message`; eval code that calls it is read whole, so its code must hold
-// the topic and the words. A message sent another way, such as envoy_send to a session or a
-// Dispatch comment, is not a publish to the holder's role topic, whatever card it left.
-func (read sessionsTranscript) publishedTo(topic string, change ...string) (sessionsCall, bool) {
-	for _, call := range read.calling("envoy_publish") {
-		to, _ := call.args["topic"].(string)
-		message, _ := call.args["message"].(string)
-		if call.name == "eval" && strings.Contains(call.text, topic) {
-			to, message = topic, call.text
-		}
-		if strings.TrimSpace(to) == topic && sessionsNamesChange(message, change...) {
-			return call, true
-		}
-	}
-	return sessionsCall{}, false
-}
-
-// sessionsNamesChange says whether text names version 2 and any of change, the words of the change
-// in any case.
-func sessionsNamesChange(text string, change ...string) bool {
-	if !sessionsVersion2.MatchString(text) {
-		return false
-	}
-	lower := strings.ToLower(text)
-	for _, words := range change {
-		if strings.Contains(lower, strings.ToLower(words)) {
-			return true
-		}
-	}
-	return false
 }
 
 // sessionsExcerpt is text as evidence prints it: on one line, cut at 600 bytes.
@@ -1412,7 +1253,7 @@ func (r *sessionsRun) a4() (sessionsOutcome, string) {
 	r.printCalls(root, claim.RoleArchitect, architect.calling("envoy_publish"), "called")
 	written, text := r.version2(child.verification)
 	if !written || !strings.Contains(text, sessionsCheckAgain) {
-		return sessionsSetup, fmt.Sprintf("Dispatch holds no version 2 of %s's Verification document with the new words: the architect did not make the edit the operator's task asks for", child.key)
+		return sessionsFailed, fmt.Sprintf("Dispatch holds no version 2 of %s's Verification document with the new words: the architect did not make the edit the operator's task asks for", child.key)
 	}
 	r.evidence("version 2 of %s's Verification document %s holds %q", child.key, child.verification, sessionsCheckAgain)
 	var why []string
@@ -1489,7 +1330,7 @@ func (r *sessionsRun) off() (sessionsOutcome, string) {
 	r.printCalls(root, claim.RoleArchitect, architect.bash("dispatch "), "ran")
 	r.printCalls(root, claim.RoleArchitect, architect.calling("envoy_publish"), "called")
 	if written, text := r.version2(root.spec); !written || !strings.Contains(text, "two pages") {
-		return sessionsSetup, fmt.Sprintf("Dispatch holds no version 2 of %s's spec with the new words: the architect did not make the edit the operator's task asks for", root.key)
+		return sessionsFailed, fmt.Sprintf("Dispatch holds no version 2 of %s's spec with the new words: the architect did not make the edit the operator's task asks for", root.key)
 	}
 	r.evidence("version 2 of %s's spec %s holds the new Design sentence", root.key, root.spec)
 	var why []string

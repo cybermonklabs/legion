@@ -76,34 +76,13 @@
 -- records this version without it, and it too is a test's own, to make again.
 --
 -- Rolling the image back to the release before this one needs no restore of the schema, but it
--- needs three statements first. That release names none of the three tables nor the new column in
--- any statement, and the kind list it set is a subset of this one, so every row it writes is still
--- taken. A design_changes row this release queued sits in the outbox unread under that daemon,
--- which runs no lane of that kind, and runs once this release is back. What it does not take is a
--- member this release added to an outbox payload. It decodes each payload strictly
--- (record.DecodeOutboxPayload, DisallowUnknownFields), so it refuses on every attempt a supervise
--- row carrying `news`, a news-only start, which waits while its claim works a turn and a merger's
--- waits while its gate is closed, and a design_gates_publish row carrying `holds`, which is every
--- one this release queued. Its RoleRuns decodes each supervise row of the issues it reads, so each
--- admission pass that reads such an issue fails too. And its pending_task_deliveries upsert names
--- its own columns, and its `on conflict ... do update` leaves design_news as this release wrote it,
--- so a delivery it writes over keeps the news of the task it replaced, which this release would
--- raise at that delivery's confirmation after a roll forward. So stop this release's daemon, run
--- these three statements, and then start the release before it:
---
---   delete from outbox where kind = 'supervise' and payload ? 'news';
---   update outbox set payload = jsonb_set(payload, '{gates}',
---       (select coalesce(jsonb_agg(gate - 'holds' order by position), '[]'::jsonb)
---         from jsonb_array_elements(payload -> 'gates') with ordinality as entry (gate, position)))
---     where kind = 'design_gates_publish' and jsonb_typeof(payload -> 'gates') = 'array';
---   update pending_task_deliveries set design_news = null where design_news is not null;
---
--- The first deletes each news-only start. The news it would carry stays owed in design_news_told,
--- so this release sends it again after the roll forward. The second takes `holds` out of each
--- entry of a design-gates publish, and leaves the step and the document the release before sends.
--- The third detaches the news from each task still pending. The task's text still says it, and a
--- confirmation of a delivery that carries no news raises nothing, so this release tells that news
--- again after the roll forward.
+-- needs four statements first, run with this release's daemon stopped: that release refuses an
+-- outbox payload member it does not know, keeps this release's news on a delivery it writes over,
+-- and reads a task queued for news alone as its claim's phase task. The statements, and why each
+-- is needed, are in docs/kubernetes.md under "Rolling back the release that tells a holder of an
+-- approved new version". The outbox and pending_task_deliveries hold the rows of every project
+-- that shares the database, so every daemon of one database moves to this release, and back,
+-- together.
 --
 -- There is no down file: migrations here are forward-only.
 create table design_news_told (

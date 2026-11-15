@@ -17,6 +17,23 @@ export function scriptFunctions(path: string): (name: string) => string {
   };
 }
 
+/**
+ * Reads the shell script at `path` once and returns `assignment`, which gives the assignment of
+ * the variable `name` exactly as the script writes it at the start of a line: `name='…'` through
+ * the first line that ends in a quote when the value is single-quoted, else `name=…` to the end of
+ * its line. `assignment` throws, naming the script by its path under scripts/e2e, when the script
+ * assigns no such variable.
+ */
+export function scriptAssignments(path: string): (name: string) => string {
+  const script = readFileSync(path, "utf8");
+  const shown = relative(dirname(import.meta.dir), path);
+  return (name) => {
+    const found = new RegExp(`^${name}=(?:'[\\s\\S]*?'|.*)$`, "m").exec(script);
+    if (found === null) throw new Error(`${shown} assigns no ${name}`);
+    return found[0];
+  };
+}
+
 // Every function a script defines at the start of a line, one-line definitions included.
 const definition = /^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm;
 // A library of scripts/e2e/lib a script sources, as every stage script and library writes it.

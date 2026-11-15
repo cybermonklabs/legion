@@ -22,7 +22,7 @@ import (
 //   - an architect that holds nothing still to take owes nothing of the work it was given (owed,
 //     the root's wait on a person).
 //
-// A start of the phase that carries its task is counted, for each, as it always was.
+// A start of the phase that carries its task is counted, for each.
 func TestAStartQueuedForNewsAloneIsNoStartOfItsPhase(t *testing.T) {
 	silent := aSilentImplementer()
 	newsOnly := record.QueuedSupervise{ID: 9, Request: record.SuperviseRequest{Op: "start", Tree: silent.root.Key,

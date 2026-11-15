@@ -391,6 +391,12 @@ func noRoute(refusal *Error) bool {
 	return refusal.Status == http.StatusNotFound && refusal.Code == "NOT_FOUND" && strings.HasPrefix(refusal.Message, "no route for ")
 }
 
+// artifactNotFound says whether refusal is Dispatch answering that it holds no document of the id
+// a read of one document names: 404 under the code ArtifactNotFound (ErrDocumentNotFound).
+func artifactNotFound(refusal *Error) bool {
+	return refusal.Status == http.StatusNotFound && refusal.Code == ArtifactNotFound
+}
+
 // Handoff is one phase handoff record Dispatch keeps on an issue, as a phase completion names it:
 // the issue carrying it, its phase word (plan, implement, test or review; phase.Handoff), its
 // version among that phase's records, and the actor that wrote it. The record's text is not read

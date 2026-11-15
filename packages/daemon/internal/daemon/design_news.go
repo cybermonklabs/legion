@@ -489,13 +489,20 @@ type newsClaims struct {
 func newNewsClaims(root record.Issue, members []record.Issue) *newsClaims {
 	claims := &newsClaims{root: root}
 	claims.project, _ = claim.ProjectToken(root.Project)
-	if members != nil {
-		claims.members = make(map[string]record.Issue, len(members))
-		for _, member := range members {
-			claims.members[member.Key] = member
-		}
-	}
+	claims.seedMembers(members)
 	return claims
+}
+
+// seedMembers gives c the tree's issues, members, as its caller read them, where c holds none
+// yet, so holderOf reads them no second time. A nil members seeds nothing.
+func (c *newsClaims) seedMembers(members []record.Issue) {
+	if c.members != nil || members == nil {
+		return
+	}
+	c.members = make(map[string]record.Issue, len(members))
+	for _, member := range members {
+		c.members[member.Key] = member
+	}
 }
 
 // holderOf is the one answer to which claim holds member's phase now, and whether one does: for a
@@ -585,27 +592,30 @@ type owedHolder struct {
 	run   record.RoleRun
 }
 
-// readOwedHolders is the one read of who is told what owed says (record.OwedNews over the tree
-// claims names): the holder of each owed member's row (newsClaims.holderOf), and of the tree root's
-// architect row while that row is owed (newsClaims.rootArchitect), each with its entry and run, by
-// told row. A row whose holder cannot be named is absent. The reconcile queues each news-only start
-// from it (settleNews), and the root architect's summary says from it how each member is told
+// readOwedHolders is the one read of who is told each told row of keys, rows owed news: the holder
+// of a member's holder row (newsClaims.holderOf), and of the tree root's architect row
+// (newsClaims.rootArchitect), each with its entry and run, by told row. A row whose holder cannot
+// be named is absent. The reconcile asks it of the rows it sends news to (settleNews), and the root
+// architect's summary of the holder row of each member owed news, to say how each is told
 // (readMemberClaims). claims was built over the tree's members, as owed was read.
-func readOwedHolders(ctx context.Context, tx pgx.Tx, records record.Store, claims *newsClaims, owed record.TreeNews) (map[toldKey]owedHolder, error) {
-	holders := make(map[toldKey]owedHolder, len(owed.Members)+1)
-	for _, news := range owed.Members {
-		holder, held, err := claims.holderOf(ctx, tx, records, claims.members[news.Issue])
+func readOwedHolders(ctx context.Context, tx pgx.Tx, records record.Store, claims *newsClaims, keys []toldKey) (map[toldKey]owedHolder, error) {
+	holders := make(map[toldKey]owedHolder, len(keys))
+	for _, key := range keys {
+		if key.audience == record.AudienceArchitect {
+			if holder, held := claims.rootArchitect(); held {
+				holders[key] = owedHolder{newsHolder: holder}
+			}
+			continue
+		}
+		holder, held, err := claims.holderOf(ctx, tx, records, claims.members[key.issue])
 		if err != nil {
 			return nil, err
 		}
 		if held {
-			holders[toldKey{news.Issue, record.AudienceHolder}] = owedHolder{newsHolder: holder}
+			holders[key] = owedHolder{newsHolder: holder}
 		}
 	}
-	if holder, held := claims.rootArchitect(); held && len(owed.Architect) > 0 {
-		holders[toldKey{claims.root.Key, record.AudienceArchitect}] = owedHolder{newsHolder: holder}
-	}
-	keys := make([]record.RoleRunKey, 0, len(holders))
+	runKeys := make([]record.RoleRunKey, 0, len(holders))
 	for key, holder := range holders {
 		if holder.role != claim.RoleArchitect {
 			rows, err := records.Phases(ctx, tx, holder.issue.Key)
@@ -615,9 +625,9 @@ func readOwedHolders(ctx context.Context, tx pgx.Tx, records record.Store, claim
 			holder.entry = record.PhaseRowOf(rows, holder.role).Entry
 			holders[key] = holder
 		}
-		keys = append(keys, record.RoleRunKey{Token: holder.token, Issue: holder.issue.Key, Role: holder.role, Generation: holder.issue.Generation})
+		runKeys = append(runKeys, record.RoleRunKey{Token: holder.token, Issue: holder.issue.Key, Role: holder.role, Generation: holder.issue.Generation})
 	}
-	runs, err := records.RoleRuns(ctx, tx, keys)
+	runs, err := records.RoleRuns(ctx, tx, runKeys)
 	if err != nil {
 		return nil, err
 	}
@@ -677,24 +687,9 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 		if err != nil {
 			return err
 		}
-		holders, err := readOwedHolders(ctx, tx, r.records, newNewsClaims(*root, facts.Members), owed)
-		if err != nil {
-			return err
-		}
-		var starts []owedHolder
-		owners := map[claim.Token]owedHolder{}
-		send := func(key toldKey) {
-			holder, held := holders[key]
-			switch {
-			case !held:
-				r.log.Warn("outbox design_changes cannot name the claim that holds a told row owed news; it is told at its next start",
-					"row", row.ID, "issue", key.issue, "audience", key.audience)
-			case holder.role == claim.RoleArchitect:
-				owners[holder.token] = holder
-			default:
-				starts = append(starts, holder)
-			}
-		}
+		// sendTo is each told row whose news goes by a news-only start, in the order the rows are
+		// settled. A row raised or left for later queues no start, so its holder is never read.
+		var sendTo []toldKey
 		for _, news := range owed.Members {
 			settlement, versions := settlementOf(news.Items, recorded, record.ToldRow(facts.Told, news.Issue, record.AudienceHolder).OpeningOwed)
 			switch settlement {
@@ -707,7 +702,7 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 				raised++
 				continue
 			}
-			send(toldKey{news.Issue, record.AudienceHolder})
+			sendTo = append(sendTo, toldKey{news.Issue, record.AudienceHolder})
 		}
 		if len(owed.Architect) > 0 {
 			settlement, versions := settlementOf(owed.Architect, recorded, record.ToldRow(facts.Told, root.Key, record.AudienceArchitect).OpeningOwed)
@@ -718,7 +713,25 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 				}
 				raised++
 			case settleSend:
-				send(toldKey{root.Key, record.AudienceArchitect})
+				sendTo = append(sendTo, toldKey{root.Key, record.AudienceArchitect})
+			}
+		}
+		holders, err := readOwedHolders(ctx, tx, r.records, newNewsClaims(*root, facts.Members), sendTo)
+		if err != nil {
+			return err
+		}
+		var starts []owedHolder
+		owners := map[claim.Token]owedHolder{}
+		for _, key := range sendTo {
+			holder, held := holders[key]
+			switch {
+			case !held:
+				r.log.Warn("outbox design_changes cannot name the claim that holds a told row owed news; it is told at its next start",
+					"row", row.ID, "issue", key.issue, "audience", key.audience)
+			case holder.role == claim.RoleArchitect:
+				owners[holder.token] = holder
+			default:
+				starts = append(starts, holder)
 			}
 		}
 		for _, owner := range slices.Sorted(maps.Keys(owners)) {

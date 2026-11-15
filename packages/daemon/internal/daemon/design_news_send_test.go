@@ -361,6 +361,26 @@ func TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend(t *te
 	}
 }
 
+// A member whose Dispatch status a person moved out of the workflow is owed nothing
+// (record.UntoldOutOfWorkflow), whatever version its holder took, and the root architect's summary
+// names it told nothing for that reason.
+func TestTheRootArchitectsSummaryNamesAMemberOutOfTheWorkflowAsToldNothing(t *testing.T) {
+	r := newNewsRig(t)
+	r.inTx(func(tx pgx.Tx) error {
+		tested, err := r.records.Issue(r.ctx, tx, newsTested)
+		if err != nil {
+			return err
+		}
+		tested.Status = "backlog"
+		return r.records.PutIssue(r.ctx, tx, *tested)
+	})
+
+	task, _ := r.send(newsRoot, claim.RoleArchitect, rootSummary())
+	if want := "- LEGION-502, in testing: told nothing: its status takes it out of the workflow."; !strings.Contains(task, want) {
+		t.Fatalf("summary = %q, want it to say %q", task, want)
+	}
+}
+
 // A member whose owed news is decision blocks alone is told nothing, and the summary says so: the
 // reconcile raises what its holder took and sends nothing. A member whose holder row also owes the
 // opening is sent a task with it, which says nothing its issue holds changed, so the summary names

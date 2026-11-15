@@ -632,16 +632,6 @@ func TestADesignGateEntryOfAPublishMayLeaveOutHolds(t *testing.T) {
 		}
 		return read
 	}
-	// required is the names a schema requires, sorted.
-	required := func(read map[string]any) []string {
-		names, _ := read["required"].([]any)
-		listed := make([]string, len(names))
-		for index, name := range names {
-			listed[index], _ = name.(string)
-		}
-		slices.Sort(listed)
-		return listed
-	}
 	properties, _ := schema("IssueDesignGatesInput")["properties"].(map[string]any)
 	gates, _ := properties["gates"].(map[string]any)
 	items, _ := gates["items"].(map[string]any)
@@ -650,10 +640,10 @@ func TestADesignGateEntryOfAPublishMayLeaveOutHolds(t *testing.T) {
 	if !found {
 		t.Fatalf("IssueDesignGatesInput.gates holds %v, want a list of one named schema", gates)
 	}
-	if got, want := required(schema(entry)), []string{"artifact_id", "step"}; !slices.Equal(got, want) {
+	if got, want := openAPIRequiredOf(t, entry, schema(entry)), []string{"artifact_id", "step"}; !slices.Equal(got, want) {
 		t.Fatalf("an entry of the publish (%s) requires %v, want %v: the route takes an entry with no holds and stores it as null", entry, got, want)
 	}
-	if got, want := required(schema("IssueDesignGate")), []string{"artifact_id", "holds", "step"}; !slices.Equal(got, want) {
+	if got, want := openAPIRequiredOf(t, "IssueDesignGate", schema("IssueDesignGate")), []string{"artifact_id", "holds", "step"}; !slices.Equal(got, want) {
 		t.Fatalf("an entry of the answer (IssueDesignGate) requires %v, want %v: every entry the route answers carries holds", got, want)
 	}
 }

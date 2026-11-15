@@ -45,11 +45,13 @@ body: |-
   tables `design_news_told`, `design_changes` and `design_history_unread`, and the column
   `pending_task_deliveries.design_news`.
 
-  A rollback to the release before this one needs no schema restore, but it needs three statements
-  first, because that release refuses an outbox payload member it does not know. Stop this
-  release's daemon, run the three statements in the comment of `20261114082752_design_news.up.sql`,
-  and then start the release before it. The first deletes each queued start that carries news
-  alone. The second takes `holds` out of each queued design-gates publish. The third takes the news
-  off each task delivery that is still pending. The news stays owed in `design_news_told`, so this
-  release sends it again after the roll forward. `docs/kubernetes.md` gives the statements and why
-  each is needed, in "Rolling back the release that tells a holder of an approved new version".
+  A rollback to the release before this one needs no schema restore, but it needs four statements
+  first, because that release refuses an outbox payload member it does not know, its upsert of a
+  pending task keeps the news this release wrote, and it reads a task queued for news alone as its
+  claim's phase task. Stop this release's daemon, run the four statements that `docs/kubernetes.md`
+  gives in "Rolling back the release that tells a holder of an approved new version", and then
+  start the release before it. The first deletes each start queued for news alone. The second
+  takes `holds` out of each queued design-gates publish. The third deletes each pending task
+  queued for news alone, and the fourth takes the news off each other task delivery that is still
+  pending. News that no turn took stays owed in `design_news_told`, so this release sends it again
+  after the roll forward. That section also says why each statement is needed.

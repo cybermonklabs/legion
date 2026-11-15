@@ -54,8 +54,9 @@
 # answers-a-stale-reviewer-moves-back-a-current-one-comments, which the driver's file describes. It
 # prints each run's evidence and `run <step> <arm> <n>: <outcome> …`. PASS and FAIL are runs that
 # reached the step's assertion. SETUP is a run that stopped before it, on something both arms
-# share, such as a holder that did not end its start turn in the run's bound. HARNESS is a run the
-# harness failed. This script counts PASS and FAIL alone for an arm, prints
+# share, such as a holder that did not end its start turn in the run's bound. An architect that did
+# not write the version its task asks for ran on its arm's own prompts, so that run is a FAIL.
+# HARNESS is a run the harness failed. This script counts PASS and FAIL alone for an arm, prints
 # `<step> <arm>: <p> of <n> runs that reached the assertion passed` for each step and arm, and
 # names each run it did not count. Part two passes when every head run reached its assertion and
 # passed: a head run that stopped before its assertion fails the run, and its FAIL line names it.
@@ -237,7 +238,7 @@ control_verdict() {
 # only when a base run failed at its assertion. It also sets head_missed: each head run that did
 # not reach its assertion and pass, by its line, each after `; `.
 part_two_step() {
-  local proof=$1 step=$2 word=$3 arm lines ran passed failed line count counts=()
+  local proof=$1 step=$2 word=$3 arm lines ran passed failed line count counts=() base_ran=0 base_passed=0 base_failed=0
   head_missed=''
   for arm in head base; do
     lines=$(grep -E "^run $step $arm [0-9]+: " "$proof" 2>/dev/null || true)
@@ -261,14 +262,16 @@ part_two_step() {
       while IFS= read -r line; do
         [ -z "$line" ] || head_missed="$head_missed; $line"
       done < <(grep -vE "^run $step head [0-9]+: PASS " <<<"$lines" || true)
+    else
+      base_ran=$ran base_passed=$passed base_failed=$failed
     fi
   done
   step_said="$word ${counts[0]}, ${counts[1]}"
-  if [ "$ran" -eq 0 ]; then
+  if [ "$base_ran" -eq 0 ]; then
     step_said="$step_said (base did not run)"
-  elif [ "$failed" -gt 0 ]; then
+  elif [ "$base_failed" -gt 0 ]; then
     step_said="$step_said (control bites)"
-  elif [ "$passed" -eq 0 ]; then
+  elif [ "$base_passed" -eq 0 ]; then
     step_said="$step_said (no control: no base run reached its assertion)"
   else
     step_said="$step_said (no control: the base arm passed every run that reached its assertion)"

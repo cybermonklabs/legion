@@ -1098,9 +1098,10 @@ func versionNewsNamesVersion(text string, n int) bool {
 
 // versionNewsNamesCheck says whether text names check where the news names a changed check, at the
 // head of its `Checks:` line ("Checks: c-a7 changed."), the one check of each tree's Verification
-// document. A bare check id is no proof: `c-a7` can stand inside a UUID the news prints.
+// document, followed by the space that ends it. A bare check id is no proof: `c-a7` can stand
+// inside a UUID the news prints, and `Checks: c-a7` alone matches `Checks: c-a7-open`.
 func versionNewsNamesCheck(text, check string) bool {
-	return strings.Contains(text, "Checks: "+check)
+	return strings.Contains(text, "Checks: "+check+" ")
 }
 
 // Step A2. A tree registers its spec alone, and its gate opens on the setup approval of version 1.
@@ -1465,10 +1466,10 @@ func (r *versionNewsLive) a7() {
 	task := merger.awaitPrompt("the merger's start task", mark)
 	r.note("%s was prompted:\n%s", merger.name(), task.message)
 	opening := "The design gate of " + closed.root().key + " opened"
-	if !strings.Contains(task.message, opening) || !versionNewsNamesCheck(task.message, closed.check) || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
-		r.fail("%s's start task names %s, want %q and the changed check %s with versions 2 and 1: %q", merger.name(), versionNewsFirstLine(task.message), opening, closed.check, task.message)
+	if strings.Index(task.message, "\n\n"+opening) <= 0 || !versionNewsNamesCheck(task.message, closed.check) || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
+		r.fail("%s's start task names %s, want the start's own text, a blank line, then %q and the changed check %s with versions 2 and 1: %q", merger.name(), versionNewsFirstLine(task.message), opening, closed.check, task.message)
 	}
-	r.held("the approval launched %s, whose start task reads %q and names the changed check %s and versions 1 and 2", merger.name(), opening, closed.check)
+	r.held("the approval launched %s, whose start task holds its own text, a blank line, then %q, and names the changed check %s and versions 1 and 2", merger.name(), opening, closed.check)
 }
 
 // Step R6. In a tree with children, an approved checks-only version of the root's Verification

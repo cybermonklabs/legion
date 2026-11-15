@@ -454,7 +454,7 @@ func (c *HTTPClient) ArtifactChanges(ctx context.Context, artifactID string, fro
 		var refusal *Error
 		switch {
 		case !errors.As(err, &refusal):
-		case refusal.Status == http.StatusNotFound && refusal.Code == ArtifactNotFound:
+		case artifactNotFound(refusal):
 			return ArtifactChanges{}, documentNotFound(err)
 		case noRoute(refusal), refusal.Status == http.StatusMethodNotAllowed:
 			return ArtifactChanges{}, fmt.Errorf("%w: %w", ErrNoChangesRoute, err)
@@ -477,7 +477,7 @@ func (c *HTTPClient) ApprovedVersionBefore(ctx context.Context, artifactID strin
 	var reviews []reviewResponse
 	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID)+"/reviews", nil, &reviews); err != nil {
 		var refusal *Error
-		if errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == ArtifactNotFound {
+		if errors.As(err, &refusal) && artifactNotFound(refusal) {
 			return 0, documentNotFound(err)
 		}
 		return 0, err

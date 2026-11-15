@@ -256,7 +256,7 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 		// stands now; one it does not carry is taken on while its row owes it and the gate is open.
 		heard.opening = heard.told.OpeningOwed && (listener.opening || tree.open)
 		if listener.audience == record.AudienceArchitect && claim.IsTreeRoot(issue.Key, issue.Tree) {
-			if heard.members, err = readTreeMembers(ctx, tx, records, steps, tree.root); err != nil {
+			if heard.members, err = readTreeMembers(ctx, tx, records, steps, tree.claims); err != nil {
 				return newsAtSend{}, err
 			}
 			for _, member := range heard.members {
@@ -422,9 +422,11 @@ func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
 	return member
 }
 
-// readTreeMembers is every member of root's tree, the root first, as its root architect's summary
-// names it: what OwedNews owes each now, read from the facts that rule reads (record.TreeNewsFacts),
-// and what each is told.
+// readTreeMembers is every member of the tree whose holders claims names, the root first, as its
+// root architect's summary names it: what OwedNews owes each now, read from the facts that rule
+// reads (record.TreeNewsFacts), and what each is told. claims is the send's own for the tree
+// (newsTree.claims), so a holder item of the same send and this read share one read of the tree's
+// issues and of its architect claims: the facts seed the issues where claims holds none yet.
 //
 // A member owed news is told by a task now (workflow.NewsSentNow) when its holder's claim was
 // given its phase's current entry, runs and holds no task its worker has not taken yet — the claim
@@ -445,8 +447,8 @@ func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
 // member's news and no start will, and each such member is told nothing yet, for that reason
 // (workflow.NewsGateClosed), rather than said to be told now or at its next start. The summary of
 // a lingering tree is never sent.
-func readTreeMembers(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, root record.Issue) ([]memberDraft, error) {
-	facts, err := record.TreeNewsFacts(ctx, records, tx, steps, root.Key)
+func readTreeMembers(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, claims *newsClaims) ([]memberDraft, error) {
+	facts, err := record.TreeNewsFacts(ctx, records, tx, steps, claims.root.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -454,8 +456,9 @@ func readTreeMembers(ctx context.Context, tx pgx.Tx, records record.Store, steps
 	slices.SortStableFunc(members, func(a, b record.Issue) int {
 		return boolOrder(claim.IsTreeRoot(b.Key, b.Tree)) - boolOrder(claim.IsTreeRoot(a.Key, a.Tree))
 	})
+	claims.seedMembers(members)
 	owed := record.OwedNews(facts)
-	told, err := readMemberClaims(ctx, tx, records, newNewsClaims(root, members), owed)
+	told, err := readMemberClaims(ctx, tx, records, claims, owed)
 	if err != nil {
 		return nil, err
 	}
@@ -479,7 +482,11 @@ func readTreeMembers(ctx context.Context, tx pgx.Tx, records record.Store, steps
 // its worker has not taken yet (holdsUntakenTask), behind which the reconcile queues no news-only
 // start. A member whose holder cannot be named is told at its next start (newsClaims.holderOf).
 func readMemberClaims(ctx context.Context, tx pgx.Tx, records record.Store, claims *newsClaims, owed record.TreeNews) (map[string]workflow.NewsState, error) {
-	holders, err := readOwedHolders(ctx, tx, records, claims, owed)
+	keys := make([]toldKey, 0, len(owed.Members))
+	for _, news := range owed.Members {
+		keys = append(keys, toldKey{news.Issue, record.AudienceHolder})
+	}
+	holders, err := readOwedHolders(ctx, tx, records, claims, keys)
 	if err != nil {
 		return nil, err
 	}

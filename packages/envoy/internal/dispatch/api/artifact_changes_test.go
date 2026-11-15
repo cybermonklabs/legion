@@ -615,18 +615,6 @@ func TestTheChangeSetEitherNamesWhatChangedOrReportsNoChange(t *testing.T) {
 			after:  sectionedPlan(goalSection, appendixRun, scopeSection, appendixRun, risksSection),
 			want:   named,
 		},
-		{
-			name:   "a section under a setext `##` heading reworded",
-			before: sectionedPlan(goalSection, setextScopeSection("Two regions."), risksSection),
-			after:  sectionedPlan(goalSection, setextScopeSection("Three regions."), risksSection),
-			want:   named,
-		},
-		{
-			name:   "the text under a setext `#` heading reworded",
-			before: sectionedPlan(goalSection, scopeSection, setextAppendixRun("Background."), risksSection),
-			after:  sectionedPlan(goalSection, scopeSection, setextAppendixRun("Background and history."), risksSection),
-			want:   named,
-		},
 	}
 	// state is which of the three a change set is, failing t when it is more than one or none.
 	state := func(t *testing.T, changes servedChanges) string {

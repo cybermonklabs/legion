@@ -29,10 +29,6 @@ import (
 // never read. A task sent twice, its prompt lost to a crash before Prompted was written, is the
 // fault left, and it loses nothing.
 //
-// Whether the delivery is a task of news alone is not a column: it is the news_only member of this
-// same value (record.DeliveryNews.NewsOnly), which the claim store's restore and a role run's read
-// back as supervise.Delivery.NewsOnly (claimSelect, record's readRoleClaims).
-//
 // The payload is read here in SQL, by its JSON names, as the kept decisions are read beside it
 // (kept_decisions.go): this package imports no record, whose own tests read the claim store, so
 // the shape is the one record.DeliveryNews writes and its doc names these readers.
@@ -104,16 +100,18 @@ func tellDesignNews(ctx context.Context, tx pgx.Tx, token claim.Token, delivery 
 // value read before the lock. Under READ COMMITTED a fill, a raise or another delivery's
 // confirmation of the same row that commits while this write waits for the row's lock is then
 // read, since Postgres evaluates both again on the version of the row that write committed, and
-// what that write wrote is kept.
+// what that write wrote is kept. The items are read out of the news once, by the statement's
+// `item` query, which reads the news alone and no row.
 func untellDesignNews(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string, news []byte) error {
-	if _, err := tx.Exec(ctx, `update design_news_told told set versions = (
+	if _, err := tx.Exec(ctx, `with item as (
+			select * from jsonb_to_recordset(coalesce($1::jsonb -> 'items', '[]'::jsonb))
+				as carried (issue text, audience text, step text, "from" int, "to" int))
+		update design_news_told told set versions = (
 			select (told.versions - array_agg(item.step))
 				|| coalesce(jsonb_object_agg(item.step, item."from") filter (where item."from" is not null), '{}'::jsonb)
-			from jsonb_to_recordset(coalesce($1::jsonb -> 'items', '[]'::jsonb))
-				as item (issue text, audience text, step text, "from" int, "to" int)
+			from item
 			where item.issue = told.issue and item.audience = told.audience and (told.versions ->> item.step)::int = item."to")
-		where exists (select 1 from jsonb_to_recordset(coalesce($1::jsonb -> 'items', '[]'::jsonb))
-				as item (issue text, audience text, step text, "to" int)
+		where exists (select 1 from item
 			where item.issue = told.issue and item.audience = told.audience and (told.versions ->> item.step)::int = item."to")`,
 		news); err != nil {
 		return fmt.Errorf("put back what the delivery %s on %s told of the approved design: %w", delivery, token, err)

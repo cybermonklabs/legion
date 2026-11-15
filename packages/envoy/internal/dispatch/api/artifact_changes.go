@@ -350,16 +350,13 @@ func readCutVersion(markdown string) (cutVersion, error) {
 }
 
 // cutUnits cuts a version's cut text into its top-level units, in document order: its `##`
-// sections, cut by the rule decisionSums cuts a decision by, and the runs of the text no `##`
-// section holds. A top-level `##` heading opens a section, the next top-level heading of its level
-// or higher closes it - `#` included, which opens none - and a deeper heading is text of the
-// section it stands in. A section is keyed by its heading's text and by how many sections before
-// it carry that text, and its text runs from its heading to where it closes, with the blank lines
-// at its end removed. Only a top-level heading cuts, since one inside a quote, a list or a callout
-// is text of the block that holds it. decisionSums' `## Replaced` rule is no part of this one:
-// that is how a decisions document files a decision, while a section here is any document's own
-// `##` heading. A `##` heading with no words is keyed from occurrence 1, so no section takes the
-// zero key.
+// sections and the runs of the text no `##` section holds. A top-level `##` heading opens a
+// section, the next top-level heading of its level or higher closes it - `#` included, which opens
+// none - and a deeper heading is text of the section it stands in. A section is keyed by its
+// heading's text and by how many sections before it carry that text, and its text runs from its
+// heading to where it closes, with the blank lines at its end removed. Only a top-level heading
+// cuts, since one inside a quote, a list or a callout is text of the block that holds it. A `##`
+// heading with no words is keyed from occurrence 1, so no section takes the zero key.
 //
 // Each heading's level and text are read off its node and never off the cut text, since a heading
 // is not always written with `#`s: the renderer writes a `#` or `##` heading that holds a line
@@ -441,9 +438,8 @@ func cutUnits(doc *pmdoc.Node, text string, offsets []pmdoc.BlockOffset) []cutUn
 //
 // The stored text is read once, at the first typed block, and each block's id is then looked up
 // in what that read found (writtenIDs), with the answer a search of the whole text for it would
-// give. A search for each block read the text once for each block, so the work grew with the
-// text's size times its blocks: one version of a mebibyte holding 11,396 requirements took 1.45 s
-// of one CPU, and every request reads two versions.
+// give. So the work grows with the text's size, never with its size times its blocks, and every
+// request reads two versions.
 func cutTypedBlocks(doc *pmdoc.Node, stored string) []cutBlock {
 	var written *writtenIDs
 	var blocks []cutBlock
@@ -545,9 +541,9 @@ func compareWritten(a, b string) int {
 // writtenIDReads, while a test sets it, is told how many bytes each step of a typed-block cut
 // reads at most: the scan of the stored text (writtenIDsIn), each comparison of two texts
 // (compareWritten), and each look up of a written id (writtenIDs.names). A test bounds that work by
-// the size of the text, counting what the cut does rather than timing it on a machine another
-// process may load, as pmdoc's tests bound a parse's and a render's (pmdoc/linear_sizes.go). The
-// server leaves it nil.
+// the size of the text, as pmdoc's growsLinearly (pmdoc/linear_test.go) bounds a parse's and a
+// render's, but by counting what the cut does rather than timing it on a machine another process
+// may load. The server leaves it nil.
 var writtenIDReads func(bytes int)
 
 // readOf tells writtenIDReads, when a test has set it, of a read of bytes bytes.

@@ -82,6 +82,8 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 	heldFromMerging.Hold = &Hold{From: phase.Merging}
 	done := newsMember(third, phase.Done)
 	done.Status = "done"
+	backlogged := newsMember(child, phase.Implementing)
+	backlogged.Status = "backlog"
 
 	for _, tc := range []struct {
 		name  string
@@ -156,6 +158,14 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 					holderTook(child, map[DesignStep]int{DesignStepSpec: 4}), holderTook(sibling, map[DesignStep]int{DesignStepSpec: 4}),
 					holderTook(third, map[DesignStep]int{DesignStepSpec: 4})}},
 			want: TreeNews{Untold: map[string]UntoldReason{newsRoot: UntoldAwaitingPerson, child: UntoldAdmitted, sibling: UntoldHeld, third: UntoldDone}},
+		},
+		{
+			name: "a member whose status a person moved out of the workflow owes nothing",
+			facts: NewsFacts{Steps: specOnly, Gates: newsRows(newsGate(DesignStepSpec, 5, 5)),
+				Members: []Issue{newsMember(newsRoot, phase.Implementing), backlogged},
+				Told: []DesignTold{architectTook(map[DesignStep]int{DesignStepSpec: 5}), holderTook(newsRoot, map[DesignStep]int{DesignStepSpec: 5}),
+					holderTook(child, map[DesignStep]int{DesignStepSpec: 4})}},
+			want: TreeNews{Untold: map[string]UntoldReason{newsRoot: UntoldTaken, child: UntoldOutOfWorkflow}},
 		},
 		{
 			name: "a merged root in merging, a member held from merging and one still reviewing whose pull request merged owe nothing",

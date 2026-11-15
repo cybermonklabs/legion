@@ -159,10 +159,13 @@ type Delivery struct {
 	// that phase: it hands the worker no work of the phase, only the news. So no reader of a
 	// claim's pending delivery takes it for the phase's task (StillWorked, HoldsWork), and the start
 	// or repair that sends the phase's task still sends it to a claim that holds one. The mark is
-	// not a column of its own: it is persisted as the news_only member of the news the delivery
-	// carries (record.DeliveryNews.NewsOnly, in pending_task_deliveries.design_news), which the
-	// start writes, and every store that reads a delivery back reads it from there. One stored
-	// copy of the fact, so nothing has to keep two equal.
+	// not a column of its own: the database holds it once, as the news_only member of the news the
+	// delivery carries (record.DeliveryNews.NewsOnly, in pending_task_deliveries.design_news), which
+	// the start writes, and every store that reads a delivery back reads it from there. In memory
+	// the delivery holds it twice, here and in News, and two writers keep the two equal: the
+	// daemon's start, which sets both from the start row's news mark (internal/daemon's outbox,
+	// record.SuperviseRequest.News), and the send that writes News again, which keeps the mark in
+	// the news it writes (internal/daemon's newsAtSend).
 	NewsOnly bool
 	// ProviderErrorRetries is how many times this task has been sent again after a turn of it
 	// ended in a provider error, from 0 (promptResulted's providerErrored). It is what the wait
@@ -457,10 +460,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 			// A task of news alone waits behind every task that holds work, confirmed or owed
 			// again after a provider error (RequestDeliver.NewsOnly). An untaken task is sent first,
 			// as below; a confirmed one is not sent, since its turn is running.
-			if err := m.sendPending(ctx); err != nil {
-				return err
-			}
-			return &RefusedError{State: m.claim.State, Request: "deliver", Err: ErrDeliveryPending}
+			return m.refuseBehindPending(ctx)
 		case pending.ConfirmedAt.IsZero():
 			owed, attempt := pending.ID, pending.ProviderErrorRetries
 			replaced, err := m.replaceOwedTask(ctx)
@@ -468,10 +468,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 				return err
 			}
 			if !replaced {
-				if err := m.sendPending(ctx); err != nil {
-					return err
-				}
-				return &RefusedError{State: m.claim.State, Request: "deliver", Err: ErrDeliveryPending}
+				return m.refuseBehindPending(ctx)
 			}
 			if relaunchTask(owed) {
 				m.log.Info("supervise: a newer task replaces the daemon's delivery of the relaunch's record, which no prompt waits on; it carries the record's sentence in its place",
@@ -518,6 +515,16 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	}
 	m.claim.Pending, m.unsaved = &d, false
 	return nil
+}
+
+// refuseBehindPending is queue's refusal of a task that waits behind the claim's pending one: the
+// pending task is sent where a send can go now (sendPending), and the request is refused
+// ErrDeliveryPending, which keeps a start's row on its backoff until the claim can take its task.
+func (m *Machine) refuseBehindPending(ctx context.Context) error {
+	if err := m.sendPending(ctx); err != nil {
+		return err
+	}
+	return &RefusedError{State: m.claim.State, Request: "deliver", Err: ErrDeliveryPending}
 }
 
 // answeredOpenRound is the hold an open update round puts on its claim: the round is open and

@@ -1779,9 +1779,6 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return nil
 			}
 		}
-		// What the start carries of news of the approved design, or that it finishes without
-		// acting, is the one helper's answer (startNewsOf), which keeps a news-only start's refusal
-		// before the merger's wait for the design gate.
 		news, finished, err := r.startNewsOf(ctx, row, issue, payload, machine, found, token)
 		if err != nil || finished {
 			return err

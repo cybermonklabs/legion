@@ -229,8 +229,8 @@ func (s *server) treeMembers(ctx context.Context, tree string) ([]record.Issue, 
 // names is refused once the ancestor's pull request has merged (record.Accepted holds merging, and
 // merged work never moves back), so the sentence says so.
 func childUnderAcceptedParent(child, ancestor, operation string) string {
-	return fmt.Sprintf("%s is beneath %s, whose own reviewed head the daemon has already accepted, and work entering the workflow beneath %s now would let it merge a head that does not carry that work; %s once %s has closed, or take %s back with a backward move first, unless the pull request of %s has merged",
-		child, ancestor, ancestor, operation, ancestor, ancestor, ancestor)
+	return fmt.Sprintf("%[1]s is beneath %[2]s, whose own reviewed head the daemon has already accepted, and work entering the workflow beneath %[2]s now would let it merge a head that does not carry that work; %[3]s once %[2]s has closed, or take %[2]s back with a backward move first, unless the pull request of %[2]s has merged",
+		child, ancestor, operation)
 }
 
 // architectForIssue authorizes an architect's operation on a recorded issue of its tree, and

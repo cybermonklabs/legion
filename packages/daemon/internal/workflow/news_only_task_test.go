@@ -12,7 +12,7 @@ import (
 // names its member's phase and run, so that it is dropped once the issue has left that phase, but
 // it is no task of the phase (supervise.Delivery.StillWorked, supervise.HoldsWork). So each rule
 // that asks whether a claim still holds its phase's work reads a claim holding only such a task as
-// one holding none, where the phase's own task is read as it always was:
+// one holding none, and a claim holding the phase's own task as one holding that work:
 //
 //   - the silence repair sees a worker up and between turns holding only the news task as silent
 //     (SilentPhaseWorker), so it sends the phase's task;

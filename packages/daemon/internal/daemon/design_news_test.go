@@ -784,7 +784,7 @@ func TestNoNewsOnlyStartIsQueuedBehindATaskTheHolderHasNotTaken(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				drafts, err = readTreeMembers(r.ctx, tx, r.records, config.DesignGateRootIssues.Steps(), *root)
+				drafts, err = readTreeMembers(r.ctx, tx, r.records, config.DesignGateRootIssues.Steps(), newNewsClaims(*root, nil))
 				return err
 			})
 			want := workflow.NewsWaitsForTask

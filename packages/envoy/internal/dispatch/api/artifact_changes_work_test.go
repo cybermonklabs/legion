@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -49,16 +48,18 @@ func requirementsVersion(blocks int, word, last string) string {
 // (pmdoc.MaxDocumentBytes) and 65,536 elements (pmdoc.MaxDocumentElements) allow. Any caller who
 // may read a document may ask for its change set again and again, and the daemon asks for it at
 // each reconcile, so the cut's work grows with the text's size and never with its size times its
-// blocks: a search of the whole text for each block's id read a mebibyte 11,396 times for one
-// version, 1.45 s of one CPU.
+// blocks.
 //
-// The work is counted, not timed (writtenIDReads): each step of the cut tells the bytes it reads.
-// A version at both caps, the requirements as many as its elements allow and each as long as fills
-// the mebibyte, is compared with the same version with its last requirement reworded, and so is a
-// version of an eighth of the requirements. The larger pair's reads may grow at most
-// workLinearSlack times as much as its text does, as pmdoc's tests bound a parse's growth
-// (pmdoc/linear_sizes.go). Both change sets name the reworded requirement and no other block, so
-// the cut kept every block whose id the text writes.
+// The work is counted, not timed (writtenIDReads): each step of the cut tells the bytes it reads,
+// and this test bounds those counted steps alone. A version at both caps, the requirements as many
+// as its elements allow and each as long as fills the mebibyte, is compared with the same version
+// with its last requirement reworded, and so is a version of an eighth of the requirements. Each
+// pair's counted reads must hold one read of each whole version, the scan of its stored text, so
+// they are at least the pair's text, and a cut whose scan counts nothing fails: the sort's
+// comparisons alone count more bytes than the text. The larger pair's counted reads may grow at
+// most workLinearSlack times as much as its text does, the bound pmdoc's growsLinearly
+// (pmdoc/linear_test.go) puts on a parse's time. The cut of the larger version keeps each of its
+// requirements, and both change sets name the reworded requirement and no other block.
 func TestACutReadsAVersionsBlockIDsInWorkLinearInItsSize(t *testing.T) {
 	one := pmdoc.MeasureDocument(requirementsVersion(1, "a", "a"))
 	two := pmdoc.MeasureDocument(requirementsVersion(2, "a", "a"))
@@ -69,12 +70,22 @@ func TestACutReadsAVersionsBlockIDsInWorkLinearInItsSize(t *testing.T) {
 	if size := pmdoc.MeasureDocument(requirementsVersion(blocks, word, word)); size.TooLong() || size.TooHeavy() {
 		t.Fatalf("the version of %d requirements measures %+v, past what one upload may send", blocks, size)
 	}
+	if cut, err := readCutVersion(requirementsVersion(blocks, word, word)); err != nil || len(cut.blocks) != blocks {
+		t.Fatalf("the cut of a version of %d requirements kept %d of its typed blocks (%v), want every one", blocks, len(cut.blocks), err)
+	}
 
 	read := func(t *testing.T, blocks int) (text int, reads int64) {
 		t.Helper()
 		before, after := requirementsVersion(blocks, word, word), requirementsVersion(blocks, word, reworded)
-		var total atomic.Int64
-		writtenIDReads = func(bytes int) { total.Add(int64(bytes)) }
+		// The two versions are of one length, and only the scan of a version reads all of it.
+		var total int64
+		scans := 0
+		writtenIDReads = func(bytes int) {
+			total += int64(bytes)
+			if bytes == len(before) {
+				scans++
+			}
+		}
 		defer func() { writtenIDReads = nil }()
 		changes, err := compareVersions(before, after)
 		if err != nil {
@@ -84,7 +95,11 @@ func TestACutReadsAVersionsBlockIDsInWorkLinearInItsSize(t *testing.T) {
 		if !reflect.DeepEqual(changes.Blocks, want) {
 			t.Fatalf("the change set of %d requirements names the blocks %+v, want %+v", blocks, changes.Blocks, want)
 		}
-		return len(before) + len(after), total.Load()
+		if scans != 2 {
+			t.Fatalf("the cut of two versions of %d requirements counted %d reads of a whole version, want 2, one scan of each "+
+				"(writtenIDsIn): a step of the cut no longer counts what it reads (writtenIDReads)", blocks, scans)
+		}
+		return len(before) + len(after), total
 	}
 	smallText, smallReads := read(t, blocks/workGrowthStep)
 	fullText, fullReads := read(t, blocks)
@@ -92,8 +107,8 @@ func TestACutReadsAVersionsBlockIDsInWorkLinearInItsSize(t *testing.T) {
 	t.Logf("%d requirements in %d bytes of two versions: %d bytes read; %d requirements in %d bytes: %d bytes read, %.1f times as many for %.1f times the text",
 		blocks/workGrowthStep, smallText, smallReads, blocks, fullText, fullReads, float64(fullReads)/float64(smallReads), growth)
 	if float64(fullReads) > workLinearSlack*growth*float64(smallReads) {
-		t.Fatalf("the cut of two versions of %d requirements read %d bytes, %.1f times the %d bytes it read for %d requirements, "+
-			"past %d times the text's growth of %.1f: the cut reads the text once for each block",
+		t.Fatalf("the cut of two versions of %d requirements counted %d bytes read, %.1f times the %d bytes it counted for %d requirements, "+
+			"past %d times the text's growth of %.1f: a counted step reads the text once for each block",
 			blocks, fullReads, float64(fullReads)/float64(smallReads), smallReads, blocks/workGrowthStep, workLinearSlack, growth)
 	}
 }

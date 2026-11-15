@@ -33,7 +33,7 @@ func (e *Engine) openBeneath(ctx context.Context, tx pgx.Tx, issue record.Issue)
 // told under, so it reaches the architect above the child by the route those already take.
 func ChildUnderAcceptedParentNotice(child, ancestor string) record.Notice {
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
-		"%s is beneath %s, whose own reviewed head the daemon has already accepted, so %s is recorded at admitted and nothing starts it until %s closes. "+
-			"Take %s back with a backward move to run %s under it now, unless the pull request of %s has merged, or leave %s where it is and it starts once %s has closed.",
-		child, ancestor, child, ancestor, ancestor, child, ancestor, child, ancestor)}
+		"%[1]s is beneath %[2]s, whose own reviewed head the daemon has already accepted, so %[1]s is recorded at admitted and nothing starts it until %[2]s closes. "+
+			"Take %[2]s back with a backward move to run %[1]s under it now, unless the pull request of %[2]s has merged, or leave %[1]s where it is and it starts once %[2]s has closed.",
+		child, ancestor)}
 }

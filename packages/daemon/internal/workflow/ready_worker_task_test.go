@@ -7,9 +7,7 @@ package workflow
 
 import (
 	"testing"
-	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -122,14 +120,8 @@ func TestAReadyWorkerWithOnlyANewsOnlyStartQueuedIsGivenItsPhaseTask(t *testing.
 	seedIssue(t, pool, issue)
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0})
 	seedPhaseWorker(t, pool, "LEGION-209", claim.RoleTester, "")
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		row, err := record.NewOutboxRow("LEGION-209", record.SuperviseRequest{Op: "start", Tree: "LEGION-209", Role: claim.RoleTester,
-			Generation: 1, Phase: phase.Testing, News: true}, time.Now())
-		if err != nil {
-			return err
-		}
-		return record.NewStore().Enqueue(t.Context(), tx, row)
-	})
+	seedOutboxRow(t, pool, "LEGION-209", record.SuperviseRequest{Op: "start", Tree: "LEGION-209", Role: claim.RoleTester,
+		Generation: 1, Phase: phase.Testing, News: true})
 
 	if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:tester:2:ready",
 		intake.ClaimReady{Issue: "LEGION-209", Role: claim.RoleTester, Launch: 2},

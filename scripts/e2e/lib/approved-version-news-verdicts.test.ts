@@ -1,8 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
+import {
+  expectNoMissingHelpers,
+  nameMissingHelpers,
+  scriptAssignments,
+  scriptFunctions,
+} from "./script-functions";
 
 // approved-version-news.sh's two controls, taken from the script by name and run over driver
 // output written as each driver prints it. Part one's negative control (control_verdict) bites only
@@ -13,18 +18,11 @@ import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./s
 // stopped there is no pass.
 
 const script = join(import.meta.dir, "..", "approved-version-news.sh");
-const text = readFileSync(script, "utf8");
+const assignment = scriptAssignments(script);
 const fn = scriptFunctions(script);
 const note = scriptFunctions(join(import.meta.dir, "live-daemon-proof.sh"))("note");
 const helperGuard = nameMissingHelpers(script);
 const dir = temporaryDirectory("approved-version-news-verdicts-test");
-
-/** The script's own assignment of NAME, as the line stands in it. */
-function assignment(name: string): string {
-  const found = new RegExp(`^${name}=.*$`, "m").exec(text);
-  if (found === null) throw new Error(`approved-version-news.sh assigns no ${name}`);
-  return found[0];
-}
 
 let files = 0;
 /** A driver output file holding LINES, one a line; null writes no file at all. */
@@ -231,7 +229,6 @@ describe("part two's count of each arm", () => {
     expect(step.said).toBe(
       "a4 head 3/3, base 0/0 with 3 not counted (no control: no base run reached its assertion)"
     );
-    expect(step.said).not.toContain("control bites");
   });
 
   test("names a head run that stopped at its setup, which is no pass", () => {
