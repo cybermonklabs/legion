@@ -65,16 +65,18 @@ func OpenApprovalAskForDocuments(ctx context.Context, tx pgx.Tx, artifactIDs []s
 // (model.AskEditEventPayload.Quiet, the rule RewriteApprovalAsk also applies).
 //
 // bySettlement says a settlement wrote version: the settlement's own version write
-// (versionWrite.settlement), or the reopen's follow of a version a settlement wrote while the
-// issue was closed. Only then, when the document waits on the human (its requested_version is the
-// version the request names) and markdown is byte for byte the stored text of that version
-// (restoresVersionText), does its requested_version move with its version, quietly: a settlement
-// saves what the room already holds, such as the blocks a close and a reopen wrote back, so the
-// text the person was asked about did not change and the request keeps its turn as if it had not
-// moved, waking nobody. A version a route writes - a named version, an upload, an edit or a
-// summary edit - moves the request to its agent whatever text it stores, as every move did before
-// the rule: the Legion daemon answers an agent's gate wait with such a version's artifact.version,
-// telling the agent the request is back on its turn, which this keeps true.
+// (versionWrite.settlement), or the reopen's follow of a version written while the issue was
+// closed, which a settlement or a comment anchor's snapshot wrote, and which no stored version
+// tells apart (FollowClosedIssueVersions). Only then, when the document waits on the human (its
+// requested_version is the version the request names) and markdown is byte for byte the stored
+// text of that version (restoresVersionText), does its requested_version move with its version,
+// quietly: a settlement saves what the room already holds, such as the blocks a close and a reopen
+// wrote back, so the text the person was asked about did not change and the request keeps its
+// turn as if it had not moved, waking nobody. A version a route writes - a named version, an
+// upload, an edit or a summary edit - moves the request to its agent whatever text it stores, as
+// every move did before the rule: the Legion daemon answers an agent's gate wait with such a
+// version's artifact.version, telling the agent the request is back on its turn, which this keeps
+// true.
 func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, bySettlement bool, serverURL string) ([]model.Event, error) {
 	ask, err := OpenApprovalAsk(ctx, tx, artifactID)
 	if err != nil {

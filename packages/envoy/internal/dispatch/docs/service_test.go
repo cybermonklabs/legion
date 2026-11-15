@@ -6179,12 +6179,14 @@ func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 	}
 }
 
-// A settlement whose room a close retires between its warm-up and its read of the room - a close
-// of the room for its issue, or ygo's idle sweep, neither of which moves the room's generation -
-// has no room to settle from, and no load of the document follows to arm its settlement again: the
-// timer that ran it was its only arming. It stops short (errRoomReplaced), and its retry warms the
-// room again and settles the document. An eviction moves the generation, so its settlement is not
-// retried and the document is left to the reload (TestSettleSurvivesEvictionBetweenWarmAndTreeRead).
+// A settlement whose room a close retires between its warm-up and its read of the room, a close
+// that moves no room generation - ygo's idle sweep, the close of the room at its issue's reopen, a
+// repeated close of a record that already reads closed; the test closes the room through ygo
+// (CloseRoom), which moves none - has no room to settle from, and no load of the document follows
+// to arm its settlement again: the timer that ran it was its only arming. It stops short
+// (errRoomReplaced), and its retry warms the room again and settles the document. An eviction
+// moves the generation, so its settlement is not retried and the document is left to the reload
+// (TestSettleSurvivesEvictionBetweenWarmAndTreeRead).
 func TestASettlementWhoseRoomACloseRetiredBeforeItsReadIsArmedAgain(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour

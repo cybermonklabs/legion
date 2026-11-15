@@ -420,10 +420,12 @@ func (s *Service) followLatestVersion(ctx context.Context, tx pgx.Tx, artifactID
 	if err != nil || owed {
 		return nil, err
 	}
-	// The latest version was written while the issue was closed, by a settlement, so the move
-	// keeps the person's turn where that settlement's own version write would have kept it. The
-	// one route that writes a closed issue's version, a rebuild a person gives markdown
-	// (RebuildDocument), is read as a settlement's here too: no stored version says which wrote it.
+	// A latest version the request does not name yet was written while the issue was closed,
+	// since every version written while it was open moved the request: by a settlement, or by a
+	// comment anchor's snapshot (SnapshotVersion under WithCommentMarks), the one route that writes
+	// a closed issue's version. No stored version says which wrote it, so the move reads it as a
+	// settlement's and keeps the person's turn where that settlement's own version write would
+	// have kept it.
 	moved, err := MoveApprovalAsk(ctx, tx, s.events, artifactID, latest.Version, latest.markdown, mover, true, s.serverURL)
 	if err != nil {
 		return nil, err

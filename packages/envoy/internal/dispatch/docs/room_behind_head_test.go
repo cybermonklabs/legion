@@ -201,11 +201,12 @@ func TestASettlementFromARoomBehindTheHeadCatchesItUpAndTheNextSettlesBoth(t *te
 }
 
 // A settlement whose room a close retires while the settlement holds the document's lock to catch
-// that room up to the head - a close of the room for its issue, or ygo's idle sweep, neither of
-// which moves the room's generation - finds the room gone (catchUpGone), and no load of the
-// document follows to arm its settlement again: the timer that ran it was its only arming. It
-// stops short (errRoomReplaced), its rollback lets the close finish, and its retry loads the room
-// at the head and settles both processes' text.
+// that room up to the head, a close that moves no room generation - ygo's idle sweep, the close of
+// the room at its issue's reopen, a repeated close of a record that already reads closed; the test
+// closes the room through ygo (CloseRoom), which moves none - finds the room gone (catchUpGone),
+// and no load of the document follows to arm its settlement again: the timer that ran it was its
+// only arming. It stops short (errRoomReplaced), its rollback lets the close finish, and its retry
+// loads the room at the head and settles both processes' text.
 func TestASettlementWhoseRoomClosedBeforeItsCatchUpIsArmedAgain(t *testing.T) {
 	pair := newProcessPair(t)
 	bob := model.Actor{Kind: "user", ID: "bob-on-task-b"}

@@ -279,13 +279,15 @@ func (st *settlement) take(parent context.Context, mayLoad bool) (settleStep, se
 	}
 	// Hold the live document for the whole settlement: reading the room again later could return
 	// nil, and every later stage would dereference it. A nil here is a close that retired the room
-	// since the generation check in settleRoomWithin or the warm-up above. One that moves the
-	// generation - a failure's eviction, an eviction, a close of a room whose stored history was
-	// replaced - leaves the document to the reload that follows it, and the retry this settlement
-	// stops short into counts and arms nothing (retrySettleLocked). One that does not - the close
-	// of the room for its issue, ygo's idle sweep - is followed by no load that arms the
-	// settlement, and this settlement took the arming it ran on, so the retry arms it again, and
-	// that settlement warms the room.
+	// since the generation check in settleRoomWithin or the warm-up above, and the retry this
+	// settlement stops short into decides by the room's generation (retrySettleLocked). A close
+	// that moved it - an eviction, a room's failure, a close of a room whose stored history was
+	// replaced, an issue's first close of the record - ended this arming: the retry counts nothing
+	// and arms nothing, and the document is left to what that close arranged, a reload, the
+	// document's next load or the resumption. A close that did not - ygo's idle sweep, the close
+	// of the room at its issue's reopen, a repeated close of a record that already reads closed -
+	// is followed by no load that arms the settlement, and this settlement took the arming it ran
+	// on, so the retry arms it again, and that settlement warms the room.
 	if s.afterSettleWarm != nil {
 		s.afterSettleWarm(room)
 	}
@@ -372,10 +374,10 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 			return settleDone, st.stoppedShort(err)
 		case outcome == catchUpGone:
 			// The room no longer holds the instance this settlement took, or a close holds it. As
-			// in take, a close that moved the generation leaves the document to its reload, and the
-			// retry this settlement stops short into arms the settlement again after one that did
-			// not; that settlement, once this one's rollback has let the close finish, loads the
-			// room at the head.
+			// in take, the retry this settlement stops short into decides by the room's generation:
+			// after a close that moved it, the document is left to what that close arranged; after
+			// one that did not, the retry arms the settlement again, and that settlement, once this
+			// one's rollback has let the close finish, loads the room at the head.
 			return settleDone, st.stoppedShort(fmt.Errorf("catch the room up to the durable head: %w", errRoomReplaced))
 		case outcome == catchUpReplaced:
 			// The rollback releases the document's advisory lock, which the room's close needs: a

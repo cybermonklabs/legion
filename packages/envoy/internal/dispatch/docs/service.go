@@ -600,7 +600,10 @@ func (s *Service) applyCaptured(ctx context.Context, room string, origin any, mu
 // errRoomReplaced is a repair refused because the room no longer holds the document its caller
 // read - the room was evicted, by ygo's idle sweep once its last browser left or the API last
 // touched it, or by a CloseRoom, and the write would load a replacement from the store - or
-// because a close of the room is under way (roomServer).
+// because a close of the room is under way (roomServer). A settlement also stops short with it
+// when the room it warmed is gone before it holds it (take) or before it catches it up
+// (readLocked, catchUpGone), retired or replaced; its retry decides by the room's generation
+// whether to arm the settlement again (retrySettleLocked).
 var errRoomReplaced = errors.New("document room was replaced")
 
 // applySuppressed writes one repair - settlement's, or the block-id backfill's - into room's live
@@ -1569,8 +1572,10 @@ func (s *Service) retrySettleLocked(room string, state *roomState, generation ui
 	case errors.Is(err, errRoomReplaced):
 		// Expected, not a fault: the settlement wrote nothing (one that wrote fails the room
 		// instead) because the room it read was replaced or retired first. A close that moved the
-		// generation leaves the settlement the document still owes to the reload that follows it;
-		// one that did not is followed by no load that arms it, so it is armed again below.
+		// generation ended this arming and leaves the settlement the document still owes to what
+		// that close arranged - a reload, the document's next load or the resumption - and is not
+		// counted below; one that did not is followed by no load that arms it, so it is armed again
+		// below.
 		slog.Info("dispatch: document settlement wrote nothing into a replaced room", "room", room, "error", err)
 	default:
 		slog.Error("dispatch: settle document", "room", room, "error", err)
