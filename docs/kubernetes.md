@@ -1327,7 +1327,7 @@ The daemon never probes a host Oh My Pi for this: pods run the image's build, no
 ## Kubernetes runtime: the Go daemon on Agent Sandbox
 
 Under the Go coordinator, `runtime: kubernetes` runs every issue as one Agent Sandbox:
-an `agents.x-k8s.io` `Sandbox` (kubernetes-sigs/agent-sandbox, LEGION-206) named for the issue, `legion-<project>-<issue>`, whose one pod runs under gVisor on the Legion pool.
+an `agents.x-k8s.io` `Sandbox` (kubernetes-sigs/agent-sandbox, LEGION-206) named for the issue, `legion-<project>-<issue>`, whose one pod runs under gVisor on the Legion pool, or in a GKE Sandbox microVM where `runtime.kubernetes.sandbox` puts the issue there ([Issue pods in microVMs](#issue-pods-in-microvms)).
 The pod holds two init containers — three where the deployment names a `skills_repository` ([Operator configuration](#operator-configuration)) — and one container, `roles`, whose PID 1 is one `legion launcher`, a supervisor with no workflow policy that runs every workflow role
 — `architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`:
 it holds one connection to the daemon's worker stream per role, each authenticated with that role's own token, and starts or stops that role's `legion worker-shim` and Oh My Pi when the daemon tells it to, each role's generation in Linux namespaces of its own.
@@ -2524,6 +2524,8 @@ runtime:
       node_selector: {}         # merged over legion.dev/pool=legion, which it may not name
       tolerations: []
       priority_class: legion
+    sandbox:                    # optional: the sandbox of the project's issue pods (Issue pods in microVMs, below)
+      type: gvisor              # default gvisor; microvm needs a microvm block that names its ComputeClass
     resources:                  # optional; two keys, each a pod's reservation: cpu and memory limits, each requested
                                 # in full unless cpu_request or memory_request sets less (Issue sizing: Guaranteed
                                 # or Burstable), so every pod is covered for the resource-limits capability with or
@@ -2592,7 +2594,7 @@ The project controller's pod has a volume of the same size — its Sandbox's own
 Nothing prunes `/legion/scratch`: it grows for the life of the pod, which is the life of the disk it sits on, and this change raises `issue_volume`'s default from `20Gi` to `50Gi` (`defaultIssueVolume`, `packages/daemon/internal/config/kubernetes.go`)
 — a default every project takes rather than a line of one deployment, so the apply this change needs is the image digest alone, with no deployment edit.
 The size rides in the pod's own ephemeral claim template, evaluated when the kubelet creates the claim, so every pod created after that apply gets 50 GiB and a pod already running keeps the size it started with.
-The disk size is one of the five keys of the `legion.dev/pod-shape` record a Sandbox carries ([The disk dies with its pod](#the-disk-dies-with-its-pod)), so a running issue pod is brought onto the new size by its update round, once every role in it has answered or at the round's bound, and the controller's pod, which no round covers, by the next launch into it.
+The disk size is one of the keys of the `legion.dev/pod-shape` record a Sandbox carries ([The disk dies with its pod](#the-disk-dies-with-its-pod)), so a running issue pod is brought onto the new size by its update round, once every role in it has answered or at the round's bound, and the controller's pod, which no round covers, by the next launch into it.
 That fits by the arithmetic alone: the shared layout's worst case for an issue that works all six roles is about 8.5 GiB
 — one temporary directory, one cache home, one data home, one bun install cache and one Go pair
 — against live volumes measured at 2.1 to 2.7 GiB of their 20 (01:45Z on 2026-10-21).
@@ -3053,6 +3055,222 @@ the check before the pane seed is written also has each daemon consume a Dispatc
 `legion-pane` is never granted the daemon's subjects above.
 Reversed, a daemon holding only the `legion-pane` seed connects as `legion-pane`, and each refused subject logs the error line above (a refused consumer or subscription never delivers).
 
+### Issue pods in microVMs
+
+A project's issue pods run under gVisor unless `runtime.kubernetes.sandbox` names the other sandbox for them.
+The other sandbox is a GKE Sandbox microVM: the pod runs under the `microvm` RuntimeClass, on the nodes of a ComputeClass the operator names.
+The block can put every issue pod of the project in a microVM, or only the pods of a list of its issues, for a canary.
+One daemon serves one project, so the block is that project's (`readSandbox`, `packages/daemon/internal/config/kubernetes.go`).
+`deploy/kubernetes/daemon/legion.yaml.example` carries it, commented out:
+
+```yaml
+runtime:
+  kubernetes:
+    sandbox:                                # optional
+      type: gvisor                          # gvisor (the default) or microvm
+      canary_issues: [WIDGETS-12]           # issues whose pods run in the sandbox type does not name; default []
+      microvm:                              # where a microVM pod runs
+        compute_class: example-microvm      # required while type is microvm or canary_issues names an issue
+        storage_class: example-microvm-disk # default: runtime.kubernetes.storage_class
+        metadata:                           # optional: the pod-local metadata endpoint (below)
+          workload_pool: example-project.svc.id.goog
+          identity_provider: https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster
+```
+
+- `type` is the sandbox of every issue pod of the project: `gvisor`, the default, or `microvm`.
+
+- `canary_issues` lists the issues whose pods run in the sandbox `type` does not name: in a microVM on a gVisor project, and in gVisor on a microVM project.
+  Each entry is one exact issue key, named once.
+
+- `microvm.compute_class` is the ComputeClass whose nodes run the microVM pods.
+  It is required while `type` is `microvm` or `canary_issues` names an issue.
+
+- `microvm.storage_class` is the StorageClass of a microVM pod's workspace volume.
+  Left out, it is `runtime.kubernetes.storage_class`.
+
+- `microvm.metadata` turns on the pod-local metadata endpoint ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
+
+An issue's sandbox is `type`, or the other one when `canary_issues` names the issue's exact key (`SandboxConfig.Of`).
+The daemon decides it each time a launch builds the issue's pod, from the issue the launch is for (`prepare`, `packages/daemon/internal/runtime/sandbox/manifest.go`).
+A `microvm` block does nothing while no issue pod runs in a microVM.
+The loader still checks its keys, but it requires no `compute_class` then and refuses none of the `scheduling` and `pod.env` keys below, so a revert that empties `canary_issues` can leave the block in place.
+`legion state --json` shows the block as the loader settled it, under `settings.runtime.kubernetes.sandbox`:
+`canary_issues` is `[]` when the file names none, `microvm` is absent when the file names no such block, and its `storage_class` is the class the microVM pods' disks use.
+
+The loader refuses each of these, naming the key, and `legion start --check-config` shows each before anything starts:
+
+- a `sandbox`, `microvm` or `metadata` that is not a mapping: `runtime.kubernetes.sandbox must be a mapping`, and likewise `runtime.kubernetes.sandbox.microvm` and `runtime.kubernetes.sandbox.microvm.metadata`.
+
+- a key the block does not know: `unknown key runtime.kubernetes.sandbox.<key>`, and likewise under `microvm` and `metadata`.
+
+- a `type` that is neither word: `runtime.kubernetes.sandbox.type must be 'gvisor' or 'microvm'`.
+
+- a `canary_issues` that is not a list of non-empty strings: `runtime.kubernetes.sandbox.canary_issues must be an array of non-empty strings`.
+
+- a `canary_issues` entry that is not an issue key: `runtime.kubernetes.sandbox.canary_issues entry "<entry>" is not an issue key, such as LEGION-208`.
+
+- a `canary_issues` entry named twice: `runtime.kubernetes.sandbox.canary_issues names <KEY> twice`.
+
+- no `microvm.compute_class` while an issue pod runs in a microVM: `runtime.kubernetes.sandbox.microvm.compute_class is required while runtime.kubernetes.sandbox.type is microvm or runtime.kubernetes.sandbox.canary_issues names an issue: the ComputeClass whose nodes run the microVM pods`.
+
+- a blank `compute_class` or `storage_class`: `runtime.kubernetes.sandbox.microvm.<key> must not be empty`.
+
+- a `metadata` block without `workload_pool`: `runtime.kubernetes.sandbox.microvm.metadata.workload_pool is required: the cluster's Workload Identity pool, <PROJECT_ID>.svc.id.goog`.
+
+- a `metadata` block without `identity_provider`: `runtime.kubernetes.sandbox.microvm.metadata.identity_provider is required: the cluster's identity provider, https://container.googleapis.com/v1/projects/<PROJECT_ID>/locations/<LOCATION>/clusters/<CLUSTER>`.
+
+- a `workload_pool` in another form: `runtime.kubernetes.sandbox.microvm.metadata.workload_pool "<value>" must be the cluster's Workload Identity pool, <PROJECT_ID>.svc.id.goog`.
+
+- an `identity_provider` in another form: `runtime.kubernetes.sandbox.microvm.metadata.identity_provider "<value>" must be the cluster's identity provider, https://container.googleapis.com/v1/projects/<PROJECT_ID>/locations/<LOCATION>/clusters/<CLUSTER>`.
+
+- a `scheduling.node_selector` key `sandbox.gke.io/runtime` while an issue pod runs in a microVM: `runtime.kubernetes.scheduling.node_selector must not set sandbox.gke.io/runtime while an issue pod runs in a microVM (runtime.kubernetes.sandbox): the RuntimeClass places the pod`.
+
+- a `scheduling.tolerations` key `sandbox.gke.io/runtime` while an issue pod runs in a microVM: `runtime.kubernetes.scheduling.tolerations[<n>].key must not be sandbox.gke.io/runtime while an issue pod runs in a microVM (runtime.kubernetes.sandbox): the RuntimeClass places the pod`.
+
+- a `pod.env` entry `GCE_METADATA_HOST` or `GCE_METADATA_IP` while `metadata` is set and an issue pod runs in a microVM: `runtime.kubernetes.pod.env must not set GCE_METADATA_HOST while runtime.kubernetes.sandbox.microvm.metadata is set and an issue pod runs in a microVM: that pod's launcher sets it to the metadata endpoint it serves`.
+
+**Where a microVM pod runs.**
+The daemon renders a microVM issue pod's placement from the block (`placement`, `manifest.go`):
+
+- `runtimeClassName: microvm`, in place of `gvisor`.
+
+- The node selector is a gVisor pod's, `legion.dev/pool: legion` and then the operator's `scheduling.node_selector`, with `cloud.google.com/compute-class` set to `microvm.compute_class`.
+  That entry replaces any class the operator's selector names, and every other entry stays.
+
+- The tolerations are a gVisor pod's, the pool's `legion.dev/pool=legion:NoSchedule` and then the operator's, less any operator toleration whose key is `cloud.google.com/compute-class`, which tolerates the class being replaced.
+  One toleration follows them: `cloud.google.com/compute-class=<compute_class>:NoSchedule`, operator `Equal`, the taint GKE puts on the nodes of a custom ComputeClass.
+
+- The priority class is `scheduling.priority_class`, as on every pod.
+
+- The pod names nothing of `sandbox.gke.io/runtime`.
+  GKE's `microvm` RuntimeClass adds that node affinity and its toleration to the pod at admission, which is why the loader refuses an operator selector or toleration on that key (above).
+
+The daemon never changes the operator's `scheduling` itself: every gVisor pod of the project keeps the selector and tolerations as the file writes them.
+
+**The label.**
+A microVM issue pod carries the label `legion.dev/sandbox: microvm`, and no gVisor pod carries it (`labelSandbox`, `names.go`).
+It is the label a NetworkPolicy selects the microVM pods by: `podSelector: {matchLabels: {legion.dev/sandbox: microvm}}`.
+It is on the pod template alone, so on the pod, and never on the Sandbox or its Secrets, which carry the labels a gVisor issue's do.
+A Sandbox is kept across its pods, and each of them can run in either sandbox, while the daemon builds the template again for each pod.
+
+**The disk.**
+A microVM pod's workspace volume, its generic ephemeral volume, is of `microvm.storage_class`, else of `storage_class`, at `issue_volume` (`diskSpec`, `manifest.go`).
+`diskSpec` is the one place an issue disk's claim takes its class from, so a source of the issue disk added later takes its class from the same place.
+The controller's disk is always of `storage_class`.
+
+**What stays in gVisor.**
+The controller's pod (`controller: daemon`), each repository cache pod and the image probe's pod run under gVisor whatever the block says, with the operator's `scheduling` as the file writes it (`probe.go`, `repocache.go`).
+So the boot's image probe runs the image under gVisor, and never in a microVM.
+
+**The stop-eviction annotations.**
+A microVM issue pod carries the annotations a gVisor issue pod carries: `karpenter.sh/do-not-disrupt: "true"`, `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` and `legion.dev/pod-shape`.
+On the nodes of a custom ComputeClass the two stop-eviction annotations hold no node upgrade off, as GKE Autopilot's extended duration does ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+The cluster's maintenance window decides when such a node is upgraded, and a pod the upgrade evicts ends as a pod whose node goes does ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
+
+**Drift.**
+A microVM pod's recorded shape (`legion.dev/pod-shape`, [The disk dies with its pod](#the-disk-dies-with-its-pod)) holds a `sandbox` member: its RuntimeClass, its ComputeClass, its disk's StorageClass and its metadata endpoint (`sandboxShape`, `drift.go`).
+A gVisor pod's shape holds no `sandbox` member, so it reads byte for byte as a shape recorded before the block existed, and adding the block opens no update round on a gVisor pod.
+The sweep compares each issue pod with the shape of the sandbox the configuration now gives the pod's issue (`storedShapeKey`, `drift.go`).
+So a change of an issue's sandbox, through `canary_issues` or `type`, opens an update round on each pod it moves, and on no other pod.
+The round names the drift `sandbox null, now {…}` for a pod that moves into a microVM, and `sandbox {…}, now null` for one that moves back.
+A change of `microvm.compute_class`, `microvm.storage_class` or `microvm.metadata` opens a round on each microVM pod alone.
+With `microvm.storage_class` left out, the microVM pods take `storage_class`, so a change of `storage_class` opens a round on each microVM pod, and still on no gVisor pod.
+The controller's pod runs in gVisor in every configuration, so the block never changes its shape.
+A role launched into a pod that its round keeps starts as that pod was built:
+the launcher's `--microvm` and metadata flags and the projected token are fixed when the pod is created, and nothing the daemon sends a generation depends on the sandbox.
+So a role of a gVisor pod whose issue joins `canary_issues` starts in gVisor until the round replaces that pod.
+
+**Rolling back.**
+A daemon of an earlier release refuses the key at boot (`unknown key runtime.kubernetes.sandbox`), so a rollback removes the `sandbox` block from `legion.yaml` before it pins the earlier release.
+`legion start --check-config` of that release shows the refusal first.
+An earlier daemon reads no `sandbox` member in a pod's recorded shape, so it replaces a microVM pod only for another drift.
+The earlier image is such a drift, so each microVM pod's update round brings its issue back to a gVisor pod.
+
+#### The pod-local metadata endpoint
+
+Under Workload Identity a pod gets its Google credential from GKE's metadata server on its node.
+Set `microvm.metadata` when a microVM pod does not reach that server.
+Each microVM issue pod's launcher then serves, inside the pod, the paths of that server a Google client reads for the pod's own account (`packages/daemon/internal/launcher/metadata.go`).
+It gets the access token it hands out the way GKE's server does: it exchanges a projected Kubernetes ServiceAccount token at Google's Security Token Service.
+A gVisor pod, and a microVM pod without the block, get none of it.
+
+The block has two keys, and both are required:
+
+- `workload_pool` is the cluster's Workload Identity pool, `<PROJECT_ID>.svc.id.goog`.
+
+- `identity_provider` is the cluster's identity provider, `https://container.googleapis.com/v1/projects/<PROJECT_ID>/locations/<LOCATION>/clusters/<CLUSTER>`.
+
+With the block the daemon adds two things to each microVM issue pod (`workloadIdentityVolumes`, `manifest.go`, and `issuePod.launcherContainer`, `podkind.go`):
+
+- a projected ServiceAccount token volume, `workload-identity-token`, for the audience `workload_pool`, with `expirationSeconds: 3600` and mode 0440, mounted read-only at `/var/run/legion/roles/workload-identity` (`WorkloadIdentityDir`, `names.go`), where the token is the file `token`.
+  The directory is under `/var/run/legion/roles`, which every role's namespace covers, so no role's process reads the token.
+  The kubelet writes a fresh token before the old one expires, and the launcher reads the file again at each exchange.
+
+- the launcher flags `--metadata-workload-pool <workload_pool> --metadata-identity-provider <identity_provider>`, beside `--microvm`.
+
+Before it starts any role, the launcher listens at `127.0.0.1:8169`.
+That is the pod's loopback, which every role shares, since a role has no network namespace of its own.
+Once it listens, it sets `GCE_METADATA_HOST` and `GCE_METADATA_IP` to that address in its own environment, so its own Google clients read the endpoint, the session database's proxy under `cloudsql-iam` among them ([Selecting the store](#selecting-the-store)).
+It also sets both on every role generation it starts, over any value the generation's start command carried, so a role is told only the address its own launcher serves.
+Go's `cloud.google.com/go/compute/metadata` and Python's `google-auth` read `GCE_METADATA_HOST`, and Node's `gcp-metadata` reads `GCE_METADATA_IP` before it.
+So `runtime.kubernetes.pod.env` must not set either variable while the endpoint is on (the refusal above).
+A launcher that serves no endpoint leaves each generation's environment as it is.
+
+The endpoint answers each path below as GKE's server answered it from a Legion issue pod: the status, the `Metadata-Flavor: Google` header where GKE's carries it, the `Content-Type` (`application/text`, or `application/json` for a JSON body), the `Location` of a 301, and the body.
+`packages/daemon/internal/launcher/testdata/gke-metadata.json` holds that recording, and the endpoint's tests compare its answers with it.
+`<pool>` is `workload_pool`, `<account>` is `default` or `<pool>`, and each path below that does not start with `/` is under `/computeMetadata/v1/`:
+
+- `/` answers `computeMetadata/`, and `/computeMetadata/` answers `v1/`, to any request.
+
+- `/computeMetadata/v1/` itself lists `instance/`, `project/` and `universe/`.
+
+- `project/` lists `project-id`, and `project/project-id` answers `<pool>` without `.svc.id.goog`.
+
+- `instance` answers 301 to `instance/`, which lists `service-accounts/` alone, the one entry of GKE's list that the endpoint serves.
+
+- `instance/service-accounts` answers 301 to `instance/service-accounts/`, which lists `default/` and `<pool>/`.
+
+- `instance/service-accounts/<account>` answers 301 to the same path with a final `/`, which lists `aliases`, `email`, `scopes` and `token`.
+  With `?recursive=true` that directory answers the JSON `{"aliases":["default"],"email":"<pool>","scopes":[…]}`.
+
+- `instance/service-accounts/<account>/email` answers `<pool>`, `aliases` answers `default`, and `scopes` lists `https://www.googleapis.com/auth/cloud-platform` and `https://www.googleapis.com/auth/userinfo.email`.
+
+- `instance/service-accounts/<account>/token` answers `{"access_token":"…","expires_in":<n>,"token_type":"Bearer"}`, where `<n>` is the whole seconds the token has left.
+  `?scopes=<a>,<b>` names the token's scopes, and a request that names none gets `https://www.googleapis.com/auth/cloud-platform`.
+
+- `universe/` lists `universe-domain` and `universe_domain`, and each of the two answers `googleapis.com`.
+
+The token is the one Google's Security Token Service gives for the projected token: the launcher sends it to `https://sts.googleapis.com/v1/token` with the audience `identitynamespace:<workload_pool>:<identity_provider>` and the subject token type `urn:ietf:params:oauth:token-type:jwt`.
+The launcher keeps one token for each set of scopes, for at most 16 sets, and exchanges again at the first request after that token has less than 5 minutes left.
+One exchange waits at most 30 seconds.
+The endpoint impersonates no Google service account.
+The account it names and the token it hands out are the pool's own, which is what GKE's server answers for a Kubernetes ServiceAccount bound to no Google service account.
+So a pod whose ServiceAccount is bound to a Google service account gets the pool's token from the endpoint, not that service account's.
+
+The endpoint serves no other path.
+Among those are `project/numeric-project-id`, `instance/zone`, `instance/hostname`, `instance/id`, every `attributes/` path, and `instance/service-accounts/<account>/identity`, which GKE's server answers 404 for an account bound to no Google service account.
+It answers each of them 404 `Not Found`, as GKE's server answers a path it does not know, and answers `?recursive=true` on any directory but an account's the same way.
+The first time it answers a path so, it logs `launcher: metadata: not served path=<path>` in the `roles` container's log, with no role prefix, so the log names each path a tool asked for and did not get.
+It remembers at most 256 such paths, and logs no path past them.
+
+Every path under `/computeMetadata/v1/` refuses a request without `Metadata-Flavor: Google` with 403 `Missing required header "Metadata-Flavor": "Google"`, as GKE's server does.
+It refuses a request with an `X-Forwarded-For` header with 403 `Request cannot contain header: X-Forwarded-For`, also as GKE's server does, so a request a proxy forwards gets no token.
+Both refusals come before anything else is read.
+
+A failed exchange answers 500 `token exchange failed`.
+It logs `launcher: metadata: token exchange failed scopes="<scopes>" reason="<the service's error>"`, at most one such line a minute, with the reason cut to 256 bytes and never a token in it.
+
+A listen that fails, as when another process of the container holds the address, logs `launcher: metadata: off reason=<error>` and sets neither variable, in the launcher's own environment or on any generation.
+The pod and its roles then run without the endpoint, and the container does not fail.
+
+The endpoint was proven on 2026-11-15 against a fake Security Token Service, with the launcher's server at `127.0.0.1:8169` and each client told its address through `GCE_METADATA_HOST` and `GCE_METADATA_IP`:
+Go's `cloud.google.com/go/compute/metadata` (`OnGCE`, the project id and the email) and `golang.org/x/oauth2/google` (`FindDefaultCredentials`), Python's `google-auth` 2.62.2 (`google.auth.default`), Node's `gcp-metadata` 9.2.3, and a `curl` of `instance/service-accounts/default/token`.
+Each library read the project `example-project` and the fake service's token, the `curl` read that token, and the launcher logged no `not served` line.
+
+#### Memory in a microVM pod
+
+A later commit of this change writes this subsection.
+
 ### The deployment's capability report
 
 `packages/daemon/internal/capabilities` is the one list of what a Legion worker can do (LEGION-578:
@@ -3165,6 +3383,7 @@ The example `legion.yaml` (`deploy/kubernetes/daemon/legion.yaml.example`) leave
 
 Each Sandbox carries `legion.dev/project`, `legion.dev/tree` and `legion.dev/issue` (`names.go`):
 one Sandbox per issue, shared by every role that works it, owning its pod and the role Secrets and no volume at all.
+A microVM issue pod's template carries one label more, `legion.dev/sandbox: microvm`, which the Sandbox and its Secrets do not carry ([Issue pods in microVMs](#issue-pods-in-microvms)).
 The pod template (`manifest.go`) has two init containers, three with a `skills_repository`, and one container, `roles`, which runs every workflow role (`claim.Roles`:
 architect, planner, implementer, tester, reviewer, merger):
 
@@ -3239,6 +3458,7 @@ architect, planner, implementer, tester, reviewer, merger):
    `/opt/legion/bin/legion launcher --connect tcp://<advertise_host, or bind with none
    set>:<worker_stream_port> --sandbox <name> --roles-dir /var/run/legion/roles --role architect
    --role planner --role implementer --role tester --role reviewer --role merger --stop-grace <d>`, the pod's uid from `POD_UID` (the downward API).
+   A microVM issue pod's command adds `--microvm`, and, where the deployment sets `runtime.kubernetes.sandbox.microvm.metadata`, `--metadata-workload-pool <pool> --metadata-identity-provider <provider>` after it, all before `--stop-grace` ([Issue pods in microVMs](#issue-pods-in-microvms)).
    It holds one authenticated worker-stream connection per role, each with that role's own launcher token, read from `/var/run/legion/roles/<role>/launcher/LAUNCHER_TOKEN`, and starts and stops each role's `legion worker-shim` (Oh My Pi) child on the daemon's command, never a worker process of its own.
    Its log has one line for each connection the daemon accepted, `launcher: connected to the
    daemon at <address> as launcher <id> (sandbox <name>, role <role>, pod <uid>)`, and one for each connection that ended, `launcher: daemon connection: <why>; reconnecting`, so a connected launcher reads apart from one still dialing.
@@ -3300,6 +3520,7 @@ The `roles` container mounts each role `<r>`'s own volumes under its directory o
 the launcher token, as `LAUNCHER_TOKEN`), `/var/run/legion/roles/<r>/gh` (`gh-<r>`, read-only:
 the role's gh bundle, each directory's two keys as `<dir>/hosts.yml` and `<dir>/config.yml`), `/var/run/legion/roles/<r>/private` (`private-<r>`, memory), `/var/run/legion/roles/<r>/state` (`state-<r>`, memory) and, only when the pod enrolls with the secrets broker, `/var/run/legion/roles/<r>/agent-secrets` (`agent-secrets-key-<r>`, memory).
 One disk `emptyDir`, `role-homes`, is at `/var/run/legion/roles/.homes`.
+A microVM issue pod whose deployment sets `runtime.kubernetes.sandbox.microvm.metadata` also mounts the projected token volume `workload-identity-token`, read-only, at `/var/run/legion/roles/workload-identity`, where no role's namespace shows it ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 The pod's shared mounts appear once: the issue volume at `/legion`, the config home, the feed read-only, the providers Secret's configured keys when there are any (with its `NATS_NKEY_SEED` key when the daemon has a NATS nkey seed), the broker's token when the pod enrolls, and the operator's volumes and mounts.
 Every one of them that belongs at or under `/home/legion` (the config home at `.config`, an operator's mount there) is mounted under `/var/run/legion/home` at the same relative path instead, so `/home/legion` itself carries no mount in the `roles` container;
 each role's namespace binds it back at its own path, except the config home.
@@ -3413,6 +3634,8 @@ Dispatch takes any other bearer as a service token or a personal token (`optiona
 for a shared agent token it answers `Session <id> runs under the shared token: no owner, …` (`packages/envoy-client/src/dispatch-commands/session.ts`).
 
 The one Kubernetes service-account token this runtime projects for a role is the broker's, `agent-secrets-token` under `runtime.kubernetes.agent_secrets` (`agentSecretsVolumes`, `manifest.go`), and it reaches the secrets broker and nothing else.
+A microVM issue pod whose deployment sets `runtime.kubernetes.sandbox.microvm.metadata` carries a second projected token, `workload-identity-token`, for the Workload Identity pool's audience.
+No role's namespace shows it, and the pod's launcher exchanges it at Google's Security Token Service for the token its metadata endpoint hands out ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 Dispatch can verify a projected token minted for its own audience (`DISPATCH_OIDC_AUDIENCE` in `packages/envoy/cmd/dispatch/settings.go`, checked by `serviceTokenActor` in `packages/envoy/internal/dispatch/api/server.go`), and the runtime projects none.
 The operator's own pod volumes are outside this statement: the operator controls them.
 An operator-launched controller can differ:
@@ -3575,13 +3798,13 @@ The init containers never call `codegraph`.
 
 Every pod runs:
 
-- with `runtimeClassName: gvisor`;
+- with `runtimeClassName: gvisor`, except an issue pod whose sandbox is a microVM, which runs with `runtimeClassName: microvm` ([Issue pods in microVMs](#issue-pods-in-microvms));
 
 - with `serviceAccountName` set to the operator's `pod.service_account` (the namespace's default when it names none) and `automountServiceAccountToken: false`;
 
 - under Pod Security "restricted": non-root user 1000 on the pod, and on each container no privilege escalation, ALL capabilities dropped and the RuntimeDefault seccomp profile;
 
-- on the Legion pool, with its node selector and toleration, and nothing else of its placement that Legion itself sets:
+- on the Legion pool, with its node selector and toleration (and, for a microVM issue pod, the `cloud.google.com/compute-class` selector and toleration of its ComputeClass), and nothing else of its placement that Legion itself sets:
   no affinity (GKE Autopilot adds its own to an annotated pod, below);
 
 - `Guaranteed` at the default reservations:
@@ -3887,7 +4110,7 @@ Run no `git` or `jj` in the pod, and bring no credential into it, for two reason
 - **The shell can read every role's credentials.**
   `kubectl exec -c roles` runs as user 1000, the launcher's own user, outside every role's namespaces, so it can read everything under `/var/run/legion/roles/`.
   The pod's `fsGroup` opens the mode-0440 mounts to it:
-  each role's gh files (`<role>/gh`) and launcher token (`<role>/launcher`), the providers Secret at `/var/run/legion/providers` (the provider keys, the `legion-pane` NATS nkey seed when the daemon has one and, under `postgres`, the session database's URL, the login to every conversation of the deployment) and, when the pod is enrolled with the secrets broker, the projected ServiceAccount token at `/var/run/legion/agent-secrets-token`.
+  each role's gh files (`<role>/gh`) and launcher token (`<role>/launcher`), the providers Secret at `/var/run/legion/providers` (the provider keys, the `legion-pane` NATS nkey seed when the daemon has one and, under `postgres`, the session database's URL, the login to every conversation of the deployment), the projected ServiceAccount token at `/var/run/legion/agent-secrets-token` when the pod is enrolled with the secrets broker, and the Workload Identity pool's projected token at `/var/run/legion/roles/workload-identity/token` in a microVM pod with the metadata endpoint.
   It reads the rest as their owner: each running generation's `<role>/private/g<generation>/` files, which the launcher writes owner-only (the boot token, the Envoy and Dispatch bearers, a spec's secrets and, under `cloudsql-iam`, the session database's URL file and socket), each role's `<role>/agent-secrets/` key directory and each role's home under `.homes/`, whose files a role writes as user 1000 outside its namespaces.
   It reads each agent's environment through `/proc/<pid>/environ` too, and whatever the operator's `runtime.kubernetes.pod.volume_mounts` mount.
   Where the pods' ServiceAccount is federated to a cloud identity, it can act as that identity, as every role can.
@@ -4637,6 +4860,7 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
 The update round is how a configuration change reaches a running issue pod without taking the disk out from under it (INFRA-484).
 Every launch records the configuration its pod was built from on the pod template, as the `legion.dev/pod-shape` annotation (`podShape` in `internal/runtime/sandbox/drift.go`, written where the template is built):
 the image every container runs, the pod kind's one reservation, the operator's `runtime.kubernetes.pod` volumes and mounts, and the size of the pod's disk.
+A microVM issue pod's record also holds the sandbox it runs in, and a gVisor pod's holds none ([Issue pods in microVMs](#issue-pods-in-microvms)).
 The orphan sweep compares that record with what the runtime would build now, and adds the three facets of the live pod whose worker can still be reached
 — the operator's volume and mount holding the role's overlays, the secrets broker's enrollment, and the session store (`PodDrift`).
 Quantities are compared as amounts, so a disk written `1024Mi` and one written `1Gi` are no drift.
