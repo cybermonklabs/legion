@@ -7,7 +7,9 @@
 // internal/testpg, which imports testcontainers-go, and testcontainers-go's package init reads
 // every process on the machine at each start of a binary that links it. The browser suite starts
 // requestseed several times per row, so a row paid that read each time. This package therefore
-// imports nothing that reaches the rig or testcontainers, and nothing added here may.
+// imports nothing that reaches the rig or testcontainers, and nothing added here may: ci.yaml's
+// ci-filters job fails a command that links testcontainers, naming its import chain
+// (.github/scripts/testcontainers_links.py).
 package podclient
 
 import (

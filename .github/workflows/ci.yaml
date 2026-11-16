@@ -315,6 +315,7 @@ jobs:
       repo_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.repo_paths_test }}
       select_e2e_proofs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.select_e2e_proofs_test }}
       go_tagged_tests_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_tagged_tests_test }}
+      testcontainers_links_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.testcontainers_links_test }}
       ci_ok_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_test }}
       ci_ok_report_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_report_test }}
       ci_ok_reconcile_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_reconcile_test }}
@@ -1423,6 +1424,12 @@ jobs:
               # :204 runs the lister over this repository's own packages/envoy/cmd/listener and
               # holds its answer to one function, so those test files decide what the step prints.
               - 'packages/envoy/cmd/listener/*_test.go'
+            testcontainers_links_test: &testcontainers_links_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/testcontainers_links.test.sh'
+              - '.github/scripts/testcontainers_links.py'
             ci_ok_test: &ci_ok_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1616,6 +1623,7 @@ jobs:
               - *repo_paths_test
               - *select_e2e_proofs_test
               - *go_tagged_tests_test
+              - *testcontainers_links_test
               - *ci_ok_test
               - *ci_ok_report_test
               - *ci_ok_reconcile_test
@@ -3533,7 +3541,9 @@ jobs:
             # whose change can move a Go closure (Go code anywhere, the modules' embedded files and
             # testdata, every module and workspace file, the target lists the go commands expand
             # over), every workflow file, and the check's own script, engine, data, rules and path
-            # model.
+            # model. The job's second check, testcontainers_links.py, lists every command and
+            # self-starting test binary of the two modules with go list, a subset of those
+            # closures, and is its own script.
             ci_filters:
               # The directory rather than the four workflows the check names one by one (this
               # file, docs-pages.yaml, docs-site.yaml and ci-caches.yaml): its rules read every
@@ -3547,6 +3557,7 @@ jobs:
               - '.github/scripts/ci_job_reads.py'
               - '.github/scripts/ci_workflow_rules.py'
               - '.github/scripts/workflow_paths.py'
+              - '.github/scripts/testcontainers_links.py'
               - '.github/go-release-targets.json'
               - '.github/agent-secrets-client-targets.json'
               - '.github/envoy-infra-targets.json'
@@ -4596,6 +4607,7 @@ jobs:
       repo_paths_test: ${{ needs.changes.outputs.repo_paths_test }}
       select_e2e_proofs_test: ${{ needs.changes.outputs.select_e2e_proofs_test }}
       go_tagged_tests_test: ${{ needs.changes.outputs.go_tagged_tests_test }}
+      testcontainers_links_test: ${{ needs.changes.outputs.testcontainers_links_test }}
       ci_ok_test: ${{ needs.changes.outputs.ci_ok_test }}
       ci_ok_report_test: ${{ needs.changes.outputs.ci_ok_report_test }}
       ci_ok_reconcile_test: ${{ needs.changes.outputs.ci_ok_reconcile_test }}
@@ -5311,7 +5323,11 @@ jobs:
 
   # Holds every filter in `changes` to every file its job reads, recomputing each Go job's closure
   # with go list (.github/scripts/check-ci-filters.sh). go list runs with GOPROXY=off over an empty
-  # module cache, so the job needs Go but downloads no module and restores no cache.
+  # module cache, so that check needs Go but downloads no module. The job's second step,
+  # .github/scripts/testcontainers_links.py, lists the commands and self-starting test binaries of
+  # the daemon and envoy modules with their third-party packages, so it downloads the modules they
+  # need into the runner's empty cache: 236 modules, 368 MB of zips and 17 s on a devbox
+  # (dispatch://INFRA-3904). It restores no cache.
   ci-filters:
     needs: changes
     if: needs.changes.outputs.ci_filters == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')

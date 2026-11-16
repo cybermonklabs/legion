@@ -162,6 +162,11 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   on a pull request that run executes the pull request's own copy of the build workflow, and of the `install-crane` action and `.github/scripts/ci_images.py` it runs before the build, none of which is checked against the bytes it pushed.
   A gate on the bytes would read the attestation's source commit; none exists, by the controller's decision, no such attack having been seen, and no by-hand reading stands in for it (one was written and withdrawn, dispatch://INFRA-1443)
 
+- **No command and no test binary that starts itself links testcontainers-go.**
+  Its package init reads every process on the machine at each start of a binary that links it, which is seconds on a crowded devbox, so a command pays it at every start and a self-starting test at every child it starts.
+  What such a binary needs lives in a package that imports no testcontainers: `internal/broker/brokertest/podclient`, split from the broker rig so `requestseed` would not link `storetest`'s `testpg`, is the precedent.
+  `ci.yaml`'s `ci-filters` job runs `.github/scripts/testcontainers_links.py`, which lists every main package of `packages/envoy` and `packages/daemon` and every test binary there that starts itself, and fails naming each one that links it with the import chain that brings it in.
+
 - **Tool assets** that a CI job installs through one of eight actions — `setup-bun`, `install-crane`, `install-changie`, `install-jj`, `install-elan`, `install-uv`, `install-docker-plugin` and `install-pulumi` — have a second source, so an hour of 504s on one service does not stop those eight installs.
   `.github/ci-tools.yaml` holds one row per asset, eleven of them: crane, changie, mise, jj, one per Bun build variant, elan, uv, the docker provider plugin and the Pulumi CLI.
   Each row names the one pinned digest both of that asset's sources are checked against, so no action holds a version or a digest of its own, and it names the source of each of its two sides, `primary_source` and `second_source`, in one of five words.
