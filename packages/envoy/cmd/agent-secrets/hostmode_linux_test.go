@@ -3,13 +3,15 @@
 
 // fakeHelperWithPids and TestRegisterExecStillPinsTheReplacedProcess need helper.PeerOf
 // (SO_PEERPIDFD), which is Linux-only (internal/broker/helper/peer.go carries the same
-// //go:build linux); everything else in hostmode_test.go that never needs to observe a
-// connecting pid stays untagged so a darwin build of this package's test binary isn't broken by
-// a helper detail no darwin client build ever touches.
+// //go:build linux), and the register tests below check the root a helper answers against this
+// process's /proc ancestry; everything else in hostmode_test.go that never needs either stays
+// untagged so a darwin build of this package's test binary isn't broken by a helper detail no
+// darwin client build ever touches.
 package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -26,9 +28,16 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/helper"
 )
 
-// fakeHelperWithPids answers one canned line per connection and records the peer pid of each
-// request — the pidfd pin only Linux provides.
-func fakeHelperWithPids(t *testing.T, canned helper.Response) (string, <-chan int) {
+// peerRequest is one connection fakeHelperWithPids answered: the pid the kernel names for its
+// peer (0 when it named none) and the request line, as sent.
+type peerRequest struct {
+	pid  int
+	line string
+}
+
+// fakeHelperWithPids answers one canned line per connection and records the peer pid and the
+// request line of each — the pidfd pin only Linux provides.
+func fakeHelperWithPids(t *testing.T, canned helper.Response) (string, <-chan peerRequest) {
 	t.Helper()
 	sock := filepath.Join(shortTempDir(t), "h.sock")
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
@@ -36,33 +45,35 @@ func fakeHelperWithPids(t *testing.T, canned helper.Response) (string, <-chan in
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
-	pids := make(chan int, 8)
+	seen := make(chan peerRequest, 8)
 	go func() {
 		for {
 			conn, err := ln.AcceptUnix()
 			if err != nil {
 				return
 			}
-			peer, err := helper.PeerOf(conn)
-			if err == nil {
-				pids <- peer.PID()
+			var got peerRequest
+			if peer, err := helper.PeerOf(conn); err == nil {
+				got.pid = peer.PID()
 				peer.Close()
 			}
-			_, _ = bufio.NewReader(conn).ReadBytes('\n')
+			line, _ := bufio.NewReader(conn).ReadBytes('\n')
+			got.line = string(line)
+			seen <- got
 			data, _ := json.Marshal(canned)
 			_, _ = conn.Write(append(data, '\n'))
 			conn.Close()
 		}
 	}()
-	return sock, pids
+	return sock, seen
 }
 
 // TestRegisterExecStillPinsTheReplacedProcess must run in a subprocess: --exec replaces the
-// process image. With --exec the client sends no root at all — the pid the helper pins is the
-// very pid the command runs as — and that is unchanged by the launcher ancestor the other forms
-// now name.
+// process image. With --exec the client sends no root and does not attach — the pid the helper
+// pins is the very pid the command runs as — and that is unchanged by the launcher ancestor the
+// other forms now name.
 func TestRegisterExecStillPinsTheReplacedProcess(t *testing.T) {
-	sock, pids := fakeHelperWithPids(t, helper.Response{OK: true, State: "enrolling", RuntimeID: "session-exec"})
+	sock, requests := fakeHelperWithPids(t, helper.Response{OK: true, State: "enrolling", RuntimeID: "session-exec"})
 	cmd := exec.Command("go", "run", ".", "register", "--session-id", "exec", "--exec", "--", "sh", "-c", "echo $$")
 	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock)
 	out, err := cmd.Output()
@@ -74,9 +85,12 @@ func TestRegisterExecStillPinsTheReplacedProcess(t *testing.T) {
 		t.Fatalf("sh must print its pid, got %q", out)
 	}
 	select {
-	case registered := <-pids:
-		if registered != printed {
-			t.Fatalf("the pid the helper pinned (%d) must be the pid the command runs as (%d)", registered, printed)
+	case seen := <-requests:
+		if seen.pid != printed {
+			t.Fatalf("the pid the helper pinned (%d) must be the pid the command runs as (%d)", seen.pid, printed)
+		}
+		if strings.Contains(seen.line, `"root_pid"`) || strings.Contains(seen.line, `"attach"`) {
+			t.Fatalf("register --exec sent %s; want neither root_pid nor attach", strings.TrimSpace(seen.line))
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the helper saw no register")
@@ -259,24 +273,47 @@ func TestRegisterSessionIDInsideAnUnregisteredOmpAttachesTheOmpTree(t *testing.T
 }
 
 // TestRegisterWithoutAnOmpAncestorRefusesAndSendsNothing: with no session launcher anywhere above
-// it, `register --session-id` refuses and sends the helper nothing at all, rather than enrolling a
-// session whose root is the command's own process and printing `enrolled` for it.
+// it and in no session, `register --session-id` is refused NOT_A_SESSION by the helper, which
+// alone knows the caller is in no session, and nothing is registered, rather than a session whose
+// root is the command's own process, with `enrolled` printed for it. The register request does
+// reach the helper: the name, which the verification's check k1 runs, now means no registration.
 func TestRegisterWithoutAnOmpAncestorRefusesAndSendsNothing(t *testing.T) {
 	binary := buildAgentSecrets(t)
-	sock, requests := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled"})
+	sock := realHelper(t)
 	code, stdout, stderr := runWithNoLauncherAbove(t, binary,
 		[]string{"AGENT_SECRETS_HELPER_SOCK=" + sock, "AGENT_SECRETS_KEY_DIR=", "HOME=" + t.TempDir(), "XDG_RUNTIME_DIR=" + t.TempDir()},
 		"register", "--session-id", "s-3890", "--wait", "5")
 	if code != 1 || stdout != "" {
 		t.Fatalf("register with no launcher above it: exit %d, stdout %q, stderr %q; want 1 and nothing on stdout", code, stdout, stderr)
 	}
-	if !strings.Contains(stderr, "no session launcher (omp)") || !strings.Contains(stderr, "register --exec") {
-		t.Fatalf("the refusal names the missing launcher and the relaunch: %q", stderr)
+	for _, want := range []string{helper.CodeNotASession, "no session launcher (omp)", "register --exec"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("the helper's refusal names %q: %q", want, stderr)
+		}
 	}
-	select {
-	case req := <-requests:
-		t.Fatalf("the helper was sent %+v; a refused register sends it nothing", req)
-	case <-time.After(250 * time.Millisecond):
+	if sessions := helperSessions(t, sock); len(sessions) != 0 {
+		t.Fatalf("a refused register registered %+v", sessions)
+	}
+}
+
+// TestRegisterSessionIDInsideAnExecSessionWithNoOmpNamesIt: a session `register --exec` started
+// for a command that is no launcher — the operator's dotfiles start Claude Code sessions as
+// `register --exec -- claude`, and their SessionStart hook runs `register --session-id` from
+// inside — has no `omp` above the hook. The helper finds the caller inside that session and names
+// it, so the register prints the session-scoped runtime id and `enrolled` and exits 0, and
+// identity from the same tree exits 0. `sh` stands for `claude` here.
+func TestRegisterSessionIDInsideAnExecSessionWithNoOmpNamesIt(t *testing.T) {
+	rig := brokertest.NewRig(t)
+	binary := buildAgentSecrets(t)
+	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
+	if code, exit, stderr := machineLoginThen(t, rig, binary, sock, "approve", nil); exit != 0 {
+		t.Fatalf("machine login (code %s): exit %d, stderr %q", code, exit, stderr)
+	}
+	code, stdout, stderr := runWithNoLauncherAbove(t, binary,
+		[]string{"AGENT_SECRETS_HELPER_SOCK=" + sock, "AGENT_SECRETS_URL=" + rig.URL, "AGENT_SECRETS_KEY_DIR=", "HOME=" + t.TempDir(), "XDG_RUNTIME_DIR=" + t.TempDir()},
+		"register", "--exec", "--", "sh", "-c", `"$0" register --session-id s-exec --wait 5 || exit $?; "$0" identity >/dev/null || exit 10`, binary)
+	if code != 0 || !strings.HasPrefix(stdout, "session-s-exec\t") || !strings.HasSuffix(strings.TrimSpace(stdout), "enrolled") {
+		t.Fatalf("register --session-id inside an --exec session with no omp: exit %d (10: identity refused), stdout %q, stderr %q; want 0 and session-s-exec enrolled", code, stdout, stderr)
 	}
 }
 
@@ -386,4 +423,224 @@ func ancestorNamed(t *testing.T, pid int, name string) (int, bool) {
 		pid = parent
 	}
 	return 0, false
+}
+
+// parentPID is pid's parent as /proc names it, read here rather than through the code under
+// test so it can contradict it.
+func parentPID(t *testing.T, pid int) int {
+	t.Helper()
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat := string(data)
+	fields := strings.Fields(stat[strings.LastIndexByte(stat, ')')+2:])
+	parent, err := strconv.Atoi(fields[1])
+	if err != nil {
+		t.Fatalf("/proc/%d/stat names the parent %q: %v", pid, fields[1], err)
+	}
+	return parent
+}
+
+// stubLauncher makes nearestLauncher answer pid and err for this test: every register without
+// --exec asks it which ancestor to name, and a test process is not started by a session
+// launcher.
+func stubLauncher(t *testing.T, pid int, err error) {
+	t.Helper()
+	previous := nearestLauncher
+	nearestLauncher = func() (int, error) { return pid, err }
+	t.Cleanup(func() { nearestLauncher = previous })
+}
+
+// fixedLauncher makes this test process's parent its launcher: a real ancestor, since the
+// command checks that the root the helper answers is one. It returns that pid.
+func fixedLauncher(t *testing.T) int {
+	t.Helper()
+	launcher := os.Getppid()
+	stubLauncher(t, launcher, nil)
+	return launcher
+}
+
+// TestRegisterWithoutExecPrintsRuntimeEnrollmentState covers register's contract without
+// --exec: "<runtime_id>\t<enrollment_id>\t<state>" on stdout, exit 0.
+func TestRegisterWithoutExecPrintsRuntimeEnrollmentState(t *testing.T) {
+	launcher := fixedLauncher(t)
+	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolled", RootPID: launcher})
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
+	var stdout, stderr bytes.Buffer
+	code := cmdRegister(nil, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("register: exit %d, stderr %q", code, stderr.String())
+	}
+	if got, want := stdout.String(), "h:1:1\tenr-h\tenrolled\n"; got != want {
+		t.Fatalf("register output: got %q, want %q", got, want)
+	}
+}
+
+// TestRegisterWithoutAWaitPrintsEnrollingAndExitsZero: with no positive --wait, a confirmed root
+// whose session is still enrolling is printed as that state, and the command exits 0.
+func TestRegisterWithoutAWaitPrintsEnrollingAndExitsZero(t *testing.T) {
+	launcher := fixedLauncher(t)
+	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolling", Error: "waiting on approver", RootPID: launcher})
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
+	var stdout, stderr bytes.Buffer
+	code := cmdRegister(nil, &stdout, &stderr)
+	if code != 0 || stdout.String() != "h:1:1\tenr-h\tenrolling\n" || stderr.String() != "" {
+		t.Fatalf("register with no wait, still enrolling: exit %d, stdout %q, stderr %q; want 0, the enrolling line and nothing on stderr", code, stdout.String(), stderr.String())
+	}
+}
+
+// TestRegisterSendsTheNearestLauncherAsRoot: without --exec the client attaches (the helper must
+// never pin its own process, which ends with the command) and names the session launcher it found
+// above itself as the root to pin. The fields go on the wire as attach and root_pid.
+func TestRegisterSendsTheNearestLauncherAsRoot(t *testing.T) {
+	launcher := fixedLauncher(t)
+	sock, reqs := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled", RootPID: launcher})
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
+	var stdout, stderr bytes.Buffer
+	if code := cmdRegister([]string{"--session-id", "s"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("register --session-id: exit %d, stderr %q", code, stderr.String())
+	}
+	select {
+	case req := <-reqs:
+		if req.Op != "register" || !req.Attach || req.RootPID != launcher {
+			t.Fatalf("the request the helper saw: %+v; want register, attach, root_pid %d", req, launcher)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the fake helper saw no request")
+	}
+	wire, err := json.Marshal(helper.Request{Op: "register", Attach: true, RootPID: 4242})
+	if err != nil || !strings.Contains(string(wire), `"attach":true`) || !strings.Contains(string(wire), `"root_pid":4242`) {
+		t.Fatalf("the fields go on the wire as attach and root_pid: %s %v", wire, err)
+	}
+}
+
+// TestRegisterWithNoLauncherStillAsksTheHelper: with no `omp` above it, register attaches and
+// names no root, and the helper decides: it alone knows whether the caller is inside a session
+// already (one `register --exec -- claude` started, say). Its answer for that session, rooted
+// above this process, is printed, and the command exits 0.
+func TestRegisterWithNoLauncherStillAsksTheHelper(t *testing.T) {
+	stubLauncher(t, 0, errNoLauncher)
+	root := os.Getppid()
+	sock, reqs := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled", RootPID: root})
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
+	var stdout, stderr bytes.Buffer
+	code := cmdRegister([]string{"--session-id", "s"}, &stdout, &stderr)
+	if code != 0 || stdout.String() != "session-s\tenr-h\tenrolled\n" {
+		t.Fatalf("register with no launcher inside a session: exit %d, stdout %q, stderr %q; want 0 and the session's line", code, stdout.String(), stderr.String())
+	}
+	select {
+	case req := <-reqs:
+		if req.Op != "register" || !req.Attach || req.RootPID != 0 {
+			t.Fatalf("the request the helper saw: %+v; want register, attach, no root_pid", req)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the fake helper saw no request")
+	}
+}
+
+// TestRegisterAcceptsARootAboveTheLauncher: inside a registered session whose root is not the
+// nearest `omp` — an `omp` run under a shell the docs register with `--exec -- bash` — the
+// helper answers that session, rooted above the launcher this command named. A root that is an
+// ancestor of this process is this session's, so the command prints it and exits 0.
+func TestRegisterAcceptsARootAboveTheLauncher(t *testing.T) {
+	launcher := fixedLauncher(t)
+	above := parentPID(t, launcher)
+	if above <= 1 {
+		t.Fatalf("the test process's parent %d has no parent above init (%d), so this test cannot name a root above it", launcher, above)
+	}
+	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled", RootPID: above})
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
+	var stdout, stderr bytes.Buffer
+	code := cmdRegister([]string{"--session-id", "s"}, &stdout, &stderr)
+	if code != 0 || stdout.String() != "session-s\tenr-h\tenrolled\n" {
+		t.Fatalf("register answered a root above its launcher: exit %d, stdout %q, stderr %q; want 0 and the session's line", code, stdout.String(), stderr.String())
+	}
+}
+
+// TestRegisterRefusesAHelperThatNamesNoRoot: a helper from before this change pins the caller,
+// which ends with the command, and says nothing about the root it pinned. Its `enrolled` is
+// never printed as success: the command refuses, naming the helper and the relaunch.
+func TestRegisterRefusesAHelperThatNamesNoRoot(t *testing.T) {
+	fixedLauncher(t)
+	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled"})
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
+	var stdout, stderr bytes.Buffer
+	code := cmdRegister([]string{"--session-id", "s"}, &stdout, &stderr)
+	if code != 1 || stdout.String() != "" {
+		t.Fatalf("register against a helper that names no root: exit %d, stdout %q, stderr %q; want 1 and nothing on stdout", code, stdout.String(), stderr.String())
+	}
+	if msg := stderr.String(); !strings.Contains(msg, sock) || !strings.Contains(msg, "before this fix") || !strings.Contains(msg, "register --exec") {
+		t.Fatalf("the refusal names the helper's socket, its age and --exec: %q", msg)
+	}
+}
+
+// TestRegisterRefusesARootThatIsNotAnAncestor: a root the helper answers that is not a process
+// above this command — the command's own process, which ends with it, or a child of it — is not
+// this session's root, so its `enrolled` is never printed.
+func TestRegisterRefusesARootThatIsNotAnAncestor(t *testing.T) {
+	fixedLauncher(t)
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	for _, tc := range []struct {
+		name string
+		root int
+	}{
+		{"this process", os.Getpid()},
+		{"a child of it", child.Process.Pid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled", RootPID: tc.root})
+			t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
+			var stdout, stderr bytes.Buffer
+			code := cmdRegister([]string{"--session-id", "s"}, &stdout, &stderr)
+			if code != 1 || stdout.String() != "" || !strings.Contains(stderr.String(), "not an ancestor") {
+				t.Fatalf("register answered %s as the root: exit %d, stdout %q, stderr %q; want 1, nothing on stdout, and not an ancestor", tc.name, code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+// TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled covers "exits 1 if --wait was given
+// and state isn't enrolled": the state is printed, and stderr says it is not enrolled yet and why.
+func TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled(t *testing.T) {
+	launcher := fixedLauncher(t)
+	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolling", Error: "waiting on approver", RootPID: launcher})
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
+	var stdout, stderr bytes.Buffer
+	code := cmdRegister([]string{"--wait", "1"}, &stdout, &stderr)
+	if code != 1 || stdout.String() != "h:1:1\tenr-h\tenrolling\n" || !strings.Contains(stderr.String(), "not enrolled yet: waiting on approver") {
+		t.Fatalf("register --wait, not enrolled: exit %d, stdout %q, stderr %q; want 1, the enrolling line, and not enrolled yet: waiting on approver", code, stdout.String(), stderr.String())
+	}
+}
+
+// TestRegisterFindsTheHelperOnItsDefaultSocket pins that register, like machine login and every
+// other helper-mode form, reaches a helper listening on its default socket
+// ($XDG_RUNTIME_DIR/agent-secrets/helper.sock) with AGENT_SECRETS_HELPER_SOCK unset: a machine set
+// up by starting the helper with no settings registers its sessions without exporting the variable.
+func TestRegisterFindsTheHelperOnItsDefaultSocket(t *testing.T) {
+	launcher := fixedLauncher(t)
+	runtimeDir := shortTempDir(t)
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
+	reqs := fakeHelperAt(t, filepath.Join(runtimeDir, "agent-secrets", "helper.sock"),
+		helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolled", RootPID: launcher})
+	var stdout, stderr bytes.Buffer
+	if code := cmdRegister(nil, &stdout, &stderr); code != 0 {
+		t.Fatalf("register with only the default socket: exit %d, stderr %q", code, stderr.String())
+	}
+	if got, want := stdout.String(), "h:1:1\tenr-h\tenrolled\n"; got != want {
+		t.Fatalf("register output: got %q, want %q", got, want)
+	}
+	select {
+	case req := <-reqs:
+		if req.Op != "register" {
+			t.Fatalf("request sent to the default socket: %+v", req)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the helper on the default socket never saw a request")
+	}
 }

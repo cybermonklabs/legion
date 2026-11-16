@@ -3,7 +3,8 @@
 
 // nearestLauncher names the session launcher above this process: the ancestor whose job it is to
 // outlive `agent-secrets register --session-id`, so the helper pins it rather than the register
-// command itself, which ends as the command ends (dispatch://INFRA-3890).
+// command itself, which ends as the command ends. isAncestor checks that
+// the root the helper answers is above this process.
 package main
 
 import (
@@ -15,38 +16,59 @@ import (
 )
 
 // errNoLauncher is what nearestLauncher answers when no session launcher is an ancestor of this
-// process: a `register --session-id` without `--exec` run outside every `omp` tree then refuses,
-// rather than pinning its own process as a session root that ends with the command.
+// process: a `register --session-id` without `--exec` then names no root, and the helper refuses
+// it unless the caller is inside a session already.
 var errNoLauncher = errors.New("no session launcher is an ancestor of this process")
 
 // launcherComm is the /proc comm of a session launcher: an `omp` process. It is the one a real
-// launcher's comm reads (measured on a developer box: `comm=omp`, `exe=.../omp`).
+// launcher's comm reads (measured on a developer box: `comm=omp`, `exe=.../omp`), and the one
+// the helper admits as a root (internal/broker/helper's launcherComm).
 const launcherComm = "omp"
 
-// maxLauncherHops bounds the parent walk, as the helper's own ancestry walk is bounded: a
-// pathological tree cannot spin the command, and a launcher may sit well above its caller.
+// maxLauncherHops is the helper's bound on its ancestry walk (maxAncestryHops there), which counts
+// the caller itself as the first of its 64 processes: a root the helper can reach is at most 63
+// parents up, so this side walks no further, and a pathological tree cannot spin the command.
 const maxLauncherHops = 64
 
-// nearestLauncher is the pid of the nearest ancestor whose /proc comm is `omp`, walking parents
-// from this process's own parent. It answers errNoLauncher at pid 1 with none found, and any
-// read error it meets, so the caller refuses rather than pinning the wrong process. It is a var
-// so a test can set the ancestor it means without a real `omp` above it.
+// nearestLauncher is the pid of the nearest ancestor whose /proc comm is `omp` (walkAncestors). It
+// answers errNoLauncher when it finds none, and any read error it meets; the caller then names no
+// root. It is a var so a test can set the ancestor it means without a real `omp` above it.
 var nearestLauncher = func() (int, error) {
+	pid, found, err := walkAncestors(func(_ int, comm string) bool { return comm == launcherComm })
+	if err == nil && !found {
+		return 0, errNoLauncher
+	}
+	return pid, err
+}
+
+// isAncestor reports whether root is a strict ancestor of this process (walkAncestors), which is
+// what a root the helper answers for a register without --exec must be: this process ends with
+// the command, and a process not above it is another session's.
+func isAncestor(root int) (bool, error) {
+	_, found, err := walkAncestors(func(pid int, _ string) bool { return pid == root })
+	return found, err
+}
+
+// walkAncestors is the nearest strict ancestor of this process that match holds for, by its pid
+// and /proc comm, walking parents from this process's own parent as far as the helper's walk
+// reaches (maxLauncherHops). It answers no match at pid 1 or 0, and an error at a parent it cannot
+// read or past that depth.
+func walkAncestors(match func(pid int, comm string) bool) (int, bool, error) {
 	pid := os.Getppid()
-	for range maxLauncherHops {
+	for range maxLauncherHops - 1 {
 		if pid <= 1 {
-			return 0, errNoLauncher
+			return 0, false, nil
 		}
 		comm, parent, err := procCommAndParent(pid)
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
-		if comm == launcherComm {
-			return pid, nil
+		if match(pid, comm) {
+			return pid, true, nil
 		}
 		pid = parent
 	}
-	return 0, fmt.Errorf("the ancestry of this process runs past %d processes with no %s launcher", maxLauncherHops, launcherComm)
+	return 0, false, fmt.Errorf("the ancestry of this process runs past the %d processes the helper's walk reaches", maxLauncherHops-1)
 }
 
 // procCommAndParent reads pid's comm and parent pid from /proc/<pid>/stat. A process controls its

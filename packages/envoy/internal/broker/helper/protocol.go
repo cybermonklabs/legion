@@ -36,9 +36,15 @@ type Request struct {
 	Thumbprint      string   `json:"thumbprint,omitempty"`       // enroll-session-key: the session key's thumbprint
 	SessionID       *string  `json:"session_id,omitempty"`       // enroll-session-key: optional registry session id; register: the omp session id this session is to be known by
 	EnrollmentID    string   `json:"enrollment_id,omitempty"`    // unenroll-session-key: which enrollment to end
-	// RootPID is register only, and only without --exec: the launcher ancestor of the caller
-	// the helper is to pin as the session's root, since the caller's own process ends with the
-	// command. Zero (--exec, and every client from before this field) pins the caller.
+	// Attach is register only: the caller is `agent-secrets register` run without --exec, whose
+	// own process ends with the command, so the helper never pins it. The caller is answered from
+	// the session it is already in; outside one, the helper pins RootPID, and with no RootPID it
+	// refuses NOT_A_SESSION. False (--exec, and every client from before this field) pins the
+	// caller when it is in no session.
+	Attach bool `json:"attach,omitempty"`
+	// RootPID is register only: the session launcher (an `omp` process) above the caller that the
+	// helper is to pin as the session's root when the caller is in no session. The client sends
+	// the nearest `omp` ancestor it finds, and none when it finds none.
 	RootPID int `json:"root_pid,omitempty"`
 }
 
@@ -52,9 +58,10 @@ type Response struct {
 	Error        string `json:"error,omitempty"`
 	EnrollmentID string `json:"enrollment_id,omitempty"`
 	RuntimeID    string `json:"runtime_id,omitempty"`
-	// RootPID is register only: the pid the session's root is, so a client can see that the
-	// helper pinned the launcher it named rather than the caller. A helper from before this
-	// field sends none, and a client that named a root refuses such an answer.
+	// RootPID is register only: the pid the session's root is, so a client run without --exec can
+	// see that the session is rooted above it (the launcher it named, or the root of the session
+	// it is already in) and not at its own process, which ends with the command. A helper from
+	// before this field sends none, and such a client refuses that answer.
 	RootPID             int           `json:"root_pid,omitempty"`
 	Operator            string        `json:"operator,omitempty"`
 	State               string        `json:"state,omitempty"`                 // register: enrolling | enrolled
@@ -127,7 +134,8 @@ type SessionInfo struct {
 // code.
 const (
 	// CodeNotASession answers sign, sign-request or unregister from a process that descends from no
-	// session `agent-secrets register` registered.
+	// session `agent-secrets register` registered, and a register run without --exec from such a
+	// process that names no session launcher (omp) above it.
 	CodeNotASession = "NOT_A_SESSION"
 	// CodeNotEnrolled answers sign or sign-request for a registered session that is still
 	// enrolling: the helper holds a launcher credential, and its enroll loop has not succeeded yet.

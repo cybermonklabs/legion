@@ -943,7 +943,7 @@ func TestRegisterRejectsAPeerWhosePIDChangedDuringTheAncestryWalk(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := r.srv.register(context.Background(), peer, os.Getpid(), "", 0, 0)
+	resp := r.srv.register(context.Background(), peer, os.Getpid(), "", false, 0, 0)
 	if resp.OK || resp.Code != CodeUnidentified {
 		t.Fatalf("a peer no longer matching the pid the ancestry walk resolved must be refused, not handed the root session: %+v", resp)
 	}
@@ -960,7 +960,7 @@ func TestRegisterRejectsAPeerWhosePIDChangedBeforeAdopting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := r.srv.register(context.Background(), peer, victim.Process.Pid, "", 0, 0)
+	resp := r.srv.register(context.Background(), peer, victim.Process.Pid, "", false, 0, 0)
 	if resp.OK || resp.Code != CodeUnidentified {
 		t.Fatalf("a peer no longer matching an unclaimed pid must be refused, not adopted: %+v", resp)
 	}
@@ -1108,30 +1108,30 @@ func TestSignStillRequiresDescendancyButEnrollSessionKeyDoesNot(t *testing.T) {
 	}
 }
 
-// TestRegisterPinsTheNamedAncestor: a register that names an ancestor as its root makes THAT
-// process the session root, not the caller. The caller here is a child of this test process,
-// which names this process; the session's pid is this process's, every later request from the
-// caller resolves to it, and the proof it signs is the session's — so a build that pinned the
-// caller instead (the behaviour before this change) refuses the register outright, since the
-// caller's pid is not the root it asked for.
+// TestRegisterPinsTheNamedAncestor: a register that names its session launcher as its root makes
+// THAT process the session root, not the caller. The caller here is a child of a launcher, which
+// it names; the session's pid is the launcher's, every later request from the caller resolves to
+// it, and the proof it signs is the session's — so a build that pinned the caller instead (the
+// behaviour before this change) refuses the register outright, since the caller's pid is not the
+// root it asked for.
 func TestRegisterPinsTheNamedAncestor(t *testing.T) {
 	r := startRig(t, "")
-	child := sleeper(t)
-	r.callerPID.Store(int64(child.Process.Pid))
-	resp := r.call(t, Request{Op: "register", RootPID: os.Getpid(), WaitSeconds: 5})
+	omp, children := ompTree(t, 1)
+	r.callerPID.Store(int64(children[0]))
+	resp := r.call(t, Request{Op: "register", Attach: true, RootPID: omp, WaitSeconds: 5})
 	if !resp.OK || resp.State != "enrolled" {
-		t.Fatalf("register naming this process as the root: %+v", resp)
+		t.Fatalf("register naming the launcher as the root: %+v", resp)
 	}
-	if resp.RootPID != os.Getpid() {
-		t.Fatalf("the answer's root_pid is %d, want this process %d", resp.RootPID, os.Getpid())
+	if resp.RootPID != omp {
+		t.Fatalf("the answer's root_pid is %d, want the launcher %d", resp.RootPID, omp)
 	}
 	sessions := r.srv.Registry.List()
-	if len(sessions) != 1 || sessions[0].PID != os.Getpid() {
-		t.Fatalf("the helper's sessions are %+v, want one rooted at this process %d", sessions, os.Getpid())
+	if len(sessions) != 1 || sessions[0].PID != omp {
+		t.Fatalf("the helper's sessions are %+v, want one rooted at the launcher %d", sessions, omp)
 	}
-	// The root outlives the caller, which is the whole point: a sign from this process (the
-	// root itself) is inside the session, and so is one from any other child of it.
-	r.callerPID.Store(0)
+	// The root outlives the caller, which is the whole point: a sign from the launcher itself
+	// is inside the session, and so is one from any other child of it.
+	r.callerPID.Store(int64(omp))
 	signed := r.call(t, Request{Op: "sign", Method: "GET", URL: "https://secrets.test/v1/enrollments/self"})
 	if !signed.OK || signed.EnrollmentID != resp.EnrollmentID {
 		t.Fatalf("the root signs inside the session it was pinned for: %+v", signed)
@@ -1139,9 +1139,11 @@ func TestRegisterPinsTheNamedAncestor(t *testing.T) {
 }
 
 // TestRegisterRefusesARootThatIsNotAnAncestor: the root a register names must be a strict
-// ancestor of the caller. A sibling, the caller itself, pid 1 and a pid that is not there are
-// each BAD_REQUEST with no session registered — otherwise any process could make a stranger's
-// process, or the whole login's process tree, a session root.
+// ancestor of the caller, and a session launcher. A sibling, the caller itself, pid 1, a pid that
+// is not there and an ancestor that is no launcher (this test process, above the caller, as a
+// tmux server or a login shell is) are each BAD_REQUEST with no session registered — otherwise
+// any process could make a stranger's process, or the whole login's process tree and every
+// session started in it later, one session of its own.
 func TestRegisterRefusesARootThatIsNotAnAncestor(t *testing.T) {
 	r := startRig(t, "")
 	caller := sleeper(t)
@@ -1154,10 +1156,11 @@ func TestRegisterRefusesARootThatIsNotAnAncestor(t *testing.T) {
 		{"the caller itself", caller.Process.Pid},
 		{"pid 1", 1},
 		{"a pid that is not there", 1 << 22},
+		{"an ancestor that is no session launcher", os.Getpid()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r.callerPID.Store(int64(caller.Process.Pid))
-			resp := r.call(t, Request{Op: "register", RootPID: tc.root})
+			resp := r.call(t, Request{Op: "register", Attach: true, RootPID: tc.root})
 			if resp.OK || resp.Code != CodeBadRequest {
 				t.Fatalf("register naming %s as the root: %+v; want BAD_REQUEST", tc.name, resp)
 			}
@@ -1165,6 +1168,81 @@ func TestRegisterRefusesARootThatIsNotAnAncestor(t *testing.T) {
 				t.Fatalf("a refused register registered %+v", sessions)
 			}
 		})
+	}
+}
+
+// TestRegisterRefusesARootAboveLiveSessions: a launcher with two live sessions below it cannot
+// be named as a root by a third process under it, which is in neither session. Admitted, it
+// would hold both sessions' processes in its own tree, and before the registry's lookup found
+// the nearest root (it took the lowest pid, which an ancestor usually has) their sign calls and
+// requests became the new session's. The register is BAD_REQUEST, and each session keeps its
+// root, its runtime id and its own enrollment for its own processes' signs.
+func TestRegisterRefusesARootAboveLiveSessions(t *testing.T) {
+	r := startRig(t, "")
+	omp, children := ompTree(t, 3)
+	before := map[int]Response{}
+	for _, pid := range children[:2] {
+		r.callerPID.Store(int64(pid))
+		reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+		if !reg.OK || reg.State != "enrolled" {
+			t.Fatalf("register %d: %+v", pid, reg)
+		}
+		before[pid] = reg
+	}
+	r.callerPID.Store(int64(children[2]))
+	resp := r.call(t, Request{Op: "register", Attach: true, RootPID: omp, WaitSeconds: 5})
+	if resp.OK || resp.Code != CodeBadRequest || !strings.Contains(resp.Error, "live session") {
+		t.Fatalf("register naming the launcher above two live sessions: %+v; want BAD_REQUEST naming the live session", resp)
+	}
+	sessions := r.srv.Registry.List()
+	if len(sessions) != 2 {
+		t.Fatalf("the helper's sessions are %+v, want the two below the launcher alone", sessions)
+	}
+	for _, pid := range children[:2] {
+		if sess := r.srv.Registry.Get(pid); sess == nil || sess.RuntimeID() != before[pid].RuntimeID {
+			t.Fatalf("the session rooted at %d is %+v, want its runtime id %s unchanged", pid, sess, before[pid].RuntimeID)
+		}
+		r.callerPID.Store(int64(pid))
+		signed := r.call(t, Request{Op: "sign", Method: "GET", URL: "https://secrets.test/v1/enrollments/self"})
+		if !signed.OK || signed.EnrollmentID != before[pid].EnrollmentID {
+			t.Fatalf("a sign from %d: %+v; want its own session's enrollment %s", pid, signed, before[pid].EnrollmentID)
+		}
+	}
+}
+
+// TestRegisterAttachedWithNoRootOutsideASessionIsRefused: a register run without --exec that
+// found no launcher above it (attach, no root_pid), from a process in no session, is refused
+// NOT_A_SESSION, naming the relaunch under `register --exec`, and registers nothing: the
+// caller's own process ends with the command, so a session rooted at it would be nobody's.
+func TestRegisterAttachedWithNoRootOutsideASessionIsRefused(t *testing.T) {
+	r := startRig(t, "")
+	caller := sleeper(t)
+	r.callerPID.Store(int64(caller.Process.Pid))
+	id := "s-attach"
+	resp := r.call(t, Request{Op: "register", Attach: true, SessionID: &id, WaitSeconds: 5})
+	if resp.OK || resp.Code != CodeNotASession || !strings.Contains(resp.Error, "no session launcher (omp)") || !strings.Contains(resp.Error, "register --exec") {
+		t.Fatalf("an attached register with no root outside a session: %+v; want NOT_A_SESSION naming the launcher and register --exec", resp)
+	}
+	if sessions := r.srv.Registry.List(); len(sessions) != 0 {
+		t.Fatalf("a refused register registered %+v", sessions)
+	}
+}
+
+// TestRegisterAttachedWithNoRootInsideASessionNamesIt: a process inside a session that
+// `register --exec` started for a command that is no launcher (`--exec -- claude`) has no `omp`
+// above it, so its register --session-id names no root; the helper answers from the session the
+// caller is in, names it, and gives that session's root as the answer's root_pid.
+func TestRegisterAttachedWithNoRootInsideASessionNamesIt(t *testing.T) {
+	r := startRig(t, "")
+	root := sleeper(t)
+	r.callerPID.Store(int64(root.Process.Pid))
+	if reg := r.call(t, Request{Op: "register", WaitSeconds: 5}); !reg.OK {
+		t.Fatalf("register the session: %+v", reg)
+	}
+	id := "s-claude"
+	resp := r.call(t, Request{Op: "register", Attach: true, SessionID: &id, WaitSeconds: 5})
+	if !resp.OK || resp.RootPID != root.Process.Pid || resp.RuntimeID != SessionRuntimeID(id) {
+		t.Fatalf("an attached register inside the session: %+v; want the session rooted at %d named %s", resp, root.Process.Pid, SessionRuntimeID(id))
 	}
 }
 
