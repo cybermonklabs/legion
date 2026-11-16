@@ -17,6 +17,7 @@ body: |-
   its text and changes its place among the document's units is marked `moved`, so a version that
   only reorders sections, or moves a section across a `#` heading, names what moved. The route
   reads both versions from their stored markdown, so it does not wait for the block index. It
-  answers `400 INVALID_VERSION` when `from` is not below `to` or a number is not a positive
-  version number of at most 2147483647, and `404 NOT_FOUND` for a version the document does not
-  have.
+  answers `404 ARTIFACT_NOT_FOUND` for an id that names no artifact, `400 NOT_DOCUMENT` for an
+  artifact that is an image or a file and not a document, `400 INVALID_VERSION` when `from` is not below `to`
+  or a number is not a positive version number of at most 2147483647, and `404 NOT_FOUND` for a
+  version the document does not have.
