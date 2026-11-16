@@ -69,8 +69,12 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	reader, ok := s.readerIf(w, r, actor, input.InReplyToBlock != nil)
+	if !ok {
+		return
+	}
 	issueKey := r.PathValue("key")
-	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, false, actor)
+	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, false, actor, reader)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -120,7 +124,11 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	message, _, err := s.createStoredMessage(r.Context(), nil, messageInput, delivery, input.ConnectedOnly, actor)
+	reader, ok := s.readerIf(w, r, actor, input.InReplyToBlock != nil)
+	if !ok {
+		return
+	}
+	message, _, err := s.createStoredMessage(r.Context(), nil, messageInput, delivery, input.ConnectedOnly, actor, reader)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -305,14 +313,16 @@ func writeMessageNode(
 // recovery point (bindRequestKeyRecovery), so a repeat under the key is answered with this message
 // however this request ends, then sends a targeted message's first attempt. connectedOnly is the
 // request's connected_only, which only the agents route takes
-// (createAgentMessageInput.ConnectedOnly).
+// (createAgentMessageInput.ConnectedOnly). actor is the writer the message records, and reader is
+// that writer as the reply block it names is read (readerAs), which a caller resolves before this
+// opens its transaction; a message that names no block reads nothing as it.
 func (s *server) createStoredMessage(
 	ctx context.Context,
 	issueKey *string,
 	input createMessageInput,
 	delivery string,
 	connectedOnly bool,
-	actor model.Actor,
+	actor, reader model.Actor,
 ) (model.Message, *writeAdvice, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -337,7 +347,7 @@ func (s *server) createStoredMessage(
 		if err := lockReplyParentMessage(ctx, tx, parent.ID); err != nil {
 			return model.Message{}, nil, err
 		}
-		if block, err = s.replyBlockOf(ctx, tx, actor, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE"); err != nil {
+		if block, err = s.replyBlockOf(ctx, tx, reader, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE"); err != nil {
 			return model.Message{}, nil, err
 		}
 		parent.ReplyBody = messageReplyPreview(block.excerpt)
@@ -394,7 +404,7 @@ func (s *server) createStoredMessage(
 		return model.Message{}, nil, err
 	}
 	if block != nil {
-		if err := hydrateMessageReplyBlocks(ctx, tx, actor, &message); err != nil {
+		if err := hydrateMessageReplyBlocks(ctx, tx, reader, &message); err != nil {
 			return model.Message{}, nil, err
 		}
 	}

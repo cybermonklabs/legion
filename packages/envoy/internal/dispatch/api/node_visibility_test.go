@@ -54,8 +54,14 @@ type privateNodeFixture struct {
 
 // author and reader are the two people of this test: the one who owns the private node and one
 // who owns none of it and acts for every read below.
-func privateNodeAuthor() model.Actor { return model.Actor{Kind: "user", ID: "alice"} }
-func privateNodeReader() model.Actor { return model.Actor{Kind: "user", ID: "bob"} }
+// Both read with a viewer that sees every project (model.ServerViewer), so the author rule alone
+// decides what each reads.
+func privateNodeAuthor() model.Actor {
+	return model.Actor{Kind: "user", ID: "alice", Viewer: model.ServerViewer}
+}
+func privateNodeReader() model.Actor {
+	return model.Actor{Kind: "user", ID: "bob", Viewer: model.ServerViewer}
+}
 
 // privateBlockID is the private block's own id inside its document, which a search hit names as
 // the block it matched (model.SearchResult.BlockID).
@@ -410,7 +416,11 @@ func requirePredicatesInSQL(t *testing.T, reads []recordedRead) {
 				t.Errorf("%s reads the store's tables in a statement that binds no predicate of the registry's:\n%s",
 					read.name, statement.SQL)
 			}
-			if rules := strings.Count(statement.SQL, ".visibility"); markers != rules {
+			// A project's own visibility (`<project>.visibility = 'public'`, the public arm of
+			// the access rule a viewer is resolved by and a person's scope binds) is a test of a
+			// project and not of a node, and is no rule of the statement's own.
+			rules := strings.Count(statement.SQL, ".visibility") - strings.Count(statement.SQL, ".visibility = 'public'")
+			if markers != rules {
 				t.Errorf("%s states %d visibility rule and the registry rendered %d of them:\n%s",
 					read.name, rules, markers, statement.SQL)
 			}

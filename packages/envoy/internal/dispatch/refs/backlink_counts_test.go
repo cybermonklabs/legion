@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
@@ -541,7 +540,7 @@ func TestBacklinkCountsReadArmByArmAgreeWithTheView(t *testing.T) {
 			ids = append(ids, fixture.commentBlock)
 		}
 		for _, exclusions := range backlinkExclusionCases(toKind) {
-			counts, err := BacklinkCounts(ctx, pool, model.Actor{}, toKind, ids, exclusions)
+			counts, err := BacklinkCounts(ctx, pool, serverReader, toKind, ids, exclusions)
 			if err != nil {
 				t.Fatalf("count %s backlinks excluding %v: %v", toKind, exclusions, err)
 			}
@@ -556,7 +555,7 @@ func TestBacklinkCountsReadArmByArmAgreeWithTheView(t *testing.T) {
 		}
 	}
 
-	counts, err := BacklinkCounts(ctx, pool, model.Actor{}, "issue", []string{fixture.heldOnce, fixture.heldTwice, fixture.removedBlock}, nil)
+	counts, err := BacklinkCounts(ctx, pool, serverReader, "issue", []string{fixture.heldOnce, fixture.heldTwice, fixture.removedBlock}, nil)
 	if err != nil {
 		t.Fatalf("count the block-held issues' backlinks: %v", err)
 	}
@@ -571,7 +570,7 @@ func TestBacklinkCountsReadArmByArmAgreeWithTheView(t *testing.T) {
 func TestBacklinkCountsRefuseANodeKindWithNoDeclaredArms(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	if _, err := BacklinkCounts(ctx, database.Pool, model.Actor{}, "pull_request", []string{"x"}, nil); err == nil {
+	if _, err := BacklinkCounts(ctx, database.Pool, serverReader, "pull_request", []string{"x"}, nil); err == nil {
 		t.Fatal("counting the backlinks of a node kind with no declared arms answered without an error")
 	}
 	for _, kind := range nodeKinds {
@@ -624,7 +623,7 @@ func TestBacklinkCountStatementReadsEveryArmThroughAnIndex(t *testing.T) {
 				// The acting credential rides as $3, as backlinkCountStatement binds it: an
 				// author who proves none, so every arm's predicate is the shape a reader of
 				// the project runs, and the plan is the one every count pays for.
-				seen := VisibilityArg(model.Actor{})
+				seen := VisibilityArg(serverReader)
 				args := []any{shape.addresses, nodeKinds, seen}
 				types := []string{shape.sqlType, "text[]", "jsonb"}
 				literals := []string{shape.literal, textArrayLiteral(nodeKinds), "null"}

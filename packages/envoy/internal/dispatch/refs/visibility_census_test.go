@@ -76,6 +76,19 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 			strings.Join(problems, "\n  "), resolved, declared)
 	}
 
+	// Every entry states its project and party rule (nodeVisibility.scope). A kind whose scope
+	// nobody stated reads as visible to the server alone, which is safe and is still a rule no one
+	// wrote, so it fails here, named.
+	for _, kind := range declared {
+		scope := nodeRegistry[kind].visibility.scope
+		if scope.name == "" {
+			t.Errorf("the registry holds the node kind %q with no stated scope: give its nodeVisibility the project and "+
+				"party rule its nodes take", kind)
+			continue
+		}
+		t.Logf("the node kind %s takes the %s scope", kind, scope.name)
+	}
+
 	reads := graphReads(t, ctx, database)
 	if len(reads) == 0 {
 		t.Fatal("no read of the graph was recorded, so no statement was checked")
@@ -86,7 +99,10 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 		var marks, tests int
 		for index, statement := range read.statements {
 			statementMarks := strings.Count(statement, VisibilityMarker)
-			statementTests := strings.Count(statement, ".visibility")
+			// A project's own visibility, the public arm of the access rule a person's scope
+			// binds (access.PersonSeesProjectSQL, `<project>.visibility = 'public'`), is a test
+			// of a project and not of a node, and is no rule of the statement's own.
+			statementTests := strings.Count(statement, ".visibility") - strings.Count(statement, ".visibility = 'public'")
 			marks, tests = marks+statementMarks, tests+statementTests
 			// A statement may bind no predicate where another statement of its read filters
 			// its rows, but a test of `visibility` that no marker opens is a rule the
@@ -273,7 +289,9 @@ type graphRead struct {
 func graphReads(t *testing.T, ctx context.Context, database *store.Store) []graphRead {
 	t.Helper()
 	recorder := &recordingQueryer{inner: database.Pool}
-	who := model.Actor{Kind: "user", ID: "alice"}
+	// A viewer that sees every project, so each read reaches every statement it issues: what the
+	// statements bind is the same text for every viewer, which is a parameter of each.
+	who := model.Actor{Kind: "user", ID: "alice", Viewer: model.ServerViewer}
 	var reads []graphRead
 	record := func(function, call string, run func() error) {
 		t.Helper()

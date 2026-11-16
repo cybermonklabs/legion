@@ -78,6 +78,34 @@ func (s *server) readerOf(w http.ResponseWriter, r *http.Request) (model.Actor, 
 	return reader, true
 }
 
+// readerAs is actor - the writer a handler records, or the person a credential acts as - as a read
+// binds it: actor kept as the author, with the viewer of the request's credential (resolveReader),
+// so what a write answers, or a read made for that actor, shows only what the caller may see. The
+// writer itself stays as it is: a handler records actor and hands this one only to its reads.
+//
+// It resolves on the pool, so a handler calls it before it opens a transaction or holds a
+// connection: inside either, access.Resolve waits on a second connection (store.ErrNestedAcquire).
+// A caller that does not resolve is refused as readerOf refuses one.
+func (s *server) readerAs(w http.ResponseWriter, r *http.Request, actor model.Actor) (model.Actor, bool) {
+	reader, ok := s.readerOf(w, r)
+	if !ok {
+		return model.Actor{}, false
+	}
+	actor.Credential = nil
+	actor.Viewer = reader.Viewer
+	return actor, true
+}
+
+// readerIf is readerAs for a write that reads as its writer only in some requests (reads): one that
+// reads nothing resolves nothing, so the write costs no read of its own, and answers actor as it
+// is, which no read of that request binds.
+func (s *server) readerIf(w http.ResponseWriter, r *http.Request, actor model.Actor, reads bool) (model.Actor, bool) {
+	if !reads {
+		return actor, true
+	}
+	return s.readerAs(w, r, actor)
+}
+
 // everyReader is who a read of the graph answers for when what it reads is kept or sent where
 // many readers read it rather than answered to the one person whose request made it: the server's
 // own viewer (model.ServerViewer), which sees every project and every party and proves no author,

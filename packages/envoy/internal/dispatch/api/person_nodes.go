@@ -132,6 +132,9 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if caller, ok = s.readerAs(w, r, caller); !ok {
+		return
+	}
 	limit, offset, err := parseMyAnswersPage(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
