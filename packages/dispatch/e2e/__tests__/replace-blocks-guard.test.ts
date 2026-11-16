@@ -36,7 +36,7 @@ import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import { sqlAt } from "../psql";
-import { rowLimit, runBounded } from "./bounded-subprocess";
+import { masked, rowLimit, runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const driverPath = join(dispatchPackage, "e2e/acceptance/replace-blocks.sh");
@@ -164,6 +164,16 @@ async function drive(
   return { code, stdout, stderr, started: existsSync(marker) };
 }
 
+/** What a row's failure says of the driver's run, whatever ended it: its exit code and its whole
+ *  stderr. Each refusal of the driver's writes its reason there, naming the variable or the
+ *  command it refused, so the failure says which refusal fired, or that none did. The stderr is
+ *  read through `masked`, as a cost line's command is: a run that wrote a connection string there
+ *  would otherwise carry its password into the failure, and the run's output reaches whatever log
+ *  keeps it. */
+function driverSaid({ code, stderr }: { code: number; stderr: string }): string {
+  return ` The driver exited ${code}, and its stderr read:\n${masked(stderr) || "(nothing)"}`;
+}
+
 /** The reason the driver's `unread_dsn` gives for a DATABASE_URL psql got no answer through. */
 const unreadReason =
   "DATABASE_URL could not be read: psql, asking through it which database it reaches, got no answer this run can read.";
@@ -196,14 +206,16 @@ async function sharedDatabaseRefusal(url: string): Promise<string> {
  *  none of `secrets`. The reason is what makes the refusal the guard's: the driver's
  *  require_commands also exits 2 and starts nothing when a command the driver needs is not on
  *  PATH, and a row that asserted the rest alone would pass without the guard running. Where stderr
- *  gives another reason, the row's failure shows the first line of stderr in its place. */
+ *  gives another reason, the row's failure shows the first line of stderr in its place, and its
+ *  message the exit code and the whole stderr (`driverSaid`). */
 async function expectRefusal(
   label: string,
   databaseUrl: string,
   reason: string,
   secrets: readonly string[]
 ): Promise<void> {
-  const { code, stderr, started } = await drive(label, databaseUrl);
+  const run = await drive(label, databaseUrl);
+  const { code, stderr, started } = run;
   expect(
     {
       code,
@@ -213,7 +225,8 @@ async function expectRefusal(
     },
     "The refusal is not the guard's, wrote part of the connection string to stderr, or the " +
       "guard let the string through to `bun run dispatch:local`. A refusal of the guard's names " +
-      "what is wrong and prints no part of the connection string."
+      "what is wrong and prints no part of the connection string." +
+      driverSaid(run)
   ).toEqual({ code: 2, reason, printed: [], started: false });
 }
 
@@ -327,7 +340,8 @@ test.skipIf(!live)(
   "a scratch database on the shared server is let through to the start",
   async () => {
     await withScratchDatabase(async (scratch) => {
-      const { code, stdout, started } = await drive("scratch-let-through", scratch.url);
+      const run = await drive("scratch-let-through", scratch.url);
+      const { code, stdout, started } = run;
       expect(
         {
           code,
@@ -337,7 +351,8 @@ test.skipIf(!live)(
           started,
         },
         "The guard refused a database of the run's own on the shared server, or the start line " +
-          "does not name the database the server answered."
+          "does not name the database the server answered." +
+          driverSaid(run)
       ).toEqual({ code: 1, starting: true, started: true });
     });
   },
@@ -406,7 +421,8 @@ test.skipIf(!live)(
         "The fixture log's last ten lines do not hold DATABASE_URL, so this row cannot see a leak."
       ).toBe(true);
 
-      const { code, stderr, started } = await drive("failed-start", scratch.url, log);
+      const run = await drive("failed-start", scratch.url, log);
+      const { code, stderr, started } = run;
       expect(
         {
           code,
@@ -416,7 +432,8 @@ test.skipIf(!live)(
           printedHandOver: handOver.filter((line) => stderr.includes(line.trim())),
         },
         "The failed start printed the instance's hand-over message, which holds DATABASE_URL " +
-          "whole. Print the log only up to that message."
+          "whole. Print the log only up to that message." +
+          driverSaid(run)
       ).toEqual({ code: 1, started: true, stopped: true, printedUrl: false, printedHandOver: [] });
     });
   },
