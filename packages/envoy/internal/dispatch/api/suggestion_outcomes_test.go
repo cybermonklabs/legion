@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
@@ -135,7 +136,7 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 	}
 	// The boot pass awaits the event horizon before it sets the cursor (suggestionOutcomePass), and
 	// a transaction open anywhere on the instance holds that back, so the wait is the horizon's.
-	pollBehindHorizon(t, database, "the boot pass to set the cursor", func() bool { return outcomeCursor(t, database) != nil })
+	horizontest.PollInProcess(t, "the boot pass to set the cursor", database, func() bool { return outcomeCursor(t, database) != nil })
 	// The hub's signal after its LISTEN earns one more pass, no sooner than the gap after the boot
 	// pass began; after it the loop is idle.
 	time.Sleep(time.Until(started.Add(idleSweepGap + 300*time.Millisecond)))
@@ -173,7 +174,7 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 	// reads every age by, and once the pass's safe horizon has passed it. The first is waited out
 	// here, so what the wait below waits on is the horizon alone.
 	awaitEventSettled(t, sweep.database, lastEventID(t, sweep.database), idleSweepGap)
-	pollBehindHorizon(t, sweep.database, "the suggestion to be marked acted_on", func() bool {
+	horizontest.PollInProcess(t, "the suggestion to be marked acted_on", sweep.database, func() bool {
 		return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome == "acted_on"
 	})
 	if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Detail != "the suggested issue was updated directly" {
@@ -197,7 +198,7 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	// The settle waited out on the database's clock, which the pass reads every age by; then the
 	// horizon alone, which the pass reads up to.
 	awaitEventSettled(t, sweep.database, lastEventID(t, sweep.database), settle)
-	pollBehindHorizon(t, sweep.database, "the suggestion to be judged", func() bool {
+	horizontest.PollInProcess(t, "the suggestion to be judged", sweep.database, func() bool {
 		return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome != "ignored"
 	})
 	if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Outcome != "acted_on" {

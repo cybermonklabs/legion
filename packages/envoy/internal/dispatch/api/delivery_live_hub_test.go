@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -337,10 +338,10 @@ func (r *hubRig) cursors() (changeSeq, eventCursor int64) {
 
 // waitForEventCursor waits until the hub holds every event through want. The relay publishes an
 // event to the hub only once the server's event horizon has passed it, and an open write anywhere
-// on the Postgres instance holds that back, so the wait is the horizon's (pollBehindHorizon).
+// on the Postgres instance holds that back, so the wait is the horizon's (horizontest.PollInProcess).
 func (r *hubRig) waitForEventCursor(t *testing.T, want int64, what string) {
 	t.Helper()
-	pollBehindHorizon(t, r.database, fmt.Sprintf("the hub's event log through %d (%s)", want, what), func() bool {
+	horizontest.PollInProcess(t, fmt.Sprintf("the hub's event log through %d (%s)", want, what), r.database, func() bool {
 		return r.eventsThrough() >= want
 	})
 }
@@ -416,7 +417,7 @@ func (r *hubRig) waitFor(t *testing.T, since int, within time.Duration, what str
 // feed carried: that feed stands behind the server's event horizon, so the wait is the horizon's.
 func (r *hubRig) waitForEvent(t *testing.T, since int, what string, match func(deliveryHubNote) bool) {
 	t.Helper()
-	pollBehindHorizon(t, r.database, what, func() bool { return r.count(since, match) > 0 })
+	horizontest.PollInProcess(t, what, r.database, func() bool { return r.count(since, match) > 0 })
 }
 
 func recomputeBegin(cause string) func(deliveryHubNote) bool {
@@ -461,7 +462,7 @@ func (c *fakeLiveConn) next(t *testing.T, within time.Duration, what string) any
 // which stands behind database's event horizon, so the wait is the horizon's.
 func (c *fakeLiveConn) eventNext(t *testing.T, database *store.Store, what string) any {
 	t.Helper()
-	return waitBehindHorizon(t, database, what, c.frames)
+	return horizontest.WaitInProcess(t, what, c.frames, database)
 }
 
 // none fails when the conn is sent a frame within within.
@@ -1415,7 +1416,7 @@ func TestAResetEventLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 	// stand on a row of this log first, and the relay publishes only up to the horizon.
 	rig.waitForEvent(t, firstReset, "the hub's event feed after the reset", func(note deliveryHubNote) bool { return note.what == "events seeded" })
 	firstOfNewLog := eventHead(t, rig.database)
-	pollBehindHorizon(t, rig.database, "the relay's cursor on the reset log's newest event", func() bool {
+	horizontest.PollInProcess(t, "the relay's cursor on the reset log's newest event", rig.database, func() bool {
 		return relayPublished(rig.relay) >= firstOfNewLog
 	})
 
@@ -1810,7 +1811,7 @@ func TestAHubWithNoViewReadsNothingAndHoldsNoListener(t *testing.T) {
 	rig.hub.Subscribe(first, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
 	first.snapshot(t, 5*time.Second, "t")
 	waitListening(t, database, "the hub's listener holding a LISTEN", &hubDials)
-	pollBehindHorizon(t, database, "the relay's generation, started for the hub's feed", func() bool {
+	horizontest.PollInProcess(t, "the relay's generation, started for the hub's feed", database, func() bool {
 		return relaySubscribers(rig.relay) > 0
 	})
 	waitListening(t, database, "the relay's listener holding a LISTEN", relayDials)
@@ -1919,7 +1920,7 @@ func TestAGenerationEndingDuringTheFeedHandOverLeavesTheRelayNoSubscriber(t *tes
 		conn := newFakeLiveConn()
 		rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
 		// The relay's generation, which seedEvents subscribes to, starts behind the event horizon.
-		waitBehindHorizon(t, rig.database, fmt.Sprintf("round %d: seedEvents' hand-over of the relay's feed", i), r.readied)
+		horizontest.WaitInProcess(t, fmt.Sprintf("round %d: seedEvents' hand-over of the relay's feed", i), r.readied, rig.database)
 		rig.hub.Close(conn)
 		close(r.release)
 		waitReturned(t, fmt.Sprintf("round %d: every goroutine of the hub to return after its generation ended", i), &rig.hub.running)
