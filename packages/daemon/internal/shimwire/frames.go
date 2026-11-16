@@ -194,12 +194,13 @@ type LauncherHelloAck struct {
 	// Hello2.AgentSecrets and LauncherState.Child.
 	MemoryGuard *LauncherMemoryGuard `json:"memoryGuard,omitempty"`
 	// KernelKills says the daemon reads a launcher_memory_kill whose cause is
-	// MemoryKillCauseKernel as the kernel's kill and tells its role so. The daemon sets it on every
-	// issue pod's acknowledgement, whether or not it sends MemoryGuard, and never on the
-	// controller's pod's. A microVM pod's launcher sends its kill reports only on a connection
-	// whose acknowledgement carries it, whatever MemoryGuard says, so a daemon built before it,
-	// which sends no member, never reads a kernel's kill with the guard's words. It is left out
-	// when false, so such an acknowledgement is the bytes an older daemon writes.
+	// MemoryKillCauseKernel or MemoryKillCauseKernelProtected as the kernel's kill and tells its
+	// role so. The daemon sets it on every issue pod's acknowledgement, whether or not it sends
+	// MemoryGuard, and never on the controller's pod's. A microVM pod's launcher sends its kill
+	// reports only on a connection whose acknowledgement carries it, whatever MemoryGuard says, so
+	// a daemon built before it, which sends no member, never reads a kernel's kill with the guard's
+	// words. It is left out when false, so such an acknowledgement is the bytes an older daemon
+	// writes.
 	KernelKills bool `json:"kernelKills,omitempty"`
 }
 
@@ -262,29 +263,43 @@ const (
 // (/proc/meminfo's AnonPages) when it acted, CounterBytes the cgroup's memory counter then, and
 // LimitBytes the container's memory limit.
 //
-// Cause is empty for the guard's own kill, the only kill a launcher that predates the member
-// reports, and MemoryKillCauseKernel for a process the pod's kernel stopped, which the launcher's
-// watch of that kernel reports with an identifier and a count of its own in Guard and Sequence.
-// It is left out when empty, so the guard's report is the bytes it was before the member existed;
-// Validate refuses any other value.
+// Cause is MemoryKillCauseGuard, empty, for the guard's own kill, the only kill a launcher that
+// predates the member reports, and MemoryKillCauseKernel or MemoryKillCauseKernelProtected for a
+// process the pod's kernel stopped, which the launcher's watch of that kernel reports with an
+// identifier and a count of its own in Guard and Sequence. It is left out when empty, so the
+// guard's report is the bytes it was before the member existed; Validate refuses any other value.
 type LauncherMemoryKill struct {
-	Guard        string    `json:"guard"`
-	Sequence     uint64    `json:"sequence"`
-	PID          int       `json:"pid"`
-	Executable   string    `json:"executable"`
-	SizeBytes    uint64    `json:"sizeBytes"`
-	ReadingBytes uint64    `json:"readingBytes"`
-	CounterBytes uint64    `json:"counterBytes"`
-	LimitBytes   uint64    `json:"limitBytes"`
-	At           time.Time `json:"at"`
-	Cause        string    `json:"cause,omitempty"`
+	Guard        string          `json:"guard"`
+	Sequence     uint64          `json:"sequence"`
+	PID          int             `json:"pid"`
+	Executable   string          `json:"executable"`
+	SizeBytes    uint64          `json:"sizeBytes"`
+	ReadingBytes uint64          `json:"readingBytes"`
+	CounterBytes uint64          `json:"counterBytes"`
+	LimitBytes   uint64          `json:"limitBytes"`
+	At           time.Time       `json:"at"`
+	Cause        MemoryKillCause `json:"cause,omitempty"`
 }
 
-// MemoryKillCauseKernel is LauncherMemoryKill.Cause for a process the pod's own kernel stopped
-// because the pod ran out of memory: in a microVM pod, whose kernel is the pod's alone and stops
-// one process rather than the whole sandbox. A launcher sends such a report only on a connection
-// whose acknowledgement carried LauncherHelloAck.KernelKills.
-const MemoryKillCauseKernel = "kernel"
+// MemoryKillCause is what stopped the process a launcher_memory_kill names, which chooses the
+// note its role is told. It is one kind with three values, since a kill has exactly one of them,
+// and its empty value, MemoryKillCauseGuard, is the guard's own kill, which every launcher built
+// before the member reports.
+//
+// MemoryKillCauseKernel and MemoryKillCauseKernelProtected are a process the pod's own kernel
+// stopped because the pod ran out of memory: in a microVM pod, whose kernel is the pod's alone and
+// stops one process rather than the whole sandbox. The first is a command of the role's, one the
+// guard would have been free to end; the second is one of the processes the launcher's classifier
+// protects, which run the role's session (the role-init, the shim, the agent and their helpers),
+// so the role is told what that process's end does to it. A launcher sends either only on a
+// connection whose acknowledgement carried LauncherHelloAck.KernelKills.
+type MemoryKillCause string
+
+const (
+	MemoryKillCauseGuard           MemoryKillCause = ""
+	MemoryKillCauseKernel          MemoryKillCause = "kernel"
+	MemoryKillCauseKernelProtected MemoryKillCause = "kernel-protected"
+)
 
 // MemoryKillExecutableBytes is the most bytes of a process's name a launcher_memory_kill carries:
 // a base name on Linux is at most 255 bytes, so the bound holds whole any name that needs no
@@ -1304,7 +1319,7 @@ func (g LauncherMemoryGuard) Validate() error {
 // Validate refuses a kill report the daemon could not apply once or tell a role of: one naming no
 // guard or a sequence below the 1 the guard counts from, which together are the report's
 // identity; one naming no process or no limit; one whose executable is longer than the bound a
-// role's note is held to; and one whose cause is neither empty nor MemoryKillCauseKernel, which
+// role's note is held to; and one whose cause is none of the three MemoryKillCause values, which
 // no note says.
 func (f LauncherMemoryKill) Validate() error {
 	switch {
@@ -1318,8 +1333,9 @@ func (f LauncherMemoryKill) Validate() error {
 		return fmt.Errorf("%w: launcher_memory_kill carries no limitBytes", ErrMalformedFrame)
 	case len(f.Executable) > MemoryKillExecutableBytes:
 		return fmt.Errorf("%w: launcher_memory_kill executable is %d bytes, limit %d", ErrMalformedFrame, len(f.Executable), MemoryKillExecutableBytes)
-	case f.Cause != "" && f.Cause != MemoryKillCauseKernel:
-		return fmt.Errorf("%w: launcher_memory_kill cause is %q, not %q or none", ErrMalformedFrame, f.Cause, MemoryKillCauseKernel)
+	case f.Cause != MemoryKillCauseGuard && f.Cause != MemoryKillCauseKernel && f.Cause != MemoryKillCauseKernelProtected:
+		return fmt.Errorf("%w: launcher_memory_kill cause is %q, not %q, %q or none",
+			ErrMalformedFrame, f.Cause, MemoryKillCauseKernel, MemoryKillCauseKernelProtected)
 	}
 	return nil
 }

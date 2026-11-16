@@ -45,9 +45,10 @@
 // oom_score_adj 1000 every process of a role that the same Classifier does not protect, and sets
 // each protected process that reads above the starting score back to it, so that the kernel stops
 // a command before an agent. It names each process that the kernel stopped from a rise of the
-// cgroup's oom_kill counter, writes the guard's own ended line for it and gives the sink a Kill
-// with the kernel's cause, and it logs the cgroup's memory each hour. Like the guard, it runs only
-// where its launcher is the container's first process.
+// cgroup's oom_kill counter, writes the guard's own ended line for it and gives the sink a Kill,
+// through the guard's own writer (writeKill), with one of the kernel's two causes, the second for
+// a process the Classifier protects; and it logs the cgroup's memory each hour. Like the guard, it
+// runs only where its launcher is the container's first process.
 package memoryguard
 
 import (
@@ -235,13 +236,12 @@ const noLimit = 1 << 62
 // Guard is one memory guard. One runs in a launcher (Run), and the settings of each role's
 // acknowledgement reach it from that role's connection (Apply).
 type Guard struct {
+	// killWriter is the guard's id, its log, its sink and its count of kills (writeKill).
+	killWriter
 	proc     string
 	classify Classifier
-	sink     func(Kill)
-	logf     func(format string, args ...any)
 	clock    Clock
 	signal   Signaler
-	id       string
 	self     int
 	// observe, when set, is called with each reading the guard takes, on its loop and before it
 	// acts on the reading. The live test (live_test.go) sets it to time the guard's decisions
@@ -270,7 +270,6 @@ type Guard struct {
 	smaps        []byte
 	phase        phase
 	wait         afterKill
-	sequence     uint64
 	window       window
 	counterAt    time.Time
 	unreadLogged map[int]bool
@@ -302,13 +301,11 @@ func New(cfg Config) *Guard {
 	proc := cmp.Or(cfg.Proc, "/proc")
 	cgroup := cmp.Or(cfg.Cgroup, "/sys/fs/cgroup/memory")
 	g := &Guard{
+		killWriter:   newKillWriter(cfg.Logf, cfg.Sink),
 		proc:         proc,
 		classify:     cfg.Classify,
-		sink:         cfg.Sink,
-		logf:         cfg.Logf,
 		clock:        cfg.Clock,
 		signal:       cfg.Signal,
-		id:           newWatchID(),
 		self:         os.Getpid(),
 		settings:     Defaults(),
 		on:           true,
@@ -320,9 +317,6 @@ func New(cfg Config) *Guard {
 		memfdLink:    memfdPrefix,
 		memfds:       map[memfdID]bool{},
 		scanMemfds:   map[memfdID]bool{},
-	}
-	if g.logf == nil {
-		g.logf = func(string, ...any) {}
 	}
 	if g.clock == nil {
 		g.clock = &wallClock{}
@@ -339,6 +333,39 @@ func newWatchID() string {
 	var id [8]byte
 	_, _ = rand.Read(id[:])
 	return hex.EncodeToString(id[:])
+}
+
+// killWriter is how a watch writes each process it names as stopped for memory and hands that
+// process's report to its sink: the guard's own kills (Guard.act) and the ones the guest kernel
+// made (Guest.report) alike, so either watch writes the same line and the same report, under the
+// watch's own id and its own count of kills from 1. logf writes every other line of the watch's
+// too. sequence is the watch's loop's own.
+type killWriter struct {
+	id       string
+	logf     func(format string, args ...any)
+	sink     func(Kill)
+	sequence uint64
+}
+
+// newKillWriter is a watch's killWriter, with an id of its own (newWatchID): a nil logf discards
+// every line, and a nil sink takes no report.
+func newKillWriter(logf func(format string, args ...any), sink func(Kill)) killWriter {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	return killWriter{id: newWatchID(), logf: logf, sink: sink}
+}
+
+// writeKill takes the next sequence for k, a process the watch names as stopped for memory: it
+// writes the guard's own endedLine for k, with shmem, the pod's shared memory then, which the line
+// alone carries, and hands the sink k under the watch's id and that sequence.
+func (w *killWriter) writeKill(k Kill, shmem uint64) {
+	w.sequence++
+	k.Guard, k.Sequence = w.id, w.sequence
+	w.logf(endedLine, k.PID, roleName(k.Role), k.SizeBytes, k.ReadingBytes, k.CounterBytes, shmem, k.LimitBytes, k.Executable)
+	if w.sink != nil {
+		w.sink(k)
+	}
 }
 
 // ID is the guard's own id, random for each guard, which every kill report carries: with the
@@ -565,19 +592,13 @@ func (g *Guard) act(now time.Time, s Settings, reading, limit uint64) {
 	at := g.clock.Now()
 	counter := g.readCounter(at)
 	shmem, _ := meminfoBytes(g.meminfoData, "Shmem")
-	executable := processName(target.Process)
-	g.sequence++
-	g.logf(endedLine, target.PID, roleName(target.role), target.size, reading, counter, shmem, limit, executable)
-	if g.sink != nil {
-		g.sink(Kill{
-			LauncherMemoryKill: shimwire.LauncherMemoryKill{
-				Guard: g.id, Sequence: g.sequence, PID: target.PID,
-				Executable: executable, SizeBytes: target.size,
-				ReadingBytes: reading, CounterBytes: counter, LimitBytes: limit, At: at,
-			},
-			Role: target.role,
-		})
-	}
+	g.writeKill(Kill{
+		LauncherMemoryKill: shimwire.LauncherMemoryKill{
+			PID: target.PID, Executable: processName(target.Process), SizeBytes: target.size,
+			ReadingBytes: reading, CounterBytes: counter, LimitBytes: limit, At: at, Cause: shimwire.MemoryKillCauseGuard,
+		},
+		Role: target.role,
+	}, shmem)
 	g.phase = waiting
 	g.wait = afterKill{handle: h, reading: reading, deadline: now.Add(s.Wait)}
 }

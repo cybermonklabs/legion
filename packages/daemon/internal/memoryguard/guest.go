@@ -37,15 +37,20 @@ import (
 // v2, memory.oom_control in v1), and a killed grandchild's exit goes to its parent, not to the
 // launcher. So each scan keeps every process the scan read, by pid and start time, with its
 // resident size (stat's rss) and its oom_score, and reads the counter after the scan. When the
-// counter rises by n, the killed are the processes the watch held before the rise that a scan no
-// longer holds (exited, a zombie, or a pid another process took), ranked by their last oom_score
-// before the rise, then their resident size, highest first; the first n are named (attribute). A
-// process the kernel killed may still run while it frees its memory, so a rise waits, up to
-// guestKillWait, while a process ranked above the n-th gone one still runs; at the wait's end the n
-// highest gone ones are named, and a rise beyond them has one unnamed line. Each killed process has
-// the guard's own endedLine and, in a role, a Kill to the sink with Cause
-// shimwire.MemoryKillCauseKernel, the watch's id and its own sequence from 1; a process of no role
-// has the line alone.
+// counter rises by n, the killed are the processes the watch held by the scan that saw the rise
+// (the latest rise's, while rises add up) that a scan no longer holds (exited, a zombie, or a pid
+// another process took), ranked by their last oom_score before the rise, then their resident
+// size, highest first; the first n are named (attribute). A process the watch first held at a
+// later scan was not among the processes the rise's scan read, so it is neither named nor waited
+// for: a command that starts during the wait and exits by itself is no kill. A process the kernel
+// killed may still run while it frees its memory, so a rise waits, up to guestKillWait, while a
+// process ranked above the n-th gone one still runs; at the wait's end the n highest gone ones are
+// named, and a rise beyond them has one unnamed line. Each killed process has the guard's own
+// endedLine and, in a role, a Kill to the sink with the watch's id and its own sequence from 1,
+// as the guard's kills have (writeKill), and Cause shimwire.MemoryKillCauseKernel, or
+// shimwire.MemoryKillCauseKernelProtected for a process the classifier protected before the rise:
+// one of the processes that run the role's session, whose end the role is told of in its own
+// words. A process of no role, protected or not, has the line alone.
 //
 // The hour. Each hour from its start, one line gives the cgroup's usage, its working set (the usage
 // less the inactive file pages, cAdvisor's figure), each with its high and when, memory.stat's
@@ -57,13 +62,13 @@ import (
 // score and the hour, which do not depend on it. Without a readable /proc it logs one line, raises
 // and names nothing, and goes on with the hour from the cgroup.
 type Guest struct {
+	// killWriter is the watch's id, its log, its sink of the kills of a role's processes
+	// (roleKills) and its count of kills (writeKill).
+	killWriter
 	proc      string
 	cgroupDir string
 	classify  Classifier
-	sink      func(Kill)
-	logf      func(format string, args ...any)
 	clock     Clock
-	id        string
 	self      int
 	pageSize  uint64
 	// writeScore writes a process's oom_score_adj: writeScoreFile, as NewGuest sets it. The tests
@@ -87,16 +92,18 @@ type Guest struct {
 	// known is every process the watch has read and not let go, by pid and start time: each one
 	// the last scan held, and each one gone since, until no rise waits (snapshot, attribute).
 	known map[procKey]*watched
-	// scans counts the scans that read the processes, by which snapshot marks what a scan held.
+	// scans counts the scans that read the processes, by which snapshot marks what a scan held
+	// and the scan that first held each process.
 	scans uint64
 	// pending is the kills of the counter's rises that no process has been named for yet, which
 	// wait until deadline; riseAt and riseMemory are the time and the pod's memory at the scan
-	// that saw the first of them.
+	// that saw the first of them, and riseScan is the scan that saw the latest, after which a
+	// process first held is taken for none of them (attribute).
 	pending    uint64
 	deadline   time.Time
 	riseAt     time.Time
 	riseMemory killMemory
-	sequence   uint64
+	riseScan   uint64
 	window     guestWindow
 	// usage is the cgroup's usage at this scan, and stat and limit its memory.stat and limit at
 	// their last read, taken at statAt.
@@ -154,15 +161,18 @@ type procKey struct {
 	start uint64
 }
 
-// watched is one process the watch read: its role and name, and its resident size and oom_score
-// at its last read before any pending rise, by which a kill is ranked and named. seen is the last
+// watched is one process the watch read: its role, whether the classifier protects it, and its
+// name, and its resident size and oom_score, each at its last read before any pending rise, by
+// which a kill is ranked, named and reported. first is the scan that first held it, seen the last
 // scan that held it, and gone a process a later scan no longer held.
 type watched struct {
 	key        procKey
 	role       string
+	protected  bool
 	executable string
 	resident   uint64
 	score      int64
+	first      uint64
 	seen       uint64
 	gone       bool
 }
@@ -188,13 +198,11 @@ type guestWindow struct {
 // NewGuest is a guest watch of cfg, with an id of its own.
 func NewGuest(cfg GuestConfig) *Guest {
 	g := &Guest{
+		killWriter:    newKillWriter(cfg.Logf, roleKills(cfg.Sink)),
 		proc:          cmp.Or(cfg.Proc, "/proc"),
 		cgroupDir:     cfg.Cgroup,
 		classify:      cfg.Classify,
-		sink:          cfg.Sink,
-		logf:          cfg.Logf,
 		clock:         cfg.Clock,
-		id:            newWatchID(),
 		self:          os.Getpid(),
 		pageSize:      uint64(os.Getpagesize()),
 		writeScore:    writeScoreFile,
@@ -202,13 +210,23 @@ func NewGuest(cfg GuestConfig) *Guest {
 		known:         map[procKey]*watched{},
 		small:         make([]byte, 64),
 	}
-	if g.logf == nil {
-		g.logf = func(string, ...any) {}
-	}
 	if g.clock == nil {
 		g.clock = &wallClock{}
 	}
 	return g
+}
+
+// roleKills is sink for the kills of a role's processes alone, or nil where sink is: a process of
+// no role the kernel killed has its line and no report (Guest).
+func roleKills(sink func(Kill)) func(Kill) {
+	if sink == nil {
+		return nil
+	}
+	return func(k Kill) {
+		if k.Role != "" {
+			sink(k)
+		}
+	}
 }
 
 // ID is the watch's own id, random for each watch, which every kill report carries: with the
@@ -294,8 +312,8 @@ func (g *Guest) tick(now time.Time) {
 	}
 }
 
-// look scans the processes and sets their scores, or answers nil where the watch reads no /proc:
-// a scan that fails turns the watch's processes off for good, with one line.
+// look scans the processes, counts the scan, and sets their scores, or answers nil where the watch
+// reads no /proc: a scan that fails turns the watch's processes off for good, with one line.
 func (g *Guest) look() (*Table, map[int]Class) {
 	if !g.watching {
 		return nil, nil
@@ -307,6 +325,7 @@ func (g *Guest) look() (*Table, map[int]Class) {
 		g.logf(guestOffLine, fmt.Sprintf("cannot list the processes in %s: %v", g.proc, err))
 		return nil, nil
 	}
+	g.scans++
 	var classes map[int]Class
 	if g.classify != nil {
 		classes = g.classify(t)
@@ -361,8 +380,8 @@ func (g *Guest) score(t *Table, classes map[int]Class) {
 }
 
 // count reads the kill counter, and a rise starts the wait for the processes it killed, or adds
-// to the one that waits. A read that fails sees no rise; a counter below the last reading, a
-// cgroup made anew, is the next rise's base.
+// to the one that waits, as of this scan (riseScan). A read that fails sees no rise; a counter
+// below the last reading, a cgroup made anew, is the next rise's base.
 func (g *Guest) count(now time.Time) {
 	n, err := g.cgroup.readKills()
 	if err != nil || n == g.kills {
@@ -379,26 +398,27 @@ func (g *Guest) count(now time.Time) {
 		g.riseAt, g.riseMemory = now, g.memoryNow()
 	}
 	g.pending += rise
+	g.riseScan = g.scans
 	g.deadline = now.Add(guestKillWait)
 }
 
-// snapshot takes t into known: each process it holds that the watch had not read, with its size
-// and score, and each it holds that the watch had, read again unless a rise waits, whose ranking
-// is by the reads before it. Each the watch had that t does not hold is let go where no rise
-// waits, and marked gone while one does, for attribute to name. A pid whose stat the scan could
-// not read is not gone, since nothing says it is.
+// snapshot takes t into known: each process it holds that the watch had not read, with the scan
+// that first held it, its role, whether the classifier protects it, its size and its score, and
+// each it holds that the watch had, read again unless a rise waits, whose ranking is by the reads
+// before it. Each the watch had that t does not hold is let go where no rise waits, and marked
+// gone while one does, for attribute to name. A pid whose stat the scan could not read is not
+// gone, since nothing says it is.
 func (g *Guest) snapshot(t *Table, classes map[int]Class) {
-	g.scans++
 	for pid, p := range t.byPID {
 		key := procKey{pid: pid, start: p.StartTime}
 		w := g.known[key]
 		fresh := w == nil
 		if fresh {
-			w = &watched{key: key, executable: processName(p)}
+			w = &watched{key: key, executable: processName(p), first: g.scans}
 			g.known[key] = w
 		}
 		if fresh || g.pending == 0 {
-			w.role = classes[pid].Role
+			w.role, w.protected = classes[pid].Role, classes[pid].Protected
 			w.resident = p.Resident * g.pageSize
 			g.read(w)
 		}
@@ -433,7 +453,10 @@ func (g *Guest) read(w *watched) {
 // highest last oom_score first, then largest resident size, it takes each gone one until it has
 // one for each kill. A process that still runs, met before that, may be one the kernel killed
 // that has not exited yet, so the walk waits for the next scan, until the wait passes; then it
-// passes over each one that runs. The kills left over have one unnamed line.
+// passes over each one that runs. A process first held after the scan that saw the latest rise
+// (riseScan) is passed over whether it runs or not: it was not among the processes that scan read,
+// so a command that started during the wait is not named for a kill, and does not hold the walk.
+// The kills left over have one unnamed line.
 func (g *Guest) attribute(now time.Time) {
 	final := !now.Before(g.deadline)
 	ranked := slices.SortedFunc(maps.Values(g.known), func(a, b *watched) int {
@@ -444,6 +467,9 @@ func (g *Guest) attribute(now time.Time) {
 	for _, w := range ranked {
 		if uint64(len(killed)) == g.pending {
 			break
+		}
+		if w.first > g.riseScan {
+			continue
 		}
 		if w.gone {
 			killed = append(killed, w)
@@ -461,23 +487,23 @@ func (g *Guest) attribute(now time.Time) {
 }
 
 // report writes the guard's own line for w, which the kernel killed, and gives a role's process's
-// kill to the sink. Every kill counts in the sequence, as the guard's do, and a process of no role
-// has the line alone.
+// kill to the sink, as the guard writes and reports its own (writeKill): with the kernel's cause,
+// or, for a process the classifier protected, one of those that run the role's session, the
+// kernel's protected cause. Every kill counts in the sequence, as the guard's do, and a process
+// of no role has the line alone (roleKills).
 func (g *Guest) report(w *watched) {
 	m := g.riseMemory
-	g.sequence++
-	g.logf(endedLine, w.key.pid, roleName(w.role), w.resident, m.reading, m.counter, m.shmem, m.limit, w.executable)
-	if g.sink == nil || w.role == "" {
-		return
+	cause := shimwire.MemoryKillCauseKernel
+	if w.protected {
+		cause = shimwire.MemoryKillCauseKernelProtected
 	}
-	g.sink(Kill{
+	g.writeKill(Kill{
 		LauncherMemoryKill: shimwire.LauncherMemoryKill{
-			Guard: g.id, Sequence: g.sequence, PID: w.key.pid, Executable: w.executable,
-			SizeBytes: w.resident, ReadingBytes: m.reading, CounterBytes: m.counter, LimitBytes: m.limit,
-			At: g.riseAt, Cause: shimwire.MemoryKillCauseKernel,
+			PID: w.key.pid, Executable: w.executable, SizeBytes: w.resident,
+			ReadingBytes: m.reading, CounterBytes: m.counter, LimitBytes: m.limit, At: g.riseAt, Cause: cause,
 		},
 		Role: w.role,
-	})
+	}, m.shmem)
 }
 
 // unnamed writes n kills no process was named for, if any, as one line, and lets them go.

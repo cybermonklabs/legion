@@ -125,7 +125,7 @@ func (p *fakePod) addGuest(gps ...guestProcess) {
 	p.t.Helper()
 	for _, gp := range gps {
 		p.add(gp.fakeProcess)
-		p.writeWhole(filepath.Join(p.proc, strconv.Itoa(gp.pid), "oom_score"), fmt.Sprintf("%d\n", gp.score))
+		p.setOOMScore(gp.pid, gp.score)
 		p.setScore(gp.pid, gp.adj)
 	}
 }
@@ -134,6 +134,12 @@ func (p *fakePod) addGuest(gps ...guestProcess) {
 func (p *fakePod) setScore(pid, adj int) {
 	p.t.Helper()
 	p.writeWhole(filepath.Join(p.proc, strconv.Itoa(pid), "oom_score_adj"), fmt.Sprintf("%d\n", adj))
+}
+
+// setOOMScore writes pid's oom_score, the kernel's badness of it, by which the watch ranks a kill.
+func (p *fakePod) setOOMScore(pid, score int) {
+	p.t.Helper()
+	p.writeWhole(filepath.Join(p.proc, strconv.Itoa(pid), "oom_score"), fmt.Sprintf("%d\n", score))
 }
 
 // setSelfScore writes the oom_score_adj of the process that reads the pod's /proc, the watch's
@@ -553,6 +559,161 @@ func TestGuestTellsNoSinkOfAKillOfAProcessOfNoRole(t *testing.T) {
 	h.tick()
 	if kills := h.reported(); len(kills) != 1 || kills[0].PID != load || kills[0].Sequence != 2 || kills[0].Role != "tester" {
 		t.Fatalf("the sink took %+v, want the tester's %d as the second kill", kills, load)
+	}
+}
+
+// A process the kernel killed is ranked and named by its reads before the rise: the kernel counts
+// the kill at its SIGKILL, and its oom_reaper frees the process's memory before the process leaves
+// /proc, so a read after the rise finds it at no size and no score. A smaller raised command that
+// exits by itself during the wait is not taken for it, and the killed process is named, at its
+// size before the rise, once it leaves.
+func TestGuestNamesAReapedProcessByItsReadsBeforeTheRise(t *testing.T) {
+	const python, rg = 850, 851
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(command(python, 8500, "python3", 1400, 1500*mib), command(rg, 8510, "rg", 1340, 50*mib))
+	classes[python], classes[rg] = Class{Role: "tester"}, Class{Role: "tester"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	reaped := command(python, 8500, "python3", 0, 0)
+	reaped.adj = raisedScore
+	pod.addGuest(reaped)
+	cgroup.setKills(1)
+	h.tick()
+	pod.remove(rg)
+	h.tick()
+	if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+		t.Fatalf("the watch wrote %q and reported %+v while the killed python3 was still in /proc, want neither; the log:\n%s", ended, kills, h.logged())
+	}
+	pod.remove(python)
+	h.tick()
+	kills := h.reported()
+	if len(kills) != 1 || kills[0].PID != python || kills[0].Executable != "python3" || kills[0].SizeBytes != 1500*mib {
+		t.Fatalf("the sink took %+v, want the one kill of python3 (%d) at its %d bytes before the rise; the log:\n%s", kills, python, 1500*mib, h.logged())
+	}
+	if ended := h.log.with("ended "); len(ended) != 1 || !strings.HasSuffix(ended[0], `executable="python3"`) {
+		t.Fatalf("the kill lines are %q, want the one of python3", ended)
+	}
+}
+
+// A process the watch first holds after the scan that saw the rise is no kill of that rise, since
+// that scan did not read it: another role's command that starts during the wait, is raised so it
+// ranks first, and exits by itself neither holds the walk nor is named. The killed process, still
+// in /proc at the rise's scan, is named once it leaves; where it does not leave within the wait,
+// the rise has its one unnamed line, and the late command is not named in its place.
+func TestGuestNamesNoProcessThatStartedAfterTheRise(t *testing.T) {
+	const killed, rg = 860, 861
+	for _, tc := range []struct {
+		name   string
+		leaves bool
+	}{
+		{"the killed process leaves after the late one", true},
+		{"only the late process leaves", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			pod.setSelfScore(0)
+			classes := guestTree(pod, 0)
+			pod.addGuest(command(killed, 8600, "node", 1400, 2*gib))
+			classes[killed], classes[rg] = Class{Role: "tester"}, Class{Role: "reviewer"}
+			cgroup := newFakeCgroup(t, cgroupV2)
+			h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+			// The kernel kills the tester's node, which stays in /proc while it frees its memory.
+			cgroup.setKills(1)
+			h.tick()
+			// The reviewer's rg starts during the wait, is raised and exits by itself.
+			pod.addGuest(guestProcess{fakeProcess: fakeProcess{pid: rg, ppid: 1, start: 8610, args: []string{"rg"}, resident: 50 * mib}, score: 1500})
+			h.tick()
+			pod.remove(rg)
+			if !tc.leaves {
+				h.tickAfter(guestKillWait)
+				want := "launcher: guest memory: killed unnamed count=1 oom_kill=1"
+				if got := h.lines("killed unnamed"); !slices.Equal(got, []string{want}) {
+					t.Fatalf("the unnamed lines are %q, want %q alone; the log:\n%s", got, want, h.logged())
+				}
+				if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+					t.Fatalf("the watch wrote %q and reported %+v, want neither: rg started after the rise; the log:\n%s", ended, kills, h.logged())
+				}
+				return
+			}
+			h.tick()
+			if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+				t.Fatalf("the watch wrote %q and reported %+v once rg exited, want neither while the killed node is in /proc; the log:\n%s", ended, kills, h.logged())
+			}
+			pod.remove(killed)
+			h.tick()
+			kills := h.reported()
+			if len(kills) != 1 || kills[0].PID != killed || kills[0].Executable != "node" || kills[0].Role != "tester" ||
+				kills[0].SizeBytes != 2*gib || kills[0].Cause != shimwire.MemoryKillCauseKernel || kills[0].Sequence != 1 {
+				t.Fatalf("the sink took %+v, want the one kill of the tester's node (%d); the log:\n%s", kills, killed, h.logged())
+			}
+			ended := h.log.with("ended ")
+			if len(ended) != 1 || !strings.HasPrefix(ended[0], fmt.Sprintf("launcher: memory guard: ended pid=%d role=tester ", killed)) ||
+				!strings.HasSuffix(ended[0], `executable="node"`) {
+				t.Fatalf("the kill lines are %q, want the one of node; the log:\n%s", ended, h.logged())
+			}
+			if unnamed := h.lines("killed unnamed"); len(unnamed) != 0 {
+				t.Fatalf("the watch logged %q, want no unnamed kill", unnamed)
+			}
+		})
+	}
+}
+
+// A process of a role that the classifier protects, one of those that run the role's session
+// (the agent here, which Oh My Pi's in-process shell can grow past every command), that the kernel
+// killed has the guard's own line as every kill has, and one Kill of its role with the kernel's
+// protected cause, so its role is told what that end does to it. A protected process of no role
+// (the test database's server) has the line alone, as every process of no role has, and counts in
+// the sequence.
+func TestGuestReportsAKillOfARolesProtectedProcessWithTheProtectedCause(t *testing.T) {
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.setOOMScore(guestAgent, 1900)
+	pod.setOOMScore(guestTestDB, 1800)
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	cgroup.setUsage(3900 * mib)
+	cgroup.setStat(fakeStat{anon: 3500 * mib, file: 400 * mib, inactiveFile: 120 * mib, shmem: 32 * mib})
+	pod.remove(guestAgent)
+	cgroup.setKills(1)
+	h.tick()
+	at := h.clock.Now()
+
+	want := fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d executable="omp"`,
+		guestAgent, 2*gib, 3500*mib, 3900*mib, 32*mib, podLimit)
+	if got := h.log.with("ended "); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the kill lines are %q, want %q; the log:\n%s", got, want, h.logged())
+	}
+	wantKill := Kill{
+		LauncherMemoryKill: shimwire.LauncherMemoryKill{
+			Guard: h.g.ID(), Sequence: 1, PID: guestAgent, Executable: "omp", SizeBytes: 2 * gib,
+			ReadingBytes: 3500 * mib, CounterBytes: 3900 * mib, LimitBytes: podLimit, At: at, Cause: shimwire.MemoryKillCauseKernelProtected,
+		},
+		Role: "tester",
+	}
+	kills := h.reported()
+	if len(kills) != 1 || kills[0] != wantKill {
+		t.Fatalf("the sink took %+v, want the one kill %+v", kills, wantKill)
+	}
+	if err := kills[0].Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	pod.remove(guestTestDB)
+	cgroup.setKills(2)
+	h.tick()
+	ended := h.log.with("ended ")
+	if len(ended) != 2 || !strings.HasPrefix(ended[1], fmt.Sprintf("launcher: memory guard: ended pid=%d role=none ", guestTestDB)) ||
+		!strings.HasSuffix(ended[1], `executable="postgres"`) {
+		t.Fatalf("the kill lines are %q, want the agent's, then the test database's in role none; the log:\n%s", ended, h.logged())
+	}
+	if kills := h.reported(); len(kills) != 1 {
+		t.Fatalf("the sink took %+v, want nothing more for a protected process of no role", kills)
 	}
 }
 

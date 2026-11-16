@@ -1056,8 +1056,11 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 // pod's own log stays.
 //
 // The report's cause chooses the note: the kernel's (kernelKillNote) for
-// shimwire.MemoryKillCauseKernel, the guard's (memoryGuardNote) for none, the only other cause
-// the launcher session lets through (shimwire.LauncherMemoryKill.Validate).
+// shimwire.MemoryKillCauseKernel, a command of the role's; the kernel's for one of the processes
+// that run the role's session (kernelProtectedKillNote) for
+// shimwire.MemoryKillCauseKernelProtected; and the guard's (memoryGuardNote) for
+// shimwire.MemoryKillCauseGuard, the only other cause the launcher session lets through
+// (shimwire.LauncherMemoryKill.Validate). The line logged names the cause.
 //
 // An issue the daemon does not record has no role of the workflow's to tell, so the fact is
 // logged and dropped.
@@ -1073,9 +1076,12 @@ func (e *Engine) memoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.Mem
 		return intake.Result{}, nil
 	}
 	var note, told string
-	if report.Cause == shimwire.MemoryKillCauseKernel {
+	switch report.Cause {
+	case shimwire.MemoryKillCauseKernel:
 		note, told = kernelKillNote(report), "workflow: the role whose process the pod's kernel stopped is told why"
-	} else {
+	case shimwire.MemoryKillCauseKernelProtected:
+		note, told = kernelProtectedKillNote(report), "workflow: the role whose session's own process the pod's kernel stopped is told why"
+	default:
 		note, told = memoryGuardNote(report), "workflow: the role whose process the memory guard ended is told why"
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.RoleMessage{Role: string(fact.Token), Body: note}); err != nil {
@@ -1088,11 +1094,31 @@ func (e *Engine) memoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.Mem
 	return intake.Result{}, nil
 }
 
-// memoryKillNoteEnd ends each note of a role's process stopped for memory: what goes on, and
-// where heavy work runs instead.
-const memoryKillNoteEnd = "The pod's other processes and your session go on. " +
-	"Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: " +
-	"read skill://legion-worker/references/tools.md before you run it again."
+// The ends of the notes of a role's process stopped for memory. memoryKillGoesOn says what goes
+// on after a command of the role's is stopped, in the guard's note and the kernel's note of a
+// command; it is not true of a process that runs the role's session, whose note says what happens
+// instead (kernelProtectedKillEnd). memoryKillHeavyWork, where heavy work runs instead, ends every
+// note.
+const (
+	memoryKillGoesOn    = "The pod's other processes and your session go on. "
+	memoryKillHeavyWork = "Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: " +
+		"read skill://legion-worker/references/tools.md before you run it again."
+)
+
+// kernelProtectedKillEnd is what a role reads of one of the processes that run its session
+// stopped by the pod's kernel (shimwire.MemoryKillCauseKernelProtected): the role-init, the shim,
+// the agent and the helpers the launcher's classifier protects. The agent's end ends the shim's
+// (the shim returns the agent's exit), the shim's ends the role-init's, which ends every process
+// of the role with it, and the launcher reports that generation's exit. The daemon reads that as
+// the role's process gone, as it reads every exit a role's process makes on its own: it takes
+// back the task the turn was running, charges one launch failure, and relaunches the same
+// session, which is sent that task again, or fails the claim where the launch failures have
+// reached their limit (supervise's died, interrupted, relaunchAfterFailure). A helper of the
+// agent's may end alone, which is why the note says what follows only of the agent.
+const kernelProtectedKillEnd = "It was one of the processes that run your session, not a command you ran. " +
+	"If it was your agent, your turn ended with it, and so did every other process of your role. " +
+	"The daemon then starts the same session again and sends again any task that the turn was running. " +
+	"It counts each such exit of a role's process as a failed launch, and at the limit of failed launches it fails your claim instead. "
 
 // memoryGuardNote is what a role reads when the memory guard ended one of its processes: which
 // process, how much it held, how near the limit the pod was, that nothing else of the role
@@ -1103,18 +1129,33 @@ const memoryKillNoteEnd = "The pod's other processes and your session go on. " +
 // (codeSpan).
 func memoryGuardNote(report shimwire.LauncherMemoryKill) string {
 	return fmt.Sprintf("The launcher's memory guard stopped one of your processes with SIGKILL because the pod was near its memory limit: "+
-		"%s (pid %d) held %s of anonymous memory while the pod's anonymous memory read %s of its %s limit. "+memoryKillNoteEnd,
+		"%s (pid %d) held %s of anonymous memory while the pod's anonymous memory read %s of its %s limit. "+memoryKillGoesOn+memoryKillHeavyWork,
 		codeSpan(report.Executable), report.PID, binarySize(report.SizeBytes), binarySize(report.ReadingBytes), binarySize(report.LimitBytes))
 }
 
-// kernelKillNote is what a role reads when a microVM pod's own kernel stopped one of its processes
+// kernelKillNote is what a role reads when a microVM pod's own kernel stopped one of its commands
 // because the pod ran out of memory (shimwire.MemoryKillCauseKernel): which process, how much it
-// held, the pod's memory counter against its limit, that nothing else of the role stopped, and
-// where heavy work runs instead. The process and the sizes are written as memoryGuardNote writes
-// them.
+// held, the pod's memory counter against its limit (kernelKillLead), that nothing else of the role
+// stopped, and where heavy work runs instead.
 func kernelKillNote(report shimwire.LauncherMemoryKill) string {
+	return kernelKillLead(report) + memoryKillGoesOn + memoryKillHeavyWork
+}
+
+// kernelProtectedKillNote is what a role reads when a microVM pod's own kernel stopped one of the
+// processes that run its session (shimwire.MemoryKillCauseKernelProtected): which process, how
+// much it held, the pod's memory counter against its limit (kernelKillLead), what that process's
+// end does to the role (kernelProtectedKillEnd), and where heavy work runs instead. It never says
+// the session goes on, which the end of the agent's own process makes false.
+func kernelProtectedKillNote(report shimwire.LauncherMemoryKill) string {
+	return kernelKillLead(report) + kernelProtectedKillEnd + memoryKillHeavyWork
+}
+
+// kernelKillLead opens each note of a process the pod's kernel stopped: which process, how much it
+// held, and the pod's memory counter against its limit, the process and the sizes written as
+// memoryGuardNote writes them.
+func kernelKillLead(report shimwire.LauncherMemoryKill) string {
 	return fmt.Sprintf("The pod's kernel stopped one of your processes because the pod ran out of memory: "+
-		"%s (pid %d) held %s when the pod's memory read %s of its %s limit. "+memoryKillNoteEnd,
+		"%s (pid %d) held %s when the pod's memory read %s of its %s limit. ",
 		codeSpan(report.Executable), report.PID, binarySize(report.SizeBytes), binarySize(report.CounterBytes), binarySize(report.LimitBytes))
 }
 

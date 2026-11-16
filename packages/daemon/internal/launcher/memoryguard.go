@@ -59,8 +59,9 @@ const maxWaitingMemoryKills = 32
 // settings reach one: the launcher logs one off line and runs the guest watch
 // (memoryguard.Guest, INFRA-3729), which steers that kernel to the processes the guard would end,
 // by the same classifier, and reports each process it stopped through the same sink, each report
-// carrying the kernel's cause. Either watch's lines are the launcher's own, behind no role's
-// prefix (roleLog.linef), because it watches every role's processes and the launcher's together.
+// carrying one of the kernel's two causes. Either watch's lines are the launcher's own, behind no
+// role's prefix (roleLog.linef), because it watches every role's processes and the launcher's
+// together.
 // A kill of a process in a role is reported to that role's manager, which sends it on that role's
 // connection (queueMemoryKill); a kill of a process in no role has the watch's own line and
 // nothing else.

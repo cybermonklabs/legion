@@ -740,36 +740,52 @@ func TestMemoryGuardKillValidateRefusesWhatTheDaemonCannotApply(t *testing.T) {
 	}
 }
 
-// kernelKillLine is a launcher's report of one process the pod's kernel stopped, as it crosses
-// the wire: the guard's report with the cause last.
-const kernelKillLine = `{"type":"launcher_memory_kill","guard":"3f2a9c1d5e7b8a60","sequence":1,"pid":4242,"executable":"python3",` +
-	`"sizeBytes":1048576000,"readingBytes":3774873600,"counterBytes":4089446400,"limitBytes":4294967296,"at":"2026-11-14T03:00:00Z","cause":"kernel"}`
+// kernelKillLine and kernelProtectedKillLine are a launcher's reports of one process the pod's
+// kernel stopped, a command of the role's and one of the processes that run its session, as they
+// cross the wire: the guard's report with the cause last.
+const (
+	kernelKillLine = `{"type":"launcher_memory_kill","guard":"3f2a9c1d5e7b8a60","sequence":1,"pid":4242,"executable":"python3",` +
+		`"sizeBytes":1048576000,"readingBytes":3774873600,"counterBytes":4089446400,"limitBytes":4294967296,"at":"2026-11-14T03:00:00Z","cause":"kernel"}`
+	kernelProtectedKillLine = `{"type":"launcher_memory_kill","guard":"3f2a9c1d5e7b8a60","sequence":1,"pid":4242,"executable":"python3",` +
+		`"sizeBytes":1048576000,"readingBytes":3774873600,"counterBytes":4089446400,"limitBytes":4294967296,"at":"2026-11-14T03:00:00Z","cause":"kernel-protected"}`
+)
 
-// A report of a process the pod's kernel stopped crosses the wire whole, through the writer and
-// the reader a launcher and the daemon speak, with its cause, and the frame's own rule takes it.
+// A report of a process the pod's kernel stopped, of either of the kernel's causes, crosses the
+// wire whole, through the writer and the reader a launcher and the daemon speak, with its cause,
+// and the frame's own rule takes it.
 func TestMemoryKillAKernelKillRoundTripsThroughTheWireWithItsCause(t *testing.T) {
-	kill := memoryKill()
-	kill.Cause = MemoryKillCauseKernel
-	var wire bytes.Buffer
-	if err := NewWriter(&wire).WriteFrame(kill); err != nil {
-		t.Fatal(err)
-	}
-	if wire.String() != kernelKillLine+"\n" {
-		t.Fatalf("the writer wrote %s, want %s", wire.String(), kernelKillLine)
-	}
-	line, err := NewReader(&wire).ReadLine()
-	if err != nil {
-		t.Fatal(err)
-	}
-	decoded, err := Decode(line)
-	if err != nil {
-		t.Fatalf("Decode(%s): %v", line, err)
-	}
-	if !reflect.DeepEqual(decoded, kill) {
-		t.Fatalf("Decode(%s) = %#v, want %#v", line, decoded, kill)
-	}
-	if err := decoded.(LauncherMemoryKill).Validate(); err != nil {
-		t.Fatalf("the decoded kernel kill does not validate: %v", err)
+	for _, tc := range []struct {
+		cause MemoryKillCause
+		line  string
+	}{
+		{MemoryKillCauseKernel, kernelKillLine},
+		{MemoryKillCauseKernelProtected, kernelProtectedKillLine},
+	} {
+		t.Run(string(tc.cause), func(t *testing.T) {
+			kill := memoryKill()
+			kill.Cause = tc.cause
+			var wire bytes.Buffer
+			if err := NewWriter(&wire).WriteFrame(kill); err != nil {
+				t.Fatal(err)
+			}
+			if wire.String() != tc.line+"\n" {
+				t.Fatalf("the writer wrote %s, want %s", wire.String(), tc.line)
+			}
+			line, err := NewReader(&wire).ReadLine()
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := Decode(line)
+			if err != nil {
+				t.Fatalf("Decode(%s): %v", line, err)
+			}
+			if !reflect.DeepEqual(decoded, kill) {
+				t.Fatalf("Decode(%s) = %#v, want %#v", line, decoded, kill)
+			}
+			if err := decoded.(LauncherMemoryKill).Validate(); err != nil {
+				t.Fatalf("the decoded kernel kill does not validate: %v", err)
+			}
+		})
 	}
 }
 
@@ -782,7 +798,7 @@ func TestMemoryKillAReportWithNoCauseIsTheGuardsOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 	kill, ok := decoded.(LauncherMemoryKill)
-	if !ok || kill.Cause != "" {
+	if !ok || kill.Cause != MemoryKillCauseGuard {
 		t.Fatalf("decoded %#v, want a launcher_memory_kill with no cause", decoded)
 	}
 	if err := kill.Validate(); err != nil {
@@ -797,22 +813,22 @@ func TestMemoryKillAReportWithNoCauseIsTheGuardsOwn(t *testing.T) {
 	}
 }
 
-// A cause other than none and MemoryKillCauseKernel is one no note says, and the frame's own rule
-// refuses it, naming the cause; the two it knows are taken.
+// A cause other than the three MemoryKillCause values is one no note says, and the frame's own
+// rule refuses it, naming the cause; the three it knows are taken.
 func TestMemoryKillValidateRefusesACauseItDoesNotKnow(t *testing.T) {
-	for _, cause := range []string{"", MemoryKillCauseKernel} {
+	for _, cause := range []MemoryKillCause{MemoryKillCauseGuard, MemoryKillCauseKernel, MemoryKillCauseKernelProtected} {
 		k := memoryKill()
 		k.Cause = cause
 		if err := k.Validate(); err != nil {
 			t.Fatalf("cause %q is refused: %v", cause, err)
 		}
 	}
-	for _, cause := range []string{"guard", "Kernel", " kernel", "oom"} {
-		t.Run(cause, func(t *testing.T) {
+	for _, cause := range []MemoryKillCause{"guard", "Kernel", " kernel", "oom", "protected", "kernel-Protected", "kernel-protected "} {
+		t.Run(string(cause), func(t *testing.T) {
 			k := memoryKill()
 			k.Cause = cause
 			err := k.Validate()
-			want := fmt.Sprintf("launcher_memory_kill cause is %q, not \"kernel\" or none", cause)
+			want := fmt.Sprintf("launcher_memory_kill cause is %q, not \"kernel\", \"kernel-protected\" or none", cause)
 			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), want) {
 				t.Fatalf("Validate = %v, want ErrMalformedFrame naming %q", err, want)
 			}
