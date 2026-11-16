@@ -343,10 +343,12 @@ audience (`$DEV_BROKER_DIR/pod-token`, the token a daemon enrolls the pod with) 
 pod may write under. The script makes that call before it prints `ready.`, which is the
 `registered the exchange pod to write under example-worker-session` line above. Making it again
 extends the registration, which lasts 24 hours from each write, and the same call with another
-name is how you add one:
+name is how you add one. The body carries a token too, so it goes on standard input
+(`--data @-`), and the header from a file curl reads (`-H @<(printf …)`, a bash process
+substitution), which keeps both tokens out of every command line:
 
 ```console
-$ printf 'Authorization: Bearer %s' "$(cat "$DEV_BROKER_DIR/registrar-token")" | curl -s -X POST -H @- -H 'Content-Type: application/json' -d "{\"pod_token\": \"$(cat "$DEV_BROKER_DIR/pod-token")\", \"session\": \"example-worker-session\"}" "$AGENT_SECRETS_URL/v1/oauth/exchange/pod-sessions"
+$ printf '{"pod_token": "%s", "session": "example-worker-session"}' "$(cat "$DEV_BROKER_DIR/pod-token")" | curl -s -X POST -H @<(printf 'Authorization: Bearer %s' "$(cat "$DEV_BROKER_DIR/registrar-token")") -H 'Content-Type: application/json' --data @- "$AGENT_SECRETS_URL/v1/oauth/exchange/pod-sessions"
 {"pod_uid":"87f7f873-65a4-47a7-b54d-abe68ac9db83","session":"example-worker-session","expires_at":"2026-10-31T00:20:03.764291Z"}
 ```
 
@@ -361,10 +363,10 @@ DPoP-bound access token. A `session` no registration names is refused, and the r
 ```
 
 Either listed caller reads a minted token back (`POST /v1/oauth/introspect` with the token in the
-form). Here the `listener` token, which may do that and nothing else:
+form, sent the same way). Here the `listener` token, which may do that and nothing else:
 
 ```console
-$ printf 'Authorization: Bearer %s' "$(cat "$DEV_BROKER_DIR/listener-token")" | curl -s -H @- -d "token=<access token>" "$AGENT_SECRETS_URL/v1/oauth/introspect"
+$ printf 'token=%s' "<access token>" | curl -s -H @<(printf 'Authorization: Bearer %s' "$(cat "$DEV_BROKER_DIR/listener-token")") --data @- "$AGENT_SECRETS_URL/v1/oauth/introspect"
 {"active":true,"session":"example-worker-session","person":"ada@example.com","project_scope":"named","project":"EXAMPLE","exp":1793320811,"client_id":"dispatch-token-exchange","jkt":"oufCNV-MCX2NLGXXB5yj7Pdnwumhbp1dGcxoxpSTyWk"}
 ```
 
@@ -376,8 +378,8 @@ broker's tokens relays a decision, so it takes the caller token, and the `listen
 introspection says `active: false` from the moment it commits:
 
 ```console
-$ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -H @- -d "token=<access token>&token_type_hint=access_token&client_id=dispatch-token-exchange" "$AGENT_SECRETS_URL/v1/oauth/revoke"
-$ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -H @- -d "token=<access token>" "$AGENT_SECRETS_URL/v1/oauth/introspect"
+$ printf 'token=%s&token_type_hint=access_token&client_id=dispatch-token-exchange' "<access token>" | curl -s -H @<(printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")") --data @- "$AGENT_SECRETS_URL/v1/oauth/revoke"
+$ printf 'token=%s' "<access token>" | curl -s -H @<(printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")") --data @- "$AGENT_SECRETS_URL/v1/oauth/introspect"
 {"active":false}
 ```
 
@@ -386,7 +388,7 @@ that the token not work — holds either way. A token issued to another client t
 names is `400`:
 
 ```console
-$ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -H @- -d "token=<access token>&client_id=agent-secrets-helper" "$AGENT_SECRETS_URL/v1/oauth/revoke"
+$ printf 'token=%s&client_id=agent-secrets-helper' "<access token>" | curl -s -H @<(printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")") --data @- "$AGENT_SECRETS_URL/v1/oauth/revoke"
 {"error":"unauthorized_client","error_description":"The client is not authorized to request a token using this method. Make sure that client id and secret are correctly specified and that the client exists.","answer_id":"1b8f254014120af2c5d4442558531dd7"}
 ```
 

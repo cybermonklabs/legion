@@ -133,7 +133,7 @@ kill_and_restart() {
     new=$(cat -- "$pidf")
     up=false
     while [ -e "/proc/$new" ] && ! grep -q '^State:.*Z' "/proc/$new/status" 2>/dev/null; do
-      if curl -fsS --max-time 1 -H "Authorization: Bearer $token" "http://127.0.0.1:$port/v1/sessions" >/dev/null 2>&1; then
+      if printf 'Authorization: Bearer %s' "$token" | curl -fsS --max-time 1 -H @- "http://127.0.0.1:$port/v1/sessions" >/dev/null 2>&1; then
         up=true
         break
       fi

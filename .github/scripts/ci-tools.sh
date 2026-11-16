@@ -656,18 +656,24 @@ ci_tools_ghcr_token() {
     return 1
   fi
   local max_time=${1:-60} scope=${2:-pull} credential=${3:-}
-  local base path url token_file token status=0
-  # A credential is passed to curl as its own argument and never spliced into the URL, so the
-  # secret reaches no log line and no process name of a redirect.
+  local base path url token_file token status=0 config=''
+  # A credential reaches curl in a config on standard input (`-K -`): never as an argument, where
+  # every process of the runner could read it, and never spliced into the URL, where it would reach
+  # a log line and the process name of a redirect. Inside the config's double quotes a backslash
+  # and a double quote are escaped.
   local -a authentication=()
-  [ -z "$credential" ] || authentication=(-u "$credential")
+  if [ -n "$credential" ]; then
+    authentication=(-K -)
+    credential=${credential//\\/\\\\}
+    config="user = \"${credential//\"/\\\"}\""
+  fi
   ci_tools__ghcr base path || return 1
   token_file=$(ci_tools__tempfile ghcr-token) || {
     printf 'this run could not make a temporary file for the %s token\n' "$scope"
     return 1
   }
   url="$base/token?service=ghcr.io&scope=repository:$path:$scope"
-  ci_tools_curl "$token_file" "$max_time" "$url" \
+  printf '%s\n' "$config" | ci_tools_curl "$token_file" "$max_time" "$url" \
     ${authentication[@]+"${authentication[@]}"} || status=$?
   if [ "$status" -ne 0 ]; then
     rm -f -- "$token_file"

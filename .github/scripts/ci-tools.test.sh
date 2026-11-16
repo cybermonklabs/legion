@@ -53,10 +53,10 @@
 # handed, one per line, and the ladder case below reads the pinned flags off that record. Those
 # flags are the ladder ci_tools_curl holds every fetch to, and before that case no assertion
 # here or anywhere else held them to a shape, so an edit of one of them reached a runner unseen.
-# The case prints no recorded argument, whether it passes or fails: this helper is handed a pull
-# token request's credential with `-u`, as an argument exactly so that it reaches no log line,
-# which a test that printed it would undo. A blob's `Authorization: Bearer …` is no argument: it
-# reaches curl on standard input (`-H @-`), and the ghcr-mirror case below holds it to that.
+# The case prints no recorded argument, whether it passes or fails, though none should hold a
+# credential: this helper hands curl a token request's credential in a config on standard input
+# (`-K -`) and a blob's `Authorization: Bearer …` on standard input (`-H @-`), and the ghcr-mirror
+# case below holds the second to that.
 #
 # THE MKTEMP ON THESE CASES' PATH: the write-error cases must name the file a fetch writes into,
 # and that file is a mktemp the helper makes under RUNNER_TEMP. Those cases put an mktemp of
@@ -604,8 +604,8 @@ RECORDED_TEMPORARY_FILE='<the temporary file this run named>'
 # line, with the tenth replaced by that placeholder. The whole record is held, and so is its
 # length, which is what catches a word appended anywhere, after the URL included: curl reads the
 # last word on --retry-max-time, so one appended word there takes the bound off every fetch this
-# repository makes. It is read inside `is` and never printed: a token request carries its
-# credential among its arguments, and the helper passes it that way so that it reaches no log line.
+# repository makes. It is read inside `is` and never printed, so a credential that ever reached
+# an argument would still reach no log line through this test.
 recorded_ladder() {
   local argument number=0
   while IFS= read -r argument; do

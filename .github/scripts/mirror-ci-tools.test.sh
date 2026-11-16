@@ -66,10 +66,14 @@ runner_temp="$work/runner-temp"
 mkdir -p "$runner_temp" "$work/payloads" "$work/bin"
 
 # The curl the cases run, first on their PATH: the real one with `--retry-max-time 1` after the
-# arguments the helper wrote, which is the bound the header above explains.
+# arguments the helper wrote, which is the bound the header above explains. It first writes those
+# arguments down, one per line, appending, into $curl_arguments, which run_mirror empties: a case
+# reads there that no argument of any call held the push credential or the push token.
 real_curl=$(command -v curl)
+curl_arguments="$work/curl-arguments"
 cat > "$work/bin/curl" <<SH
 #!/usr/bin/env bash
+printf '%s\n' "\$@" >> "$curl_arguments"
 exec "$real_curl" "\$@" --retry-max-time 1
 SH
 chmod 0755 "$work/bin/curl"
@@ -114,6 +118,7 @@ INNER_CONFIG=$(config_digest "$INNER")
 # request appended to requests.log. Its whole state is the directory it is given, so a case says
 # what the package holds by writing a file, and reads what the run did by reading that log.
 cat > "$work/origin.py" <<'PY'
+import base64
 import hashlib
 import http.server
 import os
@@ -184,6 +189,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path, _, query = self.path.partition("?")
         _, path = registry_path(path)
         if path == "/token":
+            # The push credential the run is given (GITHUB_ACTOR:GITHUB_TOKEN), which curl reads in
+            # a config on standard input. A request without it is recorded and refused 401.
+            if self.headers.get("Authorization") != "Basic " + base64.b64encode(b"fixture-actor:fixture-password").decode():
+                self.record(f"GET token {query} without the credential")
+                self.answer(401, b"no credential\n")
+                return
             self.record(f"GET token {query}")
             self.answer(200, b'{"token":"fixture-token"}')
             return
@@ -406,6 +417,7 @@ fixture() {
 # both survive the call.
 run_mirror() {
   set +e
+  : > "$curl_arguments"
   out=$(env \
     CI_TOOLS_GHCR_BASE="$base" \
     CI_TOOLS_GITHUB_BASE="$base/github" \
@@ -435,6 +447,13 @@ check "holds the row" "$(contains "$out" "^held whole sha256:$WHOLE ($WHOLE_TAG)
 check "counts it" "$(contains "$out" '^1 ghcr-mirror row(s) held, 0 filled, 0 cold, and 0 row(s) that need no copy$')"
 check "asked for a pull,push token" \
   "$(contains "$(cat "$log")" "^GET token service=ghcr.io&scope=repository:$REGISTRY_PATH:pull,push$")"
+# The registry answers the token request only for the credential (Basic, $ACTOR:fixture-password),
+# so the line above proves it arrived; these prove it, and the token, arrived in no argument.
+check "and curl was handed the token request's URL" \
+  "$(is "$(grep -c "^$base/token?service=ghcr.io&scope=repository:$REGISTRY_PATH:pull,push$" "$curl_arguments" || true)" 1)"
+check "and no argument of any call held the push credential" \
+  "$(is "$(grep -c fixture-password "$curl_arguments" || true)" 0)"
+check "nor the push token" "$(is "$(grep -c fixture-token "$curl_arguments" || true)" 0)"
 check "read the blob and the tag" \
   "$(is "$(requests HEAD)" "HEAD blob sha256:$WHOLE HEAD manifest $WHOLE_TAG ")"
 check "pushed nothing" "$(is "$(requests PUT)$(requests POST)" "")"

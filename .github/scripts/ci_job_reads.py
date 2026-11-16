@@ -50,6 +50,7 @@ covers them, not that they are complete.
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
@@ -149,6 +150,27 @@ def envoy_go_files_but_infra():
         if entry.is_dir() and entry.name not in {"infra", "node_modules", "testdata"} and holds_go(entry):
             globs.append(f"{ENVOY}/{entry.name}/**/*.go")
     return globs
+
+
+def credential_check_reads():
+    """The files packages/daemon/internal/textcheck/credential_argument_test.go reads: every one
+    git tracks but those under docs/plans and docs/superpowers. A glob cannot leave a tree out, so
+    the read is one glob per top-level entry git tracks - `<dir>/**` for a directory, the name for
+    a file - with docs/ split the same way one level down, and each glob names a tracked file, as
+    rule 9 holds every read to."""
+    listed = subprocess.run(["git", "ls-files", "-z"], capture_output=True, check=True).stdout
+    globs = set()
+    for path in os.fsdecode(listed).split("\0"):
+        parts = path.split("/")
+        if not path:
+            continue
+        if parts[0] == "docs" and len(parts) > 1:
+            if parts[1] in {"plans", "superpowers"}:
+                continue
+            globs.add(f"docs/{parts[1]}/**" if len(parts) > 2 else path)
+        else:
+            globs.add(f"{parts[0]}/**" if len(parts) > 1 else path)
+    return sorted(globs)
 
 
 def files_but_tests(directory, suffix=".go", tree=False, skip=()):
@@ -480,14 +502,13 @@ RULES = {
     f"{DAEMON}/internal/textcheck/classify_imports_test.go": [
         Read(path, "internal/textcheck/classify_imports_test.go:19 globs ../classify/*.go, and :29 parses each file it finds but the test files (:26)")
         for path in files_but_tests(f"{DAEMON}/internal/classify")],
-    # The bearer-argument check reads every text an agent or an operator copies a command from
-    # (dispatch://INFRA-3950): docs/ but its two trees of dated history, which the text_checks
-    # filter leaves out with two `!` patterns, so a new tree under docs/ starts the job too.
-    f"{DAEMON}/internal/textcheck/bearer_argument_test.go": reads(
-        *[(glob, "internal/textcheck/bearer_argument_test.go:58 walks the trees bearerTextRoots names under ../../../.. "
-                 "and :76 reads each file of them that tree's rule keeps")
-          for glob in ("skills/**", "docs/*", "docs/brainstorms/**", "docs/research/**", "docs/site/**",
-                       "docs/solutions/**", ".github/**", "packages/**/*.md", "packages/**/prompts/**")]),
+    # The credential-argument check reads every text file of the repository (dispatch://INFRA-3950)
+    # but docs/plans and docs/superpowers, which the text_checks filter leaves out with two `!`
+    # patterns (credential_check_reads says how the read is written).
+    f"{DAEMON}/internal/textcheck/credential_argument_test.go": reads(
+        *[(glob, "internal/textcheck/credential_argument_test.go:123 lists the repository's files with git ls-files "
+                 "under ../../../.. and :154 reads each of them but docs/plans and docs/superpowers")
+          for glob in credential_check_reads()]),
     # main's #4092 read these three pages in internal/prompts's production-check test; that half
     # moved here, so an edit of one of them alone starts the text checks and not the daemon's lane
     # (dispatch://INFRA-1413).
