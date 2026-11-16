@@ -4165,6 +4165,88 @@ func TestEachRecoveryStartsAChainThatCanRiseAgain(t *testing.T) {
 	assertReportEpisodes(t, f, want)
 }
 
+// A sweep that brings the volume below the low mark ends the episode, as a reading below it
+// between sweeps does: "an episode ends when the trimmer's own reading falls below the low mark"
+// (the spec's R4), and the sweep's last reading is the trimmer's own. The sweeps start at 86%,
+// 91% and 91%, which raises a rise and anchors episode 2 at 91%, and the episode's notices are
+// spent at once, since a rise-raised report skips the pod's hour. Then five old entries arrive
+// and the next sweep, from 97%, deletes them and leaves the volume at 69.9%, so it sends no
+// report. One interval later the roles have written three tenths of a point, and every reading
+// after it, at 70.2%, 78% and then 86%, is at or above the low mark. The sweep from 86% is the
+// second fill's first report: it must carry a new episode, raised by the recovery, which the
+// daemon counts afresh. A trimmer that reads a recovery from the interval's reading alone keeps
+// episode 2 and its spent count, and a rise is then read only once two starts stand at 96%, so
+// the architect hears nothing of the second fill from the low mark to 96%, and nothing at all
+// where the rise's anchor stood above 95%. Whether the tick after a clearing sweep reads 69.9%
+// or 70.2% is three tenths of a point the roles write in a minute.
+func TestASweepThatBringsTheVolumeBelowTheLowMarkEndsTheEpisode(t *testing.T) {
+	f := newTrimFixture(t, 0)
+	var mu sync.Mutex
+	level := 86.0
+	sweepReads := map[int]float64{} // the clearing sweep's own two readings, by read
+	f.useVolume(func(call int) volumeUsage {
+		mu.Lock()
+		defer mu.Unlock()
+		if reading, ok := sweepReads[call]; ok {
+			return usageAt(reading)
+		}
+		return usageAt(level)
+	})
+	f.setSettings(trimSettings())
+	f.start(f.trimmer())
+
+	at := func(reading float64, ends string) {
+		t.Helper()
+		mu.Lock()
+		level = reading
+		mu.Unlock()
+		f.tick(ends)
+		if t.Failed() {
+			t.FailNow()
+		}
+	}
+	for _, start := range []float64{86, 91, 91} {
+		at(start, "the sweep ended")
+		for range volumeQuietIntervals {
+			at(start, "no sweep for another")
+		}
+	}
+	before := f.reports()
+	if last := before[len(before)-1]; last.Episode != 2 || last.RaisedBy != shimwire.VolumeEpisodeRise {
+		t.Fatalf("the sweeps from 86%%, 91%% and 91%% left the trimmer in episode %d (%s), want 2 (%s); the reports were %q",
+			last.Episode, last.RaisedBy, shimwire.VolumeEpisodeRise, reportsSeen(f))
+	}
+
+	for _, root := range f.roots {
+		if root.Entry == ImmediateChildren {
+			for n := range 5 {
+				f.addTree(filepath.Join(root.Path, fmt.Sprintf("late-%d", n)), root.Entry)
+			}
+			break
+		}
+	}
+	mu.Lock()
+	next := f.readCount() + 1
+	sweepReads[next], sweepReads[next+1] = 97, 69.9
+	mu.Unlock()
+	at(97, "the sweep ended")
+	if got := len(f.reports()); got != len(before) {
+		t.Fatalf("the sweep that left the volume at 69.9%% sent %d reports, want none: it ended below the low mark", got-len(before))
+	}
+	at(70.2, "nothing to sweep")
+	at(78, "nothing to sweep")
+	at(86, "the sweep ended")
+
+	reports := f.reports()
+	if len(reports) != len(before)+1 {
+		t.Fatalf("the sweep from 86%% of the second fill sent %d reports, want one", len(reports)-len(before))
+	}
+	if refill := reports[len(reports)-1]; refill.Episode <= 2 || refill.RaisedBy != shimwire.VolumeEpisodeRecovery {
+		t.Errorf("the second fill's first report carries episode %d (%s), want a new episode raised by %q: the sweep before it left the volume at 69.9%%, below the low mark, and the episode it was in is over; the reports were %q",
+			refill.Episode, refill.RaisedBy, shimwire.VolumeEpisodeRecovery, reportsSeen(f))
+	}
+}
+
 // sweepsAndPauses ticks the loop through count sweeps of a volume no sweep brings down, each
 // followed by the intervals of the pause it engages (volumeQuietIntervals). The loop takes a tick
 // only once the interval before it has ended, so by the end every sweep's report has been sent.
