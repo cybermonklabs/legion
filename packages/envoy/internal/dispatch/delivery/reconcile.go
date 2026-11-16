@@ -516,8 +516,8 @@ func (r *Reconcile) reconcilePartialPullRequests(ctx context.Context) error {
 	return nil
 }
 
-// reconcilePullRequestHeads first reads every pull request a `pull_request` event owes a read
-// of (readOwedPullRequests), and then re-reads the pull request heads ListStalePullRequestHeads
+// reconcilePullRequestHeads first reads the pull requests owed a read (readOwedPullRequests), and
+// then re-reads the pull request heads ListStalePullRequestHeads
 // hands it, at most PullRequestHeadBatch of them a pass, the longest unread first: the open rows
 // Dispatch last checked over PullRequestHeadStaleAfter ago, the merged rows credited to nobody
 // that no read has reached, and every merged row a rule older than this build's judged, each of
@@ -558,39 +558,55 @@ func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time
 	return nil
 }
 
-// readOwedPullRequests reads from GitHub each pull request a `pull_request` event owes a read
-// of (pull_request_reads_owed, owePullRequestRead), at most PullRequestHeadBatch of them a pass,
-// the longest owed first. These come before the stored rows: the intake gave up on each, and
-// nothing else writes the head of one that has no row, or reads a merged or closed one again.
-// The read writes the row, creating it where none exists, through the refresh every stored row
-// takes, and settles the owed read once GitHub answers for the pull request, or refuses it past
-// owedReadRefusalFinalAfter (settleOwedPullRequestRead). A failure leaves it for the next pass,
-// so a pull request is read every pass until GitHub answers; a rate limit stops the pass as it
-// stops the stored rows'. The refresh stamps the row read, so the stored rows' list below does
-// not take a row this has just read.
+// readOwedPullRequests reads from GitHub the pull requests owed a read (pull_request_reads_owed,
+// owePullRequestRead): every failure first, at most PullRequestHeadBatch of them a pass, and then
+// the refusals, at most RefusedReadsPerPass, each kind the row read the fewest times first and
+// then the one owed longest (listOwedPullRequestReads). So a table full of refusals, which forged
+// envelopes can make, takes no read from a failure, which a GitHub outage or a slow read leaves.
+// These come before the stored rows: nothing else writes the head of a pull request that has no
+// row, or reads a merged or closed one again. The read writes the row, creating it where none
+// exists, through the refresh every stored row takes, and recordOwedReadOutcome settles the owed
+// read once GitHub answers for the pull request, or refuses it past owedReadRefusalFinalAfter, and
+// otherwise counts the read under the kind it gave. So a pull request owed a failure is read every
+// pass until GitHub answers. Both lists are taken before either is read, so a row a read of this
+// pass moves to the other kind is not read again in it. A rate limit stops the pass as it stops
+// the stored rows', after the read it limited is counted as a failure. The refresh stamps the row
+// read, so the stored rows' list below does not take a row this has just read.
 func (r *Reconcile) readOwedPullRequests(ctx context.Context, now time.Time) error {
-	owed, err := listOwedPullRequestReads(ctx, r.pool, PullRequestHeadBatch)
-	if err != nil {
-		return err
-	}
 	read := func(ctx context.Context, owed owedRead) error {
 		answered, err := refreshPullRequestHead(ctx, r.pool, r.github, r.events, owed.Repo, owed.Number, now)
+		outcome := owedReadAnswered
+		switch {
+		case err != nil:
+			outcome = owedReadFailed
+		case !answered:
+			outcome = owedReadRefused
+		}
+		if recordErr := recordOwedReadOutcome(ctx, r.pool, owed, outcome); recordErr != nil {
+			slog.Warn("dispatch delivery: record how a pull request's owed read ended; the next pass reads it again",
+				"repo", owed.Repo, "number", owed.Number, "error", recordErr)
+		}
 		if err != nil {
 			if limited, ok := githubapp.AsRateLimit(err); ok {
 				return limited
 			}
-			slog.Warn("dispatch delivery: read a pull request an event owes a read of; the next pass reads it again",
-				"repo", owed.Repo, "number", owed.Number, "owed_at", owed.OwedAt, "error", err)
-			return nil
-		}
-		if err := settleOwedPullRequestRead(ctx, r.pool, owed, !answered); err != nil {
-			slog.Warn("dispatch delivery: settle a pull request's owed read; the next pass reads it again",
-				"repo", owed.Repo, "number", owed.Number, "error", err)
+			slog.Warn("dispatch delivery: read a pull request owed a read; the next pass reads it again",
+				"repo", owed.Repo, "number", owed.Number, "reason", owed.Reason, "owed_at", owed.OwedAt, "error", err)
 		}
 		return nil
 	}
-	if err := boundedFanOut(ctx, reconcilePartialConcurrency, owed, read); err != nil {
-		return fmt.Errorf("rate-limited reading the pull requests events owe a read of: %w", err)
+	failures, err := listOwedPullRequestReads(ctx, r.pool, owedFailure, PullRequestHeadBatch)
+	if err != nil {
+		return err
+	}
+	refusals, err := listOwedPullRequestReads(ctx, r.pool, owedRefusal, RefusedReadsPerPass)
+	if err != nil {
+		return err
+	}
+	for _, owed := range [][]owedRead{failures, refusals} {
+		if err := boundedFanOut(ctx, reconcilePartialConcurrency, owed, read); err != nil {
+			return fmt.Errorf("rate-limited reading the pull requests owed a read: %w", err)
+		}
 	}
 	return nil
 }

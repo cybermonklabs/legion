@@ -514,7 +514,7 @@ func (in *Intake) oweEnvelopesRead(handling context.Context, raw string) error {
 	}
 	ctx, cancel := context.WithTimeout(handling, owedReadWriteTimeout)
 	defer cancel()
-	return owePullRequestRead(ctx, in.pool, payload["repo"], number)
+	return owePullRequestRead(ctx, in.pool, payload["repo"], number, owedFailure)
 }
 
 // headWriteDeliveriesSpent reports how many times the server has delivered msg and whether

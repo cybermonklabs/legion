@@ -33,8 +33,9 @@ import (
 // read-through made for a commit that is no head Dispatch knows (ReadThroughCommitPulls) — by a
 // recorded result, and by the read of an issue's results for a `before_merge` result's commit, at
 // most once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
-// which reads every pull request an event owes a read of (pull_request_reads_owed.go), creating
-// its row where none exists, and then takes every open row read longer than five minutes ago and
+// which reads the pull requests owed a read (pull_request_reads_owed.go), every failure before any
+// refusal, creating each one's row where none exists, and then takes every open row read longer
+// than five minutes ago and
 // every merged row the rule this build judges by has not judged yet — one offer per rule version
 // (AttributionRuleVersion, ListStalePullRequestHeads).
 //
@@ -383,6 +384,18 @@ const headWriteRollback = 2 * time.Second
 // null for any other. It is taken in the statement (clock_timestamp), not handed in, so two
 // writes of one row never carry one value: the trigger that tells a write of the release before
 // from this build's own reads a value that did not change as a write that named none.
+//
+// A write of GitHub's answer wins over a row no read of GitHub wrote, whatever the two times
+// (the guard's last arm): a stored time a caller set must never refuse GitHub. But that row may
+// hold GitHub's newer answer, which the release before stored from an envelope while it served
+// beside this build, and a slower read of this build can land an older answer after it. So where
+// the write replaces such a row and the row's time is later than the answer's, the trigger
+// pull_request_heads_older_read records, inside this statement, that the pull request is owed a
+// read of kind failure: the reconcile's next pass reads it before any refusal and whatever its
+// state, a closed or merged row included, and writes GitHub's answer then, which is newer than
+// both (dispatch://INFRA-3992, R3). The trigger compares with the row the update replaces (OLD),
+// which nothing else in the statement sees: a CTE reads the statement's snapshot, and a CTE's
+// `for update` skips a row the statement's own update has changed.
 func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
 	tag, err := db.Exec(ctx, `
 		insert into pull_request_heads (
@@ -1196,12 +1209,12 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 		headRow(repoFull, pull, attributed, checkedAt), given)
 }
 
-// oweRefusedRead records that repoFull's pull request number is owed a read (owePullRequestRead)
-// after GitHub refused the intake's read with refused, and answers that refusal as what the
-// intake read. A record that could not be written is marked ErrHeadNotStored, so the envelope
-// stays the record and is handed back.
+// oweRefusedRead records that repoFull's pull request number is owed a read of kind refusal
+// (owePullRequestRead) after GitHub refused the intake's read with refused, and answers that
+// refusal as what the intake read. A record that could not be written is marked
+// ErrHeadNotStored, so the envelope stays the record and is handed back.
 func (in *Intake) oweRefusedRead(ctx context.Context, repoFull string, number int, refused error) (headRead, error) {
-	if err := owePullRequestRead(ctx, in.pool, repoFull, number); err != nil {
+	if err := owePullRequestRead(ctx, in.pool, repoFull, number, owedRefusal); err != nil {
 		return headRead{}, markHeadNotStored(err)
 	}
 	return headRead{refused: refused}, nil

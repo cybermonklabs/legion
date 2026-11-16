@@ -1425,7 +1425,7 @@ A read is spared when the stored row already holds GitHub's answer for the event
 A row no read of GitHub wrote spares no read, and GitHub's answer applies over it whatever time it holds (`upsertHeadRow`):
 a release before this one stored an envelope's `updated_at`, which a caller sets, and it still writes rows while it serves beside this one, so a write of its that changes a fact of a row this release read takes the row's mark away (the trigger `pull_request_heads_unread_write`).
 A read that failed, a rate limit included, is handed back to NATS like a head write that failed; a rate limit is handed back after the limit's own wait, during which `githubapp.Client` sends no request at all.
-A pull request GitHub does not know, and a repository the App cannot read, write no row, and the pull request is owed a read (`pull_request_reads_owed`), since GitHub's answer to a read made a moment after its own webhook may not know the pull request yet.
+A pull request GitHub does not know, and a repository the App cannot read, write no row, and the pull request is owed a read of kind `refusal` (`pull_request_reads_owed`), since GitHub's answer to a read made a moment after its own webhook may not know the pull request yet.
 The durable is created with `DeliverAll`, so its first bind in a deployment whose durable never existed is handed the 72 hours the stream keeps.
 That replay costs one read of each pull request it names, and one more of its commits where its title, body, branch and links name no issue held to its repository, at most 4 at a time (`intakeMaxAckPending`).
 
@@ -1438,13 +1438,24 @@ messages of different keys run at once, at most 4, the durable's `MaxAckPending`
 Its durable's `AckWait`, `MaxAckPending` and filter subject are unchanged.
 Every envelope is acknowledged once its handler has run, whatever the handler made of it, with one exception:
 a `pull_request` envelope whose pull request's head row could not be stored at all is handed back to NATS instead, after `delivery.headWriteRedeliverAfter` (10 s), for as many as `delivery.headWriteMaxDeliveries` (30) deliveries of it, and acknowledged at the last of them.
-No pass over the stored rows repairs a head row that was never written, since those passes read the rows that exist, so before it acknowledges such an envelope the intake records its pull request in `pull_request_reads_owed`: the repository and the number, and nothing else the envelope says.
+No pass over the stored rows repairs a head row that was never written, since those passes read the rows that exist, so before it acknowledges such an envelope the intake records its pull request in `pull_request_reads_owed` as owed a read of kind `failure`: the repository and the number, and nothing else the envelope says.
 A GitHub outage of about 5 minutes spends the 30 deliveries.
 Where that record cannot be written either, the envelope is handed back again rather than acknowledged.
-The reconcile's head pass reads each owed pull request from GitHub first, the longest owed first and at most 200 a pass, writes its row, creating it where none exists, and settles the read once GitHub answers;
-a failure leaves it for the next pass, and a refusal settles it only once it has been owed for one reconcile period (`owedReadRefusalFinalAfter`), which bounds what an envelope naming a pull request GitHub never had costs.
+Each row says why its read is owed: `failure` where GitHub did not answer (a 5xx, a timeout, a rate limit, the delivery cap), and `refusal` where GitHub answered that it cannot give the pull request (a 404 or 410, or a repository the App cannot read).
+A write of GitHub's answer that replaces a newer row no read of GitHub wrote also owes a `failure` (the trigger `pull_request_heads_older_read`, `20261116182209`): during a roll the release before stores GitHub's newer answer from an envelope, and a slower read of this build can land an older answer after it.
+The reconcile's head pass reads the owed pull requests from GitHub before the stored rows: every `failure` first, at most 200 a pass, and then the `refusal` rows, at most 50 a pass (`delivery.RefusedReadsPerPass`).
+Inside each kind the row the reconcile has read the fewest times goes first, and then the one owed longest, so every row has its first read before any row has its second.
+Both lists are taken before either is read, and a read that answers the other way moves its row to the other kind.
+A read that GitHub answers writes the row, creating it where none exists and whatever its state, and settles the owed read.
+A `failure` is read again every pass until GitHub answers, and a `refusal` settles at its first read once it has been owed for one reconcile period (`owedReadRefusalFinalAfter`).
 No reader of a head reads that table, so an owed read is never a head, a basis or a merge.
-After an outage, the head of a pull request whose envelope the intake gave up on is written by the first reconcile pass after GitHub answers again: within one period, 5 minutes and up to a tenth more (`delivery.ReconcileInterval`, `duty.Jittered`).
+After an outage, the head of a pull request whose envelope the intake gave up on is written by the first reconcile pass after GitHub answers again: within one period, 5 minutes and up to a tenth more (`delivery.ReconcileInterval`, `duty.Jittered`), however many refusals are owed.
+With 10,000 refusals owed before it, that first pass makes 51 reads of GitHub for the owed rows, the failure and 50 refusals (`TestTenThousandOwedRefusalsTakeNoReadFromAnOwedFailure`).
+Any bearer of Envoy's `/v1` publish route can name a pull request GitHub never had, and each such envelope owes a `refusal`; dispatch://INFRA-3911 owns forged envelopes.
+So the 50 reads a pass are the most such envelopes cost, about 600 reads an hour of the App's installation, and a run of N of them is gone after about N/50 passes.
+The bound does not hold for a real pull request whose own read was refused because GitHub's answer had not caught up with its webhook, since that pull request is a `refusal` too.
+Its head is written by the first pass after the lag only while fewer than 50 refusals rank before it, that is, refusals read no more often than it and owed earlier, and each further 50 delay it by one pass.
+A later event of that pull request reads GitHub at once regardless.
 That hand-back is the process's own answer to the durable rather than the stop's, so it is made only while the process still holds the durable's hold and the hold records the deliver subject the envelope arrived on:
 a process whose hold has lapsed publishes nothing, and the next holder's take-over, which recreates the durable at its ack floor, hands it that envelope once.
 The count the cap is measured against is the consumer's own (`NumDelivered`), so a take-over starts it afresh and the cap bounds the in-flight slots of one consumer rather than the deliveries of all time.
@@ -2345,7 +2356,7 @@ One rule picks both attributions: this row's `issue_key` (`headAttribution`) and
 An older answer arriving after a newer one leaves the row as it is, and the reconcile re-reads an open row older than five minutes.
 The rule trusts only a row a read of GitHub wrote: GitHub's answer applies over a row with no `github_read_at` whatever time it holds, and only a marked row spares the intake's read of an event (`upsertHeadRow`, `headReadCovers`).
 Every row stored before `20261116163242` holds none, since a release before it wrote rows from an envelope's fields, and so does a row that release changes while it serves beside this one (the trigger `pull_request_heads_unread_write`, which also marks such a row unread and judged by no rule, so the reconcile reads it again).
-The head pass first reads every pull request an event owes a read of (`pull_request_reads_owed`, `20261116163445_pull_request_reads_owed`, The GitHub intake above), creating its row where none exists.
+The head pass first reads the pull requests owed a read (`pull_request_reads_owed`, `20261116163445_pull_request_reads_owed`, The GitHub intake above), every `failure` before any `refusal`, creating each one's row where none exists.
 That head pass runs whether or not the deployment has delivery settings, and before the deploy repository's permission check (`Reconcile.runOnce`):
 a recorded result is compared with those heads in every deployment, and behind the settings the pass never ran in one that had none, so a result recorded at a head a later push replaced went on standing at it for ever.
 A failed head pass is logged, and named in `delivery_settings.last_error` beside the other steps' failures when the pass reached them.
