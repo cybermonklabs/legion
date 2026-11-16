@@ -184,7 +184,8 @@ priv_object() {
       case "$2" in
         /api/v1/projects/*) printf playbook-md ;;
         /api/v1/issues/*) printf notes-md ;;
-        /api/v1/agents/*) recalled main "PRIV session file slug" ;;
+        # A file of an agent's conversation belongs to no project: both servers hold the same one.
+        /api/v1/agents/*) printf '{session file slug}' ;;
       esac
       ;;
     document-version) printf 1 ;;
@@ -243,8 +244,8 @@ for server in main twin; do
     curl -fsS --max-time 2 "http://127.0.0.1:$envoy_port/healthz"
   # Both servers' listeners hold the same sessions: a session is a no-project node, not an object
   # PRIV wrote, so the twin holds PRIV's session too.
-  sessions='[{"session_id":"ses-pub-session","title":"Works on PUB","projects":["PUB"]}'
-  sessions+=',{"session_id":"ses-priv-session","title":"Works on PRIV","projects":["PRIV"]}'
+  sessions='[{"session_id":"ses-pub-session","title":"Works on PUB","projects":["PUB"],"capabilities":["aside","btw","steer"]}'
+  sessions+=',{"session_id":"ses-priv-session","title":"Works on PRIV","projects":["PRIV"],"capabilities":["aside","btw","steer"]}'
   curl -fsS --max-time 5 -X PUT -H 'Content-Type: application/json' "http://127.0.0.1:$envoy_port/__fixture/sessions" \
     -d "$sessions]" >/dev/null || fail "the $server fake Envoy refused its sessions"
   database_var=${server}_database_url
@@ -313,6 +314,15 @@ for server in main twin; do
     remember "$server" "session broadcast uuid $index" "$uuid"
   done < <(jq -r --arg id "$(recalled "$server" "session broadcast")" '[.. | strings | select(test("^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$") and . != $id)]
     | reduce .[] as $u ([]; if index([$u]) then . else . + [$u] end) | .[]' "$work/body")
+  # A file of PRIV's session's conversation, a no-project node held to its parties, alike on both.
+  printf '\x89PNG\r\n\x1a\nproject-access' >"$work/session-file.png"
+  status=$(curl -sS -o "$work/body" -w '%{http_code}' --max-time "$call_seconds" -H "@$work/auth/$server-shared" \
+    -F "name=priv-session-file.png" -F "actor=$(jq -cn --arg s "$seed_session" '{kind: "session", id: $s}')" \
+    -F "file=@$work/session-file.png;type=image/png" "${build_url[$server]}/api/v1/agents/ses-priv-session/artifacts" 2>"$work/curl") ||
+    status="curl failed: $(<"$work/curl")"
+  expect_status 201 "$server: the shared token sends a file in the PRIV session's conversation"
+  remember "$server" "session file slug" "$(jq -r '.artifact.slug' "$work/body")"
+  remember "$server" "session file" "$(jq -r '.artifact.id' "$work/body")"
 done
 # bob is a person, not an object PRIV wrote, so both servers hold him alike.
 mark_restricted main bob
@@ -326,8 +336,9 @@ seed_objects main PRIV bob
 map_repository main acme/priv-repo PRIV
 send main carol PUT /api/v1/projects/PRIV/access/groups/priv-group
 expect_status 200 "main: carol names the group priv-group on PRIV's list"
-# The objects of PRIV the walk's Probes name beyond seed_objects': a handoff, a check result, a
-# file of PRIV's session's conversation, and a going run.
+# The objects of PRIV the walk's Probes name beyond seed_objects': a handoff, a check result and a
+# going run. A file of an agent's conversation is no project's, so it is seeded on both servers
+# in the loop above.
 send main shared POST /api/v1/issues/PRIV-1/handoffs/plan "$(with_actor shared '{"body":"{\"next\":\"seeded\"}"}')"
 expect_status 201 "main: the shared token records a handoff on PRIV-1"
 remember main "PRIV handoff" "$(jq -r '.id // .handoff.id' "$work/body")"
@@ -337,13 +348,6 @@ send main shared POST /api/v1/issues/PRIV-1/results \
   "$(with_actor shared '{"check":"k1","role":"implementer","verdict":"pass","commit":"1111111111111111111111111111111111111111"}')"
 expect_status 201 "main: the shared token records a result of PRIV-1's check"
 remember main "PRIV result" "$(jq -r '.id // .result.id' "$work/body")"
-printf '\x89PNG\r\n\x1a\nproject-access' >"$work/priv-file.png"
-status=$(curl -sS -o "$work/body" -w '%{http_code}' --max-time "$call_seconds" -H "@$work/auth/main-shared" \
-  -F "name=priv-session-file.png" -F "actor=$(jq -cn --arg s "$seed_session" '{kind: "session", id: $s}')" \
-  -F "file=@$work/priv-file.png;type=image/png" "${build_url[main]}/api/v1/agents/ses-priv-session/artifacts" 2>"$work/curl") ||
-  status="curl failed: $(<"$work/curl")"
-expect_status 201 "main: the shared token sends a file in the PRIV session's conversation"
-remember main "PRIV session file slug" "$(jq -r '.artifact.slug' "$work/body")"
 send main carol POST /api/v1/going/requests '{"words":"What does PRIV hold?","project":"PRIV"}'
 if [ "$status" = 201 ]; then
   remember main "PRIV going run" "$(jq -r .id "$work/body")"
@@ -570,7 +574,8 @@ walk_rows() {
       fi
       # A no-project node fills both sides alike: it is no object PRIV wrote. It goes into the
       # path as it is, so a {LABEL} it names is filled with each server's own id (compare_twin).
-      if [[ "$no_project_kinds" == *" $kind "* ]]; then
+      if [[ "$no_project_kinds" == *" $kind "* ]] ||
+        { [[ "$pattern" == /api/v1/agents/* ]] && [[ "$kind" == document-slug || "$kind" == document-version ]]; }; then
         hidden=${hidden//"{$wildcard}"/$object}
         none=${none//"{$wildcard}"/$object}
         continue
