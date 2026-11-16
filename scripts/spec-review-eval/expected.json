@@ -180,6 +180,15 @@
         { "node": "quoted-calm" },
         { "node": "quoted-entry" }
       ]
+    },
+    {
+      "id": "15-code-fence",
+      "root": "locker",
+      "spec": "15-code-fence.md",
+      "planted": [
+        { "kind": "undefined-noun", "node": "door-alarm-start", "subject": "door alarm" }
+      ],
+      "mustNotName": [{ "node": "door-close-60" }]
     }
   ]
 }

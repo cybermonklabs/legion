@@ -455,7 +455,7 @@ describe("formProblems", () => {
 });
 
 describe("the fixtures", () => {
-  test("hold fourteen change requests under the three roots", () => {
+  test("hold fifteen change requests under the three roots", () => {
     expect(plan.fixtures.map((one) => one.id)).toEqual([
       "1-principle",
       "2-undefined-noun",
@@ -471,6 +471,7 @@ describe("the fixtures", () => {
       "12-common-nouns",
       "13-markup-heading",
       "14-quoted-blocks",
+      "15-code-fence",
     ]);
     expect(plan.roots.map((root) => root.key)).toEqual(["ACME-1", "ACME-2", "ACME-3"]);
   });
@@ -539,6 +540,18 @@ describe("the fixtures", () => {
       "quoted-calm",
       "quoted-entry",
     ]);
+  });
+
+  // The form check reads nothing in a code fence, so fixture 15's definition of its noun, in a
+  // fence under `## Terms`, defines nothing to the program, and the noun has no definition.
+  test("fixture 15 defines its noun only in a code fence under its heading Terms", () => {
+    const fifteen = fixture("15-code-fence");
+    expect(fifteen.specText).toMatch(/^## Terms\n\n```text\n- \*\*door alarm\*\*: .+\n```$/m);
+    expect(termNames(fifteen.specText)).toEqual([]);
+    expect(fifteen.planted).toEqual([
+      { kind: "undefined-noun", node: "door-alarm-start", subject: "door alarm" },
+    ]);
+    expect(termNames(rootTerms(fifteen.root))).not.toContain("door alarm");
   });
 
   test("plant each of the seven kinds of the skill in some fixture", () => {
