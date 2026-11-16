@@ -1064,12 +1064,15 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, signInOn bool) (string, err
 	return origin.String(), nil
 }
 
-// refuseDispatchHostname refuses a hostname that is not hostnameRule's shape, and one a public
-// certificate authority would not issue for: the front door puts <hostname>.<tailnetDnsName> on a
-// Tailscale certificate (dispatch_frontdoor.go, the Tailscale Service it declares), which Let's
-// Encrypt refuses for a label of the reserved form weborigin.ReservedLabel names. Both resolvers
-// run it, so a cluster-only component holds its hostname, which names every cloud resource, to
-// the rule the full resolver holds it to, with the same refusals.
+// refuseDispatchHostname refuses a hostname that is not hostnameRule's shape, and one with a
+// label weborigin.ReservedLabel refuses: "--" as its third and fourth characters (RFC 5890 section
+// 2.3.1's reserved form) other than in an xn-- label the IDNA lookup profile takes. The front door
+// puts <hostname>.<tailnetDnsName> on a certificate (dispatch_frontdoor.go), and public certificate
+// authorities refuse to issue for the reserved form's labels other than xn--; an xn-- label that
+// profile refuses is no valid internationalised label. Both resolvers run it, in every mode: a
+// stack in the cluster-only mode or the sandbox, which builds no front door, keeps a hostname a
+// front door can later serve, and its hostname, which names every cloud resource, is held to the
+// rule the full resolver holds it to, with the same refusals.
 func refuseDispatchHostname(hostname string) error {
 	if !hostnameRule.MatchString(hostname) {
 		return fmt.Errorf("hostname %q must match %s", hostname, hostnameRule)

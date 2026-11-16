@@ -1155,10 +1155,13 @@ server starts and says so.
 Every image must be pinned by SHA-256 digest. Verify an `envoyImage` digest from
 `ghcr.io/cybermonklabs/legion/envoy` before pinning it, with the `gh attestation verify` command
 [Running Dispatch](https://cybermonklabs.github.io/legion/dispatch/running-dispatch/) gives. The
-component refuses invalid hostnames, a `hostname` with `--` as its third and fourth characters
-that is not a valid internationalised (`xn--`) label, since the front door puts
-`<hostname>.<tailnetDnsName>` on a certificate and no public certificate authority issues for
-that reserved form (RFC 5891 section 4.2.3.1), invalid tailnet DNS names, tags, image references, sign-in domains,
+component refuses invalid hostnames, and a `hostname` with `--` as its third and fourth characters
+(RFC 5890 section 2.3.1's reserved form) other than an `xn--` label the IDNA lookup profile
+takes: the front door puts `<hostname>.<tailnetDnsName>` on a certificate, public certificate
+authorities refuse to issue for the form's other labels, and an `xn--` label that profile refuses
+is no valid internationalised label. It is refused in every mode, so a stack in the cluster-only
+mode or the sandbox keeps a hostname a front door can later serve. It refuses invalid tailnet DNS
+names, tags, image references, sign-in domains,
 namespaces, allowed namespaces, an `appCpu`, `appMemory`, `proxyCpu`, `proxyMemory`,
 `appEphemeralStorage` or `proxyEphemeralStorage` outside
 Autopilot's bounds for the app pod (above), a `pprofPort` outside 1-65535 or on a port the app pod

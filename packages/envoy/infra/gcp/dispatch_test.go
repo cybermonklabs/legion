@@ -374,10 +374,10 @@ func TestDispatchRefusesAPprofPortBeforeRegistering(t *testing.T) {
 	require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
 }
 
-// Every hostname a public certificate authority issues for is one the component takes: a valid
-// internationalised label, a "--" that is not at the third and fourth characters, and a plain
-// name. Only the reserved form is refused (TestDispatchResolverRefusesInvalidInputs).
-func TestDispatchHostnameTakesEveryIssuableLabel(t *testing.T) {
+// These hostnames, each with "--" in it or an xn-- label the IDNA lookup profile takes, are
+// accepted: they mark where the reserved-label rule stops, whose refusals
+// TestDispatchResolverRefusesInvalidInputs holds.
+func TestDispatchHostnameTakesLabelsTheReservedLabelRuleTakes(t *testing.T) {
 	for _, hostname := range []string{"xn--bcher-kva", "xn--p1ai", "abc--d", "example-dispatch"} {
 		t.Run(hostname, func(t *testing.T) {
 			args := dispatchArgs()
@@ -395,11 +395,11 @@ func TestDispatchResolverRefusesInvalidInputs(t *testing.T) {
 		err  []string
 	}{
 		{name: "an invalid hostname", edit: func(a *gcp.DispatchArgs) { a.Hostname = "dispatch-" }, err: []string{"hostname", "^[a-z][a-z0-9-]{0,24}[a-z0-9]$"}},
-		// The front door puts <hostname>.<tailnetDnsName> on a certificate, so a hostname of the
-		// reserved form no certificate authority issues for is refused; a valid internationalised
-		// label and one whose "--" is elsewhere are not (TestDispatchHostnameTakesEveryIssuableLabel).
-		{name: "a hostname of the reserved label form", edit: func(a *gcp.DispatchArgs) { a.Hostname = "ex--dispatch" }, err: []string{`hostname: host label "ex--dispatch"`, "RFC 5891"}},
-		{name: "a hostname that is a malformed xn-- label", edit: func(a *gcp.DispatchArgs) { a.Hostname = "xn--a" }, err: []string{`hostname: host label "xn--a"`, "RFC 5891"}},
+		// A hostname with a label weborigin.ReservedLabel refuses is refused, in every mode, each
+		// for its own reason; the labels it takes are in
+		// TestDispatchHostnameTakesLabelsTheReservedLabelRuleTakes.
+		{name: "a hostname of the reserved label form", edit: func(a *gcp.DispatchArgs) { a.Hostname = "ex--dispatch" }, err: []string{`hostname: host label "ex--dispatch"`, "RFC 5890", "certificate authorities"}},
+		{name: "a hostname that is an xn-- label the IDNA lookup profile refuses", edit: func(a *gcp.DispatchArgs) { a.Hostname = "xn--a" }, err: []string{`hostname: host label "xn--a"`, "RFC 5890", "Fake A-label"}},
 		{name: "an invalid tailnet DNS name", edit: func(a *gcp.DispatchArgs) { a.TailnetDnsName = "Example-Tailnet.ts.net" }, err: []string{"tailnetDnsName", "ts.net"}},
 		{name: "no tags", edit: func(a *gcp.DispatchArgs) { a.Tags = nil }, err: []string{"tags", "at least one"}},
 		{name: "an invalid tag", edit: func(a *gcp.DispatchArgs) { a.Tags = []string{"example-dispatch"} }, err: []string{"tags[0]", "tag:"}},
