@@ -19,9 +19,11 @@ Read this in a Legion pane before you touch a role claim, or when a Legion role 
     Only the reaper releases a claim, once its holder is `gone`;
     a Legion role whose agent process exits is `gone` at once, so its successor's soft claim takes the role without waiting out the live window.
 
-  - `holder_lapsed`: a session holds the claim but has not registered within the live window, so the listener refused the publish `404` and forwarded nothing.
+  - `holder_lapsed`: a session holds the claim but has not registered within the live window.
+    The daemon's own notices send `keep: false`, so the listener refuses such a notice `404` and forwards nothing.
     The error names the holder, its `holder_state` and its `last_seen`, and says `claim_released: false`.
     An `unresponsive` holder is not dead: it keeps the role, nothing replaces it, and the daemon holds the packet and publishes it again.
+    A publish of yours to such a role is kept instead: the answer is `202` with `kept_reason: holder_lapsed` and `kept_until`.
 
   - `delivery_failed`: the stream stored no forward for the holder:
     the holder lookup failed, the publish errored, or the stream did not store the forward within the send's window.
@@ -34,8 +36,15 @@ Read this in a Legion pane before you touch a role claim, or when a Legion role 
 
 - A role message forwarded to you is kept on your inbox in the stream, which your own durable consumer reads, so your session gets it once, also after the pane restarts or reconnects.
 
+- A role message to a released Legion role is kept for one hour, and it wakes the role.
+  The listener reports the wake at the keep.
+  Its sweep reports the wake again every five minutes while the message has at least 20 minutes of its hour left and no live session holds the role.
+  The woken session gets the message as an Envoy card with `kept_at`, and the card can come before the task the daemon gives the woken role.
+  If the role is not back inside the hour, Envoy drops the message, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
+
 - Never forward these failure payloads to an architect, because the daemon already acts on them.
 
 - A role send the listener refuses `404` also raises one exception on `notifications.envoy.exceptions.notifications.role.<role>`, with the reason it refused: `unclaimed` or `holder_lapsed`.
+  The listener refuses only a publish it keeps nothing for: one sent with `keep: false`, as the daemon's own notices are, or one whose keep failed.
   It is a bus signal and nothing more: no consumer acts on a peer's refusal, and the daemon's own refused outbox row retries by itself until the role is held or its architect cannot hold it again.
   Never re-send a refused message by hand on the strength of one.

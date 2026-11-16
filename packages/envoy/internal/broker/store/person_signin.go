@@ -80,10 +80,16 @@ type PersonSignIn struct {
 // decided, so a revoke that commits mid-flight changes the words and never the verdict. It is
 // a statement of its own because a sub-select of the first would read the first's snapshot,
 // which is the one taken before that revoke committed.
+//
+// person is stored and compared as its caller wrote it: every caller passes a login the one ASCII
+// fold made (oidc.WorkspaceLogin for the trade, record.CanonicalLogin for the list and the
+// revoke), and Postgres's lower() folds Unicode, which would store U+212A KELVIN SIGN's login as
+// another person's k. The table's check refuses any login that is not lowercase. machineAccount,
+// a service account's address, is lowered here as it always was.
 func RecordPersonSignIn(ctx context.Context, tx pgx.Tx, person, thumbprint, machineAccount string) error {
 	var recorded int
 	err := tx.QueryRow(ctx, `insert into person_signins (person, thumbprint, machine_account)
-		values (lower($1), $2, lower($3))
+		values ($1, $2, lower($3))
 		on conflict (person, thumbprint) do update
 			set last_used_at = now()
 			where person_signins.revoked_at is null
@@ -94,7 +100,7 @@ func RecordPersonSignIn(ctx context.Context, tx pgx.Tx, person, thumbprint, mach
 	}
 	var revoked bool
 	if err := tx.QueryRow(ctx, `select revoked_at is not null from person_signins
-		where person = lower($1) and thumbprint = $2`, person, thumbprint).Scan(&revoked); err != nil {
+		where person = $1 and thumbprint = $2`, person, thumbprint).Scan(&revoked); err != nil {
 		return err
 	}
 	if revoked {
@@ -107,7 +113,7 @@ func RecordPersonSignIn(ctx context.Context, tx pgx.Tx, person, thumbprint, mach
 // signed in on and not revoked. A person with none has an empty list and no error.
 func (s *Store) PersonSignIns(ctx context.Context, person string) ([]PersonSignIn, error) {
 	rows, err := s.Pool.Query(ctx, `select id::text, person, thumbprint, machine_account, created_at, last_used_at
-		from person_signins where person = lower($1) and revoked_at is null order by created_at desc, id`, person)
+		from person_signins where person = $1 and revoked_at is null order by created_at desc, id`, person)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +151,7 @@ func RevokePersonSignInTx(ctx context.Context, tx pgx.Tx, id, person string) (st
 	var found, ended int
 	var thumbprint *string
 	err := tx.QueryRow(ctx, `with target as (
-			select id from person_signins where id = $1 and person = lower($2) for no key update
+			select id from person_signins where id = $1 and person = $2 for no key update
 		), revoked as (
 			update person_signins set revoked_at = now()
 			where id in (select id from target) and revoked_at is null

@@ -66,12 +66,13 @@ name is empty. Measured on 2026-11-04 from a Legion issue pod: Slack answered
 `{"ok":false,"error":"not_authed"}`. What the client hands over — the value, or the placeholder of
 a secret behind the airlock — exists only in the environment of the command the client starts, so
 that command must read it itself. Put the command in single quotes, inside
-`sh -c`, where the quotes keep the expansion for the child:
+`sh -c`, where the quotes keep the expansion for the child, and give `curl` the header on standard
+input (`-H @-`), so the value is in no command's arguments:
 
 ```sh
 # right
 agent-secrets LEGION_SLACK_BOT_TOKEN -- \
-  sh -c 'curl -sS -H "Authorization: Bearer $LEGION_SLACK_BOT_TOKEN" https://slack.com/api/auth.test'
+  sh -c 'printf "Authorization: Bearer %s" "$LEGION_SLACK_BOT_TOKEN" | curl -sS -H @- https://slack.com/api/auth.test'
 ```
 
 The repository uses the same form for a GitHub App token in `docs/deployment.md`:
@@ -211,10 +212,11 @@ prompt, a skill, or the issue you work on. There is no list to browse and nothin
   secret exists is recorded against your session with the reason you signed, and it reaches a
   person's Inbox unless the model judge decides it first.
 - `UNKNOWN_SECRET` and a denial are final. Do not ask again, and do not try a name of your own.
-- A secret that a service owns, such as `LEGION_SLACK_BOT_TOKEN`, goes to that service's own pods
-  and VMs and to nothing else: `Evaluate` in `packages/envoy/internal/broker/policy/policy.go`
-  grants a service-owned secret at once when the session's own service is the secret's owner, and
-  denies every other session, with no person asked.
+- A secret that a service owns goes to that service's own pods and VMs and to nothing else:
+  `Evaluate` in `packages/envoy/internal/broker/policy/policy.go` grants a service-owned secret at
+  once when the session's own service is the secret's owner, and denies every other session, with
+  no person asked. A shared agent secret, such as `LEGION_SLACK_BOT_TOKEN`, goes at once to every
+  session, a pod's and a person's alike.
 - The `agent-secrets secret` forms (`list`, `show`, `create`, `set`, `retag`, `delete`, `restore`)
   call the broker's store under whatever cloud credential the environment gives them, and the
   store's IAM decides what each may read and write.
@@ -259,8 +261,9 @@ reaches no shell history.
 
 ```sh
 agent-secrets LEGION_SLACK_BOT_TOKEN --reason 'read the thread of a Slack mention' --wait 0s -- sh -c '
+  printf "Authorization: Bearer %s" "$LEGION_SLACK_BOT_TOKEN" |
   curl -sS -G https://slack.com/api/conversations.replies \
-    -H "Authorization: Bearer $LEGION_SLACK_BOT_TOKEN" \
+    -H @- \
     --data-urlencode channel=<channel_id> \
     --data-urlencode ts=<thread_ts> \
     --data-urlencode limit=200'
@@ -271,9 +274,8 @@ messages of the thread. A `ts` that names no message answers
 `{"ok":false,"error":"thread_not_found"}`, also at exit 0, which is why the body decides and not the
 status. A thread read needs the app's `channels:history` scope in a public channel and
 `groups:history` in a private one; without them Slack answers `missing_scope`, which only a person
-in the Slack workspace can fix. A session with a broker identity that is not one of the
-`legion-daemon` service's own is denied this token, and the example exits 77; a session with no
-broker identity exits 2.
+in the Slack workspace can fix. `LEGION_SLACK_BOT_TOKEN` is a shared agent secret, so every session
+with a broker identity is granted it; a session with no broker identity exits 2.
 
 Paging: Slack recommends a `limit` of at most 200. While the answer's `has_more` is true, pass its
 `response_metadata.next_cursor` as `cursor` to the next call. Each page repeats the thread's root

@@ -956,10 +956,10 @@ func (r *Runtime) volumes(l launch) []corev1.Volume {
 // (runtime.kubernetes.agent_secrets), one shared projected ServiceAccount token volume (the
 // admission policy permits one volume per audience) and one private memory key directory per role
 // of roles, the controller's included; none when the runtime enrolls no pod. Every role of every pod
-// enrolls, so the broker can grant a pod of the Legion daemon's service the secrets that service
-// owns, such as the controller's Slack bot token. Where the deployment names an exchange audience
-// (AgentSecrets.ExchangeAudience) a second shared projected volume follows them, the pod's identity
-// for the broker's exchange (exchangeTokenProjection). This builds the pod, so it reads
+// enrolls, so the broker can grant a pod's agents the secrets the Legion daemon's service owns and
+// the shared ones, such as the controller's Slack bot token. Where the deployment names an exchange
+// audience (AgentSecrets.ExchangeAudience) a second shared projected volume follows them, the pod's
+// identity for the broker's exchange (exchangeTokenProjection). This builds the pod, so it reads
 // r.agentSecrets whole, as its mounts do (agentSecretsMounts); what a generation is handed reads
 // the enrollment and exchange decisions instead (enrollsIn, tradesIn), since the pod a launch
 // keeps is never rebuilt.

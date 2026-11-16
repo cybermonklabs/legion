@@ -95,8 +95,10 @@ submits signed public GitHub fixtures plus a three-paragraph direct agent
 message to a stand-in session that takes every delivery from its own NATS
 consumer. The driver asserts the one-warning response for a never-seen GitHub
 repository, refuses a registration naming a port, keeps an unheld role's
-publish and hands it to the stand-in session that claims that role, refuses a
-`keep: false` publish to an unheld role, validates settled pull-request checks,
+publish and hands it to the stand-in session that claims that role, keeps a
+publish to a role whose holder is gone and hands it to that session when it
+claims the role again, refuses a `keep: false` publish to an unheld role,
+validates settled pull-request checks,
 lifecycle and comment topics, PR-less workflow and Actions-job behavior,
 obsolete-topic absence, and the direct-message summary/body contract
 `renderInbound` prints.

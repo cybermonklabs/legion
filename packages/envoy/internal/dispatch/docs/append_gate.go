@@ -51,7 +51,9 @@ const (
 	// the block-id backfill's stamp - and keeps the strict rule: the room must hold the head. It
 	// is not refused for a closed issue: a live write has already checked its issue under the
 	// issue's row lock (lockArtifactOwner), the backfill stamps a closed issue's document on
-	// purpose, and a settlement repairs only what was stored before the close.
+	// purpose, and a settlement, which settles a closed issue's document as an open one's,
+	// repairs a tree whose updates it has stored first (Ledger.flushThrough) and saves nothing of
+	// a room whose update the gate refused (endOnRefusedUpdate).
 	appendDerived
 )
 
@@ -87,9 +89,10 @@ const closeMargin = 2 * time.Second
 //
 // The issue is read here, in the append's own transaction, because a room whose process has not
 // heard the issue close (its listener redialing, up to RedialBackoff's ceiling, or the notification
-// still on its way) would otherwise store edits on a closed issue, which nothing settles until the
-// issue reopens. The read takes no lock on the issue's row: an append whose read precedes the
-// close's commit lands, as it would have a moment earlier, and is settled once the issue reopens.
+// still on its way) would otherwise store edits on a closed issue, which takes no new text from a
+// person, and the document's next settlement would save them. The read takes no lock on the
+// issue's row: an append whose read precedes the close's commit lands, as it would have a moment
+// earlier, and the document's next settlement saves it, whether or not the issue is closed by then.
 // The prune checkpoint comes back with it, so the recovery a crashed prune owes
 // (PgVersioned.recoverPruneTx) costs a round trip only where one stands rather than one on every
 // append: normally the column is null and the append goes on from this read alone.
@@ -189,7 +192,8 @@ func (g *appendGate) result() (appendGateRead, error) {
 // agree, only run at about the same rate. Such an update was made while the issue was open, or
 // before its room could have heard of the close, and is stored as it would have been had its
 // append reached the store just ahead of the close: the document owes a settlement for it, which
-// runs once the issue reopens. An update with no observed time is not taken as one.
+// runs whether or not the issue is closed (settleRoomWithin). An update with no observed time is
+// not taken as one.
 func observedBeforeClose(observed time.Time, age, closedFor time.Duration) bool {
 	return !observed.IsZero() && age+closeMargin >= closedFor
 }
