@@ -1167,16 +1167,16 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	if err != nil {
 		return headRead{}, err
 	}
-	if at := envelopeTime(payload["updated_at"]); at != nil {
-		covered, err := headReadCovers(ctx, in.pool, repoFull, number, *at)
-		if err != nil {
-			return headRead{}, markHeadNotStored(err)
-		}
-		if covered {
-			return headRead{}, nil
-		}
+	// readFrom is the database's clock as this read begins, taken before any call to GitHub, so
+	// no wait after the read, such as for a pooled connection, moves the line the delete of the
+	// reads earlier deliveries owed draws from it (settleOwedReadsBefore).
+	readFrom, covered, err := headReadCovers(ctx, in.pool, repoFull, number, envelopeTime(payload["updated_at"]))
+	if err != nil {
+		return headRead{}, markHeadNotStored(err)
 	}
-	readStarted := time.Now()
+	if covered {
+		return headRead{}, nil
+	}
 	token, err := in.github.RepositoryToken(ctx, owner, repo)
 	if err != nil {
 		if repositoryUnreadable(err) {
@@ -1213,7 +1213,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	}
 	// The head is GitHub's answer now, so the read an earlier delivery of this envelope owed is
 	// settled (Intake.deliver). A failure to delete it costs the reconcile one read, and no more.
-	if err := settleOwedReadsBefore(ctx, in.pool, repoFull, number, time.Since(readStarted)); err != nil {
+	if err := settleOwedReadsBefore(ctx, in.pool, repoFull, number, readFrom); err != nil {
 		slog.Warn("dispatch delivery: delete the read an earlier delivery owed; the reconcile reads the pull request once more",
 			"repo", repoFull, "number", number, "error", err)
 	}
@@ -1248,30 +1248,27 @@ type headRead struct {
 // this process's agree to well inside the rest.
 const headReadMargin = 5 * time.Second
 
-// headReadCovers reports whether the stored row of repoFull's pull request number already holds
-// GitHub's answer about the change an event of updatedAt reports, so that reading the pull
-// request again would teach nothing: the row is GitHub's answer to a read (github_read_at),
-// GitHub's own updated_at on it is at least the event's, and either later — GitHub's answer
-// reflects a later second, and so every change of that one — or read headReadMargin past the
-// event's second by a read that read every attribution source (checked_at). A row no read of
-// GitHub wrote covers nothing, whatever time it holds: a release before dispatch://INFRA-3992
-// stored an envelope's updated_at, which a caller sets, and one an hour ahead would otherwise
-// spare the read of every later event of that pull request. Neither does a row with no
-// updated_at, nor a missing row.
-func headReadCovers(ctx context.Context, pool *store.Pool, repoFull string, number int, updatedAt time.Time) (bool, error) {
-	var covered bool
-	err := pool.QueryRow(ctx, `
-		select github_read_at is not null and event_at is not null and $3 <= event_at
-			and ($3 < event_at or (checked_at is not null and github_read_at >= $3 + make_interval(secs => $4)))
-		from pull_request_heads where repo = $1 and number = $2
-	`, repoFull, number, updatedAt, headReadMargin.Seconds()).Scan(&covered)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+// headReadCovers answers the database's clock at its statement (readFrom), and whether the stored
+// row of repoFull's pull request number already holds GitHub's answer about the change an event
+// of updatedAt reports, so that reading the pull request again would teach nothing: the row is
+// GitHub's answer to a read (github_read_at), GitHub's own updated_at on it is at least the
+// event's, and either later — GitHub's answer reflects a later second, and so every change of
+// that one — or read headReadMargin past the event's second by a read that read every
+// attribution source (checked_at). A row no read of GitHub wrote covers nothing, whatever time it
+// holds: a release before dispatch://INFRA-3992 stored an envelope's updated_at, which a caller
+// sets, and one an hour ahead would otherwise spare the read of every later event of that pull
+// request. Neither does a row with no updated_at, a missing row, nor an event with no time.
+func headReadCovers(ctx context.Context, pool *store.Pool, repoFull string, number int, updatedAt *time.Time) (readFrom time.Time, covered bool, err error) {
+	if err := pool.QueryRow(ctx, `
+		select clock_timestamp(), coalesce((
+			select github_read_at is not null and event_at is not null and $3 <= event_at
+				and ($3 < event_at or (checked_at is not null and github_read_at >= $3 + make_interval(secs => $4)))
+			from pull_request_heads where repo = $1 and number = $2
+		), false)
+	`, repoFull, number, updatedAt, headReadMargin.Seconds()).Scan(&readFrom, &covered); err != nil {
+		return time.Time{}, false, fmt.Errorf("read the stored head of %s#%d: %w", repoFull, number, err)
 	}
-	if err != nil {
-		return false, fmt.Errorf("read the stored head of %s#%d: %w", repoFull, number, err)
-	}
-	return covered, nil
+	return readFrom, covered, nil
 }
 
 // envelopeTime reads an envelope's RFC3339 timestamp; an absent or malformed one is no time,

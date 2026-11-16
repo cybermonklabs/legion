@@ -315,8 +315,12 @@ var intakeMaxAckPending = 4
 // intakeAckWait is how long NATS waits for an acknowledgement before redelivering. Derived from
 // the two values above rather than chosen: when every outstanding message is one key's, the last
 // of intakeMaxAckPending waits for the ones before it, so the bound is their total handling time,
-// plus a minute for the acknowledgement itself to land. A function rather than a value so a test
-// that shrinks either input gets an ack wait derived from it.
+// plus a minute for the acknowledgement itself to land. One handling is at most
+// intakeMessageTimeout and, where its head write failed, owedReadWriteTimeout more for the write
+// of the read it owes, which runs past the message's own deadline (Intake.oweEnvelopesRead):
+// 4 × (60 s + 5 s) = 4 min 20 s, inside the 5 min this answers, so that write takes 20 s of the
+// acknowledgement's minute. A function rather than a value so a test that shrinks either input
+// gets an ack wait derived from it.
 func intakeAckWait() time.Duration {
 	return time.Duration(intakeMaxAckPending)*intakeMessageTimeout + time.Minute
 }
@@ -542,12 +546,13 @@ const headWriteRedeliverAfter = 10 * time.Second
 // deliveries and a ten-second delay, one envelope's hand-backs are 29 × 10 s = 4 min 50 s of
 // wall clock, plus what each refused attempt itself spends. A write Postgres refuses outright
 // spends milliseconds, so the window is held for about five minutes — the reconcile's own
-// period, which is already the longest any other failure of this intake waits. A database or a
-// GitHub that hangs rather than refusing spends up to intakeMessageTimeout on each attempt
-// instead, which is a minute, so thirty of them hold the window for about 35 minutes. That is
-// the worst, and the cap is what bounds it: without one the window is held for ever. A failure
-// that outlasts the cap loses no head: its pull request is owed a read, which the reconcile
-// makes every pass until GitHub answers (owePullRequestRead).
+// period, which is already the longest any other failure of this intake waits. A GitHub that
+// hangs rather than refusing spends up to intakeMessageTimeout on each attempt instead, which is
+// a minute, and a database that hangs spends that and owedReadWriteTimeout more on the write of
+// the read each attempt owes: 30 × (60 s + 5 s) + 29 × 10 s = 2,240 s, so thirty of them hold
+// the window for about 37 minutes. That is the worst, and the cap is what bounds it: without one
+// the window is held for ever. A failure that outlasts the cap loses no head: its pull request is
+// owed a read, which the reconcile makes every pass until GitHub answers (owePullRequestRead).
 //
 // The count it is measured against is the consumer's, so a take-over starts it afresh: the
 // take-over deletes the durable and creates it again at its ack floor (takeOverConfig), and the

@@ -345,7 +345,7 @@ func TestNoOrderOfTwoBuildsWritesLeavesAMarkedRowWithFactsThisBuildNeverWrote(t 
 				continue
 			}
 			for _, probe := range []time.Time{base.Add(-time.Hour), base, base.Add(3 * time.Hour)} {
-				covered, err := headReadCovers(ctx, pool, "acme/widgets", number, probe)
+				_, covered, err := headReadCovers(ctx, pool, "acme/widgets", number, &probe)
 				if err != nil {
 					t.Fatal(err)
 				}

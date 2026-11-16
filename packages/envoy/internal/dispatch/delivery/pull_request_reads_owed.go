@@ -118,21 +118,24 @@ func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, num
 	return nil
 }
 
-// owedReadSettleMargin is how much earlier than its own read the intake's delete of an owed read
-// draws its line (settleOwedReadsBefore): a record a delivery of the same envelope wrote is at
-// least headWriteRedeliverAfter older, and the margin keeps a record another writer made just
-// after the read began, such as the trigger pull_request_heads_older_read, from being deleted.
+// owedReadSettleMargin is how much earlier than the database's clock at the start of its own read
+// the intake's delete of an owed read draws its line (settleOwedReadsBefore): a record a delivery
+// of the same envelope wrote is at least headWriteRedeliverAfter older, and the margin keeps a
+// record whose transaction began just before the read, since owed_at is its transaction's start
+// (now()), such as one the trigger pull_request_heads_older_read made in another writer's upsert.
 const owedReadSettleMargin = time.Second
 
 // settleOwedReadsBefore deletes the read repoFull's pull request number was owed before a read
-// of GitHub that began readAge ago, now that the intake wrote that read's answer. The line is the
-// database's own clock less readAge and owedReadSettleMargin, so no clock of this process is
-// compared with the database's; a record owed after the read began stays for the reconcile.
-func settleOwedReadsBefore(ctx context.Context, pool *store.Pool, repoFull string, number int, readAge time.Duration) error {
+// of GitHub that began at readFrom, the database's own clock then (headReadCovers), now that the
+// intake wrote that read's answer. The line is readFrom less owedReadSettleMargin, so no clock of
+// this process is compared with the database's, and no wait for the delete's own connection
+// moves it: a record owed after the read began, the one this read's own upsert owes through the
+// trigger pull_request_heads_older_read included, stays for the reconcile.
+func settleOwedReadsBefore(ctx context.Context, pool *store.Pool, repoFull string, number int, readFrom time.Time) error {
 	if _, err := pool.Exec(ctx, `
 		delete from pull_request_reads_owed
-		where repo = $1 and number = $2 and owed_at < now() - make_interval(secs => $3)
-	`, repoFull, number, (readAge + owedReadSettleMargin).Seconds()); err != nil {
+		where repo = $1 and number = $2 and owed_at < $3
+	`, repoFull, number, readFrom.Add(-owedReadSettleMargin)); err != nil {
 		return fmt.Errorf("settle the read %s#%d was owed: %w", repoFull, number, err)
 	}
 	return nil
