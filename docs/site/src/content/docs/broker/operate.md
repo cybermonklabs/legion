@@ -796,22 +796,21 @@ conditions can match.
 One kind is not a person's to write. A `google-service-account` secret the deployment binds to an
 account (`BROKER_SERVICE_ACCOUNT_SECRETS`) releases a token that acts as that account, and the
 secret's own tags say who may ask for it and which scopes its token carries, so whoever may write
-those tags decides who can get a token as that account. Give every write of a bound secret, its
-value's as much as its tags', to an administrator: name those secrets in the access you grant,
-since the setting names them, rather than testing the `kind` tag. On AWS that is a condition on the
-secret's own name under the namespace (its ARN, and `secretsmanager:Name`) for `create`,
-`PutSecretValue`, `TagResource` and `UntagResource`; on GCP, where an IAM condition cannot test
-an annotation's value, keep `secretmanager.secrets.update` and `secretmanager.versions.add` on
-those secrets for administrators alone.
+those tags decides who can get a token as that account. A deployment that binds names adds one
+term for each bound name to the grant it gives its
+people, rather than withholding the grant: on GCP a
+`!resource.name.startsWith("projects/<number>/secrets/<bound name>")` term for each, so the
+people's write stops at the namespace's bound names; on AWS a `Deny` on those secrets' ARNs for
+`CreateSecret`, `PutSecretValue`, `TagResource` and `UntagResource`. Name those secrets in the
+term, since the setting names them, rather than testing the `kind` tag.
 
 The binding names a secret by its name alone, so a bound name with no secret behind it is open to
 whoever may create a secret in the namespace: they create it under that name, own it, list
 themselves, store the bound account as its value, and the broker mints that account's token for
-them. So keep every bound name held by the administrator's own secret. Create the secret before
+them. So keep every bound name held by the administrator's own secret, which is what the term
+above leaves to the administrator. Create the secret before
 its binding is written, and remove the binding before the secret is deleted, since a deleted
-secret's name is free again once its recovery window ends. On GCP, keep
-`secretmanager.secrets.create` on the namespace for administrators alone unless each bound name
-always holds its secret.
+secret's name is free again once its recovery window ends.
 
 A `google-service-account` secret under a name the deployment binds to nothing mints nothing, so
 a person who creates one of their own under such a name, with any account in its value, is
@@ -858,10 +857,18 @@ Unlike AWS's tags, a GCP IAM condition cannot test an annotation's value, so GCP
 counterpart to AWS's "a person may tag only their own secret" conditions above, and nothing stops
 a write from reaching another person's secret: whoever is granted `secretmanager.secrets.update`
 on the namespace can retag any secret under it to any owner, tier or kind, shared secrets included,
-and whoever is granted `secretmanager.versions.add` can replace any secret's value under it. On
-Secret Manager, grant write under the namespace - `secrets.create`, `secrets.update` and
-`versions.add` alike - to administrators only, and let people ask an administrator to write on
-their behalf.
+and whoever is granted `secretmanager.versions.add` can replace any secret's value under it. A
+deployment may grant its people every write under the namespace (`secrets.create`, `.get`,
+`.update`, `.delete`, `versions.add`, `.get`, `.list`) with one condition,
+`resource.name.startsWith("projects/<number>/secrets/<prefix>")`, and no project-wide list and no
+`versions.access`. Whoever holds it can then retag any secret under the namespace to any owner
+and tier, and the broker serves by those tags, so the owner tag records whose secret it is, and
+the grant reaches every secret under the namespace. A deployment that wants fewer writers grants
+it to fewer people. The AWS counterpart is a policy of `secretsmanager:CreateSecret`,
+`TagResource`, `UntagResource`, `PutSecretValue`, `DescribeSecret`, `DeleteSecret` and
+`RestoreSecret` on `arn:aws:secretsmanager:<region>:<account>:secret:<prefix>*`, with
+`kms:GenerateDataKey` and `kms:Decrypt` through Secrets Manager on the agent-secrets key, and no
+name or owner condition, so both backends behave alike (unproved: no check runs this policy).
 
 ## Health and logs
 
