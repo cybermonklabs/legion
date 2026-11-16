@@ -2158,6 +2158,7 @@ the volume names `role-homes` and `role-probe`;
 a mount at, under or above `/var/run/legion/roles`, `/var/run/legion/home`, `/var/run/legion/role-probe`, `/dev/mqueue`, `/dev/ptmx`, `/dev/pts` or `/proc`;
 and a mount at or above `/tmp`, `/var/tmp`, `/run/lock`, `/var/lock` or `/dev/shm`, or the image's other spellings of them.
 Run this release's `legion start --check-config` on the file before the rollout.
+The release that adds microVM issue pods takes one more volume name, `workload-identity-token` ("Upgrading" in [Issue pods in microVMs](#issue-pods-in-microvms)).
 
 To roll this release back to contract 38, every stored locator and every issue Sandbox both go back to what the earlier release reads.
 Re-pinning alone boots neither:
@@ -3162,7 +3163,7 @@ runtime:
 
 - `microvm.metadata` turns on the pod-local metadata endpoint ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 
-An issue's sandbox is `type`, or the other one when `canary_issues` names the issue's exact key (`SandboxConfig.Of`).
+An issue's sandbox is `type`, or the other one when `canary_issues` names the issue's exact key (`SandboxConfig.Of`, `packages/daemon/internal/runtime/sandbox/types.go`).
 The daemon decides it each time a launch builds the issue's pod, from the issue the launch is for (`prepare`, `packages/daemon/internal/runtime/sandbox/manifest.go`).
 A `microvm` block does nothing while no issue pod runs in a microVM.
 The loader still checks its keys, but it requires no `compute_class` then and refuses none of the `scheduling` and `pod.env` keys below, so a revert that empties `canary_issues` can leave the block in place.
@@ -3252,6 +3253,14 @@ A role launched into a pod that its round keeps starts as that pod was built:
 the launcher's `--microvm` and metadata flags and the projected token are fixed when the pod is created, and nothing the daemon sends a generation depends on the sandbox.
 So a role of a gVisor pod whose issue joins `canary_issues` starts in gVisor until the round replaces that pod.
 
+**Upgrading.**
+This release refuses one volume name that the release before it took: `workload-identity-token` as a `runtime.kubernetes.pod.volumes[].name`.
+The name is now the daemon's own, for the projected token volume of the metadata endpoint ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
+The loader refuses it in every deployment, one that runs only gVisor pods and sets no `sandbox` block included:
+`runtime.kubernetes.pod.volumes[<i>].name workload-identity-token is a volume Legion puts in every pod`, where `<i>` is the volume's place in the list, from 0 (`CheckPod`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
+A daemon of this release does not start on a file it refuses, so run this release's `legion start --check-config` on the file before the rollout.
+Where the check refuses the name, give that volume another name, in `volumes` and in each `volume_mounts` entry whose `volume` names it.
+
 **Rolling back.**
 The release that adds the block is daemon API contract 151, whose entry in `packages/daemon/internal/api/version.go` is for `dispatch://INFRA-3729`.
 A daemon below contract 151 refuses the key at boot (`unknown key runtime.kubernetes.sandbox`), so a rollback below that contract removes the `sandbox` block from `legion.yaml` before it pins the earlier release.
@@ -3315,6 +3324,22 @@ The endpoint answers each path below as GKE's server answered it from a Legion i
 
 - `universe/` lists `universe-domain` and `universe_domain`, and each of the two answers `googleapis.com`.
 
+A request's `alt` query value chooses the form of three kinds of answer, as it does on GKE's server (`metadataAnswer.serve`, `metadata.go`).
+The three are a value, such as `email`, a list value, which is `aliases` or `scopes`, and a directory's listing:
+
+- Where the first `alt` value of the request is `json`, in any letter case, the endpoint answers JSON with `Content-Type: application/json`.
+  A value is a JSON string: `email` answers `"<pool>"`.
+  A list value and a listing are a JSON array of the lines of the text form: `aliases` answers `["default"]`, and `/computeMetadata/v1/` answers `["instance/","project/","universe/"]`.
+  The JSON is on one line with no line break after it.
+  A listing names only the entries that the endpoint serves, in either form.
+
+- A request with any other `alt` value, such as `text` or `xml`, or with no `alt`, gets the text form with `Content-Type: application/text`.
+
+- The token and an account's `?recursive=true` answer JSON whatever `alt` says.
+  `?recursive=true` on any other directory answers 404 whatever `alt` says (below).
+
+The recording holds GKE's answers to `?alt=json`, `?alt=JSON`, `?alt=text` and `?alt=xml`, read from the same pod on 2026-11-16.
+
 The token is the one Google's Security Token Service gives for the projected token: the launcher sends it to `https://sts.googleapis.com/v1/token` with the audience `identitynamespace:<workload_pool>:<identity_provider>` and the subject token type `urn:ietf:params:oauth:token-type:jwt`.
 The launcher keeps one token for each set of scopes, for at most 16 sets, and exchanges again at the first request after that token has less than 5 minutes left.
 One exchange waits at most 30 seconds.
@@ -3334,6 +3359,23 @@ Both refusals come before anything else is read.
 
 A failed exchange answers 500 `token exchange failed`.
 It logs `launcher: metadata: token exchange failed scopes="<scopes>" reason="<the service's error>"`, at most one such line a minute, with the reason cut to 256 bytes and never a token in it.
+
+The endpoint bounds how long a client may hold a connection open, so that no process in the pod holds one open without end (`httpServer`, `metadata.go`):
+
+- A client has 10 s to send a request: its request line, its headers and any body it names.
+  The 10 s start when the connection opens.
+  On a connection that the client keeps open after an answer, they start again when the first bytes of the next request arrive.
+  At the bound the endpoint closes the connection.
+  A client that sent nothing, or a request line and part of its headers, sees the connection close with no answer.
+  A client that sent part of a request line sees `400 Bad Request` and then the close.
+  The endpoint reads no body.
+  So a client that names a body and does not send it sees its answer at the bound, with `Connection: close`, and then the close.
+
+- The 10 s do not bound the answer.
+  They end once the request is read, so the endpoint answers a request with no body however long its token's exchange takes, 30 s at most (above).
+
+- A connection that the client keeps open after an answer has 60 s to start its next request.
+  At that bound the endpoint closes the connection, and a later request needs a new connection.
 
 A listen that fails, as when another process of the container holds the address, logs `launcher: metadata: off reason=<error>` and sets neither variable, in the launcher's own environment or on any generation.
 The pod and its roles then run without the endpoint, and the container does not fail.
@@ -3370,7 +3412,30 @@ The processes the classifier protects keep the starting score, which is the laun
 the launcher and the steps it runs itself, each `role-init` and shim, each agent, Oh My Pi's `__omp_worker_*` helpers, the Claude bridge's processes and the test database.
 The watch sets one of them that reads above the starting score back to it, so an agent that raises its own score in its in-process shell does not stay raised.
 A process of no role that the classifier does not protect, such as a shell that `kubectl exec` started, keeps the score it reads.
-The kernel's out-of-memory killer stops the process with the highest `oom_score`, which `oom_score_adj` raises, so it stops a raised process before any protected one.
+
+The kernel's out-of-memory killer stops the process with the highest badness.
+A process's badness is its resident pages plus `oom_score_adj × limit / 1000`, where `limit` is the pod's memory limit in pages.
+So a raise from the starting score to 1000 adds `(1000 − starting score) / 1000` of the limit to a command's badness.
+The kernel therefore stops a raised command first, unless a protected process is larger than that command by more than that share of the limit.
+The kubelet sets a container's starting score by its pod's QoS class, so the share differs by class:
+
+- A `Guaranteed` container starts at `-997`.
+  The raise then adds 199.7% of the limit, which is more than any process can hold.
+  So a raised command outranks a protected process of any size, Oh My Pi included.
+
+- A `Burstable` container starts at `1000 − 1000 × memory request / node memory`, which read 992 for a 1Gi request.
+  The raise then adds `memory request / node memory` of the limit, 0.8% at 992.
+  The kernel then stops a protected process before a command where that process is larger than the command by more than that share.
+  Such a process can be an agent.
+
+The tester measured both starting scores, `-997` and 992, on runc nodes, where a container runs on the node's own kernel, and not in a microVM (the result at `aae5e969`, dispatch://INFRA-3729).
+A microVM pod's own starting score is the `score=` of its watch's `start` line ("The lines", below).
+
+An issue pod is `Guaranteed` while each `cpu` and `memory` request of `runtime.kubernetes.resources.issue` equals its limit.
+That holds unless the file sets `cpu_request` or `memory_request` below its limit.
+A request that the file leaves out takes the file's limit where the file sets one.
+Else it takes the default's request, which equals the default's limit ([Configuration](#configuration)).
+Keep each request equal to its limit where issue pods run in microVMs, so that the score protects Oh My Pi.
 
 The watch can only raise a score.
 The `roles` container drops every capability, and without `CAP_SYS_RESOURCE` no process can set a score below a process's starting value, so no agent can be set below the starting score.
@@ -3392,12 +3457,17 @@ A write that fails, as a write to a process that is not dumpable does, is logged
 The kernel counts each process it stops in the cgroup's `oom_kill`: the `oom_kill` line of `memory.events` on cgroup v2, and of `memory.oom_control` on cgroup v1.
 Nothing else tells the launcher which process it stopped, since a stopped command's exit goes to its parent, the shell that ran it, and not to the launcher.
 So at each scan the watch keeps every process it read, by its pid and its start time, with its resident size (the `rss` field of its `stat`) and its `oom_score`, and it reads the counter after the scan.
-When the counter rises by n, the stopped processes are the ones the watch held before the rise that a scan no longer holds: a process that exited, a zombie, or a pid back with another start time, which is another process.
+When the counter rises by n, the watch finds the stopped processes among those it held before the rise and those that the scan that saw the rise read for the first time.
+A stopped process is one of them that a scan no longer holds: a process that exited, a zombie, or a pid back with another start time, which is another process.
 The watch ranks them by their last `oom_score` before the rise, then by their resident size, highest first, and names the first n.
 A process the kernel stopped can still run while it frees its memory.
 So while a process ranked above the n-th gone one still runs, the watch waits for the next scan, for at most 2 s after the counter's last rise, the time the kernel's `oom_reaper` gives a stopped process to exit.
 When the wait ends, it names the n highest gone ones, and writes one `killed unnamed` line for the kills it found no process for.
+A process that the watch first read at a scan after the one that saw the rise is no kill of that rise: the watch never names it and never waits for it.
+So the watch does not name a command that starts during the wait and exits by itself.
+Where the counter rises again during a wait, that scan is the one that saw the latest rise.
 
+The kernel can also stop a process that the classifier protects ("The score", above), and the watch names it as it names a command.
 Each process it names has the guard's own `ended` line, so a reader finds a process stopped for memory by the same line in either sandbox:
 
 ```text
@@ -3424,7 +3494,10 @@ The pod's four figures are the ones the watch read at the scan that saw the coun
 **The report and the note.**
 For a process of a role, the watch also gives a report to that role's part of the launcher, which sends it as the guard's report is sent ("The report and the note" in [The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), with these differences:
 
-- The `launcher_memory_kill` frame carries `cause: kernel`.
+- The `launcher_memory_kill` frame carries a `cause`, which the guard's own report leaves out.
+  It is `cause: kernel` for a command of the role, a process that the classifier does not protect.
+  It is `cause: kernel-protected` for a process of the role that the classifier protected before the rise:
+  the role's `role-init`, its shim, a direct child of the shim such as the agent, one of Oh My Pi's helpers, or `claude` or its MCP server under the Claude bridge ("What it protects, and why" in that section).
 
 - Its `guard` is the watch's own id, random at each start, and its `sequence` is the watch's count of the kills it named, from 1.
   Every named kill counts, a process of no role's included.
@@ -3438,14 +3511,36 @@ For a process of a role, the watch also gives a report to that role's part of th
   <role>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report
   ```
 
-A process of no role has its `ended` line and no report.
-The daemon chooses the note by the report's cause (`kernelKillNote`, `packages/daemon/internal/workflow/engine.go`), queues it to the role's topic with the sizes in binary units, and logs `workflow: the role whose process the pod's kernel stopped is told why` with the report's `cause`:
+A process of no role has its `ended` line and no report, whether the classifier protects it or not.
+The daemon chooses the note by the report's cause (`memoryGuardKill`, `packages/daemon/internal/workflow/engine.go`) and queues it to the role's topic with the sizes in binary units.
+
+For `cause: kernel` the note is `kernelKillNote`'s, and the daemon logs `workflow: the role whose process the pod's kernel stopped is told why` with the report's `cause`:
 
 ```text
 The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. The pod's other processes and your session go on. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
 ```
 
+For `cause: kernel-protected` the note is `kernelProtectedKillNote`'s, and the daemon logs `workflow: the role whose session's own process the pod's kernel stopped is told why` with the report's `cause`:
+
+```text
+The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. It was one of the processes that run your session, not a command you ran. If it was your agent, your turn ended with it, and so did every other process of your role. The daemon then starts the same session again and sends again any task that the turn was running. It counts each such exit of a role's process as a failed launch, and at the limit of failed launches it fails your claim instead. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
+```
+
+That note does not say that the session goes on.
+The end of a role's agent ends its shim and its `role-init`, and with them every process of the role, so the role's turn ends.
+The daemon reads that as the role's process gone (`died`, `packages/daemon/internal/supervise/machine.go`).
+It takes back the task that the turn was running, counts one failed launch, and starts the same session again.
+At the limit of failed launches it fails the claim instead.
+One of Oh My Pi's helpers can end alone, so the note says what follows only for the agent.
+
 A note can be lost in each case in which the guard's note can, and in each of them the `ended` line stays in the container's log.
+The `kernel-protected` note of an agent's end may reach nobody.
+The outbox delivers a note only to a live session that holds the role's topic when the note's row runs (`roleMessage`, `packages/daemon/internal/daemon/outbox.go`).
+When the daemon finds the role's process gone, its supervisor asks the Envoy listener to delete that session's registration (`died`, and `cleanSessionStop`, `packages/daemon/internal/daemon/daemon.go`).
+It then starts the same session again.
+A row that runs while no live session holds the topic ends undelivered, with the log line `outbox role message finished undelivered: its role has no live holder`.
+A row whose holder did not confirm the note runs again on the row's backoff (`roleMessage`'s retry); whether such a row reaches the relaunched session has not been measured.
+The `ended` line in the container's log is the record of the kill in every case.
 
 **The lines.**
 The watch's own lines start `launcher: guest memory: ` in the `roles` container's log, carry no role prefix, and write `-` for a figure the watch cannot read (`packages/daemon/internal/memoryguard/lines.go`):
