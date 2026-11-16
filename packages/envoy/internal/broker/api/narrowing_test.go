@@ -154,7 +154,8 @@ func TestABadNarrowingIs400AndMintsNothing(t *testing.T) {
 	}{
 		{"a repository with its owner", map[string]any{"owner": "ada", "repositories": []string{"ada/proofs"}}, "github_app.repositories names ada's repositories by name alone"},
 		{"an empty repository list", map[string]any{"owner": "ada", "repositories": []string{}}, "github_app.repositories is empty"},
-		{"a field the broker does not read", map[string]any{"owner": "ada", "permissions": map[string]string{"administration": "write"}}, "permissions"},
+		{"a field the broker does not read", map[string]any{"owner": "ada", "permissions": map[string]string{"administration": "write"}}, "github_app.permissions"},
+		{"a field of the wrong type", map[string]any{"owner": "ada", "read_only": "yes"}, "github_app.read_only"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			status, body := s.values(t, s.grantID, map[string]any{"github_app": tc.narrowing})

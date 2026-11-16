@@ -1,8 +1,13 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -30,7 +35,9 @@ type createRequestBody struct {
 	// itself: the release is what applies a narrowing, and a release that asks for none is
 	// owner-wide whatever this field said. The broker checks it before it asks a person to
 	// approve the request, so a narrowing it cannot serve is refused here and costs no
-	// approval.
+	// approval. An object that does not read as a narrowing, with a field it does not take or a
+	// field of the wrong type, is refused 400 INVALID_NARROWING naming that field, as the release
+	// refuses it; 400 INVALID_REQUEST is kept for the body's own fields.
 	GitHubApp *githubNarrowing `json:"github_app"`
 }
 
@@ -221,17 +228,97 @@ type githubNarrowing struct {
 	// actions: read, less the Actions grant the installation does not hold. A machine that must
 	// only read needs it, with or without repositories.
 	ReadOnly bool `json:"read_only,omitempty"`
+	// unread is why the github_app object a body sent does not read as a narrowing, "" when it
+	// does. UnmarshalJSON sets it in place of returning an error, so parsedNarrowing answers it
+	// with the narrowing's own code rather than readJSON with the body's (UnmarshalJSON).
+	unread string `json:"-"`
+}
+
+// UnmarshalJSON reads a github_app object strictly, as a narrowing: a field a narrowing does not
+// take and a field of the wrong JSON type are the narrowing's mistakes, which parsedNarrowing
+// refuses 400 INVALID_NARROWING naming github_app.<field>, on POST /v1/requests as on the
+// release's route. Returned as a decode error, readJSON would answer them with the body's own
+// code, and on POST /v1/requests that is INVALID_REQUEST: the code agent-secrets reads as a
+// broker from before github_app, which it answers by sending the same request again without the
+// narrowing (brokerTookNoNarrowing), so a narrowing this broker read and refused would go on to
+// the person the check before the approval exists to spare. A JSON null never reaches it: the
+// field's pointer stays nil, a body that names no narrowing.
+func (n *githubNarrowing) UnmarshalJSON(data []byte) error {
+	type plain githubNarrowing // the same fields, without this method
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var read plain
+	if err := decoder.Decode(&read); err != nil {
+		*n = githubNarrowing{unread: unreadNarrowing(err)}
+		return nil
+	}
+	*n = githubNarrowing(read)
+	return nil
+}
+
+// unreadNarrowing is the refusal of a github_app object that does not read as a narrowing,
+// naming the field at fault as github_app.<field>, the way policy.ParseGitHubNarrowing's
+// refusals name theirs.
+func unreadNarrowing(err error) string {
+	var wrongType *json.UnmarshalTypeError
+	if errors.As(err, &wrongType) {
+		field := "github_app"
+		if wrongType.Field != "" {
+			field += "." + wrongType.Field
+		}
+		return field + " must be " + jsonValueOf(wrongType.Type) + ", not " + jsonKindOf(wrongType.Value)
+	}
+	if name, unknown := strings.CutPrefix(err.Error(), "json: unknown field "); unknown {
+		if unquoted, unquoteErr := strconv.Unquote(name); unquoteErr == nil {
+			name = unquoted
+		}
+		return "github_app." + name + " is not a field of a narrowing"
+	}
+	return "github_app does not read as a narrowing: " + err.Error()
+}
+
+// jsonValueOf names the JSON a narrowing's field of Go type t takes.
+func jsonValueOf(t reflect.Type) string {
+	switch t.Kind() {
+	case reflect.String:
+		return "a string"
+	case reflect.Bool:
+		return "true or false"
+	case reflect.Slice:
+		return "an array of " + strings.TrimPrefix(jsonValueOf(t.Elem()), "a ") + "s"
+	default:
+		return "an object"
+	}
+}
+
+// jsonKindOf names the JSON a caller sent, from encoding/json's word for it ("string",
+// "number", "bool", "array", "object", a number sometimes followed by its literal).
+func jsonKindOf(value string) string {
+	kind, _, _ := strings.Cut(value, " ")
+	switch kind {
+	case "array", "object":
+		return "an " + kind
+	case "bool":
+		return "a boolean"
+	default:
+		return "a " + kind
+	}
 }
 
 // parsedNarrowing is the github_app field of a body as the narrowing the broker works with. Both
 // routes that take one read it through here — the request's own (createRequest) and the
 // release's (grantValues) — so one narrowing is refused by one parser and a caller reads one
-// answer for one mistake. A body naming no narrowing answers nil and true. A narrowing the
-// parser refuses answers false, with the 400 INVALID_NARROWING already written, naming the
-// field it refused: its caller returns and writes nothing more.
+// answer for one mistake. A body naming no narrowing answers nil and true. An object that did not
+// read as a narrowing (githubNarrowing.UnmarshalJSON), and a narrowing the parser refuses, answer
+// false, with the 400 INVALID_NARROWING already written, naming the field it refused: its caller
+// returns and writes nothing more.
 func parsedNarrowing(w http.ResponseWriter, sent *githubNarrowing) (*secrets.GitHubNarrowing, bool) {
 	if sent == nil {
 		return nil, true
+	}
+	if sent.unread != "" {
+		writeError(w, http.StatusBadRequest, "INVALID_NARROWING", sent.unread)
+		return nil, false
 	}
 	narrowing, refusal := policy.ParseGitHubNarrowing(sent.Owner, sent.Repositories, sent.ReadOnly)
 	if refusal != nil {

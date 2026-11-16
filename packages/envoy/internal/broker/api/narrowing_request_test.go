@@ -133,6 +133,26 @@ func TestNarrowingBeforeApprovalAnswersItsOwnStatusAndCode(t *testing.T) {
 			mentions:  "github_app.repositories",
 		},
 		{
+			// A field a narrowing does not take is the narrowing's own mistake, not the body's.
+			// INVALID_REQUEST is what agent-secrets reads as a broker from before github_app, and
+			// it would send the request again without the narrowing, to the person this check
+			// exists to spare.
+			name:      "a narrowing with a field it does not take",
+			secret:    "NARROW_APP_KEY",
+			narrowing: map[string]any{"owner": narrowingOwner, "repos": []string{"proofs"}},
+			status:    http.StatusBadRequest,
+			code:      "INVALID_NARROWING",
+			mentions:  "github_app.repos",
+		},
+		{
+			name:      "a narrowing field of the wrong type",
+			secret:    "NARROW_APP_KEY",
+			narrowing: map[string]any{"owner": narrowingOwner, "read_only": "yes"},
+			status:    http.StatusBadRequest,
+			code:      "INVALID_NARROWING",
+			mentions:  "github_app.read_only",
+		},
+		{
 			name:      "a request that asks for no github-app secret",
 			secret:    "DEEL_API_KEY",
 			narrowing: map[string]any{"owner": narrowingOwner, "read_only": true},
@@ -198,6 +218,27 @@ func TestNarrowingBeforeApprovalAnswersItsOwnStatusAndCode(t *testing.T) {
 				t.Fatalf("the refused request left %d request rows and %d records; want none of either: nobody is asked to approve a narrowing the broker will not serve", rows, records)
 			}
 		})
+	}
+}
+
+// TestNarrowingBeforeApprovalLeavesAnUnknownBodyFieldInvalidRequest: a field POST /v1/requests
+// does not take at the top of its body stays 400 INVALID_REQUEST, beside a narrowing the broker
+// would serve. That code is what agent-secrets reads as a broker from before github_app, which it
+// answers by sending the same signed request again without the narrowing; a refusal of the
+// narrowing's own fields must therefore never answer it, and a body the broker cannot read must.
+func TestNarrowingBeforeApprovalLeavesAnUnknownBodyFieldInvalidRequest(t *testing.T) {
+	s := newNarrowingRequestServer(t, airlocktest.GitHubAnswer{}, false)
+
+	status, body := s.session(t, s.key, s.enrollmentID, http.MethodPost, "/v1/requests", map[string]any{
+		"request":    signAgentSecretRequest(t, s.key, s.URL, "read the App key", "NARROW_APP_KEY"),
+		"github_app": map[string]any{"owner": narrowingOwner, "read_only": true},
+		"narrowing":  map[string]any{"owner": narrowingOwner},
+	})
+	if reply := decode[wireError](t, body); status != http.StatusBadRequest || reply.Code != "INVALID_REQUEST" || !strings.Contains(reply.Error, "narrowing") {
+		t.Fatalf("POST /v1/requests with a body field it does not take = %d %s; want 400 INVALID_REQUEST naming it", status, body)
+	}
+	if rows, records := s.pendingRows(t); rows != 0 || records != 0 {
+		t.Fatalf("the refused body left %d request rows and %d records; want none of either", rows, records)
 	}
 }
 
