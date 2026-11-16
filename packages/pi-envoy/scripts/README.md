@@ -300,9 +300,11 @@ revision), the argv and assignments each service is run with (`set_natsd_argv`, 
 the port each one binds (natsd's `-p -1` and `-m -1`, the listener's `PORT=0`: a port the kernel
 chooses, read back from the line the service logs with `reported_port`, so no other process can
 take it before the service serves there, as it could a port picked free and handed over) and when
-it is up (`natsd_serving`, `listener_healthy`, polled with `poll_until`). It is sourced, never run:
-it starts no process, so every script keeps its own isolation, logs, traps, timeouts, messages and
-exit codes.
+it is up (`natsd_serving`, `listener_healthy`, polled with `poll_until`). `reported_port` is
+`scripts/e2e/lib/report-port.sh`'s, the one reader of such a line, which the end-to-end rig
+(`scripts/e2e/lib/rig.sh`) sources too; this file sources it, and none of the rig's other helpers.
+It is sourced, never run: it starts no process, so every script keeps its own isolation, logs,
+traps, timeouts, messages and exit codes.
 `packages/envoy-client/test/envoy-stack.ts` is the same stack for the TypeScript suite.
 
 ## listener-api.sh

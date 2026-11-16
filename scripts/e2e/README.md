@@ -5276,7 +5276,7 @@ Every stage proof and rig takes its servers' ports this way, apart from the port
 Stage 2 and `verifiers-staging-token.sh` call it directly.
 A daemon always serves on a keeper's socket, since its `legion.yaml` must name the port before it starts.
 A process that binds port 0 itself and reports what it got
-— `nats-server -p -1`, a Bun fake, `kubectl port-forward :<port>` — needs no helper; the rig reads its report with `report_port`.
+— `nats-server -p -1`, a Bun fake, `kubectl port-forward :<port>` — needs no helper; the rig reads its report with [`lib/report-port.sh`](#libreport-portsh)'s `report_port`.
 A port a person sets explicitly is used as given, and an occupied one fails with `address already in use`.
 
 ## lib/port-file.sh
@@ -5292,6 +5292,22 @@ read_port_file "$work/dispatch.port" "$server_pid" port || waited=$?
 `read_port_file FILE PID VAR` polls FILE every tenth of a second while PID lives and assigns VAR the port it names.
 It prints nothing, so each caller words its own failure:
 it returns 0 once VAR is set, 1 when PID exits before FILE is written, and 2 after `port_file_seconds` (30).
+
+## lib/report-port.sh
+
+The one reader of the port a process that bound port 0 itself logs once it listens, which `lib/rig.sh`, `envoy-session-delivery.sh` and `packages/pi-envoy/scripts/local-stack.sh` share, the last for the two smokes beside it and their `role-takeover/clients.sh`.
+Sourced, never run; it needs nothing of its caller's.
+
+```sh
+. "$root/scripts/e2e/lib/report-port.sh"
+nats_port=$(report_port "$work/logs/natsd.log" 'Listening for client connections on [^ ]*:')
+poll_until 60 0.2 reported_port "$log" "$listener_line" listener_port
+```
+
+`report_port LOG PATTERN` prints the digits right after the first match of the extended regex PATTERN in LOG:
+the first match on the first line that holds one, however many that line holds.
+It fails while no line matches, so it is also the poll that waits for one.
+`reported_port LOG PATTERN VAR` assigns VAR what `report_port` prints, for a poll that runs in the caller's own shell, and fails as it does.
 
 ## lib/built-from.sh
 
@@ -5827,7 +5843,7 @@ It does this through a `tee` that ignores the signals a driver traps and SIGPIPE
 The host-side helpers a stage proof sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
 Stage 1, Stage 3, Stage 4b, the 4b.13b acceptance and the controller, Dispatch user-turn and Claude Code backend proofs source it, as do the docs site's broker and operator-walkthrough recorders and pi-legion's skill-scenario rig.
 Seven of the nine proofs that call [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s helpers themselves source it too, for those two helpers, which this file sources for them.
-`envoy-session-delivery.sh` is the eighth: it sources `lib/loopback-dsn.sh` and [`lib/port-file.sh`](#libport-filesh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
+`envoy-session-delivery.sh` is the eighth: it sources `lib/loopback-dsn.sh`, [`lib/port-file.sh`](#libport-filesh) and [`lib/report-port.sh`](#libreport-portsh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
 `busy-relaunch-delivery.sh` is the ninth: it has those helpers through [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), which it sources, and sources no rig.
 
 ```sh
@@ -5873,9 +5889,8 @@ Each item below names a function, then what it does.
 
 - `report_port LOG PATTERN`
 
-  prints the port a process that bound port 0 itself reported:
-  the digits right after the first match of the extended regex PATTERN in LOG (`'Listening for client connections on [^ ]*:'` for `nats-server -p -1`).
-  It fails while no line matches, so it is also the poll that waits for one
+  prints the port a process that bound port 0 itself reported.
+  It is [`lib/report-port.sh`](#libreport-portsh)'s, which this file sources
 
 - `port_answers PORT`
 

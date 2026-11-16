@@ -2102,6 +2102,7 @@ GATES = [
         ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:112 sources it"),
         ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh:93 sources it"),
         ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh:102 sources it"),
+        ("scripts/e2e/lib/report-port.sh", "scripts/e2e/lib/rig.sh:172 sources it"),
         ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:143,157 runs it to hold a port for the daemon"),
         ("scripts/e2e/lib/built-from.sh", "scripts/e2e/stage1-skeleton.sh:145 runs it over the checkout"),
         ("packages/pi-legion/package.json", "scripts/e2e/stage1-skeleton.sh:202 copies its name, version and legion "
@@ -2989,6 +2990,8 @@ GATES = [
         ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),
         (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/broker-client's seven modules through packages/envoy-client/src/broker-credential.ts:21-22"),
         ("scripts/e2e/lib/held-port.py", "packages/envoy-client/test/dispatch-stack.ts starts Dispatch through it, on the socket it holds (DISPATCH_LISTEN_FD)"),
+        ("scripts/e2e/lib/report-port.sh", f"{at(STALL, 'Role takeover smoke')}: packages/pi-envoy/scripts/local-stack.sh:33 sources it, "
+                                           "for the port each service reports"),
     ) + ceiling_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL)),
 
     gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(
