@@ -3916,9 +3916,9 @@ the broker's answer names no session, or names neither a person nor a service, o
 None of them repeats the token.
 It is the only credential that proves a session of its own, so its caller writes as that session with no `actor` in the body at all;
 a body `actor` naming the same session is taken, for its `Origin`, which nothing else carries, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
-A named project scope rides on `model.Actor.Project`, set from the token and never from a body, as `Service` is;
-a person-scoped token names no single project and carries none.
-`GET /api/v1/whoami` answers `session` and `project` beside `owner` and `service`, so a caller can see which session Dispatch records its writes as.
+A named project scope rides on the credential's list, `model.Credential.Projects`, set from the token and never from a body, as `Service` is;
+it is a fact of the request, so no recorded actor carries it, and a person-scoped token names no single project and carries none.
+`GET /api/v1/whoami` answers `session`, `projects` and, deprecated, `project` beside `owner` and `service`, so a caller can see which session Dispatch records its writes as.
 A proof is single use by its `jti` and `htu` (`store.DPoPProofs`, migration `0150`, swept by the maintenance pass), so each request is decided exactly once (`api.decideBrokerToken`) and a websocket's heartbeat re-resolution asks only whether the token is still live (`brokertoken.Verifier.Live`) rather than presenting the upgrade's proof again.
 The verifier is built from settings Dispatch already has and takes none of its own (`cmd/dispatch`'s `brokerTokenVerifier`:
 `DISPATCH_AGENT_SECRETS_URL`, `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` and `DISPATCH_SERVER_URL`, the origin a proof's `htu` is checked against).

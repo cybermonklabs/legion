@@ -3147,7 +3147,6 @@ export interface components {
       kind: string;
       origin?: components["schemas"]["ActorOrigin"];
       owner?: string;
-      project?: string;
       service?: string;
     };
     ActorAct: {

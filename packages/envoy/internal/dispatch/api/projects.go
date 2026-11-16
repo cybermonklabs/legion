@@ -98,29 +98,13 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// The person the call acts for, if any, owns what it creates, and a restricted member creates
-	// no project: the refusal comes before anything is checked or written.
-	creator, acts := actorPerson(actor)
-	if acts {
-		pool, err := s.readyPool()
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		kind, err := access.MemberKind(r.Context(), pool, creator)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		if kind == model.MemberRestricted {
-			writeError(w, "RESTRICTED_MEMBER", http.StatusForbidden, "a restricted member cannot create a project")
-			return
-		}
-	}
-	// No person: the owner is left to the insert, which gives a project with none its default
-	// assignee (projects_owner_from_default).
+	// The person the call acts for, if any, owns what it creates. A restricted member creates no
+	// project: this route is a write of the deployment (scopeDeployment, routes_table.go), which
+	// withinProjectScope refuses to every viewer that is not open, a restricted member with 403
+	// RESTRICTED_MEMBER, before this handler runs. No person: the owner is left to the insert,
+	// which gives a project with none its default assignee (projects_owner_from_default).
 	var owner *string
-	if acts {
+	if creator, acts := actorPerson(actor); acts {
 		owner = new(model.CanonicalLogin(creator))
 	}
 	input.Key = strings.TrimSpace(input.Key)

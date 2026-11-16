@@ -12776,9 +12776,6 @@
           "owner": {
             "type": "string"
           },
-          "project": {
-            "type": "string"
-          },
           "service": {
             "type": "string"
           }

@@ -64,7 +64,10 @@ func (s *server) listAccessGroups(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, page)
 }
 
-// putAccessGroup makes group {name}, or writes it again for its owner.
+// putAccessGroup makes group {name}, or writes it again for its owner. A restricted member makes
+// none: this route is a write of the deployment (scopeDeployment, routes_table.go), which
+// withinProjectScope refuses to every viewer that is not open, a restricted member with 403
+// RESTRICTED_MEMBER, before this handler runs.
 func (s *server) putAccessGroup(w http.ResponseWriter, r *http.Request) {
 	var input accessGroupInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -80,15 +83,6 @@ func (s *server) putAccessGroup(w http.ResponseWriter, r *http.Request) {
 		newOwner := by.ID
 		switch {
 		case owner == nil:
-			kind, err := access.MemberKind(ctx, tx, by.ID)
-			if err != nil {
-				s.writeHandlerError(w, err)
-				return nil, nil, 0, false
-			}
-			if kind == model.MemberRestricted {
-				writeError(w, "RESTRICTED_MEMBER", http.StatusForbidden, "a restricted member cannot make a group")
-				return nil, nil, 0, false
-			}
 			if input.Owner != nil && model.CanonicalLogin(*input.Owner) != by.ID {
 				writeError(w, "PROJECT_ACCESS_INPUT", http.StatusBadRequest,
 					"a new group's owner is the person who makes it; give it to another owner once it exists")

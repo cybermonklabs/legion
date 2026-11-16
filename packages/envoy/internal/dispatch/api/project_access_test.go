@@ -164,9 +164,9 @@ func TestTheOwnerGivesTheProjectToAFullMember(t *testing.T) {
 }
 
 // TestARestrictedMemberCannotCreateAProject: a restricted member's create is 403 RESTRICTED_MEMBER
-// before anything is written. A full member's create answers as it always did, and the creator
-// owns the project; a create by a credential that acts for nobody gives the project its default
-// assignee as owner.
+// before anything is written, the refusal of a deployment write (withinProjectScope). A full
+// member's create answers as it always did, and the creator owns the project; a create by a
+// credential that acts for nobody gives the project its default assignee as owner.
 func TestARestrictedMemberCannotCreateAProject(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seedPeople(t, database, accessErin, accessCarol)

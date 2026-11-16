@@ -76,17 +76,6 @@ func (s *server) brokerCredentialActor(r *http.Request) (model.Actor, bool) {
 	return actor, true
 }
 
-// callerProject is the one project an access token the secrets broker issued for a named project
-// carries (model.Actor.Project), and whether it carries one. It is deprecated, and goes with that
-// field: callerProjects reads the list every credential carries.
-func (s *server) callerProject(r *http.Request) (string, bool) {
-	actor, resolved := s.brokerCredentialActor(r)
-	if !resolved || actor.Project == nil || *actor.Project == "" {
-		return "", false
-	}
-	return *actor.Project, true
-}
-
 // callerProjects is the list of projects this request's credential may use, sorted, and whether
 // it lists any: a personal token's agent_tokens.projects, or the list of a token the secrets
 // broker issued (model.Credential.Projects), each set from the credential and never from a body.
