@@ -219,6 +219,57 @@ test("a call that joins a wait under way stops it with its own signal, and a cal
   }
 });
 
+/** Collects garbage across a few turns of the event loop, so what nothing holds is gone. */
+async function collected(): Promise<void> {
+  for (let i = 0; i < 4; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+    Bun.gc(true);
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+test("calls past their deadline are not kept by the trade they stopped waiting for", async () => {
+  // The review's finding (e0-deep-review-t-e-30.md, finding 1): a trade waiting out a missing
+  // registration can stay pending for the session's life, and each call that joined it and
+  // stopped at its deadline — each listener heartbeat, each Dispatch request — must be free to
+  // go once it has its answer. Ten calls stop; the trade keeps waiting.
+  const calls = 10;
+  const { broker, client, waits } = await heldClient(() => false);
+  const waiting = client.token().catch(() => undefined);
+  try {
+    await until(() => waits.length === 1);
+    // Counted by a FinalizationRegistry, which keeps nothing alive: a WeakRef's target is also
+    // kept until the job that made it ends, which would count the last call however it is held.
+    const collectedCalls = new Set<number>();
+    const registry = new FinalizationRegistry<number>((call) => collectedCalls.add(call));
+    // Each call is made in a function of its own, whose frame ends with it: the collector reads a
+    // live frame's registers conservatively, so one left running would hold its last answer.
+    const stopCall = async (call: number): Promise<void> => {
+      const deadline = new AbortController();
+      const before = waits.length;
+      const joined = client.token(deadline.signal);
+      await until(() => waits.length === before + 1);
+      deadline.abort();
+      const refusal = await joined.catch((error: unknown) => error);
+      if (!(refusal instanceof RegistrationPendingError)) {
+        throw new Error(`stopped call ${call} was answered ${String(refusal)}`);
+      }
+      registry.register(refusal, call);
+    };
+    for (let call = 0; call < calls; call++) await stopCall(call);
+    await collected();
+    const kept = calls - collectedCalls.size;
+    expect(
+      kept,
+      `${kept} of ${calls} calls past their deadline are kept by the trade they stopped waiting for`
+    ).toBe(0);
+  } finally {
+    client.close();
+    await waiting;
+    broker.stop();
+  }
+});
+
 test("every other refusal stays permanent", () => {
   const identity = "a pod's projected service-account token";
   const rows: [number, string, string, boolean][] = [

@@ -208,6 +208,12 @@ export class RegistrationPendingError extends Error {
   }
 }
 
+/** One caller waiting on a client's shared trade: how to tell it the trade's answer. */
+interface Waiter {
+  readonly resolve: (token: BrokerToken) => void;
+  readonly reject: (error: unknown) => void;
+}
+
 /**
  * A person's sign-in that the issuer no longer honours: its refresh token was answered
  * `invalid_grant`, because the person revoked the grant at Google or it expired. It mirrors the
@@ -358,6 +364,10 @@ export class BrokerTokenClient {
   /** The trade under way, so two callers that need a token at once make one trade. It runs on
    *  no caller's signal: each caller stops waiting for it on its own (`#joined`). */
   #trading: Promise<BrokerToken> | null = null;
+  /** The callers waiting on that trade, told its answer by its one completion subscription. A
+   *  caller whose signal ends leaves this set, so the trade, which can stay pending for the
+   *  session's life, holds nothing of a call that has its answer. */
+  readonly #waiters = new Set<Waiter>();
   /** The missing-registration refusal the trade under way is waiting out, or null. */
   #pending: BrokerRefusedError | null = null;
   /** Cuts that wait short, so a call arriving during it trades at once; null outside it. */
@@ -410,44 +420,59 @@ export class BrokerTokenClient {
   async token(signal?: AbortSignal): Promise<BrokerToken> {
     const held = this.#held;
     if (held !== null && this.#now() < held.expiresAt.getTime() - this.#renewBeforeMs) return held;
-    let trading = this.#trading;
-    if (trading === null) {
+    if (this.#trading === null) {
       const started = this.#renew();
-      const settled = (): void => {
-        if (this.#trading === started) this.#trading = null;
-      };
-      started.then(settled, settled);
-      this.#trading = trading = started;
+      this.#trading = started;
+      started.then(
+        (token) => this.#settled(started, (waiter) => waiter.resolve(token)),
+        (error: unknown) => this.#settled(started, (waiter) => waiter.reject(error))
+      );
     } else {
       this.#wake?.();
     }
-    return await this.#joined(trading, signal);
+    return await this.#joined(signal);
+  }
+
+  /** Ends `started`, the trade that has just settled, and tells every caller waiting on it. */
+  #settled(started: Promise<BrokerToken>, tell: (waiter: Waiter) => void): void {
+    if (this.#trading === started) this.#trading = null;
+    const waiters = [...this.#waiters];
+    this.#waiters.clear();
+    for (const waiter of waiters) tell(waiter);
   }
 
   /**
-   * `trading`, or what this caller is told when its `signal` ends first: that the session's
-   * registration is still pending, where the trade is waiting one out, and otherwise the
-   * signal's own reason. The trade itself goes on either way.
+   * The answer of the trade under way, or what this caller is told when its `signal` ends first:
+   * that the session's registration is still pending, where the trade is waiting one out, and
+   * otherwise the signal's own reason. The trade itself goes on either way; the caller leaves
+   * the waiting set, so nothing of it stays behind.
    */
-  async #joined(
-    trading: Promise<BrokerToken>,
-    signal: AbortSignal | undefined
-  ): Promise<BrokerToken> {
-    if (signal === undefined) return await trading;
-    const { promise, reject } = Promise.withResolvers<never>();
+  #joined(signal: AbortSignal | undefined): Promise<BrokerToken> {
+    const { promise, resolve, reject } = Promise.withResolvers<BrokerToken>();
     const stop = (): void => {
+      this.#waiters.delete(waiter);
       const pending = this.#pending;
       reject(
-        pending === null ? signal.reason : new RegistrationPendingError(this.#session, pending)
+        pending === null ? signal?.reason : new RegistrationPendingError(this.#session, pending)
       );
     };
-    if (signal.aborted) stop();
-    else signal.addEventListener("abort", stop, { once: true });
-    try {
-      return await Promise.race([trading, promise]);
-    } finally {
-      signal.removeEventListener("abort", stop);
+    const waiter: Waiter = {
+      resolve: (token) => {
+        signal?.removeEventListener("abort", stop);
+        resolve(token);
+      },
+      reject: (error) => {
+        signal?.removeEventListener("abort", stop);
+        reject(error);
+      },
+    };
+    if (signal?.aborted) {
+      stop();
+      return promise;
     }
+    this.#waiters.add(waiter);
+    signal?.addEventListener("abort", stop, { once: true });
+    return promise;
   }
 
   /** Stops a trade waiting out a missing registration, for a caller done with this client. */
