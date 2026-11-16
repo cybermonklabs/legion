@@ -80,9 +80,12 @@ func signInSettingNames() string {
 // it widens; a group and a domain both set; some of the settings but not the issuer, client ID,
 // client secret and one of the group or domain; a domain under an issuer other than Google's,
 // whose tokens carry no `hd`, unless the test hooks put the dev OIDC issuer in Google's place
-// (DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER); a domain that is not a lowercase DNS name; a group under
-// Google's issuer, whose tokens carry no `cognito:groups`. A deployment with the issuer, client
-// ID, client secret and group of a Cognito pool reaches none of them.
+// (DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER); a domain that is not a lowercase DNS name; under Google's
+// issuer, an outside origin whose host Google refuses in an OAuth redirect URI, since the Google
+// client must list `<origin>/auth/callback` (weborigin.GoogleRedirectHost, the rule gcp:Dispatch
+// holds its outsideOrigin input to with sign-in on); a group under Google's issuer, whose tokens
+// carry no `cognito:groups`. A deployment with the issuer, client ID, client secret and group of
+// a Cognito pool reaches none of them.
 func checkSignInSettings(boot bootConfig, identityMode string) error {
 	var set []string
 	for _, setting := range signInSettings(boot) {
@@ -122,6 +125,13 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 		}
 		if len(boot.SignInDomain) > maxDomainLength || !domainShape.MatchString(boot.SignInDomain) {
 			return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN must be a lowercase domain name such as example.com; got a value of %d characters", utf8.RuneCountInString(boot.SignInDomain))
+		}
+		if boot.OutsideOrigin != "" && boot.SignInIssuer == googleIssuer {
+			// parseOutsideOrigin stored the origin weborigin.Parse returned, so it parses.
+			outside, _ := url.Parse(boot.OutsideOrigin)
+			if err := weborigin.GoogleRedirectHost(outside.Hostname()); err != nil {
+				return fmt.Errorf("DISPATCH_OUTSIDE_ORIGIN's %w", err)
+			}
 		}
 	}
 	if boot.SignInGroup != "" && boot.SignInIssuer == googleIssuer {
@@ -181,7 +191,9 @@ func parseSignInOutside(raw string) (bool, error) {
 // weborigin.Parse returns for it, the rule gcp:Dispatch's outsideOrigin input is judged by, so a
 // value written by hand is refused exactly as the component refuses it, with its trailing "/"
 // trimmed as the component trims it. Beside that rule the origin must be https, or http only with
-// the test hooks on (testHooks), for a local harness. Each refusal names the setting.
+// the test hooks on (testHooks), for a local harness. Each refusal names the setting. Its host
+// under Google sign-in, which the component judges too, is checkSignInSettings', which reads the
+// sign-in settings.
 func parseOutsideOrigin(raw string, testHooks bool) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

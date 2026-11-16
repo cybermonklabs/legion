@@ -184,8 +184,10 @@ chooser, so a person from outside sees their own accounts; your own people see e
 their browser and pick their organization's one.
 
 People from outside reach Dispatch however the deployment lets them, at its second address,
-`DISPATCH_OUTSIDE_ORIGIN`, such as `https://dispatch-outside.example`: an `https` address with no
-path, on another host than `DISPATCH_SERVER_URL`. A request to that host is answered as that
+`DISPATCH_OUTSIDE_ORIGIN`, such as `https://dispatch-outside.example.com`: an `https` address with no
+path, on another host than `DISPATCH_SERVER_URL`. Google must accept its callback as a redirect
+URI, so its host is a DNS name, not an IP address, whose top-level domain is on the public suffix
+list; Dispatch refuses to start with any other. A request to that host is answered as that
 address: the sign-in comes back to `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`, which the Google
 client lists as a second redirect URI, and a write from a page there must come from that address.
 A link to a Dispatch page written on either address opens on the address the reader is on.

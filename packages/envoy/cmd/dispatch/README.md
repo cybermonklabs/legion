@@ -170,6 +170,7 @@ A request whose `Host` is its host, compared without regard to case, is answered
 its sign-in comes back to `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`, which the sign-in client must list too, and a browser write carrying a session cookie passes the origin check only with that `Origin`, so a page on one origin cannot write as a person signed in on the other.
 Every other request is answered as `DISPATCH_SERVER_URL`'s.
 Its spelling is judged by the rule `envoy-infra:gcp:Dispatch` judges its `outsideOrigin` input by (`internal/weborigin`), and it must be `https` (`http` only with `DISPATCH_TEST_HOOKS=1`) on a host other than `DISPATCH_SERVER_URL`'s, which must be set;
+under Google sign-in its host must also be one Google takes in an OAuth redirect URI, a DNS name whose top-level domain is on the public suffix list and no IP address, by the rule the component holds its `outsideOrigin` to with sign-in on (`weborigin.GoogleRedirectHost`);
 a value that breaks any of these refuses startup.
 A dashboard URL of either origin is read as a reference, by the server and by `rebuild-refs`, so a link written on one origin opens on the other.
 

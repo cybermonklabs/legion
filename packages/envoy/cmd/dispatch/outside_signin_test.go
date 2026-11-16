@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -530,6 +531,58 @@ func TestOutsideSignInOriginRuleIsTheComponents(t *testing.T) {
 		case bootErr != nil || boot.OutsideOrigin != parsed.String():
 			t.Errorf("DISPATCH_OUTSIDE_ORIGIN=%q: boot %q, %v; want the rule's %q", raw, boot.OutsideOrigin, bootErr, parsed.String())
 		}
+	}
+}
+
+// googleHostRows are hosts of each kind weborigin.GoogleRedirectHost judges: names whose top-level
+// domain is in the public suffix list's ICANN section (one listed only as a wildcard rule, one
+// internationalised, one under a private-section suffix), and an IP address, a single label and
+// top-level domains off the list, the reserved ones this package's other tests use among them.
+var googleHostRows = []string{
+	"dispatch-outside.example.com",
+	"outside.np",
+	"outside.xn--p1ai",
+	"dispatch.tail12345.ts.net",
+	"10.0.0.1",
+	"single",
+	"outside.corp",
+	"outside.test",
+	"outside.example",
+}
+
+// Under Google sign-in, boot judges DISPATCH_OUTSIDE_ORIGIN's host by the component's own rule for
+// a host Google takes in an OAuth redirect URI, not a copy: it refuses exactly the hosts
+// weborigin.GoogleRedirectHost refuses, with that rule's reason under the setting's name, and
+// takes the rest. The dev OIDC issuer the browser suite puts in Google's place has no such rule,
+// so under it boot takes a host Google would refuse.
+func TestOutsideSignInOriginHostRuleIsTheComponents(t *testing.T) {
+	google := map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com", "DISPATCH_SIGNIN_OUTSIDE": "1"}
+	refused := 0
+	for _, host := range googleHostRows {
+		env := maps.Clone(google)
+		env["DISPATCH_OUTSIDE_ORIGIN"] = "https://" + host
+		ruleErr := weborigin.GoogleRedirectHost(host)
+		boot, bootErr := resolveBootConfig(envGetter(signInEnvironment(env)))
+		switch {
+		case ruleErr != nil:
+			refused++
+			if bootErr == nil || bootErr.Error() != "DISPATCH_OUTSIDE_ORIGIN's "+ruleErr.Error() {
+				t.Errorf("DISPATCH_OUTSIDE_ORIGIN=https://%s under Google sign-in: boot answered %v, want the rule's refusal %q under the setting's name", host, bootErr, ruleErr)
+			}
+		case bootErr != nil || boot.OutsideOrigin != "https://"+host:
+			t.Errorf("DISPATCH_OUTSIDE_ORIGIN=https://%s under Google sign-in: boot %q, %v; want it taken", host, boot.OutsideOrigin, bootErr)
+		}
+	}
+	if refused == 0 || refused == len(googleHostRows) {
+		t.Fatalf("the rule refused %d of %d hosts, so the rows do not hold both a host it takes and one it refuses", refused, len(googleHostRows))
+	}
+	harness := maps.Clone(google)
+	maps.Copy(harness, map[string]string{
+		"DISPATCH_SIGNIN_ISSUER": "http://127.0.0.1:9", "DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER": "1",
+		"DISPATCH_OUTSIDE_ORIGIN": "http://localhost:5199",
+	})
+	if boot, err := resolveBootConfig(envGetter(signInEnvironment(harness))); err != nil || boot.OutsideOrigin != "http://localhost:5199" {
+		t.Errorf("DISPATCH_OUTSIDE_ORIGIN=http://localhost:5199 under the dev OIDC issuer: boot %q, %v; want it taken", boot.OutsideOrigin, err)
 	}
 }
 
