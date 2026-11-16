@@ -713,6 +713,71 @@ func TestGuestNamesNoProcessThatStartedAfterTheFirstOfTwoRises(t *testing.T) {
 	}
 }
 
+// Three rises inside one wait are three kills, and each is named from the reads before the first.
+// The tester's node, python3 and cc1 run before the burst. The first rise kills node, which stays
+// in /proc. The reviewer's rg starts and python3 grows past every other command; the second rise
+// kills python3, which stays in /proc too. The architect's make starts and cc1 grows past every
+// other command; the third rise kills cc1, which stays as well. node leaves, and rg and make exit
+// by themselves. Each read above python3's and cc1's reads before the first rise, but both started
+// after it, so neither is the victim of any kill: the watch names node, python3 and cc1, each to
+// the tester, and tells the reviewer and the architect nothing.
+func TestGuestNamesNoProcessThatStartedAfterTheFirstOfThreeRises(t *testing.T) {
+	const node, python, cc1, rg, mk = 880, 881, 882, 883, 884
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(command(node, 8800, "node", 1400, 2*gib), command(python, 8810, "python3", 1340, 100*mib), command(cc1, 8820, "cc1", 1330, 80*mib))
+	classes[node], classes[python], classes[cc1] = Class{Role: "tester"}, Class{Role: "tester"}, Class{Role: "tester"}
+	classes[rg], classes[mk] = Class{Role: "reviewer"}, Class{Role: "architect"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	// The kernel kills node, which stays in /proc.
+	cgroup.setKills(1)
+	h.tick()
+	// rg starts during the wait, and python3 grows to 3 GiB.
+	pod.addGuest(guestProcess{fakeProcess: fakeProcess{pid: rg, ppid: 1, start: 8830, args: []string{"rg"}, resident: 200 * mib}, score: 1360})
+	grownPython := command(python, 8810, "python3", 1700, 3*gib)
+	grownPython.adj = raisedScore
+	pod.addGuest(grownPython)
+	h.tick()
+	// The kernel kills python3, which stays in /proc.
+	cgroup.setKills(2)
+	h.tick()
+	// make starts during the wait, and cc1 grows to 3 GiB.
+	pod.addGuest(guestProcess{fakeProcess: fakeProcess{pid: mk, ppid: 1, start: 8840, args: []string{"make"}, resident: 150 * mib}, score: 1350})
+	grownCC1 := command(cc1, 8820, "cc1", 1700, 3*gib)
+	grownCC1.adj = raisedScore
+	pod.addGuest(grownCC1)
+	h.tick()
+	// The kernel kills cc1, which stays in /proc.
+	cgroup.setKills(3)
+	h.tick()
+	// node leaves, and rg and make exit by themselves.
+	pod.remove(node)
+	pod.remove(rg)
+	pod.remove(mk)
+	h.tick()
+	for _, kill := range h.reported() {
+		if kill.PID == rg || kill.PID == mk {
+			t.Fatalf("the sink took %+v: the watch named %s (%d), which started after the first rise and held less than the process the kernel killed at its own, and told the %s; the log:\n%s",
+				kill, kill.Executable, kill.PID, kill.Role, h.logged())
+		}
+	}
+	pod.remove(python)
+	pod.remove(cc1)
+	h.tick()
+	h.tickAfter(guestKillWait)
+	kills := h.reported()
+	if len(kills) != 3 || kills[0].PID != node || kills[0].Role != "tester" || kills[1].PID != python || kills[1].Role != "tester" ||
+		kills[2].PID != cc1 || kills[2].Role != "tester" {
+		t.Fatalf("the sink took %+v, want node (%d), python3 (%d) then cc1 (%d), each the tester's; the log:\n%s", kills, node, python, cc1, h.logged())
+	}
+	if unnamed := h.lines("killed unnamed"); len(unnamed) != 0 {
+		t.Fatalf("the watch logged %q, want no unnamed kill", unnamed)
+	}
+}
+
 // A process of a role that the classifier protects, one of those that run the role's session
 // (the agent here, which Oh My Pi's in-process shell can grow past every command), that the kernel
 // killed has the guard's own line as every kill has, and one Kill of its role with the kernel's

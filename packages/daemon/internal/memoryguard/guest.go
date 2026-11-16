@@ -38,11 +38,11 @@ import (
 // launcher. So each scan keeps every process the scan read, by pid and start time, with its
 // resident size (stat's rss) and its oom_score, and reads the counter after the scan. When the
 // counter rises by n, the killed are the processes the watch held by the scan that saw the rise
-// (the latest rise's, while rises add up) that a scan no longer holds (exited, a zombie, or a pid
-// another process took), ranked by their last oom_score before the rise, then their resident
+// (the first rise's, while rises add up) that a scan no longer holds (exited, a zombie, or a pid
+// another process took), ranked by their last oom_score before that rise, then their resident
 // size, highest first; the first n are named (attribute). A process the watch first held at a
-// later scan was not among the processes the rise's scan read, so it is neither named nor waited
-// for: a command that starts during the wait and exits by itself is no kill. A process the kernel
+// later scan was not among the processes that scan read, so it is neither named nor waited for:
+// a command that starts during the wait and exits by itself is no kill. A process the kernel
 // killed may still run while it frees its memory, so a rise waits, up to guestKillWait, while a
 // process ranked above the n-th gone one still runs; at the wait's end the n highest gone ones are
 // named, and a rise beyond them has one unnamed line. Each killed process has the guard's own
@@ -95,10 +95,11 @@ type Guest struct {
 	// scans counts the scans that read the processes, by which snapshot marks what a scan held
 	// and the scan that first held each process.
 	scans uint64
-	// pending is the kills of the counter's rises that no process has been named for yet, which
-	// wait until deadline; riseAt and riseMemory are the time and the pod's memory at the scan
-	// that saw the first of them, and riseScan is the scan that saw the latest, after which a
-	// process first held is taken for none of them (attribute).
+	// pending is the kills of the counter's rises that no process has been named for yet, a burst
+	// from the rise that found none pending, which wait until deadline, guestKillWait after the
+	// latest rise; riseAt, riseMemory and riseScan are the time, the pod's memory and the scan at
+	// the first rise of the burst, after whose scan a process first held is taken for none of
+	// them (attribute).
 	pending    uint64
 	deadline   time.Time
 	riseAt     time.Time
@@ -379,9 +380,12 @@ func (g *Guest) score(t *Table, classes map[int]Class) {
 	}
 }
 
-// count reads the kill counter, and a rise starts the wait for the processes it killed, or adds
-// to the one that waits, as of this scan (riseScan). A read that fails sees no rise; a counter
-// below the last reading, a cgroup made anew, is the next rise's base.
+// count reads the kill counter. A rise that finds no kill pending starts a burst, the wait for
+// the processes it killed, as of this scan (riseAt, riseMemory, riseScan); a rise while kills are
+// pending adds its own to the burst, which keeps the first rise's scan, so that a process first
+// held after it is named for none of them, and moves the wait's end to guestKillWait after it. A
+// read that fails sees no rise; a counter below the last reading, a cgroup made anew, is the next
+// rise's base.
 func (g *Guest) count(now time.Time) {
 	n, err := g.cgroup.readKills()
 	if err != nil || n == g.kills {
@@ -395,10 +399,9 @@ func (g *Guest) count(now time.Time) {
 	g.kills = n
 	g.window.oomKills += rise
 	if g.pending == 0 {
-		g.riseAt, g.riseMemory = now, g.memoryNow()
+		g.riseAt, g.riseMemory, g.riseScan = now, g.memoryNow(), g.scans
 	}
 	g.pending += rise
-	g.riseScan = g.scans
 	g.deadline = now.Add(guestKillWait)
 }
 
@@ -453,10 +456,11 @@ func (g *Guest) read(w *watched) {
 // highest last oom_score first, then largest resident size, it takes each gone one until it has
 // one for each kill. A process that still runs, met before that, may be one the kernel killed
 // that has not exited yet, so the walk waits for the next scan, until the wait passes; then it
-// passes over each one that runs. A process first held after the scan that saw the latest rise
-// (riseScan) is passed over whether it runs or not: it was not among the processes that scan read,
-// so a command that started during the wait is not named for a kill, and does not hold the walk.
-// The kills left over have one unnamed line.
+// passes over each one that runs. A process first held after the scan that saw the first rise of
+// the burst (riseScan) is passed over whether it runs or not: it was not among the processes that
+// scan read, and every kill of the burst is ranked by the reads before that rise (snapshot), so a
+// command that started during the wait, after any rise of the burst, is not named for a kill, and
+// does not hold the walk. The kills left over have one unnamed line.
 func (g *Guest) attribute(now time.Time) {
 	final := !now.Before(g.deadline)
 	ranked := slices.SortedFunc(maps.Values(g.known), func(a, b *watched) int {

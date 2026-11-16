@@ -3465,7 +3465,9 @@ So while a process ranked above the n-th gone one still runs, the watch waits fo
 When the wait ends, it names the n highest gone ones, and writes one `killed unnamed` line for the kills it found no process for.
 A process that the watch first read at a scan after the one that saw the rise is no kill of that rise: the watch never names it and never waits for it.
 So the watch does not name a command that starts during the wait and exits by itself.
-Where the counter rises again during a wait, that scan is the one that saw the latest rise.
+Where the counter rises again during a wait, the new kills join the ones that wait, and the burst keeps the first rise's bounds:
+each process is still ranked by its reads before the first rise, and a process first read after the first rise is named for none of the burst's kills.
+The wait ends 2 s after the burst's last rise.
 
 The kernel can also stop a process that the classifier protects ("The score", above), and the watch names it as it names a command.
 Each process it names has the guard's own `ended` line, so a reader finds a process stopped for memory by the same line in either sandbox:
