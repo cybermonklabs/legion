@@ -366,22 +366,30 @@ func (s *Server) detach() *natsserver.Server {
 // is shut down at once and returned as an error rather than failing the test here, so a caller may
 // run it on a goroutine of its own and fail on the test's goroutine (testing allows FailNow there
 // only).
+//
+// Either way it returns only once the lame duck's own goroutine has returned, not only once
+// WaitForShutdown has: nats-server v2.15.1's lameDuckMode shuts JetStream down, writing every
+// stream's state to the store, before it calls Shutdown (server/server.go:4516, 4534 and 4608),
+// and a Shutdown called while another runs returns at once (2620). The Shutdown this sends at the
+// deadline can therefore finish, and close what WaitForShutdown waits on, while the lame duck still
+// writes the store, and the cleanup start registers would then remove that store under it.
 func (s *Server) LameDuck() error {
 	srv := s.detach()
 	if srv == nil {
 		return nil
 	}
-	go srv.LameDuckShutdown()
-	down := make(chan struct{})
+	ended := make(chan struct{})
 	go func() {
+		srv.LameDuckShutdown()
 		srv.WaitForShutdown()
-		close(down)
+		close(ended)
 	}()
 	select {
-	case <-down:
+	case <-ended:
 		return nil
 	case <-time.After(connectTimeout):
 		srv.Shutdown()
+		<-ended
 		return fmt.Errorf("the NATS server did not finish its lame duck within %s: %s", connectTimeout, s.log.String())
 	}
 }
