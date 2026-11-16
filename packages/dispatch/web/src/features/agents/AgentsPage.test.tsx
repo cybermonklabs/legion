@@ -1393,7 +1393,10 @@ test("an upload that lands after an Agents row moves joins the message only back
       } as never)
     );
     // Settled once the composer no longer says it is uploading, on its status line or on Send.
-    await waitFor(() => expect(within(planner).queryAllByText("Uploading file…")).toEqual([]));
+    // Counted, not compared as elements: the first check runs before the upload lands and fails,
+    // and a failed `toEqual` of DOM elements prints each one's whole object graph - the document
+    // and React's fibers - which filled the pod's memory in seconds and never finished.
+    await waitFor(() => expect(within(planner).queryAllByText("Uploading file…").length).toBe(0));
     expect(field.value).toBe("");
     expect(
       within(planner).getByText(
