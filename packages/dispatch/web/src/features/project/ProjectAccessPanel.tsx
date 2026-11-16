@@ -13,6 +13,9 @@ import {
   inputClasses,
   linkHoverText,
   linkText,
+  switchOffBg,
+  switchOnBg,
+  switchThumbBg,
   textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
@@ -22,10 +25,11 @@ import {
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** One change of a project's access, as the owner presses it: the project given to another
- *  owner, one person or group named on its access list or taken off it, or the Slack channels
- *  its credentials may post to. */
+ *  owner, made public or private, one person or group named on its access list or taken off it,
+ *  or the Slack channels its credentials may post to. */
 type AccessChange =
   | { readonly kind: "owner"; readonly owner: string }
+  | { readonly kind: "visibility"; readonly visibility: "public" | "private" }
   | { readonly kind: "add-person" | "remove-person"; readonly email: string }
   | { readonly kind: "add-group" | "remove-group"; readonly name: string }
   | { readonly kind: "slack-channels"; readonly channels: readonly string[] };
@@ -33,12 +37,14 @@ type AccessChange =
 type AccessSave = Mutation<ProjectAccess | null, Error, AccessChange>;
 
 /** Which part of the panel a change belongs to, and so where its refusal is shown. */
-type AccessPart = "owner" | "people" | "groups" | "slack";
+type AccessPart = "owner" | "visibility" | "people" | "groups" | "slack";
 
 function partOf(change: AccessChange): AccessPart {
   switch (change.kind) {
     case "owner":
       return "owner";
+    case "visibility":
+      return "visibility";
     case "add-person":
     case "remove-person":
       return "people";
@@ -58,6 +64,8 @@ function writeChange(
   switch (change.kind) {
     case "owner":
       return api.patchProjectAccess(project, { owner: change.owner }, bounds);
+    case "visibility":
+      return api.patchProjectAccess(project, { visibility: change.visibility }, bounds);
     case "add-person":
       return api.putProjectAccessPerson(project, change.email, bounds);
     case "remove-person":
@@ -76,6 +84,8 @@ function changeLabel(project: string, change: AccessChange): string {
   switch (change.kind) {
     case "owner":
       return `Give ${project} to ${change.owner}`;
+    case "visibility":
+      return `Make ${project} ${change.visibility}`;
     case "add-person":
       return `Add ${change.email} to ${project}`;
     case "remove-person":
@@ -94,6 +104,8 @@ function refusalFallback(project: string, change: AccessChange): string {
   switch (change.kind) {
     case "owner":
       return `Couldn't give ${project} to ${change.owner}.`;
+    case "visibility":
+      return `Couldn't make ${project} ${change.visibility}.`;
     case "add-person":
       return `Couldn't add ${change.email}.`;
     case "remove-person":
@@ -198,11 +210,12 @@ const rowClass = `flex min-h-11 items-center justify-between gap-3 border-b px-4
 
 /**
  * A project's Access tab: its one owner, its visibility, and the people and groups its access
- * list names, with the owner's controls to name and take off each and to give the project to
- * another person. Only the owner changes any of it, so every control is disabled for anyone else,
- * with the reason as its title and on the page above them; whether the reader is the owner is
- * `/auth/whoami`'s `login` against the answer's `owner`, read from the identity the shell already
- * holds. Visibility is shown and not offered: a project cannot be made private in this release.
+ * list names, with the owner's controls to name and take off each, to make the project public or
+ * private, and to give it to another person. Only the owner changes any of it, so every control
+ * is disabled for anyone else, with the reason as its title and on the page above them; whether
+ * the reader is the owner is `/auth/whoami`'s `login` against the answer's `owner`, read from the
+ * identity the shell already holds. A deployment that cannot make a project private refuses the
+ * switch (409 PRIVATE_PROJECTS_OFF or PRIVATE_PROJECTS_UNAVAILABLE), and the switch says why.
  */
 export function ProjectAccessPanel({ project }: { project: string }): ReactNode {
   const ids = useId();
@@ -256,6 +269,7 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
   const { owner } = access.data;
   const people = access.data.people ?? [];
   const listedGroups = access.data.groups ?? [];
+  const isPrivate = access.data.visibility === "private";
   const channelsText = (access.data.slack_channels ?? []).join(" ");
   const refusal =
     viewer === undefined
@@ -377,16 +391,42 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
         <h2 className={headingClass} id={`${ids}-visibility`}>
           Visibility
         </h2>
-        <p
-          className={`mt-1 text-sm font-medium ${textPrimaryOnCanvas}`}
-          data-testid="access-visibility"
-        >
-          {access.data.visibility === "private" ? "Private" : "Public"}
-        </p>
+        <div className="mt-1 flex items-center gap-3">
+          {/* The switch follows Dispatch's answer, not the press: it reads the stored visibility,
+              and is busy while a change of it is out. A refusal, the reader's or Dispatch's,
+              leaves it where it was. */}
+          <button
+            aria-checked={isPrivate}
+            aria-describedby={refusal === null ? undefined : noteId}
+            aria-disabled={refusal === null ? undefined : true}
+            aria-label="Private"
+            className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50 ${isPrivate ? switchOnBg : switchOffBg}`}
+            disabled={pendingOf((change) => change.kind === "visibility")}
+            onClick={() => {
+              if (refusal !== null) return;
+              write.save({ kind: "visibility", visibility: isPrivate ? "public" : "private" });
+            }}
+            role="switch"
+            title={refusal ?? undefined}
+            type="button"
+          >
+            <span
+              className={`block h-4 w-4 rounded-full shadow-lg transition-transform ${switchThumbBg} ${isPrivate ? "translate-x-4.5" : "translate-x-0.5"}`}
+            />
+          </button>
+          <p
+            className={`text-sm font-medium ${textPrimaryOnCanvas}`}
+            data-testid="access-visibility"
+          >
+            {isPrivate ? "Private" : "Public"}
+          </p>
+        </div>
         <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-          Every full member can see a public project. A restricted member, who signs in from outside
-          the company, sees it only when the people below name them directly.
+          Every full member can see a public project. A private project is seen only by its owner
+          and the people and groups below. A restricted member, who signs in from outside the
+          company, sees either only when the people below name them directly.
         </p>
+        {refusalIn("visibility")}
       </section>
 
       <section aria-labelledby={`${ids}-slack`}>

@@ -89,9 +89,12 @@ test("shows the owner, the visibility, and the people and groups the access list
   try {
     expect(await screen.findByRole("heading", { name: "Owner" })).toBeInTheDocument();
     expect(screen.getByTestId("access-owner")).toHaveTextContent("alice (you)");
-    // Visibility is read-only in this release: it says what it is and offers no switch.
+    // The switch reads the visibility the answer holds.
     expect(screen.getByTestId("access-visibility")).toHaveTextContent("Public");
-    expect(screen.queryByRole("button", { name: /private/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Private" })).toHaveAttribute(
+      "aria-checked",
+      "false"
+    );
     expect(named("People")).toEqual(["carol@example.com"]);
     expect(named("Groups")).toEqual(["crew"]);
     // The picker offers the groups the list does not name already.
@@ -377,6 +380,88 @@ test("a refused Slack channel shows its reason beside the field, and the draft s
     await user.click(screen.getByRole("button", { name: "Save channels" }));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("#general"));
     expect(field.value).toBe("#general");
+  } finally {
+    panel.restore();
+    patch.mockRestore();
+  }
+});
+
+// The owner sets the project private with the switch, and the switch and the label beside it
+// follow Dispatch's answer rather than the press.
+test("the owner makes the project private with the switch, and the switch reads the answer", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel();
+  const patch = spyOn(api, "patchProjectAccess").mockImplementation(
+    panel.lands(access({ visibility: "private" }))
+  );
+  try {
+    const toggle = await screen.findByRole("switch", { name: "Private" });
+    await user.click(toggle);
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith("CORE", { visibility: "private" }, keyedAttempt)
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Private" })).toHaveAttribute(
+        "aria-checked",
+        "true"
+      )
+    );
+    expect(screen.getByTestId("access-visibility")).toHaveTextContent("Private");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    panel.restore();
+    patch.mockRestore();
+  }
+});
+
+// A deployment that cannot make a project private refuses the switch: with the setting off (409
+// PRIVATE_PROJECTS_OFF), or with the hub refusing the private-projects record (409
+// PRIVATE_PROJECTS_UNAVAILABLE). The switch shows Dispatch's own reason beside it, and stays
+// public.
+for (const [code, reason] of [
+  [
+    "PRIVATE_PROJECTS_OFF",
+    "this deployment cannot make a project private yet: nothing was changed",
+  ],
+  [
+    "PRIVATE_PROJECTS_UNAVAILABLE",
+    "the hub refused the private-projects record, so CORE stays public: nothing was changed",
+  ],
+] as const) {
+  test(`a switch refused ${code} shows Dispatch's reason beside it and stays public`, async () => {
+    const user = userEvent.setup();
+    const panel = renderPanel();
+    const patch = spyOn(api, "patchProjectAccess").mockRejectedValue(
+      new ApiError(409, { code, error: reason })
+    );
+    try {
+      await user.click(await screen.findByRole("switch", { name: "Private" }));
+      const alert = await within(screen.getByRole("region", { name: "Visibility" })).findByRole(
+        "alert"
+      );
+      expect(alert).toHaveTextContent(reason);
+      expect(screen.getByRole("switch", { name: "Private" })).toHaveAttribute(
+        "aria-checked",
+        "false"
+      );
+      expect(screen.getByTestId("access-visibility")).toHaveTextContent("Public");
+    } finally {
+      panel.restore();
+      patch.mockRestore();
+    }
+  });
+}
+
+test("a person who is not the owner cannot press the switch", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ login: "bob" });
+  const patch = spyOn(api, "patchProjectAccess");
+  try {
+    const toggle = await screen.findByRole("switch", { name: "Private" });
+    expect(toggle).toHaveAttribute("aria-disabled", "true");
+    expect(toggle).toHaveAttribute("title", notOwner);
+    await user.click(toggle);
+    expect(patch).not.toHaveBeenCalled();
   } finally {
     panel.restore();
     patch.mockRestore();
