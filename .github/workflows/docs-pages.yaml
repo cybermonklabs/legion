@@ -188,6 +188,7 @@ on:
       - 'packages/envoy/internal/dispatch/texttreefill/*'
       - 'packages/envoy/internal/dispatch/texttrees/*'
       - 'packages/envoy/internal/envconf/*'
+      - 'packages/envoy/internal/fold/*'
       - 'packages/envoy/internal/githubappjwt/*'
       - 'packages/envoy/internal/googleidentity/*'
       - 'packages/envoy/internal/id/*'

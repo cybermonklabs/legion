@@ -20,6 +20,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // RequestTyp is the JWS "typ" header for a credential-request object. It is disjoint from
@@ -62,11 +63,12 @@ func ValidID(id string) bool {
 	return idPattern.MatchString(id)
 }
 
-// CanonicalLogin lowercases and trims the name Dispatch signs a person in with, their email (a
-// record created before people were named by email keeps the GitHub login it was decided under).
-// Every login comparison in the module goes through this form on both sides.
+// CanonicalLogin trims the name Dispatch signs a person in with, their email (a record created
+// before people were named by email keeps the GitHub login it was decided under), and lowers its
+// ASCII letters (fold.ASCII) and nothing else. Every login comparison in the module goes through
+// this form on both sides.
 func CanonicalLogin(login string) string {
-	return strings.ToLower(strings.TrimSpace(login))
+	return fold.ASCII(strings.TrimSpace(login))
 }
 
 // HumanActor is the audit actor of a change a person made: "human:" and their canonical login,

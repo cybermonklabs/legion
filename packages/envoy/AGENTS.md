@@ -2587,7 +2587,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   done = `status='done'`), `active_at` (the subtree's newest `updated_at`), and its own `external_links`, still ordered by key.
 
 - Every issue has a nullable `assignee`: the **lowercase** email of the person every ask on it waits on until somebody hands that ask to another person, or, while it holds nobody, its project's default assignee (`issues.assignee`, migration `0034`, indexed on open issues).
-  Both identity implementations name a person by lowercase email, so `model.CanonicalLogin` (`strings.ToLower(strings.TrimSpace(login))`) is the stored form and plain `=` compares it;
+  Both identity implementations name a person by lowercase email, so `model.CanonicalLogin` (`fold.ASCII(strings.TrimSpace(login))`, which lowers ASCII letters alone, so no Unicode letter such as U+212A KELVIN SIGN is folded onto another person's `k`) is the stored form and plain `=` compares it;
   the SPA lowercases the `/auth/whoami` viewer once and compares exact.
   `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` accept `assignee` (the PATCH's `json.RawMessage` tri-state:
   absent leaves it, `null` clears, a string is canonicalised and must name a row of `people` (migration `0068`:
@@ -2972,7 +2972,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A `comment.created` payload that replies to an ask carries `ask_state` (the ask's state at posting time) beside `ask_question`, so an agent can tell a clarification request on its open ask from discussion after the answer.
 
 - `GET /api/v1/inbox?assignee=me|unassigned|<email>` (one value, combining with `project`) narrows the inbox, which needs the `person` scope, by the person each ask waits on (`inboxAssigneeFilter`, `api/inbox.go`):
-  `me` is the caller's lowercase email; an `<email>` is canonicalised (`strings.ToLower(strings.TrimSpace(...))`) before it is looked up in `people`, so a shared `?assignee=Alice@example.com` link never 400s, while an email nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`;
+  `me` is the caller's lowercase email; an `<email>` is canonicalised (`model.CanonicalLogin`) before it is looked up in `people`, so a shared `?assignee=Alice@example.com` link never 400s, while an email nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`;
   `me` / `<email>` keep the asks whose `coalesce(a.asked_of, i.assignee, p.default_assignee)` is that login — the asks handed to them, the asks on the issues assigned to them that nobody has handed on, and, for the person a project defaults to, the asks nobody has handed on that project's issues nobody holds and on its documents (`askedOfPersonExpression` in `api/ask_rows.go`, the one expression this filter, `listOpenAsks` and the Replies read's exclusion all share); `unassigned` keeps the asks the expression names nobody for, which every project naming a default assignee leaves none of; no value returns everything.
   This is the contract for shareable links and humans' scripts: the SPA asks for no assignee at all.
   It fetches the unfiltered inbox once (the one `["inbox"]` query every surface shares) and splits it client-side by the reader's own `?assignee=` filter, whose values are repeated on the page's URL and are a lowercase login or the literal `unassigned` (`features/refs/routes.ts`, `inAssigneeFilter` in `features/inbox/sections.ts`):
@@ -5376,7 +5376,7 @@ a comma that leaves an entry empty (a leading or trailing comma, or two commas w
 An unlisted subject gets the same 401 as every other refused credential, and its warning carries the class `not_listed` and the subject as `account`.
 The Google pair is for a caller on Google's platform that holds no Kubernetes token, such as the alert sink on Cloud Run.
 The listener admits a token that Google (`https://accounts.google.com`, `oidc.GoogleIssuer`) signed for `ENVOY_OIDC_GOOGLE_AUDIENCE`
-and that names, in its `email` claim, an account `ENVOY_OIDC_GOOGLE_ACCOUNTS` lists (addresses separated by commas or white space, compared in ASCII lower case, so no Unicode fold makes another address a listed one) whose address Google verified,
+and that names, in its `email` claim, an account `ENVOY_OIDC_GOOGLE_ACCOUNTS` lists (addresses separated by commas or white space, both sides lowered in ASCII alone by `fold.ASCII`, so no Unicode fold makes another address a listed one) whose address Google verified,
 so the caller asks its metadata server for the token with `format=full`, the form that carries the address (`oidc.Verifier.VerifyGoogleIdentity`).
 Every claim a caller is admitted on, the address and `email_verified` among them, is read from the payload the verified signature covers (`oidc.Verifier.VerifyClaims`, `IDToken.Claims`), never from the token's text;
 a token in any serialization but the compact one (the JWS JSON form go-jose also verifies, whose text can carry an unsigned claim set beside the signed members) is refused as `malformed` before its signature is checked; white space in a compact token is removed first, as go-jose removed it, so such a token verifies as it always did.

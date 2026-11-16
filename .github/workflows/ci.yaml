@@ -458,6 +458,7 @@ jobs:
               # text's testdata too: the daemon's race-tested packages compile it, and a compiled
               # package's testdata is read by the job that compiles it.
               - 'packages/envoy/internal/dispatch/text/**'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -550,6 +551,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/texttreefill/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -650,6 +652,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
@@ -678,6 +681,7 @@ jobs:
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dedupe/*'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/ghrename/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -720,6 +724,7 @@ jobs:
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -1239,6 +1244,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
@@ -1642,6 +1648,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/text/testdata/**'
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/explaintest/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               # room_recovery_test.go reads the goroutine dump through it.
               - 'packages/envoy/internal/goroutinetest/*'
@@ -1849,6 +1856,7 @@ jobs:
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/logging/*'
