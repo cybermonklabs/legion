@@ -100,6 +100,43 @@ func TestAnUnknownKeyInTheConfigFileIsAUsageError(t *testing.T) {
 	}
 }
 
+// TestAConfigFileOthersCanWriteIsRefused: the file names the broker this machine proves its
+// identity to and the identity it proves, so a file its group or others can write is a usage error
+// naming the file and the fix, and nothing in it is read. A file others can only read is taken.
+func TestAConfigFileOthersCanWriteIsRefused(t *testing.T) {
+	for name, mode := range map[string]os.FileMode{"its group can write it": 0o620, "anyone can write it": 0o602} {
+		t.Run(name, func(t *testing.T) {
+			path := writeClientConfig(t, "AGENT_SECRETS_URL=https://secrets.example\n")
+			if err := os.Chmod(path, mode); err != nil {
+				t.Fatal(err)
+			}
+			unsetenv(t, "AGENT_SECRETS_URL")
+			var stdout, stderr bytes.Buffer
+			if code := run([]string{"identity"}, &stdout, &stderr); code != exitUsageError {
+				t.Fatalf("exit %d, want %d (stderr %q)", code, exitUsageError, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), path) || !strings.Contains(stderr.String(), "chmod go-w") {
+				t.Fatalf("stderr %q; want it to name %s and chmod go-w", stderr.String(), path)
+			}
+			if clientConfig != nil {
+				t.Fatalf("the settings %v were read from a file others can write", clientConfig)
+			}
+		})
+	}
+
+	path := writeClientConfig(t, "AGENT_SECRETS_URL=https://secrets.example\n")
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unsetenv(t, "AGENT_SECRETS_URL")
+	if err := loadClientConfig(); err != nil {
+		t.Fatalf("a file others can only read: %v", err)
+	}
+	if got := brokerBaseURL(); got != "https://secrets.example" {
+		t.Fatalf("brokerBaseURL = %q; want the file's", got)
+	}
+}
+
 func TestNoConfigFileIsNoError(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("AGENT_SECRETS_URL", "https://secrets.example")

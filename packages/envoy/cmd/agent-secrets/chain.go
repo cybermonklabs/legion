@@ -28,7 +28,6 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
-	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -113,11 +112,16 @@ func noBrokerIdentity(reasons []string) error {
 }
 
 // keyDirSource is a launcher's key and enrollment in dir. Its session is the launcher's to make
-// again, so its signer registers nothing.
+// again, so its signer registers nothing. A fresh enrollment.pending with no key.pem beside it is
+// a launcher still enrolling this process, which is present: the chain stops there rather than
+// sign as a weaker identity while the launcher is slow (buildSigner has already waited for it).
 func keyDirSource(dir string) signerSource {
 	build := func(context.Context) (string, Signer, error) {
 		keyPath := filepath.Join(dir, keyFile)
 		if !exists(keyPath) {
+			if freshMarker(dir) {
+				return "", nil, fmt.Errorf("%s is there and no key.pem yet: the launcher that wrote it is still enrolling this process", filepath.Join(dir, pendingMarker))
+			}
 			return "", nil, absent("no key.pem in %s (AGENT_SECRETS_KEY_DIR; a launcher puts one there for a box or a pod)", dir)
 		}
 		key, err := loadKey(keyPath)
@@ -147,7 +151,7 @@ func keyDirSource(dir string) signerSource {
 // signInSource is the sign-in of the person this process acts for (signInSigner).
 func signInSource() signerSource {
 	noSignIn := func() error {
-		return absent("nobody has signed in on this machine with `%s` (%s)", brokerclient.SignInCommand, brokerclient.SignIns(os.Getenv).Dir)
+		return absent("nobody has signed in on this machine with `%s` (%s)", brokerclient.SignInCommand, brokerclient.SignIns(homeGetenv).Dir)
 	}
 	return signerSource{
 		name: "sign-in",
@@ -162,7 +166,7 @@ func signInSource() signerSource {
 			return signer.enrollmentID, signer, nil
 		},
 		describe: func(context.Context) (string, error) {
-			store := brokerclient.SignIns(os.Getenv)
+			store := brokerclient.SignIns(homeGetenv)
 			records, err := store.List()
 			if err != nil {
 				return "", err
@@ -184,13 +188,22 @@ func signInSource() signerSource {
 
 // helperSource is agent-secrets-helper, asked once whether the caller is inside a session it
 // registered (probeHelper). Its signer is built only once the helper said so: a socket alone
-// says nothing about the caller, since every process of the machine inherits it.
+// says nothing about the caller, since every process of the machine inherits it. A socket that is
+// absent where AGENT_SECRETS_HELPER_SOCK names it, or where the helper's unit is installed, is a
+// stopped helper (a clean stop removes the socket), as bare `identity` reads it: present but
+// broken, so a process in one of its sessions stops rather than act as the machine.
 func helperSource() signerSource {
 	find := func() (string, error) {
 		answer := probeHelper()
 		switch {
 		case !answer.there:
-			return "", absent("the helper socket %s is absent (AGENT_SECRETS_HELPER_SOCK; `agent-secrets register` starts a session the helper signs for)", answer.sock)
+			if _, named := helperSocket(); named {
+				return "", helperFailure(answer.sock, errors.New("the socket AGENT_SECRETS_HELPER_SOCK names is absent, so the helper is stopped; start it, or unset AGENT_SECRETS_HELPER_SOCK for a process in none of its sessions"), false)
+			}
+			if helperInstalled() {
+				return "", helperFailure(answer.sock, fmt.Errorf("the socket is absent and the helper is installed (%s), so the helper is stopped; start it: systemctl --user start %s", helper.UnitPath(homeGetenv), helper.UnitName), false)
+			}
+			return "", absent("the helper socket %s is absent and no helper is installed here (AGENT_SECRETS_HELPER_SOCK; `agent-secrets register` starts a session the helper signs for)", answer.sock)
 		case answer.err != nil:
 			return "", helperFailure(answer.sock, answer.err, false)
 		case answer.resp.OK, answer.resp.Code == helper.CodeNotEnrolled:
@@ -216,34 +229,19 @@ func helperSource() signerSource {
 
 // machineChainSource is the machine's own identity: the session the machine cache holds, read
 // with no network call whether or not AGENT_SECRETS_MACHINE_IDENTITY is set, else the identity
-// machineSource finds, traded and registered into the cache.
+// machineSource finds, traded and registered into the cache (registerMachine).
 func machineChainSource() signerSource {
 	return signerSource{
 		name: "machine",
 		build: func(ctx context.Context) (string, Signer, error) {
-			cached, err := readMachineCache()
+			signer, err := readMachineCache()
+			if err == nil && signer == nil {
+				signer, err = registerMachine(ctx, "")
+			}
 			if err != nil {
 				return "", nil, err
 			}
-			if cached != nil {
-				return cached.enrollmentID, cached, nil
-			}
-			identity, skipped, err := machineSource(ctx)
-			if err != nil {
-				return "", nil, err
-			}
-			if identity == nil {
-				return "", nil, absent("%s", joinSkipped(skipped))
-			}
-			key, err := proof.NewKey()
-			if err != nil {
-				return "", nil, err
-			}
-			id, err := registerMachineSession(ctx, identity, key)
-			if err != nil {
-				return "", nil, err
-			}
-			return id, &fileSigner{key: key, enrollmentID: id, register: machineReregister(key)}, nil
+			return signer.enrollmentID, signer, nil
 		},
 		describe: func(ctx context.Context) (string, error) {
 			cached, err := readMachineCache()
@@ -253,7 +251,7 @@ func machineChainSource() signerSource {
 			if cached != nil {
 				return "the cached enrollment in " + machineCacheDir(), nil
 			}
-			identity, skipped, err := machineSource(ctx)
+			identity, skipped, err := machineSource(ctx, false)
 			if err != nil {
 				return "", err
 			}
@@ -272,7 +270,13 @@ func machineChainSource() signerSource {
 // why each had nothing, where this machine has none: a broker that names no exchange audience
 // accepts no machine identity, and nothing is asked of the machine then. The use command, `agent-
 // secrets login` and a sign-in's renewal all take the machine from here.
-func machineSource(ctx context.Context) (brokerclient.Source, []brokerclient.Skipped, error) {
+//
+// Those settings are unauthenticated and choose the audience of the identity token this machine
+// mints and hands over, so they are read only from an https broker, or a loopback one
+// (requireTrustedBrokerURL), and a Google audience other than the first this machine read is
+// refused (holdGoogleAudience). keep records the audience read where none is recorded yet;
+// `identity --source` passes false and records nothing.
+func machineSource(ctx context.Context, keep bool) (brokerclient.Source, []brokerclient.Skipped, error) {
 	if strings.TrimSpace(clientGetenv(brokerclient.IdentityVar)) != "" {
 		identity, err := brokerclient.MachineIdentity(clientGetenv)
 		return identity, nil, err
@@ -280,6 +284,9 @@ func machineSource(ctx context.Context) (brokerclient.Source, []brokerclient.Ski
 	base := brokerBaseURL()
 	if base == "" {
 		return nil, []brokerclient.Skipped{{Source: "broker settings", Reason: brokerURLVar + " names no broker to read the exchange audiences from"}}, nil
+	}
+	if err := requireTrustedBrokerURL(base); err != nil {
+		return nil, nil, &settingError{err}
 	}
 	settings, err := newClient(base).Settings(ctx)
 	var refused *apiError
@@ -294,6 +301,11 @@ func machineSource(ctx context.Context) (brokerclient.Source, []brokerclient.Ski
 		return nil, []brokerclient.Skipped{{Source: "broker settings", Reason: fmt.Sprintf(
 			"the broker at %s names no exchange audience in GET /v1/settings (a broker from before it published them, or one that accepts no machine identity)",
 			redact.URL(base))}}, nil
+	}
+	if settings.GoogleExchangeAudience != "" {
+		if err := holdGoogleAudience(base, settings.GoogleExchangeAudience, keep); err != nil {
+			return nil, nil, err
+		}
 	}
 	return brokerclient.DetectMachineIdentity(ctx, brokerclient.ExchangeSettings{
 		Google: settings.GoogleExchangeAudience, Kubernetes: settings.KubernetesExchangeAudience,

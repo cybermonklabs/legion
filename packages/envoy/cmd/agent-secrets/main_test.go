@@ -1164,7 +1164,8 @@ func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
 
 // TestEnrollWaitGivesUpAtItsBound pins the wait's end: a marker nothing ever follows (a launcher
 // stuck without removing it) holds a call for AGENT_SECRETS_ENROLL_WAIT at most, and the call then
-// fails with the error it would have failed with at once.
+// fails naming the marker and the wait. A fresh marker is a launcher still enrolling, which is
+// present: the call stops there rather than go on to a later source of the chain.
 func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
@@ -1173,8 +1174,9 @@ func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	writePendingMarker(t, keyDir, 0)
 
 	exit, stderr, elapsed := runExecForm(t, binary, broker.URL, keyDir, "AGENT_SECRETS_ENROLL_WAIT=1s")
-	if exit == 0 || !strings.Contains(stderr, "no broker identity for this process") {
-		t.Fatalf("exit = %d, stderr = %q, want the no-identity failure", exit, stderr)
+	if exit != 1 || !strings.Contains(stderr, "enrollment.pending is there and no key.pem yet") || !strings.Contains(stderr, "(waited 1s while ") ||
+		strings.Contains(stderr, "no broker identity for this process") {
+		t.Fatalf("exit = %d, stderr = %q, want exit 1 naming the launcher's marker and the wait, and no later source", exit, stderr)
 	}
 	if elapsed < 900*time.Millisecond || elapsed > 5*time.Second {
 		t.Fatalf("gave up after %s, want about the 1s bound", elapsed)

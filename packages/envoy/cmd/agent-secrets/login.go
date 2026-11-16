@@ -68,7 +68,7 @@ func login(ctx context.Context, stdout, stderr io.Writer) error {
 		return fmt.Errorf("this machine is told of no sign-in client: set %s and %s to the device-flow client a person signs in with",
 			brokerclient.SignInClientIDVar, brokerclient.SignInClientSecretFileVar)
 	}
-	machine, skipped, err := machineSource(ctx)
+	machine, skipped, err := machineSource(ctx, true)
 	if err != nil {
 		return err
 	}
@@ -121,7 +121,7 @@ func login(ctx context.Context, stdout, stderr io.Writer) error {
 	if record.EnrollmentID, err = enrollUnderCredential(ctx, base, boxKey, thumbprint, token.CredentialID, signedIn.Person); err != nil {
 		return err
 	}
-	if err := brokerclient.SignIns(os.Getenv).Write(record); err != nil {
+	if err := brokerclient.SignIns(homeGetenv).Write(record); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "%s is signed in on this machine (enrollment %s)\n", record.Person, record.EnrollmentID)
@@ -211,7 +211,7 @@ func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord
 		return record, fmt.Errorf("%s signed in with another client than this machine now has (%s), so their sign-in cannot be renewed; run: %s",
 			record.Person, record.ClientID, brokerclient.SignInCommand)
 	}
-	machine, skipped, err := machineSource(ctx)
+	machine, skipped, err := machineSource(ctx, true)
 	if err != nil {
 		return record, err
 	}
@@ -239,5 +239,5 @@ func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord
 	if record.EnrollmentID, err = enrollUnderCredential(ctx, base, boxKey, record.Thumbprint, token.CredentialID, record.Person); err != nil {
 		return record, err
 	}
-	return record, brokerclient.SignIns(os.Getenv).Write(record)
+	return record, brokerclient.SignIns(homeGetenv).Write(record)
 }

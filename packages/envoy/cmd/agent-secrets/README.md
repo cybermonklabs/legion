@@ -108,21 +108,29 @@ this order, and needs no registered agent session:
 
 1. `key-dir`: the `key.pem` and `enrollment` a launcher put in `AGENT_SECRETS_KEY_DIR` (default
    `$XDG_RUNTIME_DIR/agent-secrets`), a box's or a pod's. Absent without `key.pem`; a `key.pem`
-   that does not parse, or one with no `enrollment`, stops the command.
+   that does not parse, one with no `enrollment`, or a fresh `enrollment.pending` still without
+   `key.pem` after `AGENT_SECRETS_ENROLL_WAIT` (a launcher still enrolling), stops the command.
 2. `sign-in`: a person's `agent-secrets login` on this machine. Absent when nobody signed in.
 3. `helper`: `agent-secrets-helper`, asked first whether the caller is in a session it registered.
-   Absent when there is no socket, or the helper answers `NOT_A_SESSION`, as it does for a process
-   that only inherited `AGENT_SECRETS_HELPER_SOCK`; a socket that does not answer, `NO_CREDENTIAL`
-   or any other refusal stops the command.
+   Absent when there is no socket and no helper is expected (`AGENT_SECRETS_HELPER_SOCK` unset, no
+   helper unit installed), or the helper answers `NOT_A_SESSION`, as it does for a process that
+   only inherited `AGENT_SECRETS_HELPER_SOCK`. A stopped helper (no socket where that variable
+   names one or the unit is installed), a socket that does not answer, `NO_CREDENTIAL` or any
+   other refusal stops the command.
 4. `machine`: the machine's own cloud identity, found with no setting from the exchange audiences
    the broker answers in `GET /v1/settings`: a projected token at
    `/var/run/legion/agent-secrets-token/token` minted for the Kubernetes audience, an
    `external_account` file `GOOGLE_APPLICATION_CREDENTIALS` names, or the Compute Engine metadata
    server (`AGENT_SECRETS_MACHINE_IDENTITY` forces one of `kubernetes`, `metadata` or `pool`
-   instead). The session it registers is kept in the machine cache,
-   `$XDG_STATE_HOME/agent-secrets/machine` (a 0700 directory, `key.pem` and `enrollment` each
-   0600), and signs every later command with no network call. A broker that names no exchange
-   audience is skipped with that reason; a broker that refuses the exchange stops the command.
+   instead). The settings are read only from an `https` broker, or an `http` one on loopback, and
+   the first Google audience they name is kept in the cache's `google-exchange-audience`: a broker
+   that later names another is refused before any token is minted for it. The session it
+   registers is kept in the machine cache, `$XDG_STATE_HOME/agent-secrets/machine` (a 0700
+   directory, `key.pem` and `enrollment` each 0600), and signs every later command with no
+   network call; each registration, the first and each one after the broker says the session is
+   not live, makes a key of its own, and a lock in the cache makes commands that find it empty at
+   once register one session between them. A broker that names no exchange audience is skipped
+   with that reason; a broker that refuses the exchange stops the command.
 
 A source that is present but broken, and any broker refusal, stop the command with that error
 (exit 1); with no source, one refusal names each source and why it had nothing:
@@ -138,8 +146,10 @@ no quotes, no `export`, no expansion. It takes `AGENT_SECRETS_URL`, `AGENT_SECRE
 `AGENT_SECRETS_SIGNIN_CLIENT_ID`, `AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE`,
 `AGENT_SECRETS_MACHINE_IDENTITY`, `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
 `AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`,
-and refuses any other key as a usage error (exit 2) naming the file and the line. A variable that
-is set and not empty wins over the file.
+and refuses any other key, and a file its group or others can write, as a usage error (exit 2)
+naming the file. A variable that is set and not empty wins over the file. With no `HOME` in the
+environment (a system unit that names no `User=`), the file, the sign-ins and the machine cache
+are under the home the password database gives the process's user.
 
 `agent-secrets identity` answers by exit status alone (0 for a launcher's key dir or a helper
 session, 1 otherwise) and asks nothing of the network. `agent-secrets identity --source` walks the

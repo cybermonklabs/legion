@@ -595,7 +595,7 @@ func sessionFailed(stderr io.Writer, prefix string, err error) int {
 // answer nothing but a dead id until somebody ran `agent-secrets login` again — which would
 // make a second box key and a second sign-in on that person's list (client.reenroller).
 func signInSigner() (*fileSigner, error) {
-	store := brokerclient.SignIns(os.Getenv)
+	store := brokerclient.SignIns(homeGetenv)
 	records, err := store.List()
 	if err != nil || len(records) == 0 {
 		return nil, err
@@ -608,17 +608,19 @@ func signInSigner() (*fileSigner, error) {
 	if err != nil {
 		return nil, err
 	}
-	register := func(ctx context.Context) (string, error) {
+	// The box key is the sign-in's own, recorded at the broker with it, so it is the key a
+	// registration made again signs with too.
+	register := func(ctx context.Context, _ string) (*ecdsa.PrivateKey, string, error) {
 		record.EnrollmentID = ""
 		fresh, err := registerSignInSession(ctx, record, key)
 		if err != nil {
-			return "", err
+			return nil, "", err
 		}
 		record = fresh
-		return fresh.EnrollmentID, nil
+		return key, fresh.EnrollmentID, nil
 	}
 	if record.EnrollmentID == "" {
-		if _, err := register(context.Background()); err != nil {
+		if _, _, err := register(context.Background(), ""); err != nil {
 			return nil, err
 		}
 	}

@@ -10,7 +10,12 @@
 // quotes are taken off, no `export` is understood and nothing is expanded, so what a line says is
 // what the client uses. It takes the settings that say where the broker is and who this machine
 // and its person are, and no others; any other key is a usage error naming the line, since a
-// setting the client would silently ignore is a mistake the person who wrote it cannot see.
+// setting the client would silently ignore is a mistake the person who wrote it cannot see. A
+// file its group or others can write is a usage error too, and nothing in it is read: whoever can
+// write it chooses the broker this machine proves its own identity to.
+//
+// HOME is the environment's, else the home the password database gives this process's user
+// (homeGetenv), so a system unit that systemd starts with no HOME still reads its user's file.
 package main
 
 import (
@@ -18,7 +23,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -45,9 +52,33 @@ var clientConfigKeys = []string{
 // no file.
 var clientConfig map[string]string
 
-// clientConfigPath is $HOME/.config/agent-secrets/config, or "" where HOME is unset.
+// passwdHome is the home directory the password database gives this process's user (os/user), ""
+// where it gives none. A test replaces it.
+var passwdHome = func() string {
+	u, err := user.Current()
+	if err != nil {
+		return ""
+	}
+	return u.HomeDir
+}
+
+// homeGetenv is os.Getenv, except that HOME, where the environment gives none, is passwdHome.
+// systemd starts a system unit that names no User= with no HOME, and the client's own files —
+// this settings file, the sign-ins, the machine cache, the helper's unit — are still its user's:
+// without this a root unit read no settings file and kept no machine session, so it traded and
+// enrolled on every command, and read the sign-ins relative to its working directory.
+func homeGetenv(name string) string {
+	value := os.Getenv(name)
+	if value == "" && name == "HOME" {
+		return passwdHome()
+	}
+	return value
+}
+
+// clientConfigPath is $HOME/.config/agent-secrets/config (homeGetenv), or "" where neither the
+// environment nor the password database gives a home.
 func clientConfigPath() string {
-	home := os.Getenv("HOME")
+	home := homeGetenv("HOME")
 	if home == "" {
 		return ""
 	}
@@ -55,18 +86,31 @@ func clientConfigPath() string {
 }
 
 // loadClientConfig reads the file into clientConfig, once per command (run). A file that is not
-// there is no settings and no error; one that cannot be read, or that holds a line the format does
-// not take, is an error naming the file and the line.
+// there is no settings and no error; one that cannot be read, that its group or others can write,
+// or that holds a line the format does not take, is an error naming the file and the line.
 func loadClientConfig() error {
 	clientConfig = nil
 	path := clientConfigPath()
 	if path == "" {
 		return nil
 	}
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
+	if err != nil {
+		return fmt.Errorf("read the settings file %s: %w", path, err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("read the settings file %s: %w", path, err)
+	}
+	if mode := info.Mode().Perm(); mode&0o022 != 0 {
+		return fmt.Errorf("the settings file %s can be written by its group or by others (mode %04o), and it names the broker this machine proves its identity to; nothing in it was read: run chmod go-w %s",
+			path, mode, path)
+	}
+	data, err := io.ReadAll(file)
 	if err != nil {
 		return fmt.Errorf("read the settings file %s: %w", path, err)
 	}

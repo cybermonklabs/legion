@@ -29,8 +29,9 @@ import (
 
 // TestBuildSignerSelectsMode covers the Signer abstraction's mode selection: file mode when
 // AGENT_SECRETS_KEY_DIR has a readable key.pem, helper mode when it doesn't but the helper at
-// AGENT_SECRETS_HELPER_SOCK says this process is in a session it registered, and the chain's
-// refusal naming both variables when neither is usable. XDG_RUNTIME_DIR points at an empty
+// AGENT_SECRETS_HELPER_SOCK says this process is in a session it registered, a stop naming the
+// helper when the socket that variable names is not there, and the chain's refusal naming both
+// variables when neither is set. XDG_RUNTIME_DIR points at an empty
 // directory so a helper running on the test machine, at the default socket buildSigner falls back
 // to, cannot change the answer, and the state directory and the broker URL are the test's own, so
 // no sign-in, machine cache or broker of the machine running it can either.
@@ -58,8 +59,9 @@ func TestBuildSignerSelectsMode(t *testing.T) {
 	}
 
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "/x/h.sock")
-	if _, _, err := buildSigner(); err == nil || !strings.Contains(err.Error(), "helper: the helper socket /x/h.sock is absent") {
-		t.Fatalf("a named socket that is not there is skipped, not used: %v", err)
+	if _, _, err := buildSigner(); err == nil || !strings.Contains(err.Error(), "agent-secrets-helper at /x/h.sock") ||
+		strings.Contains(err.Error(), "no broker identity for this process") {
+		t.Fatalf("a named socket that is not there is a stopped helper, which stops the chain: %v", err)
 	}
 
 	t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))

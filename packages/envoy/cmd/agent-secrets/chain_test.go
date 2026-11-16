@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -34,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -45,18 +47,23 @@ const chainValue = "chain-test-value"
 
 // chainBroker is the broker routes a use command calls: its settings, the token exchange a
 // machine trades its identity at, the enrollment it then registers, the request and the release.
-// It records every exchange's form, counts the enrollments, and keeps the enrollment each
-// request's session proof named.
+// It records every exchange's form, counts the enrollments and keeps the key thumbprint each was
+// registered for, and keeps the enrollment each request's session proof named. As the real broker
+// does, it refuses a request whose enrollment it ended (401 ENROLLMENT_NOT_LIVE) and one whose
+// signed request object is not that enrollment's own key (400 REQUEST_INVALID).
 type chainBroker struct {
 	server *httptest.Server
 
-	mu          sync.Mutex
-	settings    map[string]any
-	refuse      bool
-	exchanges   []url.Values
-	enrollments int
-	signedBy    []string
-	calls       int
+	mu            sync.Mutex
+	settings      map[string]any
+	settingsDelay time.Duration
+	refuse        bool
+	exchanges     []url.Values
+	enrollments   int
+	thumbprints   map[string]string
+	ended         map[string]bool
+	signedBy      []string
+	calls         int
 }
 
 // storeSettings is GET /v1/settings of a broker on store ("aws" or "gcp"), naming google and
@@ -82,12 +89,13 @@ func storeSettings(store, google, kubernetes string) map[string]any {
 
 func newChainBroker(t *testing.T, settings map[string]any) *chainBroker {
 	t.Helper()
-	b := &chainBroker{settings: settings}
+	b := &chainBroker{settings: settings, thumbprints: map[string]string{}, ended: map[string]bool{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/settings", func(w http.ResponseWriter, _ *http.Request) {
 		b.mu.Lock()
-		settings := maps.Clone(b.settings)
+		settings, delay := maps.Clone(b.settings), b.settingsDelay
 		b.mu.Unlock()
+		time.Sleep(delay)
 		writeJSON(w, settings)
 	})
 	mux.HandleFunc("POST /v1/oauth/token", func(w http.ResponseWriter, r *http.Request) {
@@ -110,19 +118,47 @@ func newChainBroker(t *testing.T, settings map[string]any) *chainBroker {
 			"credential_id": fmt.Sprintf("credential-%d", n), "credential_expires_at": "2099-01-01T00:00:00Z",
 		})
 	})
-	mux.HandleFunc("POST /v1/enrollments", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /v1/enrollments", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Thumbprint string `json:"thumbprint"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		b.mu.Lock()
 		b.enrollments++
 		id := fmt.Sprintf("machine-enrollment-%d", b.enrollments)
+		b.thumbprints[id] = body.Thumbprint
 		b.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"enrollment_id": id})
 	})
 	mux.HandleFunc("POST /v1/requests", func(w http.ResponseWriter, r *http.Request) {
+		eid := proofEID(r)
+		var body struct {
+			Request string `json:"request"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		b.mu.Lock()
-		b.signedBy = append(b.signedBy, proofEID(r))
+		b.signedBy = append(b.signedBy, eid)
+		ended, thumbprint := b.ended[eid], b.thumbprints[eid]
 		b.mu.Unlock()
+		if ended {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"code":"ENROLLMENT_NOT_LIVE","error":"this enrollment is not live"}`))
+			return
+		}
+		// An enrollment registered here has its key on record, and the request object must be
+		// signed by it (requests.Machine.Create's check); a fixture's enrollment has none.
+		if thumbprint != "" {
+			object, err := record.VerifyRequestObject(body.Request, b.URL(), time.Minute, time.Now())
+			if err != nil || object.Thumbprint != thumbprint {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":"REQUEST_INVALID","error":"iss is not this enrollment's own key"}`))
+				return
+			}
+		}
 		writeJSON(w, map[string]any{
 			"request_id": "req-chain", "state": "granted",
 			"secrets":  []map[string]string{{"name": "TEST_KEY", "decision": "automatic"}},
@@ -150,6 +186,36 @@ func (b *chainBroker) refuseExchanges() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.refuse = true
+}
+
+// setSettings changes what GET /v1/settings answers from now on.
+func (b *chainBroker) setSettings(settings map[string]any) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.settings = settings
+}
+
+// delaySettings makes every GET /v1/settings from now on answer after delay.
+func (b *chainBroker) delaySettings(delay time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.settingsDelay = delay
+}
+
+// endEnrollment makes every request signed by enrollmentID from now on answer 401
+// ENROLLMENT_NOT_LIVE, as the broker answers once a session's lease lapsed.
+func (b *chainBroker) endEnrollment(enrollmentID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.ended[enrollmentID] = true
+}
+
+// thumbprintOf is the key thumbprint enrollmentID was registered for here, "" for one it never
+// registered.
+func (b *chainBroker) thumbprintOf(enrollmentID string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.thumbprints[enrollmentID]
 }
 
 func (b *chainBroker) exchanged() []url.Values {
@@ -283,14 +349,24 @@ func (r *chainRig) withMetadata() *metadataServer {
 func (r *chainRig) keyDir() string       { return filepath.Join(r.runtime, "agent-secrets") }
 func (r *chainRig) machineCache() string { return filepath.Join(r.state, "agent-secrets", "machine") }
 
-// run runs the binary with args in the rig's environment.
-func (r *chainRig) run(args ...string) (code int, stdout, stderr string) {
-	r.t.Helper()
+// getenv reads the rig's environment as os.Getenv reads the process's, for the helpers that name
+// a default path from one (helper.DefaultSocket, helper.UnitPath).
+func (r *chainRig) getenv(name string) string { return r.env[name] }
+
+// command is the binary with args, in the rig's environment and no other.
+func (r *chainRig) command(args ...string) *exec.Cmd {
 	cmd := exec.Command(r.binary, args...)
 	cmd.Env = nil
 	for _, name := range slices.Sorted(maps.Keys(r.env)) {
 		cmd.Env = append(cmd.Env, name+"="+r.env[name])
 	}
+	return cmd
+}
+
+// run runs the binary with args in the rig's environment.
+func (r *chainRig) run(args ...string) (code int, stdout, stderr string) {
+	r.t.Helper()
+	cmd := r.command(args...)
 	var out, errOut strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Run(); err != nil {
@@ -301,18 +377,35 @@ func (r *chainRig) run(args ...string) (code int, stdout, stderr string) {
 	return cmd.ProcessState.ExitCode(), out.String(), errOut.String()
 }
 
-// use is the use command whose child prints the length of the value it was given.
+// useArgs is the use command whose child prints the length of the value it was given.
+var useArgs = []string{"TEST_KEY", "--wait", "0s", "--", "sh", "-c", "echo ${#TEST_KEY}"}
+
+// use runs useArgs.
 func (r *chainRig) use() (code int, stdout, stderr string) {
 	r.t.Helper()
-	return r.run("TEST_KEY", "--wait", "0s", "--", "sh", "-c", "echo ${#TEST_KEY}")
+	return r.run(useArgs...)
 }
 
-// mustUse is use, failing the test unless the child ran with the released value.
-func (r *chainRig) mustUse() {
+// mustUse is use, failing the test unless the child ran with the released value, and answers the
+// command's stderr.
+func (r *chainRig) mustUse() string {
 	r.t.Helper()
 	code, stdout, stderr := r.use()
 	if code != 0 || strings.TrimSpace(stdout) != fmt.Sprint(len(chainValue)) {
 		r.t.Fatalf("the use command: exit %d, stdout %q, stderr %q; want exit 0 and the value's length %d", code, stdout, stderr, len(chainValue))
+	}
+	return stderr
+}
+
+// assertInjectedFromStore fails t unless stderr holds the use command's injection line naming the
+// kind of store a broker on store ("aws" or "gcp") keeps its secrets in. That line is the use
+// path's one per-store branch (source.withSettings), so a counted `aws` or `gcp` row that checks
+// it runs its own backend's code rather than the other's.
+func assertInjectedFromStore(t *testing.T, store, stderr string) {
+	t.Helper()
+	kind := map[string]string{"aws": "AWS Secrets Manager", "gcp": "GCP Secret Manager"}[store]
+	if want := "agent-secrets: TEST_KEY from the broker AGENT_SECRETS_URL names (" + kind + ")\n"; kind == "" || !strings.Contains(stderr, want) {
+		t.Fatalf("stderr %q; want the injection line %q", stderr, want)
 	}
 }
 
@@ -418,7 +511,7 @@ func TestAUnitWithNoEnvironmentReadsTheConfigFile(t *testing.T) {
 // TestUseCommandOutsideASessionReachesTheMachineSource is Review Focus 2: a process that inherited
 // AGENT_SECRETS_HELPER_SOCK but is in no session the helper registered is skipped by the helper
 // and reaches the machine, which trades its own identity, registers one enrollment and keeps it in
-// the machine cache.
+// the machine cache. Each backend's row reads the injection line its own store names.
 func TestUseCommandOutsideASessionReachesTheMachineSource(t *testing.T) {
 	binary, _ := chainBinary(t)
 	for _, store := range []string{"aws", "gcp"} {
@@ -429,7 +522,7 @@ func TestUseCommandOutsideASessionReachesTheMachineSource(t *testing.T) {
 			sock, _ := fakeHelper(t, helper.Response{Code: helper.CodeNotASession, Error: "pid 5 is not inside a registered machine session"})
 			r.env["AGENT_SECRETS_HELPER_SOCK"] = sock
 
-			r.mustUse()
+			assertInjectedFromStore(t, store, r.mustUse())
 			if got := machineExchanges(broker); len(got) != 1 {
 				t.Fatalf("the broker saw the machine exchanges %v; want one", got)
 			}
@@ -622,9 +715,27 @@ func TestAnOldKeyDirMachineSessionMovesToTheMachineCacheOnce(t *testing.T) {
 
 // TestTheChainSkipsAbsenceAndStopsOnABrokenSource is c6: a source that has nothing for the caller
 // is skipped, and one that is present but broken, or a broker refusal, stops the command with its
-// own error rather than falling through to the next source.
+// own error rather than falling through to the next source. A helper this machine expects (its
+// socket named, or its unit installed) that is not running is present but broken, and so is a
+// launcher still enrolling the key directory; a plain-http broker off loopback is refused before
+// its settings are read, since those choose the audience the machine mints its token for. Each
+// backend's rows that run the command read the injection line its own store names.
 func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 	binary, token := chainBinary(t)
+	// stoppedHelper is the check of a row whose helper is expected and not running: the command
+	// stops naming the helper's socket, and nothing asks the metadata server or the exchange.
+	stoppedHelper := func(t *testing.T, r *chainRig, broker *chainBroker, metadata *metadataServer, code int, stdout, stderr string) {
+		sock := helper.DefaultSocket(r.getenv)
+		if named := r.env["AGENT_SECRETS_HELPER_SOCK"]; named != "" {
+			sock = named
+		}
+		if code != 1 || stdout != "" || !strings.Contains(stderr, "agent-secrets-helper at "+sock) || strings.Contains(stderr, "no broker identity for this process") {
+			t.Fatalf("exit %d, stdout %q, stderr %q; want exit 1 naming the helper at %s, and no fall through to the next source", code, stdout, stderr, sock)
+		}
+		if n, exchanges := metadata.totalRequests(), broker.exchanged(); n != 0 || len(exchanges) != 0 {
+			t.Fatalf("the metadata server saw %d requests and the broker the exchanges %v; a stopped helper stops before the machine source", n, exchanges)
+		}
+	}
 	for _, store := range []string{"aws", "gcp"} {
 		t.Run(store, func(t *testing.T) {
 			rows := []struct {
@@ -642,6 +753,68 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 					check: func(t *testing.T, _ *chainRig, broker *chainBroker, _ *metadataServer, code int, stdout, stderr string) {
 						if code != 0 || strings.TrimSpace(stdout) != fmt.Sprint(len(chainValue)) || len(machineExchanges(broker)) != 1 {
 							t.Fatalf("exit %d, stdout %q, stderr %q, %d machine exchanges; want the machine source to sign", code, stdout, stderr, len(machineExchanges(broker)))
+						}
+						assertInjectedFromStore(t, store, stderr)
+					},
+				},
+				{
+					name: "a named helper socket that is not there",
+					setup: func(t *testing.T, r *chainRig, _ *chainBroker) *metadataServer {
+						r.env["AGENT_SECRETS_HELPER_SOCK"] = filepath.Join(r.runtime, "stopped-helper.sock")
+						return r.withMetadata()
+					},
+					check: stoppedHelper,
+				},
+				{
+					name: "an installed helper that is stopped",
+					setup: func(t *testing.T, r *chainRig, _ *chainBroker) *metadataServer {
+						unit := helper.UnitPath(r.getenv)
+						if err := os.MkdirAll(filepath.Dir(unit), 0o700); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(unit, []byte("[Service]\n"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+						return r.withMetadata()
+					},
+					check: stoppedHelper,
+				},
+				{
+					name: "a launcher still enrolling the key directory",
+					setup: func(t *testing.T, r *chainRig, _ *chainBroker) *metadataServer {
+						if err := os.MkdirAll(r.keyDir(), 0o700); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(filepath.Join(r.keyDir(), "enrollment.pending"), nil, 0o600); err != nil {
+							t.Fatal(err)
+						}
+						r.env["AGENT_SECRETS_ENROLL_WAIT"] = "200ms"
+						return r.withMetadata()
+					},
+					check: func(t *testing.T, _ *chainRig, broker *chainBroker, metadata *metadataServer, code int, stdout, stderr string) {
+						if code != 1 || stdout != "" || !strings.Contains(stderr, "enrollment.pending") || strings.Contains(stderr, "no broker identity for this process") {
+							t.Fatalf("exit %d, stdout %q, stderr %q; want exit 1 naming the launcher's enrollment.pending, and no fall through to the next source", code, stdout, stderr)
+						}
+						if n, exchanges := metadata.totalRequests(), broker.exchanged(); n != 0 || len(exchanges) != 0 {
+							t.Fatalf("the metadata server saw %d requests and the broker the exchanges %v; a launcher still enrolling stops before the machine source", n, exchanges)
+						}
+					},
+				},
+				{
+					name: "a plain-http broker off loopback",
+					setup: func(t *testing.T, r *chainRig, broker *chainBroker) *metadataServer {
+						// The broker answers as the proxy of a host no resolver knows, so a client
+						// that read the settings of http://broker.example.test reaches it.
+						r.env["AGENT_SECRETS_URL"] = "http://broker.example.test"
+						r.env["HTTP_PROXY"] = broker.URL()
+						return r.withMetadata()
+					},
+					check: func(t *testing.T, _ *chainRig, broker *chainBroker, metadata *metadataServer, code int, stdout, stderr string) {
+						if code != exitUsageError || stdout != "" || !strings.Contains(stderr, "must be https") {
+							t.Fatalf("exit %d, stdout %q, stderr %q; want exit %d refusing a plain-http broker off loopback", code, stdout, stderr, exitUsageError)
+						}
+						if n, calls := metadata.totalRequests(), broker.callCount(); n != 0 || calls != 0 {
+							t.Fatalf("the metadata server saw %d requests and the broker %d calls; the refusal comes before the settings are read", n, calls)
 						}
 					},
 				},
@@ -712,6 +885,7 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 						if len(exchanges) != 1 || exchanges[0].Get("subject_token_type") != oauthwire.SubjectTokenTypeGoogle || metadata.metadataIdentityRequests() != 1 {
 							t.Fatalf("the broker saw the exchanges %v; want one trading the metadata server's identity token, not the projected token", exchanges)
 						}
+						assertInjectedFromStore(t, store, stderr)
 					},
 				},
 			}
@@ -726,6 +900,184 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTheMachineMintsOnlyForTheGoogleAudienceItFirstRead: the broker's unauthenticated settings
+// choose the audience the machine mints its Google identity token for, so the first audience the
+// machine reads is kept beside its session, and a later read naming another is refused before any
+// token is minted for it, naming both audiences and the file that keeps the first.
+func TestTheMachineMintsOnlyForTheGoogleAudienceItFirstRead(t *testing.T) {
+	binary, _ := chainBinary(t)
+	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm", ""))
+	r := newChainRig(t, binary, broker)
+	metadata := r.withMetadata()
+	r.mustUse()
+	kept := filepath.Join(r.machineCache(), "google-exchange-audience")
+	if got, err := readTrimmed(kept); err != nil || got != "agent-secrets-vm" {
+		t.Fatalf("the kept audience = %q, %v; want agent-secrets-vm, the one the first use read", got, err)
+	}
+
+	// The broker now names someone else's service as the audience, and the machine's session
+	// lapsed, so the next use registers it again and reads the settings again.
+	broker.setSettings(storeSettings("gcp", "https://victim.example", ""))
+	broker.endEnrollment("machine-enrollment-1")
+	code, stdout, stderr := r.use()
+	if code != 1 || stdout != "" || !strings.Contains(stderr, `"https://victim.example"`) || !strings.Contains(stderr, `"agent-secrets-vm"`) || !strings.Contains(stderr, kept) {
+		t.Fatalf("exit %d, stdout %q, stderr %q; want exit 1 naming both audiences and %s", code, stdout, stderr, kept)
+	}
+	if n := metadata.metadataIdentityRequests(); n != 1 {
+		t.Fatalf("the metadata server minted %d identity tokens; want only the first use's", n)
+	}
+	if got := machineExchanges(broker); len(got) != 1 {
+		t.Fatalf("the broker saw the machine exchanges %v; want only the first use's", got)
+	}
+}
+
+// TestAMachineRegistersAgainUnderAFreshKey: when the broker says the machine's cached session is
+// not live, the machine registers again under a key it makes for that registration, so a copy of
+// the old key.pem (a home backup, a disk kept across a reboot) signs for no later enrollment. The
+// call that met the refusal is signed again by the new key, its request object included, which the
+// broker holds to the enrollment's own key.
+func TestAMachineRegistersAgainUnderAFreshKey(t *testing.T) {
+	binary, _ := chainBinary(t)
+	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm", ""))
+	r := newChainRig(t, binary, broker)
+	r.withMetadata()
+	r.mustUse()
+	keyPath := filepath.Join(r.machineCache(), "key.pem")
+	first, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	broker.endEnrollment("machine-enrollment-1")
+	r.mustUse()
+	second, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(first, second) {
+		t.Fatal("the machine registered again under the key it already held: a copy of that key.pem signs for every later enrollment")
+	}
+	if got, want := pemThumbprint(t, second), broker.thumbprintOf("machine-enrollment-2"); got != want {
+		t.Fatalf("the cached key's thumbprint %s is not the one machine-enrollment-2 was registered for (%s)", got, want)
+	}
+	if id, err := readTrimmed(filepath.Join(r.machineCache(), "enrollment")); err != nil || id != "machine-enrollment-2" {
+		t.Fatalf("the cached enrollment = %q, %v; want machine-enrollment-2", id, err)
+	}
+	if signed := broker.requestsSignedBy(); !slices.Equal(signed, []string{"machine-enrollment-1", "machine-enrollment-1", "machine-enrollment-2"}) {
+		t.Fatalf("the requests were signed by %v; want the first use's, the lapsed one's refused, and the new enrollment's", signed)
+	}
+	if broker.enrolled() != 2 {
+		t.Fatalf("the broker saw %d enrollments; want two", broker.enrolled())
+	}
+	r.assertMachineCache()
+}
+
+// TestMachineRegistrationsAtOnceKeepOneSession: processes that each find the machine cache empty
+// at once register one session between them, and every one signs with it: the cache's key.pem is
+// always the key its enrollment was registered for.
+func TestMachineRegistrationsAtOnceKeepOneSession(t *testing.T) {
+	binary, _ := chainBinary(t)
+	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm", ""))
+	// Each settings read waits, so every process has found the cache empty before the first
+	// registration ends: with nothing between them, each would register a session of its own.
+	broker.delaySettings(500 * time.Millisecond)
+	r := newChainRig(t, binary, broker)
+	r.withMetadata()
+
+	const processes = 4
+	failures := make(chan string, processes)
+	var wg sync.WaitGroup
+	for range processes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cmd := r.command(useArgs...)
+			var out, errOut strings.Builder
+			cmd.Stdout, cmd.Stderr = &out, &errOut
+			if err := cmd.Run(); err != nil || strings.TrimSpace(out.String()) != fmt.Sprint(len(chainValue)) {
+				failures <- fmt.Sprintf("%v: stdout %q, stderr %q", err, out.String(), errOut.String())
+			}
+		}()
+	}
+	wg.Wait()
+	close(failures)
+	for failure := range failures {
+		t.Errorf("a use command: %s", failure)
+	}
+	if n, e := len(machineExchanges(broker)), broker.enrolled(); n != 1 || e != 1 {
+		t.Fatalf("the broker saw %d machine exchanges and %d enrollments; want one of each", n, e)
+	}
+	key, err := os.ReadFile(filepath.Join(r.machineCache(), "key.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := readTrimmed(filepath.Join(r.machineCache(), "enrollment"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := pemThumbprint(t, key), broker.thumbprintOf(id); got != want {
+		t.Fatalf("the cache pairs a key of thumbprint %s with %s, which was registered for %s", got, id, want)
+	}
+}
+
+// TestAUnitWithNoHomeKeepsItsStateUnderItsUsersHome: systemd starts a system unit that names no
+// User= with no HOME at all. The client then reads its settings file, and keeps its machine
+// session, under the home the password database gives its user, so the unit's second command
+// signs with the session its first registered rather than trading and enrolling again.
+func TestAUnitWithNoHomeKeepsItsStateUnderItsUsersHome(t *testing.T) {
+	isolateChain(t)
+	home := t.TempDir()
+	original := passwdHome
+	passwdHome = func() string { return home }
+	t.Cleanup(func() { passwdHome = original })
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("AGENT_SECRETS_KEY_DIR", "")
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm", ""))
+	startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
+	config := filepath.Join(home, ".config", "agent-secrets", "config")
+	if err := os.MkdirAll(filepath.Dir(config), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, []byte("AGENT_SECRETS_URL="+broker.URL()+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { clientConfig = nil })
+	if err := loadClientConfig(); err != nil {
+		t.Fatal(err)
+	}
+
+	for run := range 2 {
+		if _, _, err := buildSigner(); err != nil {
+			t.Fatalf("command %d with no HOME: %v", run+1, err)
+		}
+	}
+	if n, e := len(machineExchanges(broker)), broker.enrolled(); n != 1 || e != 1 {
+		t.Fatalf("two commands traded %d times and enrolled %d times; want once each, the second signing with the session the first kept", n, e)
+	}
+	for _, name := range []string{"key.pem", "enrollment"} {
+		if _, err := os.Stat(filepath.Join(home, ".local", "state", "agent-secrets", "machine", name)); err != nil {
+			t.Fatalf("the machine cache under the user's home: %v", err)
+		}
+	}
+}
+
+// pemThumbprint is the thumbprint of the key a key.pem holds.
+func pemThumbprint(t *testing.T, data []byte) string {
+	t.Helper()
+	key, err := parseKeyPEM(data, "key.pem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbprint, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return thumbprint
 }
 
 // TestIdentitySourceNamesTheSourceItWouldUse: `identity --source` prints the source a use command
