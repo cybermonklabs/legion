@@ -7,9 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -399,7 +401,8 @@ func coverPass(ctx context.Context, deps Deps) (identityRun, error) {
 	if err != nil {
 		return identityRun{}, err
 	}
-	report, err := Coverage(ctx, deps.Store, identity)
+	// The pass reports the whole deployment, which no one caller reads: the server's own viewer.
+	report, err := Coverage(ctx, deps.Store, identity, model.Actor{Viewer: model.ServerViewer})
 	if err != nil {
 		return identityRun{}, fmt.Errorf("coverage pass: %w", err)
 	}
@@ -490,23 +493,54 @@ func runCoverage(ctx context.Context, deps Deps) {
 
 // notIndexedKinds is every kind of node meaning search and keyword search hold no row of at
 // all, in the order the report lists them, each with the expression that counts how many of it
-// the database holds, read from the table that holds that kind: components from components,
-// sessions from the listener's stored session list (route_roster, Dispatch's one record of
-// which sessions exist, '[]' when the listener has not answered and no row at all before the
-// first answer, so a deployment that resolves none counts 0), a document version from
-// artifact_versions (only a document's latest text is indexed, and then as windows of its
-// blocks, so no version row is an item of any covered kind), a result from check_results and a
-// handoff from handoffs.
+// the reader sees ($2, refs.VisibilityArg), read from the table that holds that kind: components
+// from components, by their project; sessions from the listener's stored session list
+// (route_roster, Dispatch's one record of which sessions exist, '[]' when the listener has not
+// answered and no row at all before the first answer, so a deployment that resolves none counts
+// 0), each by the session rule (access.SessionClause); a document version from artifact_versions
+// (only a document's latest text is indexed, and then as windows of its blocks, so no version row
+// is an item of any covered kind), by its document's project, or by the node registry's rule for a
+// document of no project; a result from check_results and a handoff from handoffs, by the
+// project of the issue each is recorded on.
 //
 // Naming them is the point: with the report carrying the covered kinds alone, a reader could
 // not tell a kind that is covered with nothing left to embed from one nothing indexes.
 var notIndexedKinds = []struct{ kind, items string }{
-	{"component", "(select count(*) from components)"},
-	{"session", "coalesce((select jsonb_array_length(sessions) from route_roster), 0)"},
-	{"document_version", "(select count(*) from artifact_versions)"},
-	{"result", "(select count(*) from check_results)"},
-	{"handoff", "(select count(*) from handoffs)"},
+	{"component", "(select count(*) from components c where " + access.ProjectClause("c.project_key", "$2") + ")"},
+	{"session", "(select count(*) from route_roster r, jsonb_array_elements(r.sessions) s where " +
+		access.SessionClause("s->>'session_id'", "$2") + ")"},
+	{"document_version", "(select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id where " +
+		coverageProjectVisible("a.project_key", refs.VisibleKind("artifact", "a.ref_key", "$2")) + ")"},
+	{"result", "(select count(*) from check_results r join issues i on i.key = r.issue_key where " +
+		access.ProjectClause("i.project_key", "$2") + ")"},
+	{"handoff", "(select count(*) from handoffs h join issues i on i.key = h.issue_key where " +
+		access.ProjectClause("i.project_key", "$2") + ")"},
 }
+
+// coverageProjectVisible is the rule the report counts an item by, for the reader whose viewer
+// is bound at $2: an item of a project when the reader sees that project (access.ProjectClause),
+// and an item of no project - a comment, an ask or a message of an agent conversation, or that
+// conversation's file - by the node registry's rule for the node it belongs to, ofNoProject.
+func coverageProjectVisible(project, ofNoProject string) string {
+	return "case when " + project + " is null then " + ofNoProject + " else " + access.ProjectClause(project, "$2") + " end"
+}
+
+// coverageItemProject is the project a covered item belongs to: its embeddings row's label, which
+// every row the fill has reached carries, else the label the fill would give it
+// (embeddings_owner_project_key, migration 20261109120000), which also answers for an issue no
+// row stands for yet. It is null for an item of no project.
+const coverageItemProject = "coalesce(e.project_key, embeddings_owner_project_key(item.kind, item.id))"
+
+// coverageItemOwner is the node a covered item belongs to, which the node registry's rule
+// decides an item of no project by: the issue itself; the document a document's window is of,
+// which refs.VisibleEnd reads by its uuid; and the comment, the message or the ask a window's id
+// names as "<kind>/<uuid>" (refs.ItemKind.WindowOwnerKey).
+var coverageItemOwner = refs.VisibleEnd(
+	`case judged.kind when 'issue' then 'issue' when 'document_block' then 'artifact'
+		else split_part(split_part(judged.id, '#', 1), '/', 1) end`,
+	`case when judged.kind in ('issue', 'document_block') then split_part(judged.id, '#', 1)
+		else split_part(split_part(judged.id, '#', 1), '/', 2) end`,
+	false, "$2")
 
 // notIndexedPositions is each notIndexedKinds kind's place in the report's list, so the rows of
 // one statement, whose order no union all promises, land in the order declared above.
@@ -522,10 +556,13 @@ var notIndexedPositions = func() map[string]int {
 // per uncovered kind (notIndexedKinds) the items of it the database holds, in one statement so
 // every count reads one snapshot: the issue's items are issueItems, a window kind's its own
 // rows (windowRows). $1 is the configured identity, the empty string when there is none, and
-// then no item is current. greatest ignores a null, so an item with no row ages from when it
-// was written; the oldest age is null when nothing of the kind lacks. The second column says
-// which half a row came from: an uncovered kind carries its count alone, with no current,
-// failed or oldest age, none of which is defined for a kind nothing indexes.
+// then no item is current. $2 is the reader's viewer (refs.VisibilityArg), and an item counts
+// only where the reader may see it (coverageProjectVisible over coverageItemProject and
+// coverageItemOwner): a kind's every count is of the items of the projects the reader sees, so a
+// project it does not see moves none of them. greatest ignores a null, so an item with no row
+// ages from when it was written; the oldest age is null when nothing of the kind lacks. The
+// second column says which half a row came from: an uncovered kind carries its count alone, with
+// no current, failed or oldest age, none of which is defined for a kind nothing indexes.
 var coverageQuery = func() string {
 	arm := func(kind, items string) string {
 		return fmt.Sprintf("select '%s'::text as kind, item.id, item.hash, item.written_at from (%s) item", kind, items)
@@ -543,24 +580,27 @@ var coverageQuery = func() string {
 	return `
 		with items as (` + strings.Join(arms, "\n union all ") + `),
 		judged as (
-			select item.kind, item.written_at, e.pending_since, coalesce(e.dead, false) as dead,
-			       coalesce($1::text <> '' and e.embedding is not null and e.model = $1::text and e.embedded_hash = item.hash, false) as current
+			select item.kind, item.id, item.written_at, e.pending_since, coalesce(e.dead, false) as dead,
+			       coalesce($1::text <> '' and e.embedding is not null and e.model = $1::text and e.embedded_hash = item.hash, false) as current,
+			       ` + coverageItemProject + ` as project
 			from items item
 			left join embeddings e on e.kind = item.kind and e.id = item.id
 		)
 		select kind, true, count(*), count(*) filter (where current), count(*) filter (where dead and not current),
 		       floor(extract(epoch from now() - min(greatest(pending_since, written_at)) filter (where not current and not dead)))::bigint
 		from judged
+		where ` + coverageProjectVisible("judged.project", coverageItemOwner) + `
 		group by kind
 		union all ` + strings.Join(uncovered, "\n union all ")
 }()
 
 // Coverage reports how much of what meaning search covers (coverageKinds) has a current vector
 // from identity, the configured embedder's (empty when none is configured), and how many items
-// each kind it covers nothing of (notIndexedKinds) holds. Its definitions are
-// model.SearchCoverageCounts'; Total sums the covered kinds, and its oldest lacking age is
-// theirs. An uncovered kind is in no total: it has no vector to be behind on.
-func Coverage(ctx context.Context, database *store.Store, identity string) (model.SearchCoverage, error) {
+// each kind it covers nothing of (notIndexedKinds) holds, counting only what reader may see: the
+// items of the projects its viewer sees. Its definitions are model.SearchCoverageCounts'; Total
+// sums the covered kinds, and its oldest lacking age is theirs. An uncovered kind is in no total:
+// it has no vector to be behind on.
+func Coverage(ctx context.Context, database *store.Store, identity string, reader model.Actor) (model.SearchCoverage, error) {
 	var report model.SearchCoverage
 	if identity != "" {
 		place, name := embed.IdentityPlace(identity)
@@ -577,7 +617,7 @@ func Coverage(ctx context.Context, database *store.Store, identity string) (mode
 	for position, kind := range notIndexedKinds {
 		report.NotIndexed[position].Kind = kind.kind
 	}
-	rows, err := database.Pool.Query(ctx, coverageQuery, identity)
+	rows, err := database.Pool.Query(ctx, coverageQuery, identity, refs.VisibilityArg(reader))
 	if err != nil {
 		return model.SearchCoverage{}, fmt.Errorf("search coverage: %w", err)
 	}

@@ -145,6 +145,12 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		refuseWriteOutsideProjectScope(w, covers, project)
 		return
 	}
+	// What the asker may see, resolved while its credential is in hand: the run outlives this
+	// request, and the author the record keeps carries no credential, so no list of its projects.
+	reader, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	// Detached from the request, as a broadcast's deliveries are (broadcasts.go): SIGTERM
 	// cancels the server's lifetime before the HTTP drain begins, so a run bound to either the
 	// request or the lifetime would be cut off with frames it had not stored, and a reader would
@@ -174,16 +180,17 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.detached.goDetached(func() { s.startGoingRun(answering, request) })
+	s.detached.goDetached(func() { s.startGoingRun(answering, request, reader) })
 	WriteJSON(w, http.StatusCreated, request)
 }
 
-// startGoingRun answers one recorded run and stores its frames. The run itself is bounded by the
-// window the record gave it (goingRequest.EndsAt), which is what every reader of the run reads
-// too; the writes are bounded by that window and goingStreamGrace, because the terminal frame of
-// a run reaching its deadline is stored at the moment the deadline passes and a context that
-// ended with the run could not store it.
-func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
+// startGoingRun answers one recorded run and stores its frames, searching as reader, the asker
+// with what it may see. The run itself is bounded by the window the record gave it
+// (goingRequest.EndsAt), which is what every reader of the run reads too; the writes are bounded
+// by that window and goingStreamGrace, because the terminal frame of a run reaching its deadline
+// is stored at the moment the deadline passes and a context that ended with the run could not
+// store it.
+func (s *server) startGoingRun(ctx context.Context, request goingRequest, reader model.Actor) {
 	storing, endStoring := context.WithDeadline(ctx, request.EndsAt.Add(goingStreamGrace))
 	defer endStoring()
 	if s.deps.Answerer == nil {
@@ -204,7 +211,7 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 	}
 	err := s.deps.Answerer.Run(answering, going.Request{
 		Words:  request.Words,
-		Search: s.goingSearch(request.Project, request.Author),
+		Search: s.goingSearch(request.Project, reader),
 		Bodies: s.goingBodies,
 	}, emit)
 	switch {
@@ -222,15 +229,15 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 
 // goingSearch is the one search the answerer makes, within the project the question was asked
 // of: the route supplies the project, the limit and the offset, so the model cannot widen the
-// search past what the caller asked of. It searches as the run's author, the credential that
-// asked the question and the only one the stream serves, so the answer is drawn from what that
-// credential may read and no more.
-func (s *server) goingSearch(project string, author model.Actor) func(context.Context, string) ([]going.Hit, error) {
+// search past what the caller asked of. It searches as reader, the credential that asked the
+// question and the only one the stream serves, with the viewer that credential resolved when it
+// asked, so the answer is drawn from what that credential may read and no more.
+func (s *server) goingSearch(project string, reader model.Actor) func(context.Context, string) ([]going.Hit, error) {
 	return func(ctx context.Context, q string) ([]going.Hit, error) {
 		// No display tree: the answerer reads a hit's title and its href, never its markdown, so
 		// reading each hit for display would be work no reader of this answer ever sees, which is
 		// what these parameters leaving trees unset says.
-		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0, who: author}
+		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0, who: reader}
 		found, err := s.runSearch(ctx, parameters)
 		if err != nil {
 			return nil, err

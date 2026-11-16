@@ -11,7 +11,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
@@ -67,12 +66,13 @@ func (s documentSearchStatement) oracleArgs() []any {
 }
 
 // documentSearchSeen is the acting credential every statement of this build binds last
-// (refs.VisibilityArg): these reads act for a credential that proves no author, which is what a
-// read of a corpus holding no author-private node answers for anyone. Search's own two
-// statements take it from searchQueryArguments; the related-item check's four are bound by
-// hand here, as the check binds them.
+// (refs.VisibilityArg): these reads act for the server's own viewer, which proves no author and
+// sees every project, which is what a read of a corpus holding no author-private node and no
+// private project answers for anyone. Search's own two statements take it from
+// searchQueryArguments; the related-item check's four are bound by hand here, as the check binds
+// them.
 func documentSearchSeen() []any {
-	return []any{refs.VisibilityArg(model.Actor{})}
+	return []any{refs.VisibilityArg(everyReader)}
 }
 
 // documentSearchFixture is the corpus of R1's plan and equality tests: one project whose
@@ -189,7 +189,7 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 	// Search's own two statements bind the search bar's filters and the issues a query names by
 	// key beside the parameters main's text knows; this subject names no issue and no filter, so
 	// both sides of each comparison read the same rows.
-	subject := searchParameters{text: word, project: f.project, limit: searchDefaultLimit}
+	subject := searchParameters{text: word, project: f.project, limit: searchDefaultLimit, who: everyReader}
 	searchArguments := searchQueryArguments(subject)
 	searchMeaningArguments := searchMeaningQueryArguments(subject, queryVector(), f.embedder.Identity())
 	relatedKeyword, relatedMeaning := f.relatedArguments()

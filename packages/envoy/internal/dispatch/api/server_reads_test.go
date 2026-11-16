@@ -121,6 +121,9 @@ var serverReads = map[string]string{
 		"no caller, and the receipt it appends is read through the event log's rule",
 	"comment_delivery.go:claimCommentDeliveryAttempt": "a mention's sender locks the comment it is already sending, which its writer " +
 		"or the delivery sweep loaded, to claim the one attempt it sends; no caller reads what it locks",
+	"suggestions.go:relatedSearch": "the related-item check runs off the write that triggered it, detached, with no credential of " +
+		"the writer's to hand, and has read every project since before a project could be private; plan task t-a-14 binds the " +
+		"writer's own viewer here in place of this read",
 }
 
 // TestEveryServerReadIsNamed holds every use of everyReader to serverReads. everyReader is the

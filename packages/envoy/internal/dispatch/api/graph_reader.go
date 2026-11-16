@@ -79,5 +79,8 @@ func (s *server) readerOf(w http.ResponseWriter, r *http.Request) (model.Actor, 
 //     reader of that document reads;
 //   - a comment list (answerCommentList) is kept in listAnswers under its owner and its ETag
 //     and handed to the next reader whose request names the same pair, so an answer read for
-//     one person would be served to another.
+//     one person would be served to another;
+//   - the related-item check (relatedSearch) runs detached off the write that triggered it, with
+//     no credential of the writer's to hand, and reads every project as it did before a project
+//     could be private, until it binds the writer's own viewer.
 var everyReader = model.Actor{Viewer: model.ServerViewer}

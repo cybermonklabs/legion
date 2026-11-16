@@ -787,10 +787,12 @@ func (s *server) relatedSearch(
 	}
 	// The acting credential, last of the parameters each statement declares. The check runs off
 	// the write that triggered it, on a context of its own and with no credential of that
-	// writer's to hand, so it reads as one that proves no author (graphstore.ProvesAuthor): a
-	// node reserved for its author is suggested to nobody, which is the answer that can mislead
-	// no reader.
-	args = append(args, refs.VisibilityArg(model.Actor{}))
+	// writer's to hand, so it reads as the server's own viewer (everyReader), which proves no
+	// author (graphstore.ProvesAuthor): a node reserved for its author is suggested to nobody,
+	// which is the answer that can mislead no reader. Its viewer sees every project, as the check
+	// has read since before projects could be private, so search's project rule
+	// (searchProjectVisible) narrows nothing here until the check binds the writer's own viewer.
+	args = append(args, refs.VisibilityArg(everyReader))
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return model.SearchResponse{}, err

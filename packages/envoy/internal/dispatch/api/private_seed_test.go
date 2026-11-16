@@ -153,6 +153,21 @@ func (caller privateCaller) login() string {
 	return ""
 }
 
+// sees is the projects caller sees by verification v16's rule, sorted: carol both, bob and carol's
+// token that lists PRIV PRIV alone, alice, carol's token that lists none and the shared token PUB
+// alone, and alice's token that lists PRIV nothing, since alice does not see PRIV.
+func (caller privateCaller) sees() []string {
+	switch caller {
+	case callerCarol:
+		return []string{seedPrivate, seedPublic}
+	case callerBob, callerCarolPrivToken:
+		return []string{seedPrivate}
+	case callerAlice, callerCarolToken, callerSharedToken:
+		return []string{seedPublic}
+	}
+	return []string{}
+}
+
 // request makes one request to the seeded server as caller: a person at a browser by the test
 // identity's header, a personal token or the shared token by its bearer. body is encoded as JSON;
 // nil sends none.
