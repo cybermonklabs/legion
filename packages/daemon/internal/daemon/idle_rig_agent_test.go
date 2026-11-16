@@ -524,11 +524,20 @@ func (p *idleRigRoleProcess) run() error {
 		return err
 	}
 	go p.watchActivity()
-	// Oh My Pi's plugin sends its DELETE of the registration in its session_shutdown handler,
-	// but at a production release that DELETE does not take effect. The default stand-in deletes
-	// its registration and its interests as it stops, which models a released role whose claim
-	// the reaper has freed: its session is gone and its role unclaimed at once. A process whose
-	// plan sets ExitsAsReleasedInProduction deletes nothing, so the daemon's clean stop is what
+	// Once the process ends, the listener holds what the daemon's clean stop of a role's session
+	// leaves (notify's DeleteSession, DELETE /v1/sessions/<id>): the session's record gone and its
+	// role claim and interest record still naming the session. A message published to the role
+	// topic then finds a holder that is not live: the listener keeps it for the role's next live
+	// holder (kept_reason holder_lapsed), or answers one that keeps nothing 404 holder_lapsed, and
+	// reports the wake either way. A record left standing would have the message forwarded to a
+	// session nothing is left of instead.
+	//
+	// The default stand-in leaves that state itself: it deletes its registration as it stops
+	// (unregister), so its session is gone whether or not the daemon's stop reached the listener
+	// first. Oh My Pi's plugin sends its own DELETE of the registration in its session_shutdown
+	// handler, but at a production release that DELETE does not take effect. A process whose plan
+	// sets ExitsAsReleasedInProduction ends that way: it registers again while it runs, as the
+	// plugin's heartbeat does, and deletes nothing as it stops, so the daemon's clean stop is what
 	// makes its session gone.
 	end := p.unregister
 	if plan.ExitsAsReleasedInProduction {
@@ -572,11 +581,12 @@ func (p *idleRigRoleProcess) stopRefreshing() {
 	p.stopped = true
 }
 
-// unregister drops the session's role claim and its registration with the listener.
+// unregister removes the session's registration with the listener, as the daemon's clean stop
+// does (notify's DeleteSession), and leaves its role claim and its interest record standing: the
+// claim still names this session, which is the claim a released pod's role publish finds lapsed.
 func (p *idleRigRoleProcess) unregister() {
 	p.unregisterOnce.Do(func() {
 		_ = p.delete(p.envoy + "/v1/sessions/" + p.session)
-		_ = p.delete(p.envoy + "/v1/interests/" + p.session)
 	})
 }
 

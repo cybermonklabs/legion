@@ -345,6 +345,11 @@ const parallelProjects = [
   // its measured failures were in WebKit.
   // The reload line a read-only admission names: `doc-reload-line`'s one row, which reads the
   // socket the engine reconnects and the paint after it.
+  // How the engine names a download from the `filename*` and `filename` of its
+  // `Content-Disposition`, and whether it asks the server again for a download address it holds,
+  // where an older version's name changes once a newer one exists: `download-names`'s six rows.
+  // WebKit writes each space of the name it read from `filename*` as `_`, which the row of a name
+  // with spaces reads.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
   // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
   // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore is
@@ -414,6 +419,9 @@ const parallelProjects = [
   // ask before a tab unloads: eight `keyed-writes` rows and two `keyed-send` rows, whose upload
   // row carries the kept-file question with it.
   // The reload line a read-only admission names: `doc-reload-line`'s one row.
+  // How the engine names a download from the `filename*` and `filename` of its
+  // `Content-Disposition`, and whether it asks the server again for a download address it holds,
+  // where an older version's name changes once a newer one exists: `download-names`'s six rows.
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",

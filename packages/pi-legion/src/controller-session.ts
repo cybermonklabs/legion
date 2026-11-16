@@ -259,8 +259,8 @@ export function createControllerSession(deps: {
     if (launched) recordBootstrappedSession(sessionFile);
 
     const project = requiredEnvironment(process.env, "LEGION_PROJECT");
-    // Only the controller the daemon launched can reply in Slack, so only it hears the project's
-    // channels; any other ignores whatever LEGION_SLACK_CHANNELS it inherited.
+    // The daemon names the project's channels to the controller it launched alone, so only it hears
+    // them; any other ignores whatever LEGION_SLACK_CHANNELS it inherited.
     const slackChannels = supervised ? daemonControllerSlackChannels(process.env) : [];
     const client = daemon();
     const { daemon: served } = await client.state();

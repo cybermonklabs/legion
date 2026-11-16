@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -266,10 +267,12 @@ func (DispatchArtifact) isFact() {}
 
 // CarriedApprovalReasonPrefix opens the reason of a carried approval: the review Dispatch writes
 // in a person's name when their answer to a decision block was the whole change since the version
-// they approved, or when a later version's text is the text of the version they approved
-// (packages/envoy/internal/dispatch/docs/approval_carry.go, carryReason and restoreReason, whose
-// format is "Carried forward from the approval of version %d: ..."). The daemon cannot import that
-// package, so it holds the prefix before the version number as a literal of its own.
+// they approved, when a later version's text is the text of the version they approved, or when a
+// later version's text is that text with the questions a reopen opened again
+// (packages/envoy/internal/dispatch/docs/approval_carry.go, carryReason, restoreReason and
+// reopenReason, whose format is "Carried forward from the approval of version %d: ..."). The
+// daemon cannot import that package, so it holds the prefix before the version number as a
+// literal of its own.
 const CarriedApprovalReasonPrefix = "Carried forward from the approval of version"
 
 // CarriedApproval says whether the review is a carried approval, by its reason's prefix
@@ -757,11 +760,13 @@ type PullRequestMergeability struct {
 
 func (PullRequestMergeability) isFact() {}
 
-// PullRequestMerged records GitHub's terminal merged observation.
+// PullRequestMerged records GitHub's terminal merged observation: the merge commit, and HeadSHA,
+// the head the pull request merged at, "" when the observation names none.
 type PullRequestMerged struct {
 	Repo     string
 	Number   int
 	MergeSHA string
+	HeadSHA  string
 }
 
 func (PullRequestMerged) isFact() {}
@@ -824,7 +829,8 @@ func (PullRequestMissing) isFact() {}
 type Push struct {
 	Repo   string
 	Branch string
-	// Before is the head the push replaced, After the head it left.
+	// Before is the head the push replaced, After the head it left. A push that deleted the branch
+	// leaves no head: its After is record.NoCommit, which decodePush makes no fact.
 	Before string
 	After  string
 	// Pusher is the push's pusher login (the listener's `pusher`, GitHub's pusher.name).
@@ -1046,6 +1052,26 @@ type SessionStoreFault struct {
 }
 
 func (SessionStoreFault) isFact() {}
+
+// MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
+// was near its memory limit, as the pod's launcher reported it on the connection of the role
+// whose process it was (shimwire.LauncherMemoryKill). It is never decoded from an event: the
+// launcher's frame reaches the runtime, and the daemon's Kubernetes wiring applies one fact per
+// report under the id `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a
+// report the launcher sent twice is applied once (INFRA-3557).
+//
+// Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim of
+// the role the connection authenticated for, and that pod), never anything the report says.
+// The workflow tells that role, on its own role topic, which of its processes was ended and why
+// (workflow's memoryGuardKill).
+type MemoryGuardKill struct {
+	Issue  string
+	Token  claim.Token
+	PodUID string
+	Report shimwire.LauncherMemoryKill
+}
+
+func (MemoryGuardKill) isFact() {}
 
 // ClaimReady is a claim ready to be prompted, from either of two sources: the supervision
 // observation of a launch's ready, its agent having taken its Envoy role and said it can be

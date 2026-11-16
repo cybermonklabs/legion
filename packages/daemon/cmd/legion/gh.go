@@ -40,10 +40,15 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 //
 // Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
 // refuses, and one whose checks could not be made to run, are refused here, exit 2, with the
-// guard's own message, and gh never runs. Two calls pass unchecked: `legion gh auth
-// git-credential`, which answers above before any of this, and the guard's own visibility reads
+// guard's own message, and gh never runs. A call that writes nothing, by the rule ghWritesNothing
+// holds and under the shared check that rule was proven against (ghReadsProvenCheck), is read by
+// that check alone and gets no read of a repository's visibility and no private-name pass. Three
+// calls pass unchecked: `legion gh auth git-credential`, which answers above before any of this,
+// the exact `gh api rate_limit` (ghRateLimitRead), and the guard's own visibility reads
 // (ghVisibilityRead). The shared check's visibility read this command answers itself
-// (sharedCheckVisibilityRead), before it reads anything else of the call.
+// (sharedCheckVisibilityRead), before it reads anything else of the call. gh runs the rate-limit
+// read, the guard's own visibility reads and each call the shared check alone read with no pager
+// and no browser program from the environment.
 //
 // The git gh runs itself (a clone, a fetch of a fork's parent, `pr checkout`) authenticates
 // through the credential helper gh names after its own executable, GH_PATH: runGh sets it to the
@@ -116,8 +121,18 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// break it. The guard's own visibility reads (ghVisibilityRead) are another; the shared
 	// check's read returned above too, answered by this command itself (answerVisibilityRead).
 	// The exact `gh api rate_limit` GET reads no repository content and GitHub excludes it from
-	// the limit, so it is the third; a method or endpoint other than that exact argv stays
-	// guarded.
+	// the limit, so it is the third, answered before the command is read at all; a method or
+	// endpoint other than that exact argv stays guarded. Each is decided before a call that
+	// writes nothing: `auth git-credential` and the shared check's read return above, and
+	// ghCallModeOf takes the rate-limit read and the guard's own reads first, so none of them is
+	// ever taken for one.
+	//
+	// A call that writes nothing (ghWritesNothing, decided from the words it is typed with) is
+	// handed to the guard as one (leakguard.GhRequest.WritesNothing), with the sha256 of the
+	// shared check its rule was proven against (ghReadsProvenCheck). Under that check the guard
+	// runs the check and nothing more, and says so (leakguard.GhAnswer.CheckedOnly), and the log
+	// line says checked-only; under any other it runs whole. Every other call is guarded whole,
+	// the visibility read and the private-name pass included.
 	//
 	// A *leakguard.Refusal and a *leakguard.SetupFailure each refuse the call: a check that did
 	// not run has cleared nothing. Both exit 2, this command's status for a refusal made before
@@ -129,30 +144,40 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// option's arity from the leaf's own help (ghSentFiles): the guard reads the text of each,
 	// and needs no second reader of the argv for a call this command checked.
 	var buffered []byte
-	if rateLimitRead {
+	checkedOnly := false
+	visibilityRead, isVisibilityRead := ghVisibilityRead(args, env)
+	mode := ghCallModeOf(rateLimitRead, isVisibilityRead, target.writesNothing)
+	switch mode {
+	case ghRateLimitCall:
 		// This read has no repository or body for the guard to inspect.
-	} else if read, ok := ghVisibilityRead(args, env); ok {
+	case ghVisibilityCall:
 		// This process is the guard's own request. Its enclosing user call records the source of
 		// that request, so logging it again would count one wrapped call twice.
 		logCall = false
 		// Its token is the repository's, which ghVisibilityRead matched to the read's exact argv.
 		// The GraphQL read names that repository only in variables, read above as an owner alone.
-		target.owner, target.repo = strings.ToLower(read.Owner()), read.Name()
-	} else {
+		target.owner, target.repo = strings.ToLower(visibilityRead.Owner()), visibilityRead.Name()
+	case ghReadCall, ghGuardedCall:
 		guard := leakguard.New(leakguard.Options{
 			OnVisibility: func(source leakguard.VisibilitySource) {
 				visibilitySource = string(source)
 			},
 		})
-		buffered, err = guard.GhCall(ctx, leakguard.GhRequest{
-			Args:  args,
-			Stdin: os.Stdin,
-			Repo:  repo,
-			Files: target.files,
+		answer, err := guard.GhCall(ctx, leakguard.GhRequest{
+			Args:          args,
+			Stdin:         os.Stdin,
+			Repo:          repo,
+			Files:         target.files,
+			WritesNothing: mode == ghReadCall,
+			ProvenCheck:   ghReadsProvenCheck.sha256,
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "legion gh: %v\n", err)
 			return 2
+		}
+		buffered, checkedOnly = answer.Stdin, answer.CheckedOnly
+		if checkedOnly {
+			visibilitySource = ghCheckedOnlyVisibility
 		}
 	}
 	dir := env["GH_CONFIG_DIR"]
@@ -163,9 +188,22 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		}
 	}
 	set := map[string]string{"GH_CONFIG_DIR": dir, "GH_PATH": wrapper, "GH_NO_UPDATE_NOTIFIER": "1", "GH_PROMPT_DISABLED": "1"}
+	// A call no private-name pass read runs no program the environment names: such a program
+	// runs with this call's token directory and could write what that pass never read. Its pager
+	// is cat, which gh reads as no pager (GH_PAGER outranks gh's config `pager` and PAGER; gh
+	// starts a pager only when its standard output is a terminal). And it is given no browser:
+	// GH_BROWSER and BROWSER are removed. gh's config `browser` is left, because gh reads it only
+	// to open a page, which such a call never does: a leaf of ghReadLeaves opens one only under
+	// --web, which no read grammar names, so a call giving it is guarded whole (ghWritesNothing),
+	// and `gh api` opens none. A call guarded whole keeps all three as they were.
+	var unset map[string]bool
+	if mode == ghRateLimitCall || mode == ghVisibilityCall || checkedOnly {
+		set["GH_PAGER"] = "cat"
+		unset = ghUnguardedUnset
+	}
 	childEnv := make([]string, 0, len(env)+len(set)+3)
 	for _, pair := range os.Environ() {
-		if name, _, _ := strings.Cut(pair, "="); set[name] == "" {
+		if name, _, _ := strings.Cut(pair, "="); set[name] == "" && !unset[name] {
 			childEnv = append(childEnv, pair)
 		}
 	}
@@ -177,6 +215,41 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		return 2
 	}
 	return runGhChild(ctx, gh, args, childEnv, buffered, stderr)
+}
+
+// ghCallMode is what runGh does with a call before gh runs it, decided once per call
+// (ghCallModeOf).
+type ghCallMode int
+
+const (
+	// ghGuardedCall runs the whole guard: the shared check, the destination's visibility read
+	// and the private-name pass.
+	ghGuardedCall ghCallMode = iota
+	// ghReadCall is a call that writes nothing (ghWritesNothing): the guard runs the shared
+	// check alone where that check is the one the rule was proven against, and whole otherwise.
+	ghReadCall
+	// ghRateLimitCall is the exact `gh api rate_limit` (ghRateLimitRead), which runs no guard.
+	ghRateLimitCall
+	// ghVisibilityCall is one of the guard's own visibility reads, REST or GraphQL
+	// (ghVisibilityRead), which runs no guard, writes no line of the call log and takes the token
+	// of the repository it reads.
+	ghVisibilityCall
+)
+
+// ghCallModeOf is the mode of a call from what runGh read of it: whether it is the exact
+// rate-limit read, one of the guard's own visibility reads, and a call that writes nothing, in
+// that order. The shared check's own visibility read never reaches this: runGh answers it first
+// (sharedCheckVisibilityRead), as it answers `auth git-credential`.
+func ghCallModeOf(rateLimitRead, visibilityRead, writesNothing bool) ghCallMode {
+	switch {
+	case rateLimitRead:
+		return ghRateLimitCall
+	case visibilityRead:
+		return ghVisibilityCall
+	case writesNothing:
+		return ghReadCall
+	}
+	return ghGuardedCall
 }
 
 const ghCallLogBytes = 1 << 20
@@ -275,12 +348,6 @@ func trimGhCallLog(path string) {
 		return
 	}
 	_ = os.Rename(tmp.Name(), path)
-}
-
-// ghRateLimitRead is the one GitHub API call with no repository content that the guard does not
-// need to inspect. Any option changes the request's method or shape and therefore stays guarded.
-func ghRateLimitRead(argv []string) bool {
-	return slices.Equal(argv, []string{"api", "rate_limit"})
 }
 
 // ghVisibilityRead is the repository argv reads, and whether argv is one of the guard's own two
@@ -560,11 +627,15 @@ func withGitHubUseHTTPPath(env []string) ([]string, error) {
 // alone, and where none named a repository at all. A target with no owner is a command naming
 // none, whose token stays the one GH_CONFIG_DIR already names. command is the resolved command
 // path with no arguments. files are the files the command would send to GitHub as content
-// (ghSentFiles), which the leak guard reads the text of.
+// (ghSentFiles), which the leak guard reads the text of. writesNothing is whether the call is in
+// a read grammar (ghWritesNothing), so that under the shared check that rule was proven against
+// the guard runs that check alone for it (runGh's ghReadCall). Such a call sends no file: no
+// grammar names an option of ghSentFileOptions (TestGhReadGrammarNamesEachOptionAsItsHelpDoes).
 type ghTarget struct {
-	owner, repo string
-	command     string
-	files       []leakguard.GhFile
+	owner, repo   string
+	command       string
+	files         []leakguard.GhFile
+	writesNothing bool
 }
 
 // ghSentFileOptions are the options of gh 2.98.0, by long name, whose value names a file gh
@@ -728,12 +799,13 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	}
 	files := ghSentFiles(parsed)
 	command := strings.Join(cmd.path, " ")
+	writesNothing := ghWritesNothing(argv, cmd.path)
 	switch len(sel.owners) {
 	case 0:
-		return ghTarget{command: command, files: files}, nil
+		return ghTarget{command: command, files: files, writesNothing: writesNothing}, nil
 	case 1:
 		for owner := range sel.owners {
-			return ghTarget{owner: owner, repo: sel.onlyRepository(), command: command, files: files}, nil
+			return ghTarget{owner: owner, repo: sel.onlyRepository(), command: command, files: files, writesNothing: writesNothing}, nil
 		}
 	}
 	var listed []string

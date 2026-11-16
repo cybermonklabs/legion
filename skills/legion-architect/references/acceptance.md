@@ -73,8 +73,8 @@ proves a parent's check: such a result was recorded at the child's head and not 
 and a child carrying part of a parent's
 requirement proves it with a check on its own Verification document whose `serves` names that
 requirement. Nothing in the tree builds on the parent's own merge, which comes last: a child
-that waits for it waits forever, so work another child builds on is a child of its own, in a
-repository of its own or with a deploy of its own. While the approved head does not carry those
+that waits for it waits forever, so work another child builds on is a child of its own.
+While the approved head does not carry those
 merges, or a check in another repository has no pass standing since the close of a child it
 needs, leave the issue in `accepting` until each has closed (`child-closed`) or a park has
 already taken it out (`child-status`). That wait is no reason to park a child. Move a parked

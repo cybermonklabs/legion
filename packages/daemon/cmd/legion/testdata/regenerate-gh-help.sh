@@ -17,11 +17,14 @@ mkdir -p "$out"
 run --version | head -1 >"$out/VERSION"
 run --help >"$out/gh.txt"
 run help reference >"$out/reference.txt"
-for path in "pr" "pr view" "pr create" "pr list" "pr ls" "pr comment" "api" "repo" "repo view" "repo clone" \
-  "repo create" "repo edit" "repo fork" "repo set-default" "repo sync" "repo list" "repo deploy-key" "repo deploy-key add" "issue" \
-  "issue close" "issue create" "issue develop" "issue edit" "issue transfer" "label" "label clone" "project" \
-  "project link" "project unlink" "search" "search issues" "auth" "auth setup-git" "auth status" "co" "secret" \
-  "secret set" "browse" "extension" "agent-task" "agent-task view"; do
+for path in "pr" "pr view" "pr create" "pr list" "pr ls" "pr comment" "pr diff" "pr edit" "pr checks" "pr status" "pr merge" \
+  "pr review" "api" "repo" "repo view" "repo clone" "repo create" "repo edit" "repo fork" "repo set-default" "repo sync" \
+  "repo list" "repo deploy-key" "repo deploy-key add" "issue" "issue close" "issue comment" "issue create" "issue develop" \
+  "issue edit" "issue transfer" "issue view" "issue list" "issue status" "label" "label clone" "label list" "label create" \
+  "project" "project link" "project unlink" "run" "run list" "run view" "run watch" "run rerun" "release" "release create" \
+  "release view" "release list" "release delete" "workflow" "workflow view" "workflow list" "workflow run" "cache" \
+  "cache list" "cache delete" "search" "search code" "search commits" "search issues" "search prs" "search repos" "auth" \
+  "auth setup-git" "auth status" "co" "secret" "secret set" "browse" "extension" "agent-task" "agent-task view"; do
   # shellcheck disable=SC2086
   run $path --help >"$out/${path// /_}.txt"
 done
