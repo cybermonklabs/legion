@@ -368,22 +368,13 @@ export const PriorityUpdatedEventPayloadSchema = z
 export type PriorityUpdatedEventPayload = z.output<typeof PriorityUpdatedEventPayloadSchema>;
 
 /** `project.access_changed`: one write of a project's owner, visibility, access list or Slack
- *  channels committed. It carries the project's access as that write left it, which change it
- *  was, and the person (by lowercase email) or group it added or removed. It is owned by the
- *  project and wakes nobody; every reader that resolved what its caller may see resolves it
- *  again. */
+ *  channels committed. It names the project and which change it was, and nothing else: no email,
+ *  group name or channel id, since every reader of the project's events reads it, and the list is
+ *  `GET /api/v1/projects/{key}/access`'s, under that route's own rule. It is owned by the project
+ *  and wakes nobody; every reader that resolved what its caller may see resolves it again. */
 export const ProjectAccessChangedEventPayloadSchema = z
   .strictObject({
     project: z.string(),
-    owner: z.string(),
-    visibility: z.enum(["public", "private"]),
-    people: z.array(z.string()),
-    groups: z.array(z.string()),
-    /** The Slack channel ids the project's credentials may post to, at most 16, sorted, and []
-     *  for none. */
-    slack_channels: z.array(z.string()),
-    /** The people of `people` nobody has signed in as yet, sorted, and [] for none. */
-    not_signed_in: z.array(z.string()),
     change: z.enum([
       "owner",
       "visibility",
@@ -393,9 +384,6 @@ export const ProjectAccessChangedEventPayloadSchema = z
       "group_removed",
       "slack_channels",
     ]),
-    /** The person or group a list change added or removed; for an owner change, the person the
-     *  project was taken from, absent when it had none. */
-    principal: z.string().optional(),
   })
   .readonly();
 

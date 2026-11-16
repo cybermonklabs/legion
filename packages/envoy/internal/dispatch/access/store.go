@@ -373,16 +373,21 @@ func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kin
 	return appendProjectChange(ctx, tx, ev, key, change, name, by)
 }
 
-// appendProjectChange reads project key's access as tx left it and appends the event naming the
-// change.
+// appendProjectChange appends the event naming change on project key, records beside it what the
+// change named (recordProjectChanges), and reads the project's access as tx left it, which the
+// write answers. principal is the person or group a list change added or removed, the person an
+// owner change took the project from (empty when it had none), and empty for any other change.
 func appendProjectChange(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, change, principal string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	access, err := readProjectWritten(ctx, tx, key)
 	if err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
-	event, err := ev.Append(ctx, tx, projectChangeEvent(access, change, principal, by))
+	event, err := ev.Append(ctx, tx, projectChangeEvent(key, change, by))
 	if err != nil {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("append project.access_changed: %w", err)
+	}
+	if err := recordProjectChanges(ctx, tx, []int64{event.ID}, principal); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
 	}
 	if err := announceChange(ctx, tx); err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
@@ -390,12 +395,30 @@ func appendProjectChange(ctx context.Context, tx pgx.Tx, ev *events.Broker, key,
 	return access, event, nil
 }
 
-func projectChangeEvent(access model.ProjectAccess, change, principal string, by model.Actor) model.Event {
-	key := access.Project
+// projectChangeEvent is the project.access_changed of one write of project key's access: the
+// project and the change alone (model.ProjectAccessEventPayload).
+func projectChangeEvent(key, change string, by model.Actor) model.Event {
 	return model.Event{
 		ProjectKey: &key, Type: "project.access_changed", Actor: by.Recorded(),
-		Payload: model.ProjectAccessEventPayload{ProjectAccess: access, Change: change, Principal: principal},
+		Payload: model.ProjectAccessEventPayload{Project: key, Change: change},
 	}
+}
+
+// recordProjectChanges writes, in tx, the server's own record of each project.access_changed of
+// eventIDs (project_access_changes): principal, which the change named, and the owner and visibility
+// of the event's project as tx left them. The payload names none of these, since every reader of the
+// project's events reads it; a live resume reads this record to tell whether a change in its gap
+// moved what its caller sees (api: lostSightSQL, gainedSightSQL), and no route serves it.
+func recordProjectChanges(ctx context.Context, tx pgx.Tx, eventIDs []int64, principal string) error {
+	if _, err := tx.Exec(ctx, `
+		insert into project_access_changes (event_id, principal, owner, visibility)
+		select e.id, $2, coalesce(p.owner, ''), p.visibility
+		from events e join projects p on p.key = e.project_key
+		where e.id = any($1)
+	`, eventIDs, principal); err != nil {
+		return fmt.Errorf("record the access changes %v: %w", eventIDs, err)
+	}
+	return nil
 }
 
 // groupMembersSQL selects group g's members and the members nobody has signed in as yet, each
@@ -595,16 +618,19 @@ func DeleteGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name string,
 	slices.Sort(projects)
 	changes := make([]model.Event, 0, len(projects)+1)
 	for _, project := range projects {
-		access, err := readProjectWritten(ctx, tx, project)
-		if err != nil {
-			return nil, err
-		}
-		changes = append(changes, projectChangeEvent(access, model.AccessGroupRemoved, name, by))
+		changes = append(changes, projectChangeEvent(project, model.AccessGroupRemoved, by))
 	}
 	changes = append(changes, groupChangeEvent(name, model.AccessGroupDeleted, by))
 	appended, err := ev.AppendAll(ctx, tx, changes)
 	if err != nil {
 		return nil, fmt.Errorf("append the events of group %s's delete: %w", name, err)
+	}
+	projectEvents := make([]int64, 0, len(projects))
+	for _, event := range appended[:len(projects)] {
+		projectEvents = append(projectEvents, event.ID)
+	}
+	if err := recordProjectChanges(ctx, tx, projectEvents, name); err != nil {
+		return nil, err
 	}
 	if err := announceChange(ctx, tx); err != nil {
 		return nil, err

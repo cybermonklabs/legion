@@ -541,3 +541,58 @@ func TestTheGroupListPages(t *testing.T) {
 		}
 	}
 }
+
+// TestTheAccessChangedEventCarriesNoAccessList: PRIV's owner, dave, adds carol to PRIV's list, and
+// the event that write appends names the project and the change and nothing else, byte for byte.
+// A dsp_ token that lists PRIV and holds no person scope - a caller GET .../access refuses - reads
+// that event through the /ws/live events view, subscribed before the write (a resume across an
+// access change is replayed nothing), and through GET /api/v1/events/log, and neither answer holds
+// carol's email.
+func TestTheAccessChangedEventCarriesNoAccessList(t *testing.T) {
+	rig := newLiveSocketRig(t, testServerOptions{}, nil)
+	seedPeople(t, rig.database, accessCarol, accessDave)
+	if created := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": privateProject, "name": privateProject}, accessDave); created.Code != http.StatusCreated {
+		t.Fatalf("dave creates PRIV: %d %s", created.Code, created.Body.String())
+	}
+	makePrivate(t, rig.database, privateProject)
+	minted := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{
+		"name": "PRIV without the person scope", "scopes": []string{}, "projects": []string{privateProject},
+	}, accessDave)
+	if minted.Code != http.StatusCreated {
+		t.Fatalf("dave mints a PRIV token with no scope: %d %s", minted.Code, minted.Body.String())
+	}
+	token := decodeBody[listedToken](t, minted).Token
+	if refused := agentRequest(t, rig.handler, http.MethodGet, "/api/v1/projects/"+privateProject+"/access", nil, token); refused.Code != http.StatusForbidden {
+		t.Fatalf("the token reads PRIV's access = %d %s, want 403: it holds no person scope", refused.Code, refused.Body.String())
+	}
+	client := rig.dial(t, withBearer(token))
+	subscribeEvents(t, client, "feed", nil)
+
+	if added := dispatchRequest(t, rig.handler, http.MethodPut, "/api/v1/projects/"+privateProject+"/access/people/"+accessCarol, nil, accessDave); added.Code != http.StatusOK {
+		t.Fatalf("dave adds carol to PRIV: %d %s", added.Code, added.Body.String())
+	}
+	logged := agentRequest(t, rig.handler, http.MethodGet, "/api/v1/events/log", nil, token)
+	if logged.Code != http.StatusOK || !strings.Contains(logged.Body.String(), `"type":"project.access_changed"`) {
+		t.Fatalf("the token's event log = %d %.400s, want 200 holding PRIV's project.access_changed", logged.Code, logged.Body.String())
+	}
+	if strings.Contains(logged.Body.String(), accessCarol) {
+		t.Fatalf("the token's event log holds %s: %s", accessCarol, logged.Body.String())
+	}
+	frame, _ := eventOfType(t, client, "feed", "project.access_changed")
+	if strings.Contains(string(frame.Event), accessCarol) {
+		t.Fatalf("the token's /ws/live event holds %s: %s", accessCarol, frame.Event)
+	}
+	var stored []byte
+	if err := rig.database.Pool.QueryRow(context.Background(), `
+		select payload::text from events where type = 'project.access_changed' and project_key = $1 order by id desc limit 1
+	`, privateProject).Scan(&stored); err != nil {
+		t.Fatalf("read the stored project.access_changed: %v", err)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, stored); err != nil {
+		t.Fatalf("compact %s: %v", stored, err)
+	}
+	if want := `{"change":"person_added","project":"PRIV"}`; compact.String() != want {
+		t.Fatalf("the stored payload is %s, want %s", compact.String(), want)
+	}
+}

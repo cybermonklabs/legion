@@ -410,14 +410,17 @@ const (
 )
 
 // ProjectAccessEventPayload is `project.access_changed`: one write of a project's owner,
-// visibility or access list committed. It carries the project's access as that write left it,
-// which change it was, and the person or group it added or removed - for an owner change, the
-// person the project was taken from - so every reader that resolved a viewer before it resolves
-// again. It is owned by the project and never notifies.
+// visibility, access list or Slack channels committed. It names the project and which change it
+// was, and nothing else: every reader of the project's events reads it - the event log, the live
+// socket's events view and the bus, credentials without the person scope included - so it carries
+// no email, group name or channel id. Who the change named, and the project's owner and visibility
+// as it left them, are the server's own record of the event (project_access_changes), which a live
+// resume reads to tell whether the change moved what its caller sees. A reader that needs the list
+// reads GET /api/v1/projects/{key}/access, under that route's own rule, and every reader that
+// resolved a viewer resolves again. It is owned by the project and never notifies.
 type ProjectAccessEventPayload struct {
-	ProjectAccess
-	Change    string `json:"change"`
-	Principal string `json:"principal,omitempty"`
+	Project string `json:"project"`
+	Change  string `json:"change"`
 }
 
 // The Change of a ProjectAccessEventPayload.
