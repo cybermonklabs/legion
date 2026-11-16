@@ -6717,7 +6717,7 @@ Needs `BROKER_K8S_OIDC_ISSUER` and `BROKER_EXCHANGE_K8S_AUDIENCE`;
 unset, no account exchanges), `BROKER_EXCHANGE_READ_ACCOUNTS` (optional;
 whitespace-separated `<service account>=<service>=<session>` entries, such as `system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session`:
 the token minted for a pod of that account holds the OAuth scope `read` alone and the project scope `none`, names that service and that session, and names no person and no project.
-That token reads the architecture of every project that has an architecture source: each source's repository, branch and last sync error, and every issue of the project, icebox and closed ones included, with its key, title, status, priority, parent and external links.
+That token reads the whole answer of `GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each source, each component, and every issue of the project, closed and iceboxed ones included.
 No setting holds a read entry to some projects.
 Every field is required, and the session is everything after the second `=`, so it alone may carry one.
 A namespace's `default` account, a service that is not lowercase letters, digits and hyphens of at most 64 or is `shared`, an account listed twice and an account that `BROKER_EXCHANGE_ACCOUNTS` lists too are refused.

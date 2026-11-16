@@ -474,11 +474,10 @@ type Config struct {
 	// token minted for a pod of the account holds only the OAuth scope read, the project scope
 	// none, the service and the session, and names no person and no project: Dispatch serves it
 	// on the routes its read list names and refuses it everywhere else, and every other service
-	// that reads the broker's tokens, the Envoy listener among them, refuses it. That token
-	// reads the architecture of every project that has an architecture source: each source's
-	// repository, branch and last sync error, and every issue of the project, icebox and closed
-	// ones included, with its key, title, status, priority, parent and external links. No setting
-	// holds a read entry to some projects.
+	// that reads the broker's tokens, the Envoy listener among them, refuses it. That token reads the
+	// whole answer of GET /api/v1/projects/{key}/architecture for every project that has an
+	// architecture source: each source, each component, and every issue of the project, closed and
+	// iceboxed ones included. No setting holds a read entry to some projects.
 	// The session is everything after the second "=", so it alone may carry one. A namespace's
 	// default account is refused, as is a service that is not lowercase letters, digits and
 	// hyphens, at most 64, or is shared, an account listed twice, and an account

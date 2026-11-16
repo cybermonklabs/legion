@@ -56,10 +56,10 @@ and the one Dispatch project it may write. A read entry, of `BROKER_EXCHANGE_REA
 a service and a fixed session instead, and no person and no project: the token holds the OAuth
 scope `read` alone. Dispatch serves such a token on the routes its read list names and refuses it
 on every other route with `403 READ_ONLY_TOKEN`, and the Envoy listener refuses it with `401`
-([Operate](/legion/broker/operate/#what-to-run)). That token reads the architecture of every
-project that has an architecture source: each source's repository, branch and last sync error, and
-every issue of the project, icebox and closed ones included, with its key, title, status, priority,
-parent and external links. No setting holds a read entry to some projects.
+([Operate](/legion/broker/operate/#what-to-run)). That token reads the whole answer of
+`GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
+source, each component, and every issue of the project, closed and iceboxed ones included. No
+setting holds a read entry to some projects.
 
 An enrollment is leased for `BROKER_LEASE_SECONDS` and renewed while its session runs: the helper
 renews the sessions it registered, `agent-secrets renew` renews a box, and Legion's pod shim renews
