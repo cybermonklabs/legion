@@ -297,6 +297,26 @@ func TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack(t *testing.T
 // spare (growthStep's own doc comment has the exact numbers).
 const linearSlack = 3
 
+// A run of `[` and as many `]` parses in time linear in its length, from a run whose every label
+// goldmark checks for a link inside it to one 64 times as long, past the 999 characters a label may
+// hold (mergeTrailingText, nesting.go). Each `]` that closed no link used to leave its opener a text
+// of its own, which every closer after it walked. At a load of about 450 the old parse grew 11 to
+// 23 times for each eightfold step here, and the fixed one grows 8 to 11 times. A step of the old
+// parse still fits linearSlack, which this test keeps; TestARunOfBracketsTheirClosersTurnBackIntoTextIsOneText
+// (nesting_test.go) counts what the old parse left instead.
+func TestParseIsLinearOnARunOfBracketsAndTheirClosers(t *testing.T) {
+	run := func(size int) string { return strings.Repeat("[", size/2) + strings.Repeat("]", size-size/2) }
+	growsLinearly(t, "parsing a run of brackets and as many closers", []int{256, 256 * growthStep, 256 * growthStep * growthStep}, linearSlack, func(size int) (time.Duration, error) {
+		body := run(size)
+		var err error
+		took, measureErr := cpuTimeOf(again(func() { _, err = ParseForWrite(body, nil) }))
+		if err != nil {
+			return 0, fmt.Errorf("parsing %d brackets and closers: %w", size, err)
+		}
+		return took, measureErr
+	})
+}
+
 // The shapes a sweep found after the ones above, each quadratic before LEGION-465 finished: a
 // text of one delimiter character, whose every character was escaped by a scan of its whole run;
 // many `[^` before one `]`, whose every label was case-folded to look it up among the footnote
