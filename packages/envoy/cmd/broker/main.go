@@ -621,10 +621,12 @@ func main() {
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: current, SecretsStore: cfg.SecretsStore, SecretsPrefix: cfg.SecretsPrefix,
-		SecretsKMSKey:      cfg.SecretsKMSKey,
-		TrustedProxyHeader: cfg.TrustedProxyHeader,
-		Approval:           page,
-		Draining:           draining.Load,
+		SecretsKMSKey:              cfg.SecretsKMSKey,
+		GoogleExchangeAudience:     cfg.GoogleOIDCAudience,
+		KubernetesExchangeAudience: cfg.ExchangeK8sAudience,
+		TrustedProxyHeader:         cfg.TrustedProxyHeader,
+		Approval:                   page,
+		Draining:                   draining.Load,
 		NotifyReread: func(ctx context.Context, name string) {
 			// This pod reread the name itself and merged what it read (the reread route's
 			// notifyPeers), so the value behind the name may be a new version: dropped from

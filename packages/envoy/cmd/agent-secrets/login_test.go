@@ -22,27 +22,32 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
 // loginBroker is the token, enrollment and session endpoints `agent-secrets login` and the
-// commands after it call: it records the session name each trade asked under, hands out an
-// enrollment id per registration, and answers a session proof naming any enrollment but the
-// last one it made exactly as the broker answers one whose lease has lapsed.
+// commands after it call: it records the session name and the whole form of each trade, hands out
+// an enrollment id per registration, answers a session proof naming any enrollment but the last
+// one it made exactly as the broker answers one whose lease has lapsed, and answers GET
+// /v1/settings with settings, or 404 while it holds none.
 type loginBroker struct {
 	server *httptest.Server
 	mu     sync.Mutex
-	// sessions is the session form field of every trade, in order.
+	// sessions is the session form field of every trade, in order, and forms each trade's form.
 	sessions []string
+	forms    []url.Values
 	// enrollments counts the registrations, and live is the id of the one whose lease the
 	// broker still holds; lapse() ends it, as BROKER_LEASE_SECONDS does.
 	enrollments int
 	live        string
+	settings    map[string]any
 }
 
 func newLoginBroker(t *testing.T) *loginBroker {
@@ -55,11 +60,22 @@ func newLoginBroker(t *testing.T) *loginBroker {
 		}
 		b.mu.Lock()
 		b.sessions = append(b.sessions, r.PostForm.Get("session"))
+		b.forms = append(b.forms, r.PostForm)
 		b.mu.Unlock()
 		writeLoginJSON(w, map[string]any{
 			"access_token": "access-token", "token_type": "DPoP", "expires_in": 3600,
 			"credential_id": "credential-1", "credential_expires_at": "2099-01-01T00:00:00Z",
 		})
+	})
+	mux.HandleFunc("GET /v1/settings", func(w http.ResponseWriter, r *http.Request) {
+		b.mu.Lock()
+		settings := b.settings
+		b.mu.Unlock()
+		if settings == nil {
+			http.NotFound(w, r)
+			return
+		}
+		writeLoginJSON(w, settings)
 	})
 	mux.HandleFunc("POST /v1/enrollments", func(w http.ResponseWriter, _ *http.Request) {
 		b.mu.Lock()
@@ -289,5 +305,66 @@ func TestLoginsSessionNameIsTheOneEveryLaterTradeAsks(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprint(brokerclient.SessionFor(record)), " ") {
 		t.Fatal("the session name carries a space, which no form field of a trade may")
+	}
+}
+
+// noProjectedToken points brokerclient.DefaultProjectedTokenFile at a file that is not there for
+// the rest of t, so an in-process row never reads a token the machine running it holds.
+func noProjectedToken(t *testing.T) {
+	t.Helper()
+	previous := brokerclient.DefaultProjectedTokenFile
+	brokerclient.DefaultProjectedTokenFile = filepath.Join(t.TempDir(), "no-projected-token")
+	t.Cleanup(func() { brokerclient.DefaultProjectedTokenFile = previous })
+}
+
+// TestLoginFindsTheMachineWithNoSetting: a person signs in on a machine whose identity nothing
+// configures, and `agent-secrets login` finds it from the broker's exchange audience: the trade
+// carries the metadata server's identity token as its actor. A broker that names no exchange
+// audience is refused naming that, since a sign-in has no machine to act on.
+func TestLoginFindsTheMachineWithNoSetting(t *testing.T) {
+	for _, row := range []struct {
+		name     string
+		audience string
+		exit     int
+	}{
+		{"the broker names its audience", "agent-secrets-vm", 0},
+		{"the broker names none", "", 1},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			broker := newLoginBroker(t)
+			broker.settings = storeSettings("gcp", row.audience, "")
+			issuer := loginIssuer(t, "ada@example.com")
+			metadata := startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
+			noProjectedToken(t)
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv(brokerclient.SignInDirVar, filepath.Join(t.TempDir(), "signins"))
+			t.Setenv(brokerclient.BrokerURLVar, broker.server.URL)
+			t.Setenv(brokerclient.SessionVar, "")
+			t.Setenv(brokerclient.IdentityVar, "")
+			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+			t.Cleanup(func() { clientConfig = nil })
+
+			var stdout bytes.Buffer
+			stderr := &approvingWriter{t: t, issuer: issuer}
+			code := run([]string{"login"}, &stdout, stderr)
+			if code != row.exit {
+				t.Fatalf("login: exit %d, want %d (stderr %q)", code, row.exit, stderr.buf.String())
+			}
+			broker.mu.Lock()
+			forms := slices.Clone(broker.forms)
+			broker.mu.Unlock()
+			if row.exit == 1 {
+				if !strings.Contains(stderr.buf.String(), "names no exchange audience") || len(forms) != 0 {
+					t.Fatalf("stderr %q, %d trades; want the refusal naming the broker's missing exchange audience, and no trade", stderr.buf.String(), len(forms))
+				}
+				if n := metadata.totalRequests(); n != 0 {
+					t.Fatalf("the metadata server saw %d requests; a broker naming no audience asks it nothing", n)
+				}
+				return
+			}
+			if len(forms) != 1 || forms[0].Get("actor_token") != "metadata-identity-token" || forms[0].Get("actor_token_type") != oauthwire.ActorTokenTypeMachine {
+				t.Fatalf("the trades = %v; want one whose actor is the metadata server's identity token", forms)
+			}
+		})
 	}
 }

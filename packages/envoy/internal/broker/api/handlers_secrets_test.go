@@ -93,6 +93,58 @@ func TestSettingsAnswersTheGCPStore(t *testing.T) {
 	}
 }
 
+// TestSettingsNameTheExchangeAudiencesOnEitherStore pins the two exchange audiences GET
+// /v1/settings answers beside the store, on either store: the audience a machine's Google
+// identity token must carry (BROKER_GOOGLE_OIDC_AUDIENCE) and the one a pod's projected token must
+// carry (BROKER_EXCHANGE_K8S_AUDIENCE), so a machine's `agent-secrets` finds the identity it can
+// trade with no setting of its own. A broker that accepts neither names neither key at all.
+func TestSettingsNameTheExchangeAudiencesOnEitherStore(t *testing.T) {
+	for _, store := range []struct{ name, kind, prefix, key string }{
+		{"aws", secrets.StoreAWS, policytest.Prefix, policytest.KeyARN},
+		{"gcp", secrets.StoreGCP, "projects/000000000000/secrets/agent-secrets-", "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"},
+	} {
+		t.Run(store.name, func(t *testing.T) {
+			read := func(t *testing.T, google, kubernetes string) (map[string]any, string) {
+				t.Helper()
+				cur, err := policy.NewCurrent(t.Context(), policytest.Loader(secrets.NewLocal()), time.Hour)
+				if err != nil {
+					t.Fatal(err)
+				}
+				mux := http.NewServeMux()
+				api.Register(mux, api.Deps{Policy: cur, SecretsStore: store.kind, SecretsPrefix: store.prefix, SecretsKMSKey: store.key,
+					GoogleExchangeAudience: google, KubernetesExchangeAudience: kubernetes})
+				srv := httptest.NewServer(mux)
+				t.Cleanup(srv.Close)
+				resp, err := http.Get(srv.URL + "/v1/settings")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resp.Body.Close()
+				body, _ := io.ReadAll(resp.Body)
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("status %d: %s", resp.StatusCode, body)
+				}
+				return decode[map[string]any](t, body), string(body)
+			}
+
+			got, body := read(t, "agent-secrets-vm", "agent-secrets-exchange")
+			if got["google_exchange_audience"] != "agent-secrets-vm" || got["kubernetes_exchange_audience"] != "agent-secrets-exchange" {
+				t.Fatalf("settings = %s; want google_exchange_audience agent-secrets-vm and kubernetes_exchange_audience agent-secrets-exchange", body)
+			}
+			if got["store"] != store.kind {
+				t.Fatalf("settings = %s; want the store %s beside the audiences", body, store.kind)
+			}
+
+			_, body = read(t, "", "")
+			for _, field := range []string{"google_exchange_audience", "kubernetes_exchange_audience"} {
+				if strings.Contains(body, field) {
+					t.Fatalf("a broker that accepts no machine identity names %s: %s", field, body)
+				}
+			}
+		})
+	}
+}
+
 // rereadsFreely is the broker-wide bucket a row about what a reread *answers* mounts, so that
 // row never meets the production sizing of a bucket it is not about. The production figure is
 // the store's whole fleet budget divided by the pods the process counts (api.RereadOverallFor):

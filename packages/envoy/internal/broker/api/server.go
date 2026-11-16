@@ -80,6 +80,13 @@ type Deps struct {
 	// (BROKER_SECRETS_KMS_KEY_ARN), with its region and account, or the GCP store's Cloud KMS key
 	// name (BROKER_SECRETS_KMS_KEY_NAME).
 	SecretsKMSKey string
+	// GoogleExchangeAudience is BROKER_GOOGLE_OIDC_AUDIENCE, the audience a machine's Google
+	// identity token must carry at the token exchange, and KubernetesExchangeAudience is
+	// BROKER_EXCHANGE_K8S_AUDIENCE, the one a pod's projected token must carry there. GET
+	// /v1/settings answers both, empty where the broker accepts no such identity, so a machine's
+	// `agent-secrets` mints a token for the right audience with no setting of its own.
+	GoogleExchangeAudience     string
+	KubernetesExchangeAudience string
 	// LauncherLimits bounds POST /v1/oauth/device_authorization and POST
 	// /v1/launcher-credentials/token; nil means DefaultLauncherLimits.
 	LauncherLimits *LauncherLimits

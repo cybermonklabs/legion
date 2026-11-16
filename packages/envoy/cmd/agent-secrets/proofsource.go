@@ -4,12 +4,13 @@
 // signed credential-request object POST /v1/requests embeds (the broker puts
 // authorization_details and reason inside
 // that signed object, not plain top-level fields). An agent box or pod has its own key on tmpfs
-// under AGENT_SECRETS_KEY_DIR and signs both directly for its own enrollment id (fileSigner); a
-// machine session has no key of its own and asks
-// agent-secrets-helper, over AGENT_SECRETS_HELPER_SOCK, which signs only for processes that
+// under AGENT_SECRETS_KEY_DIR and signs both directly for its own enrollment id (fileSigner), as
+// do a person's sign-in and a machine's own session; a machine session has no key of its own and
+// asks agent-secrets-helper, over AGENT_SECRETS_HELPER_SOCK, which signs only for processes that
 // descend from a registered session root (helperSigner) — the session's key never leaves the
 // helper process, so building the request object is also the helper's job in that mode.
-// buildSigner (main.go) is the one place that chooses between them. The operator's own machine and
+// signerChain (chain.go) is the one place that chooses between them, and it builds a helperSigner
+// only after probeHelper said the caller is in a session. The operator's own machine and
 // grant commands sign as this machine's login instead, through the helper's sign-launcher op
 // (launcherSigner, built by machineContext).
 package main
@@ -19,6 +20,7 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
@@ -97,6 +99,33 @@ type helperSigner struct {
 // (NO_CREDENTIAL): never logged in, or its login lapsed or was refused, until the operator logs the machine in, the helper enrolls no one, so the session has no broker identity. identity prints it, and
 // reportError prints it the same way for every command that meets it.
 var errNoCredential = errors.New("this machine is not logged in to the secrets broker; not an agent session (run: agent-secrets machine login)")
+
+// helperAnswer is what the helper said to the identity probe: sock is the socket asked, there
+// whether its file exists, err a socket that is there and did not answer within
+// identityDeadline, and resp the answer otherwise.
+type helperAnswer struct {
+	sock  string
+	there bool
+	resp  helper.Response
+	err   error
+}
+
+// answered reports whether the helper answered the probe at all, whatever it said.
+func (a helperAnswer) answered() bool { return a.there && a.err == nil }
+
+// probeHelper asks the helper's sign op for a throwaway proof (identityProbeURL), which says
+// whether the caller is inside a session the helper registered and changes nothing: OK
+// (enrolled), NOT_ENROLLED (registered and still enrolling), NOT_A_SESSION, or NO_CREDENTIAL. The
+// socket is AGENT_SECRETS_HELPER_SOCK, else the helper's default, and a socket file that is not
+// there is asked nothing.
+func probeHelper() helperAnswer {
+	sock, _ := helperSocket()
+	if !exists(sock) {
+		return helperAnswer{sock: sock}
+	}
+	resp, err := helper.Call(sock, helper.Request{Op: "sign", Method: http.MethodGet, URL: identityProbeURL}, identityDeadline)
+	return helperAnswer{sock: sock, there: true, resp: resp, err: err}
+}
 
 // helperRefusal is the error for a helper answer that is not OK.
 func helperRefusal(resp helper.Response) error {

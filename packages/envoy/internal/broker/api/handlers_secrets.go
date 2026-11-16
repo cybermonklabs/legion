@@ -36,12 +36,21 @@ type settingsResponse struct {
 	// With gcp-secret-manager, the number of the project every agent secret is in, the one the
 	// prefix names; absent otherwise.
 	GCPProject string `json:"gcp_project,omitempty"`
+	// The audience a machine's Google identity token must carry at the token exchange
+	// (BROKER_GOOGLE_OIDC_AUDIENCE), on either store; absent where the broker accepts none. A
+	// machine's `agent-secrets` mints its identity token for this audience with no setting.
+	GoogleExchangeAudience string `json:"google_exchange_audience,omitempty"`
+	// The audience a pod's projected Kubernetes service-account token must carry at the token
+	// exchange (BROKER_EXCHANGE_K8S_AUDIENCE), on either store; absent where the broker accepts
+	// none.
+	KubernetesExchangeAudience string `json:"kubernetes_exchange_audience,omitempty"`
 }
 
 // readSettings is GET /v1/settings: public, since it answers only the broker's own configuration,
 // which names no secret.
 func (s *server) readSettings(w http.ResponseWriter, r *http.Request) {
-	resp := settingsResponse{Store: s.deps.SecretsStore, SecretsPrefix: s.deps.SecretsPrefix}
+	resp := settingsResponse{Store: s.deps.SecretsStore, SecretsPrefix: s.deps.SecretsPrefix,
+		GoogleExchangeAudience: s.deps.GoogleExchangeAudience, KubernetesExchangeAudience: s.deps.KubernetesExchangeAudience}
 	switch s.deps.SecretsStore {
 	case secrets.StoreGCP:
 		resp.KMSKeyName = s.deps.SecretsKMSKey

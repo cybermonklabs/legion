@@ -672,16 +672,21 @@ func (c *client) RenewEnrollment(ctx context.Context, signer Signer, enrollmentI
 // --- GET /v1/settings, POST /v1/secrets/{name}/reread (public: no proof) ---
 
 // Settings is GET /v1/settings's exact response shape: the store and namespace every agent secret
-// lives under and, per store, the key they are encrypted with and where they are. A broker from
-// before the store field answers none, and holds them in AWS Secrets Manager.
+// lives under and, per store, the key they are encrypted with and where they are; and, on either
+// store, the exchange audiences a machine's own identity token must carry, from which the use
+// command finds that identity with no setting (machineSource). A broker from before the store
+// field answers none, and holds them in AWS Secrets Manager; one from before the audiences, or
+// one that accepts no machine identity, names neither audience.
 type Settings struct {
-	Store         string `json:"store,omitempty"`
-	SecretsPrefix string `json:"secrets_prefix"`
-	KMSKeyARN     string `json:"kms_key_arn,omitempty"`
-	AWSAccountID  string `json:"aws_account_id,omitempty"`
-	AWSRegion     string `json:"aws_region,omitempty"`
-	KMSKeyName    string `json:"kms_key_name,omitempty"`
-	GCPProject    string `json:"gcp_project,omitempty"`
+	Store                      string `json:"store,omitempty"`
+	SecretsPrefix              string `json:"secrets_prefix"`
+	KMSKeyARN                  string `json:"kms_key_arn,omitempty"`
+	AWSAccountID               string `json:"aws_account_id,omitempty"`
+	AWSRegion                  string `json:"aws_region,omitempty"`
+	KMSKeyName                 string `json:"kms_key_name,omitempty"`
+	GCPProject                 string `json:"gcp_project,omitempty"`
+	GoogleExchangeAudience     string `json:"google_exchange_audience,omitempty"`
+	KubernetesExchangeAudience string `json:"kubernetes_exchange_audience,omitempty"`
 }
 
 func (c *client) Settings(ctx context.Context) (Settings, error) {
