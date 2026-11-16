@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 /**
- * host-stub.ts — the Oh My Pi host package, for `scripts/smoke-role-takeover.sh` only.
+ * host-stub.ts — the Oh My Pi host package, for `scripts/smoke-role-takeover.sh` and for the one
+ * row of `extensions/envoy.test.ts` that loads the entry in a process of its own
+ * (`ENVOY_SESSION_ROLE`).
  *
  * `extensions/envoy.ts` imports `@oh-my-pi/pi-coding-agent`, which the host supplies at run time
  * and this workspace does not install; the package's own suite replaces it with

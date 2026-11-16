@@ -323,15 +323,21 @@ export function resetNatsConnectForTests(): void {
 }
 
 /**
- * The Envoy role a session pod's launch named for its session (`ENVOY_SESSION_ROLE`, which
- * agent-infra's sessions workload sets), moved out of the environment into a process-wide slot
- * when this module loads. Every extension instance of the process reads it from the slot, an
- * instance a later load of this entry makes included (a `task` subagent's, or each top-level
- * session of an ACP host), and no process this one starts from the live environment inherits it:
- * Oh My Pi's shell builds a command's environment from `Bun.env` (`procmgr`), so an `omp` an agent
- * runs inside the pod claims none of the pod's roles. A value set again before a later load
- * replaces the one held. Only a `Bun.spawn` that names no `env` still passes the variable on, since
- * it passes the environment the process started with, which no write here reaches.
+ * The Envoy role a session pod's launch named for its session (`ENVOY_SESSION_ROLE`; agent-infra's
+ * sessions workload sets it once t-e-32 renames its `RoleEnv`, `AGENT_SESSION_ROLE` today), taken
+ * into a process-wide slot when this module loads. Every extension instance of the process reads
+ * it from the slot, an instance a later load of this entry makes included (a `task` subagent's, or
+ * each top-level session of an ACP host).
+ *
+ * The load leaves the variable set to "" rather than deleting it. A delete reaches `process.env`
+ * alone: the C environment the process started with keeps the value, and a child Oh My Pi starts
+ * in a PTY (its bash tool's `pty: true`) begins from that environment with the variables built
+ * from `Bun.env` laid over it, so a deleted variable comes back. "" lies over it in every
+ * environment built from `Bun.env`, the PTY's and the plain shell's (`procmgr`), and a child's
+ * load reads "" as no role, so an `omp` an agent runs inside the pod claims none of the pod's
+ * roles. A later load in this process that finds "" keeps the role held; one that finds a value
+ * set again takes that one. Only a `Bun.spawn` that names no `env` still hands a child the value,
+ * since it passes the environment the process started with, which no write here reaches.
  */
 const SESSION_ROLE = Symbol.for("legion.pi-envoy.session-role");
 
@@ -342,8 +348,9 @@ interface GlobalSessionRole {
 const sessionRoleStore = globalThis as unknown as GlobalSessionRole;
 
 if (process.env.ENVOY_SESSION_ROLE !== undefined) {
-  sessionRoleStore[SESSION_ROLE] = process.env.ENVOY_SESSION_ROLE.trim() || undefined;
-  delete process.env.ENVOY_SESSION_ROLE;
+  const launched = process.env.ENVOY_SESSION_ROLE.trim();
+  if (launched !== "") sessionRoleStore[SESSION_ROLE] = launched;
+  process.env.ENVOY_SESSION_ROLE = "";
 }
 
 // The slot outlives every instance of this entry in the process, so a suite clears it between
@@ -2950,9 +2957,9 @@ export default function envoyExtension(pi: PiApi): void {
     );
 
   // The Envoy role a session pod's launch named for its session, as the module's load took it
-  // out of the environment (`SESSION_ROLE`): the session claims it itself, under its own
-  // credential, which the listener holds to this very session, at every pass that registers it
-  // (`settleRole`). Read when the instance is created.
+  // into the slot and left "" in the environment (`SESSION_ROLE`): the session claims it itself,
+  // under its own credential, which the listener holds to this very session, at every pass that
+  // registers it (`settleRole`). Read when the instance is created.
   const sessionRole = sessionRoleStore[SESSION_ROLE];
 
   // The registration and role state the two serial queues write, the queues themselves, each

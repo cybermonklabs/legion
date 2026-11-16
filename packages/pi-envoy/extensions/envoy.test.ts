@@ -11346,26 +11346,29 @@ console.log(JSON.stringify(args));
   });
 
   // The variable is the launch's word to this process alone: an `omp` an agent starts inside the
-  // pod must not inherit it, or that session would take the pod's role from the pod's session at
-  // each of its registrations. Every extension instance of the process still reads it: a second
-  // one, loaded after the first took the variable out of the environment, claims it too.
-  test("no process the session starts inherits ENVOY_SESSION_ROLE, and every instance of the process claims it", async () => {
+  // pod must not get its value, or that session would take the pod's role from the pod's session
+  // at each of its registrations. The load leaves it set to "", which names no role, so every
+  // environment built from this process's carries "" over whatever the process started with.
+  // Every extension instance of the process still reads the role: a second one, loaded after the
+  // first took it out of the environment, claims it too.
+  test("no process the session starts gets the ENVOY_SESSION_ROLE value, and every instance of the process claims it", async () => {
     const first = await bootSessionPod("session-role-first", "ses_pod_first", "fan-cloud");
     expect(first.seen).toEqual([
       { registered: "ses_pod_first" },
       { claimed: roleClaimBody("ses_pod_first", "fan-cloud") },
     ]);
+    expect(process.env.ENVOY_SESSION_ROLE).toBe("");
 
     // Handed the live environment, as Oh My Pi's shell is (`procmgr.refreshShellConfigCache`
-    // captures `Bun.env`): `Bun.spawnSync` with no `env` passes the environment the process
-    // started with, which no write to `process.env` reaches, and would see nothing either way.
+    // captures `Bun.env`). What a child does with the environment the process started with is the
+    // next test's: this process set the variable after it started.
     const child = Bun.spawnSync(["env"], { env: process.env, stdout: "pipe", stderr: "pipe" });
     expect(child.exitCode).toBe(0);
     const inherited = child.stdout
       .toString()
       .split("\n")
       .filter((line) => line.startsWith("ENVOY_SESSION_ROLE="));
-    expect(inherited).toEqual([]);
+    expect(inherited).toEqual(["ENVOY_SESSION_ROLE="]);
 
     const second = await bootSessionPod("session-role-second", "ses_pod_second");
     expect(second.seen).toEqual([
@@ -11374,6 +11377,48 @@ console.log(JSON.stringify(args));
     ]);
     await first.shutdown();
     await second.shutdown();
+  });
+
+  // A deleted variable stays in the C environment the process started with, and a child Oh My Pi
+  // starts in a PTY (its bash tool's `pty: true`) begins from that environment, with the variables
+  // built from `Bun.env` laid over it. So the load must leave "" over it rather than nothing. The
+  // process here starts with the variable, as a session pod's `omp` does, loads the entry (with
+  // the host package stood in by the role takeover smoke's preload), and starts `env` the PTY's
+  // way: `env K=V … env`, its own environment being the inherited one.
+  test("a process started with ENVOY_SESSION_ROLE hands a child built over its native environment no role", () => {
+    const marker = "session-role-report ";
+    const script = `
+      await import(${JSON.stringify(join(import.meta.dir, "envoy.ts"))});
+      const overrides = Object.entries(process.env)
+        .filter(([, value]) => value !== undefined)
+        .map(([name, value]) => name + "=" + value);
+      const line = Bun.spawnSync(["env", ...overrides, "env"])
+        .stdout.toString()
+        .split("\\n")
+        .find((entry) => entry.startsWith("ENVOY_SESSION_ROLE="));
+      console.log(${JSON.stringify(marker)} + JSON.stringify({
+        processEnv: process.env.ENVOY_SESSION_ROLE ?? null,
+        pty: line === undefined ? null : line.slice("ENVOY_SESSION_ROLE=".length),
+      }));
+    `;
+    const hostStub = join(import.meta.dir, "..", "scripts", "role-takeover", "host-stub.ts");
+    const run = Bun.spawnSync([process.execPath, "--preload", hostStub, "-e", script], {
+      cwd: import.meta.dir,
+      env: { ...process.env, ENVOY_SESSION_ROLE: "fan-cloud" },
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 30_000,
+    });
+    const report = run.stdout
+      .toString()
+      .split("\n")
+      .find((line) => line.startsWith(marker));
+    if (run.exitCode !== 0 || report === undefined) {
+      throw new Error(
+        `the process that loaded the entry reported nothing: ${run.stderr.toString()}`
+      );
+    }
+    expect(JSON.parse(report.slice(marker.length))).toEqual({ processEnv: "", pty: "" });
   });
 
   test("unsubscribing all topics preserves a held role for heartbeat re-assertion", async () => {
