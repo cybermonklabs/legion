@@ -3,7 +3,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api } from "../../api/client";
-import type { AgentToken, CreatedAgentToken, DispatchScope } from "../../api/types";
+import { projectsQuery } from "../../api/queries";
+import type { AgentToken, CreatedAgentToken, DispatchScope, Project } from "../../api/types";
+import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -153,26 +155,108 @@ function TokenScopeChoices({
   );
 }
 
+/** The most projects Dispatch lets one token name (`agent_tokens.projects`, and 400
+ *  TOKEN_PROJECTS_INPUT at the mint and the edit). */
+const MAX_TOKEN_PROJECTS = 16;
+
+/** The projects a token may use, for a token's row and for the mint form. A token that names no
+ *  project uses the public projects only, and one that names projects uses those alone, private
+ *  ones included. It offers the projects the reader sees (`projects`), and any the token names
+ *  that the reader no longer sees, ticked, so they can be taken off. The choice is staged while
+ *  the picker is open and handed to `onChoose` once it closes, and only when it changed.
+ *  `subject` is the token it belongs to, as for the scope boxes. */
+function TokenProjectsChoice({
+  chosen,
+  disabled,
+  onChoose,
+  projects,
+  subject,
+}: {
+  chosen: readonly string[];
+  disabled: boolean;
+  onChoose: (projects: string[]) => void;
+  projects: readonly Project[];
+  subject: string;
+}): ReactNode {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const names = new Map(projects.map((listed) => [listed.key, listed.name]));
+  const options = [...names.keys(), ...chosen.filter((key) => !names.has(key))];
+  return (
+    <MultiSelect
+      disabled={disabled}
+      emptyMessage="No project matches that."
+      error={error}
+      label="Projects"
+      onChange={(next) => {
+        if (next.length > MAX_TOKEN_PROJECTS) {
+          setError(`A token names at most ${MAX_TOKEN_PROJECTS} projects.`);
+          return;
+        }
+        setError(null);
+        setDraft(next);
+      }}
+      onOpenChange={(next) => {
+        if (next) {
+          setDraft([...chosen]);
+          setError(null);
+          setOpen(true);
+          return;
+        }
+        if (!open) return;
+        setOpen(false);
+        if (draft.length !== chosen.length || draft.some((key) => !chosen.includes(key))) {
+          onChoose(draft);
+        }
+      }}
+      open={open}
+      optionDetail={(key) => names.get(key)}
+      options={options}
+      searchLabel="Search projects"
+      selected={open ? draft : chosen}
+      triggerAriaLabel={`Projects (${subject})`}
+    >
+      {chosen.length === 0 ? "Public projects only" : chosen.join(", ")}
+    </MultiSelect>
+  );
+}
+
 export function AgentTokensSection(): ReactNode {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   /** What the mint form's boxes hold: both scopes until the reader clears one. */
   const [newScopes, setNewScopes] = useState<readonly DispatchScope[]>(BOTH_SCOPES);
+  /** The projects the mint form names: none, the public projects only, until the reader picks. */
+  const [newProjects, setNewProjects] = useState<readonly string[]>([]);
   const [shownToken, setShownToken] = useState<CreatedAgentToken>();
   /** When the token list was last read again after a mint whose answer was lost. */
   const [rereadAt, setRereadAt] = useState<number | undefined>(undefined);
   const { copy, reset: resetCopyStatus, status: copyStatus } = useCopyFeedback();
   const tokens = useQuery({ queryKey: agentTokensQueryKey, queryFn: () => api.listAgentTokens() });
-  // The form shows a refused mint beside the name it was refused over.
+  /** The projects a token may name: those the reader sees. */
+  const projects = useQuery(projectsQuery()).data ?? [];
+  // The form shows a refused mint beside the name it was refused over. A mint that names no
+  // project sends none, as a mint did before tokens named projects.
   const createToken = useKeyedWrite({
     inline: true,
-    label: (input: { name: string; before: readonly string[]; scopes: readonly DispatchScope[] }) =>
-      `New agent token ${input.name}`,
-    write: ({ name: label, scopes }, bounds) =>
-      api.createAgentToken({ name: label, scopes: [...scopes] }, bounds),
+    label: (input: {
+      name: string;
+      before: readonly string[];
+      projects: readonly string[];
+      scopes: readonly DispatchScope[];
+    }) => `New agent token ${input.name}`,
+    write: ({ name: label, projects: named, scopes }, bounds) =>
+      api.createAgentToken(
+        named.length === 0
+          ? { name: label, scopes: [...scopes] }
+          : { name: label, projects: [...named], scopes: [...scopes] },
+        bounds
+      ),
     onSuccess: (created) => {
       setName("");
       setNewScopes(BOTH_SCOPES);
+      setNewProjects([]);
       if (created === null) {
         // Minted, and its value - shown once only - is gone with the answer
         // (`createToken.unanswered`): the token is listed once the list is read again, and the
@@ -203,16 +287,31 @@ export function AgentTokensSection(): ReactNode {
       );
     },
   });
-  /** One row's two boxes, written as the whole set the token is to hold. The row reads the set
-   *  back from the list, so the boxes follow the write rather than the press. */
-  const setTokenScopes = useKeyedWrite({
-    label: (input: { id: string; name: string; scopes: DispatchScope[] }) =>
-      `What agent token ${input.name} may do`,
-    write: (input, bounds) => api.setAgentTokenScopes(input.id, input.scopes, bounds),
+  /** One row's two boxes or its projects, written as the whole set the token is to hold. The
+   *  edit always names the scopes, and names the projects only when they are what changed, which
+   *  leaves them as they are otherwise. The row reads both back from the list, so it follows the
+   *  write rather than the press. */
+  const updateToken = useKeyedWrite({
+    label: (input: { id: string; name: string; projects?: string[]; scopes: DispatchScope[] }) =>
+      input.projects === undefined
+        ? `What agent token ${input.name} may do`
+        : `Which projects agent token ${input.name} may use`,
+    write: ({ id, projects: named, scopes }, bounds) =>
+      api.updateAgentToken(
+        id,
+        named === undefined ? { scopes } : { projects: named, scopes },
+        bounds
+      ),
     onSuccess: (updated, input) => {
       queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
         current.map((token) =>
-          token.id === input.id ? (updated ?? { ...token, scopes: input.scopes }) : token
+          token.id === input.id
+            ? (updated ?? {
+                ...token,
+                scopes: input.scopes,
+                projects: input.projects ?? token.projects,
+              })
+            : token
         )
       );
     },
@@ -223,7 +322,7 @@ export function AgentTokensSection(): ReactNode {
     event.preventDefault();
     // An emptied form - a mint that landed - sends nothing, whatever submits it.
     if (name.trim() === "") return;
-    createToken.mutate({ before: listedIds(), name, scopes: newScopes });
+    createToken.mutate({ before: listedIds(), name, projects: newProjects, scopes: newScopes });
   };
   /** A mint whose value was lost with its answer, until the next mint or the reader writes
    *  another label: the press's label and listed tokens, and whether the list has been read
@@ -239,7 +338,7 @@ export function AgentTokensSection(): ReactNode {
         };
   const candidates = lost === null ? [] : lostTokens(tokens.data, lost);
   /** Revokes `token` - once the reader confirms it, by its label and when it was made - and then
-   *  mints another under its label, holding the scopes the lost one held. */
+   *  mints another under its label, holding the scopes and the projects the lost one held. */
   const replaceLost = (token: AgentToken) => {
     const made = new Date(token.created_at).toLocaleString();
     if (
@@ -254,6 +353,7 @@ export function AgentTokensSection(): ReactNode {
         createToken.mutate({
           before: listedIds(),
           name: token.name,
+          projects: token.projects ?? [],
           scopes: heldScopes(token.scopes),
         }),
     });
@@ -279,7 +379,8 @@ export function AgentTokensSection(): ReactNode {
         Agent tokens
       </h2>
       <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-        Create a token for an agent you run. Its writes are attributed to you.
+        Create a token for an agent you run. Its writes are attributed to you. A token that names no
+        project uses only the public projects you see; one that names projects uses those alone.
       </p>
 
       {tokens.isPending ? (
@@ -314,6 +415,9 @@ export function AgentTokensSection(): ReactNode {
                 <th className="px-4 py-3 font-semibold" scope="col">
                   What it may do
                 </th>
+                <th className="px-4 py-3 font-semibold" scope="col">
+                  Projects
+                </th>
                 <th className="px-4 py-3" scope="col">
                   <span className="sr-only">Actions</span>
                 </th>
@@ -322,7 +426,7 @@ export function AgentTokensSection(): ReactNode {
             <tbody>
               {tokens.data.length === 0 ? (
                 <tr>
-                  <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={6}>
+                  <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={7}>
                     No agent tokens yet.
                   </td>
                 </tr>
@@ -348,10 +452,26 @@ export function AgentTokensSection(): ReactNode {
                     <td className="px-4 py-3">
                       <TokenScopeChoices
                         chosen={heldScopes(token.scopes)}
-                        disabled={token.revoked_at !== null || setTokenScopes.isPending}
+                        disabled={token.revoked_at !== null || updateToken.isPending}
                         onChoose={(scopes) =>
-                          setTokenScopes.mutate({ id: token.id, name: token.name, scopes })
+                          updateToken.mutate({ id: token.id, name: token.name, scopes })
                         }
+                        subject={token.name}
+                      />
+                    </td>
+                    <td className="px-4 py-3">
+                      <TokenProjectsChoice
+                        chosen={token.projects ?? []}
+                        disabled={token.revoked_at !== null || updateToken.isPending}
+                        onChoose={(named) =>
+                          updateToken.mutate({
+                            id: token.id,
+                            name: token.name,
+                            projects: named,
+                            scopes: heldScopes(token.scopes),
+                          })
+                        }
+                        projects={projects}
                         subject={token.name}
                       />
                     </td>
@@ -410,6 +530,18 @@ export function AgentTokensSection(): ReactNode {
           onChoose={setNewScopes}
           subject="new token"
         />
+        <div
+          className={`flex flex-wrap items-center gap-2 text-sm font-medium ${textSecondaryOnCanvas}`}
+        >
+          Projects
+          <TokenProjectsChoice
+            chosen={newProjects}
+            disabled={createToken.isPending}
+            onChoose={setNewProjects}
+            projects={projects}
+            subject="new token"
+          />
+        </div>
       </form>
       {lost === null ? null : (
         <div className="mt-4 space-y-2">
@@ -465,7 +597,12 @@ export function AgentTokensSection(): ReactNode {
             message="Couldn't create the agent token."
             onRetry={() =>
               createToken.mutate(
-                createToken.variables ?? { before: listedIds(), name, scopes: newScopes }
+                createToken.variables ?? {
+                  before: listedIds(),
+                  name,
+                  projects: newProjects,
+                  scopes: newScopes,
+                }
               )
             }
             retrying={createToken.isPending}

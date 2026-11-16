@@ -1141,14 +1141,15 @@ export class DispatchApiClient {
   }
 
   /** `PATCH /api/v1/me/agent-tokens/{id}`: the whole set of scopes the token is to hold, which
-   *  replaces the set it holds now, answering the updated token. A scope the caller does not hold
-   *  itself is refused, as it is at the mint. */
-  setAgentTokenScopes(
+   *  replaces the set it holds now, and, when the body names them, the whole list of projects it
+   *  may use; a body with no `projects` leaves the list as it is. Answers the updated token. A
+   *  scope the caller does not hold itself is refused, as it is at the mint. */
+  updateAgentToken(
     id: string,
-    scopes: NonNullable<Body<"/api/v1/me/agent-tokens/{id}", "patch">>["scopes"],
+    input: Body<"/api/v1/me/agent-tokens/{id}", "patch">,
     bounds: WriteBounds
   ) {
-    return this.patch("/api/v1/me/agent-tokens/{id}", { id }, { scopes }, bounds);
+    return this.patch("/api/v1/me/agent-tokens/{id}", { id }, input, bounds);
   }
 
   async revokeAgentToken(id: string, bounds: WriteBounds): Promise<void> {

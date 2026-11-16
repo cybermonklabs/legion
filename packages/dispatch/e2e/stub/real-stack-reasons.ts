@@ -39,7 +39,8 @@ export const realStackReasons: Record<string, string> = {
     "the view is built from the session's replay over the relay, and each turn is drawn under the id Dispatch minted for the message it answers, folded with the reply the server stored",
   "agent-skill-completion.e2e.ts":
     "completion reads the session's commands from the replay the live relay carries, and what Send hands over is read back from the fake Envoy",
-  "agent-tokens.e2e.ts": "token mint, attribution, privacy between two contexts, revoke",
+  "agent-tokens.e2e.ts":
+    "token mint, attribution, privacy between two contexts, revoke; the projects a token names, minted and edited, re-read after a reload",
   "agent-view-cost.e2e.ts":
     "every view opens on a transcript at the stream's limit the relay replays, and the gap row turns on the relay itself: a frame published while a viewer is subscribed reaches the page, and one published to a sleeping view reaches nobody and is kept nowhere",
   "agent-view-settings.e2e.ts":

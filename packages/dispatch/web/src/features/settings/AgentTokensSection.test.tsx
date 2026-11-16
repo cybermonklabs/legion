@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the submit site below is a form submitted with no control pressed, which user-event has no form for
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -8,7 +8,7 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import type { AgentToken, DispatchScope } from "../../api/types";
+import type { AgentToken, DispatchScope, Project } from "../../api/types";
 import { AgentTokensSection } from "./AgentTokensSection";
 
 const token: AgentToken = {
@@ -20,6 +20,21 @@ const token: AgentToken = {
   revoked_at: null,
   scopes: ["person", "approve"],
 };
+
+/** A project Dispatch lists to the reader. */
+function project(key: string, name: string): Project {
+  return { created_at: "2026-09-12T00:00:00Z", gated_steps: null, key, name, open_asks: 0 };
+}
+
+/** The projects the section offers a token, which every row reads: none unless a row lists its
+ *  own. */
+let listProjects: Mock<typeof api.listProjects>;
+beforeEach(() => {
+  listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
+});
+afterEach(() => {
+  listProjects.mockRestore();
+});
 
 test("Settings exposes a new personal token once, copies it, and revokes an existing token", async () => {
   const user = userEvent.setup();
@@ -145,8 +160,12 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
   const user = userEvent.setup();
   const personOnly: AgentToken = { ...token, scopes: ["person"] };
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([personOnly]);
-  const setAgentTokenScopes = spyOn(api, "setAgentTokenScopes").mockImplementation(
-    async (id: string, scopes: DispatchScope[]) => ({ ...personOnly, id, scopes })
+  const updateAgentToken = spyOn(api, "updateAgentToken").mockImplementation(
+    async (id: string, input: { scopes: DispatchScope[] }) => ({
+      ...personOnly,
+      id,
+      scopes: input.scopes,
+    })
   );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
@@ -161,11 +180,12 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
     expect(box("Act as you", "architect").checked).toBe(true);
     expect(box("Approve and control credentials", "architect").checked).toBe(false);
 
+    // A scope write names the scopes alone, which leaves the token's projects as they are.
     await user.click(box("Approve and control credentials", "architect"));
     await waitFor(() =>
-      expect(setAgentTokenScopes).toHaveBeenCalledWith(
+      expect(updateAgentToken).toHaveBeenCalledWith(
         personOnly.id,
-        ["person", "approve"],
+        { scopes: ["person", "approve"] },
         keyedAttempt
       )
     );
@@ -176,7 +196,7 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
 
     await user.click(box("Act as you", "architect"));
     await waitFor(() =>
-      expect(setAgentTokenScopes).toHaveBeenLastCalledWith(personOnly.id, [], keyedAttempt)
+      expect(updateAgentToken).toHaveBeenLastCalledWith(personOnly.id, { scopes: [] }, keyedAttempt)
     );
     await waitFor(() => expect(box("Act as you", "architect").checked).toBe(false));
     expect(box("Approve and control credentials", "architect").checked).toBe(false);
@@ -184,7 +204,163 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
     cleanup();
     queryClient.clear();
     listAgentTokens.mockRestore();
-    setAgentTokenScopes.mockRestore();
+    updateAgentToken.mockRestore();
+  }
+});
+
+/** The projects picker of `subject`'s token: its trigger, which reads the projects it names. */
+function projectsPicker(subject: string): HTMLElement {
+  return screen.getByRole("button", { name: `Projects (${subject})` });
+}
+
+// A token that names no project uses the public projects only, and one that names projects uses
+// those alone: the mint form names none until the reader picks some, sends the ones picked, and
+// names none again for the next token.
+test("the mint form names no project until the reader picks some, and sends the ones picked", async () => {
+  const user = userEvent.setup();
+  listProjects.mockResolvedValue([project("CORE", "Core"), project("PRIV", "Private work")]);
+  const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
+  const createAgentToken = spyOn(api, "createAgentToken").mockResolvedValue({
+    ...token,
+    id: "22222222-2222-2222-2222-222222222222",
+    name: "reviewer",
+    projects: ["PRIV"],
+    token: "dsp_abcdefghijklmnopqrstuvwxyz0123456789-ABCDEFG",
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AgentTokensSection />
+      </QueryClientProvider>
+    );
+
+    expect(projectsPicker("new token").textContent).toBe("Public projects only");
+    await user.click(projectsPicker("new token"));
+    await user.click(await screen.findByRole("option", { name: "PRIV, Private work" }));
+    await user.keyboard("{Escape}");
+    expect(projectsPicker("new token").textContent).toBe("PRIV");
+
+    await user.click(screen.getByLabelText("Token label"));
+    await user.paste("reviewer");
+    await user.click(screen.getByRole("button", { name: "New token" }));
+    await waitFor(() =>
+      expect(createAgentToken).toHaveBeenCalledWith(
+        { name: "reviewer", projects: ["PRIV"], scopes: ["person", "approve"] },
+        keyedAttempt
+      )
+    );
+    await screen.findByText("dsp_abcdefghijklmnopqrstuvwxyz0123456789-ABCDEFG");
+    expect(projectsPicker("new token").textContent).toBe("Public projects only");
+    expect(projectsPicker("reviewer").textContent).toBe("PRIV");
+  } finally {
+    cleanup();
+    queryClient.clear();
+    listAgentTokens.mockRestore();
+    createAgentToken.mockRestore();
+  }
+});
+
+// A row's picker reads the projects its token names and writes the whole list back with the
+// scopes the token holds, since the edit names both. A project the token names that the reader no
+// longer sees is still offered, ticked, so it can be taken off; and taking every project off sends
+// the empty list, which makes the token one of the public projects only.
+test("a token's row edits the projects it names, sent with the scopes it holds", async () => {
+  const user = userEvent.setup();
+  listProjects.mockResolvedValue([project("CORE", "Core"), project("PRIV", "Private work")]);
+  const naming: AgentToken = { ...token, projects: ["GONE", "PRIV"] };
+  const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([naming]);
+  const updateAgentToken = spyOn(api, "updateAgentToken").mockImplementation(
+    async (id: string, input: { projects?: string[] | null; scopes: DispatchScope[] }) => {
+      const { projects: named, ...rest } = naming;
+      const projects = [...(input.projects ?? named ?? [])].sort();
+      return projects.length === 0 ? { ...rest, id } : { ...rest, id, projects };
+    }
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AgentTokensSection />
+      </QueryClientProvider>
+    );
+
+    await screen.findByRole("cell", { name: "dsp_AbCdEf12…" });
+    expect(projectsPicker("architect").textContent).toBe("GONE, PRIV");
+    await user.click(projectsPicker("architect"));
+    expect(screen.getByRole("option", { name: "GONE" }).getAttribute("aria-selected")).toBe("true");
+    await user.click(screen.getByRole("option", { name: "GONE" }));
+    await user.click(screen.getByRole("option", { name: "CORE, Core" }));
+    // Nothing is written while the picker is open.
+    expect(updateAgentToken).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(updateAgentToken).toHaveBeenCalledWith(
+        naming.id,
+        { projects: ["PRIV", "CORE"], scopes: ["person", "approve"] },
+        keyedAttempt
+      )
+    );
+    await waitFor(() => expect(projectsPicker("architect").textContent).toBe("CORE, PRIV"));
+
+    // A picker closed with the list it opened with writes nothing.
+    await user.click(projectsPicker("architect"));
+    await user.keyboard("{Escape}");
+    expect(updateAgentToken).toHaveBeenCalledTimes(1);
+
+    await user.click(projectsPicker("architect"));
+    await user.click(screen.getByRole("button", { name: "Clear projects" }));
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(updateAgentToken).toHaveBeenLastCalledWith(
+        naming.id,
+        { projects: [], scopes: ["person", "approve"] },
+        keyedAttempt
+      )
+    );
+    await waitFor(() =>
+      expect(projectsPicker("architect").textContent).toBe("Public projects only")
+    );
+  } finally {
+    cleanup();
+    queryClient.clear();
+    listAgentTokens.mockRestore();
+    updateAgentToken.mockRestore();
+  }
+});
+
+// Dispatch holds a token to at most 16 projects (400 TOKEN_PROJECTS_INPUT): the picker takes no
+// seventeenth, and says why.
+test("a token's picker takes at most 16 projects", async () => {
+  const user = userEvent.setup();
+  const keys = Array.from({ length: 17 }, (_, index) => `P${String(index).padStart(2, "0")}`);
+  listProjects.mockResolvedValue(keys.map((key) => project(key, key)));
+  const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AgentTokensSection />
+      </QueryClientProvider>
+    );
+
+    await user.click(projectsPicker("new token"));
+    for (const key of keys) {
+      await user.click(await screen.findByRole("option", { name: `${key}, ${key}` }));
+    }
+    expect(screen.getByText("A token names at most 16 projects.")).toBeDefined();
+    expect(screen.getByRole("option", { name: "P16, P16" }).getAttribute("aria-selected")).toBe(
+      "false"
+    );
+    await user.keyboard("{Escape}");
+    expect(projectsPicker("new token").textContent).toBe(keys.slice(0, 16).join(", "));
+  } finally {
+    cleanup();
+    queryClient.clear();
+    listAgentTokens.mockRestore();
   }
 });
 
@@ -302,7 +478,7 @@ function confirmFor(made: AgentToken): string {
 test("a mint answered KEY_COMMITTED offers the one token made since the press, confirmed first", async () => {
   jest.useFakeTimers();
   const older = madeAt("older", "reviewer", -86_400_000);
-  const lost = madeAt("lost", "reviewer", 60_000);
+  const lost: AgentToken = { ...madeAt("lost", "reviewer", 60_000), projects: ["PRIV"] };
   const page = await mintLostWith(userOnFakeClock(), [lost, older, token], [false, true]);
 
   try {
@@ -326,9 +502,10 @@ test("a mint answered KEY_COMMITTED offers the one token made since the press, c
     await page.user.click(replace);
     await waitFor(() => expect(page.revokeAgentToken).toHaveBeenCalledWith(lost.id, keyedAttempt));
     await waitFor(() => expect(page.createAgentToken).toHaveBeenCalledTimes(2));
-    // The replacement holds what the lost token held.
+    // The replacement holds what the lost token held: its scopes and its projects.
     expect(page.createAgentToken.mock.calls[1]?.[0]).toEqual({
       name: "reviewer",
+      projects: ["PRIV"],
       scopes: ["person", "approve"],
     });
     expect(await screen.findByText("dsp_replacement")).toBeDefined();

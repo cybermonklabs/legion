@@ -319,7 +319,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     // is what it goes on to do with them.
     await page.goto("/settings");
     await page.getByLabel("Token label").fill("Inbox reader");
-    await page.getByRole("button", { name: "New token" }).click();
+    await page.getByRole("button", { exact: true, name: "New token" }).click();
     const token = await page.getByRole("status").locator("code").first().textContent();
     if (token === null) throw new Error("Settings minted no agent token");
     expect(token).toMatch(/^dsp_[A-Za-z0-9_-]{43}$/);
