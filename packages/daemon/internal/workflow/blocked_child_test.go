@@ -115,14 +115,17 @@ func TestAChildReleasedWhileABlockerIsUnfinishedStaysAdmitted(t *testing.T) {
 	if got := phaseOf(t, pool, "LEGION-210"); got != phase.Planning {
 		t.Fatalf("the unblocked child = %s once the line reached it, want planning", got)
 	}
-	// The second notice is the architect's: every child the line starts tells it so
-	// (ChildStartedNotice), whether a blocker held it or its tree's gate did.
-	assertOutboxKinds(t, pool, []string{"issue_branch", "dispatch_status", "supervise", "notice", "notice"})
+	// The first supervise row is the child's own architect's start, queued behind its branch row
+	// and before its planner's (Engine.gateOpened). The second notice is the architect's: every
+	// child the line starts tells it so (ChildStartedNotice), whether a blocker held it or its
+	// tree's gate did.
+	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "supervise", "notice", "notice"})
 }
 
-// The close of the last issue a held child waited on starts it: its branch row, the in_progress
-// its entry into planning writes to Dispatch, its planner's start behind the branch row, and one
-// child-status notice to the tree's architect naming the issues it waited on.
+// The close of the last issue a held child waited on starts it: its branch row, its own
+// architect's start behind that row, the in_progress its entry into planning writes to Dispatch,
+// its planner's start behind the branch row, and one child-status notice to the tree's architect
+// naming the issues it waited on and saying that the child's own architect owns it from now on.
 func TestAHeldChildStartsWhenItsLastBlockerCloses(t *testing.T) {
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3)})
@@ -145,10 +148,10 @@ func TestAHeldChildStartsWhenItsLastBlockerCloses(t *testing.T) {
 	if got := phaseOf(t, pool, "LEGION-209"); got != phase.Planning {
 		t.Fatalf("the child = %s once every issue it waited on is done, want planning", got)
 	}
-	assertOutboxKinds(t, pool, []string{"issue_branch", "dispatch_status", "supervise", "notice", "notice"})
+	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "supervise", "notice", "notice"})
 	assertBranchRow(t, pool, "LEGION-209", 4)
 	assertPlannerStart(t, pool, "LEGION-209")
-	want := "LEGION-209 starts planning under LEGION-208: every issue it waited on (LEGION-300, LEGION-301) is done"
+	want := "LEGION-209 starts planning under LEGION-208: every issue it waited on (LEGION-300, LEGION-301) is done" + childStartedOwnership
 	if got := childStatusNotices(t, pool); len(got) != 1 || got[0] != want {
 		t.Fatalf("child-status notices = %#v, want one reading %q", got, want)
 	}
@@ -189,7 +192,7 @@ func TestAHeldChildWhoseLinksAreTakenOffStarts(t *testing.T) {
 	}
 	assertBranchRow(t, pool, "LEGION-209", 4)
 	assertPlannerStart(t, pool, "LEGION-209")
-	want := "LEGION-209 starts planning under LEGION-208: it reached the front of the waiting line and took an admission slot"
+	want := "LEGION-209 starts planning under LEGION-208: it reached the front of the waiting line and took an admission slot" + childStartedOwnership
 	if got := childStatusNotices(t, pool); len(got) != 1 || got[0] != want {
 		t.Fatalf("child-status notices = %#v, want one reading %q", got, want)
 	}
@@ -239,7 +242,7 @@ func TestTheGateOpeningDoesNotStartAHeldChild(t *testing.T) {
 	if got := phaseOf(t, pool, "LEGION-210"); got != phase.Planning {
 		t.Fatalf("the child that waits on nothing = %s once the line reached it, want planning", got)
 	}
-	assertOutboxKinds(t, pool, []string{"role_message", "role_message", "notice", "issue_branch", "dispatch_status", "supervise", "notice", "notice"})
+	assertOutboxKinds(t, pool, []string{"role_message", "role_message", "notice", "issue_branch", "supervise", "dispatch_status", "supervise", "notice", "notice"})
 }
 
 // An unblocked child whose tree would not start it now is in no line either: the tree's gate is
@@ -507,6 +510,12 @@ func assertPlannerStart(t *testing.T, pool *pgxpool.Pool, issue string) {
 		t.Fatalf("supervise row = %s %s %s, want a planner start for %s", gotIssue, op, role, issue)
 	}
 }
+
+// childStartedOwnership is how every child-status notice of a child's start ends, after its
+// reason: the child's own architect starts with it and owns it, so the architect it tells hears
+// only what goes above that architect (ChildStartedNotice).
+const childStartedOwnership = ". Its own architect starts with it and owns it from now on: its decomposition, its children and " +
+	"its acceptance. You hear its child-status and child-closed notices, and a worker-died when its architect fails"
 
 func childStatusNotices(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()

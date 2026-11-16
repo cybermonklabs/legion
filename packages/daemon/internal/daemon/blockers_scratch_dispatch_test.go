@@ -451,10 +451,10 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	}
 	// The tree's architect is told the child it held starts, and why: the child-status notice the
 	// daemon queued on the child, in the very transaction that started it, naming the issue it
-	// waited on.
+	// waited on and saying that the child's own architect owns it from now on.
 	notices := childStatusNotices(t, pool, child)
 	t.Logf("the child-status notices the daemon queued on %s for its tree's architect: %q", child, notices)
-	wantNotice := fmt.Sprintf("%s starts planning under %s: every issue it waited on (%s) is done", child, free, blocked)
+	wantNotice := fmt.Sprintf("%s starts planning under %s: every issue it waited on (%s) is done", child, free, blocked) + childStartedOwnership
 	if !slices.Equal(notices, []string{wantNotice}) {
 		t.Fatalf("Legion started the held child %s once %s closed and queued its tree's architect the child-status notices %q; "+
 			"want the one reading %q\nstate %s", child, blocked, notices, wantNotice, body)
@@ -666,7 +666,7 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	}
 	notices = childStatusNotices(t, pool, unlinked)
 	t.Logf("the child-status notices the daemon queued on %s for its tree's architect: %q", unlinked, notices)
-	wantNotice = fmt.Sprintf("%s starts planning under %s: it reached the front of the waiting line and took an admission slot", unlinked, free)
+	wantNotice = fmt.Sprintf("%s starts planning under %s: it reached the front of the waiting line and took an admission slot", unlinked, free) + childStartedOwnership
 	if !slices.Equal(notices, []string{wantNotice}) {
 		t.Fatalf("Legion started the held child %s once a person took its links off and queued its tree's architect the child-status "+
 			"notices %q; want the one reading %q: a start nobody hears of is the silence the hold's report exists to remove\nstate %s",
@@ -889,6 +889,12 @@ func blockedOn(state api.State, issue string) ([]string, bool) {
 	}
 	return nil, false
 }
+
+// childStartedOwnership is how every child-status notice of a child's start ends, after its
+// reason: the child's own architect starts with it and owns it, so the architect it tells hears
+// only what goes above that architect (workflow.ChildStartedNotice).
+const childStartedOwnership = ". Its own architect starts with it and owns it from now on: its decomposition, its children and " +
+	"its acceptance. You hear its child-status and child-closed notices, and a worker-died when its architect fails"
 
 // childStatusNotices is the reason of every child-status notice the daemon has queued on issue for
 // its tree's architect, oldest first, read off the daemon's own outbox, where a notice stands

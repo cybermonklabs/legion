@@ -50,10 +50,18 @@ func joinedNotices(t *testing.T, pool *pgxpool.Pool, child string) []string {
 	return reasons
 }
 
+// childStartedOwnership is how every child-status notice of a child's start ends, after its
+// reason: the child's own architect starts with it and owns it, so the architect it tells hears
+// only what goes above that architect (workflow.ChildStartedNotice).
+const childStartedOwnership = ". Its own architect starts with it and owns it from now on: its decomposition, its children and " +
+	"its acceptance. You hear its child-status and child-closed notices, and a worker-died when its architect fails"
+
 // assertJoinedAndPlanning asserts child left admission's queue for tree's run: recorded in tree
 // at generation and, once an admission pass with a slot to spare has read it, planning there on
-// a slot of its own with one planner start queued at that generation, its tree's architect told
-// that it joined and that it started, no tree lifecycle and no architect of its own.
+// a slot of its own with one planner start queued at that generation and one start of its own
+// architect, which every child's first phase start starts (workflow.Engine.StartFirstPhase), its
+// tree's architect told that it joined and that it started, and no tree lifecycle and no
+// architect of a tree of its own.
 //
 // The child waits for a slot where it used to start the moment it joined: the cap counts the
 // issues the daemon has started, so a child of a running tree takes a slot of its own for its
@@ -86,8 +94,11 @@ func assertJoinedAndPlanning(t *testing.T, pool *pgxpool.Pool, child, tree strin
 	if planners != 1 {
 		t.Fatalf("%s has %d planner starts queued, want one", child, planners)
 	}
+	if starts := architectStarts(t, pool, child); starts != 1 {
+		t.Fatalf("%s has %d architect starts queued, want one: its own architect starts with its first phase", child, starts)
+	}
 	if want := []string{child + " joined the tree of " + tree + " from the admission queue",
-		child + " starts planning under " + tree + ": it reached the front of the waiting line and took an admission slot"}; !reflect.DeepEqual(joinedNotices(t, pool, child), want) {
+		child + " starts planning under " + tree + ": it reached the front of the waiting line and took an admission slot" + childStartedOwnership}; !reflect.DeepEqual(joinedNotices(t, pool, child), want) {
 		t.Fatalf("child-status notices of %s = %q, want %q", child, joinedNotices(t, pool, child), want)
 	}
 	assertWaiting(t, pool, nil)
@@ -115,7 +126,8 @@ func assertJoinedAndPlanning(t *testing.T, pool *pgxpool.Pool, child, tree strin
 // A labelled root waiting in admission's queue that a person makes a child of a running tree
 // leaves the queue on that event: it joins the tree at its next generation and, the tree's gate
 // open, waits there for a slot of its own and starts planning at it, as any todo child of the
-// tree does. It never takes a tree or an architect of its own.
+// tree does. It never takes a tree of its own; its own architect starts with its first phase, in
+// the tree it joined.
 func TestAQueuedRootReparentedUnderALiveTreeJoinsItAndTakesNoTreeOfItsOwn(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -234,7 +246,7 @@ func TestNestedQueuedRootsJoinTheLiveTreeAtTheTop(t *testing.T) {
 			t.Fatalf("%s = %#v, want it planning in the tree of %s at generation 2", key, got, tree)
 		}
 		want := []string{key + " joined the tree of " + tree + " from the admission queue",
-			key + " starts planning under " + tree + ": it reached the front of the waiting line and took an admission slot"}
+			key + " starts planning under " + tree + ": it reached the front of the waiting line and took an admission slot" + childStartedOwnership}
 		if !reflect.DeepEqual(joinedNotices(t, pool, key), want) {
 			t.Fatalf("child-status notices of %s = %q, want %q", key, joinedNotices(t, pool, key), want)
 		}
@@ -554,8 +566,8 @@ func TestAChildOfAnAncestryHeldRootWaitsWithIt(t *testing.T) {
 	// above the root it was held under, so it is the first of the two.
 	assertSlots(t, pool, []record.Slot{{Issue: tree, Index: 0, AdmittedAt: fixedNow},
 		{Issue: child, Index: 1, AdmittedAt: fixedNow}, {Issue: held, Index: 2, AdmittedAt: fixedNow}})
-	if starts := architectStarts(t, pool, child); starts != 0 {
-		t.Fatalf("%s has %d architect starts queued, want none: it runs in the tree of %s", child, starts, tree)
+	if starts := architectStarts(t, pool, child); starts != 1 {
+		t.Fatalf("%s has %d architect starts queued, want one: its own architect starts with its first phase in the tree of %s", child, starts, tree)
 	}
 }
 

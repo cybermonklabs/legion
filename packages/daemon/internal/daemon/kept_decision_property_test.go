@@ -1850,8 +1850,10 @@ func (r *keptRun) adoptionTarget() *keptTree {
 
 // adoptQueued is a person making the second root a child of a live tree: admission's sweep of its
 // queue moves it into that tree with every record of its own (adoptQueuedRoots, workflow's
-// Engine.Adopt), where it takes no slot and no architect of its own ever again. From then on the
-// decisions a person made on it while it waited for its slot are owed to that tree's architect.
+// Engine.Adopt), where it never takes a tree of its own again. Its own architect starts with its
+// first phase, as every child's does (workflow's Engine.StartFirstPhase), but that architect is
+// told no kept decision (workflow.QueueCatchUp): from then on the decisions a person made on it
+// while it waited for its slot are owed to that tree's architect.
 func (r *keptRun) adoptQueued() {
 	target := r.adoptionTarget()
 	if target == nil {

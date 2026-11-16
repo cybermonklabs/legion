@@ -735,18 +735,22 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 			t.Fatalf("the re-entered child = %s at generation %d in tree %s, want its first phase at generation %d under the tree it was parked in",
 				back.Phase, back.Generation, back.Tree, child.Generation+1)
 		}
-		// Nothing of the old run is wanted back: the one start the re-entry queued is the
-		// planner's, of the new generation and the new run's first phase, carrying that phase's
-		// own task at the entry the transition raised on the planner's phases row, which is no
-		// resume of anything (workflow.StartOrOwe).
+		// Nothing of the old run is wanted back: the re-entry queued two starts, the plain start of
+		// the child's own architect, which every child's first phase start queues ahead of its
+		// planner's (workflow's Engine.StartFirstPhase), and the planner's, of the new generation
+		// and the new run's first phase, carrying that phase's own task at the entry the transition
+		// raised on the planner's phases row, which is no resume of anything (workflow.StartOrOwe).
 		queued := startRequestsOf(t, rig.pool, child.Key)
-		if len(queued) != 1 {
-			t.Fatalf("the re-entry queued %d starts, want the one of the planner's first phase: %+v", len(queued), queued)
+		if len(queued) != 2 {
+			t.Fatalf("the re-entry queued %d starts, want the child's architect's and the one of the planner's first phase: %+v", len(queued), queued)
 		}
-		if row := queued[0]; row.Role != claim.RolePlanner || row.Generation != back.Generation || row.Phase != phase.Planning || row.ResumeTask {
+		if row := queued[0]; row != (record.SuperviseRequest{Op: "start", Tree: rig.root.Key, Role: claim.RoleArchitect, Generation: back.Generation}) {
+			t.Fatalf("the re-entry's first start = %+v, want the plain start of the child's own architect at generation %d", row, back.Generation)
+		}
+		if row := queued[1]; row.Role != claim.RolePlanner || row.Generation != back.Generation || row.Phase != phase.Planning || row.ResumeTask {
 			t.Fatalf("the re-entry queued %+v, want a start of the planner at %s generation %d carrying no resume of the old run", row, phase.Planning, back.Generation)
 		}
-		if row := queued[0]; row.Task == "" || row.Entry == 0 {
+		if row := queued[1]; row.Task == "" || row.Entry == 0 {
 			t.Fatalf("the re-entry's start = %+v, want it carrying the phase's own task at the entry the transition raised", row)
 		}
 
