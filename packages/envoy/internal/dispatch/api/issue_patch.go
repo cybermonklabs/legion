@@ -245,7 +245,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if parentProvided && parent != nil {
-		if err := validateIssueParent(r.Context(), tx, key, before.Project, *parent); err != nil {
+		if err := validateIssueParent(r.Context(), tx, who, key, before.Project, *parent); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -314,7 +314,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		sets = append(sets, "status = "+placeholder, "closed_at = case when "+placeholder+" = 'done' then now() else null end")
 	}
 	if input.Rank != nil {
-		issueRank, err := s.rankForInput(r.Context(), tx, before.Project, key, *input.Rank)
+		issueRank, err := s.rankForInput(r.Context(), tx, who, before.Project, key, *input.Rank)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

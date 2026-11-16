@@ -294,8 +294,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	var parentAssignee *string
 	if parentKey != "" {
+		// As the creator reads it: a parent of a project it does not see is a key no issue holds.
 		var parentProject string
-		err := tx.QueryRow(r.Context(), `select project_key, assignee from issues where key = $1`, parentKey).Scan(&parentProject, &parentAssignee)
+		err := tx.QueryRow(r.Context(), `select project_key, assignee from issues where key = $1 and `+
+			access.ProjectClause("project_key", "$2"), parentKey, refs.VisibilityArg(who)).Scan(&parentProject, &parentAssignee)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "PARENT_INPUT", http.StatusBadRequest, fmt.Sprintf("parent issue %s not found", parentKey))
 			return

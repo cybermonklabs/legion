@@ -317,12 +317,14 @@ func lockPatchRowsAndParent(ctx context.Context, tx pgx.Tx, key string, named ..
 
 // validateIssueParent reads the ancestor chain while the project's dependency lock is held, and
 // refuses a parent that would make key its own ancestor or put key's subtree past parentDepthCap.
-func validateIssueParent(ctx context.Context, tx pgx.Tx, key, project, parent string) error {
+// The parent is read as who reads it: one of a project who does not see is a key no issue holds.
+func validateIssueParent(ctx context.Context, tx pgx.Tx, who model.Actor, key, project, parent string) error {
 	if parent == key {
 		return errorf(http.StatusBadRequest, "PARENT_INPUT", "an issue cannot be its own parent")
 	}
 	var parentProject string
-	err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, parent).Scan(&parentProject)
+	err := tx.QueryRow(ctx, `select project_key from issues where key = $1 and `+access.ProjectClause("project_key", "$2"),
+		parent, refs.VisibilityArg(who)).Scan(&parentProject)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return errorf(http.StatusBadRequest, "PARENT_INPUT", "parent issue %s not found", parent)
 	}

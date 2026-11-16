@@ -78,6 +78,54 @@ func TestNoWriteReachesAHiddenObject(t *testing.T) {
 	}
 }
 
+// bodyReferences is every field of a write's body that names an object of a project, with a call
+// alice may make that names it: the row, the path of an object she sees (PUB's issue, project or
+// conversation), and the body with %s where the named object goes. accepted is a row that takes an
+// object nobody holds rather than refusing it: the design gates store a document's id they do not
+// read, so both calls write, and must write the same tables.
+var bodyReferences = []struct {
+	row, field, path string
+	object           probeObject
+	body             string
+	accepted         bool
+}{
+	{"POST /api/v1/issues", "parent", "/api/v1/issues", probeIssue, `{"project":"PUB","title":"A walked child","parent":"%s"}`, false},
+	{"POST /api/v1/issues", "blocked_by", "/api/v1/issues", probeIssue, `{"project":"PUB","title":"A walked wait","blocked_by":["%s"]}`, false},
+	{"PATCH /api/v1/issues/{key}", "parent", "/api/v1/issues/PUB-1", probeIssue, `{"parent":"%s"}`, false},
+	{"PATCH /api/v1/issues/{key}", "blocked_by", "/api/v1/issues/PUB-1", probeIssue, `{"blocked_by":["%s"]}`, false},
+	{"PATCH /api/v1/issues/{key}", "rank.after", "/api/v1/issues/PUB-1", probeIssue, `{"rank":{"after":"%s"}}`, false},
+	{"POST /api/v1/issues/{key}/comments", "reply_to", "/api/v1/issues/PUB-1/comments", probeComment, `{"body":"A walked reply.","reply_to":"%s"}`, false},
+	{"POST /api/v1/issues/{key}/comments", "ask_id", "/api/v1/issues/PUB-1/comments", probeAsk, `{"body":"A walked answer.","ask_id":"%s"}`, false},
+	{"POST /api/v1/issues/{key}/messages", "in_reply_to", "/api/v1/issues/PUB-1/messages", probeMessage, `{"body":"A walked reply.","in_reply_to":"%s"}`, false},
+	{"POST /api/v1/agents/{session_id}/messages", "in_reply_to", "/api/v1/agents/s1/messages", probeMessage, `{"body":"A walked reply.","delivery":"btw","in_reply_to":"%s"}`, false},
+	{"PUT /api/v1/issues/{key}/design-gates", "gates[].artifact_id", "/api/v1/issues/PUB-1/design-gates", probeDocument, `{"gates":[{"step":"spec","artifact_id":"%s"}]}`, true},
+	{"POST /api/v1/projects/{key}/related", "exclude_issue", "/api/v1/projects/PUB/related", probeIssue, `{"text":"walked","exclude_issue":"%s"}`, false},
+}
+
+// TestNoBodyReachesAHiddenObject: every field of a write's body that names an object
+// (bodyReferences) answers PRIV's object, to alice, exactly as an object nobody holds - the same
+// status and bytes, and no table written - while the path names an object she sees. An object
+// nobody holds is refused there, except where the row takes one (accepted).
+func TestNoBodyReachesAHiddenObject(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	if walk.issue[seedPublic] != "PUB-1" {
+		t.Fatalf("PUB's issue is %s; the walk's paths name PUB-1", walk.issue[seedPublic])
+	}
+	for _, reference := range bodyReferences {
+		name := reference.row + " (" + reference.field + ")"
+		fill := walk.fills[reference.object]
+		method, _, _ := strings.Cut(reference.row, " ")
+		missing := walk.callPair(t, callerAlice, name, method, reference.path, reference.path,
+			json.RawMessage(fmt.Sprintf(reference.body, fill.hidden)), json.RawMessage(fmt.Sprintf(reference.body, fill.missing)),
+			map[string]string{fill.missing: fill.hidden}, reference.accepted)
+		if refused := missing.Code >= http.StatusBadRequest; refused == reference.accepted {
+			t.Errorf("%s: an object nobody holds answered %d %s; want a refusal: %t", name, missing.Code,
+				strings.TrimSpace(missing.Body.String()), !reference.accepted)
+		}
+	}
+	t.Logf("walked %d body fields that name an object", len(bodyReferences))
+}
+
 // missingAnswers is what a row answers for an object nobody holds where that is no 404, and why.
 var missingAnswers = map[string]struct {
 	status int
@@ -428,20 +476,37 @@ func (w hiddenWriteSeed) compare(t *testing.T, caller privateCaller, open bool, 
 	}
 	hiddenPath, _ := w.fill(t, pattern, probe, open, true)
 	missingPath, written := w.fill(t, pattern, probe, open, false)
+	missing := w.callPair(t, caller, name, method, hiddenPath, missingPath, body, body, written, false)
+	if !answersMissing(name, open, missing) {
+		t.Errorf("%s as %s: the call naming nothing (%s) answered %d %s, which is no answer for a missing object: the row's probe never reaches its read of the object",
+			name, caller, missingPath, missing.Code, strings.TrimSpace(missing.Body.String()))
+	}
+}
 
+// callPair makes one call naming a hidden object and one naming an object nobody holds, as caller,
+// and holds them to one answer - the second's values written as the first's (written) - and to no
+// write of any table, or, for a row that writes either way (writes), to writes of the same tables.
+// It answers the second call's answer.
+func (w hiddenWriteSeed) callPair(t *testing.T, caller privateCaller, name, method, hiddenPath, missingPath string,
+	hiddenBody, missingBody any, written map[string]string, writes bool) *httptest.ResponseRecorder {
+	t.Helper()
 	before := w.tableDigests(t)
-	hidden := w.request(t, caller, method, hiddenPath, body)
+	hidden := w.request(t, caller, method, hiddenPath, hiddenBody)
 	afterHidden := w.tableDigests(t)
-	if changed := changedTables(before, afterHidden); len(changed) > 0 {
-		t.Errorf("%s as %s: the call naming PRIV's object (%s) answered %d %s and changed %v",
-			name, caller, hiddenPath, hidden.Code, strings.TrimSpace(hidden.Body.String()), changed)
-	}
-	missing := w.request(t, caller, method, missingPath, body)
-	if changed := changedTables(afterHidden, w.tableDigests(t)); len(changed) > 0 {
+	hiddenChanged := changedTables(before, afterHidden)
+	missing := w.request(t, caller, method, missingPath, missingBody)
+	missingChanged := changedTables(afterHidden, w.tableDigests(t))
+	switch {
+	case writes && !slices.Equal(hiddenChanged, missingChanged):
+		t.Errorf("%s as %s: the call naming the hidden object changed %v, and the call naming nothing %v",
+			name, caller, hiddenChanged, missingChanged)
+	case !writes && len(hiddenChanged) > 0:
+		t.Errorf("%s as %s: the call naming the hidden object (%s) answered %d %s and changed %v",
+			name, caller, hiddenPath, hidden.Code, strings.TrimSpace(hidden.Body.String()), hiddenChanged)
+	case !writes && len(missingChanged) > 0:
 		t.Errorf("%s as %s: the call naming nothing (%s) answered %d %s and changed %v",
-			name, caller, missingPath, missing.Code, strings.TrimSpace(missing.Body.String()), changed)
+			name, caller, missingPath, missing.Code, strings.TrimSpace(missing.Body.String()), missingChanged)
 	}
-
 	want := missing.Body.String()
 	keys := make([]string, 0, len(written))
 	for key := range written {
@@ -452,13 +517,10 @@ func (w hiddenWriteSeed) compare(t *testing.T, caller privateCaller, open bool, 
 		want = strings.ReplaceAll(want, key, written[key])
 	}
 	if hidden.Code != missing.Code || hidden.Body.String() != want {
-		t.Errorf("%s as %s: PRIV's object answers %d %s, and an object nobody holds %d %s",
+		t.Errorf("%s as %s: the hidden object answers %d %s, and an object nobody holds %d %s",
 			name, caller, hidden.Code, strings.TrimSpace(hidden.Body.String()), missing.Code, strings.TrimSpace(missing.Body.String()))
 	}
-	if !answersMissing(name, open, missing) {
-		t.Errorf("%s as %s: the call naming nothing (%s) answered %d %s, which is no answer for a missing object: the row's probe never reaches its read of the object",
-			name, caller, missingPath, missing.Code, strings.TrimSpace(missing.Body.String()))
-	}
+	return missing
 }
 
 // answersMissing reports whether a call naming no object was answered as the row answers a missing
