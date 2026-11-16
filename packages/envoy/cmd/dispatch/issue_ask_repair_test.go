@@ -129,6 +129,63 @@ func TestTheStartedServersRepairPassJudgesTheFormOfTheSpec(t *testing.T) {
 	}
 }
 
+// The started server's repair pass judges a withdrawn request against the list of terms too
+// (R50). The root's terms.md, which the person approved, defines session. Two issues under the
+// root each hold an approval request that a close withdrew, and a release older than the
+// withdrawal reopened both. The boot's pass leaves resolved, with the finding, the request whose
+// spec defines session again, and restores the one whose spec defines a new term.
+func TestTheStartedServersRepairPassLeavesASecondDefinitionResolved(t *testing.T) {
+	database := storetest.Open(t)
+	databaseURL := database.Pool.Config().ConnString()
+	options := dispatchOptions{Env: map[string]string{"DISPATCH_SPEC_ROOTS": "ACME-1"}}
+	first := startDispatchProcessWith(t, databaseURL, options)
+	first.waitHealthy(t)
+	first.createProject(t, "ACME", "Acme")
+	if root, _ := first.createIssueIn(t, "ACME", "The root of The Spec", "# The Spec\n\nThe design of the written account.\n"); root != "ACME-1" {
+		t.Fatalf("the first issue of ACME is %s, want ACME-1", root)
+	}
+	uploaded := first.call(t, http.MethodPost, "/api/v1/issues/ACME-1/artifacts",
+		`{"name":"terms.md","content":"# Terms\n\n- **session**: One conversation of an agent, with its id, in which the agent does its work.\n"}`,
+		http.StatusCreated)
+	var terms struct {
+		Artifact struct {
+			ID string `json:"id"`
+		} `json:"artifact"`
+	}
+	if err := json.Unmarshal(uploaded, &terms); err != nil || terms.Artifact.ID == "" {
+		t.Fatalf("upload terms.md: %s (%v), want the document's id", uploaded, err)
+	}
+	first.call(t, http.MethodPost, "/api/v1/artifacts/"+terms.Artifact.ID+"/reviews", `{"state":"approved"}`, http.StatusCreated)
+	second := first.withdrawnSpecUnderTheRoot(t, "Defines session again", "# Spec\n\n## Terms\n\n- **session**: The record of one agent process in Envoy.\n")
+	clean := first.withdrawnSpecUnderTheRoot(t, "Defines lease", "# Spec\n\n## Terms\n\n- **lease**: The right of one session to one work unit for a time.\n")
+	first.Terminate(t)
+	first.WaitExit(t, "SIGTERM")
+
+	reopener := model.Actor{Kind: "session", ID: "session-reopener"}
+	for _, request := range []withdrawnRequest{second, clean} {
+		reopenAsAnOlderRelease(t, database, request.issue, reopener)
+	}
+	restarted := startDispatchProcessWith(t, databaseURL, options)
+	restarted.waitHealthy(t)
+
+	if lines := restarted.logLines("repaired the asks of closed and reopened issues"); len(lines) != 1 ||
+		!holdsAll(lines[0], "restored=1", "left_resolved=1") {
+		t.Errorf("the boot's repair logged %q, want one line with restored=1 and left_resolved=1", lines)
+	}
+	wantReason := "Dispatch did not open this approval request again, because 1 text breaks the form of The Spec.\n" +
+		"- definition session in spec.md version 1: terms.md version 1 of ACME-1 already defines this term. " +
+		"Use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first.\n" +
+		"Fix each text, then request approval again."
+	if got := restarted.readRepairedAsk(t, second.ask); got.State != "resolved" || got.Resolution == nil ||
+		got.Resolution.Kind != "resolved" || got.Resolution.Reason != wantReason || got.Resolution.Actor.ID != reopener.ID {
+		t.Errorf("the request with a second definition reads %s with resolution %+v, want it left resolved by %s with the reason\n%s",
+			got.State, got.Resolution, reopener.ID, wantReason)
+	}
+	if got := restarted.readRepairedAsk(t, clean.ask); got.State != "open" || got.Resolution != nil {
+		t.Errorf("the request with a new term reads %s with resolution %+v, want it restored open", got.State, got.Resolution)
+	}
+}
+
 // withdrawnRequest is an issue and the approval request of its spec that its close withdrew.
 type withdrawnRequest struct{ issue, ask string }
 
@@ -137,7 +194,13 @@ type withdrawnRequest struct{ issue, ask string }
 // withdraws the request. Outside the root the request opens whatever the statement says.
 func (p *dispatchProcess) withdrawnRequestUnderTheRoot(t *testing.T, title, statement string) withdrawnRequest {
 	t.Helper()
-	key, artifactID := p.createIssueIn(t, "ACME", title, "# Spec\n\n:::requirement{#store-comment}\n"+statement+"\n:::\n")
+	return p.withdrawnSpecUnderTheRoot(t, title, "# Spec\n\n:::requirement{#store-comment}\n"+statement+"\n:::\n")
+}
+
+// withdrawnSpecUnderTheRoot is withdrawnRequestUnderTheRoot for an issue whose whole spec is spec.
+func (p *dispatchProcess) withdrawnSpecUnderTheRoot(t *testing.T, title, spec string) withdrawnRequest {
+	t.Helper()
+	key, artifactID := p.createIssueIn(t, "ACME", title, spec)
 	answer := p.send(t, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/approval-requests",
 		`{"actor":{"kind":"session","id":"session-0123456789abcdef"}}`,
 		http.Header{"Authorization": {"Bearer " + dispatchTestAgentToken}})
