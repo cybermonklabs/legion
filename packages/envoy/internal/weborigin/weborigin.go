@@ -8,6 +8,7 @@ package weborigin
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 	"strings"
 
 	"golang.org/x/net/idna"
+	"golang.org/x/net/publicsuffix"
 )
 
 var (
@@ -93,4 +95,34 @@ func ReservedLabel(label string) error {
 		return fmt.Errorf("host label %q is an xn-- label the IDNA lookup profile refuses, a Fake A-label (RFC 5890 section 2.3.1)", label)
 	}
 	return fmt.Errorf("host label %q has \"--\" as its third and fourth characters, a reserved form (RFC 5890 section 2.3.1) public certificate authorities refuse to issue for", label)
+}
+
+// GoogleRedirectHost refuses a host Google takes in no OAuth redirect URI, so browser sign-in at an
+// origin on it could not complete: an IP address, a single label, and a host whose top-level
+// domain is not in the public suffix list's ICANN section
+// (https://developers.google.com/identity/protocols/oauth2/web-server, "Redirect URI validation
+// rules": "Hosts cannot be raw IP addresses" and "Hosts must use a TLD in the public suffix
+// list"). Parse takes all three, since an origin a person reaches without Google sign-in may have
+// any of them. Each refusal begins with "host" and names no setting: callers prefix their own.
+func GoogleRedirectHost(host string) error {
+	if net.ParseIP(host) != nil {
+		return fmt.Errorf("host %s is an IP address, which Google refuses as the host of an OAuth redirect URI, so browser sign-in at it could not complete: name the origin by a DNS name", host)
+	}
+	dot := strings.LastIndexByte(host, '.')
+	if dot < 0 {
+		return fmt.Errorf("host %s is a single label, with no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete", host)
+	}
+	if tld := host[dot+1:]; !tldOnPublicSuffixList(tld) {
+		return fmt.Errorf("host %s ends in %s, no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete", host, tld)
+	}
+	return nil
+}
+
+// tldOnPublicSuffixList reports whether tld is a top-level domain in the public suffix list's ICANN
+// section. It looks up "x.<tld>" because eight ccTLDs (np, ck, er, fk, jm, kh, mm, pg) are listed
+// only as a "*.<tld>" rule, which a bare tld does not match; and it looks up the top-level domain
+// alone, not the host, so a private-section suffix such as ts.net cannot decide.
+func tldOnPublicSuffixList(tld string) bool {
+	_, icann := publicsuffix.PublicSuffix("x." + tld)
+	return icann
 }

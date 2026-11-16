@@ -112,3 +112,52 @@ func TestParseRefusesWhatIsNoBrowsersOrigin(t *testing.T) {
 		})
 	}
 }
+
+// GoogleRedirectHost takes a host under a top-level domain in the public suffix list's ICANN
+// section: ones the list carries only as a "*.<tld>" rule (np, ck, as er, fk, jm, kh, mm and pg
+// are), an internationalised one (xn--p1ai), and one under a private-section suffix (ts.net),
+// which the top-level domain decides and not that suffix.
+func TestGoogleRedirectHostTakesAHostUnderAPublicSuffix(t *testing.T) {
+	for _, host := range []string{
+		"dispatch-outside.example.com",
+		"xn--bcher-kva.example.com",
+		"dispatch.example.com.np",
+		"dispatch.example.ck",
+		"dispatch.example.xn--p1ai",
+		"example-outside.example-tailnet.ts.net",
+	} {
+		t.Run(host, func(t *testing.T) {
+			require.NoError(t, weborigin.GoogleRedirectHost(host))
+		})
+	}
+}
+
+// GoogleRedirectHost refuses each host Google refuses in an OAuth redirect URI, with the reason and
+// no setting named: an IP address, a single label, and a top-level domain off the public suffix
+// list's ICANN section, the special-use and private-use names among them.
+func TestGoogleRedirectHostRefusesWhatGoogleRefuses(t *testing.T) {
+	ip := func(host string) string {
+		return "host " + host + " is an IP address, which Google refuses as the host of an OAuth redirect URI, so browser sign-in at it could not complete: name the origin by a DNS name"
+	}
+	single := func(host string) string {
+		return "host " + host + " is a single label, with no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete"
+	}
+	offList := func(host, tld string) string {
+		return "host " + host + " ends in " + tld + ", no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete"
+	}
+	for _, row := range []struct{ host, want string }{
+		{"10.0.0.1", ip("10.0.0.1")},
+		{"127.0.0.1", ip("127.0.0.1")},
+		{"dispatch", single("dispatch")},
+		{"dispatch-outside.example", offList("dispatch-outside.example", "example")},
+		{"dispatch.test", offList("dispatch.test", "test")},
+		{"dispatch.invalid", offList("dispatch.invalid", "invalid")},
+		{"dispatch.localhost", offList("dispatch.localhost", "localhost")},
+		{"dispatch.local", offList("dispatch.local", "local")},
+		{"dispatch.internal", offList("dispatch.internal", "internal")},
+	} {
+		t.Run(row.host, func(t *testing.T) {
+			require.EqualError(t, weborigin.GoogleRedirectHost(row.host), row.want)
+		})
+	}
+}
