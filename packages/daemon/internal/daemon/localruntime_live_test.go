@@ -332,8 +332,8 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	if err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
-	promptFile := runtime.SystemPromptPath(r.stateDir, spec.Claim)
-	if err := runtime.WriteSystemPrompt(promptFile, prompt); err != nil {
+	promptFile, err := runtime.WriteSystemPrompt(r.stateDir, spec.Claim, prompt)
+	if err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
 	variables, err := tmux.PaneVariables(spec, tmux.PaneInputs{

@@ -9,7 +9,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -22,7 +21,7 @@ import (
 // TestAPromptPastTheStartFrameFailsTheClaimChargingNoLaunchFailure).
 func TestTheClaimViewOfAPromptRefusalNamesTheRoleTheSizeAndTheLimit(t *testing.T) {
 	token := claim.Token("legion-legion-legion-208-architect")
-	refusal := &runtime.PromptTooLarge{Role: claim.RoleArchitect, Bytes: 1_100_000, Frame: 1_100_400, Bound: shimwire.MaxFrameBytes}
+	refusal := &runtime.PromptTooLarge{Role: claim.RoleArchitect, Bytes: 1_100_000, Frame: 1_100_400}
 	started := fmt.Sprintf("sandbox launch %s: %v", token, refusal)
 	refused := supervise.Claim{
 		Token: token, Role: claim.RoleArchitect, State: supervise.StateFailed,

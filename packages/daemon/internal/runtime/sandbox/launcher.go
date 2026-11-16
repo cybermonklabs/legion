@@ -3,7 +3,6 @@ package sandbox
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -774,8 +773,8 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 // the role's own memory-backed private volume before the child starts, and removes the directory
 // when the child ends (internal/launcher's writeFiles). In an issue pod each role's namespace
 // binds only its own private volume back at LauncherPrivateDir (role-init), so no other role's
-// process can read or change the prompt, and it exists before the agent that names it starts —
-// Oh My Pi would read a path it cannot open as the prompt's text.
+// process can read or change the prompt, and it exists before the agent that names it starts
+// (runtime.WriteSystemPrompt says why that matters).
 //
 // The shim is told the pod's stop grace, the same TerminationGrace its launcher runs with, so the
 // wait it makes for an in-flight CodeGraph warm-up on its way out stays inside the grace after
@@ -849,25 +848,20 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	}
 }
 
-// startFrameBytes is the length of the line command reaches its role's launcher as: the frame
-// shimwire's Writer writes for it (launchers.request, shimwire.NewWriter and WriteFrame), JSON
-// with HTML escaping off, and the newline that ends it. A launcher reads no line longer than
-// shimwire.MaxFrameBytes, and the writer refuses to send one (prepare).
-func startFrameBytes(command shimwire.LauncherStart) (int, error) {
-	var line byteCount
-	encoder := json.NewEncoder(&line)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(shimwire.Frame(command)); err != nil {
-		return 0, err
+// checkStartFrame refuses command, the start l's role would be sent, when the frame that carries
+// it would be longer than a launcher reads (shimwire.FrameLen, shimwire.MaxFrameBytes): the one
+// bound a prompt still meets in a pod (runtime.PromptTooLarge, which supervise charges no launch
+// failure). prepare runs it on the start a pod built now would receive, before anything of the pod
+// is touched, and relaunch again on the start it sends, which carries what the launch learned from
+// the cluster since — the gh bundle's default owner, and for a pod it keeps, the overlays,
+// enrollment and skills repository that pod was built with.
+func (l launch) checkStartFrame(command shimwire.LauncherStart) error {
+	frame, err := shimwire.FrameLen(command)
+	if err != nil {
+		return err
 	}
-	return int(line), nil
-}
-
-// byteCount is an io.Writer that keeps nothing of what it is written but its length, so a frame
-// is measured without a copy of the prompt it carries.
-type byteCount int
-
-func (c *byteCount) Write(p []byte) (int, error) {
-	*c += byteCount(len(p))
-	return len(p), nil
+	if frame > shimwire.MaxFrameBytes {
+		return &runtime.PromptTooLarge{Role: l.spec.Role, Bytes: len(l.prompt), Frame: frame}
+	}
+	return nil
 }

@@ -484,8 +484,7 @@ func (r *Runtime) awaitGone(ctx context.Context, loc runtime.Locator) error {
 // pane. The prompt is composed before anything is written, so a prompt file that cannot be read
 // leaves no file behind. The refusal of a live claim comes before the
 // writes, so a refused launch rewrites none of the files the live process reads. The prompt's
-// file is written before the pane opens because Oh My Pi, handed a path it cannot open, starts
-// with the path's own text as its prompt and says nothing (runtime.WriteSystemPrompt).
+// file is written before the pane opens (runtime.WriteSystemPrompt says why).
 //
 // A session found in no folder it searched is runtime.ErrSessionFileMissing, whatever the claim
 // recorded and whether or not the operator's takeover is on (takingOverSession): the search is the
@@ -553,7 +552,7 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 	if err := runtime.WriteSecretFiles(r.stateDir, files); err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
-	if err := runtime.WriteSystemPrompt(runtime.SystemPromptPath(r.stateDir, spec.Claim), prompt); err != nil {
+	if _, err := runtime.WriteSystemPrompt(r.stateDir, spec.Claim, prompt); err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
 	ghDefault, err := r.writeGitHubCredential(spec, credential)

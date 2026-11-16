@@ -15,7 +15,7 @@ func writeLaunchPrompt(t *testing.T, spec runtime.SpawnSpec, host Host) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.WriteSystemPrompt(runtime.SystemPromptPath(host.StateDir, spec.Claim), prompt); err != nil {
+	if _, err := runtime.WriteSystemPrompt(host.StateDir, spec.Claim, prompt); err != nil {
 		t.Fatal(err)
 	}
 }

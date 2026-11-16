@@ -24,7 +24,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
-	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -564,23 +563,11 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 		secrets[dispatchTokenKey] = r.dispatchToken
 	}
 	l.secrets, l.prompt = secrets, prompt
-	// The prompt travels to the pod in the start command's Files, and that command is one frame: a
-	// launcher reads one line of at most shimwire.MaxFrameBytes, its newline included, and the
-	// daemon's writer refuses a longer one (shimwire.Writer). Once the prompt left argv, where
-	// Linux bounded it at 131072 bytes (MAX_ARG_STRLEN), that frame is the one transport bound a
-	// prompt still meets in a pod, so the frame this launch's role would be sent is measured now,
-	// before anything of the pod is touched, and a prompt that would overrun it is refused naming
-	// the role, the prompt's size and the frame's. The command measured is the one a pod built now
-	// would receive. The start a relaunch sends may differ from it by what the launch learns from
-	// the cluster later — the gh bundle's default owner in GH_CONFIG_DIR, and for a pod it keeps,
-	// the overlays, enrollment and skills repository that pod was built with — names of a few dozen
-	// bytes against a bound of a mebibyte.
-	frame, err := startFrameBytes(launcherCommand(l, r))
-	if err != nil {
-		return launch{}, refuse("encode its start command: %v", err)
-	}
-	if frame > shimwire.MaxFrameBytes {
-		return launch{}, refuse("%w", &runtime.PromptTooLarge{Role: spec.Role, Bytes: len(prompt), Bound: shimwire.MaxFrameBytes, Frame: frame})
+	// The prompt travels to the pod in the start command's Files, one frame a launcher reads whole
+	// (checkStartFrame), so a prompt that would overrun it is refused now, before anything of the
+	// pod is touched; relaunch checks the start it sends again.
+	if err := l.checkStartFrame(launcherCommand(l, r)); err != nil {
+		return launch{}, refuse("%w", err)
 	}
 	return l, nil
 }

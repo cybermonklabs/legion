@@ -51,9 +51,8 @@ const MCPServer = "legion"
 // `--append-system-prompt-file` naming the file promptFile the runtime wrote it to.
 //
 // The prompt rides a file, under either runtime, for the reason an Oh My Pi launch's does
-// (runtime.SystemPromptFile): Linux refuses any single argument longer than 131072 bytes, and a
-// phase worker's prompt carries the deployment's instructions, which grow. Claude Code sends the
-// whole file as its appended system prompt and refuses to start on one that is missing ("Append
+// (runtime.SystemPromptFile). Claude Code sends the whole file as its appended system prompt and
+// refuses to start on one that is missing ("Append
 // system prompt file not found"), measured on 2.1.310, the worker image's pin
 // (docker/claude-code), and on 2.1.311, `.claude-code-pin`'s.
 func Argv(paths Paths, mcpConfig, session string, resume bool, promptFile string) []string {

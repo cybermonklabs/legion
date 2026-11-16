@@ -115,7 +115,8 @@ func runControllerStart(ctx context.Context, args []string, stdout, stderr io.Wr
 // Pi exits or the daemon says the capability is no longer current
 // (controllerCredentialSuperseded); then run Oh My Pi interactive — the launch prefix and the
 // resolved invocation with one `--append-system-prompt` naming the file the joined controller
-// prompt is written to (`<state_dir>/secrets/<controller claim>-system-prompt.md`), and the one
+// prompt is written to (`<state_dir>/secrets/<controller claim>-system-prompt.md`, removed when
+// Oh My Pi exits), and the one
 // positional word daemon.ControllerStartCommand, no `--resume`, no `--mode rpc`, and
 // daemon.ControllerStartMessage as LEGION_CONTROLLER_START_MESSAGE in its environment for that
 // pi-legion command to send as the first turn — in the foreground with the same environment, and
@@ -309,13 +310,14 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	if err != nil {
 		return 0, fmt.Errorf("compose the controller's system prompt: %w", err)
 	}
-	// The prompt rides a file Oh My Pi reads rather than one argument, which Linux bounds at 131072
-	// bytes (omplaunch.SystemPromptArgument); it is written before Oh My Pi starts, since a path it
-	// cannot open it would take as the prompt's text.
-	promptFile := runtime.SystemPromptPath(stateDir, legionclaim.Token(token))
-	if err := runtime.WriteSystemPrompt(promptFile, prompt); err != nil {
+	// The prompt rides a file (runtime.SystemPromptFile), written before Oh My Pi starts. Oh My Pi
+	// reads it once, at startup, and the file is the controller's alone, so it goes when this
+	// command ends.
+	promptFile, err := runtime.WriteSystemPrompt(stateDir, legionclaim.Token(token), prompt)
+	if err != nil {
 		return 0, err
 	}
+	defer func() { _ = os.Remove(promptFile) }()
 	command := omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation) + " " + omplaunch.SystemPromptArgument(promptFile) +
 		" " + shellprefix.Word(daemon.ControllerStartCommand)
 	fmt.Fprintf(stderr, "[legion] starting the controller for %s against %s; state in %s\n", cfg.Project, cfg.DaemonURL, stateDir)

@@ -465,9 +465,9 @@ const claudeMCPFile = "claude-mcp.json"
 // runtime.SystemPromptFile in generationDir, which the launcher writes 0600 from the start
 // command's Files (launcherCommand) before the child starts and removes with the rest of the
 // directory when the generation ends. The agent's argv names this path as the value of Oh My Pi's
-// `--append-system-prompt` or Claude Code's `--append-system-prompt-file` (agentArgv, claudeArgv),
-// so the prompt never travels as an argv string, which Linux bounds at 131072 bytes
-// (MAX_ARG_STRLEN). The directory is on the role's own memory-backed private volume, which in an
+// `--append-system-prompt` or Claude Code's `--append-system-prompt-file` (agentArgv, claudeArgv;
+// runtime.SystemPromptFile says why it is a file). The directory is on the role's own
+// memory-backed private volume, which in an
 // issue pod only that role's namespace binds back at LauncherPrivateDir (RolesDir, role-init), so
 // no other role's process can read or change the file.
 func systemPromptPath(generation uint64) string {

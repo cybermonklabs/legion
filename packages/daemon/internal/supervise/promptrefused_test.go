@@ -16,7 +16,7 @@ import (
 // (shimwire.MaxFrameBytes), wrapped as that runtime wraps every refusal of its own.
 func architectFrameRefusal() error {
 	return fmt.Errorf("sandbox launch %s: %w", rootToken,
-		&runtime.PromptTooLarge{Role: rootClaim().Role, Bytes: 1_100_000, Frame: 1_100_400, Bound: 1 << 20})
+		&runtime.PromptTooLarge{Role: rootClaim().Role, Bytes: 1_100_000, Frame: 1_100_400})
 }
 
 // A start the runtime refuses because the role's system prompt would not fit the one frame a pod's

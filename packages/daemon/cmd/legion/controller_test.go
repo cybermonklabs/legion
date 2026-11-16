@@ -343,7 +343,9 @@ func newControllerStart(t *testing.T, d *controllerDaemon, opts controllerOption
 	// pi-envoy publishing the interface `envoy-interface` holds (1 when absent; `none` for no
 	// pi-envoy) from the file `envoy-loaded-from` names; and the pre-split package loaded from the
 	// file `legacy-loaded-from` names, when there is one. As the controller it records its argv,
-	// environment, and working directory, and exits with the code the test asked for.
+	// a copy of the file its --append-system-prompt names and that file's mode (the command removes
+	// the file once Oh My Pi exits), environment, and working directory, and exits with the code
+	// the test asked for.
 	omp := filepath.Join(record, "omp")
 	script := fmt.Sprintf(`#!/bin/sh
 if [ "$1" = models ]; then
@@ -366,6 +368,7 @@ if [ "$1" = models ]; then
 fi
 [ -f "$GH_CONFIG_DIR/hosts.yml" ] && cp "$GH_CONFIG_DIR/hosts.yml" %[1]s/hosts-at-start
 %[3]s
+if [ "$1" = --append-system-prompt ]; then cp "$2" %[1]s/system-prompt; stat -c %%a "$2" >%[1]s/system-prompt-mode; fi
 for a in "$@"; do printf '%%s\0' "$a"; done >%[1]s/argv
 readlink /proc/self/fd/0 >%[1]s/stdin
 env -0 >%[1]s/env
@@ -533,14 +536,15 @@ func (c *operatorMachine) argv() []string {
 }
 
 // systemPrompt is the prompt Oh My Pi was started with: the contents of the file its one
-// --append-system-prompt value names, as Oh My Pi reads a value with no newline.
+// --append-system-prompt value names, as Oh My Pi reads a value with no newline, copied by the
+// recording Oh My Pi while it ran.
 func (c *operatorMachine) systemPrompt() string {
 	c.t.Helper()
 	argv := c.argv()
 	if len(argv) != 3 || argv[0] != "--append-system-prompt" {
 		c.t.Fatalf("Oh My Pi's argv = %q, want --append-system-prompt <file> and the start word", argv)
 	}
-	prompt, err := os.ReadFile(argv[1])
+	prompt, err := os.ReadFile(filepath.Join(c.record, "system-prompt"))
 	if err != nil {
 		c.t.Fatalf("read the prompt file Oh My Pi was started with: %v", err)
 	}
@@ -711,11 +715,14 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 	// Each file's trailing newlines are dropped where the parts join.
 	wantPrompt := strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. The project's repositories are acme/widgets.\n\n" +
 		strings.TrimRight(string(instructions), "\n")
-	if got, err := os.ReadFile(promptFile); err != nil || string(got) != wantPrompt {
-		t.Fatalf("the controller's prompt file holds %q (%v)\nwant %q", got, err, wantPrompt)
+	if got := c.systemPrompt(); got != wantPrompt {
+		t.Fatalf("the controller's prompt file held %q\nwant %q", got, wantPrompt)
 	}
-	if got := modeOf(t, promptFile); got != 0o600 {
-		t.Errorf("the controller's prompt file has mode %o, want 0600", got)
+	if mode, err := os.ReadFile(filepath.Join(c.record, "system-prompt-mode")); err != nil || strings.TrimSpace(string(mode)) != "600" {
+		t.Errorf("the controller's prompt file had mode %q (%v) while Oh My Pi ran, want 600", mode, err)
+	}
+	if _, err := os.Stat(promptFile); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the controller's prompt file is still there once the command ended: %v", err)
 	}
 
 	env := c.env()

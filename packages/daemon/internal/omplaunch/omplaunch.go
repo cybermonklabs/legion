@@ -135,13 +135,9 @@ func resolveExecutable(path string) (string, bool) {
 
 // SystemPromptArgument is the one `--append-system-prompt` word every pane's OMP receives, and
 // the operator-launched controller's (`legion controller start`): the path of the file the
-// launch's composed system prompt was written to (runtime.ComposePrompt,
-// runtime.WriteSystemPrompt), quoted for the pane's shell. OMP's flag is last-wins, so the whole
-// prompt rides that one file. Oh My Pi reads a value holding no newline as a path and appends the
-// file's contents; one it cannot open it appends as text, so the caller writes the file before the
-// command runs. The value is a path rather than the text, or a `$(cat …)` the shell expands into
-// the text, because Linux refuses any single argument longer than 131072 bytes (MAX_ARG_STRLEN),
-// and a path stays a few dozen bytes however long the prompt grows.
+// launch's composed system prompt was written to (runtime.WriteSystemPrompt, which says why it is
+// a file and why it is written first), quoted for the pane's shell. OMP's flag is last-wins, so
+// the whole prompt rides that one file.
 func SystemPromptArgument(promptFile string) string {
 	return "--append-system-prompt " + shellprefix.Word(promptFile)
 }

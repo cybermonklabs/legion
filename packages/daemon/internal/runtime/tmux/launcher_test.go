@@ -161,9 +161,7 @@ func TestAgentMarkersNameEveryConfiguredHarness(t *testing.T) {
 // file is written or tmux is run, and, with `take_over` unset as this runtime has it, a resume of
 // a session found nowhere is the refusal to start fresh, naming the harness it
 // was recorded for and every sessions directory searched. A launch whose prompt file cannot be
-// read, or whose composed prompt is larger than its role's model context, is refused there too:
-// the second as the *runtime.PromptTooLarge supervise charges no launch failure, naming the role,
-// the prompt's size and the bound.
+// read is refused there too, before anything is written.
 func TestLaunchRefusesWhatItsLaunchersCannotRun(t *testing.T) {
 	stateDir := t.TempDir()
 	bin := t.TempDir()

@@ -62,30 +62,19 @@ func TestComposePrompt(t *testing.T) {
 	}
 }
 
-// A tmux launch's prompt file is the claim's own under the secrets directory, so the daemon prunes
-// it with the claim's other files, and it is written owner-only and whole.
+// A claim's prompt file is its own under the secrets directory, so the daemon prunes it with the
+// claim's other files, and it is written as every secret file there is (WriteSecretFile).
 func TestWriteSystemPromptWritesTheClaimsOwnFile(t *testing.T) {
 	state := t.TempDir()
-	path := SystemPromptPath(state, "legion-legion-legion-42-tester")
-	if want := filepath.Join(state, "secrets", "legion-legion-legion-42-tester-system-prompt.md"); path != want {
-		t.Fatalf("SystemPromptPath = %s, want %s", path, want)
+	path, err := WriteSystemPrompt(state, "legion-legion-legion-42-tester", "the prompt")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, text := range []string{"first prompt", "the second, longer prompt"} {
-		if err := WriteSystemPrompt(path, text); err != nil {
-			t.Fatal(err)
-		}
-		got, err := os.ReadFile(path)
-		if err != nil || string(got) != text {
-			t.Fatalf("the prompt file holds %q, %v; want %q", got, err, text)
-		}
+	want := filepath.Join(state, "secrets", "legion-legion-legion-42-tester-system-prompt.md")
+	if path != want || SystemPromptPath(state, "legion-legion-legion-42-tester") != want {
+		t.Fatalf("WriteSystemPrompt wrote %s, want %s, the path SystemPromptPath names", path, want)
 	}
-	for _, p := range []string{path, filepath.Dir(path)} {
-		info, err := os.Stat(p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if mode := info.Mode().Perm(); mode&0o077 != 0 {
-			t.Errorf("%s has mode %#o, want owner-only", p, mode)
-		}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "the prompt" {
+		t.Fatalf("the prompt file holds %q, %v; want the prompt", got, err)
 	}
 }
