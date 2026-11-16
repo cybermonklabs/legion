@@ -800,8 +800,9 @@ interface DaemonRequest {
 }
 
 /** A capability host where every check passes: `oracle` and `deep-worker` resolve, the search
- * provider answers, no MCP server is configured, nothing is on disk to discover, and both commands
- * exit 0. `overrides` replace members. */
+ * provider answers, no MCP server is configured, the workspace holds nothing to discover, and both
+ * commands exit 0. Every member answers from memory, so no row of a measurement waits on the
+ * machine's disk. `overrides` replace members. */
 function fakeCapabilityHost(overrides: Partial<CapabilityHost> = {}): CapabilityHost {
   return {
     discoverAgents: async () => ({ agents: [{ name: "oracle" }, { name: "deep-worker" }] }),
@@ -816,6 +817,8 @@ function fakeCapabilityHost(overrides: Partial<CapabilityHost> = {}): Capability
     },
     discoverExtensionPaths: async () => [],
     loadSkills: async () => ({ skills: [] }),
+    namesIn: async () => [],
+    kindOf: async () => undefined,
     run: async (command) =>
       command === "gh"
         ? { code: 0, stdout: "legion-reviewer[bot]\n", stderr: "" }
@@ -3553,7 +3556,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         sessionId: "ses_capability_afresh",
         host: {
           // The first measurement's search never answers, so that row fails on its budget; the
-          // second's answers.
+          // second's answers. Every other row settles in microtasks, the host answering from
+          // memory, and they run before any timer can fire: on any machine, only this row meets
+          // the 20 ms.
           runSearchQuery: () => {
             searches += 1;
             return searches === 1
