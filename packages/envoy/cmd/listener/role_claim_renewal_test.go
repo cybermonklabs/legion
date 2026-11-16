@@ -161,10 +161,11 @@ func TestAnAdoptingRegistrationNamesItsProcessOnAClaimThatNamesNone(t *testing.T
 // before it are weighed.
 //
 // What it guards: a registration's own work must leave its renewal the budget the renewal runs on.
-// The renewal runs last, on what is left of the request's sendRequestBudget. Work that grows with
-// the number of topics, such as reducing them to the consumer's filters (bus.ReduceFilterSubjects),
-// spent that budget in production: every registration was answered 200 and its renewal's claim
-// read ran out of time, so the claim was never renewed while its holder kept registering.
+// The renewal runs after the registration's topic work, on what is left of the request's
+// sendRequestBudget. Work that grows with the number of topics, such as reducing them to the
+// consumer's filters (bus.ReduceFilterSubjects), spent that budget in production: every
+// registration was answered 200 and its renewal's claim read ran out of time, so the claim was
+// never renewed while its holder kept registering.
 func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testing.T) {
 	const (
 		role      = "legion-controller"

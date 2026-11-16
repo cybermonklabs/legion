@@ -379,10 +379,10 @@ func tokensContain(patternTokens, subjectTokens []string) bool {
 // matches X alone, the other only what lies under X), so both stay. The result is sorted and holds
 // each subject once, so the same set always reduces to the same list.
 //
-// A registration reduces its topics twice, inside the request's own time budget
-// (sessionConsumerTarget), and a session can register hundreds of them. So each subject is split
-// into its tokens once, and every pair is weighed on those tokens; a drop does not restart the
-// scan of the pairs (reduceFilterPairs).
+// A registration reduces its topics twice (sessionConsumerTarget), inside the request's own time
+// budget, and a session can register hundreds of them. So each subject is split into its tokens
+// once, and every pair is weighed on those tokens; a drop does not restart the scan of the pairs
+// (reduceFilterPairs).
 func ReduceFilterSubjects(subjects []string) []string {
 	// An empty list reduces to itself, given back nil or empty as it came.
 	if len(subjects) == 0 {
