@@ -60,6 +60,9 @@ type Server struct {
 	// Atomic, because a test sets it while the Server's own goroutines (retire, Recover's log
 	// line) read it — a plain field there is a data race, and `go test -race` caught it.
 	dormantGraceNS atomic.Int64
+	// drainBoundNS is DefaultDrainBound unless SetDrainBound names another: how long a drain
+	// holds before the helper ends it by itself (drain). Atomic for the reason dormantGraceNS is.
+	drainBoundNS atomic.Int64
 }
 
 // Serve accepts until ctx ends. Each connection carries one request.
@@ -181,10 +184,11 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 		resp = s.sessions()
 	case "drain":
 		// drain is `agent-secrets-helper install`'s restart guard: the sessions, and with none,
-		// a helper that refuses every later register until it exits.
+		// a helper that refuses every later register until it exits, or until the drain bound
+		// passes with it still running.
 		resp = s.drain()
 	case "undrain":
-		// undrain is install's undo of a drain whose restart then failed: the helper takes
+		// undrain is install's undo of a drain its restart did not end: the helper takes
 		// registrations again.
 		s.Registry.Undrain()
 		s.Log.Info("undrained: taking new sessions again")
@@ -860,10 +864,25 @@ func sessionInfos(list []*Session) []SessionInfo {
 // draining.
 var drainingResponse = Response{Code: CodeDraining, Error: "the helper is restarting; retry"}
 
+// DrainEndedMessage is logged, at WARN with the bound, when a drain ends by itself: its bound
+// (Server.SetDrainBound, DefaultDrainBound) passed with this helper still running, so the
+// restart the drain was for never came, and the helper takes registrations again.
+const DrainEndedMessage = "drain ended by itself: no restart came within its bound; taking new sessions again"
+
+// drain answers the live sessions and, with none, leaves the helper draining for at most the
+// drain bound: a drain still holding when the bound passes ends then, with DrainEndedMessage,
+// since this helper is still running and so the restart the drain was for never came.
 func (s *Server) drain() Response {
-	infos := sessionInfos(s.Registry.Drain())
-	if len(infos) == 0 {
-		s.Log.Info("draining: refusing new sessions until restart")
+	live, drain := s.Registry.Drain()
+	infos := sessionInfos(live)
+	if drain != 0 {
+		bound := s.drainBound()
+		s.Log.Info("draining: refusing new sessions until restart", "bound", bound)
+		time.AfterFunc(bound, func() {
+			if s.Registry.EndDrain(drain) {
+				s.Log.Warn(DrainEndedMessage, "bound", bound)
+			}
+		})
 	}
 	return Response{OK: true, Sessions: infos}
 }
@@ -1585,6 +1604,18 @@ func (s *Server) dormantGrace() time.Duration {
 		return time.Duration(ns)
 	}
 	return DefaultDormantGrace
+}
+
+// SetDrainBound chooses this Server's drain bound; zero restores DefaultDrainBound. Safe to call
+// while the Server runs, which is why the field behind it is atomic.
+func (s *Server) SetDrainBound(d time.Duration) { s.drainBoundNS.Store(int64(d)) }
+
+// drainBound is the Server's drain bound, DefaultDrainBound when it names none.
+func (s *Server) drainBound() time.Duration {
+	if ns := s.drainBoundNS.Load(); ns > 0 {
+		return time.Duration(ns)
+	}
+	return DefaultDrainBound
 }
 
 // retire forgets the session. One with no omp session id has its enrollments revoked at once by

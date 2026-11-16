@@ -118,8 +118,7 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   parked descendants; each nudge you sent, by its tree; and the consolidation passes' three counts
   summed over the week, with the link of the report issue's `consolidation.md` artifact, which
   lists each pair and group with what was done about it or what settles it. Name beside each
-  number the command that recounts it. When you lead a stream that keeps a scoreboard, the same
-  two measures go on it under `forced_creates_by_filer` and `tree_sizes`.
+  number the command that recounts it.
 
 A day with nothing finished says so in one sentence. When the lists do not fit, give each list's
 count and name its issues of `--priority 0` and `--priority 1`, in board rank order.

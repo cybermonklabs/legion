@@ -112,7 +112,7 @@ of these flags takes text and refuses a bare `-`. Text from a file or from stdin
 stdin (`-`). The command prints the pull request body's line for it, and that line goes into the
 body unchanged.
 The surface is **production-like** — the repository's real-process test harness and fixtures, a
-sandbox repository, a real browser, a devN stack, staging, or a local stack with real migrations,
+sandbox repository, a real browser, a development stack, staging, or a local stack with real migrations,
 one that has the resource the change touches — and `--run` or `--observed` carries a **link** to
 that run, screenshot or e2e; human review does not replace user-facing verification, and a green
 unit suite is not it. A unit or integration test is a regression lock, never a check's result,
@@ -212,7 +212,7 @@ and decides there, the only gate on such an issue.
   marked `after_merge`, recorded after the merge on a look of the production check by the role
   the project's `production_check` names — the tester, unless the setting is `off`, where the
   close opens no check and nothing records it — unless the implementer can execute it against a
-  devN stack before then; if no surface can reach it, the
+  development stack before then; if no surface can reach it, the
   tester names that missing surface as the blocker instead of passing the phase. Environment or
   secret-scrub evidence (e.g. "`LEGION_*`/`DISPATCH_*`/`ENVOY_*` unset") is recorded once, in
   its `test` handoff, and only when a check calls for it — never

@@ -1,6 +1,10 @@
 package judge
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/sjawhar/envoy/internal/broker/record"
+)
 
 // specRunes bounds the spec extract the model is shown (D14). It holds the Summary and
 // Requirements of a spec written to the house outline, and caps the text an agent-written
@@ -29,9 +33,9 @@ func specExtract(markdown string) string {
 		}
 	}
 	if len(sections) == 0 {
-		return clampRunes(markdown, specRunes)
+		return record.ClampRunes(markdown, specRunes)
 	}
-	return clampRunes(strings.Join(sections, "\n\n"), specRunes)
+	return record.ClampRunes(strings.Join(sections, "\n\n"), specRunes)
 }
 
 // specSection is one "## <heading>" section of markdown: the heading line itself and every line
@@ -93,17 +97,4 @@ func headingLevel(line string, fenced bool) int {
 // that close it where it is written closed, and the space around them are taken off.
 func headingWords(line string) string {
 	return strings.TrimSpace(strings.TrimRight(strings.TrimLeft(line, "#"), "# \t"))
-}
-
-// clampRunes is s cut to at most n runes. It cuts on a rune boundary, so what it answers is
-// still the UTF-8 the caller handed it, and it walks s once without allocating.
-func clampRunes(s string, n int) string {
-	count := 0
-	for i := range s {
-		if count == n {
-			return s[:i]
-		}
-		count++
-	}
-	return s
 }
