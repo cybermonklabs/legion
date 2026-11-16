@@ -315,7 +315,9 @@ func TestNoStateEventOfAHiddenProjectReachesAnOpenViewer(t *testing.T) {
 		what   string
 		events func(caller privateCaller, login string) []privateLogRow
 	}{
-		{"event log", func(caller privateCaller, _ string) []privateLogRow { return eventLogOf(t, threads.privateSeed, caller) }},
+		{"event log", func(caller privateCaller, _ string) []privateLogRow {
+			return eventLogOf(t, threads.privateSeed, caller)
+		}},
 		{"live socket", socketEvents},
 	} {
 		if got := countCarols(read.events(callerCarol, seedCarol)); got["user_thread_state.updated"] != 1 || got["user_state.updated"] != 2 {
