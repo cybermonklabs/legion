@@ -6142,7 +6142,8 @@ A grant ends for good when a release finds its secret's type changed (a moved so
 a change reverted before any release finds it leaves the grant as it was, and to end a grant, revoke it.
 `policy.Types`, `ValidType`, `ParseMaxGrant` and `ParseGitHubOwners` are the one statement of which types exist, what a max grant is and how a `github-owners` list reads (logins separated by white space, as `BROKER_SERVICES` separates its entries, a form an AWS tag value and a Secret Manager annotation both hold;
 a comma is refused `ErrGitHubOwnersComma`), and `policy.GitHubOwnersFor` (with `TypeNeedsGitHubOwners`) the one statement of which type needs owners, which the loader, `policytest.TypeSecret` and `agent-secrets secret` create and retag all apply.
-`policy.TagType` is the classifier on both stores. `policy.TypeFromTags` reads the old tag only when `type` is absent, for one release; an empty `type` also wins.
+`policy.TagType` is the classifier on both stores.
+`policy.TypeFromTags` reads the old tag only when `type` is absent, for one release; an empty `type` also wins.
 The loader logs `agent secret uses legacy classifier tag; retag it with --type` once per secret per broker process when it reads that old tag.
 Writers use `type`, and `secret retag NAME --type none` removes both classifier names, so the compatibility read cannot revive a removed type.
 `policy.TagRequesters` and `policy.ParseRequesters` are the one statement of who may ask for a secret at all (people by their lowercase sign-in email and services by the name the deployment registers, separated by white space as `github-owners` is, answered sorted and de-duplicated;
