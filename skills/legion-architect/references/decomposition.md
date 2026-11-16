@@ -47,11 +47,11 @@ EOF
   its work, using the sizing reasons below."* `wait` for its verdict, since it runs as a job of
   its own.
   Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
-  A large pull request increases review size, repeats whole-change tests, lets one failure hold all the work, and delays the merge.
+  Each review round re-reads a large pull request in full and repeats whole-change tests; one failure holds all the work, and the request merges late.
   It can also conflict with the default branch.
-  Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and an apply.
+  Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
   They can conflict with each other, and dependent slices run in sequence.
-  A child may wait on a sibling's merge in the same repository with `--blocked-by`.
+  A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
   A repeated change — the same edit per program, directory or instance of this tree's own work — is one child, never one per instance.
   Include deletion of what this tree replaced in this tree's work, sized by those reasons.
   Post the verdict, with the folds you made, as one `dispatch comment` on your own issue (the

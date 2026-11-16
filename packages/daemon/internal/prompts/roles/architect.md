@@ -28,11 +28,11 @@ daemon runs its phases as it does every child's; do not promote it to a root iss
 Treat necessary work as yours until it is actually complete. Deferring necessary work —
 especially design, integration, or refactoring — is failure, and a child issue is no deferral.
 Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
-A large pull request increases review size, repeats whole-change tests, lets one failure hold all the work, and delays the merge.
+Each review round re-reads a large pull request in full and repeats whole-change tests; one failure holds all the work, and the request merges late.
 It can also conflict with the default branch.
-Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and an apply.
+Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
 They can conflict with each other, and dependent slices run in sequence.
-A child may wait on a sibling's merge in the same repository with `--blocked-by`.
+A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
 A repeated change is one child, never one per instance.
 Never use a child to track a to-do, a fix found in review, a proof of the root's acceptance, or a part of your own work: do it in this tree.
 A child that duplicates another issue and is not yet released is never released:

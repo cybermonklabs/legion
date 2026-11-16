@@ -109,11 +109,11 @@ The architect writes no code. A child issue runs the same phases as its root, wi
 of its own, inside the same tree.
 
 Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
-A large pull request increases review size, repeats whole-change tests, lets one failure hold all the work, and delays the merge.
+Each review round re-reads a large pull request in full and repeats whole-change tests; one failure holds all the work, and the request merges late.
 It can also conflict with the default branch.
-Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and an apply.
+Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
 They can conflict with each other, and dependent slices run in sequence.
-A child may wait on a sibling's merge in the same repository with `--blocked-by`.
+A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
 
 **The children do the work first.** An issue starts no phase of its own while Dispatch shows an
 open child under it, a child the architect has filed and not released yet included; the architect
