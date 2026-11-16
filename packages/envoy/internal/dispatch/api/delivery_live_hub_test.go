@@ -1754,6 +1754,34 @@ func (r *hubRig) waitConnected(t *testing.T) {
 	}
 }
 
+// waitListening waits for the hub's listener to have connected and caught the delivery change log
+// up, and for nothing else: all a test needs whose changes reach the hub through that log (a pull
+// request marked unfetchable, a reconcile error) or that hands the hub its events itself (hear).
+// It waits for no relay feed. The relay's first subscription waits for the safe horizon
+// (firstRelayCursor, events.Horizon.Await), which any transaction holding an id anywhere on the
+// test Postgres instance holds back - another package's suite running beside this one, say - so a
+// test that waited for "events seeded" took as long as that transaction, up to eventFeedWait.
+func (r *hubRig) waitListening(t *testing.T) {
+	t.Helper()
+	r.waitFor(t, 0, 5*time.Second, "the listener's connection", func(note deliveryHubNote) bool { return note.what == "connected" })
+}
+
+// hear hands event to the running generation as the relay's feed hands the intake each event it
+// publishes (deliveryHub.receive), for a test of what the hub does with an event rather than of
+// the relay that carries it there: the relay publishes only up to the safe horizon, which any
+// transaction open on the test Postgres instance holds back (waitListening). The relay's own
+// carrying of an event to the hub is TestAnEventAnotherTaskCommittedReachesThisHub's.
+func (r *hubRig) hear(t *testing.T, event model.Event) {
+	t.Helper()
+	r.hub.mu.Lock()
+	g := r.hub.generation
+	r.hub.mu.Unlock()
+	if g == nil {
+		t.Fatalf("the hub runs no generation to hear %s", event.Type)
+	}
+	r.hub.receive(g, event)
+}
+
 // freshness is the next frame conn is sent, which must be a freshness frame.
 func (c *fakeLiveConn) freshness(t *testing.T, within time.Duration, what string) DeliveryLiveFreshness {
 	t.Helper()

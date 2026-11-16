@@ -244,7 +244,8 @@ func TestEachReaderIsToldTheUnfetchableCountOfWhatItSees(t *testing.T) {
 			t.Errorf("%s's snapshot counts %d unfetchable pull requests, want %d", reader.name, got, reader.snapshot)
 		}
 	}
-	rig.waitConnected(t)
+	// The mark reaches the hub through the delivery change log, which needs the listener alone.
+	rig.waitListening(t)
 
 	if err := delivery.MarkPullRequestUnfetchable(t.Context(), rig.database.Pool, "acme/widgets", 1, "the pull request is gone"); err != nil {
 		t.Fatalf("mark acme/widgets#1 unfetchable: %v", err)
@@ -296,11 +297,11 @@ func TestADeliveryViewTakesItsCallersNewReaderOnAnAccessChange(t *testing.T) {
 	if got := counted(conn.snapshot(t, 5*time.Second, "p")); got != 1 {
 		t.Fatalf("the reader who sees HID counts %d unfetchable pull requests, want 1", got)
 	}
-	rig.waitConnected(t)
+	rig.waitListening(t)
 
 	lost.Store(true)
 	key := "HID"
-	appendHubEvent(t, rig, model.Event{ProjectKey: &key, Type: projectAccessChangedEvent, Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: map[string]any{}})
+	rig.hear(t, appendHubEvent(t, rig, model.Event{ProjectKey: &key, Type: projectAccessChangedEvent, Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: map[string]any{}}))
 	if got := counted(conn.snapshot(t, 5*time.Second, "p")); got != 0 {
 		t.Errorf("after the caller lost HID the page is sent a snapshot counting %d unfetchable pull requests, want 0", got)
 	}
