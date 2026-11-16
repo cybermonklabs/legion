@@ -2132,8 +2132,8 @@ reason it is that long on the line directly above it: the two hooks of
 `e2e/__tests__/row-limits.test.ts` runs over every file under that directory, at
 any depth, that the lane's `bun test` collects there - a name ending `.test`,
 `_test`, `.spec` or `_spec`, in any case, under `.ts`, `.tsx`, `.js`, `.jsx`,
-`.cjs` or `.mts`, in every directory but `node_modules` and one whose name
-begins with a dot -
+`.mjs`, `.cjs`, `.mts` or `.cts`, in every directory but `node_modules` and one
+whose name begins with a dot -
 refuses every other limit: a limit is a call of that shared
 `rowLimit`, or it carries a reason of at least eight words on the line directly
 above it.
@@ -2154,9 +2154,9 @@ function declaration of its own file or by referring to a name the file
 binds or assigns to such a call (`const lane = retained(listing(...))` at module
 load, or `lane = retained(listing(...))` in a hook, then `await lane` in the
 row), unless it states its limit as a `rowLimit`
-call, its own or, for a row, the file's `setDefaultTimeout`, which Bun applies
-to the rows and hooks registered after the call: without one the lane's
-`--timeout 60000` stops it, which ties with the `short` bound.
+call, its own, or the file's `setDefaultTimeout` or `jest.setTimeout`, which
+Bun applies to the rows and hooks registered after the call: without one the
+lane's `--timeout 60000` stops it, which ties with the `short` bound.
 It reads those
 exports from a named import, from a name bound to or destructured off an
 `import()` of their module, or from a name destructured off a `require` of it

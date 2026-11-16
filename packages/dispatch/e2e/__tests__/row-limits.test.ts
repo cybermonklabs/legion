@@ -115,12 +115,15 @@ test("the scan leaves out every control of fixtures/", () => {
 // under names `bun test` does not collect and in the directories it does not go down, and proves
 // the rule reads and refuses exactly the first set. The `.tsx` and `.jsx` rows stand below a JSX
 // element whose text holds one backtick: read as TypeScript, that backtick opens a template
-// literal that swallows the row, so a refusal on line 3 is a file parsed as what it is.
+// literal that swallows the row, so a refusal on line 3 is a file parsed as what it is. The
+// CommonJS rows destructure `test` off `require("bun:test")` under a name of their own, `t`,
+// because the bare `test` is read whatever a file binds: only a reading of that `require`
+// makes `t(...)` a row.
 test("the scan reads every spelling of a test file the lane collects", () => {
   const root = mkdtempSync(join(tmpdir(), "row-limits-spellings-"));
   try {
     const esm = 'import { test } from "bun:test";\ntest("planted", () => {}, 90_000);\n';
-    const cjs = 'const { test } = require("bun:test");\ntest("planted", () => {}, 90_000);\n';
+    const cjs = 'const { test: t } = require("bun:test");\nt("planted", () => {}, 90_000);\n';
     const jsx =
       'import { test } from "bun:test";\n' +
       "const element = <p>one ` tick</p>;\n" +
@@ -132,8 +135,10 @@ test("the scan reads every spelling of a test file the lane collects", () => {
       ["__tests__/zz.test.tsx", jsx],
       ["__tests__/zz.spec.jsx", jsx],
       ["__tests__/zz.test.js", esm],
+      ["__tests__/zz.test.mjs", esm],
       ["__tests__/zz.spec.cjs", cjs],
       ["__tests__/zz_test.mts", esm],
+      ["__tests__/zz_spec.cts", cjs],
       ["__tests__/zz.TEST.ts", esm],
       ["__tests__/zz.fixture.ts", esm],
       ["__tests__/test.ts", esm],
@@ -153,7 +158,9 @@ test("the scan reads every spelling of a test file the lane collects", () => {
       "__tests__/zz.spec.jsx",
       "__tests__/zz.spec.ts",
       "__tests__/zz.test.js",
+      "__tests__/zz.test.mjs",
       "__tests__/zz.test.tsx",
+      "__tests__/zz_spec.cts",
       "__tests__/zz_spec.ts",
       "__tests__/zz_test.mts",
       "__tests__/zz_test.ts",
@@ -241,11 +248,13 @@ test("every wall-clock limit of the directory is derived or says what it drives"
 // each. R5 of the spec asks for the limit "in any spelling Bun accepts", so each one is read and
 // refused on its own line: `jest.setTimeout`, a renamed `test`, a renamed `setDefaultTimeout`,
 // `onTestFinished`, an options object named before the body, a row reached through a `const`
-// bound to a `const` bound to `test`, and rows reached through a name destructured off
-// `await import("bun:test")`, a name bound to it, and a name bound to `require("bun:test")`.
+// bound to a `const` bound to `test`, rows reached through a name destructured off
+// `await import("bun:test")`, a name bound to it, and a name bound to `require("bun:test")`, and
+// a row reached through a `const` bound to a name the file binds to `test` on a later line, which
+// one pass over the bindings in source order does not read.
 test("a limit Bun honours under a spelling of its own is refused like any other", () => {
   const spellings = "__tests__/fixtures/row-limits-spellings.fixture.ts";
-  const lines = [26, 28, 30, 33, 38, 42, 45, 48, 51];
+  const lines = [26, 28, 30, 33, 38, 42, 45, 48, 51, 59];
   const refused = refusedLimits(limitsOfFiles(e2eDirectory, [spellings]));
   expect(refused.map((refusal) => refusal.limit.line)).toEqual(lines);
   expect(refused.map((refusal) => refusal.limit.kind)).toEqual([
@@ -253,6 +262,7 @@ test("a limit Bun honours under a spelling of its own is refused like any other"
     "row",
     "file",
     "hook",
+    "row",
     "row",
     "row",
     "row",
@@ -271,6 +281,9 @@ test("a limit Bun honours under a spelling of its own is refused like any other"
   );
   expect(refused[6].why).toStartWith(
     `${spellings}:45 the row "a row declared through a name destructured off the module"`
+  );
+  expect(refused[9].why).toStartWith(
+    `${spellings}:59 the row "a row declared through a name bound to a name bound below it"`
   );
 });
 

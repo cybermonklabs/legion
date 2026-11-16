@@ -105,14 +105,14 @@
  * in an `await lane`, or alike in a `lane.then(...)`, an argument or a destructuring; and a
  * function whose body refers to such a name waits too. A name the body declares itself is its
  * own and not that one. The name an assignment writes to is written there rather than read, so
- * the hook that assigns `lane` waits for the `listing` it calls and not for `lane`. Such a row
- * states a limit: its own, or the file's through `setDefaultTimeout` or `jest.setTimeout`, which
- * Bun applies to every row and hook registered after the call. A row that states none runs under
- * the lane's `--timeout 60000`, which ties with the `short` bound and falls below every other
- * one, so the row's clock fires first and the failure names no child. The limit it states is a
- * call of `rowLimit` naming the children it waits for, never a number under a reason, because
- * the reason is the way out for a row that drives a process and this row waits for one; a file's
- * own limit counts for its rows only where it is such a call.
+ * the hook that assigns `lane` waits for the `listing` it calls and not for `lane`. Such a row or
+ * hook states a limit: its own, or the file's through `setDefaultTimeout` or `jest.setTimeout`,
+ * which Bun applies to every row and hook registered after the call. A row that states none runs
+ * under the lane's `--timeout 60000`, which ties with the `short` bound and falls below every
+ * other one, so the row's clock fires first and the failure names no child. The limit it states
+ * is a call of `rowLimit` naming the children it waits for, never a number under a reason,
+ * because the reason is the way out for a row that drives a process and this row waits for one;
+ * a file's own limit counts for its rows and hooks only where it is such a call.
  *
  * THE SHAPES THE SCAN READS. The scan is held to reading the shapes below: where a limit stands
  * and how it is spelled, what is a wait for a bounded child, and which files are read. Beside
@@ -140,11 +140,12 @@
  *   the bounds (fixture:79), and no `rowLimit` of the file's own (fixture:73).
  * - Those exports of `bun:test` under their own names from an import declaration (fixture:45);
  *   under a name an import declaration renames one to, `test as row` (spellings:28) and
- *   `setDefaultTimeout as cap` (spellings:30); under a `const` bound to such a name, read to a
- *   fixpoint (spellings:42); destructured off `await import("bun:test")` (spellings:45) or off
- *   `require("bun:test")` ("the scan reads every spelling of a test file the lane collects");
- *   and as a member of a name bound to `await import("bun:test")` (spellings:48) or to
- *   `require("bun:test")` (spellings:51).
+ *   `setDefaultTimeout as cap` (spellings:30); under a `const` bound to such a name
+ *   (spellings:42), read to a fixpoint, so a `const` bound to a name the file binds on a later
+ *   line is read too (spellings:59); destructured under a name of its own off
+ *   `await import("bun:test")` (spellings:45) or off `require("bun:test")` ("the scan reads
+ *   every spelling of a test file the lane collects"); and as a member of a name bound to
+ *   `await import("bun:test")` (spellings:48) or to `require("bun:test")` (spellings:51).
  * - A wait: a call, in a row's or a hook's body, of `runBounded` (fixture:93, fixture:129),
  *   `eventually` (fixture:171) or `whether` (fixture:175), which the fixture imports by an
  *   import declaration, or of `listing` (fixture:122, fixture:149), which it destructures off
@@ -164,9 +165,10 @@
  *   `fixtures/` included, and no other ("the scan reads every test file of the directory,
  *   wherever it stands", "the scan reads a test file of a subdirectory, which the lane runs
  *   too"): a name with a `.test`, `_test`, `.spec` or `_spec` ending, in any case, under `.ts`,
- *   `.tsx`, `.js`, `.jsx`, `.cjs` or `.mts`, outside `node_modules/` and a directory whose name
- *   begins with a dot, each parsed as its extension says, JSX in a `.tsx` or a `.jsx` ("the scan
- *   reads every spelling of a test file the lane collects"). No control of `fixtures/` is read
+ *   `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts` or `.cts`, outside `node_modules/` and a
+ *   directory whose name begins with a dot, each parsed as its extension says, JSX in a `.tsx`
+ *   or a `.jsx` ("the scan reads every spelling of a test file the lane collects", which plants
+ *   one name under each of those eight extensions). No control of `fixtures/` is read
  *   ("the scan leaves out every control of fixtures/"), and a `test(` inside a template literal
  *   is a string and no row ("a number that is no row's or hook's own limit is read nowhere").
  *

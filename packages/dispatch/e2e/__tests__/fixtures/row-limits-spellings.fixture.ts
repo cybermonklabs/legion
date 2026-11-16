@@ -49,3 +49,14 @@ loaded.test("a row declared through a name bound to the module", () => {}, 90_00
 
 const required = require("bun:test");
 required.test("a row declared through the module `require` loads", () => {}, 90_000);
+
+// The one plant that needs the bindings read to a fixpoint: `declared` is bound to `boundBelow`
+// above the line that binds `boundBelow` to `test`, so one pass over the bindings in source
+// order reads no row here. `declareRows` runs after both are bound, and measured as the header
+// says, on 2026-11-16, a limit of 50 here stopped the row at 50 ms.
+const declareRows = (): void => {
+  const declared = boundBelow;
+  declared("a row declared through a name bound to a name bound below it", () => {}, 90_000);
+};
+const boundBelow = row;
+declareRows();
