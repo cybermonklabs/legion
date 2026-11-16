@@ -4783,6 +4783,46 @@ describe("executeDispatchTool", () => {
     expect(result.text).not.toContain("which is not this host session");
   });
 
+  // A credential that lists projects is told the list (KF4), and the deprecated project is not
+  // printed beside it: the list is what the credential may use.
+  test("dispatch_whoami prints the projects a credential lists in place of its project", async () => {
+    const whoami = async (body: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool: "dispatch_whoami",
+        args: {},
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-1",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: (async (): Promise<Response> => response(body)) as unknown as typeof fetch,
+      });
+    const agent = { kind: "agent", owner: "alice", service: null, session: null };
+
+    const two = await whoami({ ...agent, projects: ["INFRA", "OPS"], project: null });
+    expect(two.details).toEqual({
+      session: "session-1",
+      owner: "alice",
+      service: null,
+      project: null,
+      projects: ["INFRA", "OPS"],
+    });
+    expect(two.text).toContain("It may use projects INFRA, OPS and no other.");
+
+    const one = await whoami({ ...agent, projects: ["INFRA"], project: "INFRA" });
+    expect(one.text).toContain("It may use project INFRA and no other.");
+    expect(one.text).not.toContain("may write project");
+
+    const person = await whoami({ kind: "user", login: "alice", projects: ["OPS"], scopes: [] });
+    expect(person.details).toMatchObject({ projects: ["OPS"] });
+    expect(person.text).toContain("It may use project OPS and no other.");
+
+    const none = await whoami({ ...agent, project: null });
+    expect(none.details).toEqual({ session: "session-1", owner: "alice", service: null, project: null });
+    expect(none.text).not.toContain("It may use");
+  });
+
   // A token that names a service and no person is refused every Dispatch write with
   // SIGN_IN_REQUIRED, whose message names `agent-secrets login`. whoami is where a person asks
   // what their credential may do, so its sentence for that caller must not describe the issue

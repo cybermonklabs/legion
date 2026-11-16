@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -17,10 +18,12 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -638,9 +641,41 @@ func (s *server) sendOwedBroadcastRecipients(ctx context.Context, read broadcast
 	return nil
 }
 
-// GET /api/v1/broadcasts
+// broadcastVisibleSQL is which broadcasts a viewer reads, over the broadcasts row aliased
+// broadcast and the visibility argument at viewerParam (refs.VisibilityArg): the person who sent
+// it reads it, and so does a viewer that may see every session it was sent to
+// (access.SessionClause, which passes every session for an open viewer). To any other viewer it is
+// a broadcast nobody sent. The clause is negated under a coalesce because it answers null rather
+// than false for a viewer that names no session, and `not null` would let a hidden recipient pass.
+func broadcastVisibleSQL(broadcast, viewerParam string) string {
+	return `((` + broadcast + `.author->>'kind' = 'user' and ` + broadcast + `.author->>'id' = ` + viewerParam + `::jsonb->>'person')
+		or not exists (
+			select 1 from messages recipient
+			where recipient.broadcast_id = ` + broadcast + `.id
+				and not coalesce(` + access.SessionClause("substr(recipient.target, 9)", viewerParam) + `, false)
+			offset 0))`
+}
+
+// broadcastReplyVisibleSQL is whether a viewer reads the message whose id idExpr names, a reply
+// under one of a broadcast's copies: such a thread belongs to no project, so a reply is read by
+// the parties its node names or by an open viewer that may see every session among them
+// (access.PartyClause). A reply with no node is read by nobody.
+func broadcastReplyVisibleSQL(idExpr, viewerParam string) string {
+	return `exists (
+			select 1 from graph_nodes reply_node
+			where reply_node.kind = '` + graphstore.KindMessage + `' and reply_node.id = ` + idExpr + `
+				and ` + access.PartyClause("reply_node.parties", viewerParam) + `
+			offset 0)`
+}
+
+// GET /api/v1/broadcasts: the broadcasts the caller reads (broadcastVisibleSQL), each counting the
+// recipients whose answer the caller reads (broadcastReplyVisibleSQL).
 func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
@@ -648,14 +683,16 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 		       count(distinct m.id),
 		       -- Recipients who answered, not answered attempts: one recipient that answered a
 		       -- retry as well as the original attempt is one answer, never two.
-		       count(distinct m.id) filter (where d.reply_id is not null)
+		       count(distinct m.id) filter (where d.reply_id is not null
+		         and `+broadcastReplyVisibleSQL("d.reply_id::text", "$1")+`)
 		from broadcasts b
 		left join messages m on m.broadcast_id = b.id
 		left join message_deliveries d on d.message_id = m.id and d.reply_id is not null
+		where `+broadcastVisibleSQL("b", "$1")+`
 		group by b.id
 		order by b.created_at desc, b.id desc
 		limit 50
-	`)
+	`, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -697,7 +734,7 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 // A broadcast's route resolves no id prefix, but the prefix layer canonicalizes its {id} all the
 // same (canonicalizeUUIDPath), so this handler parses the one spelling of it: Postgres refuses
 // `urn:uuid:<uuid>` on the uuid column, and the raw value would answer 500 where the canonical
-// one answers this route's own 404.
+// one answers this route's own 404. A broadcast the caller may not read answers that same 404.
 func (s *server) getBroadcast(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
@@ -706,6 +743,13 @@ func (s *server) getBroadcast(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	reader, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	// The reply blocks are read for the person the request acts for, as they always were, and
+	// for what the caller sees.
+	who.Viewer = reader.Viewer
 	id := r.PathValue("id")
 	if _, err := uuid.Parse(id); err != nil {
 		writeError(w, "BROADCAST_NOT_FOUND", http.StatusNotFound, "broadcast not found")
@@ -724,13 +768,15 @@ func (s *server) getBroadcast(w http.ResponseWriter, r *http.Request) {
 }
 
 // readBroadcast reads one broadcast with every recipient's state, as GET /api/v1/broadcasts/{id}
-// answers it to who; an unknown id is pgx.ErrNoRows.
+// answers it to who; an unknown id, and a broadcast who may not read (broadcastVisibleSQL), is
+// pgx.ErrNoRows.
 func (s *server) readBroadcast(ctx context.Context, who model.Actor, id string, trees bool) (broadcastRead, error) {
 	var read broadcastRead
 	var author []byte
 	if err := s.deps.Store.Pool.QueryRow(ctx, `
-		select id::text, author, body, delivery, created_at from broadcasts where id = $1
-	`, id).Scan(&read.ID, &author, &read.Body, &read.Delivery, &read.CreatedAt); err != nil {
+		select b.id::text, b.author, b.body, b.delivery, b.created_at from broadcasts b
+		where b.id = $1 and `+broadcastVisibleSQL("b", "$2")+`
+	`, id, refs.VisibilityArg(who)).Scan(&read.ID, &author, &read.Body, &read.Delivery, &read.CreatedAt); err != nil {
 		return broadcastRead{}, err
 	}
 	if err := json.Unmarshal(author, &read.Author); err != nil {
@@ -751,7 +797,8 @@ func (s *server) readBroadcast(ctx context.Context, who model.Actor, id string, 
 }
 
 // loadBroadcastRecipients reads every message the broadcast sent in the sender's requested
-// order, each reply's block read for who. Messages created before positions existed, or by an
+// order, each reply's block read for who, and only the replies who may read
+// (keepReadableBroadcastReplies). Messages created before positions existed, or by an
 // old server during a rolling deploy, have no position; their request order was never stored, so
 // they retain the created_at and id fallback order. created_at cannot order one current broadcast
 // because all of its rows share the one transaction's now().
@@ -790,6 +837,9 @@ func (s *server) loadBroadcastRecipients(ctx context.Context, who model.Actor, b
 	if err != nil {
 		return nil, err
 	}
+	if err := s.keepReadableBroadcastReplies(ctx, who, replies, deliveries); err != nil {
+		return nil, err
+	}
 	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, who, messages, replies); err != nil {
 		return nil, err
 	}
@@ -802,4 +852,47 @@ func (s *server) loadBroadcastRecipients(ctx context.Context, who model.Actor, b
 		recipients[index].Replies = shapedMessages(replies[message.ID], reader)
 	}
 	return recipients, nil
+}
+
+// keepReadableBroadcastReplies drops from replies every answer who may not read
+// (broadcastReplyVisibleSQL), and from each copy's attempts the reply it names when who may not
+// read that reply: to who, an answer it may not read is one the session never gave.
+func (s *server) keepReadableBroadcastReplies(ctx context.Context, who model.Actor, replies map[string][]model.Message, deliveries map[string][]model.MessageDelivery) error {
+	ids := []string{}
+	for _, chain := range replies {
+		for _, reply := range chain {
+			ids = append(ids, reply.ID)
+		}
+	}
+	for _, attempts := range deliveries {
+		for _, attempt := range attempts {
+			if attempt.ReplyID != nil {
+				ids = append(ids, *attempt.ReplyID)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select reply.id from unnest($1::text[]) reply(id)
+		where `+broadcastReplyVisibleSQL("reply.id", "$2"), ids, refs.VisibilityArg(who))
+	if err != nil {
+		return fmt.Errorf("read which broadcast replies the caller reads: %w", err)
+	}
+	readable, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("read which broadcast replies the caller reads: %w", err)
+	}
+	for seed, chain := range replies {
+		replies[seed] = slices.DeleteFunc(chain, func(reply model.Message) bool { return !slices.Contains(readable, reply.ID) })
+	}
+	for _, attempts := range deliveries {
+		for index := range attempts {
+			if reply := attempts[index].ReplyID; reply != nil && !slices.Contains(readable, *reply) {
+				attempts[index].ReplyID = nil
+			}
+		}
+	}
+	return nil
 }

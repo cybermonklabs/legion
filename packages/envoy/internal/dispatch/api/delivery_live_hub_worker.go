@@ -256,7 +256,7 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 		if spec.at != nil {
 			read.at = *spec.at
 		}
-		if read.pipe, err = h.server.readPipelinePopulation(ctx, read.settings, read.at); err != nil {
+		if read.pipe, err = h.server.readPipelinePopulation(ctx, spec.reader, read.settings, read.at); err != nil {
 			return read, err
 		}
 		body = deliveryPipelineCompute(read.settings, read.pipe, read.at, now)
@@ -271,7 +271,7 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 		if spec.preset > 0 {
 			from, to = now.Add(-spec.days()), now
 		}
-		if read.pop, err = h.server.readDeliveryPopulation(ctx, read.settings, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
+		if read.pop, err = h.server.readDeliveryPopulation(ctx, spec.reader, read.settings, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
 			return read, err
 		}
 		read.issues = map[string]struct{}{}

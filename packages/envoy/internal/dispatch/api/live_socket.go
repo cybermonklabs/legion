@@ -83,6 +83,9 @@ type liveSocket struct {
 	// socket's authorization is decided: a frame carries no credential of its own, so a view the
 	// socket serves reads what the caller proved when it opened (holds).
 	credential *model.Credential
+	// reader is the caller as a read answers for it, with what it sees, resolved once at the
+	// upgrade (resolveReader): each delivery view the socket subscribes is read for it.
+	reader model.Actor
 	// queue holds the hub's frames and the socket's own refusals (Send).
 	queue chan any
 	// stream holds the frames of the events and agent subscriptions (SendWait).
@@ -332,6 +335,11 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthenticationError(w, err)
 		return
 	}
+	reader, err := s.resolveReader(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return
+	}
 	upgrader := gws.Upgrader{EnableCompression: true, ReadBufferSize: liveSocketReadBuffer}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -340,6 +348,7 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	age := s.liveSocketAge()
 	socket := newLiveSocket(r.Context(), conn, actor.Credential)
 	socket.beforePick = s.liveWriterBeforePick
+	socket.reader = reader
 	s.liveSockets.add(socket)
 	defer s.liveSockets.remove(socket)
 	defer conn.Close()

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -228,7 +229,7 @@ func TestDeliveryProductionRuleSelectsLaterAppliedListedJob(t *testing.T) {
 	if len(applies) != 1 || applies[0].RunID != run.RunID || !applies[0].CompletedAt.Equal(appliedAt) {
 		t.Fatalf("containment applies = %+v, want run %d at %s", applies, run.RunID, appliedAt)
 	}
-	waiting, err := delivery.ListPullRequestsWaitingAt(ctx, pool, run.Repo, production, stoodDownAt.Add(30*time.Minute))
+	waiting, err := delivery.ListPullRequestsWaitingAt(ctx, pool, refs.VisibilityArg(everyReader), run.Repo, production, stoodDownAt.Add(30*time.Minute))
 	if err != nil {
 		t.Fatalf("list waiting pull requests: %v", err)
 	}

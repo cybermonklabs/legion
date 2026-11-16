@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -124,11 +125,17 @@ var personNodesQuery = `
 //
 // A login the store holds no person node for is 404, with the body an address nobody holds
 // answers: the read says nothing about whether that person exists, has signed in or wrote
-// anything. The caller's own login is the one exception, answered 200 with no rows: a person who
-// has written nothing and been reached by nothing opens their own page from the signed-in login,
-// and telling them they are who they signed in as tells them nothing new.
+// anything. So is a person the caller may not see (access.PersonClause): a restricted member, or
+// a credential that lists projects, opens only its own page and the pages of the people of the
+// projects it sees. The caller's own login is the one exception, answered 200 with no rows: a
+// person who has written nothing and been reached by nothing opens their own page from the
+// signed-in login, and telling them they are who they signed in as tells them nothing new.
 func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	reader, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -139,13 +146,16 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	login := model.CanonicalLogin(r.PathValue("login"))
 	// The acting credential is marshalled once and bound by both reads: it is one value for
-	// the request, and the two statements name the same reader.
+	// the request, and the two statements name the same reader. Its author is the person the
+	// request acts for, as it always was, and its viewer is what the caller sees.
+	caller.Viewer = reader.Viewer
 	seen := refs.VisibilityArg(caller)
 	var held bool
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
 		select exists (
 			select 1 from graph_nodes
 			where kind = $1 and id = $2 and state = $3 and `+refs.VisibleRow("graph_nodes", "$4")+`
+				and `+access.PersonClause("$2::text", "$4")+`
 		)`, graphstore.KindPerson, login, graphstore.StateLive, seen).Scan(&held); err != nil {
 		s.writeHandlerError(w, err)
 		return

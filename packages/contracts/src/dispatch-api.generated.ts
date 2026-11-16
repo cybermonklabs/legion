@@ -94,7 +94,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old. */
+    /** @description Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old. Only the sessions the caller may see: a session of a project it sees, or its own. */
     get: operations["getApiV1Agents"];
     put?: never;
     post?: never;
@@ -818,7 +818,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Recent broadcasts, newest first, with their recipient and reply counts. */
+    /** @description Recent broadcasts, newest first, with their recipient and reply counts. Only broadcasts the caller wrote, or whose every recipient it may see. */
     get: operations["getApiV1Broadcasts"];
     put?: never;
     /** @description Send one message to many sessions: {body, delivery, session_ids}, one targeted message per recipient under a shared broadcast, answered once it is committed while each recipient's delivery runs behind the answer. A selected session the Envoy listener knows and that is not running is a recipient like any other, its copy stored for it and its attempt recorded queued; one the listener knows nothing about, or that does not advertise the mode, is excluded and named in the response, never switched to another mode. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 at once with the broadcast the key made, every recipient's attempts as they stand and the first answer's exclusions, Idempotency-Replayed: ?1, and puts every recipient it still owes on its way behind the answer. A recipient a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not. */
@@ -836,7 +836,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One broadcast with every recipient's delivery attempts and replies, recipients in the order the send named them; a broadcast from before that order was stored falls back to created_at, id. */
+    /** @description One broadcast with every recipient's delivery attempts and replies, recipients in the order the send named them; a broadcast from before that order was stored falls back to created_at, id. Only broadcasts the caller wrote, or whose every recipient it may see. */
     get: operations["getApiV1BroadcastsById"];
     put?: never;
     post?: never;
@@ -2295,7 +2295,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=<KEY>, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads. */
+    /** @description Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. Each count counts only the work of the projects the caller sees. ?project=<KEY>, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads. */
     get: operations["getApiV1Priorities"];
     put?: never;
     /** @description Write one priority {id?, title, description?, owner?}: title is required, and a title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is) is 400 PRIORITY_INPUT; id is the caller's and defaults to the title written as a slug, and an id that is no slug of lowercase letters, digits and single hyphens, one over 200 characters, the ids none and any (the issue listing reads advances=none as the work under no priority and advances=any as the work under any), and a title no slug can be written from are each 400 PRIORITY_INPUT, an id derived from the title as much as one given; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none. */
@@ -3020,7 +3020,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Everyone who has signed in, by lowercase email: the assignee picker's options. */
+    /** @description Everyone who has signed in, by lowercase email: the assignee picker's options. Only the people of the projects the caller sees, for a restricted member or a credential that lists projects. */
     get: operations["getApiV1Users"];
     put?: never;
     post?: never;
@@ -3037,7 +3037,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. member_kind is restricted for a restricted member, and absent for everyone else; a member kind that cannot be read is 503 IDENTITY_UNAVAILABLE. */
+    /** @description Who the server takes the caller for: {kind: user, login, projects, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, projects, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is). projects is the list of projects the credential may use, sorted, in either shape, absent when it lists none; project is deprecated, and is the one key of a one-key list, null otherwise. scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. member_kind is restricted for a restricted member, and absent for everyone else; a member kind that cannot be read is 503 IDENTITY_UNAVAILABLE. */
     get: operations["getApiV1Whoami"];
     put?: never;
     post?: never;
@@ -6358,6 +6358,7 @@ export interface components {
       member_kind?: "restricted";
       owner: null | string;
       project: null | string;
+      projects?: string[];
       scopes: string[] | null;
       service: null | string;
       session: null | string;
@@ -6368,6 +6369,7 @@ export interface components {
       login: string;
       /** @enum {string} */
       member_kind?: "restricted";
+      projects?: string[];
       scopes: string[] | null;
     };
     WorkUnderNoPriority: {

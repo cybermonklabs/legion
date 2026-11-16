@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 const (
@@ -134,11 +135,15 @@ func priorityFrom(node prioritystore.Node) model.Priority {
 // project and is dropped rather than refused, as it narrows nothing. ?summary=true answers the
 // two fault counts alone, which is what the navigation rail reads.
 //
+// The counts and the two fault lists are of the projects the caller sees (readPriorities binds
+// access.ProjectClause on every issue they count); the list of priorities stays whole.
+//
 // A store holding no live priority is answered 200 with the empty list and the sentence saying
 // why (priorityNoneWritten): a deployment that has written no priority yet has nothing to list
 // and nothing has gone wrong.
 func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	query := r.URL.Query()
@@ -148,7 +153,7 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 			projects = append(projects, named)
 		}
 	}
-	body, err := s.readPriorities(r.Context(), projects, query.Get("summary") == "true")
+	body, err := s.readPriorities(r.Context(), refs.VisibilityArg(reader), projects, query.Get("summary") == "true")
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

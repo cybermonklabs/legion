@@ -543,9 +543,10 @@ func livePipelineView(at *time.Time) DeliveryLiveView {
 	return DeliveryLiveView{Kind: deliveryLivePipeline, At: &s}
 }
 
-// subscribeFrame is a subscribe frame for a delivery view as the socket hands it to the hub.
+// subscribeFrame is a subscribe frame for a delivery view as the socket hands it to the hub, read
+// for the server's own viewer, which sees every repository and project these tests store.
 func subscribeFrame(sub string, view DeliveryLiveView) deliverySubscription {
-	return deliverySubscription{Sub: sub, View: view}
+	return deliverySubscription{Sub: sub, View: view, Reader: everyReader}
 }
 
 // seedHubSettings writes the delivery settings the hub tests run under.

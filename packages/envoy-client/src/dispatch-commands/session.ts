@@ -64,6 +64,9 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // a session of its own: read either omission as that older build, not as "no session".
   const proved = identity.kind === "agent" ? (identity.session ?? null) : null;
   const project = identity.kind === "agent" ? (identity.project ?? null) : null;
+  // The projects the credential may use, which a Dispatch that predates the list leaves out, as
+  // it does for a credential that lists none; project is then the one it names, if any.
+  const projects = identity.projects?.length ? identity.projects : null;
   // The session Dispatch records the writes as: the one the credential proved, else this host's.
   const session = proved ?? sessionId;
   const unowned =
@@ -89,10 +92,15 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
     proved !== null && proved !== sessionId
       ? ` Your credential names session ${proved}, which is not this host session (${sessionId}): Dispatch records every write you make as ${proved}.`
       : "";
-  const writable = project !== null ? ` It may write project ${project} and no other.` : "";
+  const writable =
+    projects !== null
+      ? ` It may use ${projects.length === 1 ? "project" : "projects"} ${projects.join(", ")} and no other.`
+      : project !== null
+        ? ` It may write project ${project} and no other.`
+        : "";
   return {
     text: acting + elsewhere + writable,
-    details: { session, owner, service, project },
+    details: { session, owner, service, project, ...(projects !== null ? { projects } : {}) },
   };
 }
 

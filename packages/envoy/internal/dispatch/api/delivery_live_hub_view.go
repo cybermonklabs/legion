@@ -4,7 +4,10 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // parseDeliveryLiveView resolves a subscribed view as the matching GET route reads its query, or
@@ -71,4 +74,18 @@ func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError)
 		return invalid("INVALID_FRAME", "view.kind must be timeline, measures or pipeline")
 	}
 	return spec, nil
+}
+
+// deliveryReaderKey is the part of a view's key its reader decides: whether the reader is the
+// server's own viewer, whether it is open, and the projects it sees, which are all that
+// access.ProjectClause and access.RepositoryClause read of a viewer. Readers that agree on the
+// three read the same rows and share one view, so where no project is private every open viewer
+// shares the one view it always did. A reader with no viewer is the closed one, which sees nothing.
+func deliveryReaderKey(reader model.Actor) string {
+	viewer := reader.Viewer
+	if viewer == nil {
+		viewer = &model.Viewer{}
+	}
+	return "all=" + strconv.FormatBool(viewer.All) + ",open=" + strconv.FormatBool(viewer.Open) +
+		",sees=" + strings.Join(viewer.Sees, ",")
 }

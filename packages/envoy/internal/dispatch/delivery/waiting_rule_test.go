@@ -306,7 +306,7 @@ func seedWaitingHistory(t *testing.T, ctx context.Context, pool *store.Pool, run
 // the run that ships it after at.
 func waitingSets(t *testing.T, ctx context.Context, pool *store.Pool, at time.Time, production Production) (sqlSet, goSet map[int]string) {
 	t.Helper()
-	waiting, err := ListPullRequestsWaitingAt(ctx, pool, waitingRepo, production, at)
+	waiting, err := ListPullRequestsWaitingAt(ctx, pool, everyViewer, waitingRepo, production, at)
 	if err != nil {
 		t.Fatalf("ListPullRequestsWaitingAt: %v", err)
 	}
@@ -316,7 +316,7 @@ func waitingSets(t *testing.T, ctx context.Context, pool *store.Pool, at time.Ti
 	}
 
 	epoch := time.Unix(0, 0)
-	stored, err := ListPullRequestsInWindow(ctx, pool, epoch, at)
+	stored, err := ListPullRequestsInWindow(ctx, pool, everyViewer, epoch, at)
 	if err != nil {
 		t.Fatalf("ListPullRequestsInWindow: %v", err)
 	}

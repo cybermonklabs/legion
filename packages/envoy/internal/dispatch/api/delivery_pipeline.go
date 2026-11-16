@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -53,9 +54,11 @@ type deliveryPipelinePRChecks struct {
 // fixture's day. Runs are read by start over the whole of the shown days, today included past at.
 // The PR checks are the pull_request runs; the deploy jobs are read from the push runs on main
 // (decision 6); the lead times are every population pull request merged in the shown days,
-// before any facet, since the Pipeline page follows neither the timeline's window nor its facets.
+// before any facet, since the Pipeline page follows neither the timeline's window nor its facets,
+// and of those only the ones of a repository the caller sees (readDeliveryRows).
 func (s *server) getDeliveryPipeline(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	at, err := parseOptionalRFC3339(r.URL.Query(), "at", time.Now().UTC())
@@ -68,7 +71,7 @@ func (s *server) getDeliveryPipeline(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	population, err := s.readPipelinePopulation(r.Context(), settings, at)
+	population, err := s.readPipelinePopulation(r.Context(), reader, settings, at)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -85,9 +88,9 @@ type pipelinePopulation struct {
 }
 
 // readPipelinePopulation reads the Pipeline page's runs and pull requests for the shown days
-// ending on at's UTC day. Runs are read by start over the whole of the shown days, today included
-// past at.
-func (s *server) readPipelinePopulation(ctx context.Context, settings delivery.DeliverySettings, at time.Time) (pipelinePopulation, error) {
+// ending on at's UTC day, the lead times' pull requests as reader reads them (readDeliveryRows).
+// Runs are read by start over the whole of the shown days, today included past at.
+func (s *server) readPipelinePopulation(ctx context.Context, reader model.Actor, settings delivery.DeliverySettings, at time.Time) (pipelinePopulation, error) {
 	pool := s.deps.Store.Pool
 	from := measures.WindowStart(at)
 	to := from.AddDate(0, 0, measures.ShownDayCount)
@@ -118,7 +121,7 @@ func (s *server) readPipelinePopulation(ctx context.Context, settings delivery.D
 		return pipelinePopulation{}, err
 	}
 	var err error
-	if pop.leadTimes, err = s.readDeliveryRows(ctx, settings, from, to, url.Values{}, false, false); err != nil {
+	if pop.leadTimes, err = s.readDeliveryRows(ctx, reader, settings, from, to, url.Values{}, false, false); err != nil {
 		return pipelinePopulation{}, err
 	}
 	return pop, nil

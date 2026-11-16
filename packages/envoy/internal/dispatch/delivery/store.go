@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -393,8 +394,10 @@ type WaitingPullRequest struct {
 // finished before at had shipped by then, and every one merged at or after it had not: that
 // creation, read through delivery_runs_kind_created newest first, is the one bound this needs. The
 // shipping run is read here rather than from the window's own runs, which start at the window and
-// so can miss a run created before it.
-func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, deployRepo string, production Production, at time.Time) ([]WaitingPullRequest, error) {
+// so can miss a run created before it. viewer is the visibility argument (refs.VisibilityArg) the
+// deploy repository is held to (access.RepositoryClause), as ListPullRequestsInWindow holds every
+// pull request's.
+func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, viewer any, deployRepo string, production Production, at time.Time) ([]WaitingPullRequest, error) {
 	rows, err := pool.Query(ctx, `
 		select `+PullRequestColumns+`, ship.run_id, ship.completed_at
 		from delivery_pull_requests pr
@@ -408,10 +411,10 @@ func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, deployRepo
 				and j.completed_at < $3
 			order by `+runCreatedAt+` desc
 			limit 1
-		), '-infinity')
+		), '-infinity') and `+access.RepositoryClause("pr.repo", "$6")+`
 		order by pr.merged_at, (pr.repo || '#' || pr.number) collate "C"
 		limit $4
-	`, deployRepo, production.JobNames, at, maxPullRequestsPerWindow, production.ApplyStep)
+	`, deployRepo, production.JobNames, at, maxPullRequestsPerWindow, production.ApplyStep, viewer)
 	if err != nil {
 		return nil, err
 	}
@@ -1005,20 +1008,23 @@ func ListRunsWithJobsStartedIn(ctx context.Context, pool *store.Pool, repo strin
 // a tight production ceiling.
 const maxPullRequestsPerWindow = 50_000
 
-// ListPullRequestsInWindow lists every population pull request merged in [from, to), oldest
-// merge first and those merged in one instant by id ("owner/repo#N" in byte order, the order the
-// page's live merge keeps: applyDelta.ts's ORDERS.prs), up to maxPullRequestsPerWindow: the API's
-// timeline window and the facet computations that run over it. A partial row (merged_at still
-// null) is never in range and so never appears here — exactly right, since its lead time and
-// shipped status are not yet knowable.
-func ListPullRequestsInWindow(ctx context.Context, pool *store.Pool, from, to time.Time) ([]DeliveryPullRequest, error) {
+// ListPullRequestsInWindow lists every population pull request merged in [from, to) whose
+// repository the viewer sees, oldest merge first and those merged in one instant by id
+// ("owner/repo#N" in byte order, the order the page's live merge keeps: applyDelta.ts's
+// ORDERS.prs), up to maxPullRequestsPerWindow: the API's timeline window and the facet
+// computations that run over it. A partial row (merged_at still null) is never in range and so
+// never appears here — exactly right, since its lead time and shipped status are not yet
+// knowable. viewer is the visibility argument (refs.VisibilityArg) a pull request's repository is
+// held to (access.RepositoryClause): one mapped to a project the viewer does not see is not in
+// the window, and one no project maps is there for an open viewer alone.
+func ListPullRequestsInWindow(ctx context.Context, pool *store.Pool, viewer any, from, to time.Time) ([]DeliveryPullRequest, error) {
 	rows, err := pool.Query(ctx, `
 		select `+PullRequestColumns+`
-		from delivery_pull_requests
-		where merged_at >= $1 and merged_at < $2
+		from delivery_pull_requests pr
+		where merged_at >= $1 and merged_at < $2 and `+access.RepositoryClause("pr.repo", "$4")+`
 		order by merged_at, (repo || '#' || number) collate "C"
 		limit $3
-	`, from, to, maxPullRequestsPerWindow)
+	`, from, to, maxPullRequestsPerWindow, viewer)
 	if err != nil {
 		return nil, err
 	}

@@ -17,7 +17,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -115,9 +118,11 @@ func (s *server) deliverySettings(w http.ResponseWriter, r *http.Request) (deliv
 // page showing both reads the population once. GET /api/v1/delivery/measures is the measures
 // alone, for another window. The answer is readDeliveryPopulation's read and
 // deliveryTimelineCompute's compute, the two halves the live hub calls too, so a live page's
-// snapshot is this body.
+// snapshot is this body. Every pull request, unowned P0 issue and issue fact in it is one of the
+// projects the caller sees (readDeliveryRows).
 func (s *server) getDeliveryTimeline(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	query := r.URL.Query()
@@ -130,7 +135,7 @@ func (s *server) getDeliveryTimeline(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	population, err := s.readDeliveryPopulation(r.Context(), settings, from, to, query, true)
+	population, err := s.readDeliveryPopulation(r.Context(), reader, settings, from, to, query, true)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -293,15 +298,23 @@ type deliveryWaitingRow struct {
 // unowned P0 list); nothing that computes from it reads again. With withWaiting it also reads the
 // deploy repository's pull requests still waiting at `from` (ListPullRequestsWaitingAt), resolved
 // through the same issue and session lookups so the timeline's waiting line filters them alike;
-// the measures read none.
-func (s *server) readDeliveryPopulation(ctx context.Context, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting bool) (deliveryPopulation, error) {
-	return s.readDeliveryRows(ctx, settings, from, to, query, withWaiting, true)
+// the measures read none. reader is who the answer is read for: what it holds of a project is what
+// that reader sees (readDeliveryRows).
+func (s *server) readDeliveryPopulation(ctx context.Context, reader model.Actor, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting bool) (deliveryPopulation, error) {
+	return s.readDeliveryRows(ctx, reader, settings, from, to, query, withWaiting, true)
 }
 
 // readDeliveryRows is readDeliveryPopulation, and with withMeasures false leaves out the measures'
 // runs and unowned P0 list, which the Pipeline page's lead times do not read.
-func (s *server) readDeliveryRows(ctx context.Context, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting, withMeasures bool) (deliveryPopulation, error) {
+//
+// The rows of a project are the reader's: a pull request whose repository repo_projects maps to a
+// project the reader does not see is not read, nor one of a repository no project maps unless the
+// reader is open (access.RepositoryClause), and an unowned P0 issue or the facts of an issue a pull
+// request names are read only from a project the reader sees (access.ProjectClause). The deploy
+// runs and their jobs are the deployment's own, read alike for every reader that may read them.
+func (s *server) readDeliveryRows(ctx context.Context, reader model.Actor, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting, withMeasures bool) (deliveryPopulation, error) {
 	pool := s.deps.Store.Pool
+	viewer := refs.VisibilityArg(reader)
 	pop := deliveryPopulation{query: query, withWaiting: withWaiting, jobsByRun: map[int64][]delivery.DeliveryRunJob{}, windowJobs: map[int64][]delivery.DeliveryRunJob{}}
 
 	// Independent reads, side by side. They never shared a transaction (each is its own
@@ -336,7 +349,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 	}
 	independent := []func(ctx context.Context) error{
 		func(ctx context.Context) (err error) {
-			pop.prs, err = delivery.ListPullRequestsInWindow(ctx, pool, from, to)
+			pop.prs, err = delivery.ListPullRequestsInWindow(ctx, pool, viewer, from, to)
 			return err
 		},
 		// Every deploy run on main GitHub created at or after `from`: the containment
@@ -365,7 +378,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 				return delivery.ListRunsStartedIn(ctx, pool, settings.DeployRepo, delivery.DeliveryRunKindDeploy, "main", "", from, to)
 			}, &pop.windowRuns, &pop.windowJobs),
 			func(ctx context.Context) (err error) {
-				pop.unownedP0, err = delivery.ListUnownedP0(ctx, pool)
+				pop.unownedP0, err = delivery.ListUnownedP0(ctx, pool, viewer)
 				return err
 			})
 	}
@@ -373,7 +386,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 		// The deploy repository's pull requests still waiting at `from`, so the waiting line
 		// starts the window at their count rather than at zero.
 		independent = append(independent, func(ctx context.Context) (err error) {
-			pop.waiting, err = delivery.ListPullRequestsWaitingAt(ctx, pool, settings.DeployRepo, settings.Production(), from)
+			pop.waiting, err = delivery.ListPullRequestsWaitingAt(ctx, pool, viewer, settings.DeployRepo, settings.Production(), from)
 			return err
 		})
 	}
@@ -417,7 +430,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 	if pop.titles, err = delivery.ResolveSessionTitles(ctx, pool, sessionIDs); err != nil {
 		return deliveryPopulation{}, err
 	}
-	if pop.issues, err = s.deliveryIssueFacts(ctx, issueKeys); err != nil {
+	if pop.issues, err = s.deliveryIssueFacts(ctx, viewer, issueKeys); err != nil {
 		return deliveryPopulation{}, err
 	}
 	if pop.components, err = s.deliveryComponents(ctx, deliveryIssueProjects(pop.issues)); err != nil {
@@ -789,23 +802,24 @@ type deliveryIssue struct {
 }
 
 // deliveryIssueFactsQuery is the pull-request timeline's read of the issues a delivery names,
-// with their components. The text is built once, at start, for the reason issueRowStatement
-// gives.
+// with their components, from the projects the reader whose visibility argument is $2 sees: an
+// issue of any other project reads as a key that names no issue. The text is built once, at
+// start, for the reason issueRowStatement gives.
 var deliveryIssueFactsQuery = `
 		with recursive subjects as (select i.key from issues i where i.key = any($1)),
 		` + issueComponentsTerms + `
 		select i.key, i.project_key, i.title, i.priority, coalesce(comp.ids, '{}'::text[])
 		from issues i
 		` + issueComponentsJoin + `
-		where i.key = any($1)
+		where i.key = any($1) and ` + access.ProjectClause("i.project_key", "$2") + `
 	`
 
-func (s *server) deliveryIssueFacts(ctx context.Context, keys []string) (map[string]deliveryIssue, error) {
+func (s *server) deliveryIssueFacts(ctx context.Context, viewer any, keys []string) (map[string]deliveryIssue, error) {
 	issues := make(map[string]deliveryIssue, len(keys))
 	if len(keys) == 0 {
 		return issues, nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, deliveryIssueFactsQuery, keys)
+	rows, err := s.deps.Store.Pool.Query(ctx, deliveryIssueFactsQuery, keys, viewer)
 	if err != nil {
 		return nil, err
 	}

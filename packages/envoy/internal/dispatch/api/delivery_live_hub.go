@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/pglisten"
 )
@@ -29,11 +30,13 @@ type deliveryLiveConn interface {
 }
 
 // deliverySubscription is a subscribe frame for a delivery view as the socket hands it to the hub,
-// its resume decoded as a delivery view's.
+// its resume decoded as a delivery view's, with the reader the socket resolved at its upgrade
+// (liveSocket.reader), whose view it is.
 type deliverySubscription struct {
 	Sub    string
 	View   DeliveryLiveView
 	Resume *DeliveryLiveResume
+	Reader model.Actor
 }
 
 // Subscribe answers one subscribe frame on conn, and reports whether conn's sub now follows the
@@ -53,6 +56,9 @@ type deliverySubscription struct {
 // and the settings' first save answers its snapshot. A sub id conn already holds is replaced. The
 // first sub of a hub with none starts a generation (deliveryHub); once the server's lifetime has
 // ended no generation starts and the frame is answered nothing, as the socket closes with 1012.
+// A view is its reader's: the pull requests, unowned P0 issues and issue facts it reads are of the
+// projects that reader sees (readDeliveryRows), so subscribers share a view only when they see
+// alike (deliveryReaderKey).
 func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscription) bool {
 	spec, refusal := parseDeliveryLiveView(frame.View)
 	if refusal != nil {
@@ -60,6 +66,8 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 		conn.Send(*refusal)
 		return false
 	}
+	spec.reader = frame.Reader
+	spec.key += "|" + deliveryReaderKey(frame.Reader)
 	var held *DeliveryLiveRevs
 	if frame.Resume != nil {
 		seq, err := strconv.ParseInt(frame.Resume.Seq, 10, 64)
@@ -342,14 +350,15 @@ type deliverySub struct {
 }
 
 // deliveryLiveSpec is a subscribed view, resolved: its kind, its window (a preset's length in days,
-// or a custom range), its query without from and to, a pipeline view's pinned at, and the
-// canonical key identical views share.
+// or a custom range), its query without from and to, a pipeline view's pinned at, the reader it is
+// read for, and the canonical key identical views share.
 type deliveryLiveSpec struct {
 	kind     string
 	preset   int
 	from, to time.Time
 	query    url.Values
 	at       *time.Time
+	reader   model.Actor
 	key      string
 }
 

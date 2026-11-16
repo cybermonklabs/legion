@@ -193,7 +193,7 @@ func (s *server) subscribeLive(socket *liveSocket, frame LiveSubscribe) {
 		if held != nil && held.streamed != nil {
 			s.endLive(socket, sub, held)
 		}
-		if s.deliveryHub.Subscribe(socket, deliverySubscription{Sub: sub, View: frame.View.DeliveryLiveView, Resume: deliveryResume}) {
+		if s.deliveryHub.Subscribe(socket, deliverySubscription{Sub: sub, View: frame.View.DeliveryLiveView, Resume: deliveryResume, Reader: socket.reader}) {
 			socket.subs[sub] = &liveSub{}
 		}
 		return

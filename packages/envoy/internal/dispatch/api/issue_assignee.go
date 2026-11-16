@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // parseIssueAssignee decodes the tri-state `assignee` field of an issue write. Absent →
@@ -106,12 +108,22 @@ type listUsersResponse struct {
 	Users []dispatchUser `json:"users"`
 }
 
-// listUsers returns everyone who has signed in, sorted by email: the assignee picker's options.
+// listUsers returns the people who have signed in that the caller may see (access.PersonClause),
+// sorted by email: the assignee picker's options. An open viewer sees every one of them; a
+// restricted member, and a credential that lists projects, sees itself and the people of the
+// projects it sees.
 func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), `select email from people order by email`)
+	reader, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	rows, err := s.deps.Store.Pool.Query(r.Context(), `
+		select person.email from people person
+		where `+access.PersonClause("person.email", "$1")+`
+		order by person.email`, refs.VisibilityArg(reader))
 	if err != nil {
 		s.writeHandlerError(w, fmt.Errorf("list people: %w", err))
 		return
@@ -135,8 +147,11 @@ type whoamiUser struct {
 	Login string `json:"login"`
 	// MemberKind is "restricted" for a restricted member and absent for everyone else, so a full
 	// member's answer is the one it always was.
-	MemberKind string   `json:"member_kind,omitempty" enum:"restricted"`
-	Scopes     []string `json:"scopes"`
+	MemberKind string `json:"member_kind,omitempty" enum:"restricted"`
+	// Projects is the list of projects the credential may use, sorted, and absent when it lists
+	// none, which a browser's cookie never does (whoamiProjects).
+	Projects []string `json:"projects,omitempty"`
+	Scopes   []string `json:"scopes"`
 }
 
 // whoamiAgent is the body GET /api/v1/whoami answers every credential that is not a person's
@@ -148,11 +163,15 @@ type whoamiAgent struct {
 	Owner *string `json:"owner"`
 	// MemberKind is "restricted" when the person the credential acts for is a restricted member,
 	// and absent otherwise.
-	MemberKind string   `json:"member_kind,omitempty" enum:"restricted"`
-	Project    *string  `json:"project"`
-	Scopes     []string `json:"scopes"`
-	Service    *string  `json:"service"`
-	Session    *string  `json:"session"`
+	MemberKind string `json:"member_kind,omitempty" enum:"restricted"`
+	// Projects is the list of projects the credential may use, sorted, and absent when it lists
+	// none, so a credential with no list answers what it always did (whoamiProjects).
+	Projects []string `json:"projects,omitempty"`
+	// Project is deprecated: the one key of a one-key list, and null for any other list.
+	Project *string  `json:"project"`
+	Scopes  []string `json:"scopes"`
+	Service *string  `json:"service"`
+	Session *string  `json:"session"`
 }
 
 // whoami tells any authenticated caller who the server takes it for: a human by login, or an
@@ -161,8 +180,9 @@ type whoamiAgent struct {
 // names a service and no person) — the service it is, which is the verified Kubernetes subject
 // of its service-account token or the fleet a broker-issued token naming no person belongs to
 // (null for every other credential), the session its credential proved (null for a credential
-// that proves none, which every one but a broker-issued token is) and the one project that
-// credential lets it write (null where it names none, a person-scoped token included).
+// that proves none, which every one but a broker-issued token is), the projects the credential
+// may use (absent where it lists none) and, deprecated, the one project of a one-project list
+// (null otherwise, a person-scoped token included).
 //
 // Every caller is told the OAuth scopes its credential holds, which is what decides the routes it
 // may call (gateRouteScopes): both for a person at a browser, the set its own row names for a
@@ -189,9 +209,22 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if human {
-		WriteJSON(w, http.StatusOK, whoamiUser{Kind: "user", Login: actor.ID, MemberKind: memberKind, Scopes: scopes})
+		WriteJSON(w, http.StatusOK, newWhoamiUser(actor, memberKind, scopes))
 		return
 	}
+	WriteJSON(w, http.StatusOK, newWhoamiAgent(actor, memberKind, scopes))
+}
+
+// newWhoamiUser is whoami's answer to a person at a browser.
+func newWhoamiUser(actor model.Actor, memberKind string, scopes []string) whoamiUser {
+	return whoamiUser{Kind: "user", Login: actor.ID, MemberKind: memberKind, Projects: whoamiProjects(actor.Credential), Scopes: scopes}
+}
+
+// newWhoamiAgent is whoami's answer to a credential that is not a person's browser session. Its
+// project is the one key of a one-key list and null for a longer list; a credential with no list
+// keeps the project its actor names, which is a broker token's one project until the broker's
+// claim carries the list (PlanD's t-d-2), so no answer of today loses its project.
+func newWhoamiAgent(actor model.Actor, memberKind string, scopes []string) whoamiAgent {
 	var owner *string
 	if actor.Owner != nil {
 		owner = new(model.CanonicalLogin(*actor.Owner))
@@ -200,15 +233,24 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	if actor.Kind == "session" && actor.ID != "" {
 		session = &actor.ID
 	}
-	WriteJSON(w, http.StatusOK, whoamiAgent{
+	projects := whoamiProjects(actor.Credential)
+	project := actor.Project
+	switch {
+	case len(projects) == 1:
+		project = &projects[0]
+	case len(projects) > 1:
+		project = nil
+	}
+	return whoamiAgent{
 		Kind:       "agent",
 		Owner:      owner,
 		MemberKind: memberKind,
-		Project:    actor.Project,
+		Projects:   projects,
+		Project:    project,
 		Scopes:     scopes,
 		Service:    actor.Service,
 		Session:    session,
-	})
+	}
 }
 
 // whoamiMemberKind is whoami's member_kind for person: "restricted" for a restricted member, and
@@ -237,4 +279,14 @@ func whoamiScopes(credential *model.Credential) []string {
 		return []string{}
 	}
 	return credential.Scopes
+}
+
+// whoamiProjects is the projects a credential lists as whoami answers them, in either shape: a
+// sorted copy, and nil, which the answer leaves out, for a credential that lists none (KF4: avenue
+// F routes a session's transcripts by this list).
+func whoamiProjects(credential *model.Credential) []string {
+	if credential == nil || len(credential.Projects) == 0 {
+		return nil
+	}
+	return slices.Sorted(slices.Values(credential.Projects))
 }

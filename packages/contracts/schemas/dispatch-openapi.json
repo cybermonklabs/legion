@@ -295,7 +295,7 @@
     },
     "/api/v1/agents": {
       "get": {
-        "description": "Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old.",
+        "description": "Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old. Only the sessions the caller may see: a session of a project it sees, or its own.",
         "operationId": "getApiV1Agents",
         "parameters": [
           {
@@ -3269,7 +3269,7 @@
     },
     "/api/v1/broadcasts": {
       "get": {
-        "description": "Recent broadcasts, newest first, with their recipient and reply counts.",
+        "description": "Recent broadcasts, newest first, with their recipient and reply counts. Only broadcasts the caller wrote, or whose every recipient it may see.",
         "operationId": "getApiV1Broadcasts",
         "parameters": [
           {
@@ -3365,7 +3365,7 @@
     },
     "/api/v1/broadcasts/{id}": {
       "get": {
-        "description": "One broadcast with every recipient's delivery attempts and replies, recipients in the order the send named them; a broadcast from before that order was stored falls back to created_at, id.",
+        "description": "One broadcast with every recipient's delivery attempts and replies, recipients in the order the send named them; a broadcast from before that order was stored falls back to created_at, id. Only broadcasts the caller wrote, or whose every recipient it may see.",
         "operationId": "getApiV1BroadcastsById",
         "parameters": [
           {
@@ -9177,7 +9177,7 @@
     },
     "/api/v1/priorities": {
       "get": {
-        "description": "Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=\u003cKEY\u003e, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads.",
+        "description": "Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. Each count counts only the work of the projects the caller sees. ?project=\u003cKEY\u003e, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads.",
         "operationId": "getApiV1Priorities",
         "parameters": [
           {
@@ -12221,7 +12221,7 @@
     },
     "/api/v1/users": {
       "get": {
-        "description": "Everyone who has signed in, by lowercase email: the assignee picker's options.",
+        "description": "Everyone who has signed in, by lowercase email: the assignee picker's options. Only the people of the projects the caller sees, for a restricted member or a credential that lists projects.",
         "operationId": "getApiV1Users",
         "parameters": [
           {
@@ -12263,7 +12263,7 @@
     },
     "/api/v1/whoami": {
       "get": {
-        "description": "Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. member_kind is restricted for a restricted member, and absent for everyone else; a member kind that cannot be read is 503 IDENTITY_UNAVAILABLE.",
+        "description": "Who the server takes the caller for: {kind: user, login, projects, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, projects, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is). projects is the list of projects the credential may use, sorted, in either shape, absent when it lists none; project is deprecated, and is the one key of a one-key list, null otherwise. scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. member_kind is restricted for a restricted member, and absent for everyone else; a member kind that cannot be read is 503 IDENTITY_UNAVAILABLE.",
         "operationId": "getApiV1Whoami",
         "parameters": [
           {
@@ -26970,6 +26970,12 @@
               "string"
             ]
           },
+          "projects": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "scopes": {
             "items": {
               "type": "string"
@@ -27018,6 +27024,12 @@
               "restricted"
             ],
             "type": "string"
+          },
+          "projects": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "scopes": {
             "items": {

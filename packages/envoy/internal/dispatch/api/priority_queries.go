@@ -28,6 +28,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 )
@@ -111,8 +112,11 @@ var priorityMemberTerms = `members_seed as (
 
 // priorityProjectFilter narrows a read to the projects the request named, over the issue aliased
 // `i`; a request that named none ($3 empty) reads every project. It narrows the counts and the
-// two fault lists and never the list of priorities, which belongs to no project.
-const priorityProjectFilter = `(cardinality($3::text[]) = 0 or i.project_key = any($3::text[]))`
+// two fault lists and never the list of priorities, which belongs to no project. Whatever the
+// request named, it reads only the projects the caller sees, the reader whose visibility argument
+// (refs.VisibilityArg) is $4, so no count counts the work of a project hidden from it.
+var priorityProjectFilter = `(cardinality($3::text[]) = 0 or i.project_key = any($3::text[])) and ` +
+	access.ProjectClause("i.project_key", "$4")
 
 // priorityCountsQuery counts the work under each priority, one row per (priority, status) over
 // the issues that advance it: the open issues standing in that status, how many of those a
@@ -279,7 +283,8 @@ var (
 )
 
 // readPriorities answers the whole body of GET /api/v1/priorities: the priorities in rank order,
-// the work under each, and the two faults, narrowed to `projects` where it is narrowed at all.
+// the work under each, and the two faults, narrowed to `projects` where it is narrowed at all and,
+// always, to the projects the reader whose visibility argument is viewer sees.
 //
 // It is two round trips plus the relations' own: prioritystore.List, then the relations, then one
 // batch of the statements that rest on them. A summary sends the two fault counts in that batch
@@ -287,7 +292,7 @@ var (
 // fault under it. A deployment that has written no priority holds no relation of one either, so
 // the relations are not read at all there — which is what the navigation rail asks of every page
 // of such a deployment.
-func (s *server) readPriorities(ctx context.Context, projects []string, summary bool) (model.Priorities, error) {
+func (s *server) readPriorities(ctx context.Context, viewer any, projects []string, summary bool) (model.Priorities, error) {
 	nodes, err := prioritystore.List(ctx, s.deps.Store.Pool)
 	if err != nil {
 		return model.Priorities{}, err
@@ -311,7 +316,7 @@ func (s *server) readPriorities(ctx context.Context, projects []string, summary 
 			return model.Priorities{}, err
 		}
 	}
-	arguments := []any{seedKeys, seedIDs, projects}
+	arguments := []any{seedKeys, seedIDs, projects, viewer}
 
 	batch := &pgx.Batch{}
 	if !summary {
