@@ -1273,16 +1273,24 @@ Its Sandbox goes, and its volume and session go with it, so step 5 clears the se
    `legion claims list --json --operator-token-file <file> > claims.json` (the daemon of any release prints the list this command reads), then scale the daemon to 0 straight away, so nothing launches, resumes, or cleans up a tree from here on.
 
 3. **Copy every tree.**
-   Where a tree's volume is mounted and the session database is reachable, run, for each tree the list names:
+   Copy one tree at a time, in the pod of [A shell on an issue's disk](#a-shell-on-an-issues-disk) with that tree's claim: a pod of the worker image, under gVisor, with the tree's volume read-only at `/legion` and nothing else mounted.
+   The import reads two more files, and both come from your machine after the pod is `Ready`.
+   `claims.json` from step 2 goes to the import's standard input (`--claims -`).
+   `<url file>` is a file of mode 0600 on your machine that holds the session database's `postgres://` URL, one that a pod on the Legion pool can reach; under `postgres` it is the value of the providers Secret's `session_dsn_secret` key.
+   The URL goes into the pod on standard input, into a file of mode 0600 in a directory of mode 0700, so no command line holds it:
 
    ```sh
-   legion sessions import --dsn-file <url file> --claims claims.json --tree <ROOT ISSUE> --tree-volume /legion
+   kubectl -n legion apply -f legion-tree-shell.yaml    # its claimName is this tree's claim
+   kubectl -n legion wait --for=condition=Ready pod/legion-tree-shell --timeout=300s
+   kubectl -n legion exec -i legion-tree-shell -- sh -c 'umask 077 && mkdir /tmp/import && cat > /tmp/import/dsn' < <url file>
+   kubectl -n legion exec -i legion-tree-shell -- sh -c 'legion sessions import --dsn-file /tmp/import/dsn --claims - --tree <ROOT ISSUE> --tree-volume /legion; rc=$?; rm -rf /tmp/import; exit $rc' < claims.json
+   kubectl -n legion delete pod legion-tree-shell
    ```
 
-   [A shell on an issue's disk](#a-shell-on-an-issues-disk) has the pod that mounts one tree's volume: a pod of the worker image, under gVisor, with the volume read-only at `/legion`.
-   Run the command in one such pod per tree, then delete the pod.
+   The second `exec` removes the URL's directory whatever the import's exit, and it exits with the import's own status.
+   The pod's own files go when the pod is deleted.
 
-   For each claim with a recorded session file it reads that file from the volume (its path below the agents' sessions directory, below `<tree-volume>/sessions`; without `--tree-volume` it reads the recorded path itself) and writes it as one row keyed by that recorded path: the whole file as `content`, `byte_len` its size, `mtime_ms` the file's, no title and no parts, which is how Oh My Pi reads a row an older release of it wrote.
+   For each claim with a recorded session file the import reads that file from the volume (its path below the agents' sessions directory, below `<tree-volume>/sessions`; without `--tree-volume` it reads the recorded path itself) and writes it as one row keyed by that recorded path: the whole file as `content`, `byte_len` its size, `mtime_ms` the file's, no title and no parts, which is how Oh My Pi reads a row an older release of it wrote.
    When `issue_close` already cleared a claim's resume path, the importer finds `*_<session>.jsonl` below the volume's sessions directory from the retained session id; exactly one match imports, none names the claim and session as missing, and several are refused by name.
    It creates the two tables with Oh My Pi's own statements when the database has none.
    It prints one line per claim of the tree — `copied`, `copied before (identical …)`, `recorded no session`, `failed` (a file or retained session the volume does not hold) or `refused` (several files for one retained session id, or a table row with other content, which it leaves as it is) — then a `missing` line for every claim of the whole list, any tree's, whose recorded session the table does not hold, then a count of each.
@@ -3920,8 +3928,7 @@ Nothing is saved first, because a shell on the old disk could carry nothing over
 **The one stopped disk still worth mounting: a tree volume of the release before issue pods.**
 That release's tree volume is its root Sandbox's, not a pod's, so it outlives every pod of the tree, and copying the sessions off it is the one procedure that still needs a stopped disk reachable:
 step 3 of [Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on).
-The pod below is that step for a single tree, with `legion sessions import --dsn-file <url file> --claims
-claims.json --tree <ROOT ISSUE> --tree-volume /legion` run inside it.
+The pod below is the one that step starts for each tree, and the step gives the commands that bring the database URL and the claims list into it and run the import there.
 The tree's claim is the one its labels name (`kubectl -n legion get pvc -l
 legion.dev/project=<project>,legion.dev/tree=<ROOT ISSUE>`).
 By that step of the runbook the tree's root Sandbox is `Suspended` with no pod of its own and the earlier release's daemon is stopped, so nothing launches a pod that would want the volume while yours holds it;
@@ -3958,9 +3965,10 @@ kubectl -n legion exec -it legion-tree-shell -- sh
 kubectl -n legion delete pod legion-tree-shell
 ```
 
-The pod carries no credential.
+The pod carries no credential of its own.
 An agent of that tree could plant git and jj configuration in a clone on the volume ([Trust model](#trust-model-the-provisioning-token)), which a `jj` run in this shell would obey, and the pod gives that configuration nothing to take.
-Run no command in it that holds a token.
+The session copy brings one credential in, the database URL, for the one command it runs there: `legion sessions import`, which reads the volume's session files as data, starts no `git`, `jj` or `omp`, and runs in the `exec` that removes the URL when it ends.
+Run no other command in the pod while the URL is in it, and no command that holds a token at any other time.
 
 ### Carrying unpushed work out of an issue's pod
 
