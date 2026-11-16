@@ -177,10 +177,20 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 // launch that did start a process reaches the hold here as it always did, since that process is
 // what the hold is for.
 //
-// Each of the three meets a launch, which a project pause's stop owes the role at the resume
+// A project pause's stop of a claim whose relaunch waits parked over the process it still records
+// — one that died and whose relaunch the pacing parked before letting it go (the gate sits before
+// letGo, launchAfter) — is decided where it arrives too: the parked relaunch is what the pause
+// holds, and the process it records is the one that relaunch was to replace, so the process is
+// stopped (letProcessGoFor) and the claim suspended now, with the parked launch owed, as the
+// pause's gate stops a process it held a launch over (pauseStopDue). Held until a ready instead,
+// the stop would land only at the wake's turn, which over a wave is tens of minutes out, and a
+// restart inside them would forget it and leave the claim to the boot (decision 4 of
+// dispatch://INFRA-3759's plan: a parked wake with no process is stopped at once).
+//
+// Each of them meets a launch, which a project pause's stop owes the role at the resume
 // (PauseStop.LaunchOwed, decision 6 of dispatch://INFRA-3759's plan): the start this suspension
-// cancelled, the wake parked over no process, and the launch the hold waits on until ready
-// (Machine.heldLaunch).
+// cancelled, the wake parked over no process or over the process it would replace, and the launch
+// the hold waits on until ready (Machine.heldLaunch).
 //
 // A hold already standing is replaced by the newest request, as it always was, with two
 // exceptions that keep a stronger hold's own words: a released request — the idle release's or a
@@ -204,6 +214,11 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 		m.log.Info("supervise: a suspension reached a claim whose paced wake waits over no process; deciding it here",
 			"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.at)
 		return m.suspendedFor(ctx, request, true)
+	}
+	if m.wake != nil && request.Pause != 0 {
+		m.log.Info("supervise: a project pause's stop reached a claim whose paced relaunch waits over the process it would replace; stopping that process now",
+			"reason", request.Reason, "pause", request.Pause, "kind", m.wake.kind, "due", m.wake.at, "incarnation", m.claim.Locator.Incarnation)
+		return m.letProcessGoFor(ctx, request, true)
 	}
 	switch held := m.held; {
 	case held != nil && request.By == SuspendedByReleased && held.By != SuspendedByReleased:

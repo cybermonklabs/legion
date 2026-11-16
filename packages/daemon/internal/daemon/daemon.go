@@ -211,6 +211,14 @@ type overrides struct {
 	// none of to reserve. nil, in production, is nothing: every launch reaches the real store's
 	// own check.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// supervising hands a whole-daemon test the supervisor run built and a function that applies
+	// one fact with the workflow's own handlers (intake.ApplyFact over the workflow's pool, as the
+	// daemon's consumers, its API and its own passes apply each fact), once run has built both and
+	// before any claim is restored (supervision.start). It is the seam the pause's tests post the
+	// machines' events through and apply the listener's wakes, the CI settlements and the handoffs
+	// through (pause_rig_test.go). A daemon with no workflow hands nothing. nil, in production, is
+	// nothing.
+	supervising func(sup *supervisor, apply func(ctx context.Context, source, eventID string, fact intake.Fact) (intake.Result, error))
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -535,6 +543,11 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 		log.Info("legion workflow boot stage", "stage", "admission")
 		workflow.attach(s)
+		if o.supervising != nil {
+			o.supervising(s.supervisor, func(ctx context.Context, source, eventID string, fact intake.Fact) (intake.Result, error) {
+				return intake.ApplyFact(ctx, workflow.pool, source, eventID, fact, workflow.handlers...)
+			})
+		}
 		// Both waited out whatever they waited out on ctx, which the boot budget does not bound:
 		// what follows gets a budget of its own, as the App mint and the image probe's callers
 		// already do, for the boot record and supervision's start (starting).

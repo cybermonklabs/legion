@@ -223,6 +223,71 @@ func TestAPauseHoldOverAWorkingClaimSurvivesAStartAndStopsItAtTheTurnsEnd(t *tes
 	}
 }
 
+// A pause's hold over a claim whose turn ends before its prompt's result waits for that result
+// rather than stopping the claim at the turn's end (stopWaitsForResult): a provider's refusal of
+// the prompt takes the task back for another prompt (providerErrored), and the stop that follows
+// keeps it and owes the role a launch for it, while the ladder that would send it again sends
+// nothing. Stopped at the turn's end, the claim retired the task as a finished turn's, and the
+// refusal arriving behind it was fenced out: the role lost the task the provider refused (check k1
+// of dispatch://INFRA-3759, role D).
+func TestAPauseHoldWaitsForTheTurnsResultAndKeepsATaskAProviderRefused(t *testing.T) {
+	h, flag, stops := pauseHarness(t, queuedClaim())
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
+	h.must(StreamTurnStart{Claim: h.token})
+	task := h.pending().ID
+	flag.set(7)
+	if err := h.handle(pauseStop(h.token, 7)); !errors.Is(err, ErrSuspendHeld) {
+		t.Fatalf("the pause's stop of a claim in a turn = %v, want it held", err)
+	}
+
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	stops.wantStops(t)
+	h.wantCalls("Suspend", 0)
+
+	h.must(StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true, Error: "overloaded_error", HTTPStatus: 529})
+
+	h.wantState(StateSuspended)
+	h.wantCalls("Suspend", 1)
+	stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: true}, landed: true})
+	if stored, held := h.store.delivery(h.token); !held || stored.Task != providerErrorTaskText || !stored.ConfirmedAt.IsZero() {
+		t.Fatalf("the stored task is %+v (held %v), want the refused task back unconfirmed", stored, held)
+	}
+	if p := h.claim().Pending; p == nil || p.Task != providerErrorTaskText {
+		t.Fatalf("the stopped claim holds %+v, want the task the provider refused", p)
+	}
+	h.advance(promptRetryDelay(1))
+	h.wantPrompts(1)
+}
+
+// A pause's stop of a claim whose relaunch waits in the pacing over the process that died is
+// decided where it arrives (holdSuspendUntilReady): the process the claim still records is
+// stopped, the claim is suspended through the stop transaction with the parked launch owed, and
+// the wake's turn, when it comes, launches nothing. Held until a ready instead, the stop landed
+// only at that turn, which a wave puts tens of minutes out (decision 4 of dispatch://INFRA-3759: a
+// parked wake with no process is stopped at once; check k1, role E).
+func TestAPauseStopsAClaimWhoseRelaunchWaitsOverItsDeadProcessAtOnce(t *testing.T) {
+	h, flag, stops := pauseHarness(t, queuedClaim(), pacedDeps(wakeRate))
+	h.must(RequestSpawn{Claim: h.token})
+	h.wantStarts(h.token, 1)
+	h.observe(runtime.Gone)
+	waiting := h.wantWaitingWake(WakeLaunch)
+	h.wantStarts(h.token, 1)
+	suspended := len(h.calls("Suspend"))
+	flag.set(7)
+
+	h.must(pauseStop(h.token, 7))
+
+	h.wantState(StateSuspended)
+	h.wantCalls("Suspend", suspended+1)
+	stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: true}, landed: true})
+	if held := h.m.View().WakeWaiting; held != nil {
+		t.Fatalf("the stopped claim still names the wake %+v, want it gone with the stop", held)
+	}
+	h.advance(waiting.At.Sub(h.clock.Now()) + time.Second)
+	h.wantStarts(h.token, 1)
+}
+
 // The gate (decision 7): a launch of a claim that is not the controller's, met while the project
 // is paused, starts nothing, takes no token from the pacing and arms no retry. The claim is left
 // in a state its row names — launching for one with no process, its own state for one whose
@@ -601,11 +666,17 @@ func TestAFailedPauseStopIsWrittenAgainWithThePausesRecords(t *testing.T) {
 		}
 		stops.failNext(1, brokenConnection())
 
-		// The turn ends with its prompt's result still to come, so the retirement of its task
-		// runs after the stop, in the same decision (settle): the stop's transaction fails, and
-		// the retirement writes it first, with the task, before it retires the task.
-		if err := h.handleQuiet(StreamTurnEnd{Claim: h.token}); err == nil {
-			t.Fatal("the turn's end whose stop failed returned no error")
+		// The turn ends with its prompt's result still to come, so the pause's stop waits for that
+		// result (stopWaitsForResult), which says the turn finished its task: the stop runs there,
+		// and the retirement of the task after it, in the same decision (settle). The stop's
+		// transaction fails, and the retirement writes it first, with the task, before it retires
+		// the task.
+		if err := h.handleQuiet(StreamTurnEnd{Claim: h.token}); err != nil {
+			t.Fatalf("the turn's end, whose stop waits for its prompt's result: %v", err)
+		}
+		stops.wantStops(t)
+		if err := h.handle(StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true}); err == nil {
+			t.Fatal("the prompt's result whose stop failed returned no error")
 		}
 
 		calls := stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7}}, stopCall{stop: PauseStop{Pause: 7}, landed: true})

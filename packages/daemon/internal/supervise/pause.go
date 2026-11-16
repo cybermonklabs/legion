@@ -310,6 +310,34 @@ func (m *Machine) putStops(ctx context.Context, c Claim) error {
 	return nil
 }
 
+// stopWaitsForResult is whether the end of the claim's turn leaves a project pause's held
+// suspension waiting for the result of the turn's prompt (turnEnded): the hold is a pause's, and
+// Oh My Pi has not said yet how that prompt's work ended (resultPending). The result is what
+// decides the task — a turn that finished it retires it, and a provider's refusal of it takes it
+// back for another prompt (providerErrored) — so a stop made at the turn's end would retire a
+// refused task and leave the role owed nothing at the resume (check k1 of dispatch://INFRA-3759: a
+// role whose turn a provider refuses keeps its task). Oh My Pi writes the result right behind the
+// turn's end, and a process that dies before it does ends the hold through its death (died).
+func (m *Machine) stopWaitsForResult() bool {
+	return m.held != nil && m.held.Pause != 0 && m.resultPending()
+}
+
+// pauseHoldAtResult is whether a project pause's held suspension waited for the result that has
+// just come in (stopWaitsForResult): the turn it was held for is over, and the hold still stands
+// for an open pause (holding drops one whose pause has ended).
+func (m *Machine) pauseHoldAtResult() bool {
+	return m.claim.State == StateIdle && m.held != nil && m.held.Pause != 0 && m.holding()
+}
+
+// stopAtResult runs the project pause's held suspension that waited for this result
+// (pauseHoldAtResult), once the result has decided the task, and does nothing otherwise.
+func (m *Machine) stopAtResult(ctx context.Context) error {
+	if !m.pauseHoldAtResult() {
+		return nil
+	}
+	return m.suspendHeld(ctx)
+}
+
 // wakeLetOut tells the daemon the moment the wake pacing lets a launch of this claim out
 // (Deps.WakeLetOut, decision 14), at each reservation the machine takes for one: the wake gate's
 // (reserveWake) and the let-out of a launch the pause's gate held (letOutHeldLaunch).

@@ -1023,6 +1023,22 @@ func ExpeditePauseStopRowsTx(ctx context.Context, tx pgx.Tx, issue string, role 
 	return tag.RowsAffected(), nil
 }
 
+// ExpeditePauseStops makes due at at every `pause_stop` row of pause that waits for a later
+// moment, and answers how many it moved. A stop its claim held for a turn or a launch waits on the
+// row's bounded retry (the outbox's pauseStop) while the hold itself lives in the machine's memory,
+// which a restart loses: the boot of a paused project makes each of those rows due, so its stop is
+// asked again as soon as the outbox runs and the restarted machine holds it again (decision 4 of
+// dispatch://INFRA-3759: a restart holds the stop again).
+func (s *Store) ExpeditePauseStops(ctx context.Context, pause int64, at time.Time) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `update outbox set next_at = $2
+		where kind = 'supervise' and payload->>'op' = 'pause_stop' and (payload->>'pause')::bigint = $1 and next_at > $2`,
+		pause, at)
+	if err != nil {
+		return 0, fmt.Errorf("make the stops of pause %d due: %w", pause, err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // CloseRoleOpenResumeTx closes, at at, the open resume of issue's role — the one no first turn has
 // stamped and nothing has closed — and answers whether one was open: the stop transaction of a
 // pause closes it (decision 6, gap finding 10), since the role it waited for has stopped again

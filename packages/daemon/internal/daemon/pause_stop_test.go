@@ -224,7 +224,7 @@ func (r *pauseRig) wantReleasedOnce(row, pause int64) {
 // its stop arms its backstop, and the backstop has fired by the time the stop is made again, which
 // a second arming would not notice. The tester is owed a launch: its stop takes a held wake with
 // its start row, and the second run would close that wake as the role's open resume and take
-// another. The pod is held once the last live role has stopped, and that hold has ended by the
+// another. The pod is held from the first stop of the pause on, and that hold has ended by the
 // second run, which a second open would not notice either. The first stop also makes the
 // implementer's `pause_stop` row, waiting on its bounded retry, due at once.
 func TestAPauseStopMadeAgainWritesItsRecordsOnce(t *testing.T) {
@@ -274,7 +274,7 @@ func TestAPauseStopMadeAgainWritesItsRecordsOnce(t *testing.T) {
 		t.Fatalf("the implementer's starts = %+v, want none: it was owed no launch", got)
 	}
 	if got := r.count(`select count(*) from project_pause_pod_holds where issue = $1`, pauseIssue); got != 1 {
-		t.Fatalf("holds of %s's pod = %d, want the one the tester's first stop opened", pauseIssue, got)
+		t.Fatalf("holds of %s's pod = %d, want the one the first stop opened", pauseIssue, got)
 	}
 	if _, found, err := r.st.PausePodHoldOf(r.ctx, pauseIssue); err != nil || found {
 		t.Fatalf("a hold of %s's pod stands = %t, %v; want the ended one alone", pauseIssue, found, err)
@@ -319,6 +319,69 @@ func TestAStopOwedToAClaimRunningAgainRecordsTheStopAlone(t *testing.T) {
 	}
 	if got := r.count(`select count(*) from project_pause_pod_holds where issue = $1`, pauseIssue); got != 0 {
 		t.Fatalf("holds of %s's pod = %d, want none: its roles run", pauseIssue, got)
+	}
+}
+
+// A stop made while its pause stands holds the pod whatever the pod's other roles do: the tester
+// still runs here, and an update round past its bound or an idle rule would otherwise take the pod
+// with the stopped implementer's unpushed work on its disk. A stop that ends after the resume holds
+// the pod only where no role of it is live then (decision 6 of dispatch://INFRA-3759): the
+// implementer's stop, with the tester live, holds nothing, and the tester's, the pod's last live
+// role, holds it. Check k4's sixth pod found the first half missing: the stop held the pod only
+// where no role was live, whether its pause stood or not.
+func TestAStopHoldsThePodWhileItsPauseStandsAndAfterTheResumeOnlyWithNoRoleLive(t *testing.T) {
+	t.Run("while the pause stands", func(t *testing.T) {
+		r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
+		held := r.pauseLegion()
+		r.mustStop(r.claim(claim.RoleImplementer, supervise.StateSuspended), supervise.PauseStop{Pause: held.ID})
+		if hold, found, err := r.st.PausePodHoldOf(r.ctx, pauseIssue); err != nil || !found || hold.Pause != held.ID {
+			t.Fatalf("%s's hold = %+v, %t, %v; want the implementer's stop to hold the pod for pause %d with the tester live",
+				pauseIssue, hold, found, err, held.ID)
+		}
+	})
+	t.Run("after the resume", func(t *testing.T) {
+		r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
+		held := r.pauseLegion()
+		r.resume()
+		r.mustStop(r.claim(claim.RoleImplementer, supervise.StateSuspended), supervise.PauseStop{Pause: held.ID})
+		if hold, found, err := r.st.PausePodHoldOf(r.ctx, pauseIssue); err != nil || found {
+			t.Fatalf("%s's hold = %+v, %t, %v; want none: the stop ended after the resume, with the tester live", pauseIssue, hold, found, err)
+		}
+		r.mustStop(r.claim(claim.RoleTester, supervise.StateSuspended), supervise.PauseStop{Pause: held.ID})
+		if hold, found, err := r.st.PausePodHoldOf(r.ctx, pauseIssue); err != nil || !found || hold.Pause != held.ID {
+			t.Fatalf("%s's hold = %+v, %t, %v; want the tester's stop, the pod's last live role's, to hold it", pauseIssue, hold, found, err)
+		}
+	})
+}
+
+// The boot of a paused project asks again, at once, the stops the pause still waits on
+// (projectPause.askBootStops): a stop its claim held for a turn waits on its row's bounded retry,
+// and the hold itself was in the stopped daemon's memory, so the row is made due and its stop is
+// asked of the restarted machine as soon as the outbox runs. Left waiting, a turn that ended
+// inside the wait left the role idle and unstopped (check k3 of dispatch://INFRA-3759 found it:
+// the role in a turn at the restart did not stop when its turn ended). A stop already asked is
+// asked of no second row.
+func TestTheBootOfAPausedProjectAsksItsWaitingStopsAgainAtOnce(t *testing.T) {
+	r := newPauseRig(t, claim.RoleImplementer)
+	held := r.pauseLegion()
+	if _, err := r.pool.Exec(r.ctx, `update outbox set next_at = now() + interval '10 minutes'
+		where payload->>'op' = 'pause_stop'`); err != nil {
+		t.Fatal(err)
+	}
+	waiting := `select count(*) from outbox where payload->>'op' = 'pause_stop' and next_at > now()`
+	if got := r.count(waiting); got != 1 {
+		t.Fatalf("pause_stop rows waiting = %d, want the implementer's, held for its turn", got)
+	}
+
+	if err := r.pauses.askBootStops(r.ctx, held); err != nil {
+		t.Fatalf("the boot's pass: %v", err)
+	}
+
+	if got := r.count(waiting); got != 0 {
+		t.Fatalf("pause_stop rows still waiting after the boot's pass = %d, want none: each is asked again at once", got)
+	}
+	if got := r.count(`select count(*) from outbox where payload->>'op' = 'pause_stop'`); got != 1 {
+		t.Fatalf("pause_stop rows = %d, want the one the pause queued: the boot asks no stop twice", got)
 	}
 }
 

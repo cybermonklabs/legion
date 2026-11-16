@@ -120,8 +120,11 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // A claim no longer suspended — a later write of a claim whose stop is still owed (the machine's
 // putStops) — stops there: its stop is recorded, and a claim that runs now needs no pod hold, no
 // owed launch and no backstop. A suspended claim then gets, on the first record of its stop:
-// the pod's hold where no role of the pod is live (store.IssueHasLiveRoleTx,
-// store.OpenPausePodHoldTx), and its role's open resume closed (store.CloseRoleOpenResumeTx); and
+// the pod's hold (store.OpenPausePodHoldTx) — always while its pause is still open, whatever the
+// pod's other roles do, since an update round past its bound or an idle rule would otherwise take
+// a pod that holds the stopped role's unpushed work; and, for a stop that ends after its pause
+// ended, only where no role of the pod is live then (store.IssueHasLiveRoleTx, decision 6) — and
+// its role's open resume closed (store.CloseRoleOpenResumeTx); and
 // either the launch it is owed — a held wake of the pause (store.PodRecords.TakeHeldPodWake with
 // pods.WakePause, which cancels the role's own backstop) with its start row
 // (workflow.PauseWakeRow) — or, owed none as the worker of the issue's open phase serving its
@@ -200,11 +203,15 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 		return made, nil
 	}
 	if first {
-		live, err := store.IssueHasLiveRoleTx(ctx, tx, p.token, c.Issue)
-		if err != nil {
-			return made, err
+		hold := !held.Ended()
+		if !hold {
+			live, err := store.IssueHasLiveRoleTx(ctx, tx, p.token, c.Issue)
+			if err != nil {
+				return made, err
+			}
+			hold = !live
 		}
-		if !live {
+		if hold {
 			if _, err := store.OpenPausePodHoldTx(ctx, tx, held.ID, c.Issue, at); err != nil {
 				return made, err
 			}
@@ -378,14 +385,28 @@ func (p *projectPause) endLiveHold(ctx context.Context, issue string) (bool, err
 // queued — is asked to stop (store.Store.AskLivePauseStops). Its rows run once the outbox's boot
 // sweep starts the lanes, and the relaunches and the stale-plugin pass of this boot meet the
 // gate meanwhile, so the boot launches nothing but the controller.
+//
+// The stops the pause still waits on are asked again at once as well (store.Store.ExpeditePauseStops):
+// a stop its claim held for a turn waits on its row's bounded retry, up to pauseStopWait out, and
+// the hold itself was in the stopped daemon's memory. Left to that wait, the restarted machine
+// holds no suspension, so a turn that ends inside it leaves the role idle and unstopped until the
+// row comes due (decision 4: a restart holds the stop again).
 func (p *projectPause) askBootStops(ctx context.Context, open store.Pause) error {
-	asked, err := p.store.AskLivePauseStops(ctx, open.ID, p.now().UTC(), pause.StopRow)
+	at := p.now().UTC()
+	asked, err := p.store.AskLivePauseStops(ctx, open.ID, at, pause.StopRow)
 	if err != nil {
 		return err
 	}
 	if len(asked) > 0 {
 		p.log.Info("pause: the boot asked the stop of the live roles the project's pause has not stopped",
 			"pause", open.ID, "claims", stopTokens(asked))
+	}
+	again, err := p.store.ExpeditePauseStops(ctx, open.ID, at)
+	if err != nil {
+		return err
+	}
+	if again > 0 {
+		p.log.Info("pause: the boot asks again, at once, the stops the project's pause still waits on", "pause", open.ID, "stops", again)
 	}
 	return nil
 }

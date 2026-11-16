@@ -2001,7 +2001,11 @@ func (m *Machine) busyTurnBegun(delivery string) {
 // A suspension held for the turn runs here, now that the turn is over (holdSuspension). Its stop
 // cuts off no turn, so what the let-go records reads the claim as idle, the state this end gives
 // it (suspendHeldAtEnd): the next process is told it was in no turn, and the task the turn
-// confirmed is no task cut off in its turn (recordEnd).
+// confirmed is no task cut off in its turn (recordEnd). A project pause's hold waits instead for
+// the result of the turn's prompt where Oh My Pi has not written it yet (stopWaitsForResult), and
+// runs from that result (promptResulted, stopAtResult): only the result says whether the turn
+// finished its task or a provider refused it, and a stop made first would retire a refused task
+// the role is still owed.
 //
 // Every end this records is counted (TurnsEnded), the compaction's below included, so the daemon
 // can post it to the issue's other claims once this decision is published (its wakeIssue): a phase
@@ -2028,7 +2032,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 		return nil
 	}
 	m.askFirst, m.busyTurn = false, false
-	if m.holding() {
+	if m.holding() && !m.stopWaitsForResult() {
 		if err := m.suspendHeldAtEnd(ctx, StateIdle); err != nil {
 			if m.held == nil {
 				// The stop landed and let the process go; only its write failed, and the claim is
@@ -2160,7 +2164,10 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // A turn already ended is over for its delivery here, so this is where what was held for that
 // turn runs when the end found the result still outstanding (afterTurn): settle first, so the
 // round's end and the stale-plugin relaunch read a worker whose hands are empty. A result that
-// beat its turn's end leaves both to that end.
+// beat its turn's end leaves both to that end. A project pause's hold that waited for this result
+// (stopWaitsForResult) stops the claim here instead (stopAtResult), once the result has decided
+// the task: a refused task taken back is one the stop owes the role a launch for, and a finished
+// one is retired by the settle that follows every decision (Handle).
 func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamPromptResult)
 	if !r.AgentInvoked {
@@ -2187,7 +2194,10 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	}
 	m.outstanding = nil
 	if r.Error != "" {
-		return m.providerErrored(ctx, r)
+		if err := m.providerErrored(ctx, r); err != nil {
+			return err
+		}
+		return m.stopAtResult(ctx)
 	}
 	if m.claim.ProviderErrorRun != 0 {
 		m.log.Info("supervise: a turn of this task ended with no provider error; the run of provider errors is over",
@@ -2208,6 +2218,9 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	}
 	if m.claim.State == StateWorking {
 		return m.sendPending(ctx)
+	}
+	if m.pauseHoldAtResult() {
+		return m.suspendHeld(ctx)
 	}
 	if err := m.settle(ctx); err != nil {
 		return err
