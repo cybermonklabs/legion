@@ -550,6 +550,7 @@ restoreEnvironment([
   "ENVOY_MACHINE_ID",
   "AGENTBOX_HOST",
   "ENVOY_TMUX_PLACE_CACHE_MS",
+  "ENVOY_SESSION_ROLE",
 ]);
 // The directory this process was started in. A row that chdirs elsewhere is put back in
 // `afterEach`, which a row aborted at Bun's own timeout reaches where its own `finally` does not.
@@ -634,6 +635,9 @@ beforeEach(() => {
   delete process.env.DISPATCH_TOKEN;
   delete process.env.DISPATCH_TOKEN_FILE;
   delete process.env.ENVOY_MACHINE_ID;
+  // The role a session pod's launch names, which every pass of an instance created under it
+  // claims: a suite run inside a session pod must not claim that pod's role for every fixture.
+  delete process.env.ENVOY_SESSION_ROLE;
   process.env.HOME = "/nonexistent-home-for-envoy-tests";
   delete process.env.TMUX;
   delete process.env.TMUX_PANE;
@@ -1466,6 +1470,69 @@ function roleClaimRecord(role: string, session: string): unknown {
  *  `previous_session_id`): every claim names the process making it (INFRA-783). */
 function roleClaimBody(session: string, role: string, rest: Record<string, unknown> = {}): unknown {
   return { session_id: session, role, ...rest, client_instance_id: ANY_CLIENT_INSTANCE };
+}
+
+/**
+ * A fresh session in a session pod whose launch named `sessionRole` in `ENVOY_SESSION_ROLE`
+ * (agent-infra's sessions workload), or named none. Every registration and every role claim the
+ * listener is sent lands in `seen`, in the order sent; a role lookup names `sessionID` as the
+ * holder. `heartbeat` runs one heartbeat pass and lets it settle, and `records` reads the role
+ * claim records the session's transcript holds.
+ */
+async function bootSessionPod(query: string, sessionID: string, sessionRole: string | undefined) {
+  if (sessionRole === undefined) delete process.env.ENVOY_SESSION_ROLE;
+  else process.env.ENVOY_SESSION_ROLE = sessionRole;
+  const seen: unknown[] = [];
+  let registrations = 0;
+  globalThis.fetch = async (input, init) => {
+    const { pathname } = new URL(input.toString());
+    const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+    if (pathname === "/v1/interests/subscribe") {
+      registrations += 1;
+      seen.push({ registered: body.session_id });
+    }
+    if (pathname === "/v1/roles/set") {
+      seen.push({ claimed: body });
+      return response({
+        session_id: body.session_id,
+        machine_id: "test",
+        dir: "/tmp/envoy-omp-test",
+        topics: [`notifications.role.${body.role}`],
+      });
+    }
+    if (pathname.startsWith("/v1/roles/")) {
+      return response({
+        role: pathname.slice("/v1/roles/".length),
+        holder: sessionID,
+        last_seen: 1,
+      });
+    }
+    return responseWithRegistration(input, init, {});
+  };
+  // Each caller's own query loads an instance of its own, so the specifier cannot be static.
+  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  const fixture = createPi();
+  const intervals: (() => void)[] = [];
+  const base = sessionContext(sessionID);
+  const context: SessionContext = {
+    ...base,
+    sessionManager: { ...base.sessionManager, getBranch: () => fixture.entries },
+    setInterval: (callback) => intervals.push(callback),
+  };
+  envoyExtension(fixture.pi);
+  await fixture.handlers.get("session_start")?.({}, context);
+  return {
+    seen,
+    fixture,
+    records: () => fixture.entries.filter((entry) => entry.customType === "envoy-role-claim"),
+    heartbeat: async () => {
+      const before = registrations;
+      intervals[0]?.();
+      await until(() => registrations > before, "the heartbeat's registration");
+      await settle();
+    },
+    shutdown: () => fixture.handlers.get("session_shutdown")?.({}, context),
+  };
 }
 
 function responseWithRegistration(
@@ -11142,6 +11209,49 @@ console.log(JSON.stringify(args));
       self_subscribed: true,
       topics: ["notifications.agent.ses_role_heartbeat"],
     });
+  });
+
+  // A session pod's launch names the Envoy role its session holds (`ENVOY_SESSION_ROLE`), and the
+  // session claims it itself, under its own credential, at its first registration and at every
+  // one a heartbeat makes after it. Each claim is outright, so a role an evicted pod's session
+  // still holds comes to the live one at once. Only the first writes a transcript record: each
+  // later one is a claim the newest record already names. Without the variable a fresh session
+  // claims nothing.
+  test("claims ENVOY_SESSION_ROLE for its own session", async () => {
+    const pod = await bootSessionPod("session-role", "ses_pod", "fan-cloud");
+    await pod.heartbeat();
+    await pod.heartbeat();
+    await pod.shutdown();
+    const registered = { registered: "ses_pod" };
+    const claimed = { claimed: roleClaimBody("ses_pod", "fan-cloud") };
+    expect(pod.seen).toEqual([registered, claimed, registered, claimed, registered, claimed]);
+    expect(pod.records()).toEqual([roleClaimRecord("fan-cloud", "ses_pod")]);
+
+    const unset = await bootSessionPod("session-role-unset", "ses_pod_unset", undefined);
+    await unset.heartbeat();
+    await unset.heartbeat();
+    await unset.shutdown();
+    const unsetRegistered = { registered: "ses_pod_unset" };
+    expect(unset.seen).toEqual([unsetRegistered, unsetRegistered, unsetRegistered]);
+    expect(unset.records()).toEqual([]);
+  });
+
+  // The launch's role is the session's until the session records another: a move the model makes
+  // with envoy_role_set is the session's newest record, and no heartbeat undoes it.
+  test("a session that moves off its ENVOY_SESSION_ROLE keeps the role it moved to", async () => {
+    const pod = await bootSessionPod("session-role-moved", "ses_pod_moved", "fan-cloud");
+    const roleTool = pod.fixture.tools.find((tool) => tool.name === "envoy_role_set");
+    if (roleTool === undefined) throw new Error("envoy_role_set was not registered");
+    await roleTool.execute("", { role: "librarian" });
+    await pod.heartbeat();
+    await pod.shutdown();
+    const registered = { registered: "ses_pod_moved" };
+    expect(pod.seen).toEqual([
+      registered,
+      { claimed: roleClaimBody("ses_pod_moved", "fan-cloud") },
+      { claimed: roleClaimBody("ses_pod_moved", "librarian") },
+      registered,
+    ]);
   });
 
   test("unsubscribing all topics preserves a held role for heartbeat re-assertion", async () => {

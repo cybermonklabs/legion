@@ -2914,6 +2914,12 @@ export default function envoyExtension(pi: PiApi): void {
         : `the session moved from ${from} to ${hostSessionID()} while its claim of role ${role} ran; nothing was claimed`
     );
 
+  // The Envoy role a session pod's launch named for its session (`ENVOY_SESSION_ROLE`, which
+  // agent-infra's sessions workload sets): the session claims it itself, under its own
+  // credential, which the listener holds to this very session, at every pass that registers it
+  // (`settleRole`). Read when the instance is created, as the other knobs are.
+  const sessionRole = process.env.ENVOY_SESSION_ROLE?.trim() || undefined;
+
   // The registration and role state the two serial queues write, the queues themselves, each
   // task's deadline and this extension instance's client instance id, all private to
   // `../src/registration-state`. A queued task writes none of it by hand: `run` hands it a handle
@@ -2938,12 +2944,24 @@ export default function envoyExtension(pi: PiApi): void {
       // that holds a role heartbeats from here on, whichever claim took it. The record names the
       // session the claim was made for and this process, so a second process reading the same
       // transcript — a continuation that resumed a live session's id — tells its own records
-      // from this one's.
-      pi.appendEntry(ROLE_CLAIM_ENTRY, {
-        role,
-        session_id: claimedFor,
-        client_instance_id: clientInstanceID,
-      });
+      // from this one's. The launch's role is claimed again at every pass, so a claim of it that
+      // the newest record on the branch already names — that role, for that session, by this
+      // process — writes nothing.
+      const newest =
+        role === sessionRole
+          ? transcriptRoleRecord(activeSessionContext?.sessionManager.getBranch?.() ?? [])
+          : undefined;
+      const recorded =
+        newest?.role === role &&
+        newest.session_id === claimedFor &&
+        newest.client_instance_id === clientInstanceID;
+      if (!recorded) {
+        pi.appendEntry(ROLE_CLAIM_ENTRY, {
+          role,
+          session_id: claimedFor,
+          client_instance_id: clientInstanceID,
+        });
+      }
       if (activeSessionContext !== undefined) ensureHeartbeat(activeSessionContext);
     },
     dial: dialNats,
@@ -3406,13 +3424,16 @@ export default function envoyExtension(pi: PiApi): void {
   //    survives `omp --resume` after the listener has reaped a dead session's rows), and a
   //    recorded release is final. A fork's branch is a copy of its parent's, so it records its
   //    parent's role; a `/new` records none; a resume or branch records its own.
+  //  - Otherwise the role a session pod's launch named (`sessionRole`), which the pass claims
+  //    outright (`settleRole`), so the listener never refuses it. A move the model makes with
+  //    `envoy_role_set` is a record, which no pass undoes.
   //  - Otherwise the role this process holds, when its hold is under `id` or a session `id`
   //    continues (a tree navigation to before the claim, or a fork from before it).
   //  - Otherwise, once when a pass establishes a resumed or switched session (`readRows`), the
   //    listener's rows for `id` (a same-id resume inside the reap window) and for the sessions it
   //    continues.
-  // None of them while the listener has refused that role to `id`. The pass
-  // claims it softly (`settleRole`): a session's records may be stale evidence (the parent of a
+  // None of them while the listener has refused that role to `id`. The pass claims every role but
+  // the launch's softly (`settleRole`): a session's records may be stale evidence (the parent of a
   // fork whose role moved to the child, a second process on the same transcript), and it must not
   // take a role another live session holds. The listener decides that atomically: a soft claim
   // naming a predecessor takes the role from that predecessor only when the predecessor has no
@@ -3429,6 +3450,7 @@ export default function envoyExtension(pi: PiApi): void {
     const recorded = recordedRole(branch);
     if (recorded === null) return undefined;
     if (recorded !== undefined) return want(recorded);
+    if (sessionRole !== undefined) return sessionRole;
     const held = registrationState.heldRole();
     const holdID = registrationState.holdSessionID();
     const lineage = continuedBy(id);
@@ -3691,7 +3713,11 @@ export default function envoyExtension(pi: PiApi): void {
       handle.markRoleSettled(host);
       return true;
     }
+    // The launch's role is claimed at every pass that registered the session, below, rather than
+    // read as held between two registrations: the launch named this session its holder.
+    const launched = desired === sessionRole;
     if (
+      !launched &&
       !registrationState.holdIsUnconfirmed() &&
       registrationState.heldRole() === desired &&
       registrationState.holdSessionID() === host
@@ -3727,24 +3753,27 @@ export default function envoyExtension(pi: PiApi): void {
       handle.markRoleSettled(host);
       return true;
     }
-    // The claim may supersede this process's own hold of the role, wherever the listener names
-    // it, or else whichever session the host session continues the listener names (a fork's hold
-    // from this process or an earlier one).
+    // The launch's role is claimed outright, last-claim-wins, as the pod's own claimer did: a
+    // holder that is another session is stale (an evicted pod's session the registry still lists
+    // as live for minutes) or wrong, and a soft claim would leave the role with it. Every other
+    // claim is soft and may supersede this process's own hold of the role, wherever the listener
+    // names it, or else whichever session the host session continues the listener names (a
+    // fork's hold from this process or an earlier one).
     const holdID = registrationState.holdSessionID();
     let supersedes =
       registrationState.heldRole() === desired && holdID !== undefined && holdID !== ""
         ? holdID
         : undefined;
     const lineage = continuedBy(host);
-    if (supersedes === undefined && lineage.length > 1) {
+    if (!launched && supersedes === undefined && lineage.length > 1) {
       const holder = await handle.readRoleHolder(desired);
       if (holder !== undefined && holder !== host && lineage.includes(holder)) supersedes = holder;
     }
     try {
-      const claimed = await handle.claimRole(desired, {
-        soft: true,
-        previousSessionID: supersedes,
-      });
+      const claimed = await handle.claimRole(
+        desired,
+        launched ? {} : { soft: true, previousSessionID: supersedes }
+      );
       if (claimed && unheard) handle.noteNoticesClosed(desired);
     } catch (error) {
       // This catch would otherwise swallow a step the handle refused: the check says so instead.
