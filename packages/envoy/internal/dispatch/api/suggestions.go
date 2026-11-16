@@ -15,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -870,15 +869,13 @@ func (s *server) fillRelatedItems(
 			candidates = append(candidates, result)
 		}
 	}
-	// The answers are read as the writer whose write ran the check sees them; a viewer that does not
-	// resolve reads none, and the items carry no ask state, as any other failed read leaves them.
+	// The answers are read as the check's reader (input.who): the writer whose write ran it, with the
+	// viewer its handler resolved from the request's credential (readerOf), so a token's list holds
+	// here as on every read. The writer's recorded actor carries no credential to resolve
+	// (access.ErrUnresolvedActor), and the zero reader is the closed viewer, which reads no answer.
 	who := input.source.actor.Reader()
-	viewer, err := access.Resolve(ctx, s.deps.Store.Pool, input.source.actor)
-	if err == nil {
-		who.Viewer = &viewer
-		err = s.attachAskStates(ctx, s.deps.Store.Pool, who, candidates, input.trees)
-	}
-	if err != nil {
+	who.Viewer = input.who.Viewer
+	if err := s.attachAskStates(ctx, s.deps.Store.Pool, who, candidates, input.trees); err != nil {
 		// attachAskStates sets each row's state before it reads resolved asks' answers, so a
 		// failure partway would leave a resolved ask that was answered showing no answer.
 		slog.Warn("dispatch: related items carry no ask state", "error", err)

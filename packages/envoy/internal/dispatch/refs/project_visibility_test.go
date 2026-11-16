@@ -99,13 +99,15 @@ type seededCaller struct {
 }
 
 // seededCallers is every caller of verification v16, the closed viewer a read with no viewer
-// reads as, and the server's own viewer (model.ServerViewer).
+// reads as, and the server's own viewer (model.ServerViewer). Each caller carries the credential
+// optionalActor resolves for it, a browser's included, since access.Resolve reads the credential.
 func seededCallers() []seededCaller {
 	alice, carol := seededAlice, seededCarol
+	cookie := &model.Credential{Scopes: model.Scopes}
 	return []seededCaller{
-		{name: "alice", actor: model.Actor{Kind: "user", ID: seededAlice}},
-		{name: "bob", actor: model.Actor{Kind: "user", ID: seededBob}},
-		{name: "carol", actor: model.Actor{Kind: "user", ID: seededCarol}},
+		{name: "alice", actor: model.Actor{Kind: "user", ID: seededAlice, Credential: cookie}},
+		{name: "bob", actor: model.Actor{Kind: "user", ID: seededBob, Credential: cookie}},
+		{name: "carol", actor: model.Actor{Kind: "user", ID: seededCarol, Credential: cookie}},
 		{name: "carol's token that lists PRIV", actor: model.Actor{Kind: "session", Owner: &carol,
 			Credential: &model.Credential{TokenID: "carol-priv", Projects: []string{seededPrivate}}}},
 		{name: "alice's token that lists PRIV", actor: model.Actor{Kind: "session", Owner: &alice,

@@ -20,12 +20,20 @@ package access
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
+
+// ErrUnresolvedActor is Resolve's refusal of an actor that carries no credential: one a write
+// recorded (model.Actor.Recorded), or the person actingPerson answers. What a caller may see is
+// read off the request's credential - its list of projects, and whether the broker proved its
+// session - so such an actor has nothing to resolve, and answering it as a credential that lists
+// nothing would quietly widen or narrow what it sees.
+var ErrUnresolvedActor = errors.New("access: the actor carries no credential to resolve; resolve the request's caller (optionalActor)")
 
 // Querier is what this package reads through: a pool or a transaction.
 type Querier interface {
@@ -179,10 +187,17 @@ func PartyClause(partiesExpr, viewerParam string) string {
 		SessionClause("substr(party, 9)", viewerParam)))
 }
 
-// Resolve answers what actor may see, in one read of VisibleProjectsSQL. The person is a
-// browser's login or the person an agent credential acts for; a broker token is the credential
-// whose session the broker proved; the list is the credential's Projects.
+// Resolve answers what actor may see, in one read of VisibleProjectsSQL. actor is the request's
+// caller as optionalActor resolved it, with its credential: one that carries none is refused with
+// ErrUnresolvedActor before any read. The person is a browser's login or the person an agent
+// credential acts for; a broker token is the credential whose session the broker proved; the list
+// is the credential's Projects. A caller is a browser only when it is a person acting with no
+// agent: a person-scope token acting for its person (actingPerson) is a user that carries an act,
+// and it sees what its own list lets it see, never everything its person sees.
 func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, error) {
+	if actor.Credential == nil {
+		return model.Viewer{}, ErrUnresolvedActor
+	}
 	var person *string
 	login := ""
 	switch {
@@ -194,12 +209,9 @@ func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, e
 	if login != "" {
 		person = &login
 	}
-	var listed []string
-	broker := false
-	if actor.Credential != nil {
-		listed = actor.Credential.Projects
-		broker = actor.Credential.Session != ""
-	}
+	listed := actor.Credential.Projects
+	broker := actor.Credential.Session != ""
+	agent := actor.Kind != "user" || actor.Act != nil
 	viewer := model.Viewer{Person: login, Listed: len(listed) > 0}
 	if viewer.Listed {
 		viewer.Lists = listed
@@ -207,7 +219,7 @@ func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, e
 	if actor.Kind == "session" {
 		viewer.Session = actor.ID
 	}
-	if err := q.QueryRow(ctx, VisibleProjectsSQL(), person, broker, actor.Kind != "user", listed).
+	if err := q.QueryRow(ctx, VisibleProjectsSQL(), person, broker, agent, listed).
 		Scan(&viewer.Sees, &viewer.Restricted, &viewer.AnyPrivate); err != nil {
 		return model.Viewer{}, fmt.Errorf("resolve what the caller sees: %w", err)
 	}

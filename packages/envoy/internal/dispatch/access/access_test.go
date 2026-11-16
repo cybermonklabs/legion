@@ -3,10 +3,13 @@ package access
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -101,6 +104,50 @@ func TestTheRuleOverTheSeededCallers(t *testing.T) {
 	}
 }
 
+// countingQuerier is a Querier that counts the statements it is asked to run.
+type countingQuerier struct {
+	Querier
+	reads int
+}
+
+func (q *countingQuerier) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	q.reads++
+	return q.Querier.QueryRow(ctx, sql, args...)
+}
+
+func (q *countingQuerier) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	q.reads++
+	return q.Querier.Query(ctx, sql, args...)
+}
+
+// TestResolveRefusesARecordedActor: the list and the broker flag Resolve reads live on the
+// request's credential, so an actor that carries none is refused with ErrUnresolvedActor before
+// any read, rather than answered as a credential that lists nothing. That is every seeded caller as
+// a write records it (Actor.Recorded) and the person actingPerson answers for a token, which
+// carries the token's act and no credential. The same callers as optionalActor resolves them, each
+// with its credential, answer their seeded viewers.
+func TestResolveRefusesARecordedActor(t *testing.T) {
+	ctx := context.Background()
+	database := seedAccess(t)
+	refused := []seededCaller{{name: "carol's token as actingPerson answers its person", actor: model.Actor{
+		Kind: "user", ID: carol, Act: &model.ActorAct{TokenID: "token-of-" + carol, Scopes: model.Scopes},
+	}}}
+	for _, caller := range seededCallers() {
+		refused = append(refused, seededCaller{name: caller.name + ", as a write records it", actor: caller.actor.Recorded()})
+	}
+	for _, caller := range refused {
+		q := &countingQuerier{Querier: database.Pool}
+		if got, err := Resolve(ctx, q, caller.actor); !errors.Is(err, ErrUnresolvedActor) || q.reads != 0 {
+			t.Errorf("%s: Resolve = %+v, %v after %d reads, want ErrUnresolvedActor and no read", caller.name, got, err, q.reads)
+		}
+	}
+	for _, caller := range seededCallers() {
+		if got, err := Resolve(ctx, database.Pool, caller.actor); err != nil || !viewersEqual(got, caller.want) {
+			t.Errorf("%s: Resolve = %+v, %v, want %+v", caller.name, got, err, caller.want)
+		}
+	}
+}
+
 // TestCredentialSeesAgreesWithTheSQLRule: Credential.Sees, Dispatch's rule over a resolved
 // person, answers every seeded caller and project exactly as the SQL rule does.
 func TestCredentialSeesAgreesWithTheSQLRule(t *testing.T) {
@@ -112,7 +159,7 @@ func TestCredentialSeesAgreesWithTheSQLRule(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: Resolve: %v", caller.name, err)
 		}
-		credential := Credential{Browser: caller.actor.Kind == "user"}
+		credential := Credential{Browser: caller.actor.Kind == "user" && caller.actor.Act == nil}
 		if caller.actor.Credential != nil {
 			credential.Listed = caller.actor.Credential.Projects
 		}
