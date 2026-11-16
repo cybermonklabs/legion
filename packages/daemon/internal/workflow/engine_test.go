@@ -991,10 +991,12 @@ func TestABackwardMovesTaskNamesThePullRequestAndTheReason(t *testing.T) {
 
 // A merged change never moves back: the backward move of an issue whose pull request has merged
 // is refused BACKWARD_REFUSED with that reason, in whichever phase the issue stands — a root in
-// merging, whose close can wait on the rest of its tree, and an issue still in reviewing whose
-// pull request merged early — and nothing moves, is counted or is started. The control is the
-// merger's same move on an issue in merging whose pull request is still open: it goes back and
-// starts the reviewer, so the merge alone is what refuses the other two.
+// merging, whose close can wait on the rest of its tree, an issue still in reviewing whose pull
+// request merged early, and an issue in accepting, where an approval of a merged pull request's
+// head ends the review round (TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound)
+// — and nothing moves, is counted or is started. The controls are the same moves on an issue in
+// merging and in accepting whose pull request is still open: each goes back and starts the
+// phase's worker, so the merge alone is what refuses the others.
 func TestABackwardMoveOfAMergedIssueIsRefused(t *testing.T) {
 	const reason = "its pull request has merged; a merged change never moves back"
 	for _, tc := range []struct {
@@ -1006,7 +1008,9 @@ func TestABackwardMoveOfAMergedIssueIsRefused(t *testing.T) {
 	}{
 		{"the merger's on a root in merging whose pull request merged", phase.Merging, phase.Reviewing, record.PullRequestMerged, true},
 		{"the reviewer's on an issue in reviewing whose pull request merged early", phase.Reviewing, phase.Implementing, record.PullRequestMerged, true},
+		{"the architect's on an issue in accepting whose pull request merged", phase.Accepting, phase.Implementing, record.PullRequestMerged, true},
 		{"the merger's on an issue in merging whose pull request is open", phase.Merging, phase.Reviewing, record.PullRequestOpen, false},
+		{"the architect's on an issue in accepting whose pull request is open", phase.Accepting, phase.Implementing, record.PullRequestOpen, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
