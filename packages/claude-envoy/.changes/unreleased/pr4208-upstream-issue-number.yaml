@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  The README, the package guide, the session hook's comment and the generated plugin's worker
+  skill name the upstream issue about a subagent's Bash environment as Claude Code issue 46696.

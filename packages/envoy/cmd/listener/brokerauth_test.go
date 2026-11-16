@@ -108,14 +108,14 @@ func sessionAnswer(session, person, jkt string) brokertoken.Introspection {
 }
 
 // serviceAnswer is the broker's answer about a token naming a service and no person: a machine
-// nobody has signed in on.
+// nobody has signed in on. It names no project, under the person scope, as the exchange mints it
+// (exchange.Set.Google), and as brokertoken holds such an answer to.
 func serviceAnswer(session, service, jkt string) brokertoken.Introspection {
 	return brokertoken.Introspection{
 		Active:       true,
 		Session:      session,
 		Service:      service,
-		Project:      "EXAMPLE",
-		ProjectScope: brokertoken.ProjectScopeNamed,
+		ProjectScope: brokertoken.ProjectScopePerson,
 		ClientID:     brokertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}

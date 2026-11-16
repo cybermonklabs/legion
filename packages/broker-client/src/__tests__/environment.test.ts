@@ -12,10 +12,17 @@ import {
   IDENTITY_VAR,
   MACHINE_AUDIENCE_VAR,
   MACHINE_TOKEN_FILE_VAR,
+  MAX_PROJECTS,
   machineIdentity,
+  PROJECTS_VAR,
+  tradeProjects,
   tradeSession,
 } from "../environment";
-import { FORM_LAUNCHER_CREDENTIAL, FORM_LAUNCHER_CREDENTIAL_DECLINED } from "../wire";
+import {
+  FORM_LAUNCHER_CREDENTIAL,
+  FORM_LAUNCHER_CREDENTIAL_DECLINED,
+  FORM_PROJECTS,
+} from "../wire";
 
 const makeDirectory = temporaryDirectories("broker-environment");
 
@@ -111,13 +118,37 @@ test("a machine's client this factory builds asks the broker for no launcher cre
       [MACHINE_TOKEN_FILE_VAR]: file,
       AGENT_SECRETS_SESSION: "example-worker-session",
       AGENT_SECRETS_SIGNIN_DIR: join(makeDirectory(), "signins"),
+      // A machine trading for itself names no project, whatever the variable says: its entry
+      // decides its project, and the broker refuses one it is told.
+      [PROJECTS_VAR]: "PRIV",
     });
     const token = await made?.client.token();
     expect(token?.credentialId).toBe("");
     expect(forms).toHaveLength(1);
     expect(forms[0]?.get(FORM_LAUNCHER_CREDENTIAL)).toBe(FORM_LAUNCHER_CREDENTIAL_DECLINED);
+    expect(forms[0]?.has(FORM_PROJECTS)).toBe(false);
   } finally {
     broker.stop(true);
+  }
+});
+
+test("the projects a person's trade names are AGENT_SECRETS_PROJECTS, read by the broker's grammar", () => {
+  expect(tradeProjects({})).toEqual([]);
+  expect(tradeProjects({ [PROJECTS_VAR]: "  " })).toEqual([]);
+  expect(tradeProjects({ [PROJECTS_VAR]: "PUB  PRIV" })).toEqual(["PRIV", "PUB"]);
+  const seventeen = Array.from(
+    { length: MAX_PROJECTS + 1 },
+    (_, at) => `P${String(at).padStart(2, "0")}`
+  );
+  for (const [bad, says] of [
+    ["priv", '"priv" is not a project key'],
+    ["PRIV,PUB", '"PRIV,PUB" is not a project key'],
+    ["P", '"P" is not a project key'],
+    ["PRIV PUB PRIV", "PRIV is named twice"],
+    [seventeen.join(" "), "at most 16"],
+  ] as const) {
+    expect(() => tradeProjects({ [PROJECTS_VAR]: bad })).toThrow(says);
+    expect(() => tradeProjects({ [PROJECTS_VAR]: bad })).toThrow(PROJECTS_VAR);
   }
 });
 

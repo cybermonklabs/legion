@@ -115,12 +115,10 @@ func (r *calloutRig) startHub(t *testing.T) (hubContainer, string) {
 	return ctr, uri
 }
 
-// restart stops the container, makes config its whole configuration and starts it again on the
-// same JetStream store, as an operator applies a changed configuration to the hub, then starts the
-// auth service, which holds each answer for answerDelay before it gives it, and returns the client
-// URL once the service's user is connected. The service's user is in auth_users, so it connects
-// without a callout.
-func (r *calloutRig) restart(t *testing.T, ctr hubContainer, config string, answerDelay time.Duration) string {
+// reconfigure stops the container, makes config its whole configuration and starts it again on the
+// same JetStream store, as an operator applies a changed configuration to the hub, and returns its
+// client URL. Every test of the rendered block on the hub's image starts its server this way.
+func (r *calloutRig) reconfigure(t *testing.T, ctr hubContainer, config string) string {
 	t.Helper()
 	ctx := context.Background()
 	stop := 10 * time.Second
@@ -129,14 +127,34 @@ func (r *calloutRig) restart(t *testing.T, ctr hubContainer, config string, answ
 	require.NoError(t, ctr.Start(ctx))
 	uri, err := ctr.ConnectionString(ctx)
 	require.NoError(t, err)
+	return uri
+}
+
+// connectWhenUp connects to server as the nkey user whose seed is seed, with options, retrying for
+// 30 s while a server reconfigure restarted comes up, and closes the connection when the test ends.
+// testnats.ConnectSeed sets NoReconnect, so a connection the server closes stays closed.
+func connectWhenUp(t *testing.T, server, seed string, options ...natsgo.Option) *natsgo.Conn {
+	t.Helper()
 	var conn *natsgo.Conn
-	require.Eventually(t, func() bool {
-		var err error
-		conn, err = testnats.ConnectSeed(t, uri, r.serviceSeed)
-		return err == nil
-	}, 30*time.Second, 100*time.Millisecond, "the auth service's user could not connect to the restarted hub")
+	var err error
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		if conn, err = testnats.ConnectSeed(t, server, seed, options...); err == nil {
+			break
+		}
+		require.True(t, time.Now().Before(deadline), "could not connect to %s, restarted: %v", server, err)
+	}
 	t.Cleanup(conn.Close)
-	_, err = conn.Subscribe("$SYS.REQ.USER.AUTH", func(m *natsgo.Msg) {
+	return conn
+}
+
+// restart reconfigures the container on config, then starts the auth service, which holds each
+// answer for answerDelay before it gives it, and returns the client URL once the service's user is
+// connected. The service's user is in auth_users, so it connects without a callout.
+func (r *calloutRig) restart(t *testing.T, ctr hubContainer, config string, answerDelay time.Duration) string {
+	t.Helper()
+	uri := r.reconfigure(t, ctr, config)
+	conn := connectWhenUp(t, uri, r.serviceSeed)
+	_, err := conn.Subscribe("$SYS.REQ.USER.AUTH", func(m *natsgo.Msg) {
 		time.Sleep(answerDelay)
 		r.answer(t, m)
 	})

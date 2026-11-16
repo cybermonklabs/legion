@@ -258,9 +258,9 @@ type clusteredHubSettings struct {
 	// sessionNKey is the session user's public key, "" without a session user: the hub pods'
 	// no-auth-user annotation, which rolls them when it changes (clusteredHubNoAuthUserAnnotation).
 	sessionNKey string
-	// calloutDigest is the hex SHA-256 of auth.conf's callout lines (core.Authorization.CalloutBlock),
-	// "" without authCallout: the hub pods' auth-callout annotation, which rolls them when it
-	// changes (clusteredHubAuthCalloutAnnotation).
+	// calloutDigest is the hex SHA-256 of auth.conf's callout lines, the auth_callout block and the
+	// ping lines (core.Authorization.CalloutLines), "" without authCallout: the hub pods'
+	// auth-callout annotation, which rolls them when it changes (clusteredHubAuthCalloutAnnotation).
 	calloutDigest string
 	tailnet       *clusteredHubTailnet
 }
@@ -450,8 +450,8 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 	if args.SessionUser != nil {
 		s.sessionNKey = args.SessionUser.NKey
 	}
-	if block := auth.CalloutBlock(); block != "" {
-		sum := sha256.Sum256([]byte(block))
+	if lines := auth.CalloutLines(); lines != "" {
+		sum := sha256.Sum256([]byte(lines))
 		s.calloutDigest = hex.EncodeToString(sum[:])
 	}
 	return s, nil
