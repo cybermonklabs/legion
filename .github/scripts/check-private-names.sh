@@ -27,52 +27,60 @@
 #   4. a Tailscale MagicDNS host — a DNS label then `.ts.net`, in any case, with no letter or
 #      digit after it. A reserved tailnet name (`example-tailnet`, under any machine name of its
 #      own in front) passes;
-#   5. a term of PRIVATE_NAME_TERMS: the names this public file cannot spell, such as the
-#      deployment repository's own name with its owner, the company's other forms and the cloud
-#      project ids, kept in the Actions secret of that name. The variable holds one term a line,
+#   5. a term of PRIVATE_NAME_TERMS: the names of the private deployment that this public file
+#      cannot spell, kept in the Actions secret of that name. The variable holds one term a line,
 #      each with the blanks around it (a carriage return among them) dropped, and a line left
 #      empty is dropped too, since grep reads an empty pattern as one that matches every line.
-#      Each term is matched as a fixed string, in any case, anywhere in a line or a path, so a term
-#      that holds a "/" (an owner/repository form) is found in a path as well.
+#      Each term is matched as a fixed string, in any case (grep -F -i, in the run's locale),
+#      anywhere in a line or a path, so a term that holds a "/" is found across a path's parts.
+#      The allowed hosts of rules 3 and 4 are exceptions to those rules alone, never to a term.
 #
-# Every CI job that runs this script, itself or through check-pr-text.sh or
-# packages/claude-envoy/scripts/verify-build.sh, maps PRIVATE_NAME_TERMS from that secret into the
-# step's env. With the variable unset or empty (no term left after the dropping above) the fifth
-# rule cannot run, and GITHUB_EVENT_NAME decides what follows. On a pull_request or
-# pull_request_review event, which GitHub runs with no secret for a fork's pull request, and with
-# no event at all (a run outside Actions), the check prints a warning that only the first four
-# rules ran and keeps their exit. On any other event (a merge_group, a push, a workflow_dispatch),
-# where a job can always map the secret, it fails with exit 2 before it scans anything.
+# The jobs that run this script with that secret run no dependency code: each checks out the
+# repository, or downloads what another job built, and runs this script and system tools alone.
+# With the variable unset or empty (no term left after the dropping above) the fifth rule cannot
+# run, and GITHUB_EVENT_NAME decides what follows. On a pull_request or pull_request_review event,
+# which GitHub runs with no secret for a fork's pull request, and with no event at all (a run
+# outside Actions), the check prints a warning that only the first four rules ran and keeps their
+# exit. On any other event (a merge_group, a push, a workflow_dispatch), where a job can always map
+# the secret, it fails with exit 2 before it scans anything.
 #
 # With no arguments it scans the repository: every file git tracks, a file under an ignored path
 # included, plus every untracked file git does not ignore, so a new file is caught before it is
-# added. With arguments it scans each named directory or file instead, tracked or not; ci.yaml's
-# docs job passes it the built site (docs/site/dist), whose generated reference pages and copied
-# media captions exist only after the build, and check-pr-text.sh a pull request's title, body,
+# added. With arguments it scans each named directory or file instead, tracked or not;
+# docs-site.yaml's private-names job passes it the built site (docs/site/dist), whose generated
+# reference pages and copied media captions exist only after the build, and check-pr-text.sh a
+# pull request's title, body,
 # branch name, commits (each one's message, author and committer), issue comments, reviews and
 # review comments. The first two rules and the fifth also read every file's path, directories
 # included, as git and find print it unquoted. Binary files are
 # skipped, and so are lockfiles (bun.lock, go.sum, go.work.sum), whose integrity hashes are random
-# text. Every hit is printed as its file and line, never its text, and a path component a rule
-# matches is printed as <name> (a term that spans components is replaced where it stands), so the
-# log does not repeat the name; the only non-zero exits are named hits (1), and a target or search
-# that failed or a term list the event requires and the job did not map (2).
+# text. Every hit is printed as its file and line, never its text. A path part that the first two
+# rules or a term match is printed as <name>, and so is a run of parts that a term spans; a path
+# that still holds a term after that is printed as <name> whole. Every other line that carries a
+# path, a named target or another command's message is masked the same way, so the log does not
+# repeat the name. The only non-zero exits are named hits (1), and a target or search that failed
+# or a term list the event requires and the job did not map (2).
 #
 # The rules below are spelled so that no line of this file is refused by them: a line a rule's raw
 # pattern matches, such as a reserved placeholder host, always clears that rule's own allow-list
 # too, which is why the check needs no exception for itself.
 #
 # Run from anywhere: .github/scripts/check-private-names.sh [path...]
-# CI runs it over the repository in ci.yaml's lint job; over the built site in docs-site.yaml,
-# which ci.yaml's docs job and docs-pages.yaml's build job call; over the built Claude Code plugin
-# through packages/claude-envoy/scripts/verify-build.sh, in ci.yaml's test and claude-envoy jobs
-# and release.yaml's claude_envoy_build; over a pull request's title, body, branch name, commits
-# (each one's message, author and committer), issue comments, reviews and review comments through
-# check-pr-text.sh (ci.yaml's pr-title job at each push to a pull request that is not a draft, when
-# a draft is marked ready and on the merge queue's group, and pr-title.yaml when the pull request
-# is edited or a review on it is submitted or edited); and in its tests, in ci.yaml's test job and
-# its private-names-port job. Each of those steps maps PRIVATE_NAME_TERMS.
+# CI runs it over the repository in ci-job-lint.yaml's private-names job, which ci.yaml's lint job
+# calls; over the built site in docs-site.yaml's private-names job, which ci.yaml's docs job and
+# docs-pages.yaml's build job call; over the packed Claude Code plugin's dist/ and legion/ in
+# ci-job-claude-envoy.yaml's private-names job and release.yaml's claude_envoy_names job; over a
+# pull request's title, body, branch name, commits (each one's message, author and committer),
+# issue comments, reviews and review comments through check-pr-text.sh (ci.yaml's pr-title job at
+# each push to a pull request that is not a draft, when a draft is marked ready and on the merge
+# queue's group, and pr-title.yaml when the pull request is edited or a review on it is submitted
+# or edited); and in its tests, in ci.yaml's test job and its private-names-port job, which run with
+# placeholder terms of their own and no secret. Each step that runs it with the secret maps
+# PRIVATE_NAME_TERMS.
 set -euo pipefail
+# No tracing: a traced run (`bash -x`, or xtrace in SHELLOPTS) would print each term, and the forms
+# a test or a match makes of it, wherever the lines below expand one. This comes before the first.
+set +x
 
 # A relative path argument is read from the caller's directory, so it is prefixed with that
 # directory's path from the repository root (or its absolute path, outside the repository) before
@@ -135,21 +143,79 @@ term_label="names a term of the deployment's own list (PRIVATE_NAME_TERMS)"
 lockfiles=(bun.lock go.sum go.work.sum)
 targets=("$@")
 
-for target in "${targets[@]}"; do
-  if [ ! -e "$target" ]; then
-    echo "check-private-names: $target does not exist, so there is nothing to scan there" >&2
-    exit 2
-  fi
-done
+matches=$(mktemp)
+hits=$(mktemp)
+paths=$(mktemp)
+errors=$(mktemp)
+terms_file=$(mktemp)
+trap 'rm -f "$matches" "$hits" "$paths" "$errors" "$terms_file"' EXIT
 
 # The fifth rule's terms: each line of PRIVATE_NAME_TERMS with the blanks around it dropped, and
-# none left empty (the header says why).
+# none left empty (the header says why). They are read before this script prints anything, since
+# every line below that carries a path or another command's message is masked with them.
 terms=()
 while IFS= read -r term; do
   term=${term#"${term%%[![:space:]]*}"}
   term=${term%"${term##*[![:space:]]}"}
   if [ -n "$term" ]; then terms+=("$term"); fi
 done <<< "${PRIVATE_NAME_TERMS:-}"
+if [ ${#terms[@]} -gt 0 ]; then printf '%s\n' "${terms[@]}" > "$terms_file"; fi
+
+# names <text>: whether one of the first two rules matches text.
+names() {
+  [[ ${1,,} =~ $repository_rule || ${1,,} =~ $company_rule || $1 =~ $proper_noun_rule ]]
+}
+
+# names_term <text>: whether a term of the fifth rule is in text, by the very grep the term search
+# runs (-F -i over the same file, in the same locale). So a text is masked by the case folding
+# that found it: grep folds a long s, a dotless i or a final sigma, which Bash's own lowercasing
+# does not.
+names_term() {
+  [ ${#terms[@]} -gt 0 ] && grep -q -F -i -f "$terms_file" <<< "$1"
+}
+
+# mask <text>: text, a path or a message that holds one, with each "/"-separated part that the
+# first two rules or a term match replaced by <name>, then each shortest run of parts that a term
+# spans (an owner/repository form) replaced by one <name>. A text that names_term still finds a
+# term in after that is printed as <name> whole.
+mask() {
+  local IFS=/ part masked_text i j width
+  local -a parts masked=() dropped=() kept=()
+  read -r -a parts <<< "$1"
+  for part in "${parts[@]}"; do
+    if names "$part"; then masked+=("<name>"); else masked+=("$part"); fi
+  done
+  if names_term "$1"; then
+    for i in "${!masked[@]}"; do
+      if names_term "${masked[i]}"; then masked[i]="<name>"; fi
+    done
+    for ((width = 2; width <= ${#masked[@]}; width++)); do
+      for ((i = 0; i + width <= ${#masked[@]}; i++)); do
+        if names_term "${masked[*]:i:width}"; then
+          masked[i]="<name>"
+          for ((j = i + 1; j < i + width; j++)); do
+            masked[j]="<name>"
+            dropped[j]=1
+          done
+        fi
+      done
+    done
+  fi
+  for i in "${!masked[@]}"; do
+    if [ -z "${dropped[i]:-}" ]; then kept+=("${masked[i]}"); fi
+  done
+  masked_text=${kept[*]}
+  if names_term "$masked_text"; then masked_text="<name>"; fi
+  printf '%s' "$masked_text"
+}
+
+for target in "${targets[@]}"; do
+  if [ ! -e "$target" ]; then
+    echo "check-private-names: $(mask "$target") does not exist, so there is nothing to scan there" >&2
+    exit 2
+  fi
+done
+
 if [ ${#terms[@]} -eq 0 ]; then
   case ${GITHUB_EVENT_NAME:-} in
     '' | pull_request | pull_request_review)
@@ -166,67 +232,55 @@ if [ ${#terms[@]} -eq 0 ]; then
   esac
 fi
 
-matches=$(mktemp)
-hits=$(mktemp)
-paths=$(mktemp)
-terms_file=$(mktemp)
-trap 'rm -f "$matches" "$hits" "$paths" "$terms_file"' EXIT
+# sanitized <command...>: runs the command with its error output masked line by line, since a
+# command's message can carry a path that names something private; returns the command's exit.
+sanitized() {
+  local status=0 line
+  "$@" 2> "$errors" || status=$?
+  while IFS= read -r line; do printf '%s\n' "$(mask "$line")" >&2; done < "$errors"
+  return "$status"
+}
 
 if [ ${#targets[@]} -eq 0 ]; then
-  git -c core.quotePath=false ls-files --cached --others --exclude-standard | sort -u > "$paths"
+  if ! sanitized git -c core.quotePath=false ls-files --cached --others --exclude-standard > "$matches"; then
+    echo "check-private-names: git ls-files failed, so the repository's files are unknown" >&2
+    exit 2
+  fi
+  sort -u "$matches" > "$paths"
   scanned="$(wc -l < "$paths") files in the repository"
 else
-  find "${targets[@]}" > "$paths"
+  if ! sanitized find "${targets[@]}" > "$paths"; then
+    echo "check-private-names: find failed over the named paths, so their files are unknown" >&2
+    exit 2
+  fi
   files=0
   while IFS= read -r path; do
     if [ -f "$path" ] && [ ! -L "$path" ]; then files=$((files + 1)); fi
   done < "$paths"
-  scanned="$files files under ${targets[*]}"
+  shown=()
+  for target in "${targets[@]}"; do shown+=("$(mask "$target")"); done
+  scanned="$files files under ${shown[*]}"
 fi
-
-# names <text>: whether one of the first two rules, or a term of the fifth, matches text.
-names() {
-  local term
-  [[ ${1,,} =~ $repository_rule || ${1,,} =~ $company_rule || $1 =~ $proper_noun_rule ]] && return
-  for term in "${terms[@]}"; do
-    [[ ${1,,} == *"${term,,}"* ]] && return
-  done
-  return 1
-}
-
-# mask <path>: path with each component the first two rules or a term match replaced by <name>,
-# then each term still in it, which is one that spans components (an owner/repository form),
-# replaced by <name> where it stands, in any case.
-mask() {
-  local IFS=/ part term masked_path
-  local -a parts masked=()
-  read -r -a parts <<< "$1"
-  for part in "${parts[@]}"; do
-    if names "$part"; then masked+=("<name>"); else masked+=("$part"); fi
-  done
-  masked_path=${masked[*]}
-  shopt -s nocasematch
-  for term in "${terms[@]}"; do masked_path=${masked_path//"$term"/<name>}; done
-  shopt -u nocasematch
-  printf '%s' "$masked_path"
-}
 
 # run <command...>: appends the command's output to $matches; a failed search (exit 2 or more,
 # where grep's 1 means no match) stops the check.
 run() {
   local status=0
-  "$@" >> "$matches" || status=$?
+  sanitized "$@" >> "$matches" || status=$?
   if [ "$status" -gt 1 ]; then
     echo "check-private-names: the search with $1 failed (exit $status)" >&2
     exit 2
   fi
 }
 
-# search <label> <grep pattern option...>: appends one "path:line: label" row per line where the
-# pattern (`-E -e <rule>`, or `-F -f <terms file>`) matches something other than an allowed host.
+# search <label> <committed|term> <grep pattern option...>: appends one "path:line: label" row per
+# line where the pattern (`-E -e <rule>`, or `-F -i -f <terms file>`) matches. For a committed
+# rule, a whole match that is an allowed host (a reserved example host, the reserved example
+# tailnet, or the NATS client's property in the bundle that vendors it) is dropped first; a term of
+# the fifth rule is matched as given, with no such exception.
 search() {
-  local label=$1 path line
-  shift
+  local label=$1 kind=$2 path line
+  shift 2
   : > "$matches"
   if [ ${#targets[@]} -eq 0 ]; then
     local excludes=()
@@ -241,12 +295,15 @@ search() {
     for lockfile in "${lockfiles[@]}"; do excludes+=("--exclude=$lockfile"); done
     run grep -r -n -o -H -I "${excludes[@]}" "$@" -- "${targets[@]}"
   fi
-  { grep -v -i -E -e "^[^:]*:[0-9]+:($allowed_host)\$" \
-    -e "^$vendored_nats:[0-9]+:$vendored_property\$" \
-    -e "^[^:]*:[0-9]+:($allowed_tailnet_host)\$" "$matches" || true; } |
-    cut -d: -f1,2 | while IFS=: read -r path line; do
-      printf '%s:%s: %s\n' "$(mask "$path")" "$line" "$label"
-    done >> "$hits"
+  if [ "$kind" = committed ]; then
+    { grep -v -i -E -e "^[^:]*:[0-9]+:($allowed_host)\$" \
+      -e "^$vendored_nats:[0-9]+:$vendored_property\$" \
+      -e "^[^:]*:[0-9]+:($allowed_tailnet_host)\$" "$matches" || true; }
+  else
+    cat "$matches"
+  fi | cut -d: -f1,2 | while IFS=: read -r path line; do
+    printf '%s:%s: %s\n' "$(mask "$path")" "$line" "$label"
+  done >> "$hits"
 }
 
 # search_paths <label> <grep pattern option...>: appends one "path:0: label in its path" row per
@@ -261,17 +318,16 @@ search_paths() {
   done < "$matches" >> "$hits"
 }
 
-search "$repository_label" -E -i -e "$repository_rule"
-search "$company_label" -E -i -e "$company_rule"
-search "$company_label" -E -e "$proper_noun_rule"
-search "$private_host_label" -E -i -e "$private_host_rule"
-search "$tailnet_host_label" -E -i -e "$tailnet_host_rule"
+search "$repository_label" committed -E -i -e "$repository_rule"
+search "$company_label" committed -E -i -e "$company_rule"
+search "$company_label" committed -E -e "$proper_noun_rule"
+search "$private_host_label" committed -E -i -e "$private_host_rule"
+search "$tailnet_host_label" committed -E -i -e "$tailnet_host_rule"
 search_paths "$repository_label" -E -i -e "$repository_rule"
 search_paths "$company_label" -E -i -e "$company_rule"
 search_paths "$company_label" -E -e "$proper_noun_rule"
 if [ ${#terms[@]} -gt 0 ]; then
-  printf '%s\n' "${terms[@]}" > "$terms_file"
-  search "$term_label" -F -i -f "$terms_file"
+  search "$term_label" term -F -i -f "$terms_file"
   search_paths "$term_label" -F -i -f "$terms_file"
 fi
 

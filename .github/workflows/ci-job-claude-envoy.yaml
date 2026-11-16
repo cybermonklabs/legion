@@ -1,15 +1,16 @@
 name: CI job claude-envoy
 
-# The steps of ci.yaml's `claude-envoy` job, in a file of its own.
+# The steps of ci.yaml's `claude-envoy` job, in a file of its own, and the private-name check of
+# the plugin it packs in a job after it (private-names, below).
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
 # these steps selects this job alone, where a change to ci.yaml selects every job.
 #
-# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
-# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# Each job's last step reports ci-ok for the caller: on a merge-group run its own result decides,
+# it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+# `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
@@ -22,8 +23,8 @@ on:
     secrets:
       PRIVATE_NAME_TERMS:
         description: >-
-          The deployment's own private names, one a line, which verify-build.sh's private-name
-          check reads (.github/scripts/check-private-names.sh's fifth rule).
+          The deployment's own private names, one a line, which the private-names job below
+          checks the packed plugin for (.github/scripts/check-private-names.sh's fifth rule).
         required: false
 
 jobs:
@@ -50,8 +51,6 @@ jobs:
       # them into the tarball it publishes to npm. So this builds and checks them from the head's
       # source as that job does: packages/claude-envoy/scripts/verify-build.sh.
       - name: Build, check and pack the plugin as the release does
-        env:
-          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
         run: bun run verify-build "$RUNNER_TEMP/claude-envoy-built.tar"
         working-directory: packages/claude-envoy
       # The pack step packs the package's own dist/ and legion/ (release-push.sh extract-built).
@@ -68,6 +67,49 @@ jobs:
           name: claude-envoy-pr
           path: out/pr-artifacts/*.tgz
 
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: claude-envoy
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The packed plugin's dist/ and legion/ name nothing private: the private-name check that
+  # packages/claude-envoy/scripts/verify-build.sh leaves out, over the very bytes it tarred, which
+  # the job above put into the package (release-push.sh extract-built) and packed. A job of its
+  # own, because the check reads the deployment's term list (PRIVATE_NAME_TERMS) and no job that
+  # runs dependency code holds it: this one checks out the .github cone for the script, downloads
+  # the tarball, lays its two directories out at their repository path (the vendored NATS
+  # client's exception is a path, packages/claude-envoy/dist/envoy-channel.js), and runs that
+  # shell script, tar and mkdir alone. release.yaml's claude_envoy_names runs the same check over
+  # the tarball the release publishes.
+  private-names:
+    needs: claude-envoy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: claude-envoy-pr
+          path: ${{ runner.temp }}/claude-envoy-pr
+      - name: Lay the packed plugin's dist/ and legion/ out at their repository path
+        run: |
+          tarballs=("$RUNNER_TEMP"/claude-envoy-pr/*.tgz)
+          if [ ${#tarballs[@]} -ne 1 ] || [ ! -f "${tarballs[0]}" ]; then
+            echo "::error::the claude-envoy-pr artifact holds no single tarball"
+            exit 1
+          fi
+          mkdir -p packages/claude-envoy
+          tar -xzf "${tarballs[0]}" -C packages/claude-envoy --strip-components=1 package/dist package/legion
+      - name: Check the packed plugin's dist/ and legion/ name nothing private
+        env:
+          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+        run: .github/scripts/check-private-names.sh packages/claude-envoy/dist packages/claude-envoy/legion
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

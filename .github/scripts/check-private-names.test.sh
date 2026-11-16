@@ -2,95 +2,24 @@
 # Tests for `check-private-names.sh` and `check-pr-text.sh`: every spelling the guard refuses, the
 # identifiers and the English word it must pass, what it skips, its two modes (the repository, and
 # named paths such as the built site), file names, and a pull request's title, body, branch name,
-# commits (message, author and committer), issue comments, reviews and review comments; and the
-# deployment's own term list, PRIVATE_NAME_TERMS: a planted term refused in a line and in a path,
-# its absence passing, and an unset list warning on a pull request's events and failing on the
-# merge queue's, a push's and a dispatched run's.
+# commits (message, author and committer), issue comments, reviews and review comments. The
+# deployment's own term list, the script's fifth rule, has a harness of its own,
+# check-private-names-terms.test.sh; the fixtures, the name pieces and the stand-in GitHub API both
+# read are check-private-names-test-lib.sh's.
 #
-# Each case builds a miniature git repository under a temporary directory and symlinks the real
-# script into it, so the script under test is the file CI runs: it resolves its root from its own
-# path, which the symlink puts at the fixture root. The names it hunts are assembled from pieces
-# below, so this file holds none of them and the check scans it like any other. Every case names
-# itself by an index or a neutral label, never the assembled form, since `check`'s PASS/FAIL line
-# is this script's own stdout — the CI log; the last case runs the guard over that captured log.
-# The terms the list cases plant are placeholders this file sets, never a real term, and no case's
-# output names one either.
+# Every case names itself by an index or a neutral label, never the assembled form, since
+# `check`'s PASS/FAIL line is this script's own stdout — the CI log; the last case runs the guard
+# over that captured log.
 #
 # Run from anywhere: .github/scripts/check-private-names.test.sh
 # CI runs it in ci.yaml's test job.
 set -euo pipefail
 shopt -s inherit_errexit
+# No tracing: a traced run would print the placeholder terms the library sets.
+set +x
 
-script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-check_script="$script_dir/check-private-names.sh"
-pr_text_script="$script_dir/check-pr-text.sh"
-work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
-
-# Every case's stdout below (echoed "case:" lines and `check`'s PASS/FAIL lines) is this script's
-# own output — the log of ci.yaml's test job — so it is also teed to self_log and, as the last
-# case, scanned with the guard itself: a future case that prints an assembled form turns red
-# here, in the suite, before it ever reaches a real job log. `exec 3>&1 4>&2` keeps the real
-# terminal fds reachable so the redirection can be undone before reading the file: a process
-# substitution's write end must close (and its process be waited on) before its output is
-# guaranteed to be flushed to disk.
-self_log="$work/suite-output.log"
-exec 3>&1 4>&2
-exec > >(tee "$self_log") 2>&1
-tee_pid=$!
-
-# shellcheck source=.github/scripts/test-lib.sh
-source "$script_dir/test-lib.sh"
-
-command -v git > /dev/null || { echo "  FAIL: git is required" >&2; exit 1; }
-
-repo="agent""-c"
-repo_snake="agent""_c"
-repo_joined="agent""c"
-repo_spaced="agent"" c"
-repo_en_dash="agent""–c"
-repo_nonbreaking_hyphen="agent""‑c"
-repo_percent_hyphen="agent""%2Dc"
-nbsp=$'\xc2\xa0'
-en_dash=$'\xe2\x80\x93'
-key="AGENT""C"
-company="traj""ectory"
-company_proper="T""rajectory"
-labs="labs"
-internal="internal"
-private_host_suffix="private.example"
-example_host_suffix="example"
-vendored_nats="packages/claude-envoy/dist/envoy-channel.js"
-tailnet_suffix="ts.net"
-tailnet_label="realtailnet"
-tailnet_example="example-tailnet"
-
-# The term list every case below runs the guard under, unless a case sets its own: placeholder
-# terms standing in for the deployment's own list (PRIVATE_NAME_TERMS, an Actions secret), on a
-# pull request's event. One holds regex characters, to show a term is a fixed string, and one a
-# "/", standing in for an owner/repository form. The job's own two values are kept for the last
-# case, which scans this suite's log with them: in CI, that is the deployment's real list.
-planted="zephyr-orchard"
-planted_dotted="copper.kettle"
-planted_owner="lanternfish/harbor-map"
-planted_terms=$(printf '%s\n' "$planted" "$planted_dotted" "$planted_owner")
-job_event=${GITHUB_EVENT_NAME-}
-job_terms=${PRIVATE_NAME_TERMS-}
-export GITHUB_EVENT_NAME=pull_request
-export PRIVATE_NAME_TERMS=$planted_terms
-
-# names_planted <text>: true/false for check; whether text holds a planted term, or either half of
-# the owner/repository one, in any case.
-names_planted() {
-  local term
-  for term in "$planted" "$planted_dotted" "$planted_owner" "${planted_owner%%/*}" "${planted_owner#*/}"; do
-    if grep -q -i -F -- "$term" <<< "$1"; then
-      echo true
-      return
-    fi
-  done
-  echo false
-}
+# shellcheck source=.github/scripts/check-private-names-test-lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-private-names-test-lib.sh"
 
 # assert_each_refused <fixture-prefix> <label> <array-name> [line]: writes each line of the named
 # array into its own fixture, on the given line (1 by default; 2 is preceded by a filler line), and
@@ -112,47 +41,6 @@ assert_each_refused() {
     check "$prefix-$index is named at its file and line" \
       "$(contains "$out" "docs/notes.md:$line: $label")"
   done
-}
-
-# fixture <name>: a clean repository with one tracked file. Echoes its root.
-fixture() {
-  local root="$work/$1"
-  if [ -e "$root" ]; then
-    echo "  FAIL: the fixture name '$1' is already taken by an earlier case" >&2
-    return 1
-  fi
-  mkdir -p "$root/.github/scripts" "$root/docs"
-  ln -s "$check_script" "$root/.github/scripts/check-private-names.sh"
-  printf '# Notes\n\nNothing private here.\n' > "$root/docs/notes.md"
-  git -C "$root" init -q
-  git -C "$root" add docs/notes.md
-  echo "$root"
-}
-
-# run_check <root> [path...]: sets `out` to the combined output and `status` to the exit code.
-run_check() {
-  local root=$1
-  shift
-  set +e
-  out=$(cd "$root" && .github/scripts/check-private-names.sh "$@" 2>&1)
-  status=$?
-  set -e
-}
-
-# run_check_as <event> <terms> <root> [path...]: run_check under that GITHUB_EVENT_NAME and
-# PRIVATE_NAME_TERMS, where `-` leaves the variable unset (a run outside Actions, a job that maps
-# no secret).
-run_check_as() {
-  local event=$1 list=$2 root=$3
-  shift 3
-  set +e
-  out=$(
-    if [ "$event" = - ]; then unset GITHUB_EVENT_NAME; else export GITHUB_EVENT_NAME=$event; fi
-    if [ "$list" = - ]; then unset PRIVATE_NAME_TERMS; else export PRIVATE_NAME_TERMS=$list; fi
-    cd "$root" && .github/scripts/check-private-names.sh "$@" 2>&1
-  )
-  status=$?
-  set -e
 }
 
 echo "case: a clean repository"
@@ -503,207 +391,6 @@ run_check "$root" docs/notes.md
 check "exits 0" "$(is "$status" 0)"
 check "scans the file" "$(contains "$out" '(1 files under docs/notes\.md)')"
 
-echo "case: a term of the deployment's own list is refused, in any case, and the log names only its place"
-root=$(fixture term)
-printf 'line one\nSee the %s runbook.\n' "${planted^^}" > "$root/docs/notes.md"
-run_check "$root"
-check "fails" "$(is "$status" 1)"
-check "annotates the file and line" \
-  "$(contains "$out" "^::error file=docs/notes.md,line=2::docs/notes.md:2: names a term of the deployment's own list (PRIVATE_NAME_TERMS)\$")"
-check "counts the finding" "$(contains "$out" '^check-private-names: 1 finding(s)')"
-check "does not print the term" "$(is "$(names_planted "$out")" false)"
-
-echo "case: with no term in the tree, the list passes and says it ran"
-root=$(fixture term-absent)
-run_check "$root"
-check "exits 0" "$(is "$status" 0)"
-check "names the list and its size" "$(contains "$out" 'or a term of PRIVATE_NAME_TERMS (3 terms)')"
-check "warns of nothing" "$(is "$(contains "$out" '::warning::')" false)"
-
-echo "case: a term is a fixed string, whose regex characters match only themselves"
-root=$(fixture term-fixed)
-printf '%s\n' "${planted_dotted/./X}" > "$root/docs/notes.md"
-run_check "$root"
-check "a line the term read as a regex would match passes" "$(is "$status" 0)"
-printf '%s\n' "${planted_dotted^}" > "$root/docs/notes.md"
-run_check "$root"
-check "the term itself, in another case, fails" "$(is "$status" 1)"
-check "names its line" "$(contains "$out" "docs/notes.md:1: names a term of the deployment's own list")"
-
-echo "case: blank lines, a carriage return and the blanks around a term are dropped"
-root=$(fixture term-blanks)
-padded=$(printf '\n  %s  \r\n\n\t\n' "$planted")
-run_check_as pull_request "$padded" "$root"
-check "a clean tree passes, so no empty pattern matched every line" "$(is "$status" 0)"
-check "counts the one term" "$(contains "$out" '(1 terms)')"
-printf 'the %s notes\n' "$planted" > "$root/docs/notes.md"
-run_check_as pull_request "$padded" "$root"
-check "the trimmed term still fails" "$(is "$status" 1)"
-
-echo "case: a path holding a term is refused, and the log masks it"
-root=$(fixture term-path)
-mkdir -p "$root/docs/runbooks"
-printf 'clean text\n' > "$root/docs/runbooks/$planted-steps.md"
-git -C "$root" add docs/runbooks
-run_check "$root"
-check "a file name holding a term fails" "$(is "$status" 1)"
-check "names the directory it is in" \
-  "$(contains "$out" "^::error::docs/runbooks/<name>: names a term of the deployment's own list (PRIVATE_NAME_TERMS) in its path\$")"
-check "does not print the term" "$(is "$(names_planted "$out")" false)"
-
-root=$(fixture term-owner-path)
-mkdir -p "$root/docs/${planted_owner^^}"
-printf 'see %s\n' "$planted_owner" > "$root/docs/${planted_owner^^}/notes.md"
-git -C "$root" add docs
-run_check "$root"
-check "a term that spans two directories fails" "$(is "$status" 1)"
-check "masks it where it stands in a line's annotation" \
-  "$(contains "$out" "^::error file=docs/<name>/notes.md,line=1::docs/<name>/notes.md:1: names a term")"
-check "and in the path's own report" "$(contains "$out" "^::error::docs/<name>/notes.md: names a term")"
-check "prints neither half of it" "$(is "$(names_planted "$out")" false)"
-
-echo "case: an unset or empty list on a pull request's events warns, and keeps the other rules' exit"
-root=$(fixture terms-unset-pr)
-unset_warning='^::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty, so only the'
-for event in pull_request pull_request_review; do
-  run_check_as "$event" - "$root"
-  check "$event, unset: exits 0" "$(is "$status" 0)"
-  check "$event, unset: warns that only the rules the script spells ran" "$(contains "$out" "$unset_warning")"
-done
-run_check_as pull_request "" "$root"
-check "an empty list exits 0 and warns the same way" \
-  "$(is "$status:$(contains "$out" "$unset_warning")" 0:true)"
-run_check_as pull_request "$(printf '\n \n\t')" "$root"
-check "a list of blank lines is an empty one" "$(is "$status:$(contains "$out" "$unset_warning")" 0:true)"
-run_check_as - - "$root"
-check "outside Actions, an unset list warns too" "$(is "$status:$(contains "$out" "$unset_warning")" 0:true)"
-printf '%s\n' "$key-7" > "$root/docs/notes.md"
-run_check_as pull_request - "$root"
-check "a hit of the rules the script spells still fails" "$(is "$status" 1)"
-check "and still warns" "$(contains "$out" "$unset_warning")"
-check "names the hit" "$(contains "$out" 'docs/notes.md:1: names the private deployment repository')"
-
-echo "case: an unset list on the merge queue, a push or a dispatched run fails before it scans"
-root=$(fixture terms-unset-queue)
-for event in merge_group push workflow_dispatch; do
-  run_check_as "$event" - "$root"
-  check "$event, unset: exits 2" "$(is "$status" 2)"
-  check "$event, unset: says the list is missing" \
-    "$(contains "$out" "^::error::check-private-names: PRIVATE_NAME_TERMS is unset or empty on a $event run")"
-done
-run_check_as merge_group "" "$root"
-check "merge_group, empty: exits 2" "$(is "$status" 2)"
-run_check_as merge_group "$planted_terms" "$root"
-check "merge_group with the list exits 0, so the failure above is the missing list" "$(is "$status" 0)"
-printf '%s\n' "$key-7" > "$root/docs/notes.md"
-run_check_as merge_group - "$root"
-check "merge_group, unset, over a tree with a hit: still exits 2" "$(is "$status" 2)"
-check "and reports no finding, having scanned nothing" "$(is "$(contains "$out" 'finding(s)')" false)"
-
-# write_pr_text <title> <body> <commit message> [branch] [author email] [committer email]: writes
-# the fixture check-pr-text.sh reads as CI runs it. A pull_request event payload carries the head
-# the run checks (its base and head sha, and its one commit); the stand-in `gh` answers the pull
-# request route with the title, body and branch name the pull request has now (`$work/pull`, the
-# event's own unless a case rewrites it); and it answers the compare route for exactly that
-# base...head with that commit (message, author and committer) in the route's own JSON shape, so
-# the real `.commits[] | .commit.message, …`
-# filter that feeds the required check runs for real, rather than a filter the stub fakes. It
-# matches that URL whole and refuses a call without --paginate, so losing either paging token
-# fails every case below instead of passing on a list GitHub cut short at 250 commits. It answers
-# the pull request's three comment routes (issue comments, reviews and review comments), which
-# report no total, one page of 100 at a time: page N of each is `$work/<route>.N` (`comments`,
-# `reviews` or `review-comments`), and a page no case wrote is an empty list, as GitHub answers past
-# the last. The stub also answers the pull request's own commits route, which reads whatever head
-# the pull request has by then: the same commit, until the mid-run-push case appends a later one
-# that names a private thing. A case rewrites `$work/compare` (one JSON object per page, as
-# `gh api --paginate` prints them), `$work/pr-commits` or a comment route's pages, then calls
-# run_pr_text, which runs the script and sets `out` and `status`; the stub logs each call it
-# answers to `$work/calls`.
-mkdir -p "$work/bin"
-cat > "$work/bin/gh" <<'GH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$PR_TEXT_TEST_DIR/calls"
-# page <route> <url>: the page of a comment route the url's `page=N` asks for.
-page() {
-  local file="$PR_TEXT_TEST_DIR/$1.${2##*&page=}"
-  if [ -e "$file" ]; then cat "$file"; else echo '[]'; fi
-}
-case "$1 $2" in
-  "api repos/example/repo/compare/base-sha...event-head-sha?per_page=100")
-    [[ " $* " == *" --paginate "* ]] || { echo "compare route read without --paginate: $*" >&2; exit 3; }
-    cat "$PR_TEXT_TEST_DIR/compare" ;;
-  "api repos/example/repo/issues/7/comments?per_page=100&page="[1-9]*) page comments "$2" ;;
-  "api repos/example/repo/pulls/7/reviews?per_page=100&page="[1-9]*) page reviews "$2" ;;
-  "api repos/example/repo/pulls/7/comments?per_page=100&page="[1-9]*) page review-comments "$2" ;;
-  "api repos/example/repo/pulls/7/commits") cat "$PR_TEXT_TEST_DIR/pr-commits" ;;
-  "api repos/example/repo/pulls/7") cat "$PR_TEXT_TEST_DIR/pull" ;;
-  *) echo "unexpected gh call: $*" >&2; exit 3 ;;
-esac
-GH
-chmod +x "$work/bin/gh"
-# pr_commit <message> [author email] [committer email]: one commit as both routes list it.
-pr_commit() {
-  jq -nc --arg msg "$1" --arg author_email "${2:-dev@example.com}" \
-    --arg committer_email "${3:-dev@example.com}" \
-    '{commit: {message: $msg, author: {name: "Dev", email: $author_email},
-               committer: {name: "Dev", email: $committer_email}}}'
-}
-write_pr_text() {
-  local title=$1 body=$2 message=$3 branch=${4:-fix/keep-the-order} commit
-  commit=$(pr_commit "$message" "${5:-}" "${6:-}")
-  jq -nc --argjson commit "$commit" '{total_commits: 1, commits: [$commit]}' > "$work/compare"
-  jq -nc --argjson commit "$commit" '[$commit]' > "$work/pr-commits"
-  printf '%s' "$body" > "$work/pr-body"
-  jq -n --arg title "$title" --arg branch "$branch" --rawfile body "$work/pr-body" \
-    '{pull_request: {number: 7, title: $title, commits: 1,
-                      head: {ref: $branch, sha: "event-head-sha"}, base: {sha: "base-sha"},
-                      body: (if $body == "" then null else $body end)}}' \
-    > "$work/event.json"
-  jq '.pull_request' "$work/event.json" > "$work/pull"
-  rm -f "$work"/comments.* "$work"/reviews.* "$work"/review-comments.*
-}
-run_pr_text() {
-  if [ $# -gt 0 ]; then write_pr_text "$@"; fi
-  : > "$work/calls"
-  set +e
-  out=$(GITHUB_EVENT_PATH="$work/event.json" GITHUB_REPOSITORY=example/repo \
-    PR_TEXT_TEST_DIR="$work" PATH="$work/bin:$PATH" "$pr_text_script" 2>&1)
-  status=$?
-  set -e
-}
-# app: who posted an item a case writes, unless the case says otherwise: an App installed on the
-# repository, which posts as a Bot, with the association every Legion App's comments carry here.
-app='{"user": {"login": "dev-app[bot]", "type": "Bot"}, "author_association": "CONTRIBUTOR"}'
-# items <id> <body> [<id> <body>...]: one page of a comment route, each item its id, body and
-# author (app) in the route's own JSON shape.
-items() {
-  local list='[]'
-  while [ $# -gt 0 ]; do
-    list=$(jq -c --argjson id "$1" --arg body "$2" --argjson author "$app" \
-      '. + [{id: $id, body: $body} + $author]' <<< "$list")
-    shift 2
-  done
-  printf '%s\n' "$list"
-}
-# by <login> <type> <association> <page> [index]: rewrites a page's items (only the one at index,
-# when given) as posted by that author.
-by() {
-  local filter='map(author)'
-  if [ $# -gt 4 ]; then filter=".[$5] |= author"; fi
-  jq -c --arg login "$1" --arg type "$2" --arg association "$3" \
-    "def author: .user = {login: \$login, type: \$type} | .author_association = \$association; $filter" \
-    "$4" > "$4.next"
-  mv "$4.next" "$4"
-}
-# as_review_event: rewrites the fixture's pull_request payload as a pull_request_review one,
-# which carries the pull request whole beside the review.
-as_review_event() {
-  jq '. + {action: "submitted", review: {id: 201, body: "Approved."}}' "$work/event.json" \
-    > "$work/event.next"
-  mv "$work/event.next" "$work/event.json"
-}
-
-
 echo "case: a pull request's title, body, branch name and commits, which reach main and its release notes"
 run_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 check "a clean title, body and commits pass" "$(is "$status" 0)"
@@ -827,7 +514,6 @@ run_pr_text "fix(dispatch): keep the inbox order" "$long_body" "fix: keep the or
 check "a body larger than one environment variable may hold is read" "$(is "$status" 0)"
 
 echo "case: a pull request's issue comments, reviews and review comments, public on its page"
-clean_pr() { write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"; }
 clean_pr
 items 101 "Looks good." 102 "$(printf 'Two lines.\nThe second is clean too.')" > "$work/comments.1"
 items 201 "Approved." 202 "" > "$work/reviews.1"
@@ -975,46 +661,5 @@ check "a stranger's clean comment after an App's red one still fails, so it clea
 check "names the App's comment" "$(contains "$out" 'comment:405:1: names the company')"
 check "skips the stranger's" "$(contains "$out" '^skipped comment:406: author drive-by (NONE) is not trusted$')"
 
-echo "case: a pull request's text naming a term of the deployment's own list"
-run_pr_text "fix(dispatch): keep the inbox order" "$(printf 'Line one.\nThe %s runbook says so.\n' "$planted")" \
-  "fix: keep the order"
-check "a body naming a term fails" "$(is "$status" 1)"
-check "names the body's line" "$(contains "$out" "body:2: names a term of the deployment's own list (PRIVATE_NAME_TERMS)")"
-check "does not print the term" "$(is "$(names_planted "$out")" false)"
-
-run_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order" "fix/$planted-steps"
-check "a branch naming a term fails" "$(is "$status" 1)"
-check "names the branch" "$(contains "$out" 'branch:1: names a term')"
-check "does not print the term" "$(is "$(names_planted "$out")" false)"
-
-clean_pr
-items 101 "Looks good." 102 "Owned by ${planted_owner^^}." > "$work/comments.1"
-run_pr_text
-check "an issue comment naming a term fails" "$(is "$status" 1)"
-check "names the comment by its id and line" "$(contains "$out" 'comment:102:1: names a term')"
-check "prints neither half of the term" "$(is "$(names_planted "$out")" false)"
-
-echo "case: a pull request's text with the list unset, on a pull request and on the merge queue"
-clean_pr
-GITHUB_EVENT_NAME=pull_request PRIVATE_NAME_TERMS='' run_pr_text
-check "a pull request's run passes clean text" "$(is "$status" 0)"
-check "and warns that the list did not run" "$(contains "$out" "$unset_warning")"
-clean_pr
-GITHUB_EVENT_NAME=merge_group PRIVATE_NAME_TERMS='' run_pr_text
-check "a merge group's run fails with exit 2, the pr-title job's failure" "$(is "$status" 2)"
-check "says the list is missing" \
-  "$(contains "$out" '::error::check-private-names: PRIVATE_NAME_TERMS is unset or empty on a merge_group run')"
-
-echo "case: the suite's own output never names a private thing"
-exec 1>&3 2>&4
-wait "$tee_pid" 2> /dev/null || true
-suite_status=0
-"$check_script" "$self_log" > /dev/null 2>&1 || suite_status=$?
-check "the suite's own PASS/FAIL log names no term a case planted" "$(is "$suite_status" 0)"
-job_status=0
-GITHUB_EVENT_NAME=$job_event PRIVATE_NAME_TERMS=$job_terms "$check_script" "$self_log" > /dev/null 2>&1 ||
-  job_status=$?
-check "the suite's own PASS/FAIL log passes the guard under the job's own event and term list" \
-  "$(is "$job_status" 0)"
-
+finish_self_log
 summary "check-private-names.sh"
