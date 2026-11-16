@@ -1965,6 +1965,37 @@ So after the rollback a merger learns of a removal only when it reads the pull r
 The kind check keeps both names after the rollback, and the rollback needs no statement for it: an earlier release never writes either kind, so the check refuses nothing that release writes.
 This release's one-time start of the mergers that the `awaiting_merge` cutover left stopped ([Idle release](#idle-release)) adds no outbox kind and no payload field, and its one `processed_events` row is harmless to a rollback.
 
+#### Rolling back the release that publishes each issue's role sessions to Dispatch
+
+This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
+That migration writes the whole list, and its version stands above `20261114031356`, so it writes the list last on any database.
+A `role_holders_publish` row publishes the session of each live role of one issue to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
+The daemon queues one at the boot ready of a claim, at each end of a claim and at each boot.
+The migration changes no column.
+
+The daemon and Dispatch deploy in either order.
+A Dispatch without the route answers `404 NOT_FOUND`, and the daemon retries the row until Dispatch has the route.
+
+**The session of an ended claim keeps its role for a time.**
+It keeps its role until the daemon's publication of the end lands.
+The daemon queues that publication on a goroutine, and it only logs a queue that fails.
+Such an end reaches Dispatch only at the next boot of the daemon, or at the next ready or end of a claim on the same issue.
+In that time, a process whose stop failed can still write with the pane's Dispatch bearer, because a failed claim and a suspended claim can let go of such a process.
+
+**The rows of the new kind must go before the earlier image is pinned.**
+An earlier release puts the kind in no outbox lane, so it never runs such a row, and the row runs only at the roll forward.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+-- The publication of an issue's role sessions to Dispatch.
+delete from outbox where kind = 'role_holders_publish';
+```
+
+While no Dispatch release reads `issue_role_holders` to record a result, the rollback costs nothing.
+After such a release is live, an earlier daemon publishes nothing, and each new or relaunched session records its results with no role.
+So roll Dispatch back first, to the release before that one, and then roll back the daemon.
+The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.

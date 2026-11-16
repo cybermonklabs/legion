@@ -2314,6 +2314,12 @@ Nothing updates a row — another run is another row — and a table check refus
 `check_results_check` serves the Verification tab's read of one check's results newest first, and `check_results_issue` an issue's own reads.
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
+Migration `20261116163813_issue_role_holders` creates `issue_role_holders`, the session that holds each Legion role of an issue, which the Legion daemon publishes (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
+The key is `(issue_key, role)`, and a unique index on `(issue_key, session)` keeps a session to one role of an issue.
+The `role` check names the six Legion roles, and a row goes with its issue.
+A later release reads the table in the write transaction of a result, so that the stored role of a result is the role that its session holds.
+A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
+
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
 this table holds open ones too, by any author and in any repository, one row per pull request.
@@ -4360,6 +4366,33 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/handoffs/{phase}/latest` (GET; cookie, trusted header, or bearer)
 
   The phase's newest handoff with its body, byte for byte as written; `404 HANDOFF_NOT_FOUND` when it has none.
+
+- `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; only the Legion daemon's session)
+
+  Publish the session that holds each Legion role of the issue: `{holders: [{role, session}], actor}`.
+  The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`.
+  The body is the whole set of the issue, and `[]` is an issue where no session holds a role.
+  The write replaces the stored set, so a session that the body does not name holds no role of the issue.
+  A pair that did not change keeps its `recorded_at`.
+  Only the Legion daemon of the issue's project writes the set, as session `legion-daemon:<project>`, the key up to its first `-`.
+  Every other caller is `403 ROLE_HOLDER_FORBIDDEN`.
+  This check reads the actor that the body names, so a caller that holds the deployment's bearer can name that session too.
+  The airlock closes that case.
+  A body without `holders`, a role that is not one of the six, a role or a session named twice and an empty session are each `400 INVALID_ROLE_HOLDER`.
+  An issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
+  The write takes a closed issue, appends no issue event and notifies nobody.
+  The answer is `200 {issue, holders}`, each holder `{role, session, recorded_at}`, in workflow order.
+
+  The daemon publishes the set when a claim readies, when a claim ends and at each boot.
+  The session of an ended claim keeps its role until the next publication lands.
+  The daemon queues the publication of an end on a goroutine, and it only logs a queue that fails.
+  Such an end reaches Dispatch only at the next boot of the daemon, or at the next ready or end of a claim on the same issue.
+  In that time, a process whose stop failed can still write with the pane's Dispatch bearer, and its session keeps its role.
+
+- `/api/v1/issues/{key}/role-holders` (GET; cookie, trusted header, or bearer)
+
+  The set that the daemon last published: `{issue, holders}` in workflow order, and `[]` when no session holds a role.
+  A closed issue reads too, and an issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
 
 - `/api/v1/handoffs/{id}` (GET; cookie, trusted header, or bearer)
 

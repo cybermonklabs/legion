@@ -356,6 +356,17 @@ Each item below names a task and where its code is, then notes on it.
   A write is keyed: a repeat under the same `Idempotency-Key` is answered the first call's `201` and records no second version.
   Shapes: `Handoff`, `HandoffSummary`, `HandoffRecordedPayload` in `packages/contracts/src/dispatch-api.ts`
 
+- **The session that holds each role of an issue**: `internal/dispatch/api/issue_role_holders.go`, `store/migrations/20261116163813_issue_role_holders.up.sql`
+
+  The Legion daemon publishes the live role sessions of an issue with `PUT /api/v1/issues/{key}/role-holders`, as session `legion-daemon:<project>`.
+  Every other caller is `403 ROLE_HOLDER_FORBIDDEN`.
+  The body is the issue's whole set, and the write replaces the stored set, so a session that the body does not name holds no role of the issue.
+  The write appends no event, notifies nobody and takes a closed issue, and `GET` answers the set in workflow order.
+  `heldRole` is the read that a later release of the results route makes in its own write transaction.
+  The session of an ended claim keeps its role until the daemon's next publication lands.
+  An end whose queue failed reaches Dispatch only at the next boot of the daemon, or at the next ready or end on the same issue.
+  In that time, a process whose stop failed can still write with the pane's Dispatch bearer.
+
 - **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
 
   `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
