@@ -296,10 +296,20 @@ func TestHelperSignerSignsRequestObjects(t *testing.T) {
 	}
 }
 
+// fixedLauncher makes nearestLauncher answer pid for this test: every register without --exec
+// asks it which ancestor to pin, and a test process is not started by a session launcher.
+func fixedLauncher(t *testing.T, pid int) {
+	t.Helper()
+	previous := nearestLauncher
+	nearestLauncher = func() (int, error) { return pid, nil }
+	t.Cleanup(func() { nearestLauncher = previous })
+}
+
 // TestRegisterWithoutExecPrintsRuntimeEnrollmentState covers register's contract without
 // --exec: "<runtime_id>\t<enrollment_id>\t<state>" on stdout, exit 0.
 func TestRegisterWithoutExecPrintsRuntimeEnrollmentState(t *testing.T) {
-	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolled"})
+	fixedLauncher(t, 4242)
+	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolled", RootPID: 4242})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
 	var stdout, stderr bytes.Buffer
 	code := cmdRegister(nil, &stdout, &stderr)
@@ -311,10 +321,53 @@ func TestRegisterWithoutExecPrintsRuntimeEnrollmentState(t *testing.T) {
 	}
 }
 
+// TestRegisterSendsTheNearestLauncherAsRoot: without --exec the client names the session
+// launcher it found above itself as the root to pin, since its own process ends with the
+// command. The field goes on the wire as root_pid.
+func TestRegisterSendsTheNearestLauncherAsRoot(t *testing.T) {
+	fixedLauncher(t, 4242)
+	sock, reqs := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled", RootPID: 4242})
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
+	var stdout, stderr bytes.Buffer
+	if code := cmdRegister([]string{"--session-id", "s"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("register --session-id: exit %d, stderr %q", code, stderr.String())
+	}
+	select {
+	case req := <-reqs:
+		if req.Op != "register" || req.RootPID != 4242 {
+			t.Fatalf("the request the helper saw: %+v; want register with root_pid 4242", req)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the fake helper saw no request")
+	}
+	wire, err := json.Marshal(helper.Request{Op: "register", RootPID: 4242})
+	if err != nil || !strings.Contains(string(wire), `"root_pid":4242`) {
+		t.Fatalf("the field goes on the wire as root_pid: %s %v", wire, err)
+	}
+}
+
+// TestRegisterRefusesAHelperThatPinnedAnotherRoot: a helper from before this change pins the
+// caller, which ends with the command, and says nothing about the root it pinned. Its `enrolled`
+// is never printed as success: the command refuses, naming the helper and the relaunch.
+func TestRegisterRefusesAHelperThatPinnedAnotherRoot(t *testing.T) {
+	fixedLauncher(t, 4242)
+	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled"})
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
+	var stdout, stderr bytes.Buffer
+	code := cmdRegister([]string{"--session-id", "s"}, &stdout, &stderr)
+	if code != 1 || stdout.String() != "" {
+		t.Fatalf("register against a helper that names no root: exit %d, stdout %q, stderr %q; want 1 and nothing on stdout", code, stdout.String(), stderr.String())
+	}
+	if msg := stderr.String(); !strings.Contains(msg, sock) || !strings.Contains(msg, "register --exec") {
+		t.Fatalf("the refusal names the helper's socket and --exec: %q", msg)
+	}
+}
+
 // TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled covers "exits 1 if --wait was given
 // and state isn't enrolled".
 func TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled(t *testing.T) {
-	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolling", Error: "waiting on approver"})
+	fixedLauncher(t, 4242)
+	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolling", Error: "waiting on approver", RootPID: 4242})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
 	var stdout, stderr bytes.Buffer
 	code := cmdRegister([]string{"--wait", "1"}, &stdout, &stderr)
@@ -328,11 +381,12 @@ func TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled(t *testing.T) {
 // ($XDG_RUNTIME_DIR/agent-secrets/helper.sock) with AGENT_SECRETS_HELPER_SOCK unset: a machine set
 // up by starting the helper with no settings registers its sessions without exporting the variable.
 func TestRegisterFindsTheHelperOnItsDefaultSocket(t *testing.T) {
+	fixedLauncher(t, 4242)
 	runtimeDir := shortTempDir(t)
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
 	reqs := fakeHelperAt(t, filepath.Join(runtimeDir, "agent-secrets", "helper.sock"),
-		helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolled"})
+		helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolled", RootPID: 4242})
 	var stdout, stderr bytes.Buffer
 	if code := cmdRegister(nil, &stdout, &stderr); code != 0 {
 		t.Fatalf("register with only the default socket: exit %d, stderr %q", code, stderr.String())
@@ -403,7 +457,7 @@ func TestRegisterExecWarnsWhenWaitedButNotEnrolled(t *testing.T) {
 	}
 }
 
-// TestRegisterExecRunsTheCommandAsTheRegisteredPid lives in hostmode_linux_test.go (//go:build
+// TestRegisterExecStillPinsTheReplacedProcess lives in hostmode_linux_test.go (//go:build
 // linux): it needs fakeHelperWithPids, which pins the connecting pid with helper.PeerOf
 // (SO_PEERPIDFD, Linux-only).
 

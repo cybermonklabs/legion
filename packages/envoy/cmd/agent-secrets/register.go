@@ -9,6 +9,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -80,10 +81,37 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 		return exitUsageError
 	}
 
-	resp, err := registerWithPatience(sock, *wait, *sessionID, helperConnectPatience)
+	// Without --exec the register command's own process ends with the command, so the session's
+	// root is the launcher above it, not this process (dispatch://INFRA-3890). With no launcher
+	// above it, a session registered here would end with the command, so refuse rather than
+	// print `enrolled` for an identity nothing can use. With --exec nothing of this runs: the
+	// caller's pid is the process --exec replaces, which is the session's root.
+	rootPID := 0
+	if !*doExec {
+		launcher, err := nearestLauncher()
+		if err != nil {
+			if errors.Is(err, errNoLauncher) {
+				fmt.Fprintln(stderr, "agent-secrets register: no session launcher (omp) is an ancestor of this process, so a session registered here would end with this command; relaunch the session under agent-secrets register --exec -- omp …")
+			} else {
+				fmt.Fprintf(stderr, "agent-secrets register: finding the session launcher above this process: %v\n", err)
+			}
+			return 1
+		}
+		rootPID = launcher
+	}
+
+	resp, err := registerWithPatience(sock, *wait, *sessionID, rootPID, helperConnectPatience)
 	if !*doExec {
 		if err != nil {
 			fmt.Fprintf(stderr, "agent-secrets register: %v\n", err)
+			return 1
+		}
+		// A helper that pinned the launcher this command named answers the root it pinned; one
+		// from before this task pins the caller and names no root. Its `enrolled` is never
+		// printed as success, since the process it pinned has ended: refuse, and say to restart
+		// the helper or relaunch the session under --exec.
+		if resp.RootPID != rootPID {
+			fmt.Fprintf(stderr, "agent-secrets register: the agent-secrets-helper at %s did not attach the session to its launcher (it is from before this fix); restart it on this release, or relaunch the session under agent-secrets register --exec -- omp …\n", sock)
 			return 1
 		}
 		fmt.Fprintf(stdout, "%s\t%s\t%s\n", resp.RuntimeID, resp.EnrollmentID, resp.State)
@@ -123,12 +151,12 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 // with the user manager at boot), for patience at most, and retries a DRAINING answer (a helper
 // install is about to restart) until the larger of patience and the --wait seconds has passed, so
 // the session registers with the restarted helper rather than launching with no broker identity.
-func registerWithPatience(sock string, wait int, sessionID string, patience time.Duration) (helper.Response, error) {
+func registerWithPatience(sock string, wait int, sessionID string, rootPID int, patience time.Duration) (helper.Response, error) {
 	start := time.Now()
 	deadline := start.Add(patience)
 	drainDeadline := start.Add(max(patience, time.Duration(wait)*time.Second))
 	for {
-		req := helper.Request{Op: "register", WaitSeconds: wait}
+		req := helper.Request{Op: "register", WaitSeconds: wait, RootPID: rootPID}
 		if sessionID != "" {
 			req.SessionID = &sessionID
 		}

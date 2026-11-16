@@ -4,6 +4,7 @@
 package helper
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -52,6 +53,102 @@ func PinPID(pid int) (*Peer, error) {
 		return nil, fmt.Errorf("pidfd_open(%d): %w", pid, err)
 	}
 	return &Peer{pidfd: fd}, nil
+}
+
+// errPeerGone is the caller's pid read again, after a walk, as a different process (or none):
+// the kernel may reuse a pid number while a pidfd is open (Peer's doc comment), so a walk's
+// result is trusted only while the peer still reads as the pid it was identified as.
+var errPeerGone = errors.New("the peer no longer matches the identified pid")
+
+// OpenAncestor pins the process root as the session root a peer's register asks for: a live,
+// strict ancestor of the calling process that the same login owns. It is how a session outlives
+// the command that registers it — `agent-secrets register --session-id` run from inside a
+// session the launcher never registered pins the launcher, not its own process, which ends with
+// the command (dispatch://INFRA-3890).
+//
+// Every check runs while peer's pidfd holds the caller still, and the caller's pid is read again
+// at the end, since the ancestry walk and the /proc reads all ran while the kernel could reuse
+// either pid number. The root's start ticks are read before and after its own pidfd is opened
+// for the same reason: a pid replaced between the walk and the pin would otherwise be pinned as
+// the session's root. Any failure is an error and no session: a register this refuses is one
+// whose caller is told so, never one answered for another process.
+func OpenAncestor(peer *Peer, root int) (*Peer, error) {
+	return openAncestor(peer, root, procParent, processUID)
+}
+
+// openAncestor is OpenAncestor with the parent and owner lookups a test can replace.
+func openAncestor(peer *Peer, root int, parent func(int) (int, error), owner func(int) (uint32, error)) (*Peer, error) {
+	pid := peer.PID()
+	if pid == 0 {
+		return nil, errPeerGone
+	}
+	switch {
+	case root <= 1:
+		return nil, fmt.Errorf("pid %d is no session root: a session's root is a process of this login, never init or the kernel", root)
+	case root == pid:
+		return nil, fmt.Errorf("pid %d is the calling process itself, not the launcher above it", root)
+	}
+	in, err := descendsFrom(pid, root, parent)
+	if err != nil {
+		return nil, fmt.Errorf("the ancestry of pid %d: %w", pid, err)
+	}
+	if !in {
+		return nil, fmt.Errorf("pid %d is not an ancestor of the calling process %d", root, pid)
+	}
+	callerUID, err := owner(pid)
+	if err != nil {
+		return nil, fmt.Errorf("reading the owner of pid %d: %w", pid, err)
+	}
+	rootUID, err := owner(root)
+	if err != nil {
+		return nil, fmt.Errorf("reading the owner of pid %d: %w", root, err)
+	}
+	if rootUID != callerUID {
+		return nil, fmt.Errorf("pid %d is uid %d's, not the calling process's own uid %d: a session's root is a process of the login that registers it", root, rootUID, callerUID)
+	}
+	ticks, err := StartTicks(root)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := PinPID(root)
+	if err != nil {
+		return nil, err
+	}
+	again, err := StartTicks(root)
+	if err != nil || again != ticks || opened.PID() != root {
+		opened.Close()
+		return nil, fmt.Errorf("pid %d was replaced while this register was being answered", root)
+	}
+	if peer.PID() != pid {
+		opened.Close()
+		return nil, errPeerGone
+	}
+	return opened, nil
+}
+
+// processUID is the real uid of pid, as /proc/<pid>/status's Uid line names it (real,
+// effective, saved, filesystem; the first).
+func processUID(pid int) (uint32, error) {
+	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return 0, err
+	}
+	for line := range strings.SplitSeq(string(status), "\n") {
+		rest, ok := strings.CutPrefix(line, "Uid:")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			break
+		}
+		uid, err := strconv.ParseUint(fields[0], 10, 32)
+		if err != nil {
+			return 0, fmt.Errorf("/proc/%d/status names the uid %q: %w", pid, fields[0], err)
+		}
+		return uint32(uid), nil
+	}
+	return 0, fmt.Errorf("/proc/%d/status names no Uid", pid)
 }
 
 // PID is the pinned pid, or 0 once the process has been reaped: the kernel writes `Pid: -1`

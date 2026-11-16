@@ -36,6 +36,10 @@ type Request struct {
 	Thumbprint      string   `json:"thumbprint,omitempty"`       // enroll-session-key: the session key's thumbprint
 	SessionID       *string  `json:"session_id,omitempty"`       // enroll-session-key: optional registry session id; register: the omp session id this session is to be known by
 	EnrollmentID    string   `json:"enrollment_id,omitempty"`    // unenroll-session-key: which enrollment to end
+	// RootPID is register only, and only without --exec: the launcher ancestor of the caller
+	// the helper is to pin as the session's root, since the caller's own process ends with the
+	// command. Zero (--exec, and every client from before this field) pins the caller.
+	RootPID int `json:"root_pid,omitempty"`
 }
 
 // Response is the helper's one line. Code and Error are set only when OK is false, except that
@@ -43,11 +47,15 @@ type Request struct {
 // Code NO_CREDENTIAL while the helper holds no launcher credential to enroll it with), and a
 // login/login-status reply carries the confirmation code in Code while OK is true.
 type Response struct {
-	OK                  bool          `json:"ok"`
-	Code                string        `json:"code,omitempty"`
-	Error               string        `json:"error,omitempty"`
-	EnrollmentID        string        `json:"enrollment_id,omitempty"`
-	RuntimeID           string        `json:"runtime_id,omitempty"`
+	OK           bool   `json:"ok"`
+	Code         string `json:"code,omitempty"`
+	Error        string `json:"error,omitempty"`
+	EnrollmentID string `json:"enrollment_id,omitempty"`
+	RuntimeID    string `json:"runtime_id,omitempty"`
+	// RootPID is register only: the pid the session's root is, so a client can see that the
+	// helper pinned the launcher it named rather than the caller. A helper from before this
+	// field sends none, and a client that named a root refuses such an answer.
+	RootPID             int           `json:"root_pid,omitempty"`
 	Operator            string        `json:"operator,omitempty"`
 	State               string        `json:"state,omitempty"`                 // register: enrolling | enrolled
 	VerificationURI     string        `json:"verification_uri,omitempty"`      // login: where a person types the code, the broker's device authorization verification_uri; empty from a helper before this field

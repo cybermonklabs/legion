@@ -289,6 +289,16 @@ start each agent as a machine session, so the helper signs for it:
 agent-secrets register --wait 10 --exec -- <agent command>
 ```
 
+A session whose launcher learns its omp session id only after the agent starts (omp opens its
+transcript seconds in) registers unnamed with `--exec` and then runs `agent-secrets register
+--session-id <id>` again from inside the session, so the session keeps one broker identity across a
+restart of the helper or the machine. Run without `--exec`, `register` attaches the session to the
+launcher (`omp`) above the process that runs it, not to that process, which ends with the command;
+it prints `enrolled` only once the launcher is pinned. With no `omp` launcher above it, or against a
+helper from before this (one that would pin the ended command), it refuses with exit 1 and says to
+relaunch the session under `register --exec -- omp …`, rather than print `enrolled` for an identity
+nothing can use.
+
 A Kubernetes pod or a Google Cloud VM does not use the helper or a person's approval: the Legion
 daemon enrolls its pods with their service-account tokens, and a VM enrolls itself (above). The
 docs site's [Log a machine in](https://cybermonklabs.github.io/legion/broker/guides/log-a-machine-in/)

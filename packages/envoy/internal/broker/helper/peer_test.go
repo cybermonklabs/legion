@@ -23,6 +23,55 @@ func sleeper(t *testing.T) *exec.Cmd {
 	return cmd
 }
 
+// TestOpenAncestorPinsAStrictAncestorOfThePeer: the helper takes as a session root only a live,
+// strict ancestor of the calling process that this same user owns. The peer here is a child of
+// this test process, which is its ancestor; a sibling, the peer itself, pid 1 and a pid that is
+// not there are each refused, and so is an ancestor another login owns — a `login` or `sudo`
+// above this one would otherwise be pinnable as a session root by any process under it.
+func TestOpenAncestorPinsAStrictAncestorOfThePeer(t *testing.T) {
+	child := sleeper(t)
+	sibling := sleeper(t)
+	peer, err := PinPID(child.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+
+	root, err := openAncestor(peer, os.Getpid(), procParent, processUID)
+	if err != nil {
+		t.Fatalf("the peer's own parent must be pinnable as its session root: %v", err)
+	}
+	if got := root.PID(); got != os.Getpid() {
+		t.Fatalf("the pinned root is %d, want this process %d", got, os.Getpid())
+	}
+	root.Close()
+
+	for _, tc := range []struct {
+		name string
+		root int
+		uid  func(int) (uint32, error)
+	}{
+		{"a sibling", sibling.Process.Pid, processUID},
+		{"the peer itself", child.Process.Pid, processUID},
+		{"pid 1", 1, processUID},
+		{"a pid that is not there", 1 << 22, processUID},
+		{"an ancestor another login owns", os.Getpid(), func(pid int) (uint32, error) {
+			if pid == os.Getpid() {
+				return 4242, nil
+			}
+			return processUID(pid)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, err := openAncestor(peer, tc.root, procParent, tc.uid)
+			if err == nil {
+				root.Close()
+				t.Fatalf("openAncestor(%s) must refuse", tc.name)
+			}
+		})
+	}
+}
+
 // TestDescendsFromRealProcesses: descendsFrom over /proc says a child descends from its parent and
 // a process from itself, never a parent from its child or pid 1 from anything, and every one of
 // those real walks reaches root or init without an error.

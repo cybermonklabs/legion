@@ -164,7 +164,7 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 		if req.SessionID != nil {
 			sessionID = *req.SessionID
 		}
-		resp = s.register(ctx, peer, pid, sessionID, wait)
+		resp = s.register(ctx, peer, pid, sessionID, req.RootPID, wait)
 	case "sign":
 		// sign and unregister keep peer's pidfd open through Registry.Root's ancestry walk too,
 		// for the same pid-reuse reason register does (see register's doc comment below); each
@@ -377,7 +377,7 @@ const sessionGoneMsg = "the session this process was in ended before this regist
 // never publishes a session another request or a Save beside it could see. An identity taken
 // by a registration that then fails is an identity nothing can ever reclaim, and a session
 // published before it is certain is one a restart could re-pin for a stranger.
-func (s *Server) register(ctx context.Context, peer *Peer, pid int, sessionID string, wait time.Duration) Response {
+func (s *Server) register(ctx context.Context, peer *Peer, pid int, sessionID string, rootPID int, wait time.Duration) Response {
 	if existing := s.Registry.Root(pid); existing != nil {
 		if peer.PID() != pid {
 			peer.Close()
@@ -388,6 +388,22 @@ func (s *Server) register(ctx context.Context, peer *Peer, pid int, sessionID st
 			return resp
 		}
 		return s.registerReply(existing, wait)
+	}
+	// With no session for the caller yet and a launcher named, the session's root is that
+	// launcher, not the caller: the caller runs `agent-secrets register --session-id` and
+	// exits, so a session rooted at it would end with the command, and the identity would be
+	// nobody's. OpenAncestor pins the launcher — a live, strict
+	// ancestor of this login's — and the caller's own peer is done with. With no root named
+	// (`--exec`, and every client from before the field) the caller's pid is the root, as
+	// before: `--exec` replaces the caller with the agent, so the pid pinned is the one the
+	// session runs as.
+	if rootPID != 0 {
+		root, err := OpenAncestor(peer, rootPID)
+		peer.Close()
+		if err != nil {
+			return Response{Code: CodeBadRequest, Error: err.Error()}
+		}
+		peer, pid = root, rootPID
 	}
 	ticks, err := StartTicks(pid)
 	if err != nil {
@@ -638,7 +654,7 @@ func (s *Server) registerReply(sess *Session, wait time.Duration) Response {
 		return Response{Code: CodeNotASession, Error: sessionGoneMsg}
 	}
 	st := sess.snapshot()
-	resp := Response{OK: true, EnrollmentID: st.EnrollmentID, RuntimeID: sess.RuntimeID(), Operator: s.Broker.Operator(), State: st.State, Error: st.LastError}
+	resp := Response{OK: true, EnrollmentID: st.EnrollmentID, RuntimeID: sess.RuntimeID(), RootPID: sess.PID, Operator: s.Broker.Operator(), State: st.State, Error: st.LastError}
 	// While the helper holds no launcher credential every reply that is not enrolled carries
 	// NO_CREDENTIAL: an enroll reaches the broker for nobody until a human logs it in, so the
 	// launcher is told that rather than left with an id it cannot use. It does not say the
