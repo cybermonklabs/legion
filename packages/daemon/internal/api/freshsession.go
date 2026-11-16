@@ -855,7 +855,7 @@ var (
 //
 // The Info line names the caller's address, its pod (empty for a caller its header placed), the
 // contract the decision followed, which is restore, and the contract this daemon declares, as a
-// value strip's line of the state does (recordValueStrip). It also names the claim and the step.
+// value strip's line of the state does (recordShaping). It also names the claim and the step.
 // operatorFailure writes its own line, "api: an operator request failed", for a failure that is
 // no RefusedError, on both doors, and that line does not say that the caller was served down.
 func (s *server) refusedAfterTheStop(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,

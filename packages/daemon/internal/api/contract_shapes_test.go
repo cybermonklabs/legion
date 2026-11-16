@@ -1370,13 +1370,13 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 }
 
 // Each enumerated field arrived with the earliest value its list declares, which is what
-// shaping.go's fieldArrivals reads the field's own arrival as: a value strip takes only a value
-// that arrived after its field, and tells such a value from one that came with the field by that
-// earliest arrival. That holds while the list still declares a value the field arrived with. A
-// change that removed every such value would leave the earliest arrival later than the field's,
-// and a value arriving at that later contract would read as one that came with the field: no
-// strip would take it, and a mixed pod whose older process knows the field from before that
-// contract would be served the value and refuse the whole body for it.
+// shaping.go's arrivalsOf reads the field's own arrival as, and this test reads it through that
+// same function. A value strip tells a value newer than its field from one that came with it by
+// that earliest arrival (fieldArrivals.heldBack). That holds while the list still declares a
+// value the field arrived with. A change that removed every such value would leave the earliest
+// arrival later than the field's, and a value arriving at that later contract would read as one
+// that came with the field: no strip would take it, and a mixed pod whose older process knows
+// the field from before that contract would be served it and refuse the whole body for it.
 //
 // The key's arrival is read from the records and written nowhere here: it is the earliest
 // contract of SupportedContracts whose record of the row's answer carries the row's key path,
@@ -1398,10 +1398,7 @@ func TestEveryEnumeratedFieldsEarliestValueArrivedWithItsKey(t *testing.T) {
 			t.Errorf("answers.go's EnumeratedFields declares `%s` of the %s answer with no value", field.KeyPath, field.Answer)
 			continue
 		}
-		earliest := field.Values[0].Since
-		for _, value := range field.Values {
-			earliest = min(earliest, value.Since)
-		}
+		earliest := arrivalsOf(field.Values).field
 		key := 0
 		for _, contract := range SupportedContracts {
 			record, recorded := records[shapeKey{contract: contract, answer: field.Answer}]
@@ -1548,14 +1545,16 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 		}
 	})
 
-	t.Run("a fourth stranded state is added with no serving-down", func(t *testing.T) {
+	t.Run("a fourth stranded state is declared and served past its strip", func(t *testing.T) {
 		const field = "strandedClaims.*.state"
 		const added = "parked"
-		// The second field whose values a serving-down moves, and the one that carries no
-		// serving-down of its own: withoutUnadmittedStrandedStates drops the whole entry of a
-		// retired claim below 56, which is why the three states this daemon writes pass the gate
-		// today. A fourth state served to every caller with nothing dropping its entry is
-		// caught at every contract below this daemon's own, as a tenth `answeredBy` is.
+		// The second field whose values a strip moves. That strip reads the states the table
+		// declares (withoutUnadmittedStrandedStates), so declaring a fourth state at this
+		// daemon's own contract is the whole of its serving-down: the daemon would drop the
+		// entry of a claim in that state from every caller below this contract. So this case
+		// proves a strip that is bypassed: the fourth state is declared and served to every
+		// caller anyway, and the gate catches it at every contract below this daemon's own, as
+		// it catches a tenth `answeredBy`.
 		widened := withDeclaredValue(t, EnumeratedFields, AnswerState, field, added, DaemonAPIVersion)
 		changed := withServedValue(t, served, AnswerState, field, added)
 		problems := allShapeProblems(afterUpdate(changed, widened), changed)
