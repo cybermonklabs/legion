@@ -38,6 +38,19 @@ import (
 // a secret file.
 const controllerSecretVariable = "LEGION_CONTROLLER_SECRET"
 
+// controllerPersonTradeVar is the TypeScript broker client's setting that turns its person trade
+// off (PERSON_TRADE_VAR, packages/broker-client/src/signins.ts), which controllerEnvironment sets
+// to "off" under every configuration. That client trades the controller's own Dispatch credential
+// under `dispatch_token_broker`, and its Envoy credential wherever no bearer names one, and on a
+// machine where the operator ran `agent-secrets login` it would trade that person's sign-in, which
+// the controller finds under the operator's HOME, the HOME it keeps: the controller would write
+// Dispatch and speak on Envoy in its operator's name. agent-secrets neither reads this variable
+// nor strips it (its name lies outside the AGENT_SECRETS_ prefix that the exec form drops from
+// its child: sessionIdentityVars and buildChildEnv, packages/envoy/cmd/agent-secrets/main.go), so
+// the controller's own agent-secrets reads are signed exactly as they are without it, and a
+// `dispatch` command it runs under `agent-secrets NAME --` keeps the setting.
+const controllerPersonTradeVar = "PERSON_SIGNIN_TRADE"
+
 // stdinIsTerminal says whether this process's stdin is a terminal; a test replaces it.
 var stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 
@@ -194,15 +207,18 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	// token, which a start from inside a Legion pane inherits, is dropped too: the plugin takes a
 	// controller carrying one for a controller the daemon launched (`controller: daemon`). So are
 	// the Slack channels the daemon tells its own controller (LEGION_SLACK_CHANNELS): only that
-	// controller can reply in Slack, and an inherited list is no project's word for this one. A
-	// machine that holds its Dispatch credential at the broker drops the operator's own Dispatch
-	// bearer and pointer as well: either would be presented in place of the traded token as a
-	// bearer Dispatch refuses (controllerDispatchBroker). The drop is not the whole of it — the
+	// controller hears a project's mentions, and an inherited list is no project's word for this
+	// one. A machine that holds its Dispatch credential at the broker drops the operator's own
+	// Dispatch bearer and pointer as well: either would be presented in place of the traded token
+	// as a bearer Dispatch refuses (controllerDispatchBroker). The drop is not the whole of it — the
 	// operator's HOME is the controller's, and the envoy.json there holds that person's
 	// `dispatch.token`, which no delete here reaches — so the controller's set carries
 	// DISPATCH_TOKEN_BROKER, the session's word that its Dispatch credential is this machine's
 	// own identity and nothing else, under which the client reads no bearer from any source and
 	// turns Dispatch off saying so when it can trade none (dispatch-config.ts, dispatchTarget).
+	// The same HOME holds the operator's `agent-secrets login` sign-in, which the client would
+	// trade for the controller's own Dispatch and Envoy credentials, so the set also carries
+	// PERSON_SIGNIN_TRADE=off under every configuration (controllerPersonTradeVar).
 	// The one difference between the probed and the launched
 	// environment is GH_CONFIG_DIR, which names
 	// the default owner's directory only once the credential fetch after the mint has named that
@@ -333,7 +349,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 // which the controller reads because it keeps the operator's HOME, names a `dispatch.token` that
 // resolves first — the controller would write Dispatch as the operator, which is the whole of
 // what this setting exists to stop. Set, no bearer of any source is read, and a machine that can
-// trade nothing turns Dispatch off saying so rather than falling back to a person's token. Later
+// trade nothing turns Dispatch off saying so rather than falling back to a person's token. Under
+// every configuration PERSON_SIGNIN_TRADE=off (controllerPersonTradeVar) keeps every credential
+// the TypeScript client trades for the controller on this machine's identity and off the sign-in
+// the operator made, which the controller finds under the HOME it keeps. Later
 // pairs replace any inherited value of the same name.
 func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh string) [][2]string {
 	bin := workerbin.LauncherDir(stateDir)
@@ -356,6 +375,7 @@ func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh
 		{"LEGION_GH_OWNERS_DIR", controllerGHDir(stateDir)},
 		{"LEGION_GH_PATH", gh},
 		{"LEGION_CONTROLLER_START_MESSAGE", daemon.ControllerStartMessage},
+		{controllerPersonTradeVar, "off"},
 	}
 	if cfg.DispatchURL != "" {
 		env = append(env, [2]string{"DISPATCH_URL", cfg.DispatchURL})

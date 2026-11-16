@@ -476,6 +476,15 @@ start_session_standin() {
       await connection.flush();
       process.stdout.write("ready\n");
       for await (const message of frames) {
+        // The send route probes a target whose entry records consumer delivery on this subject
+        // with the one header Envoy-Probe: 1 and no body (bus.ConnectionProbeHeader, and
+        // RelayHeader.probe in packages/envoy-client/src/consumer-delivery.ts). It is no frame,
+        // so it is answered done, as a plugin answers it before it decodes anything, and is
+        // written to no file.
+        if (message.headers?.get("Envoy-Probe") === "1") {
+          if (message.reply) message.respond(codec.encode("done"));
+          continue;
+        }
         if (!message.reply) throw new Error("a relay frame carries no reply subject");
         for (const header of headers) {
           if (!message.headers?.get(header)) throw new Error(`a relay frame carries no ${header} header`);

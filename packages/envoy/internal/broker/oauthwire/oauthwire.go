@@ -39,8 +39,10 @@ const (
 	// that asks writes a launcher_credentials row keyed by the machine and the key it proved
 	// (exchange.MachineSubject) and a token_login audit row, and a key is one process's, so a
 	// fleet of short-lived callers that never read a secret would fill an operator's
-	// machine-logins list with rows nothing ever removes. Every TypeScript client declines
-	// (packages/broker-client/src/token-client.ts): none of them reads ExtraCredentialID.
+	// machine-logins list with rows nothing ever removes. Every TypeScript client's machine trade
+	// declines (packages/broker-client/src/environment.ts, brokerTokenClient): none of them reads
+	// ExtraCredentialID. A TypeScript client's trade of a person's sign-in sends nothing, since a
+	// person's trade may not decline.
 	FormLauncherCredential = "launcher_credential"
 	// FormLauncherCredentialDeclined is the one value of FormLauncherCredential that declines.
 	FormLauncherCredentialDeclined = "false"

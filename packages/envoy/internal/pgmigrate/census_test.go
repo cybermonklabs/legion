@@ -25,6 +25,8 @@ func TestTouchedTablesFindsEveryStatementFormTheMigrationsUse(t *testing.T) {
 		"create index concurrently if not exists i on only \"events\" (id);":                                                      {"events"},
 		"drop table if exists old_a, old_b;":                                                                                      {"old_a", "old_b"},
 		"truncate table only t1, t2;":                                                                                             {"t1", "t2"},
+		"create index on events (id);":                                                                                            {"events"},
+		"create unique index on only events (id);":                                                                                {"events"},
 		"create trigger trg before insert on comments for each row execute function f();":                                         {"comments"},
 		"drop trigger comments_embeddings_enqueue on comments;":                                                                   {"comments"},
 		"DROP TRIGGER IF EXISTS asks_embeddings_enqueue ON \"asks\";":                                                             {"asks"},
@@ -200,7 +202,7 @@ func TestReportPrintsAnExemptMigrationsLargeTable(t *testing.T) {
 	}}}
 	var out strings.Builder
 	report.Write(&out)
-	want := "census: 0122_x.up.sql touches artifact_versions: 5.2 GiB, above the 1.0 GiB limit, from which the migration is exempt because its statements are only create function and create trigger, which change the catalog or the transaction's own settings and read no row, so its rows were not counted; locks held by other sessions: none\n"
+	want := "census: 0122_x.up.sql touches artifact_versions: 5.2 GiB, above the 1.0 GiB limit, from which the migration is exempt because its statements are only create function and create trigger, which change only the catalog or the transaction's own settings, or take a lock, and read no existing row, so its rows were not counted; locks held by other sessions: none\n"
 	if !strings.Contains(out.String(), want) || !strings.HasSuffix(out.String(), "census: ok\n") {
 		t.Errorf("report:\n%s\nwant the line %q and census: ok", out.String(), want)
 	}

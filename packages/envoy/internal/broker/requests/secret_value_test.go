@@ -19,7 +19,7 @@ func TestASecretWithNoValueIsRefusedBeforeAnyoneApprovesIt(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	retag(t, m, policytest.Secret("UNSEEDED_KEY", fixtureOperator, policy.TierHuman, ""))
-	if req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "UNSEEDED_KEY"), ""); !errors.Is(err, policy.ErrUnknownSecret) {
+	if req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "UNSEEDED_KEY"), "", nil); !errors.Is(err, policy.ErrUnknownSecret) {
 		t.Fatalf("Create(UNSEEDED_KEY) while it has no value = %+v, %v; want policy.ErrUnknownSecret", req, err)
 	}
 	var written int
@@ -28,7 +28,7 @@ func TestASecretWithNoValueIsRefusedBeforeAnyoneApprovesIt(t *testing.T) {
 	}
 
 	retag(t, m, policytest.Secret("UNSEEDED_KEY", fixtureOperator, policy.TierHuman, "unseeded-v1"))
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it now", "UNSEEDED_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it now", "UNSEEDED_KEY"), "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create(UNSEEDED_KEY) once it has a value = %+v, %v; want pending", req, err)
 	}
@@ -60,7 +60,7 @@ func TestAGrantStopsWhileItsSecretHasNoValueAndResumesOnceItHasOne(t *testing.T)
 			m, enr, key, approver := newFixture(t)
 			ctx := context.Background()
 			retag(t, m, policytest.Secret("SECOND_KEY", fixtureOperator, policy.TierHuman, "second-v1"))
-			req, err := m.Create(ctx, enr, signRequest(t, m, key, "need both", "DEEL_API_KEY", "SECOND_KEY"), "")
+			req, err := m.Create(ctx, enr, signRequest(t, m, key, "need both", "DEEL_API_KEY", "SECOND_KEY"), "", nil)
 			if err != nil || req.RecordID == nil {
 				t.Fatalf("Create = %+v, %v; want pending", req, err)
 			}

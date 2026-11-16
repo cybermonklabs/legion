@@ -96,7 +96,7 @@ import {
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory, writeAtomically } from "@legion/envoy-client/dispatch-session-directory"
 import { offWithError } from "@legion/envoy-client/envoy-config"
-import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
+import { hasErrnoCode, messageFor, withoutUserinfo } from "@legion/envoy-client/errors"
 import {
   readSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
@@ -307,12 +307,9 @@ async function openAsks(raw: unknown): Promise<void> {
   for (const warning of warnings) process.stdout.write(`envoy: ${warning}\n`)
   if (dispatch.enabled) {
     try {
-      const snapshot = await new DispatchClient(
-        dispatch.url,
-        dispatch.credential,
-        fetch,
-        AbortSignal.timeout(OPEN_ASKS_TIMEOUT_MS),
-      ).openAsks(input.session_id)
+      const snapshot = await new DispatchClient(dispatch.url, dispatch.credential, fetch, {
+        signal: AbortSignal.timeout(OPEN_ASKS_TIMEOUT_MS),
+      }).openAsks(input.session_id)
       process.stdout.write(
         `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, dispatch.publicUrl ?? dispatch.url)}\n`,
       )
@@ -454,8 +451,12 @@ async function refreshedAnswers(
       if (outcome.dispatch_url === dispatchUrl) {
         return { text: outcome.text ?? undefined, notice: outcome.notice ?? undefined }
       }
+      // Compared whole above; the reason reaches the session's context, so it names the URL
+      // without the user and password it may carry.
+      const read =
+        outcome.dispatch_url === null ? "no Dispatch" : withoutUserinfo(outcome.dispatch_url)
       return {
-        reason: `the refresher read ${outcome.dispatch_url ?? "no Dispatch"}, not the Dispatch envoy.json names now`,
+        reason: `the refresher read ${read}, not the Dispatch envoy.json names now`,
       }
     }
     const left = remainingUntil(by)

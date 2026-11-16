@@ -8,7 +8,7 @@ import {
   ROLE_TOPIC_PREFIX,
   slackMentionTopic,
 } from "@legion/contracts";
-import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
+import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import {
   type Block,
   type Cleanup,
@@ -1069,13 +1069,21 @@ test.skipIf(natsUrl === undefined && !onActions)(
 
     // One session on its own deliver subject, answering each frame as the half wants: the word it
     // writes, on its own connection as a session answers, or nothing at all for the half whose
-    // session takes the frame and never answers.
+    // session takes the frame and never answers. A listener's connection probe on that subject
+    // (`RelayHeader.probe`) is no frame: it is answered `done`, as a session's consumer delivery
+    // answers it before it decodes anything, and reaches no half.
     const listens = async (sid: string, answer: (frame: Msg) => void): Promise<void> => {
       const session = await connect({ servers: natsUrl ?? "" });
       cleanup.push(() => session.close());
       const frames = session.subscribe(deliverSubject(sid));
       void (async () => {
-        for await (const message of frames) answer(message);
+        for await (const message of frames) {
+          if (message.headers?.get(RelayHeader.probe) === "1") {
+            if (message.reply) message.respond(codec.encode("done"));
+            continue;
+          }
+          answer(message);
+        }
       })();
       await session.flush();
     };

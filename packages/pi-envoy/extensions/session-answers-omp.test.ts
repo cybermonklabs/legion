@@ -742,7 +742,10 @@ test.skipIf(skipped)(
       return waitOf(cold, coldFirst);
     });
 
-    // Turn 2 after a good read: the list read in turn 1, with its read time.
+    // Turn 2 after a good read: the read hangs and answers from the cache, which shows the same
+    // item, so the list keeps the place turn 1 gave it and the bytes it was placed with, not the
+    // cached read's header (`As read at …; this read failed: …`), whose changed bytes would cost
+    // the request behind them a prompt-cache miss.
     const item = answer("ask_f", "Read before Dispatch hung.", 1);
     await median("turn 2 after a good read", async () => {
       const cached = await runSession(
@@ -757,11 +760,10 @@ test.skipIf(skipped)(
       );
       const [cachedFirst, cachedSecond] = cached.turns;
       if (cachedFirst === undefined || cachedSecond === undefined) throw new Error("no turn 2");
-      expect(listOf(cachedFirst)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-      const earlier = listOf(cachedSecond);
-      const earlierCache = cachedOf(earlier);
-      expect(earlierCache.reason).toBe(deadline);
-      expect(earlier).toBe(renderSessionAnswers([item], { now: Date.now(), cached: earlierCache }));
+      const placed = listOf(cachedFirst);
+      expect(placed).toBe(renderSessionAnswers([item], { now: Date.now() }));
+      expect(listOf(cachedSecond)).toBe(placed);
+      expect(textOf(messagesOf(cachedSecond).at(-1))).toBe("Second question.");
       return waitOf(cached, cachedSecond);
     });
 
