@@ -1178,14 +1178,24 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 // role holding the pod's token and a key of its own from trading for a sibling role's session. A
 // registration that names none is the pod's, as a session watch registers a session pod's one
 // session.
+//
+// That refusal is the one trade here that is the attack the key exists to stop, so it logs a WARN
+// line of its own naming the principal, the pod, the session, the key the registration is bound to
+// and the key the trade proved: writeError logs only a server error, and without the line the
+// refusal reads in the log as an expired grant or a registration not yet written does.
 func (p *Provider) registeredPodSession(ctx context.Context, session *oauthstore.ExchangeSession) error {
 	if session.Instance == "" {
 		return nil
 	}
 	name, _ := session.Extra[ClaimSession].(string)
-	registered, err := p.store.PodSessionRegistered(ctx, session.Instance, name, session.GetDPoPJWKThumbprint())
+	presented := session.GetDPoPJWKThumbprint()
+	registered, err := p.store.PodSessionRegistered(ctx, session.Instance, name, presented)
+	var bound *oauthstore.PodSessionBoundError
 	switch {
-	case errors.Is(err, oauthstore.ErrPodSessionBoundToAnotherKey):
+	case errors.As(err, &bound):
+		slog.Warn("broker: the token exchange refused a pod's trade proved with a key other than the one its registration for the session is bound to",
+			"principal", session.Principal, "pod", session.Instance, "session", name,
+			"bound_thumbprint", bound.Bound, "presented_thumbprint", presented)
 		return oauth2.ErrInvalidGrant.WithHintf("Refused: this pod's registration for session '%s' is bound to another key; a role trades only for its own session.", name)
 	case err != nil:
 		return oauth2.ErrServerError.WithWrap(err).WithDebugError(err)

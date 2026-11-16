@@ -94,6 +94,14 @@ type podSessionResponse struct {
 // GENERATION_INVALID. The answer is always the registration as stored after the write, its
 // generation included: a write naming no key keeps the binding a live row already holds, and a
 // write of a lower generation than the row's changes nothing and is answered the row unchanged.
+//
+// Each write is logged with what it did, since the registrar is the authority here and these
+// lines are the one record of who may write under which name. A write applied is logged at Info
+// as registered, naming the thumbprint and generation the registrar sent beside the ones stored,
+// and the thumbprint it replaced when it bound the row to another key; one that names no key and
+// no generation, of a row that names neither, logs the line it logged before either existed (R9).
+// A write the generation rule refused changed nothing, so it is not logged as registered: it logs
+// a line of its own at Warn, naming what it sent beside the row it left as it was.
 func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, registrar machine.ServiceAccount) {
 	var body podSessionBody
 	if !readJSON(w, r, &body, "INVALID_REQUEST") {
@@ -136,11 +144,19 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 	case err != nil:
 		writeInternal(w, "register the pod's session name", err)
 	default:
-		// The one record of who may now write under this name: the registrar is the authority
-		// here, so a write it made and a write it stopped making are both read from this line.
-		slog.Info("broker: registered a pod to write under a session name",
-			"service", registrar.Service, "account", claims.Subject, "pod", claims.PodUID, "session", body.Session,
-			"thumbprint", stored.JKT, "generation", stored.Generation)
+		attrs := []any{"service", registrar.Service, "account", claims.Subject, "pod", claims.PodUID, "session", body.Session}
+		if body.Thumbprint != "" || body.Generation != 0 || stored.JKT != "" || stored.Generation != 0 {
+			attrs = append(attrs, "sent_thumbprint", body.Thumbprint, "sent_generation", body.Generation,
+				"thumbprint", stored.JKT, "generation", stored.Generation)
+		}
+		switch {
+		case !stored.Applied:
+			slog.Warn("broker: a pod's session registration was not written: the registration holds a later generation", attrs...)
+		case stored.Replaced != "":
+			slog.Info("broker: registered a pod to write under a session name", append(attrs, "replaced_thumbprint", stored.Replaced)...)
+		default:
+			slog.Info("broker: registered a pod to write under a session name", attrs...)
+		}
 		writeJSON(w, http.StatusOK, podSessionResponse{PodUID: claims.PodUID, Session: body.Session, Thumbprint: stored.JKT, Generation: stored.Generation, ExpiresAt: stored.ExpiresAt})
 	}
 }
