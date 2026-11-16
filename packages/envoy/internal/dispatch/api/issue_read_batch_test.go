@@ -317,6 +317,30 @@ func (r *roundTrips) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQ
 
 func (r *roundTrips) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
+// viewerResolution opens the one statement that resolves a request's viewer (access.Resolve).
+const viewerResolution = access.Marker + "VisibleProjectsSQL"
+
+// readsOwnStatements answers a counted GET read's statements past the one that resolves its
+// caller's viewer, which the read check makes once a request before the handler runs
+// (withinReadScope), as the sign-in lookup is made: the cost a test pins is the read's own. It
+// fails the test unless the read resolved its viewer exactly once, first.
+func readsOwnStatements(t *testing.T, statements []string) []string {
+	t.Helper()
+	var own []string
+	resolutions := 0
+	for _, statement := range statements {
+		if strings.Contains(statement, viewerResolution) {
+			resolutions++
+			continue
+		}
+		own = append(own, statement)
+	}
+	if resolutions != 1 || !strings.Contains(statements[0], viewerResolution) {
+		t.Fatalf("the read resolved its viewer %d times, want once and first: %v", resolutions, statements)
+	}
+	return own
+}
+
 // The issue read costs two round trips, and one for an issue with nothing the second batch is
 // for, where the sequential loaders spent a statement on each part of the answer. The request
 // makes one more before the read, every read request's own: it resolves its caller's viewer
@@ -340,7 +364,7 @@ func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
 	fixture := buildFullIssueRead(t, handler)
 
 	response := countedIssueRead(t, handler, fixture.key)
-	batched := withoutViewerRead(t, counter.take())
+	batched := readsOwnStatements(t, counter.take())
 	if response.Code != http.StatusOK {
 		t.Fatalf("read the issue: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -372,23 +396,13 @@ func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
 		}
 	}
 	bareRead := countedIssueRead(t, handler, bareKey)
-	bareTrips := withoutViewerRead(t, counter.take())
+	bareTrips := readsOwnStatements(t, counter.take())
 	if bareRead.Code != http.StatusOK {
 		t.Fatalf("read the bare issue: status=%d body=%s", bareRead.Code, bareRead.Body.String())
 	}
 	if len(bareTrips) != 1 {
 		t.Fatalf("the bare issue's read made %d round trips, want 1: %v", len(bareTrips), bareTrips)
 	}
-}
-
-// withoutViewerRead is a request's round trips past its first, which must be the one statement
-// that resolves the caller's viewer (access.VisibleProjectsSQL), read once before anything else.
-func withoutViewerRead(t *testing.T, trips []string) []string {
-	t.Helper()
-	if len(trips) == 0 || !strings.Contains(trips[0], access.Marker+"VisibleProjectsSQL") {
-		t.Fatalf("the request's first round trip is not its caller's viewer: %v", trips)
-	}
-	return trips[1:]
 }
 
 // A key no issue carries answers what it always has: the issue row's callback records the missing

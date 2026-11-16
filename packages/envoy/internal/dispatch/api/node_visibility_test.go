@@ -396,6 +396,10 @@ var storeTableRead = regexp.MustCompile(`(?i)\b(?:from|join)\s+(?:graph_nodes|gr
 //     the markers against the rules a statement states would pass such a statement at 0 == 0;
 //   - every visibility rule a statement states is one the registry rendered
 //     (refs.VisibilityMarker opens each of them), so no read carries a copy of the rule.
+//
+// The statement that resolves the request's viewer (viewerResolution, which the read check makes
+// before every handler) reads projects and access lists and no node; the projects' own
+// visibility column it reads is no node's visibility rule, so it is left out of the count.
 func requirePredicatesInSQL(t *testing.T, reads []recordedRead) {
 	t.Helper()
 	if len(reads) == 0 {
@@ -408,6 +412,9 @@ func requirePredicatesInSQL(t *testing.T, reads []recordedRead) {
 		}
 		bound := 0
 		for _, statement := range read.statements {
+			if strings.Contains(statement.SQL, viewerResolution) {
+				continue
+			}
 			markers := strings.Count(statement.SQL, refs.VisibilityMarker)
 			if markers > 0 {
 				bound++
