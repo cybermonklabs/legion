@@ -512,7 +512,10 @@ export function idsIn(text: string): Set<string> {
   return ids;
 }
 
-/** Every id the files name, read whole: a file that cannot be read stops the claim. */
+/**
+ * Every id the files name, read whole. A file that cannot be read stops the claim, and so does a
+ * file that names no id: item 6 (c) or (d) would then check nothing against it, which is no check.
+ */
 export async function idsInFiles(paths: readonly string[]): Promise<Set<string>> {
   const ids = new Set<string>();
   for (const path of paths) {
@@ -522,7 +525,11 @@ export async function idsInFiles(paths: readonly string[]): Promise<Set<string>>
     } catch {
       throw new CorpusError(`${path} could not be read, so the claim cannot check it`);
     }
-    for (const id of idsIn(text)) ids.add(id);
+    const named = idsIn(text);
+    if (named.size === 0) {
+      throw new CorpusError(`${path} names no id, so the claim would check nothing against it`);
+    }
+    for (const id of named) ids.add(id);
   }
   return ids;
 }
