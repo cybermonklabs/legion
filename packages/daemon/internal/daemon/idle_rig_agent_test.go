@@ -89,6 +89,12 @@ type idleRigAdoption struct {
 // ExitsAsReleasedInProduction is a process that ends as a released Oh My Pi does in production:
 // it registers again every idleRigRegistrationRefresh while it runs and deletes nothing when it
 // stops (idleRigRoleProcess.run).
+//
+// A process reads Topics and ExitsAsReleasedInProduction once, as it starts
+// (idleRigRoleProcess.run), and TakeTurn and Background at each task and each activity report.
+// So a plan that sets either of the first two reaches only a process that starts after it is
+// set, which for a pod the daemon's boot starts means a plan given to the rig's construction
+// (newPlannedIdleWakeRig).
 type idleRigPlan struct {
 	TakeTurn                    bool     `json:"takeTurn"`
 	Topics                      []string `json:"topics"`
@@ -138,7 +144,9 @@ func (a *idleRigAgents) setPrivate(pod, role, dir string) {
 	a.private[idleRigKey(pod, role)] = dir
 }
 
-// setPlan is what the role's next prompts do.
+// setPlan is what the role's process does from here: whether it takes a turn on its next tasks
+// and what its next activity reports name, and, for a process that has not started yet, the
+// topics it takes and how it ends (idleRigPlan).
 func (a *idleRigAgents) setPlan(pod, role string, plan idleRigPlan) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

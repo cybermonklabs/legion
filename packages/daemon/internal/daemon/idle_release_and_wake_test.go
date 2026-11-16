@@ -58,22 +58,23 @@ const idleRigSender = "idle-rig-sender"
 // them all: each live claim suspended with the source `released`, and the pod, its disk and its
 // Sandbox deleted. Each subtest then drives its own pods' wakes.
 func TestIdleReleaseAndWake(t *testing.T) {
-	rig := newIdleWakeRig(t,
+	// What a role process reads once, as it starts, is given to the rig before the daemon boots,
+	// since the boot resumes every claim of the rig and so starts its pod: the topic the
+	// subscribed pod's session takes, as `envoy_subscribe` does, and how each just-released pod's
+	// process ends. The stuck pod's plan is left alone until its own subtest: a session that
+	// acknowledges a task and takes no turn has a turn due, which is a pod the rule keeps. Its
+	// subtest sets it in time, since a process reads whether it takes a turn at each task it is
+	// given.
+	endsAsReleased := idleRigPlan{TakeTurn: true, ExitsAsReleasedInProduction: true}
+	rig := newPlannedIdleWakeRig(t, map[string]idleRigPlan{
+		idleRigSubscribed:         {TakeTurn: true, Topics: []string{idleRigSubscribedTopic}},
+		idleRigJustReleasedAgent:  endsAsReleased,
+		idleRigJustReleasedRole:   endsAsReleased,
+		idleRigJustReleasedRouted: endsAsReleased,
+	},
 		idleRigDelivery, idleRigChecks, idleRigRoleWake, idleRigAgentWake, idleRigBackstop,
 		idleRigKeepNone, idleRigSubscribed, idleRigStuck, idleRigRestart,
 		idleRigJustReleasedAgent, idleRigJustReleasedRole, idleRigJustReleasedRouted)
-
-	// The subscribed pod's session takes a topic of its own, as `envoy_subscribe` does, before
-	// its process starts. The stuck pod's plan is left alone until its own subtest: a session
-	// that acknowledges a task and takes no turn has a turn due, which is a pod the rule keeps.
-	subscribed := rig.issue(idleRigSubscribed)
-	rig.agents.setPlan(subscribed.key, string(subscribed.role), idleRigPlan{TakeTurn: true, Topics: []string{idleRigSubscribedTopic}})
-	// The just-released pods' processes are told how to end before they start, since a process
-	// reads its plan as it starts.
-	for _, name := range []string{idleRigJustReleasedAgent, idleRigJustReleasedRole, idleRigJustReleasedRouted} {
-		issue := rig.issue(name)
-		rig.agents.setPlan(issue.key, string(issue.role), idleRigPlan{TakeTurn: true, ExitsAsReleasedInProduction: true})
-	}
 
 	rig.launchAll()
 	rig.quiet()
