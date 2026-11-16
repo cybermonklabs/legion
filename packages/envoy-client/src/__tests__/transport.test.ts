@@ -1833,6 +1833,51 @@ describe("EnvoyClient", () => {
     ).rejects.toThrow("the secrets broker did not answer");
   });
 
+  // A listener URL may carry a user and a password. The request goes to it as configured, and
+  // the error a refused or unauthorised call throws names it without them.
+  test("names the listener URL without its user and password in the errors it throws", async () => {
+    const user = "user-7f2a";
+    const secret = "pw-4c7e19";
+    const baseUrl = `http://${user}:${secret}@listener`;
+    const unmintable: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => Promise.reject(new Error("the secrets broker did not answer")),
+      secret: () => "",
+    };
+    const refused = recordFetch([new Response("no such route", { status: 404 })]);
+    const closed = recordFetch([new Response(null, { status: 401 })]);
+    const failure = (call: Promise<unknown>) =>
+      call.then(
+        () => "",
+        (error: Error) => error.message
+      );
+
+    const messages = [
+      await failure(
+        createEnvoyClient({ baseUrl, fetch: refused.fetch, retry: false }).getInterest("ses_sender")
+      ),
+      await failure(
+        createEnvoyClient({
+          baseUrl,
+          fetch: closed.fetch,
+          credential: unmintable,
+          retry: false,
+        }).getInterest("ses_sender")
+      ),
+    ];
+
+    expect(refused.requests[0]?.url).toBe(`${baseUrl}/v1/interests/ses_sender`);
+    expect(messages).toEqual([
+      "GET http://listener/v1/interests/ses_sender failed with 404: no such route",
+      "GET http://listener/v1/interests/ses_sender answered 401, and this machine's Envoy " +
+        "credential could not be minted: the secrets broker did not answer",
+    ]);
+    for (const message of messages) {
+      expect(message).not.toContain(user);
+      expect(message).not.toContain(secret);
+    }
+  });
+
   // The deadline is AbortSignal.timeout's, on the platform's clock, which no fake timer moves:
   // the row holds the request until its signal aborts and reads no clock to see that a short
   // deadline gave up first. Nothing answers the request, so a client left on its own timing

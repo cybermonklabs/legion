@@ -207,10 +207,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	// token, which a start from inside a Legion pane inherits, is dropped too: the plugin takes a
 	// controller carrying one for a controller the daemon launched (`controller: daemon`). So are
 	// the Slack channels the daemon tells its own controller (LEGION_SLACK_CHANNELS): only that
-	// controller can reply in Slack, and an inherited list is no project's word for this one. A
-	// machine that holds its Dispatch credential at the broker drops the operator's own Dispatch
-	// bearer and pointer as well: either would be presented in place of the traded token as a
-	// bearer Dispatch refuses (controllerDispatchBroker). The drop is not the whole of it — the
+	// controller hears a project's mentions, and an inherited list is no project's word for this
+	// one. A machine that holds its Dispatch credential at the broker drops the operator's own
+	// Dispatch bearer and pointer as well: either would be presented in place of the traded token
+	// as a bearer Dispatch refuses (controllerDispatchBroker). The drop is not the whole of it — the
 	// operator's HOME is the controller's, and the envoy.json there holds that person's
 	// `dispatch.token`, which no delete here reaches — so the controller's set carries
 	// DISPATCH_TOKEN_BROKER, the session's word that its Dispatch credential is this machine's
