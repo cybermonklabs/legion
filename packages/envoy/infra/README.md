@@ -1168,14 +1168,8 @@ negative `signingKeyGenerations` entry, which names no resource, or a repeated o
 render the same key twice and which the server refuses at its boot, missing inputs, and nkey
 seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, an
-`oidcIssuer` with no `oidcAudience`, an `outsideOrigin` that is not an `https` origin written as
-a browser writes it (with no path, user, query or fragment, no `:443` and a port of 1 to 65535
-with no leading zero), has a host label that is not a lowercase DNS label or that has `--` as its
-third and fourth characters without being an `xn--` label the IDNA lookup profile takes, has a host
-ending in a number that is no canonical IPv4 address,
-has the front door's host, comes without the tailnet inputs, or, with the sign-in inputs set, has
-an IP address or a top-level domain off the public suffix list as its host, a `signInOutside`
-without the sign-in inputs, an
+`oidcIssuer` with no `oidcAudience`, an `outsideOrigin` that breaks the rule the paragraph on it
+above states, a `signInOutside` without the sign-in inputs, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside

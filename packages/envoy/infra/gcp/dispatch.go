@@ -178,11 +178,7 @@ type DispatchArgs struct {
 	SignInClientSecret pulumi.StringInput `pulumi:"signInClientSecret,optional" provider:"secret"`
 	SignInDomain       string             `pulumi:"signInDomain,optional"`
 	// OutsideOrigin is a second origin Dispatch is reached at, by people from outside the
-	// company: an https origin written as a browser writes it (a lowercase scheme, no :443, no
-	// path, user, query or fragment; a trailing slash is trimmed), whose host is not the front
-	// door's and whose every host label is a lowercase DNS label that weborigin.ReservedLabel
-	// takes: "--" as its third and fourth characters only in an xn-- label the IDNA lookup profile
-	// takes (RFC 5890 section 2.3.1 reserves the form).
+	// company: an https origin weborigin.Parse takes, whose host is not the front door's.
 	// It renders DISPATCH_OUTSIDE_ORIGIN and nothing else: whatever serves that origin
 	// and forwards it to the app is the deployment's, and the app's NetworkPolicy admits an
 	// in-cluster one only through allowedNamespaces. It needs the tailnet inputs: without them the
@@ -1041,9 +1037,8 @@ func refuseDispatchSignInGroup(args *DispatchArgs, clause string) error {
 
 // refuseDispatchOutsideOrigin judges outsideOrigin where the tailnet group is set, the one place
 // it may be set, and returns it with a trailing slash trimmed, as Dispatch trims one: "" when it
-// is unset. It must be a web origin as weborigin.Parse holds one to (written as a browser writes
-// it, with host labels weborigin.ReservedLabel takes), whose refusals it prefixes with
-// the input's name; the component adds that the origin is https, as the front door's is, that its
+// is unset. It must be a web origin weborigin.Parse takes, whose refusals it prefixes with the
+// input's name; the component adds that the origin is https, as the front door's is, that its
 // host is not the front door's, whose origin Dispatch already is, and, with the sign-in inputs
 // set, that its host is one Google takes in an OAuth redirect URI, since the Google client must
 // then list <outsideOrigin>/auth/callback: no raw IP address, and a top-level domain on the
@@ -1075,11 +1070,19 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, signInOn bool) (string, err
 	if dot < 0 {
 		return "", fmt.Errorf("outsideOrigin's host %s is a single label, with no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete", host)
 	}
-	tld := host[dot+1:]
-	if _, icann := publicsuffix.PublicSuffix("x." + tld); !icann {
+	if tld := host[dot+1:]; !tldOnPublicSuffixList(tld) {
 		return "", fmt.Errorf("outsideOrigin's host %s ends in %s, no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete", host, tld)
 	}
 	return origin.String(), nil
+}
+
+// tldOnPublicSuffixList reports whether tld is a top-level domain in the public suffix list's ICANN
+// section. It looks up "x.<tld>" because eight ccTLDs (np, ck, er, fk, jm, kh, mm, pg) are listed
+// only as a "*.<tld>" rule, which a bare tld does not match; and it looks up the top-level domain
+// alone, not the host, so a private-section suffix such as ts.net cannot decide.
+func tldOnPublicSuffixList(tld string) bool {
+	_, icann := publicsuffix.PublicSuffix("x." + tld)
+	return icann
 }
 
 // refuseDispatchHostname refuses a hostname that is not hostnameRule's shape. Both resolvers run

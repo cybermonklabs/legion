@@ -76,6 +76,9 @@ func TestParseRefusesWhatIsNoBrowsersOrigin(t *testing.T) {
 		{"https://dispatch-outside..example.com", notLabel("")},
 		{"https://dispatch-outside.example.com.", notLabel("")},
 		{"https://" + strings.Repeat("a", 64) + ".example.com", notLabel(strings.Repeat("a", 64))},
+		// An IPv6 literal is no host Parse takes: Hostname drops its brackets, and ":" is in no
+		// DNS label.
+		{"https://[::1]", notLabel("::1")},
 		{"https://-outside.example.com", notLabel("-outside")},
 		{"https://outside-.example.com", notLabel("outside-")},
 		{"https://ab--cd.example.com", reserved("ab--cd")},

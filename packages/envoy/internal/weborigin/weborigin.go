@@ -41,7 +41,7 @@ func Parse(raw string) (*url.URL, error) {
 	origin := strings.TrimSuffix(raw, "/")
 	parsed, err := url.Parse(origin)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" ||
-		parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(origin, "#") {
+		parsed.User != nil || strings.ContainsAny(origin, "?#") {
 		return nil, errors.New("must be an absolute http or https URL with no path, user, query or fragment, as an origin is (not echoed)")
 	}
 	host := parsed.Hostname()
