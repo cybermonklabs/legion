@@ -9,12 +9,24 @@ import (
 // metadata server, or Cloud Run's, mints for an audience it is asked for.
 const GoogleIssuer = "https://accounts.google.com"
 
+// googleSchemelessIssuer is the second spelling of Google's issuer, which Google documents and
+// go-oidc accepts for a verifier of GoogleIssuer.
+const googleSchemelessIssuer = "accounts.google.com"
+
+// namesIssuer reports whether iss is this verifier's issuer, taking Google's scheme-less spelling
+// as Google's, as the go-oidc verifier underneath does. Verify's classification and
+// IssuesGoogleIdentity both read it, so a token Verify would accept is never called another
+// issuer's.
+func (v *Verifier) namesIssuer(iss string) bool {
+	return iss == v.issuer || v.issuer == GoogleIssuer && iss == googleSchemelessIssuer
+}
+
 // IssuesGoogleIdentity reports whether raw names this verifier's issuer, including Google's
 // scheme-less spelling when the verifier is Google's. Verify accepts that spelling too. This
 // reads no signature and grants no admission; VerifyGoogleIdentity still checks the token.
 func (v *Verifier) IssuesGoogleIdentity(raw string) bool {
 	claims, err := decodeClaims(raw)
-	return err == nil && (claims.Issuer == v.issuer || v.issuer == GoogleIssuer && claims.Issuer == "accounts.google.com")
+	return err == nil && v.namesIssuer(claims.Issuer)
 }
 
 // VerifyGoogleIdentity is Verify for a Google identity token, which names its caller by an

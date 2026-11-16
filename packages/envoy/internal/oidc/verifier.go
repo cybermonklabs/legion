@@ -237,7 +237,7 @@ func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr erro
 	switch {
 	case decodeErr != nil:
 		return fmt.Errorf("%w: %v", ErrMalformed, decodeErr)
-	case claims.Issuer != v.issuer:
+	case !v.namesIssuer(claims.Issuer):
 		return fmt.Errorf("%w: %q, want %q", ErrIssuer, claims.Issuer, v.issuer)
 	case !slices.Contains(claims.Audience, v.audience):
 		return fmt.Errorf("%w: %q, want %q", ErrAudience, []string(claims.Audience), v.audience)

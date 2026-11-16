@@ -55,3 +55,39 @@ func TestVerifyGoogleIdentityReadsTheAccount(t *testing.T) {
 		t.Fatalf("a token for another audience: err = %v, want %v", err, ErrAudience)
 	}
 }
+
+// Google writes its issuer two ways, and go-oidc accepts the scheme-less accounts.google.com for
+// a verifier of https://accounts.google.com. A token of either spelling that fails is refused
+// for what is wrong with it, not as another issuer's: the class is what an operator reads, and
+// what a caller that tries several verifiers takes "not mine" from (ErrIssuer). Both spellings
+// also pick Google's verifier (IssuesGoogleIdentity), and no other issuer does.
+func TestGooglesSchemelessIssuerIsGooglesOwn(t *testing.T) {
+	issuer := oidctest.New(t)
+	signing := oidctest.NewKey(t, "google-signing-key")
+	issuer.Publish(signing)
+	keys, err := NewKeys(context.Background(), issuer.URL())
+	if err != nil {
+		t.Fatalf("NewKeys(%s): %v", issuer.URL(), err)
+	}
+	google := NewWithKeys(GoogleIssuer, googleTestAudience, keys)
+	for _, spelling := range []string{GoogleIssuer, "accounts.google.com"} {
+		claims := googleIdentityClaims(issuer, "another-audience")
+		claims["iss"] = spelling
+		raw := issuer.Mint(t, signing, claims)
+		if _, err := google.VerifyGoogleIdentity(context.Background(), raw); !errors.Is(err, ErrAudience) {
+			t.Errorf("iss %q for another audience: err = %v, want %v", spelling, err, ErrAudience)
+		}
+		if !google.IssuesGoogleIdentity(raw) {
+			t.Errorf("iss %q does not pick Google's verifier", spelling)
+		}
+	}
+	other := googleIdentityClaims(issuer, googleTestAudience)
+	other["iss"] = "https://accounts.google.com.example"
+	raw := issuer.Mint(t, signing, other)
+	if _, err := google.VerifyGoogleIdentity(context.Background(), raw); !errors.Is(err, ErrIssuer) {
+		t.Errorf("another issuer: err = %v, want %v", err, ErrIssuer)
+	}
+	if google.IssuesGoogleIdentity(raw) {
+		t.Errorf("another issuer picks Google's verifier")
+	}
+}
