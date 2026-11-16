@@ -4028,6 +4028,7 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   The legacy stream calls take `nats.Context` per call (`requestsUnder`); the requests nats.go gives no context are waited for only until ctx ends: the legacy `js.KeyValue` lookup (`bus.OpenKeyValue`, through `Bounded`) and the previous watcher's consumer delete (`kvwatch.Watcher.watch`), which then goes on by itself.
   The known-session hook's wait for the lock its background retry holds through an attempt ends with ctx too (`session.KnownSessions.lockRepair`).
   A run that context ended, or whose connection is not CONNECTED when its hooks return, is superseded, not failed (`errRunSuperseded`): it keeps no `lastHookErr`, logs INFO rather than the WARN, and covers no event, so every hook runs again on the next connection and no half-move survives.
+  `bus.RunEnded(ctx, conn)` is that one rule, and a hook that decides for itself whether a failure is a failure reads it too (the known-session hook's WARN and its store's retry), so the two never disagree.
   Once the hooks have been uncovered for `RepairGrace`, a superseded run writes the stall's ERROR all the same (`reportSuperseded`), so a link that drops during every run still pages.
   The context bounds only a KV watch's create request, never the watcher's life, and the re-subscribe's binds are never under it: a cancelled bind would race the server's release of a push-bound durable.
 

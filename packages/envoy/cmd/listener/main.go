@@ -244,6 +244,21 @@ func hookListenerKVWatchers(client *bus.Client, caches []listenerCache) {
 	})
 }
 
+// knownSessionMoveHook is the known-session store's reconnect hook: it moves the store to conn
+// (session.KnownSessions.Rewatch) and answers nil, logging a WARN for a move that failed while its
+// run was live. A move whose run is over (bus.RunEnded, the rule the bus decides a superseded run
+// by) logs nothing, so a race the bus reads as superseded is not a WARN here
+// (TestTheKnownSessionHookLogsNothingForARunThatIsOver).
+func knownSessionMoveHook(known *session.KnownSessions, logger *logging.Logger) func(context.Context, *nats.Conn) error {
+	return func(ctx context.Context, conn *nats.Conn) error {
+		if err := known.Rewatch(ctx, conn); err != nil && !bus.RunEnded(ctx, conn) {
+			logger.Warn("the known-session cache did not move to the recovered connection; the store retries the move on its own backoff",
+				slog.String("bucket", bus.KnownSessionBucket), slog.String("error", err.Error()))
+		}
+		return nil
+	}
+}
+
 // isUnrecoverableSelfHealthFailure distinguishes state that must be rebuilt
 // from transient JetStream deadlines. Rebuild only while the NATS client is
 // connected; a disconnected client owns its own infinite reconnect loop. A
@@ -1390,19 +1405,14 @@ func main() {
 	// one succeeds, the store is stopped, or a later connection event's move makes it
 	// (session.KnownSessions.Rewatch). Until a move lands, the store serves its copy for the stale
 	// bound and then answers nothing (Opened), so a publish leaves its counts out rather than
-	// answer from a copy that stopped following the bucket. A move the run's own context ended
-	// (the connection it ran on was lost) is no failure: this hook logs no WARN for it and the store
-	// arms no retry for it, since the run is superseded and the run the next connection event
-	// brings moves the store again (bus.errRunSuperseded). The store still counts it a failed move,
-	// so the move that succeeds after it logs the store's INFO "back" line (attemptRepair).
+	// answer from a copy that stopped following the bucket. A move whose run is over (bus.RunEnded:
+	// its context ended, or the connection left CONNECTED) is no failure: this hook logs no WARN
+	// for it and the store arms no retry for it, since the run is superseded and the run the next
+	// connection event brings moves the store again (bus.errRunSuperseded). The store still counts
+	// it a failed move, so the move that succeeds after it logs the store's INFO "back" line
+	// (attemptRepair).
 	client.AddDisconnectHook(known.Disconnected)
-	client.AddReconnectHook(func(ctx context.Context, conn *nats.Conn) error {
-		if err := known.Rewatch(ctx, conn); err != nil && ctx.Err() == nil {
-			logger.Warn("the known-session cache did not move to the recovered connection; the store retries the move on its own backoff",
-				slog.String("bucket", bus.KnownSessionBucket), slog.String("error", err.Error()))
-		}
-		return nil
-	})
+	client.AddReconnectHook(knownSessionMoveHook(known, logger))
 	client.AddDrainHook(known.EndWatch)
 
 	dedupeCache := dedupe.New(10 * time.Minute)

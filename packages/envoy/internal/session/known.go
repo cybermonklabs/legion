@@ -860,9 +860,10 @@ func (s *KnownSessions) Rewatch(ctx context.Context, conn *nats.Conn) error {
 		return nil
 	}
 	if _, err := s.repairOnce(ctx); err != nil {
-		// A move its run's context ended is no failure to repair in the background: the run is
-		// superseded, and the run the next connection event brings moves the store again.
-		if ctx.Err() == nil {
+		// A move whose run is over (bus.RunEnded: its context ended, or conn left CONNECTED) is no
+		// failure to repair in the background: the run is superseded, and the run the next
+		// connection event brings moves the store again.
+		if !bus.RunEnded(ctx, conn) {
 			s.armRepairWithin(ctx)
 		}
 		return err

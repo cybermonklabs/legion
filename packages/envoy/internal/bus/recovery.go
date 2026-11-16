@@ -380,20 +380,28 @@ func (c *Client) runReconnectHooks(conn *nats.Conn) error {
 	return hookErr
 }
 
-// runSuperseded is the errRunSuperseded of a run whose context (whileConnected) ended or whose
-// connection is not CONNECTED, and nil for a run neither ended. The status is read beside the
-// context because the context is cancelled by a goroutine of its own: nats.go sets RECONNECTING
-// before that goroutine hears of it, and a request made in between fails at once ("outbound
-// buffer limit exceeded", the bus buffers nothing while it reconnects), so a hook can return that
-// failure while the context still reads live (TestARunWhoseConnectionLeftConnectedIsSuperseded).
+// RunEnded reports whether the reconnect hooks' run that gave a hook ctx and conn is over: its
+// context (whileConnected) ended, or conn is not CONNECTED. It is the one rule for that, which
+// runSuperseded and every hook that decides on its own whether a failure is a failure read, so the
+// two cannot disagree. The status is read beside the context because the context is cancelled by
+// a goroutine of its own: nats.go sets RECONNECTING before that goroutine hears of it, and a
+// request made in between fails at once ("outbound buffer limit exceeded", the bus buffers nothing
+// while it reconnects), so a hook can see that failure while the context still reads live
+// (TestARunWhoseConnectionLeftConnectedIsSuperseded).
+func RunEnded(ctx context.Context, conn *nats.Conn) bool {
+	return ctx.Err() != nil || conn == nil || conn.Status() != nats.CONNECTED
+}
+
+// runSuperseded is the errRunSuperseded of a run that is over (RunEnded), naming why, and nil for
+// a run that is not.
 func runSuperseded(ctx context.Context, conn *nats.Conn) error {
+	if !RunEnded(ctx, conn) {
+		return nil
+	}
 	if ctx.Err() != nil {
 		return fmt.Errorf("%w: %w", errRunSuperseded, context.Cause(ctx))
 	}
-	if conn == nil || conn.Status() != nats.CONNECTED {
-		return fmt.Errorf("%w: %w", errRunSuperseded, errRunConnectionLost)
-	}
-	return nil
+	return fmt.Errorf("%w: %w", errRunSuperseded, errRunConnectionLost)
 }
 
 // errRunConnectionLost is the cause of a run's context (context.Cause) when its connection left
