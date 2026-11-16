@@ -129,24 +129,17 @@ type idleRigIssue struct {
 	role claim.Role
 }
 
-// newIdleWakeRig readies every part and boots the daemon, with one issue per name given and each
-// role process on the default plan (newPlannedIdleWakeRig).
-func newIdleWakeRig(t *testing.T, issues ...string) *idleWakeRig {
-	t.Helper()
-	return newPlannedIdleWakeRig(t, nil, issues...)
-}
-
-// newPlannedIdleWakeRig readies every part and boots the daemon, with one issue per name given.
-// Each issue is its own tree root, in the workflow at `implementing` with its implementer's claim
-// suspended by the daemon, a source the boot's resume by rule acts on
-// (supervise.SuspendSource.ByRule): the boot itself resumes each claim, and that launch is what
-// makes the pod, its launcher and its role process, which can all start before the boot returns.
+// newIdleWakeRig readies every part, boots the daemon, and waits until every seeded issue's pod
+// runs its role, in order, with one issue per name given. Each issue is its own tree root, in the
+// workflow at `implementing` with its implementer's claim suspended by the daemon, a source the
+// boot's resume by rule acts on (supervise.SuspendSource.ByRule): the boot itself resumes each
+// claim, and that launch is what makes the pod, its launcher and its role process, which can all
+// start before the boot returns.
 //
 // plans is what the role process of each issue it names does, by the name the test calls the
-// issue; an issue it does not name runs the default plan. They are set before the boot because a
-// process reads the topics it takes and how it ends once, as it starts (idleRigRoleProcess.run):
-// set after the boot, a plan can reach a process that has already read the default one.
-func newPlannedIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string) *idleWakeRig {
+// issue; an issue it does not name, and every issue when plans is nil, runs the default plan. They
+// are set before the boot (idleRigPlan says why).
+func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string) *idleWakeRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	if _, err := pool.Exec(context.Background(), idleRigSessionTable()); err != nil {
@@ -211,6 +204,9 @@ func newPlannedIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ..
 	}
 	rig.boot()
 	rig.awaitListenerReady()
+	for _, issue := range rig.issues {
+		rig.launch(issue)
+	}
 	return rig
 }
 
@@ -281,16 +277,6 @@ func (r *idleWakeRig) issue(name string) idleRigIssue {
 	}
 	r.t.Fatalf("the rig seeded no issue called %s", name)
 	return idleRigIssue{}
-}
-
-// launchAll waits until every seeded issue's pod runs its role, in order. The daemon's boot has
-// already started each of them (newPlannedIdleWakeRig), so a plan a role process reads as it
-// starts is given to the rig's construction rather than set before this.
-func (r *idleWakeRig) launchAll() {
-	r.t.Helper()
-	for _, issue := range r.issues {
-		r.launch(issue)
-	}
 }
 
 // idleRigDatabase and idleRigUser are the rig's own database and login, which its launchers'

@@ -62,15 +62,13 @@ const idleRigSender = "idle-rig-sender"
 // them all: each live claim suspended with the source `released`, and the pod, its disk and its
 // Sandbox deleted. Each subtest then drives its own pods' wakes.
 func TestIdleReleaseAndWake(t *testing.T) {
-	// What a role process reads once, as it starts, is given to the rig before the daemon boots,
-	// since the boot resumes every claim of the rig and so starts its pod: the topic the
-	// subscribed pod's session takes, as `envoy_subscribe` does, and how each just-released pod's
-	// process ends. The stuck pod's plan is left alone until its own subtest: a session that
-	// acknowledges a task and takes no turn has a turn due, which is a pod the rule keeps. Its
-	// subtest sets it in time, since a process reads whether it takes a turn at each task it is
-	// given.
+	// The rig is given every plan that sets a field a role process reads as it starts (idleRigPlan):
+	// the topic the subscribed pod's session takes, as `envoy_subscribe` does, and how each
+	// just-released pod's process ends. The stuck pod's plan is left alone until its own subtest,
+	// which can set it then, since TakeTurn is read at each task (idleRigPlan): a session that
+	// acknowledges a task and takes no turn has a turn due, which is a pod the rule keeps.
 	endsAsReleased := idleRigPlan{TakeTurn: true, ExitsAsReleasedInProduction: true}
-	rig := newPlannedIdleWakeRig(t, map[string]idleRigPlan{
+	rig := newIdleWakeRig(t, map[string]idleRigPlan{
 		idleRigSubscribed:         {TakeTurn: true, Topics: []string{idleRigSubscribedTopic}},
 		idleRigJustReleasedAgent:  endsAsReleased,
 		idleRigJustReleasedRole:   endsAsReleased,
@@ -80,7 +78,6 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		idleRigKeepNone, idleRigSubscribed, idleRigStuck, idleRigRestart, idleRigLapsed, idleRigFreed,
 		idleRigJustReleasedAgent, idleRigJustReleasedRole, idleRigJustReleasedRouted)
 
-	rig.launchAll()
 	rig.quiet()
 	rig.awaitReleased(rig.issues...)
 	// What each role was given before its pod was released — the phase task the daemon's boot

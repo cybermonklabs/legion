@@ -94,8 +94,7 @@ func idleRigEarlierBundle(issue string, at time.Time) runtime.WorkspaceBundle {
 // each holding a live claim ready or idle, each one the idle rule would otherwise take — stand
 // with their claims untouched.
 func TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain(t *testing.T) {
-	rig := newIdleWakeRig(t, idleRigOperatorRetry, idleRigFreshSession, idleRigQueuedStart)
-	rig.launchAll()
+	rig := newIdleWakeRig(t, nil, idleRigOperatorRetry, idleRigFreshSession, idleRigQueuedStart)
 	// From here no pod of the rig is released for being idle. The gate is shut now and kept
 	// shut by a goroutine of the rig's for the rest of the test, because the listener
 	// republishes a ready report every five minutes and the claim rows this test back-dates
