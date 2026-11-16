@@ -5,7 +5,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
-import { bounds, masked, named, rowLimit, runBounded, whether } from "./bounded-subprocess";
+import {
+  bounds,
+  type Listed,
+  masked,
+  maxReads,
+  named,
+  rowLimit,
+  runBounded,
+  stopTree,
+  whether,
+} from "./bounded-subprocess";
 
 const boundedModule = fileURLToPath(new URL("./bounded-subprocess.ts", import.meta.url));
 
@@ -164,6 +174,119 @@ test.skipIf(!existsSync("/proc/self/stat"))(
   // ends.
   rowLimit("short", "short")
 );
+
+/** The child of the scripted kills below: it has exited, as the setsid row's child has by the time
+ *  its kill runs. Its pid is no process's in their tables, and the pids they list are none of this
+ *  process's, which a kill never takes. */
+const exitedChild = { pid: process.pid + 1, start: 5_000, token: "the-exited-child's-token" };
+
+/** A process every scripted table lists beside the child's: pid 1, which carries no token and
+ *  whose environment reads whole. */
+const init: Listed = { pid: 1, ppid: 0, start: 1, tokens: [], unknown: false };
+
+/** `stopTree` of `exitedChild`, driven over `tables`, a scripted process table: read n answers
+ *  `tables[n - 1]`, and each read after the last answers the last again. It answers what the
+ *  kill did, in order: each `read`, each `pause`, each `signal <pid>`, and `child.kill`, which an
+ *  exited child never gets. No clock runs and no process is started or signalled: the pause and
+ *  the signal only record. The kill is told its table comes from `/proc`, so it runs the path
+ *  that reads again whatever this machine has. Its loop is synchronous, so a loop that lost its
+ *  `maxReads` bound would spin past every row clock; a read past `maxReads` throws instead. */
+function scriptedKill(tables: readonly (readonly Listed[])[]): string[] {
+  const did: string[] = [];
+  let reads = 0;
+  stopTree(
+    {
+      child: {
+        exitCode: 0,
+        kill: () => {
+          did.push("child.kill");
+        },
+        pid: exitedChild.pid,
+        signalCode: null,
+      },
+      start: exitedChild.start,
+      token: exitedChild.token,
+    },
+    {
+      pause: () => {
+        did.push("pause");
+      },
+      procfs: true,
+      read: () => {
+        reads += 1;
+        if (reads > maxReads) {
+          throw new Error(`the kill read the table ${reads} times, past maxReads of ${maxReads}`);
+        }
+        did.push("read");
+        return tables[Math.min(reads, tables.length) - 1];
+      },
+      signal: (pid) => {
+        did.push(`signal ${pid}`);
+      },
+    }
+  );
+  return did;
+}
+
+test("a kill reads again, after a pause, while a process started since the child reads unknown", () => {
+  // One of the child's processes, caught in its exec at read 1, its environment read empty;
+  // carrying the child's token at read 2, once the exec has loaded; and still listed at read 3,
+  // killed already, beside nothing new.
+  const pid = process.pid + 2;
+  const execing: Listed = { pid, ppid: 1, start: exitedChild.start + 1, tokens: [], unknown: true };
+  const loaded: Listed = { ...execing, tokens: [exitedChild.token], unknown: false };
+  expect(
+    scriptedKill([
+      [init, execing],
+      [init, loaded],
+      [init, loaded],
+    ])
+  ).toEqual(["read", "pause", "read", `signal ${pid}`, "read"]);
+});
+
+test("an unknown process that started before the child ends a kill at its first read", () => {
+  const older: Listed = {
+    pid: process.pid + 2,
+    ppid: 1,
+    start: exitedChild.start - 1,
+    tokens: [],
+    unknown: true,
+  };
+  expect(scriptedKill([[init, older]])).toEqual(["read"]);
+});
+
+test("a process started since the child that stays unknown ends a kill's reads at maxReads", () => {
+  const stuck: Listed = {
+    pid: process.pid + 2,
+    ppid: 1,
+    start: exitedChild.start + 1,
+    tokens: [],
+    unknown: true,
+  };
+  const did = scriptedKill([[init, stuck]]);
+  expect(did.filter((step) => step === "read")).toHaveLength(maxReads);
+  expect(did.filter((step) => step !== "read" && step !== "pause")).toEqual([]);
+});
+
+test("an unknown process the kill signalled already ends its reads", () => {
+  // One of the child's processes, carrying its token at read 1 and exiting at read 2, its memory
+  // gone, so its environment reads empty.
+  const pid = process.pid + 2;
+  const carrying: Listed = {
+    pid,
+    ppid: 1,
+    start: exitedChild.start + 1,
+    tokens: [exitedChild.token],
+    unknown: false,
+  };
+  const exiting: Listed = { ...carrying, tokens: [], unknown: true };
+  expect(
+    scriptedKill([
+      [init, carrying],
+      [init, exiting],
+    ])
+  ).toEqual(["read", `signal ${pid}`, "read"]);
+});
 
 test("a child's name hides each password libpq reads and keeps the rest", () => {
   // Each URL that carries a password is built from its parts, as replace-blocks-guard.test.ts

@@ -164,12 +164,14 @@ async function drive(
   return { code, stdout, stderr, started: existsSync(marker) };
 }
 
-/** What a row's failure says of the driver's run, whatever ended it: its exit code and its whole
- *  stderr. Each refusal of the driver's writes its reason there, naming the variable or the
- *  command it refused, so the failure says which refusal fired, or that none did. The stderr is
- *  read through `masked`, as a cost line's command is: a run that wrote a connection string there
- *  would otherwise carry its password into the failure, and the run's output reaches whatever log
- *  keeps it. */
+/** What a row's failure says of a driver that ended, whatever its exit code: that code and its
+ *  whole stderr. A driver its short bound stopped never reaches here: `runBounded` throws before
+ *  `drive` returns, and the row fails with that message, which names the child, the bound and the
+ *  time waited. Each refusal of the driver's writes its reason on its stderr, naming the variable
+ *  or the command it refused, so the failure says which refusal fired, or that none did. The
+ *  stderr is read through `masked`, as a cost line's command is: a run that wrote a connection
+ *  string there would otherwise carry its password into the failure, and the run's output reaches
+ *  whatever log keeps it. */
 function driverSaid({ code, stderr }: { code: number; stderr: string }): string {
   return ` The driver exited ${code}, and its stderr read:\n${masked(stderr) || "(nothing)"}`;
 }

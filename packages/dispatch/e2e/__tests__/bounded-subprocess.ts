@@ -54,8 +54,9 @@
  *   dc68da15 on 2026-11-15), 0.803 s and 0.19 s.
  * - `listing`, against 113.61 s, one of four listings started at once, in a whole-lane run under
  *   nine busy loops, three per CPU, on a pod of 3 CPUs, on 2026-11-16; against 76.20 s, the
- *   largest of the 22 listings of two such runs on 2026-11-15; and against 78.4 s for the first
- *   listing in a fresh checkout.
+ *   largest of the 22 listings of two such runs on 2026-11-15; and against 78.4 s, the spec's
+ *   reading of the first listing in a fresh checkout of main at c0c49979, on a pod of 2 CPUs
+ *   under six busy loops, on 2026-11-11, whose next two listings read 6.9 s and 7.0 s.
  * - `generation`, 30 s above the listings inside it. The `row-map` generation starts two listings
  *   of its own, so the inner bound fires first and the inner message is what the reader sees. The
  *   30 s is the tool's own start and the work it does outside its two listings. The generation
@@ -221,8 +222,9 @@ const tokensVariable = "DISPATCH_E2E_BOUNDED_TOKENS";
 const procfs = existsSync("/proc/self/stat");
 
 /** One process of the machine: its pid, its parent's pid, the bounded tokens of its environment,
- *  when it started, and whether its read could tell its tokens at all. */
-interface Listed {
+ *  when it started, and whether its read could tell its tokens at all. Exported for the rows of
+ *  `bounded-subprocess.test.ts` that script the table `stopTree` reads. */
+export interface Listed {
   readonly pid: number;
   readonly ppid: number;
   readonly tokens: readonly string[];
@@ -334,8 +336,9 @@ function treeOf(table: readonly Listed[], token: string, root: number | undefine
 /** The most reads of the process table one kill makes. Each read kills what it finds, so only a
  *  tree that keeps forking faster than it is killed reaches this, or an `unknown` process started
  *  since the child that stays unknown, such as one started with an empty environment: the reads
- *  wait on it, `execPause` apart, until this bound. */
-const maxReads = 100;
+ *  wait on it, `execPause` apart, until this bound. Exported for the row of
+ *  `bounded-subprocess.test.ts` that counts those reads. */
+export const maxReads = 100;
 
 /** How long a kill waits, in milliseconds, before it reads the table again for an `unknown`
  *  process alone (`stopTree`). No verdict rests on it: the reads end at the first one that finds
@@ -350,11 +353,30 @@ const execPause = 5;
 /** One bounded child being waited for, the token its environment carries, and when it started:
  *  field 22 of its `/proc/<pid>/stat`, in clock ticks since boot, read once as it spawns. Every
  *  process the child starts starts after it. It is 0 where `/proc` is missing, or where the child
- *  was gone before that read, and 0 counts every process as started since the child. */
+ *  was gone before that read, and 0 counts every process as started since the child. `child` is
+ *  what `stopTree` reads of the child and does to it: a `Subprocess` has it, and the rows of
+ *  `bounded-subprocess.test.ts` that drive `stopTree` hand a stand-in. */
 interface Running {
-  readonly child: Subprocess;
+  readonly child: Pick<Subprocess, "exitCode" | "kill" | "pid" | "signalCode">;
   readonly start: number;
   readonly token: string;
+}
+
+/** What `stopTree` reads the process table with, signals a process with and waits with, and
+ *  whether that table comes from `/proc`. Each defaults to the real one: the rows of
+ *  `bounded-subprocess.test.ts` that drive the kill over a scripted table pass their own, and no
+ *  other caller passes any. */
+interface Collaborators {
+  /** Whether `read` lists processes from `/proc`, with their tokens and `unknown` reads: this
+   *  machine's `procfs`. The rows pass `true`, so they run the path that reads again on any
+   *  machine. */
+  readonly procfs?: boolean;
+  /** Reads the process table: `processTable`. */
+  readonly read?: () => readonly Listed[] | undefined;
+  /** Sends SIGKILL to one pid, and may throw where it is gone: `process.kill`. */
+  readonly signal?: (pid: number) => void;
+  /** Waits before a read made for `unknown` processes alone: `Bun.sleepSync(execPause)`. */
+  readonly pause?: () => void;
 }
 
 /** Kills one bounded child and every process it started.
@@ -381,6 +403,15 @@ interface Running {
  *  child cannot carry its token, and one this kill signalled is exiting, not exec'ing, so
  *  neither keeps the reads going.
  *
+ *  Four rows of `bounded-subprocess.test.ts` hold those reads with no clock and no real process,
+ *  each driving this loop over a scripted table through the second argument below. A process
+ *  read `unknown` and then with the child's token is read again after one pause and killed, and
+ *  the next read, which finds nothing new, ends the reads; an unknown process that started
+ *  before the child, or that this kill signalled, ends them at once; and one that stays unknown
+ *  ends them at `maxReads`. The row whose child leaves a `setsid sleep` behind does not hold the
+ *  second read: a kill without it misses that sleep only where the sleep is caught in its exec,
+ *  which was 2 of the 500 runs above.
+ *
  *  Nothing is stopped with SIGSTOP first. A child shares this process's group, and where that
  *  group is orphaned - no member's parent stands in another group of the same session, as under
  *  `setsid` or in a pod - the kernel sends SIGHUP to every member of a group that holds a stopped
@@ -401,33 +432,46 @@ interface Running {
  *  The child's own pid is signalled only through `child.kill`, and only while the runtime has
  *  not seen the child exit. Once the runtime reaps a child the system may give its pid to another
  *  process, so the child's pid seeds only the first read, taken before the child is killed, and
- *  a child that has exited is found by its token alone. */
-function stopTree({ child, start, token }: Running): void {
+ *  a child that has exited is found by its token alone.
+ *
+ *  The second argument is for those four rows, which are why this is exported, and no other
+ *  caller passes it: each of its fields defaults to the real one (`Collaborators`). `child.kill`
+ *  is the child's own, so the rows hand a stand-in child, one that has exited and is never
+ *  killed. */
+export function stopTree(
+  { child, start, token }: Running,
+  {
+    procfs: fromProc = procfs,
+    read = processTable,
+    signal = (pid) => process.kill(pid, "SIGKILL"),
+    pause = () => Bun.sleepSync(execPause),
+  }: Collaborators = {}
+): void {
   const alive = child.exitCode === null && child.signalCode === null;
-  if (!alive && !procfs) return;
+  if (!alive && !fromProc) return;
   // The child's pid counts as killed from the start, so nothing but `child.kill` signals it.
   const killed = new Set<number>(alive ? [child.pid] : []);
-  for (let read = 0; read < maxReads; read++) {
-    const root = alive && read === 0 ? child.pid : undefined;
-    const table = processTable() ?? [];
+  for (let reads = 0; reads < maxReads; reads++) {
+    const root = alive && reads === 0 ? child.pid : undefined;
+    const table = read() ?? [];
     const found = treeOf(table, token, root);
     if (root !== undefined) child.kill("SIGKILL");
     const fresh = [...found].filter((pid) => !killed.has(pid));
     for (const pid of fresh) {
       try {
-        process.kill(pid, "SIGKILL");
+        signal(pid);
       } catch {
         // ESRCH: it ended already.
       }
       killed.add(pid);
     }
-    if (!procfs) break;
+    if (!fromProc) break;
     if (fresh.length > 0) continue;
     const pending = table.some(
       (listed) => listed.unknown && listed.start >= start && !killed.has(listed.pid)
     );
     if (!pending) break;
-    Bun.sleepSync(execPause);
+    pause();
   }
 }
 
@@ -606,11 +650,12 @@ const passwordKey = secretKeys
  *  whitespace and runs to the next whitespace, `&`, quote or backslash, or, where it opens with
  *  `'`, as libpq and a shell quote a value holding a space, to the `'` that closes it. An empty
  *  value, as in `password=`, `password=&dbname=d`, `password=''` or `PGPASSWORD=`, holds no
- *  password and is left as it is. No other key is hidden, as a key is read whole and `_` is a
- *  character a key holds: `dbname=mine`, `passwords=x`, `mypassword=x`, `sslpasswords=x`,
- *  `mysslpassword=x`, `my_oauth_client_secret=x`, `scram_client_keys=x`, `-dbname=x`,
- *  `-Xdbname=x`, `-dmydb` and `-dpasswords=x` stay, but in `password= dbname=mine` libpq reads
- *  `dbname=mine` as the password, and it is hidden. */
+ *  password and is left as it is. No other key is hidden, but a longer key that ends in a secret
+ *  key after `-` and option letters (above). `_` is a character a key holds, and with no `-` and
+ *  option letters before it a key is read whole, so `dbname=mine`, `passwords=x`, `mypassword=x`,
+ *  `sslpasswords=x`, `mysslpassword=x`, `my_oauth_client_secret=x`, `scram_client_keys=x`,
+ *  `-dbname=x`, `-Xdbname=x`, `-dmydb` and `-dpasswords=x` stay, but in `password= dbname=mine`
+ *  libpq reads `dbname=mine` as the password, and it is hidden. */
 const passwordParameter = new RegExp(
   String.raw`(?:(?<![\w%])|(?<=(?:^|[\s"'\\])-[a-z0-9]+))` +
     String.raw`(pgpassword=|(?:${passwordKey})\s*=\s*)` +
