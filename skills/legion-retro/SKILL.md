@@ -31,12 +31,13 @@ would put a commit above the head the reviewer approved.
 ## A news task during retro
 
 A news task can reach you during retro: it names a person's approval of a new version of the
-tree's design and what changed for your issue, or it says that nothing your issue holds changed,
-which needs no comment. Answer it as the implementer does, by the rule in your role prompt. When
-the reviewed head is stale, call `request_backward_move` with `to`, the phase that must do the
-work again, and a `reason` that names the version and the change. Retro has nothing to push
-first, since it commits nothing. When the head is still current, write a `dispatch comment` on
-the issue that names the version and why, and go on with retro.
+tree's design and what changed for your issue, or it says that nothing your issue holds changed.
+Answer it as the implementer does, by the rule in your role prompt. When the reviewed head is
+stale, call `request_backward_move` with `to`, the phase that must do the work again, and a
+`reason` that names the version and the change. Retro has nothing to push first, since it commits
+nothing. When the head is still current, write a `dispatch comment` on the issue that names the
+version and why, and go on with retro. A news task that says nothing your issue holds changed
+needs no comment.
 
 ## When retro stops
 

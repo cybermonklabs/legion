@@ -148,13 +148,13 @@ func (r *newsPathRig) sweepNews() {
 	}
 }
 
-// sI path 1. An earlier daemon sent the reviewer its news task, the change list of version 4 and no
-// opening, and Oh My Pi acknowledged it; the daemon stopped before the task's turn started. The gate
-// then closed and opened again while the reviewer was still owed that news, so its row owes the
-// opening and no opened message went. The booted daemon's send renders the task again, which takes
-// the owed opening on, and only then asks the agent whether the turn it is in is the task's. The
-// agent answers that it is streaming, and that turn is the earlier prompt's, which carried no
-// opening: the confirmation raises the version that prompt told and leaves the opening owed.
+// An earlier daemon sent the reviewer its news task, the change list of version 4 and no opening,
+// and Oh My Pi acknowledged it; the daemon stopped before the task's turn started. The gate then
+// closed and opened again while the reviewer was still owed that news, so its row owes the opening
+// and no opened message went. The booted daemon's send renders the task again, which takes the
+// owed opening on, and only then asks the agent whether the turn it is in is the task's. The agent
+// answers that it is streaming, and that turn is the earlier prompt's, which carried no opening:
+// the confirmation raises the version that prompt told and leaves the opening owed.
 func TestARestartsConfirmationOfATaskSentWithoutTheOpeningLeavesTheOpeningOwed(t *testing.T) {
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
@@ -182,11 +182,11 @@ func TestARestartsConfirmationOfATaskSentWithoutTheOpeningLeavesTheOpeningOwed(t
 	r.wantTold("after the restart's confirmation of a task sent without the opening", pathRoot, record.AudienceHolder, 4, true)
 }
 
-// sI path 2. The reviewer's news task, the change list of version 4 and no opening, is acknowledged,
-// and its turn does not start within the wait (noTurn): the task is taken back under a new id, and
-// the first prompt stays outstanding. The gate closes and opens again meanwhile, so the reviewer's
-// row owes the opening. The next trigger sends the task again, rendered with the opening, and Oh My
-// Pi answers that send busy, since it is preparing the first prompt's turn. That turn starts: it
+// The reviewer's news task, the change list of version 4 and no opening, is acknowledged, and its
+// turn does not start within the wait (noTurn): the task is taken back under a new id, and the
+// first prompt stays outstanding. The gate closes and opens again meanwhile, so the reviewer's row
+// owes the opening. The next trigger sends the task again, rendered with the opening, and Oh My Pi
+// answers that send busy, since it is preparing the first prompt's turn. That turn starts: it
 // confirms the task, and raises what the first prompt carried, which said nothing of the opening.
 func TestALateTurnOfAFirstPromptLeavesTheOpeningABusyResendRenderedOwed(t *testing.T) {
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
@@ -228,8 +228,8 @@ func TestALateTurnOfAFirstPromptLeavesTheOpeningABusyResendRenderedOwed(t *testi
 	r.wantTold("after the first prompt's late turn", pathRoot, record.AudienceHolder, 4, true)
 }
 
-// sI path 3. The reviewer is in a turn of its own when the reconcile queues its news task, and the
-// gate closes and opens again while the task waits, so the task, sent at the turn's end, carries the
+// The reviewer is in a turn of its own when the reconcile queues its news task, and the gate
+// closes and opens again while the task waits, so the task, sent at the turn's end, carries the
 // opening. Before that task's turn starts the gate closes and opens again: the reviewer is told the
 // close, and the reopening owes it a new opening, which no message tells. The task's turn confirms
 // it: the version it told is raised, and the new opening stays owed. The reviewer is then told the
@@ -272,12 +272,12 @@ func TestAConfirmationOfAnOpeningACloseAndReopeningReplacedLeavesTheReopeningOwe
 	r.wantTold("after the confirmation of the task that told the reopening", pathRoot, record.AudienceHolder, 4, false)
 }
 
-// sN and thread 4. The reviewer's news task is sent while the working copy's adoption is refused,
-// or while the reviewer's GitHub App identity cannot be minted, so its prompt never reaches the
-// agent, though the send marked the task prompted. The daemon is restarted, and the agent of the
-// booted daemon is in a turn of its own, an Envoy message's, when its first turn start is read: that
-// turn is not the task's, so it confirms nothing and raises nothing. The turn's end sends the task,
-// and the turn its prompt starts confirms it.
+// The reviewer's news task is sent while the working copy's adoption is refused, or while the
+// reviewer's GitHub App identity cannot be minted, so its prompt never reaches the agent, though
+// the send marked the task prompted. The daemon is restarted, and the agent of the booted daemon
+// is in a turn of its own, an Envoy message's, when its first turn start is read: that turn is not
+// the task's, so it confirms nothing and raises nothing. The turn's end sends the task, and the
+// turn its prompt starts confirms it.
 func TestARestartNeverConfirmsANewsTaskWhoseSendFailedBeforeItsPrompt(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -341,7 +341,7 @@ func TestARestartNeverConfirmsANewsTaskWhoseSendFailedBeforeItsPrompt(t *testing
 	}
 }
 
-// sS. The reviewer's news task is confirmed by its turn, which raises what it told. While that turn
+// The reviewer's news task is confirmed by its turn, which raises what it told. While that turn
 // runs, an operator gives the reviewer a task, which takes the confirmed task's place. The turn then
 // ends in a provider error, whose result names a task the claim no longer holds, so the fence drops
 // it as stale and nothing takes the news back there. The retirement gave it back: the reviewer is
@@ -402,10 +402,10 @@ func (r *newsPathRig) checksEvent(kind intake.DispatchArtifactKind, version int)
 	applyFact(r.t, r.pool, "dispatch", fmt.Sprintf("checks-%s-%d-%d", kind, version, r.marks), fact, r.engine, r.admission)
 }
 
-// sW, the five steps. A child's reviewer holds news task D (spec 3 to 4, no opening), waiting
-// behind a turn of its own. A Verification version closes the gate and its approval opens it while
-// the reviewer is still owed spec 4, so its row owes the opening. Another Verification version
-// closes the gate, which settles that opening, and D is sent while the gate is closed, so it says
+// A child's reviewer holds a news task (spec 3 to 4, no opening), waiting behind a turn of its
+// own. A Verification version closes the gate and its approval opens it while the reviewer is
+// still owed spec 4, so its row owes the opening. Another Verification version closes the gate,
+// which settles that opening, and the news task is sent while the gate is closed, so it says
 // nothing of an opening, and its confirmation raises spec to 4. The Verification document is
 // approved: the reviewer is owed nothing now, so it is sent the opened message, which settles the
 // opening too. A version of the spec that changes decision blocks alone, which Dispatch carries
@@ -434,12 +434,12 @@ func TestAnOpenedMessageAndACloseSettleTheOpeningSoADecisionOnlyVersionSendsNoth
 		return nil
 	})
 
-	// Step 1: task D waits behind a turn of the reviewer's own.
+	// Step 1: the news task waits behind a turn of the reviewer's own.
 	reviewer, conn, token := r.reviewerBetweenTurns(pathChild)
 	ownTurn(r.ctx, t, reviewer, token)
 	r.queueNewsTask(pathChild)
 	if news := pendingNewsOf(t, reviewer); len(news.Items) != 1 || news.Items[0].To != 4 || len(news.Openings) != 0 {
-		t.Fatalf("task D carries %+v, want spec 4 and no opening", news)
+		t.Fatalf("the news task carries %+v, want spec 4 and no opening", news)
 	}
 
 	// Step 2: a Verification version closes the gate, and its approval opens it.
@@ -448,19 +448,20 @@ func TestAnOpenedMessageAndACloseSettleTheOpeningSoADecisionOnlyVersionSendsNoth
 	r.run(ofKind(record.OutboxKindRoleMessage))
 	r.wantTold("at the opening", pathChild, record.AudienceHolder, 3, true)
 
-	// Step 3: another Verification version closes the gate, and D is sent while it is closed.
+	// Step 3: another Verification version closes the gate, and the news task is sent while it is
+	// closed.
 	r.checksEvent(intake.DispatchArtifactVersion, 3)
 	r.run(ofKind(record.OutboxKindRoleMessage))
 	before := len(conn.Prompts())
 	endTurn(r.ctx, t, reviewer, token)
 	sent := r.delivered(reviewer)
 	if prompted := promptsAfter(conn, before); len(prompted) != 1 || prompted[0].DeliveryID != sent.ID || strings.Contains(prompted[0].Message, "opened") {
-		t.Fatalf("the reviewer's prompts while the gate is closed = %+v, want task D, saying nothing of an opening", prompted)
+		t.Fatalf("the reviewer's prompts while the gate is closed = %+v, want the news task, saying nothing of an opening", prompted)
 	}
 	r.startTurn(reviewer)
 	endTurn(r.ctx, t, reviewer, token)
 	if took, _ := r.toldOf(pathChild, record.AudienceHolder).Took(record.DesignStepSpec); took != 4 {
-		t.Fatalf("the reviewer took spec %d after D's confirmation, want 4", took)
+		t.Fatalf("the reviewer took spec %d after the news task's confirmation, want 4", took)
 	}
 
 	// Step 4: the Verification document is approved, and the reviewer, owed nothing, is sent the

@@ -984,11 +984,11 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // the gate, through the one rule every writer of the owed opening calls (the SQL function
 // design_news_opening_settled, through record.Store.SettleOpening and CloseOpenings): the opening a
 // holder owed news is owed (owed), the opening the opened message told (not owed), and the close,
-// which settles every told row of the tree, linger or not, since the closed message is the last
-// word on any opening before it. Each moves the row's opening number, so a task that carried an
-// earlier opening never clears a later one at its confirmation, and an opened message never leaves
-// a holder owed an opening it was told: a later version that changes decision blocks alone then
-// sends that holder nothing (the daemon's settlementOf).
+// which settles every told row of the tree, linger or not, since an opening owed before a close is
+// never told. Each moves the row's opening number, so a task that carried an earlier opening never
+// clears a later one at its confirmation, and an opened message never leaves a holder owed an
+// opening it was told: a later version that changes decision blocks alone then sends that holder
+// nothing (the daemon's settlementOf).
 //
 // A holder whose message token cannot be built is logged and skipped, and the rest are told. The
 // gate's state is the record this transaction writes; a message is what the record is worth

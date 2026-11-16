@@ -27,9 +27,9 @@ body: |-
   phase: an architect's task does not tell a member that the architect signed off while the task
   waited, and the member's next holder is told instead. If the gate closes and opens again while a
   holder's news task waits, that task carries the opening, so the holder gets the opening once.
-  After a restart, a news task that no prompt reached the agent with is sent, and a turn the agent
-  started by itself does not count as that task's turn; a send whose working-copy adoption or
-  identity mint failed counts as no prompt.
+  After a restart, the daemon sends a news task that no prompt reached the agent with. A turn the
+  agent started by itself does not count as that task's turn. A send whose working-copy adoption
+  or identity mint failed counts as no prompt.
 
   A turn records as told only what the prompt of that turn carried. A later send can render more
   of the news, such as an opening the gate owes since, and the turn that starts can still be the
@@ -55,8 +55,8 @@ body: |-
   task's news, and every other holder gets the opened message, which now says, where the record
   shows it, that nothing its issue holds changed. Migration `20261114082752_design_news` adds the
   tables `design_news_told` (with its column `opening_seq`), `design_changes` and
-  `design_history_unread`, the function `design_news_opening_settled`, and the columns
-  `pending_task_deliveries.design_news`, `carried_news` and `news_only`.
+  `design_history_unread`, the functions `design_news_raised` and `design_news_opening_settled`,
+  and the columns `pending_task_deliveries.design_news`, `carried_news` and `news_only`.
 
   A rollback to the release before this one needs no schema restore, but it needs four statements
   first, because that release refuses an outbox payload member it does not know, its upsert of a

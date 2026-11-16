@@ -74,22 +74,14 @@ func owedNewsItems(news record.TreeNews, root string) []owedNewsItem {
 //  3. In one write transaction, it records each change set it read (record.Store.PutDesignChanges),
 //     each version the review history answered (record.Store.FillTold), clearing what the record
 //     held of that history as unread (record.Store.ClearDesignHistoryUnread), and each history it
-//     gave up on (record.Store.PutDesignHistoryUnread). A document Dispatch no longer holds, which
-//     it answers 404 ARTIFACT_NOT_FOUND (dispatch.ErrDocumentNotFound), has its pair recorded
-//     unavailable, and its review history recorded unread, at once, with Dispatch's refusal as the
-//     reason: a deleted document does not come back with a wait. Any other failed read returns its
-//     error, so the row retries on its backoff, and the attempt that is the row's
-//     designChangesAttempts-th records the pair unavailable, or the question unread, with the last
-//     error instead. A Dispatch build without the changes route (dispatch.ErrNoChangesRoute) is
-//     one such failure: while Dispatch rolls out, the next attempt can reach the build that has
-//     the route, so its pair is recorded unavailable only when every attempt has failed. The told
-//     row of a question recorded unread is left knowing no version. A read that failed says
-//     nothing about the document, so it is never written as version 0, which says no version was
-//     approved before: the news says the version could not be read, and why
-//     (workflow.RenderNews), and the next reconcile asks the history again, nothing being told
-//     from the unread row while that one is pending (readNewsRecorded). So every read this row
-//     makes ends within its bounded attempts, and a merger held for the news is released then
-//     (mergerWaitsForTheDesignGate).
+//     gave up on (record.Store.PutDesignHistoryUnread). A failed read is recorded unavailable or
+//     unread, or returned for the row to retry, as giveUpReason answers. The told row of a
+//     question recorded unread is left knowing no version. A read that failed says nothing about
+//     the document, so it is never written as version 0, which says no version was approved
+//     before: the news says the version could not be read, and why (workflow.RenderNews), and the
+//     next reconcile asks the history again, nothing being told from the unread row while that
+//     one is pending (readNewsRecorded). So every read this row makes ends within its bounded
+//     attempts, and a merger held for the news is released then (mergerWaitsForTheDesignGate).
 //  4. In one transaction under the fact lock (intake.SerializeFacts), it settles each owed member
 //     (settleNews).
 //  5. In that same transaction, it settles the tree root's architect row, and queues the root
@@ -98,8 +90,9 @@ func owedNewsItems(news record.TreeNews, root string) []owedNewsItem {
 // A root the record no longer holds owes nothing, and the row finishes. So does a tree owed
 // nothing at the first step, with no lock taken: every write that leaves news owed queues a
 // reconcile of its own (record.QueueDesignNews), and this row, running, does not stand in for it
-// (record.Store.DesignNewsPending). A tree owed an opening alone (record.OwedNews) reads nothing
-// of Dispatch and goes straight to the settling.
+// (record.Store.DesignNewsPending). A tree owed an opening alone (record.OwedNews) names no pair
+// of versions, so it reads nothing of Dispatch or of the recorded change sets, and goes straight
+// to the settling.
 func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error {
 	if r.dispatch == nil {
 		return errors.New("design_changes executor has no Dispatch client")
@@ -126,13 +119,16 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 		return nil
 	}
 	baselines, historyErr := r.resolveBaselines(ctx, row, items)
+	// A tree that names no pair, such as one owed an opening alone, has no change set to read.
 	var recorded map[record.VersionPair]record.DesignChanges
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		var err error
-		recorded, err = r.records.DesignChangesOf(ctx, tx, baselines.pairs)
-		return err
-	}); err != nil {
-		return fmt.Errorf("read the recorded change sets of the tree of %s: %w", root.Tree, err)
+	if len(baselines.pairs) > 0 {
+		if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+			var err error
+			recorded, err = r.records.DesignChangesOf(ctx, tx, baselines.pairs)
+			return err
+		}); err != nil {
+			return fmt.Errorf("read the recorded change sets of the tree of %s: %w", root.Tree, err)
+		}
 	}
 	read, readErr := r.readChangeSets(ctx, row, baselines.pairs, recorded)
 	if len(read) > 0 || len(baselines.fills) > 0 || len(baselines.unread) > 0 {
@@ -469,9 +465,10 @@ func (n newsRecorded) change(item record.NewsItem) (workflow.NewsChange, bool) {
 //   - the tree root's architect row is settled the same way, and its news goes by the root
 //     architect's news-only start, which also carries the holder form of each member in accepting
 //     the root architect owns;
-//   - a row that owes the opening alone, while the gate stands open (record.OwedNews: a task
-//     confirmed carrying an earlier opening, which a close and a reopening before its turn
-//     replaced), is sent the same way: its task leads with the opening and says nothing more.
+//   - a row that owes the opening alone, while the gate stands open (record.OwedNews: the prompt
+//     whose turn confirmed its task was rendered before the opening became owed, or carried an
+//     earlier opening that a close and a reopening replaced), is sent the same way: its task leads
+//     with the opening and says nothing more.
 //
 // A tree that lingers, a member out of the workflow, one that merged, or one whose phase has no
 // holder is owed nothing (record.OwedNews), so nothing is queued for it. Each start reads again,

@@ -68,12 +68,14 @@
 // run that stopped before its assertion, an architect that did not write the version its task asks
 // for among them. HARNESS is a run the harness failed: a fault of the harness before or after the
 // step's own outcome, or a session whose transcript holds the plugin's refusal of a daemon answer,
-// which ran with a `legion` tool that could not read the daemon. Neither SETUP nor HARNESS says
-// anything about the prompts the arms differ in, so the script does not count them. A HARNESS run
-// ends the proof in either arm, since no count of runs means anything past it. A head run that
-// does not pass ends the proof there, whatever its outcome: the head must reach its assertion and
-// pass in every run, and every model call after a run that did not would be spent for nothing. A
-// base run that ends PASS, FAIL or SETUP is the control's to read, and fails nothing.
+// which ran with a `legion` tool that could not read the daemon. The line prints after the run's
+// daemon stops, so a daemon that does not stop cleanly makes the run HARNESS too. Neither SETUP
+// nor HARNESS says anything about the prompts the arms differ in, so the script does not count
+// them. A HARNESS run ends the proof in either arm, since no count of runs means anything past it.
+// A head run that does not pass ends the proof there, whatever its outcome: the head must reach
+// its assertion and pass in every run, and every model call after a run that did not would be
+// spent for nothing. A base run that ends PASS, FAIL or SETUP is the control's to read, and fails
+// nothing.
 package daemon
 
 import (
@@ -527,29 +529,23 @@ type sessionsMember struct {
 // it ran, which a -test.run pattern can leave out, and how it ended. Its sessions end with its
 // outcome, before anything else of the run is read, so none spends a model call past it. A fault
 // of the harness fails the subtest, prints the run's line as HARNESS and ends the proof, since no
-// count of runs means anything past it: a fault before the step's own outcome, one in keeping the
-// transcripts after it, and a session whose transcript holds the plugin's refusal of a daemon
-// answer (sessionsEnding). Otherwise the step's own outcome is the answer.
+// count of runs means anything past it. These are such faults:
+//   - a fault before the step's own outcome;
+//   - a fault in ending the sessions (localRuntime.killEverything) or in keeping their transcripts
+//     after it;
+//   - a fault in a cleanup of the subtest, such as the daemon's stop or the store's close, since
+//     the line prints after them (sessionsRunLine.printAtEnd);
+//   - a session whose transcript holds the plugin's refusal of a daemon answer (sessionsEnding).
+//
+// Otherwise the step's own outcome is the answer.
 func (s *sessionsLive) run(step, arm string, n int, gates config.DesignGate, body func(*sessionsRun) (sessionsOutcome, string)) (ran bool, outcome sessionsOutcome) {
 	name := fmt.Sprintf("%s %s %d", step, arm, n)
-	outcome = sessionsHarness
+	line := newSessionsRunLine()
 	succeeded := s.t.Run(fmt.Sprintf("%s-%s-%d", step, arm, n), func(t *testing.T) {
 		ran = true
-		started := time.Now()
-		calls := s.calls.count()
+		// The run's line is the subtest's first cleanup, so it prints last.
+		line.printAtEnd(t, name, s.calls.count)
 		fmt.Printf("== %s\n", name)
-		why := "the harness failed; its log is above"
-		var refused []string
-		// The run's line is deferred first, so it runs last: after the transcripts are kept, and
-		// even when keeping them stops the subtest.
-		defer func() {
-			outcome, why = sessionsEnding(outcome, why, t.Failed(), refused)
-			said := string(outcome)
-			if outcome != sessionsPassed {
-				said += ": " + why
-			}
-			fmt.Printf("run %s: %s in %ds, %d model calls\n", name, said, int(time.Since(started).Seconds()), s.calls.count()-calls)
-		}()
 		var r *sessionsRun
 		defer func() {
 			if r == nil {
@@ -559,18 +555,18 @@ func (s *sessionsLive) run(step, arm string, n int, gates config.DesignGate, bod
 			if r.d == nil {
 				return
 			}
-			refused = r.keepTranscripts()
-			for _, session := range refused {
+			line.refused = r.keepTranscripts()
+			for _, session := range line.refused {
 				t.Errorf("the legion plugin refused a daemon answer as a body the daemon API contract does not describe, in the transcript of %s", session)
 			}
 		}()
 		r = s.newRun(t, name, arm, gates)
-		outcome, why = body(r)
+		line.outcome, line.why = body(r)
 	})
 	if !succeeded {
 		s.t.Fatalf("the harness failed in run %s; its log is above", name)
 	}
-	return ran, outcome
+	return ran, line.outcome
 }
 
 // newRun readies a run's configuration, database, Dispatch project and runtime. The step seeds its

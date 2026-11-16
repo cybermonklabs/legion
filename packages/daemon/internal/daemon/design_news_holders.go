@@ -49,10 +49,11 @@ func phaseHolder(project string, member record.Issue) (newsHolder, bool) {
 // token, read from its root's record as notice routing reads it (readNoticeRoute), "" where that
 // project names none. members is the tree's issues by key: those its caller read in its own
 // transaction, and those member read from the record on a miss. Every reader takes a member's
-// issue through member, so none mistakes a key it holds no issue of for an issue in no phase.
-// architects is the architect claim of each member as the record holds it, and architectOf the
-// member each token names, since a token carries the issue's key lowercased (claim.NewToken): both
-// are read the first time an owner is asked, and nil until then.
+// issue from the record, through member or, at a send, through records.Issue (readNewsAtSend),
+// which skips a key the record holds no issue of. So none mistakes such a key for an issue in no
+// phase. architects is the architect claim of each member as the record holds it, and
+// architectOf the member each token names, since a token carries the issue's key lowercased
+// (claim.NewToken): both are read the first time an owner is asked, and nil until then.
 type newsClaims struct {
 	project     string
 	root        record.Issue

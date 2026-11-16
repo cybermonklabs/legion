@@ -2004,15 +2004,21 @@ A confirmed delivery's copy goes too, so the raise its confirmation made stands,
 The earlier release writes neither column, so after the fourth statement no row holds a copy for a roll forward to raise.
 
 **Two costs of a rollback that no statement undoes.**
+The first cost exists only where `gates.design` gates `spec` and not `criteria`: the key is unset, `root-issues`, or a list such as `[spec]`.
+Under such a setting, this release holds a tree on a `criteria` row too, once its root registered its Verification document as `criteria` (`record.JoinsByRegistration`).
 The earlier release reads only the steps the deployment gates: its `TreeGate.Open` reads the rows of `RequiredSteps` alone, and it ignores a row of a step it does not gate.
 So a tree that this release holds on a registered `criteria` row, whose new Verification version waits for a person's approval, opens on `spec` alone after the rollback: its merger starts, and its children are released.
-These trees are the ones this read names, run before the rollback:
+Under such a setting, run this read before the rollback to find those trees:
 
 ```sql
 select issue from design_gates where step = 'criteria' and approved_version is distinct from latest_version;
 ```
 
-Roll back while it names a tree only when that tree may merge on its approved spec alone, or park that tree's root first.
+If the read names a tree, park that tree's root before the rollback.
+A tree that may merge on its approved spec alone needs no park.
+Under a `gates.design` list that names `criteria`, the earlier release holds such a tree on its `criteria` row too.
+Under `off`, neither release holds a tree on a `criteria` row.
+So under either of those two settings, a tree that the read names needs no park.
 This release also deletes the `design_news_told` rows of an issue when it clears the issue's generation, and the earlier release does not know that table.
 So an issue that re-enters the workflow during the rollback keeps its old generation's rows, and after the roll forward `BaselineTold` leaves an existing row as it is.
 The new generation's holders are then owed news of versions their work never stood on, and each gets one news task for them, which it reads against its work.

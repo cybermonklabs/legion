@@ -335,9 +335,11 @@ func stepConcerns(step DesignStep, issue, tree string) bool {
 // A member whose holder row owes the opening (DesignTold.OpeningOwed) while the standing gate is
 // open and the tree does not linger is owed that opening, with no item where it is owed none, on
 // the same rule of its own record. The opening became owed because the holder was owed news when
-// the gate opened, and the task that carried that news can be confirmed without it: it carried an
-// earlier opening, which a close and a reopening before its turn replaced. So no role message told
-// this opening, and a task of its own does (MemberNews with no Items).
+// the gate opened, and the task that carried that news can be confirmed without it. Either the
+// prompt whose turn confirms the task was rendered before the opening became owed (the turn after
+// a restart, or the late turn of a prompt whose resend Oh My Pi answered busy), or that prompt
+// carried an earlier opening, which a close and a reopening before its turn replaced. So no role
+// message told this opening, and a task of its own does (MemberNews with no Items).
 //
 // Every member owed nothing is named in Untold with the reason, the first that holds of those
 // UntoldReason lists: what its holder took, then its own record, then the hold of the standing

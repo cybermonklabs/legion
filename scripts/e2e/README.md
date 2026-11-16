@@ -5004,6 +5004,7 @@ The outcome is `PASS` or `FAIL` for a run that reached the step's assertion, and
 It is `SETUP` for a run that stopped before its assertion: a holder that did not end its start turn in the run's bound, a reviewer the daemon never gave its news, or an architect that did not write the version the operator's task asks for.
 The assertion of the a4 and `off` steps is the telling of that version, so a run in which it was never written never tried the telling, in either arm.
 It is `HARNESS` for a run the harness failed, before or after the step's own outcome, which ends the proof in either arm.
+The driver prints a run's line after it ends the run's sessions, keeps their transcripts and stops the run's daemon, so a fault in any of these steps makes the run `HARNESS` too.
 A run is `HARNESS` too when a session's transcript holds a tool result in which the plugin refused a daemon answer (`<method> <route> answered <status> with a body the daemon API contract does not describe: …`).
 That session's `legion` tool could not read the daemon, so the run says nothing about the prompts, and its line names the session.
 The script does not count a `SETUP` or `HARNESS` run, so such a run never makes the control bite.

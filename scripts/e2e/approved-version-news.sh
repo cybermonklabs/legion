@@ -55,14 +55,15 @@
 # prints each run's evidence and `run <step> <arm> <n>: <outcome> …`. PASS and FAIL are runs that
 # reached the step's assertion. SETUP is a run that stopped before it, such as a holder that did
 # not end its start turn in the run's bound, or an architect that did not write the version its
-# task asks for, whose telling is the a4 and off steps' assertion. HARNESS is a run the harness
-# failed, before or after the step's own outcome, or one in which a session's `legion` tool could
-# not read the daemon: the plugin refused the daemon's answer as a body the daemon API contract
-# does not describe. The driver ends the proof at a HARNESS run in either arm. This script counts
-# PASS and FAIL alone for an arm, prints `<step> <arm>: <p> of <n> runs that reached the assertion
-# passed` for each step and arm, and names each run it did not count. Part two passes when every
-# head run reached its assertion and passed: a head run that stopped before its assertion fails
-# the run, and its FAIL line names it.
+# task asks for. The a4 and off steps assert the telling of that version. HARNESS is a run the
+# harness failed, before or after the step's own outcome, or one in which a session's `legion`
+# tool could not read the daemon: the plugin refused the daemon's answer as a body the daemon API
+# contract does not describe. The driver prints a run's line after it stops the run's daemon, so a
+# fault in that stop makes the run HARNESS too. The driver ends the proof at a HARNESS run in
+# either arm. This script counts PASS and FAIL alone for an arm, prints `<step> <arm>: <p> of <n>
+# runs that reached the assertion passed` for each step and arm, and names each run it did not
+# count. Part two passes when every head run reached its assertion and passed: a head run that
+# stopped before its assertion fails the run, and its FAIL line names it.
 # The base arm is the control of each step: it bites when a base run failed at its assertion. A
 # base arm that passed every run that reached its assertion is printed as no control for that
 # step, which fails nothing, and a setup failure is never counted as the control biting. The
@@ -235,11 +236,12 @@ control_verdict() {
 
 # part_two_step PROOF STEP WORD reads STEP's `run STEP <arm> <n>: <outcome> …` lines in part two's
 # driver output PROOF. A PASS or FAIL run reached the step's assertion, and it counts for its arm. A
-# SETUP or HARNESS run stopped before the assertion, so it does not count, and it is noted by its
-# line. It sets step_said, the step's part of the last line: WORD, each arm's passed runs of those
-# that reached the assertion, the runs not counted, and the control's verdict. The control bites
-# only when a base run failed at its assertion. It also sets head_missed: each head run that did
-# not reach its assertion and pass, by its line, each after `; `.
+# SETUP run stopped before the assertion, and a HARNESS run is a fault of the harness before or
+# after it. Neither counts, and each is noted by its line. It sets step_said, the step's part of the
+# last line: WORD, each arm's passed runs of those that reached the assertion, the runs not
+# counted, and the control's verdict. The control bites only when a base run failed at its
+# assertion. It also sets head_missed: each head run that did not reach its assertion and pass, by
+# its line, each after `; `.
 part_two_step() {
   local proof=$1 step=$2 word=$3 arm lines ran passed failed line count counts=() base_ran=0 base_passed=0 base_failed=0
   head_missed=''
@@ -251,7 +253,7 @@ part_two_step() {
     line="$step $arm: $passed of $((passed + failed)) runs that reached the assertion passed"
     count="$arm $passed/$((passed + failed))"
     if [ "$ran" -ne $((passed + failed)) ]; then
-      line="$line; $((ran - passed - failed)) stopped before it, not counted"
+      line="$line; $((ran - passed - failed)) not counted (SETUP or HARNESS)"
       count="$count with $((ran - passed - failed)) not counted"
     fi
     [ "$ran" -eq "$part_two_runs" ] || line="$line ($ran of $part_two_runs ran)"

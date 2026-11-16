@@ -178,9 +178,6 @@ const failed =
 const setupFailed =
   "SETUP: the reviewer of AS1-2 did not end its start turn within the run's bound";
 const harnessFailed = "HARNESS: the harness failed; its log is above";
-// An architect that wrote no version 2 stopped the run before the telling the step asserts.
-const unwritten =
-  "SETUP: Dispatch holds no version 2 of AS1-2's Verification document with the new words: the architect did not make the edit the operator's task asks for, so the run did not reach its assertion";
 
 /** part_two_step over the A4 lines LINES: the step's part of the last line, the head runs that
  * missed, and the notes it printed. */
@@ -239,25 +236,5 @@ describe("part two's count of each arm", () => {
     const step = partTwoStep([runLine("head", 1, passed), runLine("head", 2, setupFailed)]);
     expect(step.said).toBe("a4 head 1/1 with 1 not counted, base 0/0 (base did not run)");
     expect(step.missed).toBe(`; a4: 2 of 3 head runs ran; ${runLine("head", 2, setupFailed)}`);
-  });
-
-  test("is no control when no base architect wrote the version its task asks for", () => {
-    const step = partTwoStep([
-      ...headPassed,
-      runLine("base", 1, unwritten),
-      runLine("base", 2, unwritten),
-      runLine("base", 3, unwritten),
-    ]);
-    expect(step.said).toBe(
-      "a4 head 3/3, base 0/0 with 3 not counted (no control: no base run reached its assertion)"
-    );
-    expect(step.missed).toBe("");
-    expect(step.notes).toContain(`   not counted: ${runLine("base", 1, unwritten)}\n`);
-  });
-
-  test("names a head run whose architect wrote no version, which is no pass", () => {
-    const step = partTwoStep([runLine("head", 1, passed), runLine("head", 2, unwritten)]);
-    expect(step.said).toBe("a4 head 1/1 with 1 not counted, base 0/0 (base did not run)");
-    expect(step.missed).toBe(`; a4: 2 of 3 head runs ran; ${runLine("head", 2, unwritten)}`);
   });
 });

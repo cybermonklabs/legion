@@ -1484,8 +1484,8 @@ func (m *Machine) confirmCarrying(ctx context.Context, news []byte) error {
 //     id since — so the turn raises nothing of it either: told twice, never credited for a prompt
 //     that was not this delivery's.
 //   - Otherwise the turn is one a restart's question took for the earlier daemon's send
-//     (askFirst), or one a replay named, or one a prompt's result says ran: what the delivery holds
-//     is the copy that prompt's acknowledgement wrote, and none where no prompt was acknowledged.
+//     (askFirst), or one a replay named: what the delivery holds is the copy that prompt's
+//     acknowledgement wrote, and none where no prompt was acknowledged.
 func (m *Machine) confirmedNews() []byte {
 	switch {
 	case m.awaitsResult():

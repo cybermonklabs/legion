@@ -14,10 +14,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/notify"
 )
@@ -41,7 +44,8 @@ const (
 	// never written never tried the telling, in either arm.
 	sessionsSetup sessionsOutcome = "SETUP"
 	// sessionsHarness is a run the harness failed, which ends the proof in either arm: a fault of
-	// the harness before or after the step's own outcome, or a session whose `legion` tool could
+	// the harness before or after the step's own outcome, up to the daemon's stop and the closes
+	// of the run's cleanups (sessionsRunLine.printAtEnd), or a session whose `legion` tool could
 	// not read the daemon (sessionsEnding).
 	sessionsHarness sessionsOutcome = "HARNESS"
 )
@@ -93,6 +97,40 @@ func sessionsEnding(outcome sessionsOutcome, why string, failed bool, refused []
 		return sessionsHarness, "the harness failed after the step ended " + ended + "; the test log above names the failure"
 	}
 	return outcome, why
+}
+
+// sessionsRunLine is what a run's line prints from: the word and the reason the step's body
+// answered, and each session whose transcript holds the plugin's refusal of a daemon answer
+// (refusedByContract).
+type sessionsRunLine struct {
+	outcome sessionsOutcome
+	why     string
+	refused []string
+}
+
+// newSessionsRunLine is a run's line before its step answers. It is HARNESS, since a run the
+// harness stops before its step answers holds no word of the step's.
+func newSessionsRunLine() *sessionsRunLine {
+	return &sessionsRunLine{outcome: sessionsHarness, why: "the harness failed; its log is above"}
+}
+
+// printAtEnd prints the line of the run called name when t, the run's subtest, ends, with the
+// run's time and the model calls it made, as calls counts them. The print is a cleanup of t, and
+// the run registers it first, so it runs last: a test runs its cleanups in the reverse order of
+// their registration. The line then prints after the sessions end and their transcripts are kept,
+// and after every cleanup the run registers later, the daemon's stop and the store's close among
+// them, whichever of them stops the subtest. So a fault in any of them makes the line HARNESS
+// (sessionsEnding), and the script does not count the step's word.
+func (line *sessionsRunLine) printAtEnd(t *testing.T, name string, calls func() int64) {
+	started, before := time.Now(), calls()
+	t.Cleanup(func() {
+		line.outcome, line.why = sessionsEnding(line.outcome, line.why, t.Failed(), line.refused)
+		said := string(line.outcome)
+		if line.outcome != sessionsPassed {
+			said += ": " + line.why
+		}
+		fmt.Printf("run %s: %s in %ds, %d model calls\n", name, said, int(time.Since(started).Seconds()), calls()-before)
+	})
 }
 
 // sessionsCheckID is the id of the one check of A4's child.
@@ -479,5 +517,51 @@ func TestApprovedVersionNewsARunLinePrintsHarnessForAFaultAfterItsStep(t *testin
 				t.Fatalf("the line of %s ends %s: %q; want %s ending %q", tc.name, got, why, tc.want, tc.says)
 			}
 		})
+	}
+}
+
+// sessionsCleanupChildEnv tells the re-executed test binary to run the run below, which is skipped
+// in an ordinary run. That run has to fail, and a test that fails fails its parent, so it runs in
+// a binary of its own.
+const sessionsCleanupChildEnv = "LEGION_TEST_SESSIONS_CLEANUP_CHILD"
+
+// sessionsCleanupChildRun is the name of the child's run, as its line prints it.
+const sessionsCleanupChildRun = "a4-the-architect-tells-the-child-reviewer base 1"
+
+// TestApprovedVersionNewsRunWhoseCleanupFails is the child of the test below: a run whose step
+// ends FAIL at its assertion, and whose later cleanup, which stands for the daemon's stop, then
+// fails the test as daemon.stop does. It runs only when the parent re-executes this binary.
+func TestApprovedVersionNewsRunWhoseCleanupFails(t *testing.T) {
+	if os.Getenv(sessionsCleanupChildEnv) != "1" {
+		t.Skip(sessionsCleanupChildEnv + " is not set: this test is the child of TestApprovedVersionNewsARunLinePrintsHarnessForAFaultInItsCleanup")
+	}
+	line := newSessionsRunLine()
+	line.printAtEnd(t, sessionsCleanupChildRun, func() int64 { return 0 })
+	t.Cleanup(func() { t.Fatal("run: the daemon did not stop cleanly") })
+	line.outcome, line.why = sessionsFailed, "no message"
+}
+
+// A fault in a cleanup of a run makes its line HARNESS, whatever its step answered. The line is
+// the run's first cleanup, so it prints after the cleanups the run registers later: the daemon's
+// stop, which fails the test when the daemon does not stop cleanly, and the closes. A line
+// printed before them would print the step's word, and the script would count a base FAIL as the
+// control biting. The line says the test log above names the failure, so the fault prints above
+// it. The child runs with no database, since it reads none.
+func TestApprovedVersionNewsARunLinePrintsHarnessForAFaultInItsCleanup(t *testing.T) {
+	child := exec.Command(os.Args[0], "-test.run", "^TestApprovedVersionNewsRunWhoseCleanupFails$", "-test.v")
+	child.Env = append(os.Environ(), sessionsCleanupChildEnv+"=1", "LEGION_TEST_PG_DSN=")
+	out, err := child.CombinedOutput()
+	if err == nil {
+		t.Fatalf("the child was meant to fail; it passed:\n%s", out)
+	}
+	const fault = "run: the daemon did not stop cleanly"
+	want := "run " + sessionsCleanupChildRun + ": HARNESS: the harness failed after the step ended FAIL (no message); " +
+		"the test log above names the failure in "
+	at := strings.Index(string(out), want)
+	if at < 0 {
+		t.Fatalf("the child's output holds no line %q:\n%s", want, out)
+	}
+	if above := strings.Index(string(out), fault); above < 0 || above > at {
+		t.Fatalf("the child's output does not hold the cleanup's fault %q above its line:\n%s", fault, out)
 	}
 }
