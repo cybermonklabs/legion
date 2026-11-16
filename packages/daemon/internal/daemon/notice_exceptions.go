@@ -534,7 +534,7 @@ func (r *outbox) releaseWaiting(ctx context.Context, architects ...claim.Token) 
 			if err != nil {
 				return err
 			}
-			if owner, err := owningArchitect(route.project, route.issues, issue, notice.Kind, r.holdsItsRole); err == nil && slices.Contains(architects, owner) {
+			if owner, err := record.OwningArchitect(route.project, route.issues, issue, notice.Kind, notice.Role, r.holdsItsRole); err == nil && slices.Contains(architects, owner) {
 				released = append(released, row)
 			}
 		}

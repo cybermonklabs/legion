@@ -131,50 +131,6 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 	return route.issues[key], route, nil
 }
 
-// owningArchitect is the architect claim that owns a notice of kind about issue: the nearest issue
-// at or above it, through its parents, whose sub-architect claim runs (runs; one the operator
-// started, and not suspended: the workflow suspends a child's sub-architect when the child leaves,
-// and nothing starts it again for a notice), else the tree root, whose architect is the tree's own
-// claim. A child's close or status change starts at its parent: the child's own sub-architect is
-// suspended with it (workflow's leave), and the architect above it decides what the rest of the
-// tree does. The walk stays inside the issue's tree: admission records a Dispatch re-parent as it
-// comes and leaves the issue's tree as it was (admit's recordObservation), except a root that
-// never ran, which joins its parent's live tree (workflow/adopt.go), so a parent that is not an
-// issue of tree — not recorded, or recorded in another tree — ends the walk at the tree root.
-func owningArchitect(project string, tree map[string]record.Issue, issue record.Issue, kind record.NoticeKind, runs func(claim.Token) bool) (claim.Token, error) {
-	root := func() (claim.Token, error) { return claim.NewToken(project, issue.Tree, claim.RoleArchitect) }
-	current := issue
-	if (kind == "child-closed" || kind == "child-status") && issue.Parent != nil && !claim.IsTreeRoot(issue.Key, issue.Tree) {
-		parent, ok := tree[*issue.Parent]
-		if !ok {
-			return root()
-		}
-		current = parent
-	}
-	seen := map[string]bool{}
-	for {
-		if claim.IsTreeRoot(current.Key, current.Tree) {
-			return root()
-		}
-		token, err := claim.NewToken(project, current.Key, claim.RoleArchitect)
-		if err != nil {
-			return "", err
-		}
-		if runs(token) {
-			return token, nil
-		}
-		seen[current.Key] = true
-		if current.Parent == nil || seen[*current.Parent] {
-			return root()
-		}
-		parent, ok := tree[*current.Parent]
-		if !ok {
-			return root()
-		}
-		current = parent
-	}
-}
-
 // earlierNoticeFor is the oldest of tree's earlier notices that goes to architect as the claims
 // run now — its id and the moment it is due — or 0 and the zero moment when there is none. Each
 // earlier notice's architect is resolved again rather than recorded when it was held, since a
@@ -199,21 +155,16 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 		if !ok {
 			continue
 		}
-		if owner, err := owningArchitect(tree.project, tree.issues, issue, notice.Kind, runs); err == nil && owner == architect {
+		if owner, err := record.OwningArchitect(tree.project, tree.issues, issue, notice.Kind, notice.Role, runs); err == nil && owner == architect {
 			return other.ID, other.NextAt
 		}
 	}
 	return 0, time.Time{}
 }
 
-// claimRuns is whether a claim in state runs, or is on its way back to running: it has not ended,
-// and it is not suspended.
-func claimRuns(state supervise.ClaimState) bool {
-	return !claimEnded(state) && state != supervise.StateSuspended
-}
-
-// holdsRole is whether held's claim keeps its role through the decision in flight: it runs
-// (claimRuns), and that decision is not stopping its process for good (supervise.ClaimView's
+// holdsRole is whether held's claim keeps its role through the decision in flight: the record's
+// rule holds (record.HoldsRole: it has not ended, and it is not suspended unless the idle release
+// suspended it), and that decision is not stopping its process for good (supervise.ClaimView's
 // Stopping) — a suspension, a failure, a release. The routing reads it, so no notice is routed to
 // a sub-architect whose session is being stopped; it goes on up the tree, as it will once the stop
 // returns.
@@ -224,10 +175,7 @@ func claimRuns(state supervise.ClaimState) bool {
 // it to lose its role here, a notice for a released sub-architect would walk up to the architect
 // above it, which owns neither the issue nor the answer.
 func holdsRole(held supervise.ClaimView) bool {
-	if held.Released() {
-		return !held.Stopping
-	}
-	return claimRuns(held.State) && !held.Stopping
+	return record.HoldsRole(held.State, held.SuspendedBy) && !held.Stopping
 }
 
 // claimEnded is whether a claim in state will not hold its role again: this daemon does not
@@ -254,7 +202,8 @@ func (r *outbox) claimState(token claim.Token) supervise.ClaimState {
 	return r.supervisedClaim(token).State
 }
 
-// holdsItsRole is holdsRole for token's claim, the owning-architect walk's runs.
+// holdsItsRole is holdsRole for token's claim: the outbox's runs for the owner walk
+// (record.OwningArchitect).
 func (r *outbox) holdsItsRole(token claim.Token) bool {
 	return holdsRole(r.supervisedClaim(token))
 }

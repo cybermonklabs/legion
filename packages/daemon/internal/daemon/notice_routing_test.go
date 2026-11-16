@@ -139,11 +139,12 @@ func mustClaimToken(t *testing.T, issue string, role claim.Role) claim.Token {
 }
 
 // Every notice is architect-facing, so it goes to the architect that owns its issue, by the
-// TypeScript daemon's rule (owningArchitect): the nearest issue at or above it whose sub-architect
-// claim runs (not suspended, failed or retired), else the tree root; a child's close or status
-// change starts at its parent. The walk stays inside the issue's tree: admission records a Dispatch
-// re-parent as it comes and leaves the issue's tree as it was, so a parent that is not an issue of
-// that tree — not recorded, or recorded in another tree — ends the walk at the tree's root.
+// TypeScript daemon's rule (record.OwningArchitect): the nearest issue at or above it whose
+// architect claim holds its role (not suspended, failed or retired), else the tree root; a child's
+// close or status change starts at its parent. The walk stays inside the issue's tree: admission
+// records a Dispatch re-parent as it comes and leaves the issue's tree as it was, so a parent that
+// is not an issue of that tree — not recorded, or recorded in another tree — ends the walk at the
+// tree's root. The runs are the outbox's own (holdsRole), over the claim's state alone.
 func TestTheArchitectThatOwnsANotice(t *testing.T) {
 	root, child, unrecorded, elsewhere := "LEGION-1", "LEGION-2", "LEGION-77", "LEGION-50"
 	tree := map[string]record.Issue{
@@ -186,7 +187,9 @@ func TestTheArchitectThatOwnsANotice(t *testing.T) {
 			if kind == "" {
 				kind = "phase-finished"
 			}
-			got, err := owningArchitect("legion", tree, tree[tc.issue], kind, func(token claim.Token) bool { return claimRuns(states[token]) })
+			got, err := record.OwningArchitect("legion", tree, tree[tc.issue], kind, "", func(token claim.Token) bool {
+				return holdsRole(supervise.ClaimView{Claim: supervise.Claim{State: states[token]}})
+			})
 			if want := mustClaimToken(t, tc.owner, claim.RoleArchitect); err != nil || got != want {
 				t.Fatalf("owner = %s, %v; want %s", got, err, want)
 			}
