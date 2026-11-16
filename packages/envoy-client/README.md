@@ -227,10 +227,15 @@ Successful direct sends return both the envelope and listener-selected recipient
 `duplicate` when the listener already held a send under that target and idempotency key.
 A publish returns the envelope and an optional role holder. A role publish has three answers,
 told apart by status. 200 is a live holder that took the message, named by `holder`. 202 is a
-message the listener kept for the session that claims the role next, with `kept`, `keptReason`
-(`unclaimed` or `holder_lapsed`) and `holder` when a lapsed claim named one. 404 is nothing kept,
-thrown as an `EnvoyApiError`, and the sender's own fallback must run. A sender that keeps a queue
-of its own passes `keep: false` to get the 404. Network failures, timeouts (5 s an
+message the listener kept for one hour because no live session holds the role, with `kept`,
+`keptReason` (`unclaimed`, or `holder_lapsed` with the `holder`, its `holderState` and its
+`lastSeen` when the claim's holder is not live) and `keptUntil`, the end of that hour in epoch
+milliseconds. The next session to hold the role live before `keptUntil` is handed the message. If
+none does, the listener drops it and sends the publishing session a dead letter, when the publish
+named that session as its source and the listener did not drop it more than an hour late. A
+listener of an earlier release sends no `keptUntil`. 404 is nothing kept, thrown as an
+`EnvoyApiError`, and the sender's own fallback must run. A sender that
+keeps a queue of its own passes `keep: false` to get the 404. Network failures, timeouts (5 s an
 attempt, the answer's body included) and 5xx responses retry once after 250 ms, under the same
 idempotency key; a 4xx whose body does not arrive is still a refusal. A send any attempt of which
 got no answer, an unreadable 2xx or a 5xx throws `EnvoySendUnconfirmedError`, even when a later
