@@ -90,9 +90,9 @@ type socketClient struct {
 	ended   chan struct{}
 	err     error
 	endedAt time.Time
-	// database is the database the server behind the socket reads, which a wait on its event
-	// feed names as the test's own (eventFeedFrame): the rig's, or the one servedBy names.
-	database string
+	// database is the store of the server behind the socket, which a wait on its event feed
+	// names as the test's own (eventFeedFrame): the rig's, or the one servedBy names.
+	database *store.Store
 }
 
 // open dials the socket, failing the test unless the upgrade succeeds; it reads nothing until read.
@@ -229,18 +229,22 @@ type socketArrival struct {
 // cleanup closes the socket.
 func (c *socketClient) arrival() <-chan socketArrival {
 	arrived := make(chan socketArrival, 1)
-	heartbeat := func(data []byte) bool {
+	// deliver sends data unless it is a heartbeat, and says whether it sent.
+	deliver := func(data []byte) bool {
 		var head struct {
 			Type string `json:"type"`
 		}
-		return json.Unmarshal(data, &head) == nil && head.Type == "heartbeat"
+		if json.Unmarshal(data, &head) == nil && head.Type == "heartbeat" {
+			return false
+		}
+		arrived <- socketArrival{data: data}
+		return true
 	}
 	go func() {
 		for {
 			select {
 			case data := <-c.frames:
-				if !heartbeat(data) {
-					arrived <- socketArrival{data: data}
+				if deliver(data) {
 					return
 				}
 			case <-c.ended:
@@ -248,8 +252,7 @@ func (c *socketClient) arrival() <-chan socketArrival {
 				for {
 					select {
 					case data := <-c.frames:
-						if !heartbeat(data) {
-							arrived <- socketArrival{data: data}
+						if deliver(data) {
 							return
 						}
 					default:

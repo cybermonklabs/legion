@@ -25,7 +25,8 @@ import (
 // is read on a goroutine that sets no read deadline (horizontest.ReadFirstFrame).
 func (p *dispatchProcess) waitEventsStart(t *testing.T, conn *gws.Conn, sub string) {
 	t.Helper()
-	result := horizontest.Wait(t, "the event feed's events_start", horizontest.ReadFirstFrame(conn), p.stallWarnings(), p.database, p.Output.String)
+	result := horizontest.Wait(t, "the event feed's events_start", horizontest.ReadFirstFrame(conn), p.stallWarnings(), p.database,
+		horizontest.Dialed(p.databaseURL), p.Output.String)
 	switch {
 	case result.Err != nil:
 		t.Fatalf("read the event feed's events_start: %v\n%s", result.Err, p.Output.String())

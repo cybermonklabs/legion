@@ -36,11 +36,11 @@ const eventFeedWait = 30 * time.Second
 // these tests build warns at horizontest.StallWarning (newRegisteredTestServer).
 
 // eventFeedFrame is the next frame but a heartbeat client is sent, which what names: a frame of
-// the event feed, so the wait for it is the horizon's (horizontest.WaitInProcess), with client's
-// database as the test's own.
+// the event feed, so the wait for it is the horizon's (horizontest.WaitInProcess), on the store of
+// client's server.
 func eventFeedFrame(t *testing.T, client *socketClient, what string) any {
 	t.Helper()
-	if client.database == "" {
+	if client.database == nil {
 		t.Fatalf("waiting for %s on a socket whose server's database no one named (servedBy)", what)
 	}
 	arrived := horizontest.WaitInProcess(t, what, client.arrival(), client.database)
@@ -64,7 +64,7 @@ func eventFeedEvent(t *testing.T, client *socketClient, sub string) LiveEventFra
 // servedBy names database as the one the server behind c reads, for a wait on its event feed: a
 // socket a rig opens names the rig's, and one dialled to another process names that process's.
 func (c *socketClient) servedBy(database *store.Store) *socketClient {
-	c.database = database.Pool.Config().ConnConfig.Database
+	c.database = database
 	return c
 }
 
@@ -72,14 +72,14 @@ func (c *socketClient) servedBy(database *store.Store) *socketClient {
 // arrived delivers, from work that waits on that server's event horizon.
 func waitBehindHorizon[T any](t *testing.T, database *store.Store, what string, arrived <-chan T) T {
 	t.Helper()
-	return horizontest.WaitInProcess(t, what, arrived, database.Pool.Config().ConnConfig.Database)
+	return horizontest.WaitInProcess(t, what, arrived, database)
 }
 
 // pollBehindHorizon is horizontest.PollInProcess on the server reading database: a condition on
 // work that waits on that server's event horizon.
 func pollBehindHorizon(t *testing.T, database *store.Store, what string, condition func() bool) {
 	t.Helper()
-	horizontest.PollInProcess(t, what, database.Pool.Config().ConnConfig.Database, condition)
+	horizontest.PollInProcess(t, what, database, condition)
 }
 
 // eventHead is the newest committed event id: what a page resuming now would name as its since.

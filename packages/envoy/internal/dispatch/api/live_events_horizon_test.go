@@ -603,12 +603,7 @@ func TestTheRelaysFirstStartReadsAboveThePersistedHorizonWhileAnEventInsertFromB
 	// proof is instance-wide, so the wait for it keys on the horizon's own account of itself.
 	before := events.NewHorizon(database.Pool)
 	before.PersistProven()
-	before.SetStallWarning(horizontest.StallWarning, horizontest.StallWarning)
-	newest := eventHead(t, database)
-	if err := horizontest.WaitInProcess(t, fmt.Sprintf("a persisted horizon of %d", newest), horizontest.PersistedThrough(t.Context(), before, newest),
-		database.Pool.Config().ConnConfig.Database); err != nil {
-		t.Fatal(err)
-	}
+	horizontest.AwaitPersisted(t, before, eventHead(t, database), database)
 
 	// An event insert that opened before the next process boots, and outlives its first start.
 	open, release := holdEventInsert(t, database)

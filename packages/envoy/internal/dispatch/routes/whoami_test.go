@@ -189,7 +189,7 @@ func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testi
 		}
 	}
 
-	data := waitEventsStart(t, conn, database.Pool.Config().ConnConfig.Database)
+	data := waitEventsStart(t, conn, database)
 	var start api.LiveEventsStart
 	if err := json.Unmarshal(data, &start); err != nil || start.Type != "events_start" || start.Sub != "events" || start.Since != head {
 		t.Fatalf("first frame = %s (%v), want events' events_start from whoami's head %s", data, err, head)
@@ -600,11 +600,7 @@ func TestWhoamiAnswersThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(
 	newest := newestEventID(t, database)
 	before := events.NewHorizon(database.Pool)
 	before.PersistProven()
-	before.SetStallWarning(horizontest.StallWarning, horizontest.StallWarning)
-	if err := horizontest.WaitInProcess(t, fmt.Sprintf("a persisted horizon of %d", newest), horizontest.PersistedThrough(ctx, before, newest),
-		database.Pool.Config().ConnConfig.Database); err != nil {
-		t.Fatal(err)
-	}
+	horizontest.AwaitPersisted(t, before, newest, database)
 
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
