@@ -39,7 +39,7 @@ const driftRevision = uint64(1) << 62
 // holdersMu that guards it and the roleWatcher whose epoch a write into it names - through the
 // reflection seam refuseRoleClaimView reaches the watcher field by, so a test makes the copy drift
 // from the bucket with no write the bucket sees.
-func roleClaimCopy(t *testing.T, registry *store.Registry) (*sync.RWMutex, *kvwatch.Copy[string], *kvwatch.Watcher) {
+func roleClaimCopy(t *testing.T, registry *store.Registry) (*sync.RWMutex, *kvwatch.Copy[kvwatch.Kept[store.RoleClaim]], *kvwatch.Watcher) {
 	t.Helper()
 	fields := reflect.ValueOf(registry).Elem()
 	field := func(name string) reflect.Value {
@@ -47,7 +47,7 @@ func roleClaimCopy(t *testing.T, registry *store.Registry) (*sync.RWMutex, *kvwa
 		return reflect.NewAt(value.Type(), unsafe.Pointer(value.UnsafeAddr()))
 	}
 	return field("holdersMu").Interface().(*sync.RWMutex),
-		field("roleHolders").Interface().(*kvwatch.Copy[string]),
+		field("roleHolders").Interface().(*kvwatch.Copy[kvwatch.Kept[store.RoleClaim]]),
 		field("roleWatcher").Elem().Interface().(*kvwatch.Watcher)
 }
 
@@ -71,7 +71,8 @@ func holdRoleInCopy(t *testing.T, registry *store.Registry, role, holder string)
 	guard, roleCopy, watcher := roleClaimCopy(t, registry)
 	guard.Lock()
 	defer guard.Unlock()
-	if outcome := roleCopy.Put(watcher, watcher.Epoch(), role, holder, driftRevision); outcome != kvwatch.Applied {
+	claim := kvwatch.Kept[store.RoleClaim]{Value: store.RoleClaim{HolderSessionID: holder}}
+	if outcome := roleCopy.Put(watcher, watcher.Epoch(), role, claim, driftRevision); outcome != kvwatch.Applied {
 		t.Fatalf("give %s role %s in the copy: outcome %d, want it applied", holder, role, outcome)
 	}
 }
@@ -84,7 +85,8 @@ func requireDrift(t *testing.T, registry *store.Registry, role, copyNames, store
 	t.Helper()
 	guard, roleCopy, _ := roleClaimCopy(t, registry)
 	guard.RLock()
-	inCopy, _ := roleCopy.Get(role)
+	kept, _ := roleCopy.Get(role)
+	inCopy := kept.Value.HolderSessionID
 	guard.RUnlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -44,6 +44,9 @@ func runRegister(args []string) error {
 					"title":           sessionTitle(j.set.name, j.index, j.set.variant),
 					"topics":          topics(j.set, j.index, *role),
 					"self_subscribed": true,
+					// The listener refuses a registration that asks for no session consumer
+					// (409 not_requested, #2603): every session receives through its own.
+					"delivery": map[string]any{"consumer": true, "epoch": "e2e-refill"},
 				})
 				resp, err := client.Post(*url+"/v1/interests/subscribe", "application/json", bytes.NewReader(body))
 				if err == nil {
