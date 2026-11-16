@@ -482,11 +482,11 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 }
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its
-// claim failed and holds no start of it queued: a failed sub-architect starts again at its child's
-// next phase start (dispatch://INFRA-3915 R2), and until then its child's notices go to the
-// architect above it (record.OwningArchitect). The outbox's start retries a failed claim with
-// fresh budgets in the session it recorded (supervise.RequestRetry). A tree root's architect is
-// admission's, started with its tree, so a root revives nothing here.
+// claim failed and holds no start of it queued that the outbox will act on: a failed sub-architect
+// starts again at its child's next phase start (dispatch://INFRA-3915 R2), and until then its
+// child's notices go to the architect above it (record.OwningArchitect). The outbox's start
+// retries a failed claim with fresh budgets in the session it recorded (supervise.RequestRetry).
+// A tree root's architect is admission's, started with its tree, so a root revives nothing here.
 //
 // The claim's state is read in the transaction, and no row carries a mark that asks for the
 // revive: an older daemon's strict decoder refuses an outbox row with a field it does not know
@@ -494,10 +494,13 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // (record.Store.RoleRuns), each admission pass of the issue among them. So the start is the plain
 // one admission gives a root's architect, with no phase, task, entry, slot mark or kept
 // decisions. The read is stable: a failed claim stays failed until something starts it, and a
-// start already queued is that start — the one the child's first phase start queues whatever the
-// claim's state (gateOpened), or an earlier phase start's the outbox has not run yet — so no
-// second start is queued beside it. An issue whose key makes no claim token has no claim to
-// revive.
+// start already queued with no phase or with the phase issue now stands in is that start — the
+// one the child's first phase start queues whatever the claim's state (gateOpened), or an earlier
+// phase start's the outbox has not run yet — so no second start is queued beside it. A queued
+// start of another phase does not count: re-admission brings a mid-phase child's failed architect
+// back with a start that names the phase the child stood in (admit's startMidPhaseMembers), and
+// the outbox finishes, without acting, a start of a phase the issue has left. An issue whose key
+// makes no claim token has no claim to revive.
 func (e *Engine) reviveArchitect(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return nil
@@ -518,7 +521,7 @@ func (e *Engine) reviveArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 		return nil
 	}
 	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" {
+		if queued.Request.Op == "start" && (queued.Request.Phase == "" || queued.Request.Phase == issue.Phase) {
 			return nil
 		}
 	}
