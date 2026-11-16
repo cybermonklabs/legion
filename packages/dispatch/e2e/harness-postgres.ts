@@ -18,11 +18,12 @@
  *  removes (`e2e/harness-pool.ts`), and neither serves on a port picked free and handed over, which
  *  another process could bind first: a Postgres server cannot inherit a held socket the way the
  *  harness's own listeners do (`scripts/e2e/lib/held-port.py`). The binaries' server listens on a
- *  unix socket in the stack's own directory and on no TCP port at all (`listen_addresses` empty),
- *  and an image's container port is published on a 127.0.0.1 port Docker chooses and binds as it
- *  starts the container, read back with `docker port`. Both are hosts the server's dev sign-in
- *  takes: it refuses a `DATABASE_URL` whose host is neither loopback nor a unix socket
- *  (`e2e/run-server.sh`).
+ *  unix socket in the stack's own directory, or in a short directory of the stack's own where a
+ *  long `TMPDIR` leaves that no room (`socketDirectory`), and on no TCP port at all
+ *  (`listen_addresses` empty), and an image's container port is published on a 127.0.0.1 port
+ *  Docker chooses and binds as it starts the container, read back with `docker port`. Both are
+ *  hosts the server's dev sign-in takes: it refuses a `DATABASE_URL` whose host is neither
+ *  loopback nor a unix socket (`e2e/run-server.sh`).
  *
  *  The binaries provider runs `initdb` once per run and copies the data directory it made per
  *  stack, because `initdb` is the cost that grows with the stacks: measured in an issue pod, from
@@ -34,11 +35,12 @@
  *  measured with them applied cost 5.7-6.2 s at 2 stacks and 7.7-8.7 s at 4 — more than it saves,
  *  since the 1.0 s of migrations it takes out of a stack's boot runs in every stack at once. */
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { socketPathRefusal, socketRoot } from "@legion/test-fixtures/socket-root";
 
 import { Interrupted } from "./local-instance-support";
 import { sqlAt } from "./psql";
@@ -163,6 +165,8 @@ const readyMs = 120_000;
 /** The port a binaries server names its unix socket with (`.s.PGSQL.<port>` in its directory). It
  *  listens on no TCP port, so every stack's server can name the same one. */
 const socketPort = 5432;
+/** The name of a binaries server's unix socket in its socket directory. */
+const socketName = `.s.PGSQL.${socketPort}`;
 
 /** One stack's Postgres. */
 export interface StackDatabase {
@@ -179,9 +183,9 @@ export interface StackPostgres {
   /** What a log line and a refusal call it. */
   readonly name: string;
   /** One stack's server. Everything it leaves behind is under the run's own directory, which the
-   *  pool removes (`e2e/harness-pool.ts`), or a container the returned `stop` removes. `signal`
-   *  is the pool's own stop: a Ctrl-C while this waits for the server to answer ends the wait as
-   *  `Interrupted` rather than as a start that failed. */
+   *  pool removes (`e2e/harness-pool.ts`), or a socket directory or a container the returned
+   *  `stop` removes. `signal` is the pool's own stop: a Ctrl-C while this waits for the server to
+   *  answer ends the wait as `Interrupted` rather than as a start that failed. */
   start(index: number, signal?: AbortSignal): Promise<StackDatabase>;
 }
 
@@ -231,20 +235,50 @@ function socketUrl(dir: string, database: string): string {
   );
 }
 
-/** Starts the cluster in `data`, with its log and its unix socket in `dir` and no TCP listener at
- *  all (`-h ''`): no other process can take a socket in the stack's own directory, where a port
- *  picked free for the server could be bound by one before the server binds it. Returns or
- *  throws with no postmaster of `data` left running. */
+/** A binaries server's socket directory (`dir`), and the removal of it once the server is
+ *  stopped (`release`). */
+interface SocketDirectory {
+  readonly dir: string;
+  release(): void;
+}
+
+/** The directory the unix socket of the binaries server whose log is in `serverDir` goes in:
+ *  `serverDir` itself, under the run's own directory, when the socket's path there fits the 107
+ *  bytes a socket path holds. A long `TMPDIR` leaves it no room, and a server whose only listener
+ *  cannot be made does not start, so the socket then goes in a fresh directory of its own under a
+ *  root where it fits (`socketRoot`: `TMPDIR`, else `/tmp`), which `release` removes. The data
+ *  directory stays under the run's own either way. */
+function socketDirectory(serverDir: string): SocketDirectory {
+  if (socketPathRefusal(join(serverDir, socketName)) === undefined) {
+    return { dir: serverDir, release: () => {} };
+  }
+  const root = socketRoot("the Dispatch e2e harness's Postgres socket", (root) =>
+    socketPathRefusal(join(root, "dispatch-e2e-pg-XXXXXX", socketName))
+  );
+  const dir = mkdtempSync(join(root, "dispatch-e2e-pg-"));
+  return { dir, release: () => rmSync(dir, { force: true, recursive: true }) };
+}
+
+/** Starts the cluster in `data`, with its log in `dir`, its unix socket in `socketDir` and no TCP
+ *  listener at all (`-h ''`): no other process can take a socket in a directory of the stack's
+ *  own, where a port picked free for the server could be bound by one before the server binds
+ *  it. Returns or throws with no postmaster of `data` left running. */
 async function startCluster(
   bin: string,
   data: string,
   dir: string,
+  socketDir: string,
   what: string,
   env: NodeJS.ProcessEnv
 ): Promise<void> {
   const started = await serverSettings(env);
   // pg_ctl hands `-o` to the server through a shell, which reads `''` as the empty address list.
-  const options = [`-p ${socketPort}`, "-h ''", `-k ${dir}`, ...started.map((s) => `-c ${s}`)];
+  const options = [
+    `-p ${socketPort}`,
+    "-h ''",
+    `-k ${socketDir}`,
+    ...started.map((s) => `-c ${s}`),
+  ];
   try {
     await execFileAsync(join(bin, "pg_ctl"), [
       "-D",
@@ -298,17 +332,22 @@ function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): Sta
       "-E",
       "UTF8",
     ]);
-    await startCluster(bin, data, templateDir, "the stacks' Postgres template", env);
+    const sockets = socketDirectory(templateDir);
     try {
-      const admin = socketUrl(templateDir, "postgres");
-      await ready(admin, "the stacks' Postgres template", signal);
-      await sqlAt(admin, [`create database ${databaseName}`], signal);
-      await sqlAt(socketUrl(templateDir, databaseName), ["create extension vector"], signal);
+      await startCluster(bin, data, templateDir, sockets.dir, "the stacks' Postgres template", env);
+      try {
+        const admin = socketUrl(sockets.dir, "postgres");
+        await ready(admin, "the stacks' Postgres template", signal);
+        await sqlAt(admin, [`create database ${databaseName}`], signal);
+        await sqlAt(socketUrl(sockets.dir, databaseName), ["create extension vector"], signal);
+      } finally {
+        // Whatever happened above: the postmaster is up from `startCluster` on, and a throw that
+        // left it running would leave it serving while the pool removes the data directory under
+        // it.
+        await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "fast", "-w", "stop"]);
+      }
     } finally {
-      // Whatever happened above: the postmaster is up from `startCluster` on, and a throw that
-      // left it running would leave it serving while the pool removes the data directory under
-      // it.
-      await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "fast", "-w", "stop"]);
+      sockets.release();
     }
     return data;
   };
@@ -323,11 +362,21 @@ function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): Sta
         // `cp -a` keeps the 0700 a data directory's server refuses to start without.
         await execFileAsync("cp", ["-a", await template, data]);
         const what = `stack ${index}'s Postgres`;
-        await startCluster(bin, data, stackDir, what, env);
+        const sockets = socketDirectory(stackDir);
+        try {
+          await startCluster(bin, data, stackDir, sockets.dir, what, env);
+        } catch (error) {
+          sockets.release();
+          throw error;
+        }
         const stop = async (): Promise<void> => {
-          await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]);
+          try {
+            await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]);
+          } finally {
+            sockets.release();
+          }
         };
-        const url = socketUrl(stackDir, databaseName);
+        const url = socketUrl(sockets.dir, databaseName);
         try {
           await ready(url, what, signal);
         } catch (error) {
@@ -339,7 +388,7 @@ function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): Sta
           await stop().catch(() => {});
           throw error;
         }
-        return { address: stackDir, url, stop };
+        return { address: sockets.dir, url, stop };
       }),
   };
 }
