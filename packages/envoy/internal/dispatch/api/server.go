@@ -716,9 +716,10 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	}
 	routes := s.routes()
 	if undecidable := s.undecidableWrites(routes); len(undecidable) > 0 {
-		// A mutating row the project check cannot decide would serve a project-scoped caller a
-		// write nothing judged, so the table is refused rather than mounted (project_scope.go).
-		panic("api.Register: the route table holds a mutating row the project-scope check cannot decide: " + strings.Join(undecidable, "; "))
+		// A mutating row nothing decides - no class, or a project's write the hidden-object walk
+		// has no probe for - would serve a write nothing judged, so the table is refused rather
+		// than mounted (project_scope.go).
+		panic("api.Register: the route table holds a mutating row nothing decides: " + strings.Join(undecidable, "; "))
 	}
 	if undecided := undecidedReads(routes, readClasses); len(undecided) > 0 {
 		// A GET row with no read class is a read nothing decided who may see, and a class for a

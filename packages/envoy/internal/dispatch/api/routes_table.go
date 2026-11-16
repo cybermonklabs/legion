@@ -40,8 +40,9 @@ type writeScope string
 const (
 	// scopeProject is a write to an object that belongs to one project: the issue-key rows, the
 	// project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the
-	// message rows that carry an issue. A caller whose credential names another project is
-	// refused, naming both projects.
+	// message rows that carry an issue. The handler reads the object as the caller reads it, so
+	// one of a project the caller does not see answers as an object nobody holds
+	// (TestNoWriteReachesAHiddenObject, which writeProbes lets call every such row).
 	scopeProject writeScope = "project"
 	// scopeSession is a write that belongs to the calling session rather than to any project:
 	// an agent conversation's own artifact, messages and stream frames, the two routes a
@@ -50,7 +51,8 @@ const (
 	//
 	//   - The rows whose path names a session — the `agents/{session_id}` writes and
 	//     `PUT /api/v1/me/agents/{session_id}/state` — are held to it by withinSessionScope,
-	//     which refuses a credential that proved another session (project_scope.go). Only a
+	//     which refuses a credential that proved another session, and answers a session the
+	//     caller may not see as one nobody holds (project_scope.go). Only a
 	//     broker-issued token proves one; `POST /api/v1/agents/{session_id}/messages`, the
 	//     stream publish and the `me` state row need the `person` scope besides, since a person
 	//     writing to a session is writing to someone else's conversation by design, and that
@@ -62,16 +64,15 @@ const (
 	//   - The `me` token rows name no session at all: they are the calling person's, read and
 	//     written by a credential holding the `person` scope and keyed on that person.
 	scopeSession writeScope = "session"
-	// scopeDeployment is a write that belongs to the deployment rather than to any project: a
-	// credential that may write one project may not create another or change a deployment-wide
-	// setting, so a project-scoped caller is refused these by name.
+	// scopeDeployment is a write that belongs to the deployment rather than to any project, so a
+	// viewer that is not open - a restricted member, or a credential that lists projects - is
+	// refused these by name (withinProjectScope).
 	scopeDeployment writeScope = "deployment"
 	// scopeProjectInBody is a write that belongs to one project the request's body names rather
 	// than its path: the issue create, whose project comes from the body, or from the
-	// repository an external ref names. There is no object to resolve before the handler runs,
-	// so createIssue makes the check itself once that project is settled
-	// (refuseWriteOutsideProjectScope), and withinProjectScope passes the row through by this
-	// class rather than by a name it compares.
+	// repository an external ref names, and the going request. A credential that lists projects
+	// is refused a project outside its list by the handler once that project is settled
+	// (refuseOutsideCallerProjects).
 	scopeProjectInBody writeScope = "project-in-body"
 	// scopeNoWrite is a row that writes nothing and reads no row: its answer is computed from
 	// its own body alone. There is no object whose project could be resolved and no session the
@@ -109,7 +110,7 @@ var writeClasses = map[string]writeScope{
 	"PUT /api/v1/issues/{key}/design-gates":                scopeProject,
 
 	// A result's retraction: the row belongs to the project of the issue the result was
-	// recorded on, one hop through check_results (projectOfCheckResult).
+	// recorded on, one hop through check_results (lockRetractedResult).
 	"POST /api/v1/results/{id}/retract": scopeProject,
 
 	"POST /api/v1/projects/{key}/artifacts":                 scopeProject,

@@ -211,34 +211,31 @@ A websocket re-resolves its caller every heartbeat from the request that opened 
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
 
-A credential that names one project may write that project and nothing else.
+A credential that lists projects may write those of them its person sees, and nothing else.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
 a `GET` row declares what it reads instead, `readClasses` in `internal/dispatch/api/read_classes.go`), in four classes:
 *a project's* — the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue;
-*a project the body names* — the issue create alone, whose project its address does not name, so `createIssue` makes the same check itself once that project is settled;
+*a project the body names* — the issue create and the going request, whose project their address does not name;
 *the calling session's* — an agent conversation's own artifact and messages, the two routes a session answers its own delivery on, and the caller-private `me` rows;
 and *the deployment's* — the project create, the repository-to-project map, the delivery settings and session groups, the broadcast, and the credential and machine-login decisions.
-`Register` wraps every mutating route in three checks (`internal/dispatch/api/project_scope.go`), which run after the caller is resolved and before the handler, so no route is left to check any of them for itself.
+`Register` wraps every mutating route in three checks (`internal/dispatch/api/project_scope.go`), which run after the caller is resolved and before the handler.
 
-The project check resolves the project the addressed object belongs to
-— an issue key, a project key, an artifact id, an ask id, a comment id or a message id, each by one read
-— and lets through only a target that resolves to the caller's own project.
-It fails closed, so a target that resolves to another project, to no project at all (an object belonging to none), or to nothing at all (no such row, or an id Postgres will not read as a uuid) is `403 PROJECT_SCOPE`, naming the project the credential covers and the project the write belongs to where one resolved, and nothing of the credential.
-The two refusals still read differently — a target of another project names that project, one that resolved to nothing says the write resolves to no project of that credential's
-— so failing closed does not close an existence oracle and does not claim to.
-Nothing is read out that way: no GET route is project-scoped, so every answer this check can colour is a refusal of the caller's own write.
-Each resolver sends the raw path value to Postgres, as the handler behind it does, so the check reads a path exactly as the handler then addresses its row by it
-— Postgres's uuid parser takes a hyphen after any group of four digits, and a check that parsed ids in Go admitted those spellings unjudged.
-A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT`, naming the credential's project and the route:
-a credential that may write one project may not create another or change a setting that is not any project's.
-`POST /api/v1/issues` takes its project from the body, or from the repository an external ref names, rather than from its address, so its handler makes the same check, with the same refusal, the moment that project is settled
-— before the ref is resolved to an issue already imported, and before anything is written.
+The first resolves the caller's viewer once for the write and hands it to the handler, and every read the write makes binds it.
+An object of a project the caller does not see is a row that read does not find, so the write answers it exactly as an object nobody holds
+— the same status and the same bytes, and nothing written — whether the path names it or a field of the body does (a parent, a `blocked_by` target, a rank neighbour, a reply's parent).
+A credential that lists projects sees no project outside its list, so this is what holds it to its list.
+`TestNoWriteReachesAHiddenObject` calls every write row that names an object, and `TestNoBodyReachesAHiddenObject` every body field that does, on a private project's object and on one nobody holds.
+A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT` to a viewer that is not open — a restricted member, or a credential that lists projects — naming the route and the credential's list:
+what it writes belongs to no project such a viewer could be held to.
+`POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so a credential that lists projects is refused one outside its list, `403 PROJECT_SCOPE`, naming its list and the project the body named, before anything is read.
 
 The session check holds the rows classed *the calling session's* whose path names a session
 — the `agents/{session_id}` writes and `PUT /api/v1/me/agents/{session_id}/state` — to the session the caller's credential proved:
 addressing another session's conversation is `403 SESSION_SCOPE`, naming the session the credential acts for, the route and the session addressed.
 Only a broker-issued token proves a session;
 a cookie, a personal token, a Kubernetes service-account token and the shared token prove none and are untouched, so a person still uploads into the conversation they name.
+The session addressed is also read as the caller sees it: to a restricted member, or to a credential that lists projects, a session that is neither its own nor has acted in a project it sees is `404 SESSION_NOT_FOUND`, exactly as a session nobody holds;
+an open viewer sees every session and is answered as before.
 
 The sign-in check refuses every write by a credential that names a service and no person
 — an access token the broker issued to a machine nobody has signed in on
