@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // The tests that read GET /auth/whoami's event_head off a real event log open a database of their
@@ -42,7 +43,9 @@ func standInEventLog(ctx *AppContext, head int64) {
 // a Lifetime, so it mounts GET /ws/live as production does. Its people are the database's own
 // table, as main's are: a header names a person by recording them there, and a project create
 // names its default from that same table (allowedLogin), so an in-memory store here would leave
-// the person the header names unknown to the create.
+// the person the header names unknown to the create. Its event horizon warns of a stall at
+// testHorizonStallWarning, as a cmd/dispatch test process's does, so a wait on the event feed
+// (waitEventsStart) hears that the horizon is held inside its own patience.
 func storeRouter(t *testing.T, database *store.Store) http.Handler {
 	t.Helper()
 	broker := events.NewBroker()
@@ -50,13 +53,15 @@ func storeRouter(t *testing.T, database *store.Store) http.Handler {
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	people := store.NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	ctx, err := BuildAppContext(AppContextOptions{
-		SigningKey: testSigningKey,
-		People:     people,
-		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
-		Store:      database,
-		Docs:       documents,
-		Events:     broker,
-		Lifetime:   t.Context(),
+		SigningKey:        testSigningKey,
+		People:            people,
+		Identity:          identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Store:             database,
+		Docs:              documents,
+		Events:            broker,
+		Lifetime:          t.Context(),
+		HorizonStallAfter: testHorizonStallWarning,
+		HorizonWarnEvery:  testHorizonStallWarning,
 	})
 	if err != nil {
 		t.Fatalf("build context: %v", err)
@@ -140,6 +145,10 @@ func TestWhoamiCarriesTheNewestEventID(t *testing.T) {
 // answer, before the subscription -- reaches it during catch-up, and the subscription's
 // events_start names that head.
 func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testing.T) {
+	// The router's event horizon warns of a stall through the default logger, and the wait for
+	// the events_start reads those warnings (waitEventsStart).
+	logged := &logtest.Recorder{}
+	logtest.SetDefault(t, logged)
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)
 	server := httptest.NewServer(handler)
@@ -165,7 +174,6 @@ func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testi
 	}); err != nil {
 		t.Fatalf("subscribe to the event feed: %v", err)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	next := func(what string) (string, []byte) {
 		t.Helper()
 		for {
@@ -185,12 +193,15 @@ func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testi
 		}
 	}
 
-	kind, data := next("the events_start")
+	data := waitEventsStart(t, conn, logged, database.Pool.Config().ConnConfig.Database)
 	var start api.LiveEventsStart
-	if err := json.Unmarshal(data, &start); err != nil || kind != "events_start" || start.Sub != "events" || start.Since != head {
+	if err := json.Unmarshal(data, &start); err != nil || start.Type != "events_start" || start.Sub != "events" || start.Since != head {
 		t.Fatalf("first frame = %s (%v), want events' events_start from whoami's head %s", data, err, head)
 	}
-	kind, data = next("the change committed while the page loaded")
+	// The replay follows the events_start out of what the subscription read before sending it,
+	// with no wait on the horizon between them (feedEvents), so a deadline the test owns bounds it.
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	kind, data := next("the change committed while the page loaded")
 	var frame api.LiveEventFrame
 	if err := json.Unmarshal(data, &frame); err != nil || kind != "event" {
 		t.Fatalf("second frame = %s (%v), want an event", data, err)
@@ -580,6 +591,10 @@ func TestWhoamiDoesNotSendAPageToReplayTheWholeLogWhileAWriteFromBeforeBootIsOpe
 // horizon the process before it persisted is final, so whoami answers that at once, below the open
 // event, rather than waiting for the insert or answering 503.
 func TestWhoamiAnswersThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(t *testing.T) {
+	// The horizon below warns of a stall through the default logger, and the wait for its
+	// persisted value reads those warnings (waitBehindHorizon).
+	logged := &logtest.Recorder{}
+	logtest.SetDefault(t, logged)
 	database := storetest.Open(t)
 	ctx := t.Context()
 	for _, key := range []string{"ONE", "TWO"} {
@@ -593,18 +608,10 @@ func TestWhoamiAnswersThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(
 	newest := newestEventID(t, database)
 	before := events.NewHorizon(database.Pool)
 	before.PersistProven()
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, err := before.Safe(ctx); err != nil {
-			t.Fatalf("observe the horizon: %v", err)
-		}
-		if persisted, err := before.Persisted(ctx); err != nil {
-			t.Fatalf("read the persisted horizon: %v", err)
-		} else if persisted >= newest {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no horizon of %d persisted within 30s", newest)
-		}
+	before.SetStallWarning(testHorizonStallWarning, testHorizonStallWarning)
+	if err := waitBehindHorizon(t, fmt.Sprintf("a persisted horizon of %d", newest), persistedThrough(ctx, before, newest),
+		logged, database.Pool.Config().ConnConfig.Database); err != nil {
+		t.Fatal(err)
 	}
 
 	tx, err := database.Pool.Begin(ctx)
