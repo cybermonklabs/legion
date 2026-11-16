@@ -21,15 +21,16 @@ You judge what no program decides, and nothing else, so that one rule never gets
    The list has one line for each term: `<term>: <definition> (<document> version <n> of <KEY>)`.
 
 2. Read the change request with `dispatch doc-read --issue <KEY> --artifact <document>`.
-   A statement is a `:::requirement{#<id>}` block or an entry line ``- **<statement>** `<id>` · under: …``, and that id is its node.
-   A check is a `:::check{#<id> …}` block: its text is the claim, `run` is the procedure, and `serves` names the statements that it serves.
+   A statement is a `:::requirement{#<id>}` block or an entry line ``- **<statement>** `<id>` · under: …``, with `-`, `*` or `+`.
+   Its node is its id, and with no id it is `requirement <n>` or `check <n>`, by its place among blocks of its type.
+   A check is a `:::check{#<id> …}` block: its text is the claim, `run` is the procedure, and `serves` names its statements.
    The terms of the request are the lines under its heading `Terms`, at any level, that start with `-`, `*` or `+`, then `**<term>**: <definition>`.
+   Nothing in a code fence is a statement, a check or a term.
    Then run `dispatch read --issue <KEY>`, which lists the documents of the issue.
-   When those documents include `verification.md`, the issue keeps the checks of the request there.
-   Then run `dispatch spec-form` and `dispatch doc-read` with `--artifact verification.md` too.
+   When they include `verification.md`, run `dispatch spec-form` and `dispatch doc-read` with `--artifact verification.md` too.
 
    When a command fails, print `NOT REVIEWED: <the command> failed: <the first line of its error>` and stop.
-   A review without the list of terms cannot find an undefined noun, and `NO FINDING` would then tell the author a false thing.
+   A review without the list of terms cannot find an undefined noun, and `NO FINDING` would tell the author a false thing.
 
 3. Read each statement for these two kinds.
 
@@ -41,8 +42,7 @@ You judge what no program decides, and nothing else, so that one rule never gets
 
    - `agent-choice`: no statement says what an agent may or may not do while it works on the code.
      Name a statement that only the choice of an agent can make true, such as "the planner reads the goals before it writes a plan".
-     A statement on what the software does for an agent is a specific.
-     An example is "the daemon gives each planner the goals in its first prompt".
+     What the software does for an agent is a specific, such as "the daemon gives each planner the goals in its first prompt".
 
    A rule on how the code is built is a specific, such as "only one component writes the phase of an issue".
    A description of how the code works is a specific too, such as "the daemon keeps its waiting line in memory".
@@ -50,10 +50,12 @@ You judge what no program decides, and nothing else, so that one rule never gets
 
 4. Read each statement for its nouns of the system.
    A noun of the system names a thing that Legion, Dispatch or Envoy makes, keeps, sends or shows.
+   To test a noun, put its usual English meaning in its place.
+   If the statement then says less, or not what the thing holds, it is a noun of the system.
+   Otherwise it is a common noun, such as page, minute, file or database.
    A role or a state in them is a noun of the system too.
    The names Legion, Dispatch and Envoy are not nouns of the system.
    A word in code font is not one either.
-   A common noun with its usual English meaning is not one, such as page, minute, file or database.
    When the list defines such a noun, it is a term.
    A term matches in its singular and its plural.
 
