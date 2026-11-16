@@ -71,7 +71,7 @@ sequenceDiagram
         Person->>Dispatch: open the request in the Inbox
         Dispatch-->>Person: a link to the request's page on the broker
         Person->>Broker: Approve, signed in to the broker
-        CLI->>Broker: poll until granted
+        Broker-->>CLI: granted, at once, to the read it was holding
     end
     CLI->>Broker: POST /v1/grants/{id}/values
     Broker-->>CLI: the values, read fresh from the secret store

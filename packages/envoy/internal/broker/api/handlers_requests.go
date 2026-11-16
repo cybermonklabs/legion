@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -242,9 +244,30 @@ type airlockName struct {
 	Hosts []string `json:"hosts"`
 }
 
+// requestWaitMax is the longest wait GET /v1/requests/{id}?wait= takes, in seconds. A held read
+// ends well inside the broker's own request deadline (45 s, cmd/broker's requestDeadline) and the
+// agent-secrets client's whole-call timeout (30 s, leasetime.RenewClientTimeout), so neither cuts
+// it short; a client that waits longer asks again.
+const requestWaitMax = 20
+
+// requestWaitStep is how often a held read reads its request again.
+const requestWaitStep = 500 * time.Millisecond
+
+// readRequest answers one of the calling session's requests. With ?wait=N, N a whole number of
+// seconds from 1 to requestWaitMax, it holds the read while the request is pending: after the
+// owner check it reads the request again every requestWaitStep (Machine.Get), and answers the
+// first state that is not pending, or pending once N seconds have passed or the request's context
+// ended. The state it reads is the database's, so a decision made on either broker process — the
+// approval page's, the model judge's, the sweeper's expiry, the session's own cancel — is seen
+// within one step of its commit. Any other wait is refused REQUEST_WAIT_INPUT before any read; an
+// absent or empty one answers at once, as before the parameter.
 func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentID string) {
 	ctx := r.Context()
 	id, ok := pathUUID(w, r, "id", "REQUEST_ID_INPUT", "request")
+	if !ok {
+		return
+	}
+	wait, ok := requestWait(w, r.URL.Query().Get("wait"))
 	if !ok {
 		return
 	}
@@ -267,6 +290,12 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 		writeInternal(w, "read request", err)
 		return
 	}
+	if req.State == "pending" && wait > 0 {
+		if req, err = s.awaitDecision(ctx, id, req, wait); err != nil {
+			writeInternal(w, "read request", err)
+			return
+		}
+	}
 	resp := requestStatusResponse{
 		State: req.State, GrantID: req.GrantID, RecordID: req.RecordID, Approver: req.Approver, LifetimeSeconds: req.LifetimeSeconds,
 		DecidedAt: req.DecidedAt, Detail: req.Detail, ApproveURL: s.pendingApproveURL(req.State, req.RecordID),
@@ -275,6 +304,50 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 		resp.Decision = &requestDecision{By: *req.DecidedBy, At: *req.DecidedAt}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// requestWait reads GET /v1/requests/{id}'s ?wait: 0 for none, else the wait it names, refusing
+// anything but a whole number of seconds from 1 to requestWaitMax.
+func requestWait(w http.ResponseWriter, raw string) (time.Duration, bool) {
+	if raw == "" {
+		return 0, true
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds < 1 || seconds > requestWaitMax {
+		writeError(w, http.StatusBadRequest, "REQUEST_WAIT_INPUT", "wait is a whole number of seconds from 1 to 20")
+		return 0, false
+	}
+	return time.Duration(seconds) * time.Second, true
+}
+
+// awaitDecision reads request id again every requestWaitStep, the last time at wait after the
+// call, and answers the first read that is no longer pending, else the last one; req is the read
+// the handler already made, answered as it is when ctx ends first (the caller has gone, or the
+// request deadline came), since a read that ctx cut short says nothing new about the request.
+func (s *server) awaitDecision(ctx context.Context, id string, req requests.Request, wait time.Duration) (requests.Request, error) {
+	deadline := time.Now().Add(wait)
+	step := time.NewTimer(min(requestWaitStep, wait))
+	defer step.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return req, nil
+		case <-step.C:
+		}
+		next, err := s.deps.Machine.Get(ctx, id)
+		if err != nil {
+			if ctx.Err() != nil {
+				return req, nil
+			}
+			return requests.Request{}, err
+		}
+		req = next
+		left := time.Until(deadline)
+		if req.State != "pending" || left <= 0 {
+			return req, nil
+		}
+		step.Reset(min(requestWaitStep, left))
+	}
 }
 
 func (s *server) cancelRequest(w http.ResponseWriter, r *http.Request, enrollmentID string) {

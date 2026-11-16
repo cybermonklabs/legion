@@ -5729,7 +5729,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
 ## Secrets broker
 
 The secrets broker (`cmd/broker`, `internal/broker/`) issues secret grants, each lasting the lifetime its request signed, else 15 minutes when any requested secret is human tier (`requests.DefaultHumanGrantLifetime`, so the card a person approves covers about the one action its reason named), else 12 hours (`requests.DefaultGrantLifetime`), else, when every requested secret is tagged `default-grant=session` (`policy.TagDefaultGrant`, any other value refused `default-grant-malformed`), until its session ends, and key-bound launcher credentials to enrolled agent sessions and pods;
-`cmd/agent-secrets` is its client (a box's or pod's own key, or a machine session's `cmd/agent-secrets-helper`), which enrolls a runtime, requests grants, polls a pending decision to completion, and either prints session/grant state (`self`, `status --json`) or `syscall.Exec`s a command with the granted values injected into its environment.
+`cmd/agent-secrets` is its client (a box's or pod's own key, or a machine session's `cmd/agent-secrets-helper`), which enrolls a runtime, requests grants, waits out a pending decision with reads the broker holds until it is made, and either prints session/grant state (`self`, `status --json`) or `syscall.Exec`s a command with the granted values injected into its environment.
 Every line it prints about a secret names the store it answered from (`cmd/agent-secrets/source.go`):
 the broker `AGENT_SECRETS_URL` names, and the kind of that broker's own store, read once from the public `GET /v1/settings` (`AWS Secrets Manager`, `GCP
 Secret Manager`), the broker alone where those settings cannot be read, as `the broker
@@ -6902,6 +6902,16 @@ No row written after the deploy matches, so the bridge ends on its own a day aft
 `POST /v1/requests` and `GET /v1/requests/{id}` echo `lifetime_seconds` (null for none), which the CLI checks against its `--ttl`, revoking the grant or cancelling the pending request this call made when a broker or helper from before the claim dropped it, and never touching a reused approved grant or a pending request it joined (`coalesced`);
 when every name is decided (`granted`/`denied`) with nothing pending, the request and, if granted, its grant are written with no record.
 `Create` and `Get` answer that record's approver (`approver` on `POST /v1/requests` and `GET /v1/requests/{id}`, read from `credential_requests.approver`, the column `PendingForApprover` lists by, never re-evaluated from the current policy), so the asking session names whose list holds it; a request with no record answers null.
+`GET /v1/requests/{id}?wait=N`, N whole seconds from 1 to 20 (`requestWaitMax`), holds the read while the request is pending (`awaitDecision`):
+after the owner check it reads `Machine.Get` again every 500 ms (`requestWaitStep`) and answers the first state that is not pending, or `pending` once N seconds have passed or the request's context ended.
+Any other wait is `400 REQUEST_WAIT_INPUT` before any read, and an absent or empty one answers at once.
+The state it reads is the database's, so a decision either broker process makes (the approval page's, the judge's, the sweeper's expiry, the session's cancel) reaches a held read within one step of its commit, with nothing sent between the processes.
+Twenty seconds ends well inside the broker's 45-second request deadline and the CLI's 30-second whole-call timeout (`leasetime.RenewClientTimeout`).
+The exec form's wait asks each read to hold for what is left of `--wait`, rounded up to whole seconds and at most 20, with no sleep before it, so the command runs its child within about one step of the decision.
+A broker from before the parameter ignores it and answers at once:
+a read that comes back undecided sooner than the wait it asked (such a broker's `pending`, or a failed read) makes the loop sleep its old backoff (`nextBackoff`, 2 s doubling to 10 s) before the next, so it never asks as fast as such a broker answers.
+`agent-secrets status` sends no wait.
+The CLI's proof signs the path without the query (`proofCall`), since the broker rebuilds a proof's htu from `BROKER_PUBLIC_URL` and the request's path alone.
 The enrollment lock, taken before any request or grant row, means a request racing the sweep or a revoke writes nothing on an enrollment that ended after `Create` first read it (`401 PROOF_INVALID`, as for one that had ended before).
 A pending request leaves `pending` without a human through `store.EndPendingRequests` (the session's cancel, the sweeper's expiry, an enrollment's end):
 one statement moves the request rows and writes each one's audit row and its record's terminal event.
