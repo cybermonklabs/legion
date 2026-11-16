@@ -561,8 +561,21 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 	}
 	if previous != nil {
 		// Its consume goes on reading it until it closes. Stop reports a consumer the server has
-		// lost to its caller, never at ERROR.
-		_ = previous.stop()
+		// lost to its caller, never at ERROR. Stop deletes the consumer nats.go created for the
+		// previous watcher, a request that takes no context, so it is waited for only until run
+		// ends: a reconnect hook's run whose connection drops while that delete is unanswered ends
+		// at the drop rather than at the request's own bound, and the stop goes on by itself
+		// (TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete). A run that does not end waits
+		// for it, so a caller that returns from a live Rewatch has the previous watcher stopped.
+		stopped := make(chan struct{})
+		go func() {
+			_ = previous.stop()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case <-run.Done():
+		}
 	}
 	go w.consume(sub, generation, read, started, idle, idleSince)
 	return nil

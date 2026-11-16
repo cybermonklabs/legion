@@ -26,7 +26,9 @@ body: |-
   nats-server 2.15's default of 1000.
 
   **A connection that drops again right after a reconnect no longer stalls the listener for 10 s.**
-  The work a reconnect starts (re-subscribing, the stream ensure, every KV cache's re-watch) now
-  runs off nats.go's callback goroutine and ends when the connection it runs on is lost, so the
-  next disconnect is reported at once and the next reconnect's re-watch is not held behind a
-  request that will never be answered.
+  The work a reconnect starts now runs off nats.go's callback goroutine, and its stream ensure and
+  every KV cache's re-watch end when the connection they run on is lost, so the next disconnect is
+  reported at once and the next reconnect's re-watch is not held behind a request that will never
+  be answered. Re-subscribing is not cut short, so a durable is never bound twice. A link that
+  drops during every such run still raises the "reconnect hooks have not succeeded" ERROR once
+  the hooks have been behind for the repair grace.

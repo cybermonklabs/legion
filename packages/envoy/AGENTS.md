@@ -4023,10 +4023,12 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
 - No run of the reconnect hooks is on nats.go's one callback goroutine: the reconnect callback (`bus.Client.onReconnect`) reports the reconnect, marks the hooks due and hands the re-subscribe and the run to a goroutine of its own (`afterReconnect`).
   A hook's request on a connection that drops again waits out its whole bound (10 s for most), and every callback queued behind it, the next disconnect's, its hooks and Dispatch's outbox wake among them, would wait too (`TestAFlapDuringTheEnsuresRequestRunsTheSecondDisconnectHookAtOnce`).
 
-- Each run's hooks get the run's context (`bus.Client.whileConnected`), which ends when the run's connection leaves CONNECTED or the client stops, and make every request under it, so a run never waits out a request on a connection that is gone and the next reconnect's run is not held behind it (`TestASecondReconnectRunsItsHooksWithoutWaitingOutTheFirstRunsRequest`).
+- Each run's hooks get the run's context (`bus.Client.whileConnected`), which ends when the run's connection leaves CONNECTED or the client stops, and wait on nothing past it, so a run never waits out a request on a connection that is gone and the next reconnect's run is not held behind it (`TestASecondReconnectRunsItsHooksWithoutWaitingOutTheFirstRunsRequest`).
   A hook is `func(ctx context.Context, conn *nats.Conn) error`.
-  nats.go's legacy `js.KeyValue` lookup takes no context, so `bus.OpenKeyValue` waits for it only until ctx ends (`Bounded`); the legacy stream calls take `nats.Context` per call (`requestsUnder`).
-  A run that context ended is superseded, not failed (`errRunSuperseded`): it keeps no `lastHookErr`, logs INFO rather than the WARN, and covers no event, so every hook runs again on the next connection and no half-move survives.
+  The legacy stream calls take `nats.Context` per call (`requestsUnder`); the requests nats.go gives no context are waited for only until ctx ends: the legacy `js.KeyValue` lookup (`bus.OpenKeyValue`, through `Bounded`) and the previous watcher's consumer delete (`kvwatch.Watcher.watch`), which then goes on by itself.
+  The known-session hook's wait for the lock its background retry holds through an attempt ends with ctx too (`session.KnownSessions.lockRepair`).
+  A run that context ended, or whose connection is not CONNECTED when its hooks return, is superseded, not failed (`errRunSuperseded`): it keeps no `lastHookErr`, logs INFO rather than the WARN, and covers no event, so every hook runs again on the next connection and no half-move survives.
+  Once the hooks have been uncovered for `RepairGrace`, a superseded run writes the stall's ERROR all the same (`reportSuperseded`), so a link that drops during every run still pages.
   The context bounds only a KV watch's create request, never the watcher's life, and the re-subscribe's binds are never under it: a cancelled bind would race the server's release of a push-bound durable.
 
 - A rewatch opens the bucket on the connection it is given, so a store bound to a replaced connection moves to the new one.

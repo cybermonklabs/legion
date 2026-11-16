@@ -1349,8 +1349,10 @@ func main() {
 	// (session.KnownSessions.Rewatch). Until a move lands, the store serves its copy for the stale
 	// bound and then answers nothing (Opened), so a publish leaves its counts out rather than
 	// answer from a copy that stopped following the bucket. A move the run's own context ended
-	// (the connection it ran on was lost) is no failure and logs nothing: the run is superseded,
-	// and the run the next connection event brings moves the store again (bus.errRunSuperseded).
+	// (the connection it ran on was lost) is no failure: this hook logs no WARN for it and the store
+	// arms no retry for it, since the run is superseded and the run the next connection event
+	// brings moves the store again (bus.errRunSuperseded). The store still counts it a failed move,
+	// so the move that succeeds after it logs the store's INFO "back" line (attemptRepair).
 	client.AddDisconnectHook(known.Disconnected)
 	client.AddReconnectHook(func(ctx context.Context, conn *nats.Conn) error {
 		if err := known.Rewatch(ctx, conn); err != nil && ctx.Err() == nil {

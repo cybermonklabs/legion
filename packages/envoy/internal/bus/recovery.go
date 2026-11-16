@@ -110,9 +110,10 @@ func (c *Client) afterReconnect(nc *nats.Conn) {
 			return
 		}
 		// A run its connection's loss cancelled is superseded, not failed: the hooks stay due, and
-		// the reconnect or the recovery that replaces the connection runs them again.
+		// the reconnect or the recovery that replaces the connection runs them again. It is still
+		// the stall's ERROR once the hooks have been uncovered for RepairGrace (reportSuperseded).
 		if errors.Is(hookErr, errRunSuperseded) {
-			slog.Info("envoy nats reconnect hooks superseded by a newer connection event", slog.String("name", c.name), slog.String("error", hookErr.Error()))
+			c.reportSuperseded(hookErr)
 			hookErr = nil
 		} else {
 			c.reportHookFailure(hookErr)
@@ -338,11 +339,27 @@ func (c *Client) reportHookFailure(err error) {
 		slog.Int64("stall_ms", stall.Milliseconds()))
 }
 
+// reportSuperseded reports err, the error of a run its connection's loss or the client's stop
+// superseded (errRunSuperseded). That is no failure of the hooks, so it is an INFO line, until the
+// hooks have been uncovered for RepairGrace or longer: then it is the stall's ERROR all the same
+// (reportHookFailure), since a link that drops during every run supersedes every run, and the
+// paging alarm reads only that ERROR (infra/aws/rendering/metricfilters.go,
+// reconnect-hooks-stalled). A stall reached by superseded runs alone pages as one reached by
+// failed runs does (TestSupersededRunsPastTheRepairGraceRaiseTheStallError).
+func (c *Client) reportSuperseded(err error) {
+	if stall, _ := c.HookStall(); stall >= RepairGrace {
+		c.reportHookFailure(err)
+		return
+	}
+	slog.Info("envoy nats reconnect hooks superseded by a newer connection event", slog.String("name", c.name), slog.String("error", err.Error()))
+}
+
 // runReconnectHooks runs the reconnect hooks on conn, one after another, under a context that ends
-// when conn leaves CONNECTED or the client stops (whileConnected). A run whose context ended is
-// superseded (errRunSuperseded), whatever its hooks returned: a hook may have moved its state
-// before the cancel, or swallowed the cancel and returned nil, so the run covers nothing and every
-// hook runs again on the connection that replaces this one (rewatch).
+// when conn leaves CONNECTED or the client stops (whileConnected). A run whose context ended, or
+// whose connection is not CONNECTED when its hooks return, is superseded (errRunSuperseded),
+// whatever its hooks returned: a hook may have moved its state before the cancel, or swallowed the
+// cancel and returned nil, so the run covers nothing and every hook runs again on the connection
+// that replaces this one (rewatch).
 func (c *Client) runReconnectHooks(conn *nats.Conn) error {
 	c.reconnectHooksMu.Lock()
 	hooks := slices.Clone(c.reconnectHooks)
@@ -355,10 +372,26 @@ func (c *Client) runReconnectHooks(conn *nats.Conn) error {
 			break
 		}
 	}
-	if ctx.Err() != nil {
-		return errors.Join(fmt.Errorf("%w: %w", errRunSuperseded, context.Cause(ctx)), hookErr)
+	if err := runSuperseded(ctx, conn); err != nil {
+		return errors.Join(err, hookErr)
 	}
 	return hookErr
+}
+
+// runSuperseded is the errRunSuperseded of a run whose context (whileConnected) ended or whose
+// connection is not CONNECTED, and nil for a run neither ended. The status is read beside the
+// context because the context is cancelled by a goroutine of its own: nats.go sets RECONNECTING
+// before that goroutine hears of it, and a request made in between fails at once ("outbound
+// buffer limit exceeded", the bus buffers nothing while it reconnects), so a hook can return that
+// failure while the context still reads live (TestARunWhoseConnectionLeftConnectedIsSuperseded).
+func runSuperseded(ctx context.Context, conn *nats.Conn) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("%w: %w", errRunSuperseded, context.Cause(ctx))
+	}
+	if conn == nil || conn.Status() != nats.CONNECTED {
+		return fmt.Errorf("%w: %w", errRunSuperseded, errRunConnectionLost)
+	}
+	return nil
 }
 
 // errRunConnectionLost is the cause of a run's context (context.Cause) when its connection left
@@ -483,8 +516,12 @@ func (c *Client) recoverUntilHealthy() {
 		if err != nil {
 			slog.Error(failure, slog.String("name", c.name), slog.Int("attempt", attempt), slog.String("error", err.Error()))
 		}
-		if hookErr != nil && !errors.Is(hookErr, errRunSuperseded) {
-			c.reportHookFailure(hookErr)
+		if hookErr != nil {
+			if errors.Is(hookErr, errRunSuperseded) {
+				c.reportSuperseded(hookErr)
+			} else {
+				c.reportHookFailure(hookErr)
+			}
 		}
 		select {
 		case <-c.stopCh:

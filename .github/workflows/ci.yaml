@@ -339,7 +339,7 @@ jobs:
       # jobs below pin, so gating its build behind a label would leave a pull request that edits
       # the Dockerfile writing a row whose digest the package does not hold, which the
       # ci-images job then refuses.
-      browser_image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.browser_image }}
+      browser_image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.browser_image }}
       contracts: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.contracts }}
       test_fixtures: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.test_fixtures }}
       conflicts_script: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.conflicts_script }}
@@ -400,13 +400,13 @@ jobs:
       envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.envoy_e2e_local }}
       envoy_session_stall: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.envoy_session_stall }}
       go_notices: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_notices }}
-      ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.ci_filters }}
-      ci_images: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.ci_images }}
+      ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.ci_filters }}
+      ci_images: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.ci_images }}
       # The second source of every tool install, proved by driving it: no `full-ci` term, so the
       # proof comes back on every change that selects it. It selects the arm64 half of that
       # proof too, which drives the same action over the same manifest through the same helper
       # and so reads the same files.
-      tool_fallback: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.tool_fallback }}
+      tool_fallback: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.tool_fallback }}
       proof_sdk_offline: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.proof_sdk_offline }}
       # The paths filter's own verdict for every filter, before the `full-ci` term above rewrites
       # the eight outputs the nine slow suites run behind. On a pull request without that
@@ -3519,164 +3519,6 @@ jobs:
               # builds no worker image, and a fragment stays where it was written, so no pattern
               # here matches nothing.
               - '!packages/*/.changes/**'
-            # Every file the browser image's build reads, for the browser-image job
-            # (.github/workflows/browser-image.yaml, which the build reads too): that build's
-            # context is .github/docker, so every file under it reaches the build, and the
-            # Dockerfile it builds is the only file there today.
-            # .github/ci-images.yaml is deliberately not named. The build does read that file:
-            # its `row` step reads the registry and the digest of the row built from that
-            # Dockerfile out of it at run time, and its publish decision is that digest and the
-            # label the image at it carries. But .github/scripts/check-image-trigger-paths.sh
-            # reads what a build reads from its context and its Dockerfile alone, and it
-            # refuses a path matched by a filter that decides nothing but an image build and
-            # that no build reads by that reading: "browser_image matches
-            # .github/ci-images.yaml, which no image build reads, so a pull request touching
-            # only that builds an image for nothing; narrow the filter". worker_image above
-            # leaves .github/scripts/repo-paths.sh out for that same reason, though its build
-            # job runs that script. That refusal does not reach this filter today: the steps of
-            # browser-image.yaml's build job are in no BUILD_PLUMBING_STEPS entry of that check
-            # and its `attest` job is in none either, so the check reads the browser-image job
-            # as doing more than build an image and leaves this filter's breadth unjudged
-            # ("not checked for files no image build reads"). The file stays out all the same:
-            # the argument below is why, and a filter narrowed by hand needs no refusal to
-            # keep it narrow.
-            # Nothing is lost by leaving it out. A change to the row alone builds nothing, and
-            # the digest a row names is one the package already holds: the ci-images job, whose
-            # filter does name that file, is what reads whether it does
-            # (.github/scripts/check-ci-images.sh package), and the push that writes the row
-            # needs no build of its own: the image that row names was built and pushed by the
-            # earlier push, the one that changed the Dockerfile under .github/docker, which
-            # this filter does name. The `container:` jobs that run the image are in
-            # .github/workflows/dispatch-browser.yaml, and this file declares no `container:`.
-            # That check also fails the build when this list misses a file the image build reads;
-            # it reads this filter only as a flat list, so the one anchor it names is ci_router,
-            # which stands for a single glob and leaves the list flat.
-            # .github/scripts/ci_images.py is named, and is the one file here the build does
-            # not read as a file: the build's `labels:` is
-            # legion.browser-image.source-sha256=<the row step's source output>, and that step
-            # computes the output with that file's recipe_sha256, so the file's own bytes
-            # decide a label of the image this build pushes. Without it a change to the rule
-            # that defines the hash selected the ci-images job, whose rule 10 then refused the
-            # published image for carrying a hash this tree no longer computes, while no build
-            # ran and no row could move. check-image-trigger-paths.sh reads it as an input of
-            # this build for that reason, from the COMPUTED_BUILD_INPUTS entry that writes the
-            # argument down, and that entry is what refuses this filter if it stops naming it.
-            browser_image:
-              - *ci_router
-              - '.github/workflows/browser-image.yaml'
-              - '.github/docker/**'
-              - '.github/scripts/ci_images.py'
-            # check-ci-filters.sh, which holds every filter above to what its job reads: every file
-            # whose change can move a Go closure (Go code anywhere, the modules' embedded files and
-            # testdata, every module and workspace file, the target lists the go commands expand
-            # over), every workflow file, and the check's own script, engine, data, rules and path
-            # model.
-            ci_filters:
-              # The directory rather than the four workflows the check names one by one (this
-              # file, docs-pages.yaml, docs-site.yaml and ci-caches.yaml): its rules read every
-              # workflow of it - ci_workflow_rules.check_one_merge_group_workflow refuses any but
-              # this one that runs on merge_group - and a rule that refuses a new workflow has to
-              # run on the change that adds one, which a list of the names already there cannot
-              # select.
-              - '.github/workflows/**'
-              - '.github/scripts/check-ci-filters.sh'
-              - '.github/scripts/ci_filter_coverage.py'
-              - '.github/scripts/ci_job_reads.py'
-              - '.github/scripts/ci_workflow_rules.py'
-              - '.github/scripts/workflow_paths.py'
-              - '.github/go-release-targets.json'
-              - '.github/agent-secrets-client-targets.json'
-              - '.github/envoy-infra-targets.json'
-              # ci_job_reads.py reads the workspace list from the root manifest.
-              - 'package.json'
-              - '**/*.go'
-              - '**/go.mod'
-              - '**/go.sum'
-              - '**/go.work'
-              - '**/go.work.sum'
-              - 'packages/daemon/**'
-              - 'packages/envoy/**'
-            # ci.yaml's tool-fallback and tool-fallback-arm jobs, the live proof of the second
-            # source every tool install reads when the first source does not serve the bytes:
-            # the manifest that names both sources of each row, the fetch helper every install
-            # goes through, the filler and the gate beside it, the rig and the fault proxy it
-            # drives, the eight actions it installs through, and the two files a row's version is
-            # pinned in that the job itself reads (.bun-version for the bun rows and the
-            # worker image's Dockerfile for mise, jj and uv).
-            # packages/envoy/infra/internal/pulumitest/pulumitest.go, whose
-            # `const DockerPluginVersion` the gate holds the pulumi-docker row's version to,
-            # is not here and no step of either job reads it: a raise of that constant must
-            # move the row, and .github/ci-tools.yaml is in this list.
-            # One filter for the two jobs, as `envoy_go_race_docs` is for its two: the arm64
-            # job drives the same action over the same manifest through the same helper, so a
-            # change that selects one of them must select both, and one list cannot drift from
-            # another that does not exist. Each job carries a gate of its own in
-            # .github/scripts/ci_job_reads.py for what it reads.
-            # Each job holds its steps in a called file of its own, which this list names beside
-            # ci.yaml, where both jobs keep their gate.
-            tool_fallback:
-              - '.github/ci-tools.yaml'
-              - '.github/scripts/ci-tools.sh'
-              - '.github/scripts/mirror-ci-tools.sh'
-              - '.github/scripts/check-ci-tools.sh'
-              - '.github/scripts/ci-tools-proof.sh'
-              - '.github/scripts/ci-fault-proxy.py'
-              # The two jobs read the machine they run on with it.
-              - '.github/scripts/disk_watch.py'
-              - '.github/actions/install-crane/**'
-              - '.github/actions/install-changie/**'
-              - '.github/actions/install-jj/**'
-              - '.github/actions/setup-bun/**'
-              - '.github/actions/install-elan/**'
-              - '.github/actions/install-uv/**'
-              - '.github/actions/install-pulumi/**'
-              - '.github/actions/install-docker-plugin/**'
-              - '.bun-version'
-              - 'packages/daemon/docker/worker.Dockerfile'
-              - *ci_router
-              - '.github/workflows/ci-job-tool-fallback.yaml'
-              - '.github/workflows/ci-job-tool-fallback-arm.yaml'
-            # ci.yaml's ci-images job: the image copy (.github/scripts/mirror-ci-images.sh,
-            # through the crane .github/actions/install-crane installs), the package mode of
-            # .github/scripts/check-ci-images.sh, which reads ghcr.io, and the tool copy
-            # (.github/scripts/mirror-ci-tools.sh), which fills the second source of every tool
-            # install. These files are what decides what those three steps do, the built row's
-            # whole build recipe among them: the package mode hashes the recipe - the browser
-            # Dockerfile's own path, every file of .github/docker and
-            # .github/workflows/browser-image.yaml, folded by the recipe_sha256 of
-            # .github/scripts/ci_images.py - and holds the built row's published image to that
-            # hash. The gate's other half reads the whole tree and is a step of lint, which
-            # runs on every change.
-            # It names what this job reads and nothing else, the tool_fallback filter above
-            # included: rule 9's second direction refuses a pattern of a gate's filter that
-            # matches no file its job reads, so this list cannot name that filter whole to be a
-            # superset of it by construction. The tool-fallback job below therefore carries
-            # `!cancelled()` rather than leaning on that: its `needs: ci-images` is for order,
-            # since a run that selects both must fill the copy before the proof reads it, and
-            # the one file that can bring a new row in, .github/ci-tools.yaml, is in both
-            # filters, so every change that adds a row runs the fill first.
-            ci_images:
-              - '.github/ci-images.yaml'
-              - '.github/scripts/mirror-ci-images.sh'
-              - '.github/scripts/check-ci-images.sh'
-              - '.github/scripts/ci_images.py'
-              # The browser image's build recipe, which the package mode hashes to hold the
-              # built row's published image to it.
-              - '.github/docker/**'
-              - '.github/workflows/browser-image.yaml'
-              # The tool half of the copy: the rows the step fills from, the filler that runs,
-              # and the fetch helper whose seams that filler reads.
-              - '.github/ci-tools.yaml'
-              - '.github/scripts/mirror-ci-tools.sh'
-              - '.github/scripts/ci-tools.sh'
-              - '.github/actions/install-crane/**'
-              - *ci_router
-              - '.github/workflows/ci-job-ci-images.yaml'
-              # The job reads no Markdown file: its steps read the image rows, the two scripts
-              # that copy and check them, the tool rows and the filler beside them, and the
-              # crane the action installs, so a guide written under one of those directories
-              # would start it for nothing.
-              - '!**/*.md'
 
             # The proof-sdk-offline job: a frozen install behind a proxy that answers 504
             # for every host the proof editor's old `github:sjawhar/proof-sdk#<sha>` route used.
@@ -3702,8 +3544,13 @@ jobs:
       # race lane filters are here, and so is envoy_client, which the first step had no room for
       # once main's new test files grew its generated blocks, and so is private_names_port, whose
       # generated block names every migration test of the daemon's store and grows with each one
-      # main adds. They share no group with a filter of the other steps but ci_router,
-      # go_workspace, bun_install and legion_command, which this string writes again.
+      # main adds. ci_filters, browser_image, tool_fallback and ci_images moved here from the
+      # second step when two branches that each grew that string merged to 98,665 bytes, over the
+      # margin (dispatch://INFRA-3884, pull request 4134); none shares a group with another filter
+      # but ci_router, which this string writes too, so each moved whole, and the four together
+      # leave the second string some 7 KB under the margin rather than one. They share no group
+      # with a filter of the other steps but ci_router, go_workspace, bun_install and
+      # legion_command, which this string writes again.
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter3
         if: github.event_name != 'workflow_dispatch'
@@ -4369,6 +4216,165 @@ jobs:
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!**/*_test.go'
               # END generated
+
+            # check-ci-filters.sh, which holds every filter above to what its job reads: every file
+            # whose change can move a Go closure (Go code anywhere, the modules' embedded files and
+            # testdata, every module and workspace file, the target lists the go commands expand
+            # over), every workflow file, and the check's own script, engine, data, rules and path
+            # model.
+            ci_filters:
+              # The directory rather than the four workflows the check names one by one (this
+              # file, docs-pages.yaml, docs-site.yaml and ci-caches.yaml): its rules read every
+              # workflow of it - ci_workflow_rules.check_one_merge_group_workflow refuses any but
+              # this one that runs on merge_group - and a rule that refuses a new workflow has to
+              # run on the change that adds one, which a list of the names already there cannot
+              # select.
+              - '.github/workflows/**'
+              - '.github/scripts/check-ci-filters.sh'
+              - '.github/scripts/ci_filter_coverage.py'
+              - '.github/scripts/ci_job_reads.py'
+              - '.github/scripts/ci_workflow_rules.py'
+              - '.github/scripts/workflow_paths.py'
+              - '.github/go-release-targets.json'
+              - '.github/agent-secrets-client-targets.json'
+              - '.github/envoy-infra-targets.json'
+              # ci_job_reads.py reads the workspace list from the root manifest.
+              - 'package.json'
+              - '**/*.go'
+              - '**/go.mod'
+              - '**/go.sum'
+              - '**/go.work'
+              - '**/go.work.sum'
+              - 'packages/daemon/**'
+              - 'packages/envoy/**'
+            # Every file the browser image's build reads, for the browser-image job
+            # (.github/workflows/browser-image.yaml, which the build reads too): that build's
+            # context is .github/docker, so every file under it reaches the build, and the
+            # Dockerfile it builds is the only file there today.
+            # .github/ci-images.yaml is deliberately not named. The build does read that file:
+            # its `row` step reads the registry and the digest of the row built from that
+            # Dockerfile out of it at run time, and its publish decision is that digest and the
+            # label the image at it carries. But .github/scripts/check-image-trigger-paths.sh
+            # reads what a build reads from its context and its Dockerfile alone, and it
+            # refuses a path matched by a filter that decides nothing but an image build and
+            # that no build reads by that reading: "browser_image matches
+            # .github/ci-images.yaml, which no image build reads, so a pull request touching
+            # only that builds an image for nothing; narrow the filter". worker_image above
+            # leaves .github/scripts/repo-paths.sh out for that same reason, though its build
+            # job runs that script. That refusal does not reach this filter today: the steps of
+            # browser-image.yaml's build job are in no BUILD_PLUMBING_STEPS entry of that check
+            # and its `attest` job is in none either, so the check reads the browser-image job
+            # as doing more than build an image and leaves this filter's breadth unjudged
+            # ("not checked for files no image build reads"). The file stays out all the same:
+            # the argument below is why, and a filter narrowed by hand needs no refusal to
+            # keep it narrow.
+            # Nothing is lost by leaving it out. A change to the row alone builds nothing, and
+            # the digest a row names is one the package already holds: the ci-images job, whose
+            # filter does name that file, is what reads whether it does
+            # (.github/scripts/check-ci-images.sh package), and the push that writes the row
+            # needs no build of its own: the image that row names was built and pushed by the
+            # earlier push, the one that changed the Dockerfile under .github/docker, which
+            # this filter does name. The `container:` jobs that run the image are in
+            # .github/workflows/dispatch-browser.yaml, and this file declares no `container:`.
+            # That check also fails the build when this list misses a file the image build reads;
+            # it reads this filter only as a flat list, so the one anchor it names is ci_router,
+            # which stands for a single glob and leaves the list flat.
+            # .github/scripts/ci_images.py is named, and is the one file here the build does
+            # not read as a file: the build's `labels:` is
+            # legion.browser-image.source-sha256=<the row step's source output>, and that step
+            # computes the output with that file's recipe_sha256, so the file's own bytes
+            # decide a label of the image this build pushes. Without it a change to the rule
+            # that defines the hash selected the ci-images job, whose rule 10 then refused the
+            # published image for carrying a hash this tree no longer computes, while no build
+            # ran and no row could move. check-image-trigger-paths.sh reads it as an input of
+            # this build for that reason, from the COMPUTED_BUILD_INPUTS entry that writes the
+            # argument down, and that entry is what refuses this filter if it stops naming it.
+            browser_image:
+              - *ci_router
+              - '.github/workflows/browser-image.yaml'
+              - '.github/docker/**'
+              - '.github/scripts/ci_images.py'
+            # ci.yaml's tool-fallback and tool-fallback-arm jobs, the live proof of the second
+            # source every tool install reads when the first source does not serve the bytes:
+            # the manifest that names both sources of each row, the fetch helper every install
+            # goes through, the filler and the gate beside it, the rig and the fault proxy it
+            # drives, the eight actions it installs through, and the two files a row's version is
+            # pinned in that the job itself reads (.bun-version for the bun rows and the
+            # worker image's Dockerfile for mise, jj and uv).
+            # packages/envoy/infra/internal/pulumitest/pulumitest.go, whose
+            # `const DockerPluginVersion` the gate holds the pulumi-docker row's version to,
+            # is not here and no step of either job reads it: a raise of that constant must
+            # move the row, and .github/ci-tools.yaml is in this list.
+            # One filter for the two jobs, as `envoy_go_race_docs` is for its two: the arm64
+            # job drives the same action over the same manifest through the same helper, so a
+            # change that selects one of them must select both, and one list cannot drift from
+            # another that does not exist. Each job carries a gate of its own in
+            # .github/scripts/ci_job_reads.py for what it reads.
+            # Each job holds its steps in a called file of its own, which this list names beside
+            # ci.yaml, where both jobs keep their gate.
+            tool_fallback:
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
+              - '.github/scripts/mirror-ci-tools.sh'
+              - '.github/scripts/check-ci-tools.sh'
+              - '.github/scripts/ci-tools-proof.sh'
+              - '.github/scripts/ci-fault-proxy.py'
+              # The two jobs read the machine they run on with it.
+              - '.github/scripts/disk_watch.py'
+              - '.github/actions/install-crane/**'
+              - '.github/actions/install-changie/**'
+              - '.github/actions/install-jj/**'
+              - '.github/actions/setup-bun/**'
+              - '.github/actions/install-elan/**'
+              - '.github/actions/install-uv/**'
+              - '.github/actions/install-pulumi/**'
+              - '.github/actions/install-docker-plugin/**'
+              - '.bun-version'
+              - 'packages/daemon/docker/worker.Dockerfile'
+              - *ci_router
+              - '.github/workflows/ci-job-tool-fallback.yaml'
+              - '.github/workflows/ci-job-tool-fallback-arm.yaml'
+            # ci.yaml's ci-images job: the image copy (.github/scripts/mirror-ci-images.sh,
+            # through the crane .github/actions/install-crane installs), the package mode of
+            # .github/scripts/check-ci-images.sh, which reads ghcr.io, and the tool copy
+            # (.github/scripts/mirror-ci-tools.sh), which fills the second source of every tool
+            # install. These files are what decides what those three steps do, the built row's
+            # whole build recipe among them: the package mode hashes the recipe - the browser
+            # Dockerfile's own path, every file of .github/docker and
+            # .github/workflows/browser-image.yaml, folded by the recipe_sha256 of
+            # .github/scripts/ci_images.py - and holds the built row's published image to that
+            # hash. The gate's other half reads the whole tree and is a step of lint, which
+            # runs on every change.
+            # It names what this job reads and nothing else, the tool_fallback filter above
+            # included: rule 9's second direction refuses a pattern of a gate's filter that
+            # matches no file its job reads, so this list cannot name that filter whole to be a
+            # superset of it by construction. The tool-fallback job below therefore carries
+            # `!cancelled()` rather than leaning on that: its `needs: ci-images` is for order,
+            # since a run that selects both must fill the copy before the proof reads it, and
+            # the one file that can bring a new row in, .github/ci-tools.yaml, is in both
+            # filters, so every change that adds a row runs the fill first.
+            ci_images:
+              - '.github/ci-images.yaml'
+              - '.github/scripts/mirror-ci-images.sh'
+              - '.github/scripts/check-ci-images.sh'
+              - '.github/scripts/ci_images.py'
+              # The browser image's build recipe, which the package mode hashes to hold the
+              # built row's published image to it.
+              - '.github/docker/**'
+              - '.github/workflows/browser-image.yaml'
+              # The tool half of the copy: the rows the step fills from, the filler that runs,
+              # and the fetch helper whose seams that filler reads.
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/mirror-ci-tools.sh'
+              - '.github/scripts/ci-tools.sh'
+              - '.github/actions/install-crane/**'
+              - *ci_router
+              - '.github/workflows/ci-job-ci-images.yaml'
+              # The job reads no Markdown file: its steps read the image rows, the two scripts
+              # that copy and check them, the tool rows and the filler beside them, and the
+              # crane the action installs, so a guide written under one of those directories
+              # would start it for nothing.
+              - '!**/*.md'
 
       # filter_verdicts above is one object over the three steps, the shape .github/scripts/ci-ok.jq
       # reads. A GitHub expression can build no object from three, so jq merges them here. A

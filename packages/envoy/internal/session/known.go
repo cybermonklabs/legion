@@ -458,11 +458,33 @@ func (s *KnownSessions) retryRepair() (repairResult, error) {
 // repairOnce is one attempt a caller of its own makes, the reconnect hook's move (Rewatch), its
 // requests under ctx, the hook's run. It leaves the retry as it found it: a caller that fails arms
 // one (armRepair), and one that succeeds leaves the running retry to find at its next attempt that
-// there is nothing left to repair, which is where a retry is retired.
+// there is nothing left to repair, which is where a retry is retired. Its wait for repairMu ends
+// with ctx too (lockRepair), since the retry holds that lock through an attempt of its own.
 func (s *KnownSessions) repairOnce(ctx context.Context) (repairResult, error) {
-	s.repairMu.Lock()
+	if err := s.lockRepair(ctx); err != nil {
+		return repairNothing, err
+	}
 	defer s.repairMu.Unlock()
 	return s.attemptRepair(ctx)
+}
+
+// repairLockPoll is how often lockRepair tries repairMu again.
+const repairLockPoll = 10 * time.Millisecond
+
+// lockRepair takes repairMu, or answers ctx's error once ctx ends first. The background retry
+// holds repairMu through its attempt (retryRepair), whose request takes no context and so waits out
+// its own bound on a connection that dropped with it unanswered; a reconnect hook's run that waited
+// for the lock that long would hold every other hook of the run behind it
+// (TestTheHooksMoveDoesNotWaitOutTheRetrysAttempt).
+func (s *KnownSessions) lockRepair(ctx context.Context) error {
+	for !s.repairMu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(repairLockPoll):
+		}
+	}
+	return nil
 }
 
 // attemptRepair makes one attempt to make the store current on the connection it holds now: it
@@ -524,6 +546,22 @@ func (s *KnownSessions) cover(asked uint64) {
 func (s *KnownSessions) armRepair() {
 	s.repairMu.Lock()
 	defer s.repairMu.Unlock()
+	s.armRepairLocked()
+}
+
+// armRepairWithin is armRepair for a reconnect hook's run, whose wait for repairMu ends with ctx
+// (lockRepair). A run that ends first arms nothing: its connection is gone, the run is superseded
+// and leaves the hooks due, and the run the next connection event brings asks again (Rewatch).
+func (s *KnownSessions) armRepairWithin(ctx context.Context) {
+	if s.lockRepair(ctx) != nil {
+		return
+	}
+	defer s.repairMu.Unlock()
+	s.armRepairLocked()
+}
+
+// armRepairLocked is armRepair's step, for a caller holding repairMu.
+func (s *KnownSessions) armRepairLocked() {
 	if s.repairing {
 		return
 	}
@@ -815,11 +853,15 @@ func (s *KnownSessions) Rewatch(ctx context.Context, conn *nats.Conn) error {
 		case s.wake <- struct{}{}:
 		default:
 		}
-		s.armRepair()
+		s.armRepairWithin(ctx)
 		return nil
 	}
 	if _, err := s.repairOnce(ctx); err != nil {
-		s.armRepair()
+		// A move its run's context ended is no failure to repair in the background: the run is
+		// superseded, and the run the next connection event brings moves the store again.
+		if ctx.Err() == nil {
+			s.armRepairWithin(ctx)
+		}
 		return err
 	}
 	return nil
