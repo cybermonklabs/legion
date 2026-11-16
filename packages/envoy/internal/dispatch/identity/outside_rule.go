@@ -2,7 +2,6 @@ package identity
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -39,26 +38,22 @@ type OutsideRule struct {
 
 var _ SignInRule = OutsideRule{}
 
-// Person admits an account of Domain's Workspace as a full member without reading the lists, as
-// DomainRule.Person does, and refuses it as DomainRule does for every reason but being outside the
-// domain. An account outside the domain must have a subject and an email Google has verified
-// (oidc.VerifiedLogin), and an address outside the sign-in domain and every subdomain of it: an
-// address of the domain that is not of its Workspace (a personal Google account) is ErrNotInDomain,
-// else it would read every project that lists the employee. Then it is a restricted member while
-// People names it; ErrNotListed, naming the address, once no project does; and an error matching
-// ErrMembershipUnreadable, which is no refusal, when the lists cannot be read. An empty Domain
-// admits nobody from outside, as it admits nobody from inside.
+// Person requires of every account a subject and an email Google has verified
+// (oidc.VerifiedLogin), refusing one without them as DomainRule does, and admits an account of
+// Domain's Workspace (hd) as a full member without reading the lists, as DomainRule.Person does.
+// An account outside the domain must also have an address outside the sign-in domain and every
+// subdomain of it: an address of the domain that is not of its Workspace (a personal Google
+// account) is ErrNotInDomain, else it would read every project that lists the employee. Then it is
+// a restricted member while People names it; ErrNotListed, naming the address, once no project
+// does; and an error matching ErrMembershipUnreadable, which is no refusal, when the lists cannot
+// be read. An empty Domain admits nobody from outside, as it admits nobody from inside.
 func (r OutsideRule) Person(ctx context.Context, claims oidc.Claims) (SignedIn, error) {
-	email, err := oidc.WorkspaceLogin(claims, r.Domain.Domain)
-	switch {
-	case err == nil:
-		return SignedIn{Email: email, Kind: model.MemberFull}, nil
-	case !errors.Is(err, oidc.ErrNotInDomain):
-		return SignedIn{Email: email}, googleRefusal(email, claims, err)
-	}
-	email, err = oidc.VerifiedLogin(claims)
+	email, err := oidc.VerifiedLogin(claims)
 	if err != nil {
 		return SignedIn{Email: email}, googleRefusal(email, claims, err)
+	}
+	if r.Domain.Domain != "" && claims.HostedDomain == r.Domain.Domain {
+		return SignedIn{Email: email, Kind: model.MemberFull}, nil
 	}
 	if r.ofTheSignInDomain(email) {
 		return SignedIn{Email: email}, fmt.Errorf("%s (hd %q): %w", email, claims.HostedDomain, ErrNotInDomain)
