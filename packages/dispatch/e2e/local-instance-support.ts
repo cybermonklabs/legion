@@ -38,12 +38,41 @@ export interface PipedRunning extends Running {
   readonly child: ChildProcess & { readonly stdout: Readable; readonly stderr: Readable };
 }
 
+/** The reaper's program (bash, whose `kill` takes a negative group id after `--`, where dash's does
+ *  not; every harness script is bash already): it reads one process group id per line from its stdin, the
+ *  write end of which only the supervising process holds. `end` is a stop that already ended every
+ *  group, and it exits. End of input with no `end` is that process gone without a stop - killed,
+ *  crashed, out of memory - and it ends every group it was told of as `stop` would: SIGTERM, then
+ *  SIGKILL to whatever still runs ten seconds later. */
+const reaperProgram = `groups=
+while IFS= read -r line; do
+  if [ "$line" = end ]; then exit 0; fi
+  groups="$groups $line"
+done
+for group in $groups; do kill -TERM -- "-$group" 2>/dev/null; done
+waited=0
+while [ "$waited" -lt 100 ]; do
+  alive=
+  for group in $groups; do kill -0 -- "-$group" 2>/dev/null && alive=1; done
+  [ -z "$alive" ] && exit 0
+  sleep 0.1
+  waited=$((waited + 1))
+done
+for group in $groups; do kill -KILL -- "-$group" 2>/dev/null; done`;
+
 /** Every process the command starts, as the leader of a process group of its own, and the one
- *  signal that a stop is under way: a Ctrl-C (`interrupt`) or the end of the run (`stop`). */
+ *  signal that a stop is under way: a Ctrl-C (`interrupt`) or the end of the run (`stop`).
+ *
+ *  A stop is something this process does, so a process that dies without one - a SIGKILL, an
+ *  out-of-memory kill, a crashed test runner - would leave every group running. So the first
+ *  start also starts a reaper (`reaperProgram`), in a session of its own so no signal meant for
+ *  this process reaches it, and tells it each group as it starts; its stdin is a pipe only this
+ *  process writes, so this process's death, however it comes, is the reaper's end of input, and
+ *  the reaper ends the groups. */
 export class Supervisor {
   readonly #children: Running[] = [];
   readonly #stopping = new AbortController();
-
+  #reaper: ChildProcess | undefined;
   /** Aborted by `interrupt` or `stop`. A step that starts a process outside `start` (psql through
    *  e2e/psql.ts) passes it on, so the process ends with the others. */
   get signal(): AbortSignal {
@@ -107,9 +136,27 @@ export class Supervisor {
     // unhandled before then.
     child.once("error", (error) => ended.reject(error));
     ended.promise.catch(() => {});
+    if (child.pid !== undefined) this.#reap(child.pid);
     const running = { child, exited: ended.promise, name };
     this.#children.push(running);
     return running;
+  }
+
+  /** Tells the reaper of group `pgid`, starting it first if this is the first group. The reaper
+   *  is unreferenced, its pipe too, so neither keeps this process alive; a reaper that is already
+   *  gone answers a write with EPIPE, which is ignored, since it can reap nothing either way. */
+  #reap(pgid: number): void {
+    if (this.#reaper === undefined) {
+      this.#reaper = spawn("bash", ["-c", reaperProgram], {
+        detached: true,
+        stdio: ["pipe", "ignore", "ignore"],
+      });
+      this.#reaper.on("error", () => {});
+      this.#reaper.stdin?.on("error", () => {});
+      this.#reaper.unref();
+      (this.#reaper.stdin as { unref?: () => void } | null)?.unref?.();
+    }
+    this.#reaper.stdin?.write(`${pgid}\n`);
   }
 
   /** A foreground step. It throws on a non-zero exit, so a failed web build or dev-postgres.sh
@@ -153,6 +200,11 @@ export class Supervisor {
     const forceKill = setTimeout(() => signalGroups("SIGKILL"), forceAfterMs);
     await Promise.allSettled(running.map(({ exited }) => exited));
     clearTimeout(forceKill);
+    // Every group this stop signalled is gone, so the reaper has nothing left to end: `end` lets
+    // it go without signalling a group number the system may since have handed to another
+    // process.
+    this.#reaper?.stdin?.end("end\n");
+    this.#reaper = undefined;
   }
 }
 
