@@ -27,13 +27,13 @@ func twoNameGrant(t *testing.T, reason string) (m *Machine, enrollmentID, grantI
 	m, enrollmentID, key, _ := newPlaceholderFixture(t, twoNameRules())
 	retag(t, m,
 		policytest.Secret("AWS_KEY", fixtureOperator, policy.TierAgent, `{"access_key_id":"AKIAONE","secret_access_key":"real-secret"}`),
-		policytest.KindSecret("LOGIN_KEY", fixtureOperator, policy.TierAgent, policy.KindGoogleLogin, `{"type":"authorized_user"}`),
+		policytest.KindSecret("LOGIN_KEY", fixtureOperator, policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin)),
 	)
 	m.Minters = map[string]Minter{policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 		return secrets.Minted{Value: "real-access-token"}, nil
 	}}
 	_, grantID = grantOf(t, m, enrollmentID, key, reason, "AWS_KEY", "LOGIN_KEY")
-	release, err := m.Values(t.Context(), grantID, enrollmentID, nil)
+	release, err := m.Values(t.Context(), grantID, enrollmentID, nil, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("Values: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestAirlockValuesAnswersTheRealValuesOfTheAirlocksNames(t *testing.T) {
 	m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}})
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	_, grantID := grantOf(t, m, enr, key, "read both", "AUTO_TOKEN", "SECOND_TOKEN")
-	if _, err := m.Values(t.Context(), grantID, enr, nil); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestAirlockValuesAnswersTheRealValuesOfTheAirlocksNames(t *testing.T) {
 func TestAirlockValuesEndsAGrantWhoseAirlockEntryChanged(t *testing.T) {
 	m, enr, key, digests := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}})
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-	if _, err := m.Values(t.Context(), grantID, enr, nil); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 
@@ -181,7 +181,7 @@ func TestAirlockValuesEndsAGrantWhoseAirlockEntryChanged(t *testing.T) {
 func TestTheSweeperDeletesThePlaceholdersOfGrantsThatHaveEnded(t *testing.T) {
 	m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}})
 	_, ended := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-	if _, err := m.Values(t.Context(), ended, enr, nil); err != nil {
+	if _, err := m.Values(t.Context(), ended, enr, nil, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 	if deleted, err := m.deleteSpentPlaceholders(t.Context()); err != nil || deleted != 0 {

@@ -6,7 +6,9 @@ The secrets broker's client. An agent session runs it to use a secret:
 agent-secrets DEMO_API_KEY --reason "Deploy the example service" -- ./deploy.sh
 ```
 
-It asks the broker for the named secrets, waits while a person approves them on the broker's own
+It looks the command up on `PATH` first, and refuses one it does not find (exit 1) before it asks
+the broker anything, so no request waits on an approver for a command that could not run. It then
+asks the broker for the named secrets, waits while a person approves them on the broker's own
 approval page if the secret's owner and tier require it, and runs the command with each granted
 value in its
 environment, writing one line to standard error first: the names it injected, that the broker
@@ -14,8 +16,13 @@ environment, writing one line to standard error first: the names it injected, th
 AGENT_SECRETS_URL names (GCP Secret Manager)`, never a value. Every other line about a secret names
 its source the same way - `request`, `status` and `self` as a `source:` line, a denial, a pending
 request and every refusal as `; asked the broker AGENT_SECRETS_URL names (<store kind>)` - so an
-answer of this CLI's is never taken for another secrets CLI's about the same name. Those lines are
-quoted wherever an agent's output is, so none names the store's account, region or project, and
+answer of this CLI's is never taken for another secrets CLI's about the same name. An error the
+broker answers also ends with its answer id, `(answer <id>)`, for whoever was refused to quote to
+whoever runs the broker. For a refusal, from 400 to 499 but a `429`, the id names the broker's own
+log line for it. A `429` and a failure of 500 and above name their id in no line: for
+`MINT_FAILED`, the broker's `broker: mint failed` line names the secret and the time. This CLI's
+lines are quoted wherever an agent's output is, so none names the store's account, region or
+project, and
 none names the broker's host but two: a broker that could not be reached, named by its URL so a
 stale address reads as one, and a pending secret request, whose line names the page on the broker
 where its approver decides it, the `approve_url` the broker's own answer carries. The secret
@@ -32,7 +39,18 @@ session's grants (`agent-secrets self`). People and agents manage the agent secr
 store (AWS Secrets Manager or GCP Secret Manager) under whatever cloud credential its environment
 gives it - the store's own IAM decides what that credential may do - and then asks the broker to
 reread each secret written, so the change
-is served at once; those forms need no helper and no session. From their own shell on a machine
+is served at once; those forms need no helper and no session. On GCP, `secret create` makes the
+secret, empty and with its tags, before it asks for the value, so a store that refuses the create
+asks for none; until the value is added, a failure or a hang-up, interrupt, quit or termination
+deletes that empty secret again, and a secret that may hold the value, where the store's answer to
+the add leaves that open, is kept. Each store call from the create until the value is stored or
+the empty secret deleted has a deadline of 60 seconds, Secret Manager's Go client's own default
+for those calls, which AWS's `CreateSecret` takes too, its SDK setting none. That bound is per
+call, not per signal: a signal waits out the call in flight, and then its cleanup makes its own
+calls, each with the same deadline, so a first signal against a store that answers nothing can
+take a few minutes. A second signal ends the command at once, by that signal, naming what the
+store may be left holding and the command that clears or checks it. From their own shell on a
+machine
 that runs the helper, people list and end their own machines' logins and their live grants with
 `agent-secrets machine list|revoke` and `agent-secrets grant list|revoke`, under that machine's
 login; a service's login is revoked on Dispatch's machine-login page. The helper refuses these
@@ -65,10 +83,20 @@ retag <NAME> --shape document`.
 token|document|none` changes it or removes it, `secret show` prints it as a `shape:` line, and
 `secret list` prints it as a `SHAPE` column. `secret create` and `secret set` read the value they
 store by this same rule, so a value stored through this client and a value stored by any other
-writer are spent alike. `secret set` reads the secret's own shape tag first, so a document's
-owner stores a document. Where the rule changes nothing, the client still removes one final line
-feed, which it has always done, so `echo` and a file that ends in a newline store the value
-without one.
+writer are spent alike. `secret set` reads the secret's own kind and shape tags first, so a
+document's owner stores a document. Where the rule changes nothing, the client still removes one
+final line feed, which it has always done, so `echo` and a file that ends in a newline store the
+value without one.
+
+A kind secret's value is checked before it is written, by the decoder the broker's minter for that
+kind reads it with: `secret create --kind` checks the value it stores, `secret set` checks it under
+the kind tag the secret holds, and `secret retag` checks the value the secret holds when it
+changes the kind, or the shape of a secret that keeps a kind. A value that minter could not mint
+from is refused with the minter's reason, exit 2, and nothing is written. The retag reads the
+value for that check and never prints it. A sign-in the store refuses that read still writes the
+tags, and the retag says on standard error that the value was not checked and names the
+permission the read needs. The broker reads every kind secret's value with the same decoder and
+refuses a secret whose value it refuses as `value-malformed`.
 
 On a machine that runs agents directly, `agent-secrets-helper` (`../agent-secrets-helper`) holds
 each session's key and signs for it; in a container or a Kubernetes pod, the session's key lives in

@@ -55,7 +55,7 @@ func (h *holderSignIns) Current(context.Context) (*brokerclient.Authority, error
 	return h.authority, nil
 }
 
-func (h *holderSignIns) Refused(string) {}
+func (h *holderSignIns) Refused(context.Context, string) error { return nil }
 
 func (h *holderSignIns) signIn(authority *brokerclient.Authority) {
 	h.mu.Lock()

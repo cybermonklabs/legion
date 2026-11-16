@@ -60,6 +60,15 @@ func (s *Service) AfterSettleLockForTest(hook func(room string)) {
 	s.afterSettleLock = hook
 }
 
+// ResumeOwedSettlementsForTest runs one pass of the settlement resumption
+// (resumeOwedSettlements): it arms the settlement of at most settlementResumeBatch documents whose
+// pending-settlement row is at least age old, those no pass has tried first, as
+// RunSettlementResumption's pass does once a minute under its lease. Tests in package api run it
+// with age 0 to settle a document that nothing else settles, whether or not its issue is closed.
+func (s *Service) ResumeOwedSettlementsForTest(ctx context.Context, age time.Duration) error {
+	return s.resumeOwedSettlements(ctx, age)
+}
+
 // SetRoomBudgetForTest replaces the room budget's limit with bytes, or restores the service's own
 // (MemoryBounds.RoomBudget) for zero, so a browser test can fill the budget with documents a test
 // can type into. It is mounted only through Dispatch's test-hook route; the real-process drives

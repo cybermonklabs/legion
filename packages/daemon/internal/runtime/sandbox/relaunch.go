@@ -284,7 +284,14 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, l.enrolls(r)); err != nil {
 		return fail("record the addresses its generation is handed", err)
 	}
-	if err := r.launchers.start(starting, spec.Claim, string(pod.UID), launcherCommand(l, r)); err != nil {
+	// The start sent carries what this launch learned from the cluster since prepare measured it,
+	// so it is measured again here: a frame no launcher reads is refused as the prompt it is, which
+	// supervise charges nothing, rather than failing in the writer as a charged launch failure.
+	command := launcherCommand(l, r)
+	if err := l.checkStartFrame(command); err != nil {
+		return fail("measure its start frame", err)
+	}
+	if err := r.launchers.start(starting, spec.Claim, string(pod.UID), command); err != nil {
 		return fail("start through its authenticated launcher", errors.Join(err, r.stopIssuedChild(ctx, spec.Claim, string(pod.UID), spec.Generation, err)))
 	}
 	r.join(loc)
@@ -293,7 +300,8 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 
 // keptBy is what the live pod of the Sandbox read as s was built with, for the role l starts in
 // it: the enrollment decision for that role in that pod (enrollsIn, which reads the broker's
-// volumes the pod carries), which of the role's own overlays and of the project's memory overlays
+// volumes the pod carries), which of the role's own overlays and of every declared variant's
+// overlays
 // its container holds (heldRoleOverlays), the skills repository its recorded pod shape names, and
 // the session store it was built under (heldSessionStore, the URL file its generation is pointed
 // at). A launch that keeps such a pod
@@ -314,7 +322,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 // the daemon then cannot tell what the pod carries, and relaunch replaces the pod.
 func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
 	spec := s.Spec.PodTemplate.Spec
-	overlays, memory, readable := r.heldRoleOverlays(spec, l.spec.Role)
+	overlays, variantFiles, readable := r.heldRoleOverlays(spec, l.spec.Role)
 	if !readable {
 		return keptPod{}, false
 	}
@@ -333,7 +341,7 @@ func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
 		}
 	}
 	kind, _, _ := heldSessionStore(spec)
-	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), overlays: overlays, memory: memory, store: kind, skills: skills}, true
+	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind, skills: skills}, true
 }
 
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,

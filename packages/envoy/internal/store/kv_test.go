@@ -76,6 +76,34 @@ func TestMatch_FiltersByMachineID(t *testing.T) {
 	}
 }
 
+// The all-machines walk a publish's recipient count reads returns every session whose topics
+// match, whatever machine it registered on, each once however many of its topics match; a session
+// whose topics do not match is left out on every machine.
+func TestMatchAllMachinesReturnsEachMatchingSessionOnceWhateverItsMachine(t *testing.T) {
+	r := holding(t, map[string]Interest{
+		"ses_a":     {SessionID: "ses_a", MachineID: "machine-A", Topics: []string{"notifications.team.x.>"}},
+		"ses_b":     {SessionID: "ses_b", MachineID: "machine-B", Topics: []string{"notifications.team.x.>", "notifications.team.*.update"}},
+		"ses_c":     {SessionID: "ses_c", MachineID: "", Topics: []string{"notifications.team.x.update"}},
+		"ses_other": {SessionID: "ses_other", MachineID: "machine-A", Topics: []string{"notifications.team.y.>"}},
+	})
+
+	got := r.MatchAllMachines("notifications.team.x.update")
+	ids := make([]string, len(got))
+	for i, item := range got {
+		ids[i] = item.SessionID
+	}
+	sort.Strings(ids)
+	if want := []string{"ses_a", "ses_b", "ses_c"}; !slices.Equal(ids, want) {
+		t.Fatalf("MatchAllMachines = %v, want %v", ids, want)
+	}
+	if got := r.MatchAllMachines("notifications.team.z.created"); len(got) != 0 {
+		t.Fatalf("MatchAllMachines of a topic no session follows = %v, want none", got)
+	}
+	if got := (&Registry{}).MatchAllMachines("notifications.team.x.update"); len(got) != 0 {
+		t.Fatalf("a registry with no index matched %v", got)
+	}
+}
+
 func TestMatch_WildcardPatterns(t *testing.T) {
 	r := holding(t, map[string]Interest{
 		"ses_exact":   {SessionID: "ses_exact", MachineID: "m1", Topics: []string{"notifications.github.sjawhar.legion.pr"}},

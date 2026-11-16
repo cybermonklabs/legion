@@ -1,0 +1,30 @@
+{
+  "architect": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/architect.yml",
+    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-architect-system-prompt.md"
+  },
+  "controller": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/controller.yml",
+    "--append-system-prompt": "/state/secrets/legion-omp-controller-system-prompt.md"
+  },
+  "implementer": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/implementer.yml",
+    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-implementer-system-prompt.md"
+  },
+  "merger": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/merger.yml",
+    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-merger-system-prompt.md"
+  },
+  "planner": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/planner.yml",
+    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-planner-system-prompt.md"
+  },
+  "reviewer": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/reviewer.yml",
+    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-reviewer-system-prompt.md"
+  },
+  "tester": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/tester.yml",
+    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-tester-system-prompt.md"
+  }
+}

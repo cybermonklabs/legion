@@ -87,6 +87,12 @@ type NatsServiceArgs struct {
 type AuthorizationArgs struct {
 	Users      []UserArgs `pulumi:"users"`
 	NoAuthUser string     `pulumi:"noAuthUser,optional"` // the name of a keyed user without a seed
+	// The auth service's callout, which admits every client that is not one of users; unset, the
+	// server renders exactly what it rendered before callouts existed.
+	Callout *nats.AuthCalloutArgs `pulumi:"callout,optional"`
+	// The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862): it needs
+	// callout, and no user but callout.serviceUser.
+	PrivateProjects bool `pulumi:"privateProjects,optional"`
 }
 
 // Annotate names the type aws:Authorization in the schema: generated SDKs append Args to an object
@@ -112,7 +118,7 @@ func (a *AuthorizationArgs) core() *core.Authorization {
 	for i, u := range a.Users {
 		users[i] = core.User{Name: u.Name, NKey: u.NKey, Publish: u.Publish.Core(), Subscribe: u.Subscribe.Core(), HasSeed: u.HasSeed}
 	}
-	return &core.Authorization{Users: users, NoAuthUser: a.NoAuthUser}
+	return &core.Authorization{Users: users, NoAuthUser: a.NoAuthUser, Callout: a.Callout.Core(), PrivateProjects: a.PrivateProjects}
 }
 
 // NatsService is Envoy's NATS server on ECS Fargate: JetStream on one EFS file system, a Tailscale
@@ -288,16 +294,16 @@ func NewNatsService(ctx *pulumi.Context, name string, args *NatsServiceArgs, opt
 // naming its input: a plain input holding a seed (seededPlainInput), configHeader and configPath
 // against authorization, then the authorization, configHeader and serverArgs (through
 // rendering.NatsLaunch), then the service's. It returns the NATS container's launch.
-func (args *NatsServiceArgs) validate() ([]core.Field, error) {
+func (args *NatsServiceArgs) validate() (rendering.Launch, error) {
 	if err := seededPlainInput(*args); err != nil {
-		return nil, err
+		return rendering.Launch{}, err
 	}
 	owner := rendering.Owner{Name: "authorization", Present: args.Authorization != nil, Absent: "which is not given"}
 	if err := rendering.CheckOwnedInputs([]rendering.OwnedInput{
 		{Owner: owner, Field: "configHeader", Given: args.ConfigHeader != nil, Set: args.ConfigHeader != nil},
 		{Owner: owner, Field: "configPath", Given: args.ConfigPath != nil, Set: args.ConfigPath != nil && *args.ConfigPath != ""},
 	}); err != nil {
-		return nil, err
+		return rendering.Launch{}, err
 	}
 	var authorization *core.Authorization
 	configPath := ""
@@ -306,16 +312,16 @@ func (args *NatsServiceArgs) validate() ([]core.Field, error) {
 	}
 	launch, err := rendering.NatsLaunch(authorization, args.ConfigHeader, args.ServerArgs, configPath)
 	if err != nil {
-		return nil, err
+		return rendering.Launch{}, err
 	}
 	if len(args.SubnetIds) == 0 {
-		return nil, errors.New("subnetIds names no subnet: each file system needs a mount target where the task runs")
+		return rendering.Launch{}, errors.New("subnetIds names no subnet: each file system needs a mount target where the task runs")
 	}
 	if len(args.TailnetTags) == 0 {
-		return nil, errors.New("tailnetTags names no tag: an auth key made from an OAuth client must advertise one")
+		return rendering.Launch{}, errors.New("tailnetTags names no tag: an auth key made from an OAuth client must advertise one")
 	}
 	if err := refuseServiceTag(args.BaseTags); err != nil {
-		return nil, err
+		return rendering.Launch{}, err
 	}
 	return launch, nil
 }

@@ -79,14 +79,25 @@
 # sessions stopped on their stdin's end of file, and the stream must then hold no `s-` consumer at
 # all.
 #
-# Nothing addressed to a session reaches one the listener holds no live registration for: a direct
-# send is refused 404 (no live session), and its role's holder reads lapsed, so neither a role
-# publish nor a core publish on its role topic is forwarded to it. Those three events are expected
-# 0 times for such a session, as a Dispatch message Dispatch could not send is, and publish_rest
-# reads the registry of the listener it sends through to say which. Only window g ever reads 0
-# there: a SIGKILLed session stays registered until its entry lapses, five minutes on. A topic the
-# stream captures is the one thing stored for a session that is away — the followed issue's
-# comments — and handing those over on its return is what window g proves.
+# A direct send is judged by its own answer. The listener stores a send to every session Envoy
+# knows, whether it holds a live registration for it or knows it only from its 30-day
+# known-session record, as it knows a session that stopped cleanly, and answers it 200 (`state:
+# "stopped"` for a session away); only a session neither store knows is refused 404. A send
+# answered 200 is expected once, since the session's own consumer hands the stored message over
+# when the session returns, and one answered 404 reaches nobody and is expected 0 times; any other
+# answer is a send that failed and stays expected once, so the table shows it as a miss. A role
+# publish is judged by its own answer too. The listener forwards it to a holder it holds a live
+# registration for and answers 200; for a holder with none it keeps the message on the role's kept
+# lane for an hour and answers 202 kept (`kept_reason: "holder_lapsed"`), and the registration
+# that makes that holder live again hands the kept copy over. So a role publish answered 200 or
+# 202 is expected once, and one answered 404 kept nothing and is expected 0 times (a `keep: false`
+# publish would be one, and this run sends none); any other answer stays expected once. A core
+# publish on a role topic is expected once in every window: the role lane forwards it to a live
+# holder and keeps it for one that is not. Window g's cleanly stopped Oh My Pi session has no
+# registration at all, and it comes back under the same id within the hour still holding its
+# role, so each of its role events reaches it once. What is stored for a session that is away —
+# the followed issue's comments, the direct send, the Dispatch message and the role messages to
+# it — is handed over on its return, and that is what window g proves.
 #
 # After each window, up to SESSION_DELIVERY_SETTLE_S for every marker to reach its session, then
 # SESSION_DELIVERY_HOLD_S more for a repeat. At the end every marker is counted in every
@@ -1182,41 +1193,43 @@ publish_dispatch() {
   done
 }
 publish_rest() {
-  local d=$1 via=$2 label answer text
-  # Every event below is addressed to one session, and nothing addressed to a session reaches one
-  # the listener holds no live registration for: its direct send is refused 404 (no live session),
-  # and its role's holder reads lapsed, so neither the role publish nor the core publish on its
-  # role topic is forwarded to it. Each is then published to nobody and expected 0 times, as a
-  # Dispatch message Dispatch could not send is. Only window g's cleanly stopped session reads 0
-  # here: a session SIGKILLed or cut off its NATS connection stays registered until its entry
-  # lapses, five minutes on (contracts.SessionLiveWindow).
-  local -A live=()
-  for label in pi cc; do
-    live[$label]=1
-    if ! registered "$via" "${sid[$label]}"; then
-      live[$label]=0
-      note "window $d: listener $via holds no live registration for $label (${sid[$label]}); its direct send and its role's forwards reach nobody, and each is expected 0 times"
-    fi
-  done
+  local d=$1 via=$2 label answer text expected
+  # Every event below is addressed to one session. The direct send's expectation comes from its own
+  # answer: the listener stores a send to every session Envoy knows, one it holds a live
+  # registration for or one only its known-session record holds (window g's cleanly stopped
+  # session), and answers it 200, so it is expected once, because the session's own consumer hands
+  # it over when the session returns. A 404 is a session neither store knows: the send reaches
+  # nobody and is expected 0 times. Any other answer is a send that failed, which stays expected
+  # once so the table shows it as a miss. The role publish's expectation comes from its own answer
+  # the same way: 200 is a forward to a live holder and 202 a copy kept for a holder that is not
+  # live (window g's cleanly stopped session, whose claim stands), which the registration that
+  # makes it live again hands over, so both are expected once; 404 kept nothing and is expected 0
+  # times, and any other answer stays expected once. The core publish on the role topic is expected
+  # once in every window: the role lane forwards it to a live holder and keeps it for one that is
+  # not, as the route does.
   for label in pi cc; do
     next_marker
     text=$(text_for "$d" agent "POST /v1/messages/send to listener $via")
     answer=$(listener_post "$via" /v1/messages/send "$(jq -nc --arg s "${sid[$label]}" --arg m "$text" \
       '{target_session: $s, source: "agent", source_session: "envoy-session-delivery", message: $m}')")
-    record "$d" agent listener-send "$label" "${live[$label]}" "$answer"
+    expected=1
+    [[ "${answer##*$'\n'}" != 404 ]] || expected=0
+    record "$d" agent listener-send "$label" "$expected" "$answer"
   done
   for label in pi cc; do
     next_marker
     text=$(text_for "$d" role "POST /v1/messages/publish to listener $via")
     answer=$(listener_post "$via" /v1/messages/publish "$(jq -nc --arg t "notifications.role.${role[$label]}" --arg m "$text" \
       '{topic: $t, source: "agent", source_session: "envoy-session-delivery", message: $m}')")
-    record "$d" role listener-publish "$label" "${live[$label]}" "$answer"
+    expected=1
+    [[ "${answer##*$'\n'}" != 404 ]] || expected=0
+    record "$d" role listener-publish "$label" "$expected" "$answer"
   done
   for label in pi cc; do
     next_marker
     text=$(text_for "$d" role "a core publish on notifications.role.${role[$label]}")
     answer=$(core_publish "notifications.role.${role[$label]}" "$text")
-    record "$d" role core-publish "$label" "${live[$label]}" "$answer"
+    record "$d" role core-publish "$label" 1 "$answer"
   done
   next_marker
   text=$(text_for "$d" team "POST /v1/messages/publish to listener $via")

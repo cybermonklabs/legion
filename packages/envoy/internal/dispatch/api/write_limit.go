@@ -159,9 +159,9 @@ func (s *server) holdWriteLimit(handler http.HandlerFunc) http.HandlerFunc {
 		body := &deadlinedBody{ReadCloser: r.Body, writer: w, idle: s.drainTime(), whole: bodyDrainLimit}
 		r.Body = body
 		// The drain is this request's writer, and it is what answers a cut body (drainingWriter):
-		// register puts drainBeforeAnswer directly around this layer on every route that is not a
-		// GET, and the drain hands on every request with a body under its own writer. Only a
-		// register that lost the drain could hand this layer another, and the assertion refuses it
+		// routeHandler puts drainBeforeAnswer directly around this layer on every route that is not
+		// a GET, and the drain hands on every request with a body under its own writer. Only a
+		// chain that lost the drain could hand this layer another, and the assertion refuses it
 		// loudly rather than leave a cut body to the 400 that blames the caller's input.
 		w.(*drainingWriter).deadlined = body
 		handler(w, r)

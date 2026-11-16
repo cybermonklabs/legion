@@ -480,6 +480,12 @@ order; that relay, not a subscription of this plugin's, is where the session's m
   path left after two unanswered pings (`natsConnectionOptions`, below) ends in such a reconnect:
   nats.js subscribes the relay subject again on the new connection, and the registration names the
   new epoch.
+  The relay subscription also answers the listener's connection probe, through `receive` in
+  `@legion/envoy-client/consumer-delivery` (the probe's format is in `packages/envoy/AGENTS.md`,
+  "Session consumers"), and nothing in this extension takes part: while the relay subscription
+  is open a send to this session reads `connected`, and once the NATS connection closes, or a
+  session switch moves the relay to another id and drops the old subject, nothing answers and
+  the send reads `stopped`.
 - The answer's one mode is `consumer` (`takeDeliveryAnswer`), and the relay carries the agent
   subject and every followed topic, each of which the stream stores (`streamStores`; the listener
   drops any other `notifications.` topic from the registration and names it in a warning, so a
@@ -1039,16 +1045,64 @@ which is also the session it writes to Dispatch as (`DISPATCH_SESSION_ID`); a su
 process cannot place carries no list. Dispatch is resolved per request with `commands: "kept"`,
 so no `!` token command runs on the request path, and `readSessionAnswers` works out the cache's
 directory from `process.env`. Position: the list goes after the request's last message only when
-it shows an item, or an answer or comment a person changed, that the session's list before it did
-not (`SessionAnswersRead.words`, from `sessionAnswersWords` over the items the list shows, so an item the cap left out was not seen: each item's kind, id, author, times,
-options chosen and words, so an issue title, an ask's question or a cached list's header does not
-count); on the requests after that it stays right after that message, found by role, timestamp
-and a tool result's call id, with its current text, so the request ends with its own last message
-and the model does not read a list with nothing new in it as a new turn and answer it on every
-turn. A list that only lost items, or the failure line, keeps its place. A session with no list
+it shows something the session's list before it did not (`sessionAnswersChanged` over the two
+reads' `SessionAnswersRead.words`, from `sessionAnswersWords` over every item Dispatch sent inside
+the read's 72-hour window, the ones the character cap left out of the list included: each item's
+kind, id, author, times, options chosen and words, so an issue title, an ask's question or a
+cached list's header does not count): an item, or an answer or comment a person changed, even one
+the cap leaves out (a newest item longer than the cap, a comment an edit made too long to fit), so
+the model reads the new list with its left-out line rather than the person's old words as
+current; or an item gone from the read while its time is still inside the read's window
+(`SessionAnswersRead.since`), which a person retracted (an answer set back to none) or Dispatch
+removed. An item gone because the window left it behind is no change. `readSessionAnswers` asks
+Dispatch for the window by this host's clock (`since`), the clock the render filters by, so an
+item Dispatch would drop by a clock ahead of the host's is still sent while the host's window
+holds it, and is not taken for a retracted one. On the requests after that the list stays right
+after that message, found by role, timestamp and a tool result's call id, with the bytes it was
+placed with, so the request ends with its own last message and the model does not read a list
+with nothing new in it as a new turn and answer it on every turn. A list that only lost items to
+the window, or whose text names a different read of the same items
+(`As read at …; this read failed: …`), keeps its place and those same bytes, since a changed byte
+inside the conversation costs a prompt-cache miss for every byte behind it. The exception is
+a list an older copy of the extension placed, which carries no `words`: it keeps its place only
+when its text differs in nothing but that read line, and any other difference, a lost item
+included, re-renders it after the last message, since reading that text more closely took a
+person's words for the renderer's (`showsNew`). The failure line, which a read gives when it has
+no list to give, is no list: where a list is placed it counts as a change and goes after the last
+message, so the model reads that the read failed rather than a list's kept bytes that look like a
+read that answered, and a list after a placed failure line goes after the last message the same
+way; a failure line after a placed one keeps that one's place and bytes, its reason included. A
+read that fails but gives the cached list is a list: with the same items it keeps the placed
+bytes, which do not name this read's failure; the extension logs that read's reason with
+`logger.warn` instead (`unshownFailure`), on the session's first such request and not again until
+one of its reads has answered, so a lasting failure, such as a Dispatch with no answers route, is
+one line beside that Dispatch's own notice. Nothing is logged when the placed bytes are this
+read's own text, which names its failure. A list an older copy rendered from its cache, placed
+after the last message, names its failed read on its second line (`As read at …; this read
+failed: …`); where it keeps the placed bytes, that line leaves the request, and `placedLegacy`
+hands its failure on as the reason (`failedRead`), the sentence as that copy wrote it. An older
+copy's list with no such line comes only from a read Dispatch answered, so it counts as an
+answered read, and that path is logged under the same rule. The state is each session's, by
+`sessionManager` and session id as the placements are (on `globalThis` under
+`Symbol.for("legion.pi-envoy.session-answers-unshown.v1")`). The extension logs no newer list,
+no retraction and no read that answers, since those reach the model. A read that gives no text
+leaves a placed list where it is rather than taking it out, and takes a placed failure line out
+together with its place, since that read did not fail. A read whose window holds no item still
+gives its
+`words` (`carriedAnswers`, which `sessionAnswersText` and `src/session-answers-read.test.ts`
+call): when they show an item of the placed list gone inside the window, as when a person
+retracts the only answer the window held, the list leaves the request together with its place,
+and a list whose items only aged out stays. A read with no words (a Dispatch with no answers
+route and nothing cached, Dispatch off) compares nothing and keeps the list. So a placed list can
+name a read older than the request carrying it, and can hold an item that has since aged out of
+the window, until a read shows something new or gives the failure line, and the list or the
+failure line goes after the last message, or a read with no text shows an item of it retracted,
+and the list leaves. A move empties
+the old place, so the request first differs there. A session with no list
 placed yet in this process, or whose list's message is no longer in the request (a compaction
 summarized it, the branch moved), gets it after the last message again. Each session's place and
-last list live in a process-wide `WeakMap` by `sessionManager` and then session id, since Oh My Pi
+the list as it was placed (its bytes, its `words` and its `since`) live in a process-wide
+`WeakMap` by `sessionManager` and then session id, since Oh My Pi
 keeps one `sessionManager` across a session switch (on `globalThis` under
 `Symbol.for("legion.pi-envoy.session-answers-placements.v1")`). While the session compacts
 (`compacting`) or right after a cut, the list goes after the last message and no place moves, so
@@ -1110,22 +1164,32 @@ conversation and never switches the list off.
 Bounds, all in the shared module: under 8,000 characters (at most 7,999) for the whole message, items newest first as a
 strict prefix with a left-out line naming `dispatch answers`; one read in flight per session and
 Dispatch URL for the whole process, the parent's and every subagent's requests joining it; each
-request waits at most `SESSION_ANSWERS_DEADLINE_MS` (800 ms), then carries the last list read
-from that Dispatch (memory, then `answers.json` in the session's state directory) with its read
-time and why this read failed, or, when that renders nothing, the failure line naming why; a
+read waits at most `SESSION_ANSWERS_DEADLINE_MS` (800 ms), then gives the last list read from
+that Dispatch (memory, then `answers.json` in the session's state directory) with its read time
+and why this read failed, or, when that renders nothing, the failure line naming why. What a
+request sends is that read's text only where the list or the failure line goes after the last
+message; where the placed list keeps its place, the request sends the bytes it was placed with,
+an older read time and reason included, and a failure line moves past a placed list (above). A
 Dispatch that answers its own `404 NOT_FOUND` "no route for …" (`isNoAnswersRoute`; a proxy's 404
-page or a 200 with no answers list is a failed read like any other) carries no line then
-(`source: "unavailable"`), since the failure line's `dispatch answers` fails there too, carries a
+page or a 200 with no answers list is a failed read like any other) gives no line then
+(`source: "unavailable"`), since the failure line's `dispatch answers` fails there too, gives a
 list read before from it with a left-out line naming no command, gives a `notice` once per session
 and URL that `sessionAnswersText` logs with `logger.warn`, and is not asked again for 5 minutes; a
 read that already passed its deadline is not waited on again. The pinned host hands a `context`
 handler no abort signal: it races the handler against the run's own and drops an aborted
 handler's result. A handler that throws loses
-everything it returns, the skill included, so a read that throws rather than answering carries
-the failure line naming the error. `src/session-answers-context.test.ts` holds the insertion
-and placement rules, the requests that carry no list and the two-copy cases, `extensions/envoy.test.ts` the
-handler, a subagent reading its parent's id, a Dispatch that answers no list (the failure line)
-and one with no answers route (no line, one warning for two requests), and
+everything it returns, the skill included, so a read that throws rather than answering gives the
+failure line naming the error, which goes where any failure line goes, and `sessionAnswersText`
+logs the error with `logger.warn`. `src/session-answers-context.test.ts` holds the insertion
+and placement rules on scripted reads, the requests that carry no list and the two-copy cases,
+two copies with an empty list making one HTTP read among them,
+`src/session-answers-read.test.ts` the placement rules on reads through the real
+`readSessionAnswers` and `carriedAnswers` (the cap, a retraction, the window),
+`extensions/envoy.test.ts` the
+handler, a subagent reading its parent's id, a Dispatch that answers no list (the failure line),
+one with no answers route (no line, one warning for two requests), and a failed read whose cached
+list keeps the placed bytes (one warning for three such reads, none for a read that answers, one
+for the next such read after it), and
 `extensions/session-answers-omp.test.ts` the real binary: a new answer in the next turn, after a
 compaction and in a subagent's first request; every kind of item word for word; the cap; a route
 that never answers costing a request under one second, by the median of three readings; a route that answers 404 (no line); the cache

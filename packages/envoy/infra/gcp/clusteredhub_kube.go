@@ -32,7 +32,9 @@ const (
 	// clusteredHubNoAuthUserAnnotation, on the hub's pod template, holds the session user's public
 	// key. nats-server refuses a reload that changes no_auth_user, so a session-user change must
 	// restart each server: the annotation changes the template, and the StatefulSet rolls its pods
-	// one at a time. Any other users change rewrites only auth.conf, which the reloader applies.
+	// one at a time. Without authCallout any other users change rewrites only auth.conf, which the
+	// reloader applies; with it, a user added or removed also changes auth_users, which rolls the
+	// pods (clusteredHubAuthCalloutAnnotation).
 	clusteredHubNoAuthUserAnnotation = "envoy-infra.sjawhar.dev/no-auth-user"
 	// clusteredHubMaxFileStoreAnnotation, on the hub's pod template, holds JetStream's
 	// max_file_store (maxFileStoreGb). nats-server v2.15.1 refuses a reload that lowers it
@@ -42,6 +44,14 @@ const (
 	// new nats.conf (the StatefulSet is applied after the ConfigMap), as a session-user change does;
 	// a raise rolls them as well, which costs a restart and keeps one rule.
 	clusteredHubMaxFileStoreAnnotation = "envoy-infra.sjawhar.dev/max-file-store"
+	// clusteredHubAuthCalloutAnnotation, on the hub's pod template, holds the SHA-256 of auth.conf's
+	// callout lines, the auth_callout block and the ping lines (core.Authorization.CalloutLines),
+	// and is absent without authCallout. A change of either, a user added to or removed from
+	// auth_users among them, rolls the pods as a session-user change does; a change of a grant
+	// alone leaves the lines as they were. CalloutLines' doc comment says why a change rolls the
+	// pods rather than reloads, and why the routes' ping pin (clusteredHubCluster) arrives with that
+	// roll; clusteredhub_callout_live_test.go measures the refused reload.
+	clusteredHubAuthCalloutAnnotation = "envoy-infra.sjawhar.dev/auth-callout"
 	// clusteredHubAuthConf is the file of the chart's ConfigMap holding the users' authorization,
 	// which nats.conf includes and the reloader watches.
 	clusteredHubAuthConf = "auth.conf"
@@ -215,6 +225,9 @@ func clusteredHubChartValues(s clusteredHubSettings) pulumi.Map {
 	if s.sessionNKey != "" {
 		annotations[clusteredHubNoAuthUserAnnotation] = pulumi.String(s.sessionNKey)
 	}
+	if s.calloutDigest != "" {
+		annotations[clusteredHubAuthCalloutAnnotation] = pulumi.String(s.calloutDigest)
+	}
 	podMerge["metadata"] = pulumi.Map{"annotations": annotations}
 	podTemplate["merge"] = podMerge
 	servicePorts := pulumi.Map{}
@@ -225,7 +238,7 @@ func clusteredHubChartValues(s clusteredHubSettings) pulumi.Map {
 		"fullnameOverride": pulumi.String(s.name),
 		"natsBox":          pulumi.Map{"enabled": pulumi.Bool(false)},
 		"config": pulumi.Map{
-			"cluster": pulumi.Map{"enabled": pulumi.Bool(true), "replicas": pulumi.Int(clusteredHubServers), "noAdvertise": pulumi.Bool(true)},
+			"cluster": clusteredHubCluster(s),
 			"jetstream": pulumi.Map{
 				"enabled":     pulumi.Bool(true),
 				"fileStore":   pulumi.Map{"pvc": jetstreamPVC, "maxSize": gibibytes(s.size.maxFileStoreGb)},
@@ -254,19 +267,42 @@ func clusteredHubChartValues(s clusteredHubSettings) pulumi.Map {
 		"podTemplate":         podTemplate,
 		"podDisruptionBudget": pulumi.Map{"enabled": pulumi.Bool(true)},
 		// The StatefulSet is applied only once the chart's ConfigMap, holding nats.conf and
-		// auth.conf, is. Both pod annotations roll the pods for a value nats-server cannot reload,
-		// no-auth-user for a new no_auth_user in auth.conf and max-file-store for a lower
-		// max_file_store in nats.conf, and each pod they roll must start on the new ConfigMap: a pod
-		// restarted on the old files keeps the old value, the reload that later brings the new one
-		// is refused, and so is every reload after it. Applied in parallel, a pod could restart on
-		// the old files, and a failed ConfigMap update could leave the pods rolled on the old values
-		// with nothing left to roll them again. So the order holds always, with or without a
-		// session user. pulumi-kubernetes orders a helm v4 Chart's objects by this annotation
-		// (references within the chart only).
+		// auth.conf, is. The three pod annotations roll the pods for a value nats-server cannot
+		// reload: no-auth-user for a new no_auth_user in auth.conf, max-file-store for a lower
+		// max_file_store in nats.conf, and auth-callout for a changed auth_callout block in
+		// auth.conf. Each pod they roll must start on the new ConfigMap: a pod restarted on the old
+		// files keeps the old value, the reload that later brings the new one is refused, and so is
+		// every reload after it. Applied in parallel, a pod could restart on the old files, and a
+		// failed ConfigMap update could leave the pods rolled on the old values with nothing left to
+		// roll them again. So the order holds always, with or without a session user or a callout.
+		// pulumi-kubernetes orders a helm v4 Chart's objects by this annotation (references within
+		// the chart only).
 		"statefulSet": pulumi.Map{"merge": pulumi.Map{"metadata": pulumi.Map{"annotations": pulumi.Map{
 			clusteredHubDependsOnAnnotation: pulumi.String(clusteredHubConfigMapRef(s.namespace, s.name)),
 		}}}},
 	}
+}
+
+// clusteredHubCluster is the chart's cluster values: three servers that advertise no pod address
+// and, beside a callout, whose routes keep their own ping. The settings carry a callout exactly
+// when calloutDigest is set.
+//
+// The merge pins the routes' own ping_interval and ping_max at what routes used before the
+// callout. A route reads cluster.ping_interval first and the top-level ping_interval otherwise
+// (server/client.go:5957-5964, :6042-6049, :7124), so the callout's top-level 20 s would govern
+// routes too. A route is pinged on every tick whether or not it carries traffic (:5968-5970), and a
+// PING queues behind pending data, so a route whose queue takes longer than 2 to 3 intervals to
+// drain is closed as stale and loses what was in transit. Without a callout, the 2-minute default
+// (server/const.go:120) is capped for routes at routeMaxPingInterval, 30 s (server/route.go:144,
+// :152; client.go:6005-6010), and a route takes the top-level ping_max, 2 (const.go:123;
+// client.go:5983-5986). Pinned, only client connections get the 20 s ping. Without a callout the
+// cluster block is as it was (R9).
+func clusteredHubCluster(s clusteredHubSettings) pulumi.Map {
+	cluster := pulumi.Map{"enabled": pulumi.Bool(true), "replicas": pulumi.Int(clusteredHubServers), "noAdvertise": pulumi.Bool(true)}
+	if s.calloutDigest != "" {
+		cluster["merge"] = pulumi.Map{"ping_interval": pulumi.String("30s"), "ping_max": pulumi.Int(2)}
+	}
+	return cluster
 }
 
 // chartResources is a container's resources as chart values: the request and the limit equal.

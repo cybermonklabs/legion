@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -21,17 +23,19 @@ import (
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
+	"github.com/aws/smithy-go/middleware"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
 // secretsAPI is the Secrets Manager calls the secret forms make: ListSecrets and DescribeSecret to
-// read, and writes for values, tags and deletion. *secretsmanager.Client and secrets.Local satisfy
-// it.
+// read, GetSecretValue for the value retag decodes (readValue), and writes for values, tags and
+// deletion. *secretsmanager.Client and secrets.Local satisfy it.
 type secretsAPI interface {
 	secretsmanager.ListSecretsAPIClient
 	DescribeSecret(ctx context.Context, in *secretsmanager.DescribeSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error)
+	GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, o ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error)
 	CreateSecret(ctx context.Context, in *secretsmanager.CreateSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error)
 	PutSecretValue(ctx context.Context, in *secretsmanager.PutSecretValueInput, o ...func(*secretsmanager.Options)) (*secretsmanager.PutSecretValueOutput, error)
 	TagResource(ctx context.Context, in *secretsmanager.TagResourceInput, o ...func(*secretsmanager.Options)) (*secretsmanager.TagResourceOutput, error)
@@ -119,6 +123,15 @@ type awsBackend struct {
 	st       stsAPI
 	// arn is the sign-in requireAccount read, which every form reads first.
 	arn string
+	// profile is the --profile the form was given, "" for none: a command the form prints for
+	// running again carries it (agentSecrets), so it signs in as this one did.
+	profile string
+}
+
+// agentSecrets is an agent-secrets command line for printing, carrying the --profile this form ran
+// under, so it reads the store as the identity that wrote to it.
+func (b *awsBackend) agentSecrets(words ...string) string {
+	return pipeCommand(b.signInPrefix(), b.profile, words...)
 }
 
 func (b *awsBackend) id(slug string) string { return b.settings.SecretsPrefix + slug }
@@ -191,14 +204,126 @@ func (b *awsBackend) show(ctx context.Context, slug string) (secretView, error) 
 	}.withTags(secrets.TagMap(out.Tags)), nil
 }
 
-func (b *awsBackend) create(ctx context.Context, slug string, tags map[string]string, value string) error {
-	_, err := b.sm.CreateSecret(ctx, &secretsmanager.CreateSecretInput{
-		Name:         aws.String(b.id(slug)),
-		KmsKeyId:     aws.String(b.settings.KMSKeyARN),
+// prepareCreate makes nothing: AWS creates the secret with its value in store.
+func (b *awsBackend) prepareCreate(slug string, tags map[string]string) newSecret {
+	return &awsNewSecret{b: b, slug: slug, tags: tags}
+}
+
+// awsNewSecret is a secret AWS has not made yet: store makes it, with its tags and value. begun,
+// which unsettled reads while store may be in flight, is set once store begins the CreateSecret.
+type awsNewSecret struct {
+	b     *awsBackend
+	slug  string
+	tags  map[string]string
+	begun atomic.Bool
+}
+
+func (*awsNewSecret) begin(context.Context) (discardOutcome, error) { return madeNothing, nil }
+
+// store makes the secret with its tags and value, under storeCallDeadline. Its error says whether
+// the store may hold the secret: a create whose every attempt the SDK made ended in an answer
+// Secrets Manager gives before it acts (attempts.definiteRefusal) says nothing was stored; any
+// other, a deadline among them, says the store may hold the secret with its value, or nothing,
+// naming the command that tells which.
+func (n *awsNewSecret) store(ctx context.Context, value string) error {
+	n.begun.Store(true)
+	ctx, cancel := withStoreDeadline(ctx)
+	defer cancel()
+	var attempts awsAttempts
+	_, err := n.b.sm.CreateSecret(ctx, &secretsmanager.CreateSecretInput{
+		Name:         aws.String(n.b.id(n.slug)),
+		KmsKeyId:     aws.String(n.b.settings.KMSKeyARN),
 		SecretString: aws.String(value),
-		Tags:         secrets.TagList(tags),
+		Tags:         secrets.TagList(n.tags),
+	}, attempts.record)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return fmt.Errorf("%w; Secrets Manager did not answer within %s, so %s", err, storeCallDeadlineText(), n.unsettled())
+	case attempts.definiteRefusal(err):
+		return fmt.Errorf("%w; Secrets Manager refused the create before acting on it, so nothing was stored", err)
+	}
+	return fmt.Errorf("%w; Secrets Manager's answer leaves open whether it made the secret, so %s", err, n.unsettled())
+}
+
+// awsAttempts is the error each attempt of one call ended with, as the SDK made them: record, a
+// per-call option, puts a middleware right after the SDK's retry middleware ("Retry", in the
+// Finalize step), which runs once for each attempt. The SDK's own error is the last attempt's
+// alone, which cannot say whether an earlier attempt reached the store.
+type awsAttempts struct {
+	mu   sync.Mutex
+	errs []error
+}
+
+// record is the per-call option that logs each attempt's error.
+func (a *awsAttempts) record(o *secretsmanager.Options) {
+	o.APIOptions = append(o.APIOptions, func(stack *middleware.Stack) error {
+		return stack.Finalize.Insert(middleware.FinalizeMiddlewareFunc("agentSecretsAttempts", func(ctx context.Context, in middleware.FinalizeInput, next middleware.FinalizeHandler) (middleware.FinalizeOutput, middleware.Metadata, error) {
+			out, md, err := next.HandleFinalize(ctx, in)
+			a.mu.Lock()
+			a.errs = append(a.errs, err)
+			a.mu.Unlock()
+			return out, md, err
+		}), "Retry", middleware.After)
 	})
-	return err
+}
+
+// definiteRefusal reports whether the call err ended may have made nothing for certain: it made
+// exactly one attempt, and that attempt ended in an error whose code awsDefiniteRefusals lists. More
+// than one attempt is never certain: an attempt the SDK retried may have reached the store, which
+// then answers the retry as a refusal (a name taken, by the secret that attempt made). A client
+// that runs no SDK middleware, and so records no attempt, is judged by err alone.
+func (a *awsAttempts) definiteRefusal(err error) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch len(a.errs) {
+	case 0:
+		return awsDefiniteRefusal(err)
+	case 1:
+		return awsDefiniteRefusal(a.errs[0])
+	}
+	return false
+}
+
+// awsDefiniteRefusals are the error codes Secrets Manager, or AWS's request handling in front of
+// it, answers before it acts on a call: the secret's own refusals of CreateSecret (a name taken,
+// a request, a parameter or a policy refused, a precondition unmet, a limit reached, KMS refusing
+// the key), and the sign-in's and the request's refusals. InternalServiceError, ServiceUnavailable
+// and every code not listed may follow a call the store carried out.
+var awsDefiniteRefusals = []string{
+	"AccessDeniedException", "ResourceExistsException", "InvalidRequestException", "InvalidParameterException",
+	"LimitExceededException", "MalformedPolicyDocumentException", "PreconditionNotMetException",
+	"ResourceNotFoundException", "EncryptionFailure", "DecryptionFailure", "ValidationException",
+	"UnrecognizedClientException", "InvalidClientTokenId", "ExpiredTokenException", "IncompleteSignature",
+	"InvalidSignatureException", "MissingAuthenticationToken", "NotAuthorized", "RequestExpired", "OptInRequired",
+}
+
+// awsDefiniteRefusal reports whether err, one attempt's error, is an answer Secrets Manager gives
+// before it acts: an API error whose code awsDefiniteRefusals lists. An error that is no API error
+// at all (a dropped connection, a reset) may follow a call the store carried out.
+func awsDefiniteRefusal(err error) bool {
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && slices.Contains(awsDefiniteRefusals, apiErr.ErrorCode())
+}
+
+// discard has nothing to remove: AWS makes the secret only in store.
+func (*awsNewSecret) discard(context.Context) (discardOutcome, error) {
+	return madeNothing, nil
+}
+
+// madeBeforeValue is false: AWS makes the secret only with its value, so nothing waits for it.
+func (*awsNewSecret) madeBeforeValue() bool { return false }
+
+// unsettled says what the store may hold should the form end now: nothing before the CreateSecret,
+// and from then the secret with its value or nothing, which `secret show` tells apart; never an
+// empty secret, which Secrets Manager does not make.
+func (n *awsNewSecret) unsettled() string {
+	if !n.begun.Load() {
+		return "nothing stays in the store, since Secrets Manager makes a secret only with its value"
+	}
+	name := n.b.displayName(n.b.id(n.slug))
+	return fmt.Sprintf("the store may hold %s, made with its value, or no %s at all: `%s` says which, and no empty secret stays to clear, since Secrets Manager makes a secret only with its value", name, name, n.b.agentSecrets("secret", "show", name))
 }
 
 func (b *awsBackend) set(ctx context.Context, slug, value string) error {
@@ -214,6 +339,25 @@ func (b *awsBackend) currentTags(ctx context.Context, slug string) (heldTags, er
 		return heldTags{}, err
 	}
 	return heldTags{tags: secrets.TagMap(held.Tags)}, nil
+}
+
+// readValue reads the secret's AWSCURRENT value with GetSecretValue, and refuses one that is not a
+// non-empty string, as the broker's own read does (secrets.AWS.Read).
+func (b *awsBackend) readValue(ctx context.Context, slug string) (string, error) {
+	out, err := b.sm.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: aws.String(b.id(slug))})
+	if err != nil {
+		return "", err
+	}
+	if out.SecretString == nil || *out.SecretString == "" {
+		return "", errors.New("its value is not a non-empty string")
+	}
+	return *out.SecretString, nil
+}
+
+// valueReadPermission is what GetSecretValue needs of a person's sign-in: the call itself, and
+// the key the value is encrypted under, since Secrets Manager decrypts it as the caller.
+func (b *awsBackend) valueReadPermission() string {
+	return "secretsmanager:GetSecretValue on the secret and kms:Decrypt on its key"
 }
 
 // setTags writes tags in one TagResource, which keeps every tag it does not name. TagResource takes

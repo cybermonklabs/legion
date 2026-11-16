@@ -6144,8 +6144,9 @@ func TestTreeOfRefusesAnUnloadedDocument(t *testing.T) {
 
 // A room evicted after settleRoom's generation check but before it reads the live document
 // (an Evict whose timer Stop misses the timer that already fired) must not make the settle
-// dereference a nil document and crash the server. The settle ends quietly and the next
-// write to the room settles on its own.
+// dereference a nil document and crash the server. The settle stops short, and since the
+// eviction moved the room's generation its retry arms nothing: the next write to the room settles
+// on its own.
 func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
@@ -6187,6 +6188,51 @@ func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 	}
 	if markdown != "later\n" {
 		t.Fatalf("version %d markdown = %q, want %q", version.Number, markdown, "later\n")
+	}
+}
+
+// A settlement whose room a close retires between its warm-up and its read of the room, a close
+// that moves no room generation - ygo's idle sweep, the close of the room at its issue's reopen, a
+// repeated close of a record that already reads closed; the test closes the room through ygo
+// (CloseRoom), which moves none - has no room to settle from, and no load of the document follows
+// to arm its settlement again: the timer that ran it was its only arming. It stops short
+// (errRoomReplaced), and its retry warms the room again and settles the document. An eviction
+// moves the generation, so its settlement is not retried and the document is left to the reload
+// (TestSettleSurvivesEvictionBetweenWarmAndTreeRead).
+func TestASettlementWhoseRoomACloseRetiredBeforeItsReadIsArmedAgain(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, "before")
+	settleCurrentGeneration(t, service, artifactID)
+	versions := latestVersionNumber(t, service, artifactID)
+	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
+	waitForLandedAppends(t, service, artifactID)
+	var closed atomic.Bool
+	service.afterSettleWarm = func(room string) {
+		if room != artifactID || !closed.CompareAndSwap(false, true) {
+			return
+		}
+		if err := service.srv.CloseRoom(room, true); err != nil {
+			t.Errorf("close the room between the settlement's warm-up and its read: %v", err)
+		}
+	}
+	// The hook stays in place, one-shot through the CAS, so nothing races the settlement that
+	// reads it. The delay is written once, before the settlement it arms.
+	service.settle = 20 * time.Millisecond
+	service.scheduleSettle(artifactID)
+	waitFor(t, roomWait(t), "the document whose room closed under its settlement to settle", func() bool {
+		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
+		return err == nil && !owed
+	})
+	if !closed.Load() {
+		t.Fatal("no settlement reached the window between its warm-up and its read of the room")
+	}
+	if latest := latestVersionNumber(t, service, artifactID); latest != versions+1 {
+		t.Fatalf("latest version = %d, want %d: the retried settlement wrote no version", latest, versions+1)
+	}
+	requireLatestVersionMarkdown(t, service, artifactID, "after\n")
+	if err := service.roomFailure(artifactID); err != nil {
+		t.Fatalf("the document's room failed: %v", err)
 	}
 }
 

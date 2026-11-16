@@ -175,7 +175,7 @@ func TestCreatePendingWritesTheRecordAndApproveMintsTheGrant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record.Sign: %v", err)
 	}
-	req, err := m.Create(ctx, enr, compact, "")
+	req, err := m.Create(ctx, enr, compact, "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("%+v %v", req, err)
 	}
@@ -204,7 +204,7 @@ func TestCreatePendingWritesTheRecordAndApproveMintsTheGrant(t *testing.T) {
 func TestOnlyTheRecordsApproverDecides(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "why", "DEEL_API_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "why", "DEEL_API_KEY"), "", nil)
 	if err != nil || req.RecordID == nil {
 		t.Fatalf("%+v %v", req, err)
 	}
@@ -233,7 +233,7 @@ func TestOnlyTheRecordsApproverDecides(t *testing.T) {
 func TestValuesRefusesAGrantWhoseRowWasForged(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "why", "DEEL_API_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "why", "DEEL_API_KEY"), "", nil)
 	if err != nil || req.RecordID == nil {
 		t.Fatalf("%+v %v", req, err)
 	}
@@ -244,7 +244,7 @@ func TestValuesRefusesAGrantWhoseRowWasForged(t *testing.T) {
 		grantID, req.ID, enr); err != nil {
 		t.Fatalf("insert forged grant: %v", err)
 	}
-	if _, err := m.Values(ctx, grantID, enr, nil); !errors.Is(err, ErrGrantChainInvalid) {
+	if _, err := m.Values(ctx, grantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantChainInvalid) {
 		t.Fatalf("Values(forged grant) = %v, want ErrGrantChainInvalid", err)
 	}
 }
@@ -291,7 +291,7 @@ func TestValuesRefusesAChainTheBrokerDidNotWrite(t *testing.T) {
 			m, enr, key, approver := newFixture(t)
 			sessionDefaultFixture(t, m)
 			ctx := context.Background()
-			req, err := m.Create(ctx, enr, signRequest(t, m, key, "why", "DEEL_API_KEY"), "")
+			req, err := m.Create(ctx, enr, signRequest(t, m, key, "why", "DEEL_API_KEY"), "", nil)
 			if err != nil || req.RecordID == nil {
 				t.Fatalf("%+v %v", req, err)
 			}
@@ -299,16 +299,16 @@ func TestValuesRefusesAChainTheBrokerDidNotWrite(t *testing.T) {
 			if err != nil || dec.GrantID == "" {
 				t.Fatalf("ApplyDecision: %+v %v", dec, err)
 			}
-			if _, err := m.Values(ctx, dec.GrantID, enr, nil); err != nil {
+			if _, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); err != nil {
 				t.Fatalf("Values before the write: %v", err)
 			}
 
 			tamper(t, m.Store, *req.RecordID)
 
-			if _, err := m.Values(ctx, dec.GrantID, enr, nil); !errors.Is(err, ErrGrantChainInvalid) {
+			if _, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantChainInvalid) {
 				t.Fatalf("Values after %s = %v, want ErrGrantChainInvalid", name, err)
 			}
-			again, err := m.Create(ctx, enr, signRequest(t, m, key, "why, again", "DEEL_API_KEY"), "")
+			again, err := m.Create(ctx, enr, signRequest(t, m, key, "why, again", "DEEL_API_KEY"), "", nil)
 			if err != nil {
 				t.Fatalf("Create after %s: %v", name, err)
 			}
@@ -327,7 +327,7 @@ func TestCreateRefusesLoginHintAndForeignThumbprint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record.Sign(login_hint): %v", err)
 	}
-	if _, err := m.Create(ctx, enr, withHint, ""); !errors.Is(err, record.ErrRequestInvalid) {
+	if _, err := m.Create(ctx, enr, withHint, "", nil); !errors.Is(err, record.ErrRequestInvalid) {
 		t.Fatalf("Create(login_hint) = %v, want ErrRequestInvalid", err)
 	}
 
@@ -336,7 +336,7 @@ func TestCreateRefusesLoginHintAndForeignThumbprint(t *testing.T) {
 		t.Fatalf("generate foreign key: %v", err)
 	}
 	foreign := signRequest(t, m, foreignKey, "why", "DEEL_API_KEY")
-	if _, err := m.Create(ctx, enr, foreign, ""); !errors.Is(err, record.ErrRequestInvalid) {
+	if _, err := m.Create(ctx, enr, foreign, "", nil); !errors.Is(err, record.ErrRequestInvalid) {
 		t.Fatalf("Create(foreign thumbprint) = %v, want ErrRequestInvalid", err)
 	}
 }
@@ -353,12 +353,12 @@ func TestCreateRefusesAnInvalidSessionID(t *testing.T) {
 		"control character": "sess\twith\ttab",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), sessionID); !errors.Is(err, ErrSessionIDInvalid) {
+			if _, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), sessionID, nil); !errors.Is(err, ErrSessionIDInvalid) {
 				t.Fatalf("Create(session_id=%q) = %v, want ErrSessionIDInvalid", sessionID, err)
 			}
 		})
 	}
-	if _, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), strings.Repeat("a", maxSessionIDLength)); err != nil {
+	if _, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), strings.Repeat("a", maxSessionIDLength), nil); err != nil {
 		t.Fatalf("Create(session_id at the exact limit) = %v, want no error", err)
 	}
 }
@@ -367,11 +367,11 @@ func TestAutomaticAndDeniedEvaluationsWriteNoRecordRow(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 
-	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
+	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
 	if err != nil || auto.State != "granted" || auto.RecordID != nil || auto.GrantID == nil {
 		t.Fatalf("Create(automatic) = %+v, %v, want granted with a grant and no record", auto, err)
 	}
-	denied, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "SERVICE_KEY"), "")
+	denied, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "SERVICE_KEY"), "", nil)
 	if err != nil || denied.State != "denied" || denied.RecordID != nil {
 		t.Fatalf("Create(denied) = %+v, %v, want denied with no record", denied, err)
 	}
@@ -384,7 +384,7 @@ func TestAutomaticAndDeniedEvaluationsWriteNoRecordRow(t *testing.T) {
 func TestDenyOpensNoRecord(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY", "SERVICE_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY", "SERVICE_KEY"), "", nil)
 	if err != nil || req.State != "denied" || req.RecordID != nil {
 		t.Fatalf("Create = %+v, %v, want denied with no record (any denied name refuses the whole request)", req, err)
 	}
@@ -406,18 +406,18 @@ func TestAServicesSecretGoesToItsOwnPodsAlone(t *testing.T) {
 	ctx := context.Background()
 	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-"+t.Name())
 
-	granted, err := m.Create(ctx, pod, signRequest(t, m, podKey, "need it", "SERVICE_KEY"), "")
+	granted, err := m.Create(ctx, pod, signRequest(t, m, podKey, "need it", "SERVICE_KEY"), "", nil)
 	if err != nil || granted.State != "granted" || granted.GrantID == nil || granted.RecordID != nil {
 		t.Fatalf("Create(the service's pod) = %+v, %v; want granted at once, with a grant and no record", granted, err)
 	}
-	if release, err := m.Values(ctx, *granted.GrantID, pod, nil); err != nil || release.Values["SERVICE_KEY"] != "service-v1" {
+	if release, err := m.Values(ctx, *granted.GrantID, pod, nil, ReleaseCall{}); err != nil || release.Values["SERVICE_KEY"] != "service-v1" {
 		t.Fatalf("Values(the service's pod) = %v, %v; want SERVICE_KEY released", release.Values, err)
 	}
 	retag(t, m, policytest.Secret("SHARED_TOKEN", policy.OwnerShared, policy.TierAgent, "shared-token-v1"))
-	if release, err := m.Values(ctx, *granted.GrantID, pod, nil); err != nil || release.Values["SERVICE_KEY"] != "service-v1" {
+	if release, err := m.Values(ctx, *granted.GrantID, pod, nil, ReleaseCall{}); err != nil || release.Values["SERVICE_KEY"] != "service-v1" {
 		t.Fatalf("Values(the service's pod) after the policy moved = %v, %v; want SERVICE_KEY still released", release.Values, err)
 	}
-	if again, err := m.Create(ctx, pod, signRequest(t, m, podKey, "need it again", "SERVICE_KEY"), ""); err != nil || again.ID != granted.ID {
+	if again, err := m.Create(ctx, pod, signRequest(t, m, podKey, "need it again", "SERVICE_KEY"), "", nil); err != nil || again.ID != granted.ID {
 		t.Fatalf("Create(the service's pod) again after the policy moved = %+v, %v; want request %s reused", again, err, granted.ID)
 	}
 
@@ -434,7 +434,7 @@ func TestAServicesSecretGoesToItsOwnPodsAlone(t *testing.T) {
 		"the operator's machine session":                                   {host, hostKey},
 		"a pod no service's launcher enrolled":                             {plainPod, plainPodKey},
 	} {
-		denied, err := m.Create(ctx, r.enrollment, signRequest(t, m, r.key, "need it", "SERVICE_KEY"), "")
+		denied, err := m.Create(ctx, r.enrollment, signRequest(t, m, r.key, "need it", "SERVICE_KEY"), "", nil)
 		if err != nil || denied.State != "denied" || denied.GrantID != nil || denied.RecordID != nil {
 			t.Errorf("Create(%s) = %+v, %v; want denied with no grant and no record", who, denied, err)
 		}
@@ -463,7 +463,7 @@ func TestAServicesSecretGoesToItsOwnPodsAlone(t *testing.T) {
 func TestCreateRefusesAnUnknownSecretNameWithNoRecordWritten(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
-	_, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "NOT_A_REAL_SECRET"), "")
+	_, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "NOT_A_REAL_SECRET"), "", nil)
 	if !errors.Is(err, policy.ErrUnknownSecret) {
 		t.Fatalf("Create(unknown secret) error = %v, want policy.ErrUnknownSecret", err)
 	}
@@ -480,9 +480,57 @@ func TestCreateServesASecretCreatedAfterTheLastReload(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	fixtureStore(m).Put(policytest.Secret("BRAND_NEW_KEY", fixtureOperator, policy.TierAgent, "v1"))
 	// No Policy.Refresh: the cached Set predates the Put, as production's does for up to 5 minutes.
-	req, err := m.Create(context.Background(), enr, signRequest(t, m, key, "need it", "BRAND_NEW_KEY"), "")
+	req, err := m.Create(context.Background(), enr, signRequest(t, m, key, "need it", "BRAND_NEW_KEY"), "", nil)
 	if err != nil || req.State != "granted" || req.GrantID == nil {
 		t.Fatalf("Create(BRAND_NEW_KEY) = %+v, %v; want an automatic grant via the miss-path reread", req, err)
+	}
+}
+
+// TestCreateRefusesASecretPendingItsFirstValueUntilTheValueLands pins what a request meets while
+// `agent-secrets secret create` waits for the person to type the value of a secret it has made but
+// not filled (policy.ReasonPendingValue): the name is refused policy.ErrPendingValue (400
+// PENDING_VALUE), a refusal of its own that says the secret exists and waits for its first value,
+// never UNKNOWN_SECRET, which an agent takes as final; with no request, no record and no judge
+// call, so no approver is asked to approve a secret that holds nothing. Once the value lands, the
+// same name is served: the next request goes to its owner for approval, as any human-tier
+// secret's does, and the grant that approval mints releases the value.
+func TestCreateRefusesASecretPendingItsFirstValueUntilTheValueLands(t *testing.T) {
+	m, enr, key, approver := newFixture(t)
+	ctx := context.Background()
+	var judged []PendingRequest
+	m.Judge = func(p PendingRequest) { judged = append(judged, p) }
+	created := time.Now()
+	waiting := policytest.Secret("TYPED_KEY", fixtureOperator, policy.TierHuman, "")
+	waiting.Tags[secrets.CreateLabel] = "0123456789abcdef0123456789abcdef"
+	waiting.CreatedAt = &created
+	fixtureStore(m).Put(waiting)
+
+	_, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "TYPED_KEY"), "", nil)
+	if !errors.Is(err, policy.ErrPendingValue) || errors.Is(err, policy.ErrUnknownSecret) || !strings.Contains(err.Error(), "TYPED_KEY") {
+		t.Fatalf("Create(TYPED_KEY) while it waits for its value = %v; want policy.ErrPendingValue naming TYPED_KEY, not ErrUnknownSecret", err)
+	}
+	if pending, waits := m.Policy.Get().Pending[policytest.ID("TYPED_KEY")]; !waits {
+		t.Fatalf("the policy holds TYPED_KEY as %+v; want it waiting for its value (pending-value), the reason the request was refused", pending)
+	}
+	var requests, records int
+	if err := m.Store.Pool.QueryRow(ctx, `select (select count(*) from requests where enrollment_id=$1), (select count(*) from credential_requests)`, enr).Scan(&requests, &records); err != nil || requests != 0 || records != 0 || len(judged) != 0 {
+		t.Fatalf("after the refusal: %d requests, %d records, %d judge calls, %v; want none of each, no approver asked", requests, records, len(judged), err)
+	}
+
+	filled := policytest.Secret("TYPED_KEY", fixtureOperator, policy.TierHuman, "typed-v1")
+	filled.CreatedAt = &created
+	fixtureStore(m).Put(filled)
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "TYPED_KEY"), "", nil)
+	if err != nil || req.State != "pending" || req.RecordID == nil || req.Approver == nil || *req.Approver != approver || len(judged) != 1 {
+		t.Fatalf("Create(TYPED_KEY) once its value landed = %+v, %v, %d judge calls; want pending on %s's approval, judged once", req, err, len(judged), approver)
+	}
+	decision, err := m.ApplyDecision(ctx, *req.RecordID, true, approver)
+	if err != nil || decision.GrantID == "" {
+		t.Fatalf("approve: %+v, %v; want a grant", decision, err)
+	}
+	release, err := m.Values(ctx, decision.GrantID, enr, nil, ReleaseCall{})
+	if err != nil || release.Values["TYPED_KEY"] != "typed-v1" {
+		t.Fatalf("Values = %+v, %v; want TYPED_KEY released as typed-v1", release.Values, err)
 	}
 }
 
@@ -501,7 +549,7 @@ func TestMissRereadsAreBoundedPerEnrollment(t *testing.T) {
 	}
 	m.Policy = cur
 	for i := range 3 {
-		if _, err := m.Create(context.Background(), enr, signRequest(t, m, key, "miss", fmt.Sprintf("NO_SUCH_KEY_%d", i)), ""); !errors.Is(err, policy.ErrUnknownSecret) {
+		if _, err := m.Create(context.Background(), enr, signRequest(t, m, key, "miss", fmt.Sprintf("NO_SUCH_KEY_%d", i)), "", nil); !errors.Is(err, policy.ErrUnknownSecret) {
 			t.Fatalf("miss %d: %v", i, err)
 		}
 	}
@@ -519,11 +567,11 @@ func TestANameNoSecretCanCarrySpendsNoMissReread(t *testing.T) {
 	m.MissRereads = &ratelimit.Limit{Every: time.Hour, Burst: 1}
 	ctx := context.Background()
 	tooLong := "A" + strings.Repeat("B", 512-len(policytest.Prefix))
-	if _, err := m.Create(ctx, enr, signRequest(t, m, key, "free text", "not a secret name", tooLong), ""); !errors.Is(err, policy.ErrUnknownSecret) {
+	if _, err := m.Create(ctx, enr, signRequest(t, m, key, "free text", "not a secret name", tooLong), "", nil); !errors.Is(err, policy.ErrUnknownSecret) {
 		t.Fatalf("Create(names no secret can carry) = %v, want policy.ErrUnknownSecret", err)
 	}
 	fixtureStore(m).Put(policytest.Secret("BRAND_NEW_KEY", fixtureOperator, policy.TierAgent, "v1"))
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "BRAND_NEW_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "BRAND_NEW_KEY"), "", nil)
 	if err != nil || req.State != "granted" {
 		t.Fatalf("Create(BRAND_NEW_KEY) after the invalid names = %+v, %v; want granted through the reread they must not have spent", req, err)
 	}
@@ -531,8 +579,8 @@ func TestANameNoSecretCanCarrySpendsNoMissReread(t *testing.T) {
 
 // TestARereadItsCallerAbandonedRaisesNoAlarm pins that a miss-path reread cut short by its own
 // request's end is that request's failure, not Secrets Manager's: the broker logs no
-// LoadFailedMessage, the line the policy alarm filters on, and answers the request with its
-// context's error, writing no request and so no grant.
+// LoadFailedMessage, the line that reports a failed reread of the store, and answers the request
+// with its context's error, writing no request and so no grant.
 func TestARereadItsCallerAbandonedRaisesNoAlarm(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -546,7 +594,7 @@ func TestARereadItsCallerAbandonedRaisesNoAlarm(t *testing.T) {
 	m.Policy = cur
 	fixtureStore(m).Put(policytest.Secret("BRAND_NEW_KEY", fixtureOperator, policy.TierAgent, "v1"))
 	logged := policytest.CaptureLog(t)
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "BRAND_NEW_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "BRAND_NEW_KEY"), "", nil)
 	if !errors.Is(err, context.Canceled) || req.GrantID != nil {
 		t.Fatalf("Create whose request ended during the reread = %+v, %v; want context.Canceled and no grant", req, err)
 	}
@@ -585,7 +633,7 @@ func TestAnOrdinaryRereadFailureRaisesThePolicyAlarm(t *testing.T) {
 	m.Policy = cur
 	fixtureStore(m).Put(policytest.Secret("BRAND_NEW_KEY", fixtureOperator, policy.TierAgent, "v1"))
 	logged := policytest.CaptureLog(t)
-	if _, err := m.Create(context.Background(), enr, signRequest(t, m, key, "need it", "BRAND_NEW_KEY"), ""); !errors.Is(err, policy.ErrUnknownSecret) {
+	if _, err := m.Create(context.Background(), enr, signRequest(t, m, key, "need it", "BRAND_NEW_KEY"), "", nil); !errors.Is(err, policy.ErrUnknownSecret) {
 		t.Fatalf("Create whose reread Secrets Manager failed = %v; want policy.ErrUnknownSecret", err)
 	}
 	var alarms []string
@@ -616,11 +664,11 @@ func (d failingDescriber) DescribeSecret(context.Context, *secretsmanager.Descri
 func TestCoalescesIdenticalPendingAndReturnsTheFirstRecordID(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
-	first, err := m.Create(ctx, enr, signRequest(t, m, key, "first", "DEEL_API_KEY"), "")
+	first, err := m.Create(ctx, enr, signRequest(t, m, key, "first", "DEEL_API_KEY"), "", nil)
 	if err != nil || first.RecordID == nil {
 		t.Fatalf("Create(first) = %+v, %v", first, err)
 	}
-	second, err := m.Create(ctx, enr, signRequest(t, m, key, "second", "DEEL_API_KEY"), "")
+	second, err := m.Create(ctx, enr, signRequest(t, m, key, "second", "DEEL_API_KEY"), "", nil)
 	if err != nil {
 		t.Fatalf("Create(second): %v", err)
 	}
@@ -636,7 +684,7 @@ func TestCoalescesIdenticalPendingAndReturnsTheFirstRecordID(t *testing.T) {
 func TestExpirePendingWritesTheExpiredEventAndFlipsTheRequest(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil || req.RecordID == nil {
 		t.Fatalf("%+v %v", req, err)
 	}
@@ -669,7 +717,7 @@ func TestApplyDecisionRefusesARecordPastItsExpiry(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	m.PendingTTL = -time.Minute
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v", req, err)
 	}
@@ -700,11 +748,11 @@ func TestExpirePendingAuditsEveryExpiredRequest(t *testing.T) {
 	ctx := context.Background()
 	enrB, keyB := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
 
-	reqA, err := m.Create(ctx, enrA, signRequest(t, m, keyA, "need it", "DEEL_API_KEY"), "")
+	reqA, err := m.Create(ctx, enrA, signRequest(t, m, keyA, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil {
 		t.Fatalf("Create(A): %v", err)
 	}
-	reqB, err := m.Create(ctx, enrB, signRequest(t, m, keyB, "need it too", "DEEL_API_KEY"), "")
+	reqB, err := m.Create(ctx, enrB, signRequest(t, m, keyB, "need it too", "DEEL_API_KEY"), "", nil)
 	if err != nil {
 		t.Fatalf("Create(B): %v", err)
 	}
@@ -737,15 +785,15 @@ func TestOtherEnrollmentCannotUseGrant(t *testing.T) {
 	ctx := context.Background()
 	enrB, _ := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
 
-	granted, err := m.Create(ctx, enrA, signRequest(t, m, keyA, "need it", "AUTO_TOKEN"), "")
+	granted, err := m.Create(ctx, enrA, signRequest(t, m, keyA, "need it", "AUTO_TOKEN"), "", nil)
 	if err != nil {
 		t.Fatalf("Create(automatic): %v", err)
 	}
-	pending, err := m.Create(ctx, enrA, signRequest(t, m, keyA, "need it", "DEEL_API_KEY"), "")
+	pending, err := m.Create(ctx, enrA, signRequest(t, m, keyA, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil {
 		t.Fatalf("Create(pending): %v", err)
 	}
-	if _, err := m.Values(ctx, *granted.GrantID, enrB, nil); !errors.Is(err, ErrNotYours) {
+	if _, err := m.Values(ctx, *granted.GrantID, enrB, nil, ReleaseCall{}); !errors.Is(err, ErrNotYours) {
 		t.Fatalf("Values(other enrollment) = %v, want ErrNotYours", err)
 	}
 	if err := m.Cancel(ctx, pending.ID, enrB); !errors.Is(err, ErrNotYours) {
@@ -759,14 +807,14 @@ func TestOtherEnrollmentCannotUseGrant(t *testing.T) {
 func TestRevokeStopsValues(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
 	if err != nil || req.GrantID == nil {
 		t.Fatalf("Create = %+v, %v", req, err)
 	}
 	if err := m.RevokeGrant(ctx, *req.GrantID, enr); err != nil {
 		t.Fatalf("RevokeGrant: %v", err)
 	}
-	if _, err := m.Values(ctx, *req.GrantID, enr, nil); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := m.Values(ctx, *req.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values(after revoke) = %v, want ErrGrantNotLive", err)
 	}
 }
@@ -780,7 +828,7 @@ func TestMachineSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record.Sign: %v", err)
 	}
-	withSession, err := m.Create(ctx, enrA, compact, "session-abc")
+	withSession, err := m.Create(ctx, enrA, compact, "session-abc", nil)
 	if err != nil {
 		t.Fatalf("Create(withSession): %v", err)
 	}
@@ -788,7 +836,7 @@ func TestMachineSessionID(t *testing.T) {
 		t.Fatalf("SessionID(withSession) = %q, %v, want %q, nil", got, err, "session-abc")
 	}
 
-	noSession, err := m.Create(ctx, enrB, signRequest(t, m, keyB, "need it", "AUTO_TOKEN"), "")
+	noSession, err := m.Create(ctx, enrB, signRequest(t, m, keyB, "need it", "AUTO_TOKEN"), "", nil)
 	if err != nil {
 		t.Fatalf("Create(noSession): %v", err)
 	}
@@ -803,7 +851,7 @@ func TestMachineSessionID(t *testing.T) {
 func TestCreateReusesLiveGrantForIdenticalNameSetWithoutNewRecord(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil || req.RecordID == nil {
 		t.Fatalf("Create: %+v %v", req, err)
 	}
@@ -812,7 +860,7 @@ func TestCreateReusesLiveGrantForIdenticalNameSetWithoutNewRecord(t *testing.T) 
 		t.Fatalf("ApplyDecision: %+v %v", dec, err)
 	}
 
-	reused, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", "DEEL_API_KEY"), "")
+	reused, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", "DEEL_API_KEY"), "", nil)
 	if err != nil {
 		t.Fatalf("Create(again): %v", err)
 	}
@@ -828,7 +876,7 @@ func TestCreateReusesLiveGrantForIdenticalNameSetWithoutNewRecord(t *testing.T) 
 func TestCreateDoesNotReuseLiveGrantForADifferentNameSet(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
-	first, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+	first, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil || first.RecordID == nil {
 		t.Fatalf("Create: %+v %v", first, err)
 	}
@@ -836,7 +884,7 @@ func TestCreateDoesNotReuseLiveGrantForADifferentNameSet(t *testing.T) {
 		t.Fatalf("ApplyDecision: %v", err)
 	}
 
-	second, err := m.Create(ctx, enr, signRequest(t, m, key, "need more", "DEEL_API_KEY", "AUTO_TOKEN"), "")
+	second, err := m.Create(ctx, enr, signRequest(t, m, key, "need more", "DEEL_API_KEY", "AUTO_TOKEN"), "", nil)
 	if err != nil {
 		t.Fatalf("Create(superset): %v", err)
 	}
@@ -848,7 +896,7 @@ func TestCreateDoesNotReuseLiveGrantForADifferentNameSet(t *testing.T) {
 func TestCreateDoesNotReuseAnExpiredOrRevokedGrant(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
-	granted, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
+	granted, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
 	if err != nil || granted.GrantID == nil {
 		t.Fatalf("Create = %+v, %v, want a grant id", granted, err)
 	}
@@ -856,7 +904,7 @@ func TestCreateDoesNotReuseAnExpiredOrRevokedGrant(t *testing.T) {
 		t.Fatalf("backdate grant: %v", err)
 	}
 
-	fresh, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", "AUTO_TOKEN"), "")
+	fresh, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", "AUTO_TOKEN"), "", nil)
 	if err != nil {
 		t.Fatalf("Create(after expiry): %v", err)
 	}
@@ -867,7 +915,7 @@ func TestCreateDoesNotReuseAnExpiredOrRevokedGrant(t *testing.T) {
 	if err := m.RevokeGrant(ctx, *fresh.GrantID, enr); err != nil {
 		t.Fatalf("RevokeGrant: %v", err)
 	}
-	again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it a third time", "AUTO_TOKEN"), "")
+	again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it a third time", "AUTO_TOKEN"), "", nil)
 	if err != nil {
 		t.Fatalf("Create(after revoke): %v", err)
 	}
@@ -882,7 +930,7 @@ func TestCreateDoesNotReuseAnExpiredOrRevokedGrant(t *testing.T) {
 func TestValuesHoldsNoPooledConnectionWhileReadingSecrets(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
 	if err != nil || req.GrantID == nil {
 		t.Fatalf("Create = %+v, %v, want an automatic grant", req, err)
 	}
@@ -890,7 +938,7 @@ func TestValuesHoldsNoPooledConnectionWhileReadingSecrets(t *testing.T) {
 	m.Secrets = reader
 	done := make(chan error, 1)
 	go func() {
-		_, err := m.Values(ctx, *req.GrantID, enr, nil)
+		_, err := m.Values(ctx, *req.GrantID, enr, nil, ReleaseCall{})
 		done <- err
 	}()
 	awaitEntered(t, reader.entered, "the secret read")
@@ -938,14 +986,14 @@ func TestRevokeByApproverIsLimitedToTheApproverOrOperator(t *testing.T) {
 
 	// The operator may revoke an automatic grant nobody approved; mallory, neither its approver
 	// nor its operator, may not.
-	automatic, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
+	automatic, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
 	if err != nil || automatic.GrantID == nil {
 		t.Fatalf("Create(automatic) = %+v, %v", automatic, err)
 	}
 	if err := m.RevokeByApprover(ctx, *automatic.GrantID, "mallory", "human:mallory"); !errors.Is(err, ErrNotApprover) {
 		t.Fatalf("RevokeByApprover(mallory, not the operator) = %v, want ErrNotApprover", err)
 	}
-	if _, err := m.Values(ctx, *automatic.GrantID, enr, nil); err != nil {
+	if _, err := m.Values(ctx, *automatic.GrantID, enr, nil, ReleaseCall{}); err != nil {
 		t.Fatalf("Values after a refused revoke = %v, want the grant still live", err)
 	}
 	if err := m.RevokeByApprover(ctx, *automatic.GrantID, operator, record.HumanActor(operator)); err != nil {
@@ -954,7 +1002,7 @@ func TestRevokeByApproverIsLimitedToTheApproverOrOperator(t *testing.T) {
 
 	// A grant alice approved: alice, its approver though not its operator, may revoke it, and
 	// mallory still may not.
-	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "ALICE_KEY"), "")
+	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "ALICE_KEY"), "", nil)
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(pending) = %+v, %v", pending, err)
 	}
@@ -965,7 +1013,7 @@ func TestRevokeByApproverIsLimitedToTheApproverOrOperator(t *testing.T) {
 	if err := m.RevokeByApprover(ctx, dec.GrantID, "mallory", "human:mallory"); !errors.Is(err, ErrNotApprover) {
 		t.Fatalf("RevokeByApprover(a login that is neither approver nor operator) = %v, want ErrNotApprover", err)
 	}
-	if _, err := m.Values(ctx, dec.GrantID, enr, nil); err != nil {
+	if _, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); err != nil {
 		t.Fatalf("Values after a refused revoke = %v, want the grant still live", err)
 	}
 	if err := m.RevokeByApprover(ctx, dec.GrantID, "Alice@Example.com", record.HumanActor(otherPerson)); err != nil {
@@ -985,7 +1033,7 @@ func TestRevokeByApproverIsLimitedToTheApproverOrOperator(t *testing.T) {
 func TestApprovalAfterTheEnrollmentLapsedDenies(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil || req.RecordID == nil {
 		t.Fatalf("Create: %+v %v", req, err)
 	}
@@ -1041,15 +1089,15 @@ func TestTightenedPolicyStopsLiveGrants(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key, _ := newFixture(t)
 			ctx := context.Background()
-			granted, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
+			granted, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
 			if err != nil || granted.GrantID == nil {
 				t.Fatalf("Create = %+v, %v, want an automatic grant", granted, err)
 			}
 			tighten(t, m)
-			if _, err := m.Values(ctx, *granted.GrantID, enr, nil); !errors.Is(err, ErrGrantNotLive) {
+			if _, err := m.Values(ctx, *granted.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 				t.Fatalf("Values under the tightened policy = %v, want ErrGrantNotLive", err)
 			}
-			again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", "AUTO_TOKEN"), "")
+			again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", "AUTO_TOKEN"), "", nil)
 			if err == nil && again.ID == granted.ID {
 				t.Fatalf("Create(again) reused the grant the tightened policy no longer allows")
 			}
@@ -1068,7 +1116,7 @@ func TestUnchangedPermissionSurvivesAPolicyChange(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key, _ := newFixture(t)
 			ctx := context.Background()
-			granted, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
+			granted, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
 			if err != nil || granted.GrantID == nil {
 				t.Fatalf("Create = %+v, %v", granted, err)
 			}
@@ -1077,10 +1125,10 @@ func TestUnchangedPermissionSurvivesAPolicyChange(t *testing.T) {
 			if m.Policy.Get().Version == before {
 				t.Fatalf("the edit left the policy version %s unchanged, so it re-checks nothing", before)
 			}
-			if _, err := m.Values(ctx, *granted.GrantID, enr, nil); err != nil {
+			if _, err := m.Values(ctx, *granted.GrantID, enr, nil, ReleaseCall{}); err != nil {
 				t.Fatalf("Values = %v, want the grant still usable", err)
 			}
-			if again, err := m.Create(ctx, enr, signRequest(t, m, key, "again", "AUTO_TOKEN"), ""); err != nil || again.ID != granted.ID {
+			if again, err := m.Create(ctx, enr, signRequest(t, m, key, "again", "AUTO_TOKEN"), "", nil); err != nil || again.ID != granted.ID {
 				t.Fatalf("Create(again) = %+v, %v, want the live grant reused", again, err)
 			}
 		})
@@ -1107,12 +1155,12 @@ func TestValuesNamesASecretDeletedBeforeTheNextRefresh(t *testing.T) {
 		t.Run(shape, func(t *testing.T) {
 			m, enr, key, _ := newFixture(t)
 			ctx := context.Background()
-			granted, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
+			granted, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
 			if err != nil || granted.GrantID == nil {
 				t.Fatalf("Create = %+v, %v", granted, err)
 			}
 			remove(fixtureStore(m))
-			if _, err := m.Values(ctx, *granted.GrantID, enr, nil); !errors.Is(err, ErrSecretNotInStore) || !strings.Contains(err.Error(), "AUTO_TOKEN") {
+			if _, err := m.Values(ctx, *granted.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrSecretNotInStore) || !strings.Contains(err.Error(), "AUTO_TOKEN") {
 				t.Fatalf("Values = %v, want ErrSecretNotInStore naming AUTO_TOKEN", err)
 			}
 		})
@@ -1124,7 +1172,7 @@ func TestValuesNamesASecretDeletedBeforeTheNextRefresh(t *testing.T) {
 func TestRevokingARevokedGrantWritesNoSecondAuditRow(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
 	if err != nil || req.GrantID == nil {
 		t.Fatalf("Create = %+v, %v", req, err)
 	}
@@ -1194,7 +1242,7 @@ func TestEveryRequesterIsDecidedByOwnerAndTier(t *testing.T) {
 	for who, row := range table {
 		for name, want := range row {
 			r := requesters[who]
-			req, err := m.Create(ctx, r.enrollment, signRequest(t, m, r.key, "need it", name), "")
+			req, err := m.Create(ctx, r.enrollment, signRequest(t, m, r.key, "need it", name), "", nil)
 			if err != nil || req.State != want.state {
 				t.Errorf("%s asking for %s = %+v, %v; want %s", who, name, req, err, want.state)
 				continue
@@ -1225,7 +1273,7 @@ func TestEveryRequesterIsDecidedByOwnerAndTier(t *testing.T) {
 func TestAnyoneDecidesASharedHumanTierRequest(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need the shared one", "SHARED_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need the shared one", "SHARED_KEY"), "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v, want pending with a record", req, err)
 	}
@@ -1250,7 +1298,7 @@ func TestAnyoneDecidesASharedHumanTierRequest(t *testing.T) {
 	if err := m.Store.Pool.QueryRow(ctx, `select login from credential_request_events where record_id=$1 and event='approved'`, *req.RecordID).Scan(&login); err != nil || login != "bob@example.com" {
 		t.Fatalf("approved event login = %q, %v, want bob@example.com", login, err)
 	}
-	release, err := m.Values(ctx, dec.GrantID, enr, nil)
+	release, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{})
 	if err != nil || release.Values["SHARED_KEY"] != "shared-v1" {
 		t.Fatalf("Values = %v, %v, want SHARED_KEY released", release.Values, err)
 	}
@@ -1272,15 +1320,15 @@ func TestAServiceGrantStopsWhenItsServiceAccountChanges(t *testing.T) {
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-"+t.Name())
-	granted, err := m.Create(ctx, pod, signRequest(t, m, podKey, "need it", "SERVICE_KEY"), "")
+	granted, err := m.Create(ctx, pod, signRequest(t, m, podKey, "need it", "SERVICE_KEY"), "", nil)
 	if err != nil || granted.State != "granted" || granted.GrantID == nil {
 		t.Fatalf("Create(the service's pod) = %+v, %v; want granted", granted, err)
 	}
 	m.ServicesByAccount = map[string]string{"system:serviceaccount:example:other-sa": fixtureService}
-	if release, err := m.Values(ctx, *granted.GrantID, pod, nil); !errors.Is(err, ErrGrantNotLive) {
+	if release, err := m.Values(ctx, *granted.GrantID, pod, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values after the service's account changed = %v, %v; want ErrGrantNotLive", release.Values, err)
 	}
-	again, err := m.Create(ctx, pod, signRequest(t, m, podKey, "need it again", "SERVICE_KEY"), "")
+	again, err := m.Create(ctx, pod, signRequest(t, m, podKey, "need it again", "SERVICE_KEY"), "", nil)
 	if err != nil || again.ID == granted.ID || again.State != "denied" || again.GrantID != nil {
 		t.Fatalf("Create after the service's account changed = %+v, %v; want a new request, denied, not request %s reused", again, err, granted.ID)
 	}
@@ -1299,14 +1347,14 @@ func TestAPodBoundToOneServiceAndLoggedInAsAnotherGetsNoServiceSecrets(t *testin
 	ctx := context.Background()
 	m.ServicesByAccount = map[string]string{fixtureSubject: "other-service"}
 	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-cross-"+t.Name())
-	crossed, err := m.Create(ctx, pod, signRequest(t, m, podKey, "need it", "SERVICE_KEY"), "")
+	crossed, err := m.Create(ctx, pod, signRequest(t, m, podKey, "need it", "SERVICE_KEY"), "", nil)
 	if err != nil || crossed.State != "denied" || crossed.GrantID != nil {
 		t.Fatalf("Create(a pod whose account is bound to another service) = %+v, %v; want denied with no grant", crossed, err)
 	}
 
 	m.ServicesByAccount = map[string]string{fixtureSubject: fixtureService}
 	same, sameKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-same-"+t.Name())
-	granted, err := m.Create(ctx, same, signRequest(t, m, sameKey, "need it", "SERVICE_KEY"), "")
+	granted, err := m.Create(ctx, same, signRequest(t, m, sameKey, "need it", "SERVICE_KEY"), "", nil)
 	if err != nil || granted.State != "granted" || granted.GrantID == nil {
 		t.Fatalf("Create(a pod of the account bound to the service it logs in as) = %+v, %v; want granted", granted, err)
 	}

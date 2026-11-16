@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A Ghost Wispr envelope carries the session's `started_at`, `ended_at`, `drive_folder_url` and
+  `session_url` for every event type, and a `summary_ready` envelope its `summary_model`. A Ghost
+  Wispr unit now sends those in place of its title and summary text, which the stream would keep
+  for 72 hours past a deletion, and the listener accepted them but published an envelope without
+  them, so an agent had no way to reach the current text. An older unit's title and summary still
+  pass when present.
+time: 2026-11-15T20:46:47Z
+custom:
+    Issue: pr4111

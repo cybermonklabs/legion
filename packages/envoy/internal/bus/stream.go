@@ -42,6 +42,15 @@ const (
 	// SessionBucket holds each live session's registration, keyed by session id
 	// (internal/session).
 	SessionBucket = "envoy_sessions"
+	// KnownSessionBucket holds one record per session that registered in the last 30 days, keyed
+	// by session id (internal/session). A record says the session was known in the last 30 days,
+	// never that it is registered now: it outlives both stores that answer for a session that
+	// runs, the session entry (SessionBucket) and the interest row (InterestBucket), so a send to
+	// a stopped session is queued rather than refused and a publish counts that session as a
+	// recipient. The code that needs a live session or a role holder therefore never reads it:
+	// role resolution (roleHolderSessions.Holder in cmd/listener/role_holder.go) and the reapers
+	// each ask the stores whose records end when the session is gone.
+	KnownSessionBucket = "envoy_known_sessions"
 	// CIStateBucket holds the CI state of each commit of a pull request (internal/cistore).
 	CIStateBucket = "envoy_ci_state"
 	// LegionAgentBucket holds the Legion agent registry: each Legion session the daemon ran, under
@@ -61,16 +70,18 @@ const (
 )
 
 // ListenerBuckets reports the KV buckets envoy-listener opens, in the order its NATS grant lists
-// them: the interest and role-claim buckets (internal/store), the session registry
-// (internal/session), the Legion agent registry (internal/legionagents), the CI state bucket,
-// which only a listener with the GitHub webhook route opens (internal/cistore), and the
-// spent-proof bucket, which only a listener that takes broker access tokens opens
+// them: the interest and role-claim buckets (internal/store), the session registry and the
+// known-session store (internal/session), the Legion agent registry (internal/legionagents), the
+// CI state bucket, which only a listener with the GitHub webhook route opens (internal/cistore),
+// and the spent-proof bucket, which only a listener that takes broker access tokens opens
 // (cmd/listener/brokerauth.go). The listener's keeper raises each of them (WithKeptBuckets), and
 // envoy-infra grants the listener and the host each one's calls
 // (packages/envoy/infra/core/permissions.go), so a bucket named here is both kept and granted.
+// A bucket named here is granted to the host and Dispatch users too; the note on that file's
+// ListenerBuckets loop (listenerGrant) says where what that widens is written down.
 // Each call returns a fresh slice, so no caller changes another's list.
 func ListenerBuckets() []string {
-	return []string{InterestBucket, RoleClaimBucket, SessionBucket, LegionAgentBucket, CIStateBucket, DPoPProofBucket}
+	return []string{InterestBucket, RoleClaimBucket, SessionBucket, KnownSessionBucket, LegionAgentBucket, CIStateBucket, DPoPProofBucket}
 }
 
 // NotificationTopicPrefix begins every notification topic: the subjects the stream carries, the
@@ -129,6 +140,23 @@ const DeliverSubjectPrefix = NotificationTopicPrefix + "envoy.deliver."
 func DeliverSubject(sessionID string) string {
 	return DeliverSubjectPrefix + sessionID
 }
+
+// ConnectionProbeHeader is the one header the listener's connection probe carries on a session's
+// relay subject (DeliverSubject), with the value "1", and no body: a core request whose answer, or
+// a second of silence, says something still subscribes the subject, and whose no-responders says
+// nothing does (cmd/listener/connection_probe.go). It is not a relay frame header (Envoy-Subject
+// and the rest, cmd/listener/session_relay.go): the probe carries none of those, since a message on
+// the relay subject that carried them would be read as a frame and move the session's resume point
+// past the messages it stands for. Every subscriber of a relay subject that stands for a session -
+// the plugins, and each stand-in for one in the tests, the load test and the end-to-end scripts -
+// answers a message carrying this header done, when it carries a reply subject, before it decodes
+// anything, and takes nothing else from it: no frame, no envelope, no count. The plugins answer it
+// in their shared consumer delivery (packages/envoy-client/src/consumer-delivery.ts,
+// RelayHeader.probe); one older than the header answers the same bytes, which decode as no frame,
+// done too. A subscriber that is no session and holds the subject only through a wildcard -
+// natstail on notifications.>, an end-to-end capture of every notification - passes it over
+// unanswered and takes nothing from it either: an answer would speak for a session it is not.
+const ConnectionProbeHeader = "Envoy-Probe"
 
 // KeptTopicPrefix begins the listener's kept lane: the role messages it kept because it could not
 // deliver them and the drain cursors over them (cmd/listener/role_keep.go). The listener alone
@@ -629,7 +657,12 @@ func migrateRoleLanesOffStream(js nats.JetStreamContext, oldConfig, newConfig *n
 // subjectsOverlap reports whether some subject matches both patterns. JetStream refuses two such
 // subjects in one stream.
 func subjectsOverlap(a, b string) bool {
-	aTokens, bTokens := strings.Split(a, "."), strings.Split(b, ".")
+	return tokensOverlap(strings.Split(a, "."), strings.Split(b, "."))
+}
+
+// tokensOverlap is subjectsOverlap on two subjects already split into their tokens, for a caller
+// that weighs each subject against many others and splits it once.
+func tokensOverlap(aTokens, bTokens []string) bool {
 	for index := 0; index < len(aTokens) && index < len(bTokens); index++ {
 		aToken, bToken := aTokens[index], bTokens[index]
 		if aToken == ">" || bToken == ">" {

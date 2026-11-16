@@ -1,0 +1,14 @@
+{"Time":"2026-11-16T08:18:30.708347011Z","Action":"start","Package":"example.com/acme/gotest/exit"}
+{"Time":"2026-11-16T08:18:30.72583624Z","Action":"run","Package":"example.com/acme/gotest/exit","Test":"TestFirst"}
+{"Time":"2026-11-16T08:18:30.725912655Z","Action":"output","Package":"example.com/acme/gotest/exit","Test":"TestFirst","Output":"=== RUN   TestFirst\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:18:30.725942822Z","Action":"output","Package":"example.com/acme/gotest/exit","Test":"TestFirst","Output":"--- PASS: TestFirst (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:18:30.725951286Z","Action":"pass","Package":"example.com/acme/gotest/exit","Test":"TestFirst","Elapsed":0}
+{"Time":"2026-11-16T08:18:30.725957111Z","Action":"run","Package":"example.com/acme/gotest/exit","Test":"TestExits"}
+{"Time":"2026-11-16T08:18:30.725958919Z","Action":"output","Package":"example.com/acme/gotest/exit","Test":"TestExits","Output":"=== RUN   TestExits\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:18:30.725960919Z","Action":"run","Package":"example.com/acme/gotest/exit","Test":"TestExits/first"}
+{"Time":"2026-11-16T08:18:30.725963006Z","Action":"output","Package":"example.com/acme/gotest/exit","Test":"TestExits/first","Output":"=== RUN   TestExits/first\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:18:30.725966358Z","Action":"output","Package":"example.com/acme/gotest/exit","Test":"TestExits/first","Output":"--- PASS: TestExits/first (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:18:30.725970043Z","Action":"pass","Package":"example.com/acme/gotest/exit","Test":"TestExits/first","Elapsed":0}
+{"Time":"2026-11-16T08:18:30.725972673Z","Action":"output","Package":"example.com/acme/gotest/exit","Test":"TestExits","Output":"    exit_test.go:12: the process ends here\n"}
+{"Time":"2026-11-16T08:18:30.728090972Z","Action":"output","Package":"example.com/acme/gotest/exit","Output":"FAIL\texample.com/acme/gotest/exit\t0.019s\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:18:30.728140164Z","Action":"fail","Package":"example.com/acme/gotest/exit","Elapsed":0.02}

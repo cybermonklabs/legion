@@ -10,6 +10,32 @@ import (
 	"testing"
 )
 
+// TestEndDrainEndsOnlyTheDrainItWasStartedFor: each drain that marks the registry draining
+// starts its own bound (Server.drain), and a bound that passes ends its own drain and no later
+// one: an install that drained, undrained and drained again keeps its second drain for the whole
+// of its own bound, whatever the first bound's timer does when it fires.
+func TestEndDrainEndsOnlyTheDrainItWasStartedFor(t *testing.T) {
+	reg := NewRegistry(filepath.Join(t.TempDir(), "sessions.json"))
+	live, first := reg.Drain()
+	if len(live) != 0 || first == 0 || !reg.Draining() {
+		t.Fatalf("Drain on an empty registry: %d sessions, drain %d, draining %v", len(live), first, reg.Draining())
+	}
+	reg.Undrain()
+	_, second := reg.Drain()
+	if second == first {
+		t.Fatalf("two drains share the token %d", first)
+	}
+	if reg.EndDrain(first) || !reg.Draining() {
+		t.Fatal("the first drain's end ended the second drain")
+	}
+	if !reg.EndDrain(second) || reg.Draining() {
+		t.Fatal("the second drain's end left the registry draining")
+	}
+	if reg.EndDrain(second) {
+		t.Fatal("a drain already ended was ended again")
+	}
+}
+
 func TestRootFindsSelfAndDescendantOnly(t *testing.T) {
 	reg := NewRegistry(filepath.Join(t.TempDir(), "sessions.json"))
 	self := os.Getpid()

@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The broker answers `PENDING_VALUE` only while the secret is less than ten minutes old, even where
+  no load or reread has replaced its policy since it found the secret pending (a reread the
+  per-session limit refused, or one that failed): from ten minutes on it answers `UNKNOWN_SECRET`,
+  as its own refusal of the secret does.

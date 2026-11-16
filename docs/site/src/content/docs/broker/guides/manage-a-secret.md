@@ -169,17 +169,32 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   secret the request names is human tier, and 12 hours otherwise.
 - **The value.** At a terminal the CLI reads one hidden line. Enter or Ctrl-D ends it; Backspace,
   Ctrl-W and the terminal's kill-line character edit it. An unhandled control byte, including
-  Ctrl-S, Ctrl-Q, and Ctrl-C, Ctrl-\\ or Ctrl-Z inside a bracketed paste, refuses the value. The
-  prompt keeps discarding through Enter or Ctrl-D and the paste's end before reporting the error
-  and naming the pipe command. Anywhere
+  Tab, Escape, Ctrl-S, Ctrl-Q, and Ctrl-C, Ctrl-\\ or Ctrl-Z inside a bracketed paste, refuses the
+  whole value: the CLI never trims a value to store the rest. The
+  prompt keeps discarding through Enter or Ctrl-D and the paste's end before reporting the error,
+  which names the byte by its number and its name, says whether it came at the start of the
+  value, at its end, inside it or as the whole value, and, for a Tab at either end, that a paste
+  often adds one there, as a copy out of a web page's table does. It then says to enter the value
+  again without the byte, or, where the byte is part of the value, names the pipe command. Anywhere
   else the CLI reads standard input to its end. The CLI then reads what it stores by the same rule
   the broker spends a value under, the secret's `--shape` above: a token loses its whole trailing
   run of carriage returns and line feeds, a document loses nothing, and a value whose secret
   carries no shape tag loses that run only where the rest of it is not empty and holds no carriage
   return and no line feed. Where that rule removes nothing, one final line feed goes, so `echo`
   and a file that ends in a newline store the value without one. `secret set` reads the secret's
-  own shape tag first, so a document's owner stores a document. Empty values and
-  invalid UTF-8 are refused (exit 2) and write nothing.
+  own kind and shape tags first, so a document's owner stores a document. Empty values and
+  invalid UTF-8 are refused (exit 2) and write nothing. A space is never trimmed: a value that
+  starts or ends with one, typed or piped, is stored as given, and the command then prints one
+  line on standard error saying the value starts or ends with a space and was stored as given.
+  That line names the secret and never the value. A space inside the value prints nothing.
+- **The value of a kind.** `create --kind` checks the value as the broker's minter for that kind
+  reads it, before it writes, and `set` does the same under the kind tag the secret holds. A value
+  that minter could not mint from is refused (exit 2) with the minter's own reason, such as
+  `GitHub App secret needs an app_id and private_key`, and nothing is written. The broker reads
+  every kind secret's value with the same decoder, so when a value stored some other way, such as
+  with `gcloud` or the AWS console, is one the decoder refuses, the broker refuses the secret as
+  `value-malformed` ([the value read](/legion/broker/operate/#the-value-read)). `set` on a secret
+  whose kind tag names no kind the broker mints is refused before it asks for the value.
 
 **Keeping a value's final line ending.** Tag the secret `--shape document`, and the broker removes
 nothing from its value. The CLI still removes one final line feed wherever the rule removes
@@ -189,9 +204,121 @@ ending than the value needs. For a value the rule trims, a one-line credential u
 `--shape document` is the only way to keep one.
 
 The CLI checks your sign-in before it asks for the value, so a refused sign-in never has you type a
-secret for nothing. The secret is created on the broker's key with its tags, and the broker serves
-it from the next request. Secrets Manager refuses a name that is already taken, including one
-scheduled for deletion: [restore](#delete-and-restore) that one instead.
+secret for nothing. On GCP it then makes the secret, on the broker's key, with its tags and no
+value yet, and only then asks for the value, so a store that refuses the create - a sign-in IAM
+does not let create there, or a name already taken - ends the command before the prompt. The
+create labels the secret `agent-secrets-create` with a random value of its own. The label stays on
+the secret, so a create needs no `secretmanager.secrets.update`; the broker reads only whether a
+secret carries it, never its value. Once the secret is made, the CLI asks IAM whether your sign-in
+may add its value (`secretmanager.versions.add`, through `TestIamPermissions` on the new secret).
+Where IAM says it may not, the CLI deletes the empty secret and exits 1 before the prompt, naming
+the permission and your sign-in; where IAM cannot be asked, it goes on, and the add itself is the
+check.
+
+Where the store's answer to the create itself leaves open whether it made the secret - a lost
+answer, an outage - the CLI reads the secret back before it exits 1, and touches only a secret
+that carries its own label value. A read that finds no secret says the store did not show one then,
+that a create the store has not finished may still land, and names `agent-secrets secret show NAME`
+and the label value to look for. A secret without that value, there before or made by another
+create of the name, is left as it is; one with it and no version is deleted again, and the broker
+asked to reread the name; one with it and a version is left. A read that fails names the label
+value and the `gcloud secrets describe` command that shows a secret's labels, and a read, list or
+delete that fails names the `gcloud secrets delete` command that clears this create's empty
+secret.
+
+Every cleanup checks the creation label and lists versions, even when this form never added a
+value, since another writer may have filled or replaced the secret during the prompt; a failed
+read or list keeps the secret, and the delete carries the read's `etag`, so a secret replaced
+since is not deleted. One case remains: Secret Manager offers no delete conditional on a secret
+holding no version, so a version another writer adds between the version list and the delete is
+deleted with the secret. A cleanup that deletes the empty secret says so: the failure the command
+prints ends with `the empty secret … is deleted, so nothing stays in the store`. Where the store's
+answer to the delete leaves open whether it deleted the secret - a lost answer, a deadline, an
+outage - the CLI reads the secret back: none found is the delete done, said as above; the secret
+still there has its versions listed again, since another writer may have added one meanwhile, and
+stays: with no version it is said to stay, with the `gcloud secrets delete` command that clears it;
+with a version it may hold a value, so no delete is named and the broker rereads the name; and a
+list that fails names that command only for `versions: none`. A read back that fails says the store
+may still hold it, naming `agent-secrets secret show NAME` and that command. Only a delete the store
+refused, or a read back that found the secret, is said to leave it in the store.
+
+While the secret waits for its value, for ten minutes from its making, the broker serves it to
+nobody, logs that it waits, and refuses a request for it `PENDING_VALUE`, which says the secret
+waits for its first value and to ask again once its owner stores it. On GCP the CLI reads the value
+for the same ten minutes, at the prompt or from a pipe, and the prompt names the time the value must
+come by. When no whole value has come by then, through the pipe or with nothing typed or pasted at
+the prompt, it ends the read, deletes the empty secret, asks the broker to reread the name, and
+exits 1, saying to run the command again. Where the ten minutes run out while you type or paste,
+the prompt says so at once and keeps reading until you press Enter, and a paste until its end (or
+until it falls quiet for ten seconds), so no part of the value is echoed or reaches your shell; a
+value that ends only after the ten minutes is not stored. The create deletes the empty secret when
+that entry ends: at Enter, or at a signal that ends the process, such as a hang-up, or Ctrl-C typed
+outside a paste. The notice says the empty secret stays in the store until then and names what ends
+the entry from where you are: Enter, with Ctrl-C deleting it at once where Ctrl-C ends the
+process; inside a paste, where Ctrl-C is pasted text, finishing the paste first; and where Ctrl-C
+does nothing (an interrupt the shell ignores, or a terminal that is not the prompt's own), ending
+the process by closing the terminal or sending it SIGTERM. A prompt left waiting in the background
+for `fg` gives up at the ten minutes. On AWS, where the create makes nothing before it has the
+value, the read has no such limit. After the ten minutes the broker refuses a secret still without
+a value `no-current-value`, and the broker deletes nothing: the create that made it deletes it when
+its prompt ends, at the ten minutes or, with an entry under way then, when that entry ends. A
+create that was killed or crashed deletes nothing, so the secret stays in the store with no value.
+Its owner sees it as `versions: none` in `agent-secrets secret show NAME`, and frees the name with
+`gcloud secrets delete <id> --project <project number>`, `<id>` being the part after `secrets/` of
+the `secret_name` that `show` prints, or gives it its value with
+`agent-secrets secret set NAME`. `agent-secrets secret delete NAME` only schedules the deletion
+30 days out (see [delete and restore](#delete-and-restore)), and until then the name stays taken, so
+a `secret create` of it is refused. A secret without the label, or one holding a version, is never
+pending. If this create stores no value, it deletes its own empty secret before exit and asks the
+broker to reread the name: a refused value exits 2 and a refused store call exits 1.
+
+SIGHUP, Ctrl-C, Ctrl-\\ and SIGTERM are handled from before the initial create through recovery,
+the value prompt and adding the value. A signal waits for a call in flight before cleanup; a signal
+before the first call writes and deletes nothing. Each store call from the create until the value
+is stored or the empty secret deleted has a deadline of 60 seconds, which is Secret Manager's Go
+client's own default for those calls, and which AWS's `CreateSecret` takes too, since the AWS SDK
+sets none; each `gcloud auth print-access-token` that refreshes a gcloud login's token has the same
+deadline of its own. That bound is per call, not per signal: a signal waits out the call in
+flight, and then its cleanup makes its own calls - a read back, a version list, a delete - each
+with the same deadline, so a first signal against a store that answers nothing can take a few
+minutes to return. The first signal's cleanup says what the create left, as the command would have:
+a value the store stored meanwhile is said stored (`created NAME in …`) and the broker asked to
+reread the name; a store call that failed is named with what the store may hold, such as an AWS
+`CreateSecret` that ran out of time and may have made the secret. A second signal while the first
+one still waits ends the command at once, by that second signal, with one line naming what the
+store may be left holding and the command that clears or checks it: on GCP the empty secret, or the
+secret empty or holding the value, with the `gcloud secrets delete` command, and `agent-secrets
+secret show NAME` for the second; on AWS the secret with its value or nothing, with `agent-secrets
+secret show NAME`.
+
+Where the store's answer to the add of the value leaves open whether it stored it - a lost answer,
+a deadline, an outage - the CLI never deletes the secret, since the add may have stored the value or
+may still. It lists the secret's versions to say what it found: with a version there it says the
+value may have been stored; with none it says the store showed no version then and a late add may
+still land; where the list fails too it says whether the secret holds the value is unknown. Each
+asks the broker to reread the name where the list answered, names `agent-secrets secret show NAME`
+to settle it and the `gcloud secrets delete` command for a secret that proves empty, and exits 1,
+as does a delete the store refuses, which names the empty secret that stays and that command. A
+SIGKILL or a crash in that stretch leaves the empty secret, which
+`gcloud secrets delete <id> --project <project number>` clears, `<id>` being the part after
+`secrets/` of the `secret_name` that `agent-secrets secret show NAME` prints.
+
+Every command the CLI prints for settling what a create left signs in as that create did: an
+`agent-secrets` line carries `--profile` on AWS, and on GCP the `GOOGLE_APPLICATION_CREDENTIALS`
+or `CLOUDSDK_CORE_ACCOUNT` the create used; a `gcloud` line carries `CLOUDSDK_CORE_ACCOUNT` for a
+gcloud login, or `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE` for a key file, and names the identity
+after it, `(as …)`, so where gcloud cannot be pointed at that identity (a machine's metadata
+server, Application Default Credentials in their default file) you know whose sign-in to use.
+
+On AWS, Secrets Manager takes the value with the tags, so the secret is made in one call once the
+value is read. A `CreateSecret` the AWS SDK tried once and that was refused with an answer Secrets
+Manager gives before it acts - a name taken, access denied, a request, a parameter or a limit
+refused - says nothing was stored. Any other failure says that the store may hold the secret, with
+its value, or not, and names `agent-secrets secret show NAME` to tell which: a deadline, an outage,
+and any create the SDK tried more than once, since an attempt it retried may have made the secret,
+which the store then answers the retry with as a name already taken. Each exits 1. The broker serves
+the secret from the next request. Secrets Manager refuses a name that is already taken, including
+one scheduled for deletion: [restore](#delete-and-restore) that one instead.
 
 The prompt takes one line. A bracketed paste of more than one line, such as a key, is read through
 its closing mark and refused (exit 2), however long its writes take, as long as no more than 10
@@ -217,8 +344,11 @@ $ agent-secrets secret set DEMO_DEPLOY_TOKEN < key.pem
 set a new value of DEMO_DEPLOY_TOKEN in AWS Secrets Manager account 111122223333 in us-east-1
 broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 in us-east-1
 ```
-Ctrl-C, Ctrl-\\, SIGTERM or SIGHUP at the prompt restores the foreground terminal and writes
-nothing, then ends the CLI by that signal. A shell reports 130, 131, 143 or 129 respectively.
+Ctrl-C, Ctrl-\\, SIGTERM or SIGHUP at the prompt restores the foreground terminal and leaves the
+store as it was, deleting first the empty secret a GCP `create` made, then ends the CLI by that
+signal. A shell reports 130, 131, 143 or 129 respectively. While that delete waits on the store,
+a second signal ends the CLI at once, by that second signal, naming the empty secret that may stay
+and the `gcloud secrets delete` command that clears it.
 Ctrl-C also stops a shell's `;` list. On Unix, core dumps are disabled before the value is read and
 stay disabled for the rest of the process. On other platforms, crash-dump policy is OS-managed.
 
@@ -342,9 +472,10 @@ broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 
 ```
 
 `set` reads the value as `create` does: one line at a prompt with echo off, or all of standard
-input, which is how a value of more than one line goes in. The broker never keeps a value; it
-reads it from Secrets Manager each time a session reads a grant, so the next read of a live grant
-gets the new one.
+input, which is how a value of more than one line goes in. On a kind secret it checks the value
+under the secret's kind and shape tags before it writes. The broker never keeps a value; it reads
+it from Secrets Manager each time a session reads a grant, so the next read of a live grant gets
+the new one.
 
 ## Change its owner, tier, kind, requesters or max grant
 
@@ -379,13 +510,33 @@ retagged DEMO_LOGIN in AWS Secrets Manager account 111122223333 in us-east-1 (re
 broker: serving DEMO_LOGIN from AWS Secrets Manager account 111122223333 in us-east-1
 ```
 
-To make a stored secret a kind, retag it first, and only once the retag exits 0, showing
-`broker: serving NAME (kind <kind>)`, store the App key or the Google login with `secret set`. A
-reread can read the tags stale (Secret Manager's metadata can lag a write by hours), and while the
-broker still serves the secret as stored, a grant of it releases its stored value raw. So a retag
-whose reread answers another kind than the one it wrote exits 1: the broker still sees the old
-tags; run the retag again, and store no value until it exits 0. A release that finds the secret
-retagged while it reads the store releases nothing and ends that grant.
+A retag that changes the kind, or the shape of a secret that keeps a kind, first reads the value
+the secret holds and checks it as that kind's minter will read it once the tags are written. It
+never prints the value. A value the minter could not mint from refuses the retag (exit 2), and
+nothing is written. A read the store refuses your sign-in does not stop the retag: it writes the
+tags and prints one line on standard error that says the value was not checked and names the
+permission the read needs. The broker then reads the value with its own access, and refuses the
+secret as `value-malformed` when its minter could not mint from it. Any other failed read refuses
+the retag and writes nothing, and a secret with no value is one: it has no value to read.
+
+To make a stored secret a kind, retag it first, and store the App key or the Google login with
+`secret set` only once the broker reads the new tags. Where your sign-in may read the secret's
+value, that retag is refused while the value is not yet of that kind, and so is one of a secret
+with no value: create the kind secret under a new name instead, as below. Where your sign-in may
+not read the value, the retag writes the tags, and the broker refuses the secret as
+`value-malformed` until `set` stores a value of that kind. The retag then exits 1 on
+`reason=value-malformed`, which says the broker reads the new tags. A secret with no value is
+refused `no-current-value` whichever kind tag the broker reads (`pending-value` in the ten minutes
+after `secret create` made it), so there the retag exits 1 on that reason, which says nothing of the tags:
+`set` is the next step, since it
+checks the value under the kind the retag wrote, and its reread prints
+`broker: serving NAME (kind <kind>)` once the broker reads the new tags. A reread can read the tags
+stale (Secret Manager's metadata can lag a write by hours), and while the broker still serves the
+secret as stored, a grant of it releases its stored value raw. So a retag whose reread answers
+another kind than the one it wrote exits 1: the broker still sees the old tags. Run the retag
+again, and store no value until the broker serves the secret as that kind
+(`broker: serving NAME (kind <kind>)`) or refuses it as `value-malformed`. A release that finds
+the secret retagged while it reads the store releases nothing and ends that grant.
 
 Exit 0 is the answer of the one broker process that served the reread, not of every process. That
 process tells the others over Postgres and they reread within seconds, so exit 0 is the usual case
@@ -414,12 +565,17 @@ Where you must convert, before you store an App key or a Google login:
 - Read the broker's log since the retag. **If any of those five lines appears, do not store yet** —
   not only one naming your secret. Three of the five carry no secret at all, so a process that
   logged one may be behind on yours and nothing in the line will say so.
-- Run the retag again and require another exit 0 with none of those lines after it. That says
-  **the answering process** has the new tags: its reread reads the one secret directly
+- Run the retag again and require another exit 0 with none of those lines after it, or, where the
+  retag wrote the tags without checking the value, exit 1 on `reason=value-malformed` alone. That
+  says **the answering process** has the new tags: its reread reads the one secret directly
   (`DescribeSecret`, `GetSecret`) rather than through a listing, and the retag exits 1 unless the
   kind it reads back is the one it wrote. On Secrets Manager that read answers a write at once;
   on Secret Manager a single read is eventually consistent like the listing, which is why a retag
-  there can need running more than once.
+  there can need running more than once. A secret with no value answers `reason=no-current-value`
+  (`reason=pending-value` in the ten minutes after `secret create` made it) whichever tags a process reads, so
+  no retag of it says this. For such a secret, `secret set` is
+  the next step, and the line its own reread prints, `broker: serving NAME (kind <kind>)`, says
+  the answering process has the new tags.
 - **It says nothing about the peers, and no log line will.** A peer's reread reads the one name
   too, so on Secret Manager it can succeed while still reading the old tags: the broker warns
   only when that read returns an error, and a successful read of stale tags is not one. The
@@ -517,7 +673,7 @@ and prints its answer on a line of its own, naming the store the secret is in:
 | `broker: serving NAME from <store>` | The broker serves the secret as just written, as a stored secret. |
 | `broker: serving NAME from <store> (kind <kind>)` | The broker serves the secret as that kind: it mints from the stored value and never returns it. |
 | `broker: NAME is deleted in <store> (restorable until <date>)` | After a delete: the broker no longer serves it. |
-| `broker: refusing NAME from <store> (reason=<reason>)` | The broker leaves the secret out: `absent` (it found no such secret, or one scheduled for deletion), or one of the refusals [Operating the broker](/legion/broker/operate/#health-and-logs) lists, such as `no-current-value`. |
+| `broker: refusing NAME from <store> (reason=<reason>)` | The broker leaves the secret out: `absent` (it found no such secret, or one scheduled for deletion), `pending-value` (a secret `secret create` made and has not yet filled, which carries its `agent-secrets-create` label, holds no version and was made less than ten minutes ago: the broker waits for its value rather than refuses it), or one of the refusals [Operating the broker](/legion/broker/operate/#health-and-logs) lists, such as `no-current-value`. |
 
 `<store>` is the store the broker's settings name: `AWS Secrets Manager account <id> in <region>`,
 or `GCP Secret Manager project <number>`. The command exits 0 when the answer is what the write

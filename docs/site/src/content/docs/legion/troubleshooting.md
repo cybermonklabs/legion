@@ -45,6 +45,20 @@ legion start --config legion.yaml --check-config
 | `projects.<KEY>.memory.config_files names <file>, which a memory-group role's Oh My Pi could not read: …` | Under tmux the file must exist on the host and be readable by the daemon's user, as every pane is. |
 | `projects.<KEY>.memory.config_files …` or `projects.<KEY>.memory.instructions …` (another refusal) | The message names the entry: an empty list, a relative or unclean path, a path holding `:`, which separates the overlays `PI_CONFIG_FILES` names, or a path named twice. |
 | `memory instructions file <path> could not be read: …` or `memory instructions file <path> is empty` | Boot reads that file from the daemon's own disk and puts its text in every memory-group role's prompt, so give it a readable file with text in it, or take `instructions` out, which appends nothing. Boot reads it whatever the mode is, since a tree already drawn into the memory group is given it. |
+| `projects.<KEY>.memory and projects.<KEY>.experiments.memory are one experiment written twice: the memory block is the experiment named memory, so write the block or the key, not both` | The `memory` block **is** the experiment named `memory`, so the file declares it twice. Keep one spelling: the block, or `experiments.memory`. The block is accepted and refused in no other new way. |
+| `projects.<KEY>.experiments.memory names the variants …: its variants must be exactly memory and none, since a draw of it is served to every pod as the issue state's memoryGroup, whose wire enum is those two words, and a third makes the whole body fail to parse` | Name that experiment's two arms `memory` and `none`, or declare your own experiment under another name, which may name whatever arms it likes. |
+| `projects.<KEY>.experiments.memory is unit issue: its unit must be tree, since a draw of it is served to every pod as the issue state's memoryGroup, memoryDrawMode and memoryDrawnAt, which are the draw of the issue's tree, one answer for every issue of it` | The experiment named `memory` is drawn once for a whole tree, as the `memory` block always has been: take `unit` out, or set `unit: tree`. To draw something for each issue on its own, declare it under another name. |
+| `projects.<KEY>.experiments must be a mapping of an experiment's name to its block` (or `projects.<KEY>.experiments.<NAME> must be a mapping`, `projects.<KEY>.experiments.<NAME>.variants must be a sequence of variant blocks`, or `projects.<KEY>.experiments.<NAME>.variants[<n>] names no name: a draw records the variant it drew by name`) | The shape: `experiments` is a mapping of a name to a block, a block is a mapping, its `variants` is a sequence of mappings, and each arm names a `name`. |
+| `projects.<KEY>.experiments key "…" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes` (or `projects.<KEY>.experiments.<NAME>.variants[<n>] name "…" must match ^[a-z0-9-]{1,32}$: a draw records the variant it drew by name`, or `projects.<KEY>.experiments.<NAME>.variants names <name> twice`) | An experiment's name and an arm's name are 1 to 32 characters of `a-z`, `0-9` and `-`, and each is named once, because every draw records both. |
+| `projects.<KEY>.experiments.<NAME>.mode must be off, on, or random (got "…")` | The mode is one of three words: `off` (the default, and what a block that names no mode gets), `on`, or `random`. |
+| `projects.<KEY>.experiments.<NAME>.unit must be tree or issue (got "…")` | The unit is `tree`, the default, which draws once for a whole tree and gives every issue of it the same arm, or `issue`, which draws for each issue on its own. |
+| `projects.<KEY>.experiments.<NAME>.variants is required: an experiment draws among the variants its block lists` (or `projects.<KEY>.experiments.<NAME>.variants lists no variant: …`, or `projects.<KEY>.experiments.<NAME> is <mode> and lists one variant: …`) | List the arms the experiment compares. A mode other than `off` needs at least two of them: a draw among one arm measures nothing, so list the arm it is compared against, or set `mode: off`. |
+| `projects.<KEY>.experiments.<NAME> is on and names no on_variant: …` (or `projects.<KEY>.experiments.<NAME>.on_variant names "…", which is no variant of the experiment (…)`) | `mode: on` gives every new unit one arm, so name that arm in `on_variant`, and name one this experiment lists. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM>.weight must be a whole number above zero (got <n>): …` | A weight is the arm's share of a random draw against its siblings'. An arm of no weight is never drawn, so take it out of the list instead. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM> names config_files, and worker_backends.<role> is claude, which reads no PI_CONFIG_FILES: …` | An arm that names overlays hands them to every role of a unit drawn into it whatever the mode is, and Claude Code reads no `PI_CONFIG_FILES`: put every issue role on Oh My Pi, or take the overlays out of the arm. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files entry <file> is under no runtime.kubernetes.pod.volume_mounts mount_path: …` (or `… is not among the items volume <name> projects …`) | As for a role's overlay: under Kubernetes an arm's overlay must be a file the operator's mounts carry, so mount the ConfigMap holding it, or add the item. It is refused at `mode: off` too, since a unit already drawn into the arm still names it. Mounting it replaces every live issue pod of the deployment, so add it when no role of an affected issue is mid-turn. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files …` or `projects.<KEY>.experiments.<NAME>.variants.<ARM>.instructions …` (another refusal) | The message names the entry: an empty list, a relative or unclean path, a path holding `:`, which separates the overlays `PI_CONFIG_FILES` names, a path named twice, or, under tmux, an overlay no role drawn into the arm could read. |
+| `instructions file <path> of experiment <experiment> variant <variant> could not be read: …` or `instructions file <path> of experiment <experiment> variant <variant> is empty` | Boot reads every declared arm's `instructions` from the daemon's own disk and puts its text in the prompt of every role of a unit drawn into that arm, so give it a readable file with text in it, or take the key out, which appends nothing. Boot reads it whatever the experiment's mode is, since a unit already drawn into the arm is given it. |
 | `projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")` or `projects.<KEY>.commit_issue_trailer_repos names <owner>/<name> twice` | Each entry is one repository, written `owner/name`, and one repository is named once: names are compared as GitHub compares them, without case, so a second spelling of one name is the file saying the same thing twice. |
 | `projects.<KEY>.commit_issue_trailer_repos[<n>] (<owner>/<name>) and projects.<KEY>.commit_issue_trailer_repos[<m>] (<owner>/<name>) name one repository: repository_renames makes … one repository, so the list names it twice; name it once` | A configured rename makes the two entries select the same repository. Keep the one the project uses now and delete the other. |
 | `<PROJECT> is already running (pid <n>)` (from `legion start` itself) | A daemon for this project is already registered on the machine: `legion status <PROJECT>`, `legion legions`. |
@@ -580,6 +594,19 @@ listing alone. What follows the colon says where to look:
   verify or move the check into place on the pod's disk. The sentence on the claim is the whole
   record, because the launcher writes no log line for a refusal.
 
+**A pod launch whose system prompt is too large for one start frame** is refused before anything
+starts, and its claim fails at once, charged no launch failure, since every try would compose the
+same text from the same files. The prompt reaches the pod's launcher in one frame, which holds at
+most 1048576 bytes. The daemon logs the error `supervise: the role's system prompt is too large
+to launch; failing the claim, charging no launch failure`; the claim's `failure` carries the cause
+word `launch_refused` (`died` where the refused launch was the relaunch of a process that died)
+and a `detail` reading `launch refused, charged no launch failure: …: the <role>'s system prompt is
+<N> bytes, and the start frame that carries it to its pod's launcher would be <F> bytes, larger
+than the 1048576 bytes a launcher reads in one frame`, the part before the sentence naming the
+claim and the launch step that measured the frame, and its `lastStartFailure` carries the same
+sentence, both read with `read_state`. Cut the prompt: the deployment's instructions, the role's
+prompt, or an experiment arm's instructions.
+
 Once the cause is fixed, `legion claims retry --claim <token>` starts a failed claim again. The
 daemon launches a claim that has not failed yet again on its own, after the backoff below.
 
@@ -977,7 +1004,7 @@ Nothing adds the two lines to these commits:
 - A `git commit` when the git whose version `legion git` reads is older than 2.32, the first git with `git commit --trailer`: the real git in a pod, and under tmux the first git on `PATH` after `bin/` that is a compiled program.
   A host's git wrapper script that runs another git older than 2.32 makes the commit fail on the two `--trailer` options instead (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
 
-- Under Claude Code, a jj commit from a subagent's shell that lacks the session's environment file (anthropics/claude-code#46696).
+- Under Claude Code, a jj commit from a subagent's shell that lacks the session's environment file (Claude Code issue 46696).
   That subagent's `git commit` still gets the `Legion-Role` line.
 
 **The git author and committer name no role.**
@@ -1174,6 +1201,10 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   write that decision makes of the claim as the daemon holds it: the daemon's memory is ahead of
   the row. The mark is held in memory only, so a daemon that stops while a write is owed loses
   that write and the reports it carried, as a stop between a decision and its write always has.
+  A write the daemon's own stop cut short writes the same line at Info, with `owed=true` and a
+  `context canceled` error: the database refused nothing, and the next boot takes the claim up
+  from its row, as it does every decision the stop ends. A write that ran out its own deadline
+  while the daemon stopped did wait on the database, and stays at Warn.
   The line comes again with `owed=true` at each decision whose repair fails again. With
   `owed=false` a repair's write reached the server, which judged the statement and would judge it
   the same way again, so the owed write and the reports it carried are dropped and the row stays
@@ -1210,8 +1241,9 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   decision whose write landed, except one of a generation the claim has left (`supervise: an owed
   report is dropped; the claim has left the generation it was owed at`, at Info with its `state=`
   and `generation=`). A claim whose last `owed=true` line has no such line after it is still
-  behind, and its next decision will try again; one whose last line is `owed=false` has dropped
-  the write, and nothing tries it again.
+  behind: while that daemon runs, the claim's next decision tries the write again, and a daemon
+  that stopped since lost the mark, so its next boot takes the claim up from its row. One whose
+  last line is `owed=false` has dropped the write, and nothing tries it again.
 - **`supervise: a turn started`** and **`supervise: a turn ended`** at Info, each with the claim
   and its `generation`, and with `delivery=` where the turn is a task's, are how a reader tells a
   turn that started from one the daemon never saw, and a turn that ended from one still running.
