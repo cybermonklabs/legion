@@ -74,12 +74,6 @@ agent-secrets LEGION_SLACK_BOT_TOKEN -- \
   sh -c 'printf "Authorization: Bearer %s" "$LEGION_SLACK_BOT_TOKEN" | curl -sS -H @- https://slack.com/api/auth.test'
 ```
 
-The repository uses the same form for a GitHub App token in `docs/deployment.md`:
-
-```sh
-agent-secrets LEGION_IMPLEMENT_APP --reason=… -- sh -c 'printf %s "$LEGION_IMPLEMENT_APP"'
-```
-
 ## A secret behind the airlock
 
 Your deployment can hold a secret's value back and give your command a stand-in. You see it in the
@@ -130,13 +124,42 @@ Your transcript keeps everything a command prints.
 
 - Never echo or print the value, and never run `curl -v`, `curl --trace` or a shell with `set -x`
   around it: each of those writes the header, and so the value, to your output.
-- Check a value's shape by its length and its prefix alone. For a secret behind the airlock, that
-  reads the placeholder's shape and not the value's:
+- Check a plain value's shape by its length and its prefix alone:
 
   ```sh
   agent-secrets NAME --reason 'check the shape of this credential' -- sh -c 'echo "${#NAME}"; case "$NAME" in ghp_*) echo prefix-ok;; *) echo prefix-no;; esac'
   ```
 
+- A value may be a JSON document, with the credential one level down or deeper: a GitHub App
+  secret asked for without `--github-token` is the JSON object of installations, and its tokens
+  are inside it. Check a JSON value's shape by its key paths and the length of each leaf, and
+  never by printing a leaf. A probe that masks one key prints every other key's value, the
+  nested ones too, so print no value at all, masked or not. These print the key paths, then each
+  leaf's path with its length. For a value that is not JSON, jq exits 5 and writes
+  `jq: error (at <unknown>): the value is not JSON` to stderr (jaq writes
+  `Error: "the value is not JSON"`), and nothing of the value: `try … catch` keeps jq's own parse
+  error out, which quotes the text (`… (while parsing '<the value>')`):
+
+  ```sh
+  agent-secrets NAME --reason 'check the shape of this credential' -- \
+    jq -n 'env.NAME | try fromjson catch error("the value is not JSON") | [paths(type != "object" and type != "array") | join(".")]'
+  agent-secrets NAME --reason 'check the shape of this credential' -- \
+    jq -n 'env.NAME | try fromjson catch error("the value is not JSON") | [paths(type != "object" and type != "array") as $p | {path: ($p | join(".")), length: (getpath($p) | tostring | length)}]'
+  ```
+
+- Take a credential out of a JSON value inside the command, and pass it on there without
+  printing it. `jq -e` exits 1 when the path holds nothing, so the command stops rather than
+  sending an empty credential:
+
+  ```sh
+  agent-secrets NAME --reason '…' -- sh -c '
+    token=$(printf %s "$NAME" | jq -er ".path.to.token" 2>/dev/null) || { echo "no token at .path.to.token" >&2; exit 1; }
+    curl -sS -H "Authorization: Bearer $token" https://api.example.com/'
+  ```
+
+  For a GitHub App secret, `--github-owner <account> --github-token` hands the command that one
+  account's token under the secret's name, with no JSON to take apart.
+- For a secret behind the airlock, every one of these reads the placeholder and not the value.
 - Compare two values only as equal or not equal. Never print, slice or diff their characters.
 
 ## Read the answer, not the status alone

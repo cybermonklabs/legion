@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -85,8 +87,12 @@ func unitValue(name string, getenv func(string) string) string {
 // answering before is restarted when restartWithSessions is set, whether or not the unit
 // changed; otherwise only when the unit changed and `drain` finds it has no sessions (the
 // helper then refuses new ones). A restart ends the sessions' grants, so with sessions it prints
-// them and why it did not restart, and returns nil. A restart that fails after a drain sends
-// `undrain`, so the helper takes sessions again, and returns the restart's error. A helper older
+// them and why it did not restart, and returns nil. The restart is bounded (restartTimeout).
+// After a drain install reads the unit's main process before and after the restart, and when
+// the restart did not replace it — the same main process, none, or a read that failed, as after
+// a restart that failed or outlived its bound — install sends `undrain`, so the helper takes
+// sessions again, and returns the restart's error, or one naming the unchanged process after a
+// restart systemd answered success. A helper older
 // than `drain` cannot refuse a register between the check and the restart, so without
 // restartWithSessions it is never restarted: install prints its sessions and that it predates
 // drain, and returns nil. An unchanged, active unit without restartWithSessions changes nothing.
@@ -202,15 +208,116 @@ WantedBy=default.target
 			return nil
 		}
 	}
-	if err := systemctl("restart", helper.UnitName); err != nil {
-		if drained {
-			if resp, uerr := helper.Call(cfg.Socket, helper.Request{Op: "undrain"}, 2*time.Second); uerr != nil || !resp.OK {
-				fmt.Fprintf(stdout, "the helper is still draining (refusing new sessions): undrain failed: %v %s\n", uerr, resp.Error)
-			}
-		}
-		return err
+	if !drained {
+		return restartHelper()
 	}
-	return nil
+	// The unit's main process before and after the restart says whether the restart replaced the
+	// helper install drained. When it did not, or install cannot tell, install undoes the drain:
+	// the helper would otherwise refuse every registration until its drain bound passes, and an
+	// undrain that reaches a new helper changes nothing. It does not while a job for the unit is
+	// still queued, as after a restart that outlived restartTimeout, whose job systemd keeps when
+	// its client is killed: a session that registered after an undrain would lose its grants when
+	// that job stops the helper, which is what the drain is for. The drain then ends with that
+	// restart, or at the helper's own bound (helper.DefaultDrainBound).
+	before, beforeErr := mainPID()
+	restartErr := restartHelper()
+	after, afterErr := mainPID()
+	var notReplaced string
+	switch {
+	case beforeErr != nil:
+		notReplaced = "its main process could not be read before the restart: " + beforeErr.Error()
+	case afterErr != nil:
+		notReplaced = "its main process could not be read after the restart: " + afterErr.Error()
+	case after == 0:
+		notReplaced = "the unit runs no main process after the restart"
+	case after == before:
+		notReplaced = fmt.Sprintf("the unit's main process is still %d", after)
+	default:
+		return restartErr
+	}
+	var queued string
+	switch job, err := queuedJob(); {
+	case err != nil:
+		queued = "whether a job for the unit is still queued could not be read: " + err.Error()
+	case job != "":
+		queued = "job " + job + " for the unit is still queued"
+	}
+	if queued != "" {
+		fmt.Fprintf(stdout, "the helper is left draining (refusing new sessions): %s, and an undrain now would let a session register on the helper that job may stop; the drain ends with the restart, or by itself within %s of the drain\n", queued, helper.DefaultDrainBound)
+		if restartErr != nil {
+			return fmt.Errorf("%w; %s, so install did not undrain the helper", restartErr, queued)
+		}
+		return fmt.Errorf("systemctl --user restart %s answered success, but %s and %s, so install did not undrain the helper", helper.UnitName, notReplaced, queued)
+	}
+	if resp, uerr := helper.Call(cfg.Socket, helper.Request{Op: "undrain"}, 2*time.Second); uerr != nil || !resp.OK {
+		fmt.Fprintf(stdout, "the helper may still be draining (refusing new sessions): undrain failed: %v %s; it ends the drain itself within %s of the drain\n", uerr, resp.Error, helper.DefaultDrainBound)
+	}
+	if restartErr != nil {
+		return restartErr
+	}
+	return fmt.Errorf("systemctl --user restart %s answered success, but %s, so the helper install drained was not restarted; install sent it undrain", helper.UnitName, notReplaced)
+}
+
+// restartTimeout bounds install's `systemctl --user restart` of the helper
+// (helper.InstallRestartTimeout, which says why 30 s). A variable only so a test can shorten it.
+var restartTimeout = helper.InstallRestartTimeout
+
+// restartHelper runs `systemctl --user restart` on the helper's unit, and stops waiting for it at
+// restartTimeout.
+func restartHelper() error {
+	ctx, cancel := context.WithTimeout(context.Background(), restartTimeout)
+	defer cancel()
+	err := systemctlContext(ctx, "restart", helper.UnitName)
+	if err != nil && ctx.Err() != nil {
+		return fmt.Errorf("systemctl --user restart %s did not finish within %s", helper.UnitName, restartTimeout)
+	}
+	return err
+}
+
+// systemctlReadTimeout bounds each read of the unit's state, one D-Bus property read that answers
+// at once from a working user manager. Three of them (the main process before and after the
+// restart, and its queued job) and the 2 s undrain fit, with InstallRestartTimeout, inside
+// helper.DefaultDrainBound.
+const systemctlReadTimeout = 5 * time.Second
+
+// unitProperty is the helper unit's property as `systemctl --user show --value` prints it,
+// trimmed.
+func unitProperty(property string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), systemctlReadTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "systemctl", "--user", "show", "--property="+property, "--value", helper.UnitName).Output()
+	if err != nil {
+		return "", fmt.Errorf("systemctl --user show --property=%s %s: %w", property, helper.UnitName, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// mainPID is the helper unit's main process as `systemctl --user show` names it, 0 while the
+// unit runs none.
+func mainPID() (int, error) {
+	value, err := unitProperty("MainPID")
+	if err != nil {
+		return 0, err
+	}
+	pid, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("systemctl --user show --property=MainPID %s answered %q, which is no process id", helper.UnitName, value)
+	}
+	return pid, nil
+}
+
+// queuedJob is the id of the job systemd holds for the helper unit, a restart or any other, and
+// "" while it holds none: `systemctl --user show --property=Job --value` prints the job's id, or
+// nothing when there is no job.
+func queuedJob() (string, error) {
+	value, err := unitProperty("Job")
+	if err != nil {
+		return "", err
+	}
+	if _, err := strconv.ParseUint(value, 10, 32); value != "" && err != nil {
+		return "", fmt.Errorf("systemctl --user show --property=Job %s answered %q, which is no job id", helper.UnitName, value)
+	}
+	return value, nil
 }
 
 // unitActive reports whether `systemctl --user is-active` names the helper's unit active.
@@ -220,9 +327,10 @@ func unitActive() bool {
 }
 
 // drainHelper asks the helper at sock to drain: it answers its sessions and, with none, refuses
-// every later register until it exits, so none can start between the answer and the restart.
-// A helper older than the drain op answers it as an unknown op; drainHelper then answers that
-// helper's `sessions` and drained false.
+// every later register until it exits, so none can start between the answer and the restart; a
+// helper of this release also ends that drain itself once helper.DefaultDrainBound passes with it
+// still running. A helper older than the drain op answers it as an unknown op; drainHelper then
+// answers that helper's `sessions` and drained false.
 func drainHelper(sock string) (sessions []helper.SessionInfo, drained bool, err error) {
 	resp, err := helper.Call(sock, helper.Request{Op: "drain"}, 2*time.Second)
 	drained = true
@@ -265,7 +373,12 @@ func writeFileAtomic(path string, data []byte) error {
 }
 
 func systemctl(args ...string) error {
-	cmd := exec.Command("systemctl", append([]string{"--user"}, args...)...)
+	return systemctlContext(context.Background(), args...)
+}
+
+// systemctlContext runs `systemctl --user args...` until it exits or ctx ends, whichever is first.
+func systemctlContext(ctx context.Context, args ...string) error {
+	cmd := exec.CommandContext(ctx, "systemctl", append([]string{"--user"}, args...)...)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("systemctl --user %s: %w", strings.Join(args, " "), err)

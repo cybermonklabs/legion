@@ -449,6 +449,12 @@ provider_keys:
   every launch of that role fail. `docs/kubernetes.md` ("Operator configuration") has the rest of
   the key's rules. Every pane runs as the daemon's Unix user, so each role can read every role's
   overlay file; only loading is per role, so never put a secret in one.
+- **A role's system prompt is a file.** Each launch's composed system prompt — the role's prompt
+  files, the sentence that says which claim it is, the deployment's `instructions`, then each drawn
+  arm's — is written to `<state_dir>/secrets/<claim token>-system-prompt.md`, kept beside the
+  claim's other secret files and pruned with them, and Oh My Pi is passed that file's path as
+  `--append-system-prompt <path>`, Claude Code as `--append-system-prompt-file <path>`, so no
+  prompt travels as one argument and none is bounded by the 131,072 bytes Linux allows one.
 - **`projects.<KEY>.memory`**, the project's own block, is one of the things that append to a
   pane's `PI_CONFIG_FILES`
   (`memory: {mode: random, config_files: [/etc/legion-memory/memory.yml], instructions: /etc/legion-daemon/memory-instructions.md}`).
@@ -476,8 +482,8 @@ provider_keys:
   nothing, so its own first open draws it like any other new tree.
   Every role of a memory-group tree names the memory overlays after `pi_config_files` and the
   role's own, and before any other experiment's arms, since the block's experiment comes first
-  among the project's declared experiments, and ends its one `--append-system-prompt` value with
-  the memory instructions, after the deployment's own.
+  among the project's declared experiments, and ends its system prompt with the memory
+  instructions, after the deployment's own.
   The controller and every role of a no-memory tree get neither, and a block with no
   `instructions` appends nothing.
   The launch follows the record, not the mode:
@@ -519,8 +525,8 @@ provider_keys:
   experiments, so an arm's file outranks both.
   The `memory` block's own arm comes first among them, since the block's experiment comes before
   the `experiments` mapping's own.
-  The one `--append-system-prompt` value ends with each such arm's `instructions` in that same
-  order, after the deployment's own.
+  The system prompt ends with each such arm's `instructions` in that same order, after the
+  deployment's own.
   The draw is made once, when the unit is opened — a tree's when its lifecycle row is first
   created, an issue's when the daemon first records that issue — and is recorded with the arm, the
   mode in force and the instant.
