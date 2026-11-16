@@ -163,14 +163,16 @@ function pickedFields({ assignee, priority, repo, resolved_repo }: IssueFields):
   return { assignee, priority, repo, resolved_repo };
 }
 
+/** What an answer that is an issue carries as its own: its key, each field of it a pick changes,
+ *  and the repository it resolves to. */
+const answerNames: readonly string[] = ["key", ...everyField, "resolved_repo"];
+
 /** `answer`, Dispatch's answer to a write, as an issue: an object whose `key` names the issue and
  *  that carries each field of it a pick changes as its own. Undefined for any other answer - for
  *  `null`, a landing Dispatch kept no answer for, among them. */
 function issueAnswer(answer: unknown): (IssueFields & Pick<Issue, "key">) | undefined {
   if (typeof answer !== "object" || answer === null) return undefined;
-  const carried = ["key", "assignee", "priority", "repo", "resolved_repo"].every((name) =>
-    Object.hasOwn(answer, name)
-  );
+  const carried = answerNames.every((name) => Object.hasOwn(answer, name));
   if (!carried || typeof Reflect.get(answer, "key") !== "string") return undefined;
   return answer as IssueFields & Pick<Issue, "key">;
 }
@@ -628,10 +630,10 @@ interface Confirmed {
  *  takes from the last answer of each read of an issue's detail, a list of issues or the Inbox -
  *  of each issue it holds, the fields a pick changes, and of the Inbox, the person each row waits
  *  on (`answeredLooks`) - by the hash of its query, in the order they answered, for as long as the
- *  client holds that query (`keepAnswer`); the answer of the last write that landed carrying each
- *  field, of any kind and whatever field it set, by field (`confirmLanding`); and how each field
- *  showed in the caches at the first pick of a run of picks of it (`started`), which stands in
- *  for an answer only where the client keeps none (`confirmedOf`). */
+ *  client holds that query (`keepAnswer`); the answer of the last write on the issue's line that
+ *  landed carrying each field, of any kind and whatever field it set, by field (`confirmLanding`,
+ *  `ended`); and how each field showed in the caches at the first pick of a run of picks of it
+ *  (`started`), which stands in for an answer only where the client keeps none (`confirmedOf`). */
 interface Answers {
   readonly landings: Map<string, Confirmed>;
   readonly reads: Map<string, Read>;
@@ -670,15 +672,15 @@ function keepAnswer(client: QueryClient, query: Query): void {
 }
 
 /** How `of`'s field shows as Dispatch last confirmed it: the field in the newest answer Dispatch
- *  gave the client for the issue - the answer of the last write that landed carrying the field,
- *  whatever field that write set, or of a read that holds the issue, a read being as new as its
- *  request, so one sent before a write landed is older than that write's answer, whenever it
- *  arrived. An assignee comes with the person each Inbox row of the issue waits on as the newest
- *  Inbox answer for the issue names them, whichever answer the assignee comes from, where that
- *  Inbox answer holds the same assignee: Dispatch's answer for a row nobody handed on, which
- *  waits on the project's default while the issue has no assignee. Where the client keeps neither
- *  - its caches were written by hand - what they showed at the first pick of the run; undefined
- *  where not even that is known. */
+ *  gave the client for the issue - the answer of the last write on the issue's line that landed
+ *  carrying the field, whatever field that write set, or of a read that holds the issue, a read
+ *  being as new as its request, so one sent before a write landed is older than that write's
+ *  answer, whenever it arrived. An assignee comes with the person each Inbox row of the issue
+ *  waits on as the newest Inbox answer for the issue names them, whichever answer the assignee
+ *  comes from, where that Inbox answer holds the same assignee: Dispatch's answer for a row
+ *  nobody handed on, which waits on the project's default while the issue has no assignee. Where
+ *  the client keeps neither - its caches were written by hand - what they showed at the first
+ *  pick of the run; undefined where not even that is known. */
 function confirmedOf(
   client: QueryClient,
   of: Pick<IssueFieldPick, "field" | "issueKey">
@@ -880,9 +882,10 @@ function follow(client: QueryClient, watch: Watch): void {
 
 /** What the end of a write does, the store having let it go. Landed, what its landing told the
  *  client is kept, whatever field of an issue it set (`confirmLanding`) - a pick's was kept as it
- *  landed (`landed`), before the store told its end - and each field the watch followed it for is
- *  what Dispatch last confirmed for the field, which shows unless a newer live write of it does,
- *  and where none does, over the answer of each read out then as well (`holdReads`); refused,
+ *  landed (`landed`), before the store told its end - but for an answer of a write off the line
+ *  of the issue it names (`issue:<KEY>`), and each field the watch followed it for is what
+ *  Dispatch last confirmed for the field, which shows unless a newer live write of it does, and
+ *  where none does, over the answer of each read out then as well (`holdReads`); refused,
  *  discarded or stopped, each such field shows as its newest live write, or else as Dispatch last
  *  confirmed it, over each older read out then as well, and the issue is read again
  *  (`putBack`). */
@@ -894,7 +897,12 @@ function ended(client: QueryClient, watch: Watch, outcome: WriteOutcome): void {
     return;
   }
   if (outcome.write.kind === KIND) return;
-  const landings = confirmLanding(client, outcome.answer, followed);
+  // A landing is as new as its answer's arrival, which is the order Dispatch stored the writes
+  // in only on the issue's line, which sends one at a time: the answer of a write off it - a
+  // claim released - can arrive after a later landing's though Dispatch stored it first.
+  const issue = issueAnswer(outcome.answer);
+  const onItsLine = issue !== undefined && outcome.write.target === `issue:${issue.key}`;
+  const landings = confirmLanding(client, onItsLine ? outcome.answer : null, followed);
   for (const [index, pick] of followed.entries()) {
     const landing = landings[index];
     if (showNewestOr(client, watch, pick, landing.look)) holdReads(client, watch, pick, landing);
@@ -1020,22 +1028,23 @@ const KIND = "issue-field";
  *
  * The value Dispatch last confirmed is the field in the newest answer Dispatch gave the client
  * for the issue, kept apart from the pick shown over it (`confirmedOf`): the answer of the last
- * write that landed carrying the field, of any kind and whatever field it set - a pick of another
- * field, a save of the title in the issue's header, a board move, a claim released, an edit from
- * the issues table - which is the issue (`confirmLanding`, `ended`), and of a write of the field
- * that landed with no such answer, the value it set (`landedMove` for a board move); or of a read
- * of the issue's detail, a list of issues or the Inbox that holds the issue, of which the fields
- * a pick changes are kept as the read returned them, before the issue's query keeps an older one
- * out or a pick is shown over it, from the moment the client's store is made (`opened`,
- * `keepAnswer`) - a read being as new as its request, whether a pick was live when it was sent
- * or not, so one sent before a landing is older than it whenever it arrives. An assignee put back
- * comes with the person each Inbox row of the issue waits on as the newest Inbox answer named
- * them, where that answer holds the same assignee. Only where the client keeps no such answer -
- * its caches were written by hand - it is what the caches showed at the first pick of a run,
- * unless a live write of the field of another kind put it there. After a reload the client holds
- * no answer yet, and whoever is signed in changing lets go of every answer kept (`reset`) - once
- * the picks that change drops have each put back what Dispatch last confirmed - so only the
- * answers since count.
+ * write on the issue's line (`issue:<KEY>`) that landed carrying the field, of any kind and
+ * whatever field it set - a pick of another field, a save of the title in the issue's header, a
+ * board move, an edit from the issues table - which is the issue (`confirmLanding`, `ended`), and
+ * of a write of the field that landed with no such answer, the value it set (`landedMove` for a
+ * board move); not a claim released, off that line, whose answer can arrive after a later
+ * landing's though Dispatch stored it first; or of a read of the issue's detail, a list of
+ * issues or the Inbox that holds the issue, of which the fields a pick changes are kept as the
+ * read returned them, before the issue's query keeps an older one out or a pick is shown over
+ * it, from the moment the client's store is made (`opened`, `keepAnswer`) - a read being as new
+ * as its request, whether a pick was live when it was sent or not, so one sent before a landing
+ * is older than it whenever it arrives. An assignee put back comes with the person each Inbox
+ * row of the issue waits on as the newest Inbox answer named them, where that answer holds the
+ * same assignee. Only where the client keeps no such answer - its caches were written by hand -
+ * it is what the caches showed at the first pick of a run, unless a live write of the field of
+ * another kind put it there. After a reload the client holds no answer yet, and whoever is
+ * signed in changing lets go of every answer kept (`reset`) - once the picks that change drops
+ * have each put back what Dispatch last confirmed - so only the answers since count.
  */
 export const issueFieldWrite = defineWriteKind<IssueFieldPick>({
   kept: keptPick,

@@ -2110,6 +2110,119 @@ test("a refused priority pick puts back the priority an assignee pick that lande
   }
 });
 
+/** Has the page's store release CORE-1's claim, as the issue page's header does (`releaseClaim`
+ *  in `IssueHeader`): off the issue's line, `answer` being Dispatch's, the issue, merged into
+ *  the issue, and the lists read again. */
+function releaseClaim(client: DispatchQueryClient, answer: Promise<Issue>): void {
+  act(() => {
+    void writesOf(client)
+      .run({
+        detail: null,
+        inline: true,
+        kind: plainWrite,
+        label: `Claim on ${issue.key} released`,
+        presentation: "indicator",
+        write: (bounds) => {
+          bounds.sent?.({ method: "DELETE", path: `/api/v1/issues/${issue.key}/claim` });
+          return answer;
+        },
+      })
+      .then((next) => {
+        if (next !== null) mergeIssue(client, next);
+        void client.invalidateQueries({ queryKey: ["issues"] });
+      })
+      .catch(() => undefined);
+  });
+}
+
+// R3 with a write off the issue's line: a landing is stamped as its answer arrives, which is the
+// order Dispatch stored the writes in only on the issue's line, which sends one at a time. The
+// issue, the project's list and the Inbox are read at P1; P0 is picked, and the claim is released
+// from the issue's header while it is out, off the issue's line. Dispatch stores the release
+// first, so its answer carries P1, then P0, and P0's answer arrives first. P2 is then picked and
+// refused before any read sent after the release's answer answers: until the reads answer, every
+// surface shows P0, the newest value Dispatch stored - never the older P1 of the release's answer.
+test("a refused pick puts back the priority a pick that landed answered, not the older one a claim release off the issue's line answered after it", async () => {
+  const pick = Promise.withResolvers<Issue>();
+  const refusal = Promise.withResolvers<Issue>();
+  const release = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => pick.promise)
+    .mockImplementationOnce(() => refusal.promise);
+  const client = signedInHolding();
+  // The page's store is made with the app, before any read goes out, so each read is kept.
+  writesOf(client);
+  const reads = dispatchReads();
+  const view = renderIn(
+    client,
+    <>
+      <Surfaces reads={reads} />
+      <CachedPriority reads={reads} />
+    </>
+  );
+  const user = userEvent.setup();
+  const releasedAt = "2026-09-09T00:01:00Z";
+  const pickedAt = "2026-09-09T00:02:00Z";
+  const seen: string[] = [];
+  const see = (step: string) => {
+    const { detail, inbox, list } = shownPriorities();
+    seen.push(`${step}: detail ${detail} list ${list} inbox ${inbox}`);
+  };
+  try {
+    await waitFor(() =>
+      expect(shownPriorities()).toEqual({ detail: "P1", inbox: "P1", list: "P1" })
+    );
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    see("the issue, the list and the Inbox read at P1");
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 0 }]));
+    releaseClaim(client, release.promise);
+    see("P0 picked and the claim released, both out");
+    // Dispatch stores the release at P1, then P0. Every read sent from now on - those P0's
+    // landing, the release and the refusal start - waits.
+    reads.store(0, { updated_at: pickedAt });
+    const answerReads = reads.hold();
+    await act(async () => {
+      pick.resolve({ ...issue, priority: 0, updated_at: pickedAt });
+      await pick.promise;
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toHaveLength(1));
+    see("P0 lands");
+    await act(async () => {
+      release.resolve({ ...issue, priority: 1, updated_at: releasedAt });
+      await release.promise;
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    see("the release's answer, at P1 from before P0, arrives after P0's");
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 0 }, { priority: 2 }]));
+    see("P2 picked");
+
+    await act(async () => {
+      refusal.reject(closed());
+      await refusal.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    see("P2 refused, before any read sent after the release's answer answers");
+    await act(async () => answerReads());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    see("the reads answer");
+
+    expect(seen).toEqual([
+      "the issue, the list and the Inbox read at P1: detail P1 list P1 inbox P1",
+      "P0 picked and the claim released, both out: detail P0 list P0 inbox P0",
+      "P0 lands: detail P0 list P0 inbox P0",
+      "the release's answer, at P1 from before P0, arrives after P0's: detail P0 list P0 inbox P0",
+      "P2 picked: detail P2 list P2 inbox P2",
+      "P2 refused, before any read sent after the release's answer answers: detail P0 list P0 inbox P0",
+      "the reads answer: detail P0 list P0 inbox P0",
+    ]);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
 // R3 on an Inbox row: Dispatch answers the person an ask nobody handed on waits on as its issue's
 // assignee, else its project's default. CORE-1 is unassigned and its ask waits on dave, CORE's
 // default; the Inbox is read, then the issue's detail, and the client holds no read of the
