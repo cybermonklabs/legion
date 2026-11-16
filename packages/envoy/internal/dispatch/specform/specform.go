@@ -1,8 +1,9 @@
 // Package specform decides the form of the texts of The Spec (R49): the sentences and words of
 // each statement, check, component purpose and definition of a term, the hard findings of the
 // ASD-STE100 program, and the links, incidents, pull requests and people that no text may name.
-// It works on plain texts and reads no store: ExtractDocument reads the texts of one document's
-// markdown, Check judges them, and Message and ChangesReason write the refusal.
+// It also decides the rules of the terms (R50): a definition has one sentence, and a term has one
+// definition. It works on plain texts and reads no store: ExtractDocument reads the texts of one
+// document's markdown, Check judges them, and Message and ChangesReason write the refusal.
 package specform
 
 import "strings"
@@ -69,7 +70,9 @@ type Finding struct {
 const excerptRunes = 160
 
 // Check judges each text of in, and each proposed definition as a text of Kind definition
-// named by its term, by the rules of R49, in the order of the texts.
+// named by its term, by the rules of R49, in the order of the texts. A proposed definition first
+// takes the rules of R50: it has one sentence, and it is the one definition of its term, in the
+// list and in the proposal.
 func Check(c Context, in Input) []Finding {
 	texts := make([]Text, 0, len(in.Texts)+len(in.Proposed))
 	texts = append(texts, in.Texts...)
@@ -77,9 +80,14 @@ func Check(c Context, in Input) []Finding {
 		texts = append(texts, Text{Node: term.Name, Kind: KindDefinition, Body: term.Definition, Where: term.Where})
 	}
 	people := personPieces(c, in)
+	terms := indexTerms(in)
 	var findings []Finding
-	for _, text := range texts {
-		for _, broken := range breaks(c, people, text) {
+	for at, text := range texts {
+		found := breaks(c, people, text)
+		if proposed := at - len(in.Texts); proposed >= 0 {
+			found = append(terms.breaks(proposed, in.Proposed[proposed]), found...)
+		}
+		for _, broken := range found {
 			findings = append(findings, Finding{
 				Node: text.Node, Kind: text.Kind, Where: text.Where,
 				Rule: broken.rule, Detail: broken.detail, Excerpt: excerpt(text.Body),
