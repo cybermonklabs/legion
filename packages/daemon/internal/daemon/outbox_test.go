@@ -1218,11 +1218,7 @@ func TestOutboxRoleMessageToAReleasedRoleEndsWithoutAWake(t *testing.T) {
 	if held := implementer.Claim(); !held.Released() {
 		t.Fatalf("the implementer is %s by %s, want it still released: the message is no wake", held.State, held.SuspendedBy)
 	}
-	var resumes int
-	if err := pool.QueryRow(ctx, `select count(*) from pod_resumes where issue = $1`, "LEGION-208").Scan(&resumes); err != nil {
-		t.Fatalf("read the recorded wakes: %v", err)
-	}
-	if resumes != 0 {
+	if resumes := podResumes(t, pool, "LEGION-208"); resumes != 0 {
 		t.Fatalf("recorded wakes = %d, want none: the message is no wake", resumes)
 	}
 }

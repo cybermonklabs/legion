@@ -25,11 +25,11 @@ import (
 
 // holderPublisher is the listener as a role publish meets it: a role topic in absent has no live
 // holder, and the publish is refused as the listener refuses it (notify.ErrNoHolder); any other
-// publish is delivered, and recorded in order. keeps is the listener's kept lane
-// (cybermonklabs/legion#4079): with it, a kept publish (PublishKept) to a topic in absent is
-// kept for the role's next holder and recorded in kept, and without it that publish is refused
-// as a keep: false publish is, which is what a listener without the lane answers a claim whose
-// holder is not live.
+// publish is delivered, and recorded in order. keeps is whether the listener keeps a kept publish
+// (PublishKept) for a claim whose holder is not live, as the listener of
+// cybermonklabs/legion#4079 does: with it, a kept publish to a topic in absent is kept for the
+// role's next holder and recorded in kept, and without it that publish is refused as a keep:
+// false publish is, which is what a listener before #4079 answers a claim whose holder is gone.
 type holderPublisher struct {
 	mu        sync.Mutex
 	absent    map[string]bool

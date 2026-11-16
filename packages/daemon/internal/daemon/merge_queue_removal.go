@@ -104,16 +104,16 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 // it reaches, as a phase-ended message stops nothing.
 //
 // The row is held as an architect's notice is held (notice_exceptions.go, noticeAnswered), not
-// ended as the row of a phase-ended message nobody holds is (phaseEnded), whose message the
-// listener keeps for the role's next holder for an hour at most. A phase-ended message is worth
-// nothing later, since the role's next task names its phase anyway. Nothing else tells a merger
-// of this removal: its pull request waits out of the queue with nobody to enqueue it again or send
-// the issue back, and a merger whose pod was released would learn of it only when the release's
-// backstop wakes it (backstop_minutes, an hour by default). So a released merger is woken
-// (wakeForDelivery), and the row waits on its backoff until the woken session holds the role, as
-// it waits while the listener answers that nobody holds it (notify.ErrNoHolder) or that its holder
-// is unresponsive (notify.ErrHolderUnresponsive). A merger with no claim yet, its start still
-// owed, is no end either: the row waits for it.
+// ended as the row of a phase-ended message nobody holds is (phaseEnded). That row can end because
+// the role's next task names its phase anyway, and the listener keeps its message for the role's
+// next holder for an hour, the bound on how old a message a later session of the role is handed.
+// Nothing else tells a merger of this removal: its pull request waits out of the queue with nobody
+// to enqueue it again or send the issue back, and a merger whose pod was released would learn of
+// it only when the release's backstop wakes it (backstop_minutes, an hour by default). So a
+// released merger is woken (wakeForDelivery), and the row waits on its backoff until the woken
+// session holds the role, as it waits while the listener answers that nobody holds it
+// (notify.ErrNoHolder) or that its holder is unresponsive (notify.ErrHolderUnresponsive). A
+// merger with no claim yet, its start still owed, is no end either: the row waits for it.
 //
 // Each attempt reads, in this order, what ends or holds the row. The row finishes undelivered,
 // with one log line naming why, once the issue has left merging at the row's head (mergingAt, the

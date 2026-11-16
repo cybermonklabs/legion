@@ -200,7 +200,7 @@ type keptRace struct {
 // holds one publish open for the interleaving a step armed (keptRace), and records, for each
 // catch-up it takes, the generation that catch-up's root stood at then (atPublish). A kept
 // publish (PublishKept) is answered by the run's mode as any other is and never kept: the mode's
-// no-holder is the 404 of a listener without the kept lane.
+// no-holder is the 404 a listener before #4079 answers a claim whose holder is gone.
 type keptPublisher struct {
 	mu        sync.Mutex
 	mode      keptPublishMode

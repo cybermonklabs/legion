@@ -1087,10 +1087,13 @@ func (p PhaseEnded) Message(issue string) string {
 //
 // The prompt is published with keep, as a phase-ended message is: for a role no live session
 // holds, the listener answers it kept and holds it for an hour for the role's next live holder,
-// and the row ends with one log line, the listener its keeper. A listener without the kept lane
-// answers it 404 and keeps nothing, and the row ends there undelivered with one log line: the
-// words were written for the round the move back opened, and a role that reads them later reads
-// them of a round that is over.
+// and the row ends with one log line, the listener its keeper. A listener before #4079 keeps
+// nothing for a claim whose holder is not live, and the daemon's publishKeptToRole says what each
+// answer does to the row. For a role nobody claims, the listener hands the prompt to the first
+// session that claims the role inside the hour, so a reviewer started within it is handed an
+// earlier round's prompt. That is intended, and the hour bounds it: the listener drops a copy no
+// live holder took inside its hour, and the move back and the counts Message states tell the
+// reader which round the words were written for.
 type HookPrompt struct {
 	Hook        string         `json:"hook"`
 	Role        claim.Role     `json:"role"`

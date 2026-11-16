@@ -206,7 +206,7 @@ func New(baseURL, token string) *HTTPPublisher {
 // messages instead, a phase-ended message and a hook prompt, which the daemon publishes with
 // PublishKept: neither outbox row holds itself for a role no live session holds, each ends, so
 // the kept copy is the one keeper of the message, and it is what reaches a released role's woken
-// session, which claims the role only after the row's next attempt has published.
+// session, which claims the role only after the row has published.
 func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
 	_, err := p.publish(ctx, topic, message, payload, dedupeKey, false)
 	return err
@@ -214,31 +214,27 @@ func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payl
 
 // PublishKept posts the envelope as Publish does, but with keep: true: a role message that no
 // live session holds the role for is kept on the role's kept lane for one hour and handed to the
-// role's next live holder (cybermonklabs/legion#4079). The listener answers it 202 with kept: true
-// (roleSend.kept, packages/envoy/cmd/listener/confirmed.go), whether nobody claims the role
-// (kept_reason unclaimed) or its claim's holder is not live (holder_lapsed), and that answer is
-// kept with no error: the listener is the message's keeper. A repeat of the same dedupe key while
-// the copy is kept is answered with that first copy and stores nothing new, so a publish sent
-// again is still one message. A 200 is a live holder that took the message: not kept, and no
-// error. Every other answer is the error Publish makes of it, a 202 that does not say kept: true
-// among them.
+// role's next live holder. The listener says a sender tells its answers apart by status alone
+// (roleSend.kept, packages/envoy/cmd/listener/confirmed.go), and this reads them so:
 //
-// A listener without #4079 keeps a message only for a role nobody claims. It answers a claim
-// whose holder is not live — the claim a released role leaves standing until the listener's
-// reaper frees it — 404 holder_lapsed, as it answers keep: false, and that is ErrNoHolder here as
-// it is for Publish, so against such a listener the caller's own rule for a role with no holder
-// still runs.
+//   - 200 is a live holder that took the message: not kept, and no error.
+//   - 202 is a message the listener kept: kept, and no error, the listener being its keeper. The
+//     listener of cybermonklabs/legion#4079 keeps it whether nobody claims the role (kept_reason
+//     unclaimed) or its claim's holder is not live (holder_lapsed); a listener before #4079 keeps
+//     it only for a role nobody claims, the kept lane sjawhar/legion#2588 shipped.
+//   - 404 holder_lapsed is what a listener before #4079 answers a claim whose holder is not live
+//     — the claim a released role leaves standing until the listener's reaper frees it — keeping
+//     nothing, as it answers keep: false: ErrHolderUnresponsive for a holder_state of
+//     unresponsive, and ErrNoHolder for any other state, gone among them.
+//   - Every other answer is the error Publish makes of it.
+//
+// A repeat of the same dedupe key while its copy is still on the lane inside its hour is answered
+// with that copy and stores nothing new. Once the listener has handed the copy to the role's
+// holder, a repeat — a caller's retry after a 202 it never read — is forwarded again, so a kept
+// publish reaches its holder at least once, and can reach it twice.
 func (p *HTTPPublisher) PublishKept(ctx context.Context, topic, message string, payload any, dedupeKey string) (bool, error) {
 	return p.publish(ctx, topic, message, payload, dedupeKey, true)
 }
-
-// keptAnswerBodyLimit bounds the body a kept publish's 202 is decoded from. It is not
-// refusalBodyLimit, which bounds an error body: the 202 carries the kept copy's whole envelope,
-// its message and payload included, and a hook prompt alone can pass 4 KiB, so an answer cut off
-// there would fail to decode and a message the listener kept would read as a refusal and be
-// published again. The envelope is one NATS message, which the server bounds at 1 MiB unless its
-// operator raises max_payload, so this is the same bound.
-const keptAnswerBodyLimit = 1 << 20
 
 // publish is the one body of Publish and PublishKept: it posts the envelope with keep as the
 // request's keep field, and answers whether the listener kept the message rather than
@@ -277,21 +273,10 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 	if response.StatusCode == http.StatusOK {
 		return false, nil
 	}
-	accepted := keep && response.StatusCode == http.StatusAccepted
-	limit := int64(refusalBodyLimit)
-	if accepted {
-		limit = keptAnswerBodyLimit
+	if keep && response.StatusCode == http.StatusAccepted {
+		return true, nil
 	}
-	answered, _ := io.ReadAll(io.LimitReader(response.Body, limit))
-	if accepted {
-		var kept struct {
-			Kept bool `json:"kept"`
-		}
-		if json.Unmarshal(answered, &kept) == nil && kept.Kept {
-			return true, nil
-		}
-		answered = answered[:min(len(answered), refusalBodyLimit)]
-	}
+	answered, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
 	refusal := fmt.Errorf("publish notice to %s: listener returned %s: %s", topic, response.Status, strings.TrimSpace(string(answered)))
 	var answer RoleRefusal
 	if json.Unmarshal(answered, &answer) != nil {
