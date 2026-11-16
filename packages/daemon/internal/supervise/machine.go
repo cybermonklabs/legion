@@ -1095,17 +1095,19 @@ type Machine struct {
 	// answer that the agent is in no prompt empties it (askTurnOver), and so does a compaction,
 	// which aborts whatever run the session had (compactStart). letGo, retirePending — and with
 	// it queue, when a newer task takes the pending one's place — and interrupted empty it too,
-	// since what it waits on goes with the process or the task.
+	// since what it waits on goes with the process or the task. Each of those empties it through
+	// forgetOutstanding, which empties promptNews with it.
 	//
 	// It is memory only: a daemon restarted inside a late turn's wait restores the claim with no
 	// prompt outstanding and asks the agent where it is instead (askFirst), so that window keeps
 	// the behaviour it had before the set: a turn that starts is taken for the task by askFirst.
 	outstanding []string
 	// promptNews is the news of the approved design each prompt in outstanding carried, by its
-	// delivery id, as its acknowledgement reported it (awaitResult, PromptAcked.News): what a
-	// confirmation of that prompt's turn raises (confirmedNews, turnNews). It is read only for an id
-	// still outstanding, and pruned to them at each acknowledgement. Memory only, as outstanding
-	// is: across a restart the delivery's own copy stands for it (Delivery.Carried).
+	// delivery id, as its first acknowledgement reported it (awaitResult, PromptAcked.News): what a
+	// confirmation of that prompt's turn raises (confirmedNews, turnNews). It holds exactly the ids
+	// outstanding holds: answered removes one from both, and forgetOutstanding empties both. Memory
+	// only, as outstanding is: across a restart the delivery's own copy stands for it
+	// (Delivery.Carried).
 	promptNews map[string][]byte
 	// askFirst is a restored claim whose agent an earlier daemon was talking to: a pending
 	// delivery it may already have sent, or a turn it saw start and may not have seen end. The
@@ -2920,7 +2922,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.relaunch = nil
 	m.wake = nil
 	m.forgetSend()
-	m.outstanding = nil
+	m.forgetOutstanding()
 	if p := m.claim.Pending; p != nil && p.ConfirmedAt.IsZero() && len(p.Carried) > 0 {
 		p.Carried, m.unsaved = nil, true
 	}

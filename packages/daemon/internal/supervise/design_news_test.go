@@ -521,3 +521,47 @@ func TestATaskCarryingNewsTakesTheRelaunchDeliverysPlace(t *testing.T) {
 		h.wantEndedTold(false, "", "before the relaunch delivery's turn")
 	})
 }
+
+// A turn the in-flight rule takes for the pending task while the send in flight is an older task's
+// raises none of that send's news (confirmedNews). The send of a task carrying news is past its
+// adoption and on its way when a turn starts, which confirms that task with the news the send
+// carries. A newer task carrying news takes the confirmed task's place while the send is still
+// out, the turn ends, and another turn starts before the send returns: the start is taken for the
+// newer task, since a send is in flight, and its confirmation records no copy at all, since the
+// send in flight carried the older task's news under the older task's id.
+func TestATurnTakenForANewerTaskWhileAnOlderTasksSendIsOutRaisesNoneOfThatSendsNews(t *testing.T) {
+	answer := &designNewsAnswer{task: queuedTask, news: []byte(queuedNews)}
+	h := newsHarness(t, answer)
+	h.reach(StateReady)
+	gated := newGatedConn()
+	h.conns.Register(testToken, gated)
+	if err := h.m.Handle(h.ctx, newsStart("outbox:41", 41)); err != nil {
+		t.Fatal(err)
+	}
+	older := waitFor(t, "the older task's send", gated.entered)
+	if err := h.m.Handle(h.ctx, StreamTurnStart{Claim: testToken}); err != nil {
+		t.Fatal(err)
+	}
+	if p := h.pending(); p.ID != older || p.ConfirmedAt.IsZero() || !bytes.Equal(p.Carried, []byte(queuedNews)) {
+		t.Fatalf("pending after a turn started with its send in flight = %+v, want %s confirmed with the news its send carries", p, older)
+	}
+
+	if err := h.m.Handle(h.ctx, newsStart("outbox:42", 42)); err != nil {
+		t.Fatalf("the newer task: %v", err)
+	}
+	if err := h.m.Handle(h.ctx, StreamTurnEnd{Claim: testToken}); err != nil {
+		t.Fatalf("the older task's turn ends: %v", err)
+	}
+	if err := h.m.Handle(h.ctx, StreamTurnStart{Claim: testToken}); err != nil {
+		t.Fatalf("a turn starts with the older task's send still out: %v", err)
+	}
+	stored, ok := h.store.delivery(testToken)
+	if !ok || stored.ID != "outbox:42" || stored.ConfirmedAt.IsZero() {
+		t.Fatalf("stored delivery after the second start = %+v (held %t), want outbox:42 taken by that turn", stored, ok)
+	}
+	if len(stored.Carried) != 0 {
+		t.Fatalf("outbox:42's confirmation records the copy %s, want none: the send in flight carried %s's news, under its id", stored.Carried, older)
+	}
+	gated.release <- struct{}{}
+	h.m.Wait()
+}

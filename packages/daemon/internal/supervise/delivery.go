@@ -937,7 +937,7 @@ func (m *Machine) currentRootTask(ctx context.Context) (bool, error) {
 			"delivery", p.ID, "issue", m.claim.Issue, "run", p.Generation)
 		return false, m.retirePending(ctx)
 	}
-	if err := m.rewritePending(ctx, task, kept, p.News); err != nil {
+	if err := m.rewritePending(ctx, p.ID, task, kept, p.News); err != nil {
 		return false, err
 	}
 	m.log.Info("supervise: a decision this held task named is owed to another tree now; the task is sent without it",
@@ -945,15 +945,15 @@ func (m *Machine) currentRootTask(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// rewritePending writes the pending delivery back with task as its text, and kept and news as the
-// decisions and the news it carries, then holds that delivery in memory: the one persist-and-swap
-// of a held task read again at its send (currentRootTask, currentNews), each of which keeps its
-// own rule for when to rewrite and when to retire. The id is kept, so it is this delivery with
-// less in it. The write comes first, so a restart reads the task the send that follows carries,
-// and a failed write leaves memory as the record holds it.
-func (m *Machine) rewritePending(ctx context.Context, task string, kept, news []byte) error {
+// rewritePending writes the pending delivery back under id with task as its text, and kept and
+// news as the decisions and the news it carries, then holds that delivery in memory: the one
+// persist-and-swap of a held task read again at its send (currentRootTask, currentNews), each of
+// which keeps its own rule for when to rewrite, when to retire and which id the rewrite takes. The
+// write comes first, so a restart reads the task the send that follows carries, and a failed write
+// leaves memory as the record holds it.
+func (m *Machine) rewritePending(ctx context.Context, id, task string, kept, news []byte) error {
 	next := *m.claim.Pending
-	next.Task, next.Kept, next.News = task, kept, news
+	next.ID, next.Task, next.Kept, next.News = id, task, kept, news
 	if err := m.saved(m.putDelivery(ctx, next)); err != nil {
 		return err
 	}
@@ -975,14 +975,31 @@ func (m *Machine) rewritePending(ctx context.Context, task string, kept, news []
 // acknowledged: a render here that adds an opening, before the restart's question is asked or for
 // a resend Oh My Pi answers busy, adds nothing to the copy of a prompt that went out before it.
 //
+// A rewrite that changes the news takes a new id (rotateTaskID), so a delivery id names one
+// rendering of the news and never two. The acknowledgement of a prompt is what records the news it
+// carried (acked), and the shim answers a send under a delivery id it already holds from its own
+// record, without forwarding it to Oh My Pi (shimwire's Dedupe): the acknowledgement of such a
+// resend is the first send's, and the agent read the first send's text. A resend under the same id
+// carrying a new rendering would record news the agent never read — after a restart whose question
+// finds the agent out of the turn, or after the answer to the first send was lost on the way back
+// and the reconnect's hello sends the task again (refused keeps the id for that dedupe). Under a new
+// id the shim forwards the new rendering, so Oh My Pi either takes it or answers it busy, and what
+// is recorded is what it took. Keeping the first send's news for the id instead is not enough: the
+// daemon learns what a send carried only from its acknowledgement, and a lost acknowledgement leaves
+// it nothing to keep. The cost of the new id is a prompt sent twice where the earlier one's turn
+// still runs or already ran: told twice, never not at all. A restart's question that finds the
+// agent in the earlier prompt's turn confirms the task under the new id with the copy that prompt
+// carried, and that prompt's result is then fenced as another id's, so its turn's end gives the
+// news back (the claim store's RetireDelivery) and a later task tells it again. A rewrite of the
+// text alone keeps the id, as currentRootTask's does: what a confirmation raises is the news.
+//
 // A task queued for its news alone that is left with nothing to say is not sent, and the answer
 // is false: sendPending retires it through the one exit every drop leaves by, which answers the
 // question a restart left for it (answerAskFirstAfterDrop) and gives a claim that drop leaves
 // holding nothing the delivery of its untold record of the last let-go (relaunchAfterDrop). The
-// id is kept across the rewrite, as currentRootTask keeps it: it is this delivery, under the row
-// that queued it, with less in it than when it was queued. The rewritten task is persisted before
-// it is sent, so a restart reads the task this send carried. A task that carries no news is never
-// asked about, and every task holds where nothing answers (Deps.DesignNews nil).
+// rewritten task is persisted before it is sent, so a restart reads the task this send carried. A
+// task that carries no news is never asked about, and every task holds where nothing answers
+// (Deps.DesignNews nil).
 func (m *Machine) currentNews(ctx context.Context) (bool, error) {
 	p := m.claim.Pending
 	if m.deps.DesignNews == nil || len(p.News) == 0 {
@@ -998,11 +1015,15 @@ func (m *Machine) currentNews(ctx context.Context) (bool, error) {
 	if task == p.Task && bytes.Equal(news, p.News) {
 		return true, nil
 	}
-	if err := m.rewritePending(ctx, task, p.Kept, news); err != nil {
+	was, id := p.ID, p.ID
+	if !bytes.Equal(news, p.News) {
+		id = rotateTaskID(was)
+	}
+	if err := m.rewritePending(ctx, id, task, p.Kept, news); err != nil {
 		return false, err
 	}
 	m.log.Info("supervise: the news this task carries was read again from the record; the task is sent as it reads now",
-		"delivery", p.ID, "issue", m.claim.Issue)
+		"delivery", id, "was", was, "issue", m.claim.Issue)
 	return true, nil
 }
 
@@ -1210,7 +1231,8 @@ func (m *Machine) retirePending(ctx context.Context) error {
 	// The prompts the retired task waited on a result for go with it (Machine.outstanding): their
 	// results answer a task the claim no longer holds, and the fence drops them, so a newer task
 	// queue puts in its place is never taken for the turn one of them runs.
-	m.claim, m.unsaved, m.outstanding = retired, false, nil
+	m.claim, m.unsaved = retired, false
+	m.forgetOutstanding()
 	if err != nil {
 		m.log.Warn("supervise: the store holds no such delivery; the refusal is of a retirement it has already made",
 			"delivery", p.ID, "error", err)
@@ -1411,7 +1433,7 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 // (confirmedNews), never to the news the delivery holds now, which a send since that prompt may
 // have rendered again with more in it.
 func (m *Machine) confirm(ctx context.Context) error {
-	return m.confirmCarrying(ctx, m.confirmedNews(m.claim.Pending.Carried))
+	return m.confirmCarrying(ctx, m.confirmedNews())
 }
 
 // confirmCarrying is confirm with news, what the prompt whose turn this is carried of news of the
@@ -1446,30 +1468,34 @@ func (m *Machine) confirmCarrying(ctx context.Context, news []byte) error {
 }
 
 // confirmedNews is the news of the approved design the prompt whose turn a confirmation takes
-// carried, which the confirmation's write raises (Delivery.Carried), given stored, the copy the
-// delivery holds. The turn is taken for the task's the same way beginTurn takes it:
+// carried, which the confirmation's write raises (Delivery.Carried). The turn is taken for the
+// task's the same way beginTurn takes it:
 //
 //   - While a prompt of the task Oh My Pi acknowledged waits on its result (Machine.outstanding),
 //     the turn is the first of them's: the pinned Oh My Pi runs one admitted prompt at a time, and
 //     a later send it answered busy carried nothing that turn reads. So a resend that rendered an
 //     opening the first prompt did not carry adds none to what the turn's confirmation raises.
-//   - Otherwise, while a send is in flight, the turn is that send's only once the send has passed
-//     its adoption and identity mint and its prompt is on the way (sending.prompting): a turn that
-//     starts before is another input's, and its confirmation raises nothing; the send's own
-//     outcome takes that confirmation back.
+//   - Otherwise, while a send of the pending task is in flight, the turn is that send's only once
+//     the send has passed its adoption and identity mint and its prompt is on the way
+//     (sending.prompting): a turn that starts before is another input's, and its confirmation
+//     raises nothing; the send's own outcome takes that confirmation back. A send in flight under
+//     another id carried another delivery's news, or this task's under an id it has left — a
+//     retired task that a newer one replaced while its send was out, or one taken back under a new
+//     id since — so the turn raises nothing of it either: told twice, never credited for a prompt
+//     that was not this delivery's.
 //   - Otherwise the turn is one a restart's question took for the earlier daemon's send
 //     (askFirst), or one a replay named, or one a prompt's result says ran: what the delivery holds
 //     is the copy that prompt's acknowledgement wrote, and none where no prompt was acknowledged.
-func (m *Machine) confirmedNews(stored []byte) []byte {
+func (m *Machine) confirmedNews() []byte {
 	switch {
 	case m.awaitsResult():
 		return m.turnNews()
-	case m.send != nil && m.send.prompting.Load():
+	case m.send != nil && m.send.id == m.claim.Pending.ID && m.send.prompting.Load():
 		return m.send.news
 	case m.send != nil:
 		return nil
 	}
-	return stored
+	return m.claim.Pending.Carried
 }
 
 // settle retires a delivery whose life is over, and runs around every decision, so that two things
@@ -1683,7 +1709,7 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 		return err
 	}
 	*p = next
-	m.outstanding = nil
+	m.forgetOutstanding()
 	m.cutTurnOf = next.ID
 	return nil
 }
@@ -1741,23 +1767,30 @@ func (m *Machine) markUnread(ctx context.Context) error {
 
 // awaitResult records id as a prompt of the pending task Oh My Pi acknowledged, whose result is
 // still to come (Machine.outstanding), with news, the news of the approved design that prompt
-// carried (Machine.promptNews). An id already held is held once: the shim answers a prompt it has a
-// record of without a second turn (shimwire's dedupe), so its acknowledgement can come twice for
-// one prompt. The news of a prompt no longer outstanding — its wait ended with a turn's result, a
-// let-go or a retirement, which empty the set alone — goes here, so the map never outgrows the set.
+// carried (Machine.promptNews). An id already held is held once, with the news its first
+// acknowledgement reported: the shim answers a prompt it has a record of without a second turn
+// (shimwire's dedupe), so its acknowledgement can come twice for one prompt, and the agent read
+// what the send the shim forwarded carried. Every send under one id carries the same news
+// (currentNews takes a new id for a new rendering), so keeping the first is that rule's backstop.
 func (m *Machine) awaitResult(id string, news []byte) {
-	if !slices.Contains(m.outstanding, id) {
-		m.outstanding = append(m.outstanding, id)
+	if slices.Contains(m.outstanding, id) {
+		return
 	}
-	for held := range m.promptNews {
-		if !slices.Contains(m.outstanding, held) {
-			delete(m.promptNews, held)
-		}
-	}
+	m.outstanding = append(m.outstanding, id)
 	if m.promptNews == nil {
 		m.promptNews = map[string][]byte{}
 	}
 	m.promptNews[id] = news
+}
+
+// forgetOutstanding ends the wait for every prompt of the pending task at once
+// (Machine.outstanding), and forgets the news each of them carried with it (Machine.promptNews):
+// a turn's result, the sweep's answer that the agent is in no prompt, a compaction, a let-go, a
+// take-back of a task whose turn its process can no longer finish, and a retirement each end the
+// wait for all of them.
+func (m *Machine) forgetOutstanding() {
+	m.outstanding = nil
+	clear(m.promptNews)
 }
 
 // answered drops id from the prompts the pending task waits on a result for: Oh My Pi answered

@@ -63,14 +63,23 @@ type newsClaims struct {
 
 // newNewsClaims names the holders of root's tree, whose issues members are, as the caller read them
 // in its transaction (record.TreeNewsFacts). A caller that read none passes none, and member reads
-// them the first time it is asked.
+// them the first time it is asked, or a later reader of the facts hands them over (seed).
 func newNewsClaims(root record.Issue, members []record.Issue) *newsClaims {
 	claims := &newsClaims{root: root, members: make(map[string]record.Issue, len(members))}
 	claims.project, _ = claim.ProjectToken(root.Project)
-	for _, member := range members {
-		claims.members[member.Key] = member
-	}
+	claims.seed(members)
 	return claims
+}
+
+// seed holds each of members, as its caller read them in its transaction, under its key where c
+// holds no issue of that key yet, so member reads the tree's issues again only for a key none of
+// its callers read. An issue c already holds was read in the same transaction, and is kept.
+func (c *newsClaims) seed(members []record.Issue) {
+	for _, member := range members {
+		if _, held := c.members[member.Key]; !held {
+			c.members[member.Key] = member
+		}
+	}
 }
 
 // member is the issue of c's tree whose key is key. A key c holds no issue of is read again with

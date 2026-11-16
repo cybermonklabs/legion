@@ -1339,7 +1339,7 @@ func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
 	} else {
 		m.log.Info(over)
 	}
-	m.outstanding = nil
+	m.forgetOutstanding()
 	return turnEnded(m, ctx, ev)
 }
 
@@ -1368,7 +1368,10 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // mint went through and that the agent took the prompt, so a send refused at either, or answered
 // busy, records none, and a task no prompt of which was acknowledged stays one the question a
 // restart leaves never takes a turn of the agent's own for (unsentNews). The copy is written with
-// the delivery, so a restart reads what the prompt it may find running carried.
+// the delivery, so a restart reads what the prompt it may find running carried. An
+// acknowledgement the shim gave from its own record, for a send under an id it already carried
+// (shimwire's Dedupe), reports the news the forwarded send carried, since every send under one id
+// carries the same news (currentNews takes a new id for a new rendering).
 func acked(m *Machine, ctx context.Context, ev Event) error {
 	m.helloDuringSend = false
 	p := m.claim.Pending
@@ -2180,7 +2183,7 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 		return m.promptFailed(ctx, why, taskRead)
 	}
 	ran, acknowledged := m.promptNews[r.DeliveryID], m.outstandingPrompt(r.DeliveryID)
-	m.outstanding = nil
+	m.forgetOutstanding()
 	if r.Error != "" {
 		return m.providerErrored(ctx, r)
 	}

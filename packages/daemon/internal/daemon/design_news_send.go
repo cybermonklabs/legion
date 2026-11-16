@@ -492,6 +492,9 @@ func readTreeMembers(ctx context.Context, tx pgx.Tx, records record.Store, steps
 	if err != nil {
 		return nil, err
 	}
+	// The facts read every member of the tree in this transaction, so the claims that name each
+	// member's holder take them from here rather than read the tree's issues a second time.
+	claims.seed(facts.Members)
 	members := facts.Members
 	slices.SortStableFunc(members, func(a, b record.Issue) int {
 		return boolOrder(claim.IsTreeRoot(b.Key, b.Tree)) - boolOrder(claim.IsTreeRoot(a.Key, a.Tree))
