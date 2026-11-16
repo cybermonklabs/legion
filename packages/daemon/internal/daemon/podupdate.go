@@ -948,7 +948,7 @@ func (s *supervision) replacementDue(issue, round string, holds podHolds, ended 
 		if held := heldByOperator(group, round); len(held) > 0 {
 			return fmt.Errorf("%w: an operator's suspension holds %s", errReplacementNotDue, strings.Join(namesOf(held), ", "))
 		}
-		switch _, held, err := s.supervisor.store.PausePodHoldOf(ctx, issue); {
+		switch _, held, err := s.supervisor.store.PausePodHoldOf(ctx, s.cfg.Project, issue); {
 		case err != nil:
 			return fmt.Errorf("%w: whether a pause holds the pod of %s cannot be read: %w", errReplacementNotDue, issue, err)
 		case held:

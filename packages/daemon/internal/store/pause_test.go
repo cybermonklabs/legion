@@ -47,14 +47,21 @@ func seedPauseClaims(t *testing.T, st *Store) {
 	}
 }
 
-// pauseStopRow is the pause service's stop row, encoded as the daemon encodes it.
+// pauseStopRow is the pause service's stop row, encoded and keyed as the daemon does (pause.StopRow
+// and pause.StopKey, which this package's tests cannot import): by the claim's issue, or by the
+// pause's project, naming the claim's issue, for a claim of another project's issue.
 func pauseStopRow(pause Pause, stop PauseStopClaim) (PauseRow, error) {
-	row, err := record.NewOutboxRow(stop.Issue, record.SuperviseRequest{Op: "pause_stop", Tree: stop.Tree, Role: stop.Role,
-		Generation: stop.Generation, Pause: pause.ID}, pause.Since)
+	request := record.SuperviseRequest{Op: "pause_stop", Tree: stop.Tree, Role: stop.Role,
+		Generation: stop.Generation, Pause: pause.ID}
+	key := stop.Issue
+	if issueProject(stop.Issue) != pause.Project {
+		key, request.Issue = pause.Project, stop.Issue
+	}
+	row, err := record.NewOutboxRow(key, request, pause.Since)
 	if err != nil {
 		return PauseRow{}, err
 	}
-	return PauseRow{Kind: string(row.Kind), Payload: row.Payload}, nil
+	return PauseRow{Issue: row.Issue, Kind: string(row.Kind), Payload: row.Payload}, nil
 }
 
 // pauseNoticeRow is the controller's notice of a pause or a resume, encoded as the daemon encodes it.
@@ -68,14 +75,14 @@ func pauseNoticeRow(kind record.NoticeKind) func(Pause) (PauseRow, error) {
 		if err != nil {
 			return PauseRow{}, err
 		}
-		return PauseRow{Kind: string(row.Kind), Payload: row.Payload}, nil
+		return PauseRow{Issue: row.Issue, Kind: string(row.Kind), Payload: row.Payload}, nil
 	}
 }
 
 // pauseLegion pauses project LEGION as the operator, through the store's own transaction.
 func pauseLegion(t *testing.T, st *Store, at time.Time) (Pause, []PauseStopClaim) {
 	t.Helper()
-	pause, stops, _, err := st.Pause(context.Background(), PauseRequest{Project: "LEGION", By: PauseActor{Kind: PauseByOperator},
+	pause, stops, err := st.Pause(context.Background(), PauseRequest{Project: "LEGION", By: PauseActor{Kind: PauseByOperator},
 		Reason: "the model provider is down", At: at, StopRow: pauseStopRow, Notice: pauseNoticeRow(record.ProjectPausedNotice)})
 	if err != nil {
 		t.Fatalf("pause LEGION: %v", err)
@@ -187,7 +194,7 @@ func TestAPauseStopsEveryLiveRoleButTheControllerAndRefusesASecond(t *testing.T)
 		t.Fatalf("rows of another project = %d, want none: its claims are not this project's", got)
 	}
 
-	_, _, _, err = st.Pause(ctx, PauseRequest{Project: "LEGION", By: PauseActor{Kind: PauseByController, Session: "session-1"},
+	_, _, err = st.Pause(ctx, PauseRequest{Project: "LEGION", By: PauseActor{Kind: PauseByController, Session: "session-1"},
 		Reason: "again", At: pausedAt.Add(time.Minute), StopRow: pauseStopRow})
 	var standing *AlreadyPausedError
 	if !errors.As(err, &standing) || standing.Standing.ID != pause.ID {
@@ -361,7 +368,7 @@ func TestAResumeEndsThePauseAndWhatItStillWaitedOn(t *testing.T) {
 	// The tester's stop ends after the resume: its stop row, which the resume cancelled, ends
 	// stopped, with the launch it was owed.
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
-		_, err := RecordPauseStoppedTx(ctx, tx, pause.ID, tester, resumedAt.Add(time.Minute), true)
+		_, err := RecordPauseStoppedTx(ctx, tx, pause, tester, resumedAt.Add(time.Minute), true)
 		return err
 	}); err != nil {
 		t.Fatalf("record the tester's late stop: %v", err)
@@ -378,8 +385,10 @@ func TestAResumeEndsThePauseAndWhatItStillWaitedOn(t *testing.T) {
 }
 
 // A pause holds one pod at most once: a second open finds the hold that stands and opens none,
-// the end takes it away, and once it has ended the pod can be held again. A pause cannot hold a
-// pod of another project.
+// the end takes it away, and once it has ended the pod can be held again. The pod of a claim of
+// another project's issue, which the operator's spawn makes under this project's token, is held
+// under the pause's own project, and each read and end of a hold finds it by that project, never
+// by the issue key's prefix.
 func TestAPausePodHoldOpensOnceAndEnds(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -391,24 +400,36 @@ func TestAPausePodHoldOpensOnceAndEnds(t *testing.T) {
 	if opened, err := holdPod(st, pause, "LEGION-208", pausedAt.Add(time.Minute)); err != nil || opened {
 		t.Fatalf("hold LEGION-208's pod again = %t, %v; want the hold that stands kept", opened, err)
 	}
-	hold, found, err := st.PausePodHoldOf(ctx, "LEGION-208")
+	hold, found, err := st.PausePodHoldOf(ctx, "LEGION", "LEGION-208")
 	if err != nil || !found || hold.Pause != pause.ID || hold.Project != "LEGION" || !hold.HeldAt.Equal(pausedAt) {
 		t.Fatalf("PausePodHoldOf = %+v, %t, %v; want pause %d's hold from %s", hold, found, err, pause.ID, pausedAt)
 	}
 	if holds, err := st.OpenPausePodHolds(ctx, "LEGION"); err != nil || len(holds) != 1 || holds[0].Issue != "LEGION-208" {
 		t.Fatalf("OpenPausePodHolds = %+v, %v; want LEGION-208's", holds, err)
 	}
-	if _, err := holdPod(st, pause, "INFRA-5", pausedAt); err == nil {
-		t.Fatal("a pause of LEGION held a pod of INFRA, want it refused")
+	if opened, err := holdPod(st, pause, "INFRA-5", pausedAt); err != nil || !opened {
+		t.Fatalf("hold INFRA-5's pod under LEGION's pause = %t, %v; want it held", opened, err)
+	}
+	if hold, found, err := st.PausePodHoldOf(ctx, "LEGION", "INFRA-5"); err != nil || !found || hold.Pause != pause.ID || hold.Project != "LEGION" {
+		t.Fatalf("LEGION's hold of INFRA-5's pod = %+v, %t, %v; want pause %d's", hold, found, err, pause.ID)
+	}
+	if _, found, err := st.PausePodHoldOf(ctx, "INFRA", "INFRA-5"); err != nil || found {
+		t.Fatalf("INFRA's hold of INFRA-5's pod = %t, %v; want none: the hold is LEGION's", found, err)
+	}
+	if ended, err := st.EndPausePodHold(ctx, "INFRA", "INFRA-5", PausePodHoldDeleted, pausedAt.Add(time.Minute)); err != nil || ended {
+		t.Fatalf("INFRA's end of INFRA-5's hold = %t, %v; want nothing ended", ended, err)
+	}
+	if ended, err := st.EndPausePodHold(ctx, "LEGION", "INFRA-5", PausePodHoldDeleted, pausedAt.Add(time.Minute)); err != nil || !ended {
+		t.Fatalf("LEGION's end of INFRA-5's hold = %t, %v; want it ended", ended, err)
 	}
 
-	if ended, err := st.EndPausePodHold(ctx, "LEGION-208", PausePodHoldReady, pausedAt.Add(time.Hour)); err != nil || !ended {
+	if ended, err := st.EndPausePodHold(ctx, "LEGION", "LEGION-208", PausePodHoldReady, pausedAt.Add(time.Hour)); err != nil || !ended {
 		t.Fatalf("end LEGION-208's hold = %t, %v; want it ended", ended, err)
 	}
-	if ended, err := st.EndPausePodHold(ctx, "LEGION-208", PausePodHoldReady, pausedAt.Add(time.Hour)); err != nil || ended {
+	if ended, err := st.EndPausePodHold(ctx, "LEGION", "LEGION-208", PausePodHoldReady, pausedAt.Add(time.Hour)); err != nil || ended {
 		t.Fatalf("end LEGION-208's hold again = %t, %v; want nothing left to end", ended, err)
 	}
-	if _, found, err := st.PausePodHoldOf(ctx, "LEGION-208"); err != nil || found {
+	if _, found, err := st.PausePodHoldOf(ctx, "LEGION", "LEGION-208"); err != nil || found {
 		t.Fatalf("PausePodHoldOf after the end = %t, %v; want none", found, err)
 	}
 	var why string
@@ -463,7 +484,7 @@ func TestTheIssueLockSerializesTwoWritersOfOnePodsHold(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		ended, err := st.EndPausePodHold(ctx, "LEGION-208", PausePodHoldResumed, pausedAt.Add(time.Minute))
+		ended, err := st.EndPausePodHold(ctx, "LEGION", "LEGION-208", PausePodHoldResumed, pausedAt.Add(time.Minute))
 		done <- result{ended, err}
 	}()
 	testwait.Eventually(t, "the second writer to wait on LEGION-208's pause lock", func() bool {
@@ -490,7 +511,7 @@ func TestTheIssueLockSerializesTwoWritersOfOnePodsHold(t *testing.T) {
 	if r.err != nil || !r.ended {
 		t.Fatalf("the second writer's end = %t, %v; want it to end the hold the first committed", r.ended, r.err)
 	}
-	if _, found, err := st.PausePodHoldOf(ctx, "LEGION-208"); err != nil || found {
+	if _, found, err := st.PausePodHoldOf(ctx, "LEGION", "LEGION-208"); err != nil || found {
 		t.Fatalf("LEGION-208's hold after both writers = %t, %v; want it ended", found, err)
 	}
 }
@@ -555,10 +576,11 @@ func TestAHeldWakeRecordsItsPauseAndPairsWithNoRelease(t *testing.T) {
 // The resume launches by rule each operator's spawn its pause stopped owing a launch, since no
 // start row can carry it (projectPause.Resumed in internal/daemon), and the store names them: a
 // claim of an issue with no record whose stop of the pause, or a stop that ended while the pause
-// stood, is `stopped` with a launch owed and still holds it suspended by the release's source.
-// Not a stop owed nothing, not a claim of a recorded issue, not a claim that runs again or that
-// the operator has suspended since, and not a stop of an earlier pause that ended before this one
-// began.
+// stood, is `stopped` with a launch owed and still holds it suspended by the release's source; a
+// spawn of another project's issue, whose stop the pause records under its own project, among
+// them. Not a stop owed nothing, not a claim of a recorded issue, not a claim that runs again or
+// that the operator has suspended since, and not a stop of an earlier pause that ended before
+// this one began.
 func TestTheResumeNamesTheOperatorsSpawnsItsPauseStoppedOwingALaunch(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -580,7 +602,7 @@ func TestTheResumeNamesTheOperatorsSpawnsItsPauseStoppedOwingALaunch(t *testing.
 		return PauseStopClaim{Claim: token, Tree: issue, Issue: issue, Role: claim.RoleArchitect, Generation: 1}
 	}
 	suspended, released := supervise.StateSuspended, supervise.SuspendedByReleased
-	stopped := func(pause int64, stop PauseStopClaim, at time.Time, owed bool) {
+	stopped := func(pause Pause, stop PauseStopClaim, at time.Time, owed bool) {
 		t.Helper()
 		if err := st.Tx(ctx, func(tx pgx.Tx) error {
 			_, err := RecordPauseStoppedTx(ctx, tx, pause, stop, at, owed)
@@ -591,19 +613,22 @@ func TestTheResumeNamesTheOperatorsSpawnsItsPauseStoppedOwingALaunch(t *testing.
 	}
 
 	earlier, _ := pauseLegion(t, st, pausedAt.Add(-2*time.Hour))
-	stopped(earlier.ID, stopOf("LEGION-81", suspended, released), pausedAt.Add(-90*time.Minute), true)
+	stopped(earlier, stopOf("LEGION-81", suspended, released), pausedAt.Add(-90*time.Minute), true)
 	if _, err := st.Resume(ctx, ResumeRequest{Project: "LEGION", By: operator, At: pausedAt.Add(-time.Hour)}); err != nil {
 		t.Fatalf("resume the earlier pause: %v", err)
 	}
 	pause, _ := pauseLegion(t, st, pausedAt)
 	spawn := stopOf("LEGION-77", suspended, released)
-	stopped(pause.ID, spawn, pausedAt.Add(time.Minute), true)
-	stopped(pause.ID, stopOf("LEGION-78", suspended, released), pausedAt.Add(time.Minute), false)
-	stopped(pause.ID, stopOf("LEGION-208", suspended, released), pausedAt.Add(time.Minute), true)
-	stopped(pause.ID, stopOf("LEGION-79", supervise.StateIdle, ""), pausedAt.Add(time.Minute), true)
-	stopped(pause.ID, stopOf("LEGION-80", suspended, supervise.SuspendedByOperator), pausedAt.Add(time.Minute), true)
+	stopped(pause, spawn, pausedAt.Add(time.Minute), true)
+	stopped(pause, stopOf("LEGION-78", suspended, released), pausedAt.Add(time.Minute), false)
+	stopped(pause, stopOf("LEGION-208", suspended, released), pausedAt.Add(time.Minute), true)
+	stopped(pause, stopOf("LEGION-79", supervise.StateIdle, ""), pausedAt.Add(time.Minute), true)
+	stopped(pause, stopOf("LEGION-80", suspended, supervise.SuspendedByOperator), pausedAt.Add(time.Minute), true)
+	// A spawn of another project's issue, stopped under this project's pause.
+	foreign := stopOf("OTHER-5", suspended, released)
+	stopped(pause, foreign, pausedAt.Add(time.Minute), true)
 	late := stopOf("LEGION-82", suspended, released)
-	stopped(earlier.ID, late, pausedAt.Add(10*time.Minute), true)
+	stopped(earlier, late, pausedAt.Add(10*time.Minute), true)
 	ended, err := st.Resume(ctx, ResumeRequest{Project: "LEGION", By: operator, At: pausedAt.Add(time.Hour)})
 	if err != nil {
 		t.Fatalf("resume LEGION: %v", err)
@@ -613,7 +638,7 @@ func TestTheResumeNamesTheOperatorsSpawnsItsPauseStoppedOwingALaunch(t *testing.
 	if err != nil {
 		t.Fatalf("read the spawns the pause owes a launch: %v", err)
 	}
-	if want := []claim.Token{spawn.Claim, late.Claim}; !slices.Equal(owed, want) {
+	if want := []claim.Token{spawn.Claim, late.Claim, foreign.Claim}; !slices.Equal(owed, want) {
 		t.Fatalf("the spawns pause %d owes a launch = %v, want %v", ended.Pause.ID, owed, want)
 	}
 }

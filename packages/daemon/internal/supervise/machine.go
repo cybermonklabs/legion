@@ -884,10 +884,9 @@ type Deps struct {
 	// is paused (reserveWake, wakeNow, pauseGate), the send that hands such a claim no task then
 	// (sendPending), a start that keeps the hold of the open pause (StartedBy), and a pause's
 	// hold that is dropped at the start of a decision once its pause is no longer the open one
-	// (dropEndedPauseHold). The controller's claim (claim.IsController) is never held by it, and
-	// neither is a claim of another project's issue (claim.IssueOfProject, pauseHolds). nil is a
-	// project never paused, which is today's behaviour: nothing is gated, and a hold that names a
-	// pause is one whose pause has ended.
+	// (dropEndedPauseHold). The controller's claim (claim.IsController) is never held by it. nil
+	// is a project never paused, which is today's behaviour: nothing is gated, and a hold that
+	// names a pause is one whose pause has ended.
 	Paused func() (int64, bool)
 	// PauseStopped is the stop transaction (decision 6): the claim write a suspension a project
 	// pause asked for (RequestSuspend.Pause) ends in, in place of the plain write, together with

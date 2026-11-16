@@ -949,6 +949,15 @@ type SuperviseRequest struct {
 	// transaction writes beside the held wake (WakeKind pods.WakePause). Every other request
 	// carries none.
 	Pause int64 `json:"pause,omitempty"`
+	// Issue is the issue of the claim a `pause_stop` row stops where the row is keyed by the
+	// project rather than by that issue (pause.StopKey): a claim of another project's issue, which
+	// the operator's spawn makes under the daemon's own project token. Such a row is keyed by the
+	// project because the outbox runs only the rows of its own project's keys (DueRows), and its
+	// executor reads the claim from this issue. It is an issue key, and every other row carries
+	// none, a `pause_stop` row keyed by its claim's issue among them. A release before this key
+	// refuses a row that carries it (DisallowUnknownFields); the rollback deletes every
+	// `pause_stop` row (migrations/20261115194357_project_pause.up.sql).
+	Issue string `json:"issue,omitempty"`
 	// WakeKind marks a start that brings a released role back for a wake: the wake's kind, one of
 	// the pods wake kinds (validWakeKind), as the resume the wake took records it. The start
 	// finishes without acting when its claim is suspended by the daemon, since a park, a close or
@@ -1356,7 +1365,7 @@ func (p MergeQueueRemoval) Message(issue, repo string) string {
 
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
 func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (OutboxRow, error) {
-	if err := validateOutboxPayload(payload); err != nil {
+	if err := validateOutboxPayload(issue, payload); err != nil {
 		return OutboxRow{}, err
 	}
 	encoded, err := json.Marshal(payload)
@@ -1372,7 +1381,7 @@ func DecodeOutboxPayload(row OutboxRow) (OutboxPayload, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := validateOutboxPayload(payload); err != nil {
+	if err := validateOutboxPayload(row.Issue, payload); err != nil {
 		return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 	}
 	if payload.OutboxKind() != row.Kind {
@@ -1551,7 +1560,9 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 	return payload, nil
 }
 
-func validateOutboxPayload(payload OutboxPayload) error {
+// validateOutboxPayload refuses a payload no row may carry. issue is the row's key
+// (OutboxRow.Issue), which a `pause_stop` row's own Issue is read against.
+func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	switch value := payload.(type) {
 	case StatusWrite:
 		// A row whose kind is not one of StatusRowKinds can never be queued, and one stored by an
@@ -1705,6 +1716,13 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.Op == "pause_stop" && (value.Pause <= 0 || !claim.IsRole(value.Role)) {
 			return fmt.Errorf("a pause's stop names its pause and the role it stops; it names pause %d and role %q", value.Pause, value.Role)
+		}
+		if value.Issue != "" && (value.Op != "pause_stop" || !claim.IsIssueKey(value.Issue) || claim.IsIssueKey(issue)) {
+			return fmt.Errorf("a supervise %s names the issue %q on a row keyed by %q; only a pause's stop keyed by its project names its claim's issue, and that is an issue key",
+				value.Op, value.Issue, issue)
+		}
+		if value.Op == "pause_stop" && value.Issue == "" && !claim.IsIssueKey(issue) {
+			return fmt.Errorf("a pause's stop keyed by %q, which is no issue key, names the issue of the claim it stops", issue)
 		}
 		if value.Pause < 0 || (value.Pause != 0 && value.Op != "pause_stop" && value.Op != "start") {
 			return fmt.Errorf("a supervise %s names pause %d; only a pause's stop and a start name one", value.Op, value.Pause)

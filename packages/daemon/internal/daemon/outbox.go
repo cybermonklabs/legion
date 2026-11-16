@@ -187,7 +187,7 @@ type outboxTrees interface {
 	ArmPodBackstop(ctx context.Context, backstop store.PodWakeBackstop) error
 	PauseByID(ctx context.Context, id int64) (store.Pause, error)
 	EndPauseStop(ctx context.Context, pause int64, token claim.Token, end store.PauseStopEnd, at time.Time) (bool, error)
-	EndPausePodHold(ctx context.Context, issue string, end store.PausePodHoldEnd, at time.Time) (bool, error)
+	EndPausePodHold(ctx context.Context, project, issue string, end store.PausePodHoldEnd, at time.Time) (bool, error)
 }
 
 func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, log *slog.Logger) *outbox {
@@ -2292,7 +2292,7 @@ func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value r
 // writer of a pod hold does. A failed end fails the row, whose retry deletes nothing more, since
 // the pod is gone, and ends the hold.
 func (r *outbox) podDeleted(ctx context.Context, issue, why string) error {
-	ended, err := r.trees.EndPausePodHold(ctx, issue, store.PausePodHoldDeleted, r.now().UTC())
+	ended, err := r.trees.EndPausePodHold(ctx, r.dispatchProject, issue, store.PausePodHoldDeleted, r.now().UTC())
 	if err != nil {
 		return err
 	}

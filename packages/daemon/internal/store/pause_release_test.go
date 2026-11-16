@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // servingReleasedClaim is role's claim of the root issue as a release left it: suspended as
@@ -81,7 +82,7 @@ func TestAReleaseIsMarkedNothingWhileTheProjectIsPaused(t *testing.T) {
 	}
 
 	endPause(t, st, pause.ID, pausedAt.Add(time.Hour))
-	if _, err := st.EndPausePodHold(ctx, rootIssue, PausePodHoldReady, pausedAt.Add(time.Hour)); err != nil {
+	if _, err := st.EndPausePodHold(ctx, "LEGION", rootIssue, PausePodHoldReady, pausedAt.Add(time.Hour)); err != nil {
 		t.Fatalf("end the pod's hold: %v", err)
 	}
 	marked, err = st.ReleaseIdleIssue(ctx, "legion", rootIssue, decide)
@@ -178,7 +179,7 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 					t.Fatalf("%s's stops ended stopped owing a launch %t = %d, want 1", role, owed, n)
 				}
 			}
-			if hold, held, err := st.PausePodHoldOf(ctx, rootIssue); err != nil || !held || hold.Pause != pause.ID {
+			if hold, held, err := st.PausePodHoldOf(ctx, "LEGION", rootIssue); err != nil || !held || hold.Pause != pause.ID {
 				t.Fatalf("the pod's hold = %+v, %t, %v; want pause %d's", hold, held, err, pause.ID)
 			}
 			wantBackstops := 0
@@ -303,7 +304,9 @@ func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t
 }
 
 // Decision 13 of dispatch://INFRA-3759: a tree's cleanup deletes every pod of the tree, so the
-// transaction that confirms it ends the pause's hold of each, as deleted.
+// transaction that confirms it ends the pause's hold of each, as deleted. An operator's tree of
+// another project's issue, whose claim the daemon runs and whose issue it keeps no record of, is
+// cleaned up the same way: its pod's hold is found through the tree's claims.
 func TestATreesCleanupEndsThePauseHoldsOfItsPods(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -319,16 +322,40 @@ func TestATreesCleanupEndsThePauseHoldsOfItsPods(t *testing.T) {
 	if err := st.CleanupReservedTree(ctx, "legion", rootIssue, lifecycle.Epoch, &countingReleaser{}); err != nil {
 		t.Fatalf("clean the tree up: %v", err)
 	}
-	if _, held, err := st.PausePodHoldOf(ctx, rootIssue); err != nil || held {
+	if _, held, err := st.PausePodHoldOf(ctx, "LEGION", rootIssue); err != nil || held {
 		t.Fatalf("after the cleanup a hold stands = %t, %v; want it ended", held, err)
 	}
 	if n := pauseCount(t, st, `select count(*) from project_pause_pod_holds where issue = $1 and ended_why = 'deleted'`, rootIssue); n != 1 {
 		t.Fatalf("holds ended as deleted = %d, want 1", n)
 	}
+
+	const other = "OTHER-5"
+	if _, err := st.OpenTreeLifecycle(ctx, "legion", other, treelifecycle.AuthorityOperator); err != nil {
+		t.Fatalf("open the operator's tree %s: %v", other, err)
+	}
+	if err := st.PutClaim(ctx, supervise.Claim{Token: "legion-legion-other-5-architect", Project: "legion", Tree: other, Issue: other,
+		Role: claim.RoleArchitect, Generation: 1, State: supervise.StateRetired}); err != nil {
+		t.Fatalf("seed the retired architect of %s: %v", other, err)
+	}
+	if _, err := holdPod(st, pause, other, pausedAt); err != nil {
+		t.Fatalf("hold the pod of %s: %v", other, err)
+	}
+	operatorTree, reserved, err := st.ReserveOperatorTreeCleanup(ctx, "legion", other)
+	if err != nil || !reserved {
+		t.Fatalf("reserve the cleanup of %s = %+v, %t, %v", other, operatorTree, reserved, err)
+	}
+	if err := st.CleanupReservedTree(ctx, "legion", other, operatorTree.Epoch, &countingReleaser{}); err != nil {
+		t.Fatalf("clean the tree %s up: %v", other, err)
+	}
+	if _, held, err := st.PausePodHoldOf(ctx, "LEGION", other); err != nil || held {
+		t.Fatalf("after the cleanup of %s its hold stands = %t, %v; want it ended", other, held, err)
+	}
 }
 
 // Decision 13 of dispatch://INFRA-3759: a hold ends at a role's ready only where a role of the pod
 // is live, read under the issue's lock; a ready read after the role stopped again ends nothing.
+// The pod of a claim of another project's issue, held under this project's pause, ends the same
+// way: the hold is read by its project, not by its issue key's prefix.
 func TestAPodHoldEndsAtAReadyOnlyWhereARoleIsLive(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -350,5 +377,16 @@ func TestAPodHoldEndsAtAReadyOnlyWhereARoleIsLive(t *testing.T) {
 	}
 	if n := pauseCount(t, st, `select count(*) from project_pause_pod_holds where issue = $1 and ended_why = 'ready'`, rootIssue); n != 1 {
 		t.Fatalf("holds ended at a ready = %d, want 1", n)
+	}
+
+	if _, err := holdPod(st, pause, "OTHER-5", pausedAt); err != nil {
+		t.Fatalf("hold the pod of OTHER-5: %v", err)
+	}
+	if err := st.PutClaim(ctx, supervise.Claim{Token: "legion-legion-other-5-architect", Project: "legion", Tree: "OTHER-5",
+		Issue: "OTHER-5", Role: claim.RoleArchitect, Generation: 1, State: supervise.StateReady}); err != nil {
+		t.Fatalf("make the architect of OTHER-5 ready: %v", err)
+	}
+	if ended, err := st.EndLivePausePodHold(ctx, "legion", "OTHER-5", PausePodHoldReady, pausedAt.Add(3*time.Minute)); err != nil || !ended {
+		t.Fatalf("the end at the ready of OTHER-5's architect = %t, %v; want the hold LEGION's pause put on its pod ended", ended, err)
 	}
 }

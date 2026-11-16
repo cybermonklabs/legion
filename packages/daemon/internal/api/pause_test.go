@@ -512,28 +512,58 @@ func TestPauseRoutes(t *testing.T) {
 		}
 	})
 
-	// A claim of another project's issue, which the operator's spawn can make under this project's
-	// token, is outside the pause: the pause commits, and while the project is paused that claim's
-	// task is delivered, as the controller's is, while a role of the project's own issue is still
-	// refused.
-	t.Run("a claim of another project's issue is outside the pause", func(t *testing.T) {
+	// A claim of another project's issue, which the operator's spawn makes under this project's
+	// token, is a session this daemon runs: while the project is paused every request that would
+	// start a turn of it answers PROJECT_PAUSED and changes nothing, as for a role of the project's
+	// own issue, and so does a spawn of another project's issue.
+	t.Run("a claim of another project's issue is refused as every other claim is", func(t *testing.T) {
 		h := newPauseHarness(t, pauseCapable())
-		other, _ := h.launch("OTHER-5", claim.RoleArchitect)
-		h.ready(other, "ses_other", 1)
-		own, _ := h.launch("LEGION-208", claim.RoleImplementer)
-		h.ready(own, "ses_implementer", 1)
+		grant := h.controllerSession()
+		architect, _ := h.launch("OTHER-5", claim.RoleArchitect)
+		h.ready(architect, "ses_other_architect", 1)
+		tester, _ := h.launch("OTHER-6", claim.RoleTester)
+		h.ready(tester, "ses_other_tester", 1)
 		route := func(token claim.Token, action string) string {
 			return "/legion/v1/operator/claims/" + string(token) + "/" + action
 		}
+		if recorder := h.operator(http.MethodPost, route(tester, "suspend"), nil); recorder.Code != http.StatusOK {
+			t.Fatalf("suspend the tester of OTHER-6 before the pause = %d; body %s", recorder.Code, recorder.Body)
+		}
 
 		began := beganPause(t, h.pauseOK(operatorPauseRoute, OperatorPauseRequest{Reason: "a provider outage"}, bearer))
-
-		if recorder := h.operator(http.MethodPost, route(other, "deliver"), DeliverRequest{Task: "Read the state."}); recorder.Code != http.StatusOK {
-			t.Fatalf("deliver to the claim of OTHER-5 while paused = %d, want 200; body %s", recorder.Code, recorder.Body)
+		before, err := h.store.Claims(h.ctx)
+		if err != nil {
+			t.Fatal(err)
 		}
-		failure := h.pauseRefused(route(own, "deliver"), DeliverRequest{Task: "Do it."}, bearer, http.StatusConflict, projectPaused)
-		if failure.Pause == nil || failure.Pause.ID != began.ID {
-			t.Fatalf("deliver to the claim of LEGION-208 refused %+v, want it to name pause %d", failure, began.ID)
+		calls := len(h.runtime.Calls())
+		for _, request := range []struct {
+			name   string
+			target string
+			body   any
+			header http.Header
+		}{
+			{"the controller's compact", "/legion/v1/claims/compact", ClaimRequest{GrantID: grant, Issue: "OTHER-5", Role: string(claim.RoleArchitect)}, nil},
+			{"the controller's fresh_session", "/legion/v1/claims/fresh-session", ClaimRequest{GrantID: grant, Issue: "OTHER-5", Role: string(claim.RoleArchitect)}, nil},
+			{"legion claims resume", route(tester, "resume"), nil, bearer},
+			{"legion claims retry", route(architect, "retry"), nil, bearer},
+			{"legion claims compact", route(architect, "compact"), nil, bearer},
+			{"legion claims spawn", "/legion/v1/operator/claims", SpawnRequest{Tree: "OTHER-7", Issue: "OTHER-7", Role: claim.RoleArchitect, Task: "Plan it."}, bearer},
+			{"legion claims deliver", route(architect, "deliver"), DeliverRequest{Task: "Read the state."}, bearer},
+		} {
+			failure := h.pauseRefused(request.target, request.body, request.header, http.StatusConflict, projectPaused)
+			if failure.Pause == nil || failure.Pause.ID != began.ID {
+				t.Fatalf("%s of a claim of another project's issue refused %+v, want it to name pause %d", request.name, failure, began.ID)
+			}
+		}
+		after, err := h.store.Claims(h.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(after, before) {
+			t.Fatalf("the refused requests changed the claims:\nbefore %+v\nafter  %+v", before, after)
+		}
+		if got := len(h.runtime.Calls()); got != calls {
+			t.Fatalf("the refused requests reached the runtime: %v", h.runtime.Methods()[calls:])
 		}
 	})
 

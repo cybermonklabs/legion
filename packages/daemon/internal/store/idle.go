@@ -659,14 +659,17 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		return pods.IdleView{}, err
 	}
 	view.BundleUnrestored = unrestored
-	// The pause's two facts, read by the issue key's project (the Dispatch key project_pauses and
-	// the pod holds carry). The view is read under treelifecycle.Serialize, which the pause's own
+	// The pause's two facts, read by the view's project: project_pauses and the pod holds carry
+	// its Dispatch key, which project, the token (claim.ProjectToken), lowercases for every key
+	// project_pauses admits. Not by the issue key's prefix: the pod of a claim of another project's
+	// issue, which the operator's spawn makes under this project's token, is this project's to
+	// pause and to hold. The view is read under treelifecycle.Serialize, which the pause's own
 	// transaction takes too, so a release is marked either before a pause or not at all
 	// (ReleaseIdleIssue, decision 12 of dispatch://INFRA-3759).
 	if err := tx.QueryRow(ctx, `select
-		exists (select 1 from project_pauses where project = split_part($1, '-', 1) and ended_at is null),
-		exists (select 1 from project_pause_pod_holds where project = split_part($1, '-', 1) and issue = $1 and ended_at is null)`,
-		issue).Scan(&view.Paused, &view.PauseHeld); err != nil {
+		exists (select 1 from project_pauses where lower(project) = $1 and ended_at is null),
+		exists (select 1 from project_pause_pod_holds where lower(project) = $1 and issue = $2 and ended_at is null)`,
+		project, issue).Scan(&view.Paused, &view.PauseHeld); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read whether a pause holds %s: %w", issue, err)
 	}
 	holding, err := openPodHold(ctx, tx, project, issue)

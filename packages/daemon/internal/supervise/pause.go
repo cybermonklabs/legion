@@ -3,11 +3,10 @@ package supervise
 // The project's pause (dispatch://INFRA-3759): what a machine does while the daemon's project is
 // paused, as the plan's decisions say it. Four things, each written once, here:
 //
-//   - The gate (decision 7): a launch of a claim that is neither the controller's nor one of
-//     another project's issue runs nothing while the project is paused (reserveWake, wakeNow,
-//     pauseGate, pauseHolds). It is held on the machine with no timer and no token, and the machine
-//     stops the claim for the pause in its next decision (TimerPause, pauseStopDue), with a launch
-//     owed.
+//   - The gate (decision 7): a launch of a claim that is not the controller's runs nothing while
+//     the project is paused (reserveWake, wakeNow, pauseGate). It is held on the machine with no
+//     timer and no token, and the machine stops the claim for the pause in its next decision
+//     (TimerPause, pauseStopDue), with a launch owed.
 //   - The task gate (decision 8): no task is sent to such a claim while the project is paused
 //     (sendPending, pauseHolds).
 //   - The stop transaction (decision 6): a suspension a pause asked for (RequestSuspend.Pause)
@@ -52,14 +51,12 @@ type PauseStop struct {
 }
 
 // pauseHolds is the open pause that holds this claim's launches and tasks, and whether one does:
-// the daemon's project is paused (Deps.Paused) and the claim is neither the controller's
-// (claim.IsController), which is the one role a pause never holds, nor a claim of another
-// project's issue (claim.IssueOfProject), which the pause leaves out: the gate's own stop of such
-// a claim would reach the stop transaction, which records no stop of another project's issue
-// beside this project's pause.
+// the daemon's project is paused (Deps.Paused) and the claim is not the controller's
+// (claim.IsController), which is the one role a pause never holds. A claim of another project's
+// issue, which the operator's spawn makes under the daemon's own project token, is a session this
+// daemon runs, so the pause holds it as it holds every other claim.
 func (m *Machine) pauseHolds() (int64, bool) {
-	if m.deps.Paused == nil || claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree) ||
-		!claim.IssueOfProject(m.claim.Issue, m.claim.Project) {
+	if m.deps.Paused == nil || claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree) {
 		return 0, false
 	}
 	pause, paused := m.deps.Paused()

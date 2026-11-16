@@ -442,53 +442,46 @@ func TestNoTaskIsSentWhilePausedButTheControllersAndTheResumeSendsIt(t *testing.
 	})
 }
 
-// A claim of another project's issue — one the operator's spawn can make under this project's
-// token — is outside the pause (claim.IssueOfProject): while the project is paused the gate holds
-// neither its launch nor its task, since the gate's own stop would reach the stop transaction,
-// which records no stop of another project's issue beside this project's pause. A claim of the
-// project's own issue is still held.
-func TestThePauseHoldsNoClaimOfAnotherProjectsIssue(t *testing.T) {
+// A claim of another project's issue — one the operator's spawn makes under this project's token —
+// is a session this daemon runs, so the pause holds it as it holds every claim but the
+// controller's: while the project is paused the gate starts none of its launches and stops it in
+// its next decision through the stop transaction, with a launch owed, and its task waits for the
+// resume.
+func TestThePauseHoldsAClaimOfAnotherProjectsIssue(t *testing.T) {
 	other := func() Claim {
 		c := queuedClaim()
 		c.Token, c.Tree, c.Issue = "legion-legion-other-5-implementer", "OTHER-5", "OTHER-5"
 		return c
 	}
 
-	t.Run("its launch runs", func(t *testing.T) {
+	t.Run("its launch is held and the gate stops it", func(t *testing.T) {
 		h, flag, stops := pauseHarness(t, other())
 		flag.set(7)
 
 		h.must(RequestSpawn{Claim: h.token})
 
 		h.wantState(StateLaunching)
-		h.wantStarts(h.token, 1)
-		if h.armed(TimerPause) {
-			t.Fatal("the gate posted a stop of the claim of another project's issue")
+		h.wantStarts(h.token, 0)
+		if !h.armed(TimerPause) {
+			t.Fatal("the gate posted no stop of the claim of another project's issue")
 		}
-		stops.wantStops(t)
+		h.advance(0)
+		h.wantState(StateSuspended)
+		h.wantStarts(h.token, 0)
+		stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: true}, landed: true})
 	})
 
-	t.Run("its task is sent", func(t *testing.T) {
+	t.Run("its task waits for the resume", func(t *testing.T) {
 		h, flag, _ := pauseHarness(t, other())
 		h.reach(StateReady)
 		flag.set(7)
 
 		h.must(RequestDeliver{Claim: h.token, Task: "summarize the incident"})
 
+		h.wantPrompts(0)
+		flag.set(0)
+		h.must(ResumePause{Claim: h.token, Pause: 7})
 		h.wantPrompts(1)
-	})
-
-	t.Run("a claim of the project's own issue is held", func(t *testing.T) {
-		h, flag, stops := pauseHarness(t, queuedClaim())
-		flag.set(7)
-
-		h.must(RequestSpawn{Claim: h.token})
-
-		h.wantStarts(h.token, 0)
-		if !h.armed(TimerPause) {
-			t.Fatal("the gate posted no stop of the claim of the project's own issue")
-		}
-		stops.wantStops(t)
 	})
 }
 

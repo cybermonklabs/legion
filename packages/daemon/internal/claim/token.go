@@ -33,22 +33,6 @@ func ProjectToken(project string) (string, error) {
 // IsIssueKey reports whether key is a Dispatch issue key (`LEGION-208`).
 func IsIssueKey(key string) bool { return issueKey.MatchString(key) }
 
-// IssueOfProject reports whether issue is an issue of the project whose token (ProjectToken) is
-// project: the project its key names, the part before its first dash, spelled as a token. That is
-// how a Dispatch key ("LEGION") and the token a claim is stored under ("legion") meet. The
-// workflow makes no claim of another project's issue (intake refuses its facts), but the
-// operator's spawn can, under the daemon's own token. The project's pause leaves such a claim
-// out, since the stop table holds each stop to its pause's own project and the outbox runs no row
-// of another project's issue.
-func IssueOfProject(issue, project string) bool {
-	key, _, found := strings.Cut(issue, "-")
-	if !found {
-		return false
-	}
-	token, err := ProjectToken(key)
-	return err == nil && token == project
-}
-
 // IsRole reports whether role is one of the six a claim can be on.
 func IsRole(role Role) bool {
 	for _, known := range Roles {

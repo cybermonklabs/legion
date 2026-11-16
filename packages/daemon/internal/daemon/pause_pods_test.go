@@ -100,16 +100,20 @@ func podHoldEnd(t *testing.T, pool *store.Pool, issue string) string {
 // which the wake pacing's let-out moved past the wake's own moment, and passes over every resume
 // of a project paused now. Ten minutes after the wake, with the clock younger than that, nothing
 // is stuck; past the clock's ten minutes, a paused project is warned of nothing; once the pause
-// ends, the same pass warns.
+// ends, the same pass warns. A resume of a claim of another project's issue, which this daemon
+// runs under its own project and the pause holds, is passed over the same way: the pause is the
+// daemon's project's, not its issue key's.
 func TestTheStuckWarningReadsTheStuckClockAndPassesOverAPausedProject(t *testing.T) {
 	w, pool, logged := wakeRuntime(t)
 	ctx := context.Background()
 	woke := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
-	recordPodWake(t, w.idleStore, store.PodResume{Project: "legion", Issue: "LEGION-208",
-		Role: string(claim.RoleImplementer), Kind: pods.WakeBackstop, At: woke})
 	letOut := woke.Add(30 * time.Minute)
-	if _, err := w.idleStore.SetResumeClock(ctx, "legion", "LEGION-208", claim.RoleImplementer, letOut); err != nil {
-		t.Fatalf("start the stuck clock at the let-out: %v", err)
+	for _, issue := range []string{"LEGION-208", "OTHERPROJECT-5"} {
+		recordPodWake(t, w.idleStore, store.PodResume{Project: "legion", Issue: issue,
+			Role: string(claim.RoleImplementer), Kind: pods.WakeBackstop, At: woke})
+		if _, err := w.idleStore.SetResumeClock(ctx, "legion", issue, claim.RoleImplementer, letOut); err != nil {
+			t.Fatalf("start the stuck clock of %s at the let-out: %v", issue, err)
+		}
 	}
 	const warning = "has had no first turn"
 
@@ -121,13 +125,18 @@ func TestTheStuckWarningReadsTheStuckClockAndPassesOverAPausedProject(t *testing
 	pause := openLegionPause(t, pool, letOut)
 	w.warnStuckResumes(ctx, letOut.Add(workflow.StrandedReleaseWake))
 	if strings.Contains(logged.String(), warning) {
-		t.Fatalf("the log = %q, want no warning while the project is paused", logged)
+		t.Fatalf("the log = %q, want no warning while the project is paused, for its own issue or another project's", logged)
 	}
 
 	endLegionPause(t, pool, pause, letOut.Add(time.Minute))
 	w.warnStuckResumes(ctx, letOut.Add(workflow.StrandedReleaseWake))
+	for _, issue := range []string{"LEGION-208", "OTHERPROJECT-5"} {
+		if !strings.Contains(logged.String(), "issue="+issue) {
+			t.Fatalf("the log = %q, want a warning for %s once the pause has ended", logged, issue)
+		}
+	}
 	if !strings.Contains(logged.String(), warning) || !strings.Contains(logged.String(), "clock="+letOut.Format(time.RFC3339)) {
-		t.Fatalf("the log = %q, want one warning naming the stuck clock %s", logged, letOut.Format(time.RFC3339))
+		t.Fatalf("the log = %q, want warnings naming the stuck clock %s", logged, letOut.Format(time.RFC3339))
 	}
 }
 
@@ -184,7 +193,7 @@ func TestAPodHoldEndsWhenTheIssuesSuspensionDeletesThePod(t *testing.T) {
 			holdLegionPod(t, st, pause, "LEGION-208", time.Now().Add(-time.Hour))
 			rt := &releaseRuntime{Runtime: fake.NewRuntime()}
 			runner := &outbox{supervisor: &supervisor{deps: supervise.Deps{Runtime: rt}}, trees: closeAuthorizingTrees{outboxTrees: st, act: tc.act},
-				project: "legion", log: quietLogger(), now: time.Now}
+				project: "legion", dispatchProject: "LEGION", log: quietLogger(), now: time.Now}
 
 			if err := runner.suspendIssue(ctx, record.OutboxRow{ID: 7, Issue: "LEGION-208"},
 				record.IssueSuspend{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1}); err != nil {
@@ -220,7 +229,7 @@ func TestPodUpdateOpensNoRoundOverAPodAPauseHolds(t *testing.T) {
 	}
 
 	endLegionPause(t, rig.pool, pause, podUpdateStart.Add(time.Minute))
-	if _, err := rig.st.EndPausePodHold(rig.ctx, podUpdateIssue, store.PausePodHoldReady, podUpdateStart.Add(time.Minute)); err != nil {
+	if _, err := rig.st.EndPausePodHold(rig.ctx, "LEGION", podUpdateIssue, store.PausePodHoldReady, podUpdateStart.Add(time.Minute)); err != nil {
 		t.Fatalf("end the pod's hold: %v", err)
 	}
 	rig.tick()
@@ -257,7 +266,7 @@ func TestPodUpdateRoundWaitsOverAPodAPauseHoldsAndItsBoundMovesByTheHeldTime(t *
 
 	endedAt := heldAt.Add(10 * time.Minute)
 	endLegionPause(t, rig.pool, pause, endedAt)
-	if _, err := rig.st.EndPausePodHold(rig.ctx, podUpdateIssue, store.PausePodHoldReady, endedAt); err != nil {
+	if _, err := rig.st.EndPausePodHold(rig.ctx, "LEGION", podUpdateIssue, store.PausePodHoldReady, endedAt); err != nil {
 		t.Fatalf("end the pod's hold: %v", err)
 	}
 	rig.clockAt(podUpdateBound.Add(9 * time.Minute))

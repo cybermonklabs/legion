@@ -1314,7 +1314,8 @@ type OutboxRow struct {
 	ID   int64
 	Kind OutboxKind
 	// Issue is the issue the effect belongs to. A project-level row carries the bare project key
-	// instead — the deployment's gated-steps publish, which belongs to no issue — and the same
+	// instead — the deployment's gated-steps publish, which belongs to no issue, and a project
+	// pause's stop of a claim of another project's issue (SuperviseRequest.Issue) — and the same
 	// split_part(issue, '-', 1) that scopes an issue's row to its own daemon answers that key
 	// itself, since a project key holds no hyphen.
 	Issue      string

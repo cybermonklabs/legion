@@ -15,7 +15,9 @@ const projectPauseVersion = 20261115194357
 // clock: the negative control is each refused as the undefined table (42P01) and column (42703)
 // it is, since any other error would satisfy a weaker control. After it every resume the database
 // already held starts its clock at its own wake (clock_at = at), a resume inserted without a
-// clock gets the same, and the tables refuse every row their checks exist for.
+// clock gets the same, and the tables refuse every row their checks exist for: a stop's claim
+// must be a role token of the pause's project, while its issue, and a held pod's, may be another
+// project's.
 func TestTheProjectPauseRecordsWith20261115194357(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -115,8 +117,15 @@ func TestTheProjectPauseRecordsWith20261115194357(t *testing.T) {
 	refused("a stop naming no claim", "23514", stopOf, paused, "LEGION", "", "LEGION-208", "tester", at)
 	refused("a stop naming no role", "23514", stopOf, paused, "LEGION", "legion-legion-legion-208-tester", "LEGION-208", "", at)
 	refused("a stop of something that is not an issue key", "23514", stopOf, paused, "LEGION", "legion-legion-legion-208-tester", "legion-208", "tester", at)
-	refused("a stop of another project's issue", "23514", stopOf, paused, "LEGION", "legion-infra-infra-208-tester", "INFRA-208", "tester", at)
+	refused("a stop of a claim under another project's token", "23514", stopOf, paused, "LEGION", "legion-infra-infra-208-tester", "INFRA-208", "tester", at)
+	refused("a stop of a claim whose token only begins with the project's", "23514", stopOf, paused, "LEGION", "legion-legionx-legion-208-tester", "LEGION-208", "tester", at)
+	refused("a stop of a claim of no role token", "23514", stopOf, paused, "LEGION", "legion-208-tester", "LEGION-208", "tester", at)
 	refused("a stop naming its pause under another project", "23503", stopOf, paused, "INFRA", "legion-infra-infra-208-tester", "INFRA-208", "tester", at)
+	// The operator's spawn makes a claim of another project's issue under this project's token,
+	// and this project's pause stops it.
+	if err := exec(stopOf, paused, "LEGION", "legion-legion-infra-208-tester", "INFRA-208", "tester", at); err != nil {
+		t.Fatalf("open the stop of a claim of another project's issue under the pause's project: %v", err)
+	}
 	refused("a stop naming no project", "23502", stopOf, paused, nil, "legion-legion-legion-208-tester", "LEGION-208", "tester", at)
 	refused("an end of a stop that says no way it ended", "23514", `update project_pause_stops set ended_at = $2 where pause_id = $1`, paused, at)
 	refused("a way a stop ended with no end", "23514", `update project_pause_stops set ended_as = 'stopped' where pause_id = $1`, paused)
@@ -126,7 +135,10 @@ func TestTheProjectPauseRecordsWith20261115194357(t *testing.T) {
 		t.Fatalf("hold the pod of LEGION-208: %v", err)
 	}
 	refused("a second open hold of one pod", "23505", holdRow, paused, "LEGION", "LEGION-208", at)
-	refused("a hold of another project's issue", "23514", holdRow, paused, "LEGION", "INFRA-208", at)
+	// The pod of a claim of another project's issue, held by the pause of the claim's project.
+	if err := exec(holdRow, paused, "LEGION", "INFRA-208", at); err != nil {
+		t.Fatalf("hold the pod of a claim of another project's issue under the pause's project: %v", err)
+	}
 	refused("a hold naming its pause under another project", "23503", holdRow, paused, "INFRA", "INFRA-208", at)
 	refused("a hold ended for no reason", "23514", `update project_pause_pod_holds set ended_at = $2 where pause_id = $1`, paused, at)
 	refused("a hold ended for a reason it does not know", "23514",

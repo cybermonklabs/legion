@@ -494,12 +494,12 @@ func TestASecondPauseIsRefusedWithThePauseThatStands(t *testing.T) {
 	}
 }
 
-// A live claim of another project's issue — one the operator's spawn can make under this project's
-// token — is left out of the pause rather than failing it: the stop table holds each stop to its
-// pause's own project, so no stop of that issue can be written beside this project's pause. The
-// pause commits, asks the stop of every other live role, writes no stop and no pause_stop row of
-// that claim, and names it in one line.
-func TestAPauseLeavesOutALiveClaimOfAnotherProjectsIssueAndSaysSo(t *testing.T) {
+// A live claim of another project's issue — one the operator's spawn makes under this project's
+// token — is a session this daemon runs, so the pause stops it as it stops every other live role:
+// Effects.Paused is handed it with the rest, its stop row names the pause's own project, and its
+// `pause_stop` row (StopRow) is keyed by the project, whose outbox runs it, naming the claim's
+// issue in its payload. A row of the project's own issue is keyed by that issue and names none.
+func TestAPauseStopsALiveClaimOfAnotherProjectsIssueUnderTheProjectsKey(t *testing.T) {
 	ctx := context.Background()
 	r := newRig(t)
 	seedClaims(t, r.st)
@@ -513,28 +513,38 @@ func TestAPauseLeavesOutALiveClaimOfAnotherProjectsIssueAndSaysSo(t *testing.T) 
 	if err != nil {
 		t.Fatalf("pause with a live claim of another project's issue: %v", err)
 	}
-	if id, paused := r.svc.Paused(); !paused || id != pause.ID {
-		t.Fatalf("Paused after the pause = %d, %t; want pause %d", id, paused, pause.ID)
-	}
 	calls := r.effects.pausedCalls()
-	if len(calls) != 1 || !slices.Equal(tokens(calls[0].asked), []claim.Token{implementer, tester}) {
-		t.Fatalf("Effects.Paused calls = %+v, want one asking the implementer and the tester", calls)
+	if want := []claim.Token{foreign, implementer, tester}; len(calls) != 1 || !slices.Equal(tokens(calls[0].asked), want) {
+		t.Fatalf("Effects.Paused calls = %+v, want one asking %v", calls, want)
 	}
-	if got := count(t, r.st, `select count(*) from project_pause_stops where pause_id = $1`, pause.ID); got != 2 {
-		t.Fatalf("stops of pause %d = %d, want the two live roles of LEGION's issues", pause.ID, got)
-	}
-	if got := count(t, r.st, `select count(*) from project_pause_stops where claim = $1`, string(foreign)); got != 0 {
-		t.Fatalf("stops of %s = %d, want none", foreign, got)
+	var project string
+	if err := r.st.Pool().QueryRow(ctx, `select project from project_pause_stops where pause_id = $1 and claim = $2`,
+		pause.ID, string(foreign)).Scan(&project); err != nil || project != "LEGION" {
+		t.Fatalf("the stop of %s names project %q, %v; want the pause's own, LEGION", foreign, project, err)
 	}
 	if got := count(t, r.st, `select count(*) from outbox where issue = 'INFRA-5'`); got != 0 {
-		t.Fatalf("outbox rows of INFRA-5 = %d, want none", got)
+		t.Fatalf("outbox rows keyed by INFRA-5 = %d, want none: the outbox runs only LEGION's keys", got)
 	}
-	left := lines(t, r.log, "pause: live claims of another project's issue are left out of the pause")
-	if len(left) != 1 {
-		t.Fatalf("left-out lines = %d, want one; log %s", len(left), r.log.String())
+	row := record.OutboxRow{Kind: record.OutboxKindSupervise}
+	if err := r.st.Pool().QueryRow(ctx, `select issue, payload from outbox where kind = 'supervise' and issue = 'LEGION'`).
+		Scan(&row.Issue, &row.Payload); err != nil {
+		t.Fatalf("read the stop row keyed by LEGION: %v", err)
 	}
-	if got, ok := left[0]["claims"].([]any); !ok || len(got) != 1 || got[0] != string(foreign) || left[0]["pause"] != float64(pause.ID) {
-		t.Fatalf("the left-out line is %v, want it to name pause %d and %s alone", left[0], pause.ID, foreign)
+	payload, err := record.DecodeOutboxPayload(row)
+	if err != nil {
+		t.Fatalf("decode the stop row of %s: %v", foreign, err)
+	}
+	if request := payload.(record.SuperviseRequest); request.Op != "pause_stop" || request.Issue != "INFRA-5" || request.Tree != "INFRA-5" ||
+		request.Role != claim.RoleImplementer || request.Pause != pause.ID {
+		t.Fatalf("the stop row keyed by LEGION = %+v, want pause %d's stop of INFRA-5's implementer", request, pause.ID)
+	}
+	for issue, key := range map[string]string{"LEGION-208": "LEGION-208", "INFRA-5": "LEGION"} {
+		if got := StopKey(pause, issue); got != key {
+			t.Fatalf("StopKey of %s = %q, want %q", issue, got, key)
+		}
+	}
+	if got := count(t, r.st, `select count(*) from outbox where kind = 'supervise' and issue = 'LEGION-208' and not payload ? 'issue'`); got != 1 {
+		t.Fatalf("stop rows of LEGION-208 keyed by their issue and naming none = %d, want the implementer's", got)
 	}
 }
 

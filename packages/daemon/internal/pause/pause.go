@@ -49,31 +49,6 @@ var ErrReasonRequired = errors.New("a pause needs a reason")
 // as well.
 const HeldRowReleasedMessage = "pause: a held row released"
 
-// LeftOutMessage is the warning a pause writes naming the live claims of another project's issue
-// it left out (`claims`, store.Store.Pause), and the boot's pass while the project is paused
-// writes for the ones it left out (store.Store.AskLivePauseStops). The operator's spawn can make
-// such a claim; the pause neither stops nor holds it (claim.IssueOfProject), so it runs on while
-// the project is paused.
-const LeftOutMessage = "pause: live claims of another project's issue are left out of the pause"
-
-// LogLeftOut writes LeftOutMessage for pause's leftOut claims, once, and nothing when there are
-// none.
-func LogLeftOut(log *slog.Logger, pause int64, leftOut []store.PauseStopClaim) {
-	if len(leftOut) == 0 {
-		return
-	}
-	log.Warn(LeftOutMessage, "pause", pause, "claims", claimTokens(leftOut))
-}
-
-// claimTokens is the claims of stops, for a log line.
-func claimTokens(stops []store.PauseStopClaim) []string {
-	tokens := make([]string, len(stops))
-	for i, stop := range stops {
-		tokens[i] = string(stop.Claim)
-	}
-	return tokens
-}
-
 // Setting is a setting of legion.yaml under which a daemon cannot hold a pause, spelled as the
 // file spells it, with the path of its key as the config package's own errors name a key
 // (config's readIdleRelease).
@@ -132,8 +107,8 @@ func (e *UnavailableError) Error() string {
 type Effects interface {
 	// Paused runs once pause has committed and the flag is set. asked are the claims the pause's
 	// transaction asked to stop; the daemon asks the stop of every other live role of the project
-	// but the controller and a claim of another project's issue (LeftOutMessage), which catches a
-	// launch that passed the gate before the flag was set (decision 3).
+	// but the controller, which catches a launch that passed the gate before the flag was set
+	// (decision 3).
 	Paused(ctx context.Context, pause store.Pause, asked []store.PauseStopClaim)
 	// Resumed runs once the resume that ended pause has committed and the flag is cleared: the
 	// steps of decision 22 after the transaction, in their order, are the daemon's.
@@ -155,8 +130,7 @@ type Options struct {
 	// Effects runs after each commit; nil runs nothing.
 	Effects Effects
 	// Log takes the lines of decision 23 this package writes: the pause, the resume, and each held
-	// row the resume released; and the warning that names the claims a pause left out
-	// (LeftOutMessage). nil is slog.Default().
+	// row the resume released. nil is slog.Default().
 	Log *slog.Logger
 	// Now is the daemon's clock; nil is time.Now.
 	Now func() time.Time
@@ -211,9 +185,8 @@ func (s *Service) Paused() (int64, bool) {
 // (ErrReasonRequired) and a daemon that cannot hold a pause (*UnavailableError), then runs the
 // store's pause transaction, which refuses a second pause with the *store.AlreadyPausedError it
 // returns unchanged. Once that commits it sets the flag, runs Effects.Paused with the claims the
-// transaction asked to stop, logs the pause, and warns of the live claims of another project's
-// issue the transaction left out (LogLeftOut). A caller that goes away does not stop an act under
-// way, so no pause commits without its flag and its after-commit steps.
+// transaction asked to stop, and logs the pause. A caller that goes away does not stop an act
+// under way, so no pause commits without its flag and its after-commit steps.
 func (s *Service) Pause(ctx context.Context, by store.PauseActor, reason string) (store.Pause, error) {
 	if strings.TrimSpace(reason) == "" {
 		return store.Pause{}, ErrReasonRequired
@@ -232,7 +205,7 @@ func (s *Service) Pause(ctx context.Context, by store.PauseActor, reason string)
 	if tell {
 		req.Notice = pausedNotice
 	}
-	pause, asked, leftOut, err := s.store.Pause(ctx, req)
+	pause, asked, err := s.store.Pause(ctx, req)
 	if standing := (*store.AlreadyPausedError)(nil); errors.As(err, &standing) {
 		// The refusal read the pause that stands, which another daemon of a rolling restart may
 		// have made since this one's last Refresh: the flag holds it from now.
@@ -245,9 +218,12 @@ func (s *Service) Pause(ctx context.Context, by store.PauseActor, reason string)
 	if s.effects != nil {
 		s.effects.Paused(ctx, pause, asked)
 	}
+	claims := make([]string, len(asked))
+	for i, stop := range asked {
+		claims[i] = string(stop.Claim)
+	}
 	s.log.Info("pause: the project is paused", "pause", pause.ID, "by", string(pause.By.Kind), "by_session", pause.By.Session,
-		"reason", pause.Reason, "stops", len(asked), "claims", claimTokens(asked), "told_controller", tell)
-	LogLeftOut(s.log, pause.ID, leftOut)
+		"reason", pause.Reason, "stops", len(asked), "claims", claims, "told_controller", tell)
 	return pause, nil
 }
 
@@ -356,14 +332,35 @@ func (s *Service) tellsController(ctx context.Context, by store.PauseActor) (boo
 }
 
 // StopRow is the `pause_stop` row of one claim the pause asks to stop (decision 4): a supervise row
-// of the claim's issue naming the pause, the claim's role, tree and generation, and a reason the
-// stopped claim's log line carries. The pause's transaction builds its rows with it, and so do the
-// daemon's catch-up after a pause and its boot's pass while paused (store.Store.AskPauseStops,
-// AskLivePauseStops), so every stop of a pause is one row of one shape.
+// naming the pause, the claim's role, tree and generation, and a reason the stopped claim's log
+// line carries, keyed as StopKey keys it. The pause's transaction builds its rows with it, and so
+// do the daemon's catch-up after a pause and its boot's pass while paused
+// (store.Store.AskPauseStops, AskLivePauseStops), so every stop of a pause is one row of one
+// shape. A row keyed by the project names the claim's issue in its payload
+// (record.SuperviseRequest.Issue), which the executor reads its claim from.
 func StopRow(pause store.Pause, stop store.PauseStopClaim) (store.PauseRow, error) {
-	return pauseRow(stop.Issue, record.SuperviseRequest{Op: "pause_stop", Tree: stop.Tree, Role: stop.Role,
+	request := record.SuperviseRequest{Op: "pause_stop", Tree: stop.Tree, Role: stop.Role,
 		Generation: stop.Generation, Pause: pause.ID,
-		Reason: fmt.Sprintf("project %s is paused (pause %d): %s", pause.Project, pause.ID, pause.Reason)}, pause.Since)
+		Reason: fmt.Sprintf("project %s is paused (pause %d): %s", pause.Project, pause.ID, pause.Reason)}
+	key := StopKey(pause, stop.Issue)
+	if key != stop.Issue {
+		request.Issue = stop.Issue
+	}
+	return pauseRow(key, request, pause.Since)
+}
+
+// StopKey is the outbox key (record.OutboxRow.Issue) of pause's `pause_stop` row of a claim of
+// issue, and so the key of the lifecycle lane that runs it: the issue itself where it is an issue
+// of pause's project, and otherwise the project's own key, a project-level row. The outbox runs
+// only the rows whose key names its own project (record's split_part(issue, '-', 1) scope), so a
+// row keyed by another project's issue would never run, and the resume's delete of the pause's
+// rows that have not run would never find it. Such a claim is one the operator's spawn made
+// under this daemon's project token (api's spawn), which the pause stops as it stops every other.
+func StopKey(pause store.Pause, issue string) string {
+	if project, _, _ := strings.Cut(issue, "-"); project == pause.Project {
+		return issue
+	}
+	return pause.Project
 }
 
 // pausedNotice is the controller's project-paused notice: who paused, when, and why.
@@ -380,13 +377,13 @@ func resumedNotice(ended store.Pause) (store.PauseRow, error) {
 }
 
 // pauseRow encodes payload through record's own constructor, which validates it, as the store's
-// pause transaction takes a row (store.PauseRow).
+// pause transaction takes a row (store.PauseRow), keyed by issue.
 func pauseRow(issue string, payload record.OutboxPayload, at time.Time) (store.PauseRow, error) {
 	row, err := record.NewOutboxRow(issue, payload, at)
 	if err != nil {
 		return store.PauseRow{}, err
 	}
-	return store.PauseRow{Kind: string(row.Kind), Payload: row.Payload}, nil
+	return store.PauseRow{Issue: row.Issue, Kind: string(row.Kind), Payload: row.Payload}, nil
 }
 
 func actor(a store.PauseActor) record.PauseActor {

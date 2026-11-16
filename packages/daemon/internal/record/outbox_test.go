@@ -147,7 +147,7 @@ func TestEveryStatusRowKindHasAConstructorThatSetsIt(t *testing.T) {
 		if write.Kind != kind {
 			t.Fatalf("the constructor of %q built a write of kind %q, want it to set its own kind", kind, write.Kind)
 		}
-		if err := validateOutboxPayload(write); err != nil {
+		if err := validateOutboxPayload("LEGION-208", write); err != nil {
 			t.Fatalf("the write the constructor of %q built was refused: %v", kind, err)
 		}
 	}
@@ -430,6 +430,63 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 			_, err := NewOutboxRow("LEGION-208", tc.payload, now)
 			if err == nil || !strings.Contains(err.Error(), tc.reason) {
 				t.Fatalf("NewOutboxRow error = %v, want %q", err, tc.reason)
+			}
+		})
+	}
+}
+
+// A pause's stop of a claim of another project's issue is keyed by the project, which the outbox
+// of the project's own daemon serves, and names the claim's issue in its payload: it round-trips
+// through Postgres and that daemon lists it. A row may carry that issue only so: on a pause's stop
+// keyed by its project, never beside a row of an issue key, never naming something that is no
+// issue key, and never on another op; and a pause's stop keyed by its project must carry it.
+func TestAPauseStopKeyedByItsProjectNamesItsClaimsIssue(t *testing.T) {
+	now := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	stop := SuperviseRequest{Op: "pause_stop", Tree: "OTHER-5", Role: claim.RoleArchitect, Generation: 1, Pause: 7, Issue: "OTHER-5"}
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	row, err := NewOutboxRow("LEGION", stop, now)
+	if err != nil {
+		t.Fatalf("NewOutboxRow of the stop keyed by LEGION: %v", err)
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.Enqueue(ctx, tx, row))
+	})
+	var due []OutboxRow
+	inTx(t, st, func(tx pgx.Tx) {
+		due, err = records.DueRows(ctx, tx, "LEGION", "", nil, now)
+		must(t, err)
+	})
+	if len(due) != 1 || due[0].Issue != "LEGION" {
+		t.Fatalf("LEGION's due rows = %+v, want the stop keyed by LEGION", due)
+	}
+	got, err := DecodeOutboxPayload(due[0])
+	if err != nil || !reflect.DeepEqual(got, stop) {
+		t.Fatalf("the stop decodes as %#v, %v; want %#v", got, err, stop)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		issue   string
+		payload SuperviseRequest
+	}{
+		{"beside a row of an issue key", "LEGION-208", stop},
+		{"naming no issue key", "LEGION", SuperviseRequest{Op: "pause_stop", Role: claim.RoleArchitect, Pause: 7, Issue: "other-5"}},
+		{"on a start", "LEGION", SuperviseRequest{Op: "start", Tree: "OTHER-5", Role: claim.RoleArchitect, Issue: "OTHER-5"}},
+		{"missing from a stop keyed by the project", "LEGION", SuperviseRequest{Op: "pause_stop", Tree: "OTHER-5", Role: claim.RoleArchitect, Pause: 7}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewOutboxRow(tc.issue, tc.payload, now); err == nil || !strings.Contains(err.Error(), "issue") {
+				t.Fatalf("NewOutboxRow(%q, %+v) = %v, want it refused for the issue it names", tc.issue, tc.payload, err)
+			}
+			encoded, err := json.Marshal(tc.payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored := OutboxRow{Kind: OutboxKindSupervise, Issue: tc.issue, Payload: encoded}
+			if _, err := DecodeOutboxPayload(stored); err == nil {
+				t.Fatalf("the decode of a stored %+v keyed by %q passed, want it refused", tc.payload, tc.issue)
 			}
 		})
 	}

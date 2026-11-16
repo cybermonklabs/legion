@@ -254,7 +254,7 @@ func (s *Store) CleanupReservedTree(ctx context.Context, project, tree string, e
 		if err := treelifecycle.ConfirmCleanup(ctx, tx, project, tree, epoch); err != nil {
 			return err
 		}
-		return endTreePausePodHoldsTx(ctx, tx, tree, time.Now().UTC())
+		return endTreePausePodHoldsTx(ctx, tx, project, tree, time.Now().UTC())
 	})
 }
 

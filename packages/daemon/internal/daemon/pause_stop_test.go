@@ -91,7 +91,7 @@ func (r *pauseRig) claim(role claim.Role, state supervise.ClaimState) supervise.
 // (pause.Service.Refresh), and answers the pause.
 func (r *pauseRig) pauseLegion() store.Pause {
 	r.t.Helper()
-	held, _, _, err := r.st.Pause(r.ctx, store.PauseRequest{Project: "LEGION", By: pauseOperator, Reason: "the model provider is down",
+	held, _, err := r.st.Pause(r.ctx, store.PauseRequest{Project: "LEGION", By: pauseOperator, Reason: "the model provider is down",
 		At: time.Now(), StopRow: pause.StopRow})
 	if err != nil {
 		r.t.Fatalf("pause LEGION: %v", err)
@@ -278,7 +278,7 @@ func TestAPauseStopMadeAgainWritesItsRecordsOnce(t *testing.T) {
 	tester := r.claim(claim.RoleTester, supervise.StateSuspended)
 	owed := supervise.PauseStop{Pause: held.ID, LaunchOwed: true}
 	r.mustStop(tester, owed)
-	if _, err := r.st.EndPausePodHold(r.ctx, pauseIssue, store.PausePodHoldReady, time.Now()); err != nil {
+	if _, err := r.st.EndPausePodHold(r.ctx, "LEGION", pauseIssue, store.PausePodHoldReady, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	r.mustStop(tester, owed)
@@ -305,7 +305,7 @@ func TestAPauseStopMadeAgainWritesItsRecordsOnce(t *testing.T) {
 	if got := r.count(`select count(*) from project_pause_pod_holds where issue = $1`, pauseIssue); got != 1 {
 		t.Fatalf("holds of %s's pod = %d, want the one the first stop opened", pauseIssue, got)
 	}
-	if _, found, err := r.st.PausePodHoldOf(r.ctx, pauseIssue); err != nil || found {
+	if _, found, err := r.st.PausePodHoldOf(r.ctx, "LEGION", pauseIssue); err != nil || found {
 		t.Fatalf("a hold of %s's pod stands = %t, %v; want the ended one alone", pauseIssue, found, err)
 	}
 }
@@ -362,7 +362,7 @@ func TestAStopHoldsThePodWhileItsPauseStandsAndAfterTheResumeOnlyWithNoRoleLive(
 		r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
 		held := r.pauseLegion()
 		r.mustStop(r.claim(claim.RoleImplementer, supervise.StateSuspended), supervise.PauseStop{Pause: held.ID})
-		if hold, found, err := r.st.PausePodHoldOf(r.ctx, pauseIssue); err != nil || !found || hold.Pause != held.ID {
+		if hold, found, err := r.st.PausePodHoldOf(r.ctx, "LEGION", pauseIssue); err != nil || !found || hold.Pause != held.ID {
 			t.Fatalf("%s's hold = %+v, %t, %v; want the implementer's stop to hold the pod for pause %d with the tester live",
 				pauseIssue, hold, found, err, held.ID)
 		}
@@ -372,11 +372,11 @@ func TestAStopHoldsThePodWhileItsPauseStandsAndAfterTheResumeOnlyWithNoRoleLive(
 		held := r.pauseLegion()
 		r.resume()
 		r.mustStop(r.claim(claim.RoleImplementer, supervise.StateSuspended), supervise.PauseStop{Pause: held.ID})
-		if hold, found, err := r.st.PausePodHoldOf(r.ctx, pauseIssue); err != nil || found {
+		if hold, found, err := r.st.PausePodHoldOf(r.ctx, "LEGION", pauseIssue); err != nil || found {
 			t.Fatalf("%s's hold = %+v, %t, %v; want none: the stop ended after the resume, with the tester live", pauseIssue, hold, found, err)
 		}
 		r.mustStop(r.claim(claim.RoleTester, supervise.StateSuspended), supervise.PauseStop{Pause: held.ID})
-		if hold, found, err := r.st.PausePodHoldOf(r.ctx, pauseIssue); err != nil || !found || hold.Pause != held.ID {
+		if hold, found, err := r.st.PausePodHoldOf(r.ctx, "LEGION", pauseIssue); err != nil || !found || hold.Pause != held.ID {
 			t.Fatalf("%s's hold = %+v, %t, %v; want the tester's stop, the pod's last live role's, to hold it", pauseIssue, hold, found, err)
 		}
 	})
@@ -412,38 +412,68 @@ func TestTheBootOfAPausedProjectAsksItsWaitingStopsAgainAtOnce(t *testing.T) {
 	}
 }
 
-// A live claim of another project's issue, which the operator's spawn can make under this
-// project's token, is outside the pause: the boot of a paused project asks no stop of it and names
-// it in the pause's warning (pause.LeftOutMessage), and the catch-up after a pause asks none
-// either (pausable), while it still asks the project's own live roles.
-func TestTheBootOfAPausedProjectLeavesOutAClaimOfAnotherProjectsIssueAndSaysSo(t *testing.T) {
-	r := newPauseRig(t, claim.RoleImplementer)
+// A live claim of another project's issue that the pause has not stopped — one an earlier daemon
+// launched before the pause reached it, which the operator's spawn made under this project's
+// token — is a session this daemon runs, so the boot of a paused project asks its stop as it asks
+// every other live role's (askBootStops), and the catch-up after a pause would too (pausable): a
+// stop row under the pause's project, and a `pause_stop` row keyed by the project, which this
+// daemon's outbox runs, naming the claim's issue. The executor reads the claim from that issue and
+// stops it, and the stop transaction records the stop under the pause's project and holds the
+// claim's pod there.
+func TestTheBootOfAPausedProjectStopsALiveClaimOfAnotherProjectsIssue(t *testing.T) {
+	r := newPauseRig(t)
+	sup, rt := r.supervisor()
+	sup.deps.PauseStopped = r.pauses.stopped
+	r.pauses.supervisor = sup
+	const other = "INFRA-5"
+	foreign := launchedClaim(t, sup, other, other, claim.RoleImplementer)
+	machine, _ := sup.Machine(foreign)
 	held := r.pauseLegion()
-	foreign := supervise.Claim{Token: "legion-legion-infra-5-implementer", Project: "legion", Tree: "INFRA-5", Issue: "INFRA-5",
-		Role: claim.RoleImplementer, Generation: 1, State: supervise.StateIdle}
-	if err := r.st.PutClaim(r.ctx, foreign); err != nil {
-		t.Fatalf("seed the claim of INFRA-5: %v", err)
+	live := machine.Claim()
+	if err := r.st.PutClaim(r.ctx, live); err != nil {
+		t.Fatalf("store the live claim of %s: %v", other, err)
+	}
+	if !pausable(live) {
+		t.Fatalf("the catch-up would ask no stop of %s, a live claim the daemon runs", foreign)
 	}
 
 	if err := r.pauses.askBootStops(r.ctx, held); err != nil {
 		t.Fatalf("the boot's pass with a live claim of another project's issue: %v", err)
 	}
+	asked := r.lines("pause: the boot asked the stop of the live roles the project's pause has not stopped")
+	if len(asked) != 1 {
+		t.Fatalf("the boot's lines that it asked stops = %d, want one; log %s", len(asked), r.logs.String())
+	}
+	if got, ok := asked[0]["claims"].([]any); !ok || len(got) != 1 || got[0] != string(foreign) {
+		t.Fatalf("the boot asked the stops of %v, want %s's", asked[0]["claims"], foreign)
+	}
+	if got := r.count(`select count(*) from outbox where issue = $1`, other); got != 0 {
+		t.Fatalf("outbox rows keyed by %s = %d, want none: this daemon's outbox runs only LEGION's keys", other, got)
+	}
+	row := record.OutboxRow{Kind: record.OutboxKindSupervise}
+	if err := r.pool.QueryRow(r.ctx, `select id, issue, payload from outbox where kind = 'supervise' and issue = 'LEGION'
+		and payload->>'op' = 'pause_stop' and payload->>'issue' = $1`, other).Scan(&row.ID, &row.Issue, &row.Payload); err != nil {
+		t.Fatalf("read the stop row of %s keyed by LEGION: %v", foreign, err)
+	}
 
-	if got := r.count(`select count(*) from project_pause_stops where claim = $1`, string(foreign.Token)); got != 0 {
-		t.Fatalf("stops of %s = %d, want none", foreign.Token, got)
+	runner := &outbox{pool: r.pool, records: record.NewStore(), supervisor: sup, trees: r.st, project: "legion",
+		dispatchProject: "LEGION", log: quietLogger(), now: time.Now}
+	if err := runner.execute(r.ctx, row); err != nil {
+		t.Fatalf("run the stop of %s: %v", foreign, err)
 	}
-	left := r.lines(pause.LeftOutMessage)
-	if len(left) != 1 {
-		t.Fatalf("left-out lines = %d, want one; log %s", len(left), r.logs.String())
+	if c := machine.Claim(); c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByReleased {
+		t.Fatalf("%s is %s by %s after its stop row ran, want it stopped for the pause", foreign, c.State, c.SuspendedBy)
 	}
-	if got, ok := left[0]["claims"].([]any); !ok || len(got) != 1 || got[0] != string(foreign.Token) || left[0]["pause"] != float64(held.ID) {
-		t.Fatalf("the boot's left-out line is %v, want it to name pause %d and %s alone", left[0], held.ID, foreign.Token)
+	if got := len(rt.CallsOf("Suspend")); got != 1 {
+		t.Fatalf("the runtime was asked to stop %d processes, want the one of %s", got, foreign)
 	}
-	if pausable(foreign) {
-		t.Fatalf("the catch-up would ask the stop of %s", foreign.Token)
+	var project, end string
+	if err := r.pool.QueryRow(r.ctx, `select project, coalesce(ended_as, '') from project_pause_stops where pause_id = $1 and claim = $2`,
+		held.ID, string(foreign)).Scan(&project, &end); err != nil || project != "LEGION" || end != string(store.PauseStopStopped) {
+		t.Fatalf("the stop of %s = project %q ended %q, %v; want LEGION's stop ended stopped", foreign, project, end, err)
 	}
-	if own := r.claim(claim.RoleImplementer, supervise.StateIdle); !pausable(own) {
-		t.Fatalf("the catch-up would not ask the stop of %s, a live role of the project's own issue", own.Token)
+	if hold, found, err := r.st.PausePodHoldOf(r.ctx, "LEGION", other); err != nil || !found || hold.Pause != held.ID {
+		t.Fatalf("the hold of %s's pod = %+v, %t, %v; want pause %d's", other, hold, found, err, held.ID)
 	}
 }
 
@@ -517,7 +547,7 @@ func TestTheLaterOfTwoOverlappingStopsHoldsThePodTheEarlierLeftIt(t *testing.T) 
 		t.Fatal("the tester's stop never finished after the implementer's committed")
 	}
 
-	hold, found, err := r.st.PausePodHoldOf(r.ctx, pauseIssue)
+	hold, found, err := r.st.PausePodHoldOf(r.ctx, "LEGION", pauseIssue)
 	if err != nil || !found || hold.Pause != held.ID {
 		t.Fatalf("%s's hold = %+v, %t, %v; want the tester's stop to hold the pod for pause %d", pauseIssue, hold, found, err, held.ID)
 	}
@@ -617,7 +647,7 @@ func TestALateStopOfAPauseIsHeldByTheNextPauseAndLoggedByItsResume(t *testing.T)
 	if got := r.stops(earlier.ID, claim.RoleImplementer); len(got) != 1 || got[0] != (pauseStopRecord{end: store.PauseStopStopped, owed: true}) {
 		t.Fatalf("the earlier pause's stops = %+v, want its cancelled stop recorded stopped with the launch owed", got)
 	}
-	if hold, found, err := r.st.PausePodHoldOf(r.ctx, pauseIssue); err != nil || !found || hold.Pause != earlier.ID {
+	if hold, found, err := r.st.PausePodHoldOf(r.ctx, "LEGION", pauseIssue); err != nil || !found || hold.Pause != earlier.ID {
 		t.Fatalf("%s's hold = %+v, %t, %v; want the earlier pause's", pauseIssue, hold, found, err)
 	}
 	if _, open := r.heldWakes(earlier.ID, claim.RoleImplementer); open != 1 {

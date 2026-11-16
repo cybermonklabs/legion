@@ -112,7 +112,7 @@ func TestAPausedProjectsHeldRowsAreNotClaimable(t *testing.T) {
 		return ok
 	}
 
-	pause, asked, _, err := st.Pause(ctx, store.PauseRequest{Project: "LEGION", By: store.PauseActor{Kind: store.PauseByOperator},
+	pause, asked, err := st.Pause(ctx, store.PauseRequest{Project: "LEGION", By: store.PauseActor{Kind: store.PauseByOperator},
 		Reason: "the model provider is down", At: now,
 		StopRow: func(store.Pause, store.PauseStopClaim) (store.PauseRow, error) {
 			return store.PauseRow{}, errors.New("this project has no claim to stop")

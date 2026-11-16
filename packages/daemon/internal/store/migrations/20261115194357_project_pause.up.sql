@@ -20,16 +20,23 @@
 -- an idle release stopped the role first), `failed` (the claim failed or retired) or `cancelled`
 -- (the resume ended the pause first). A pause has at most one open stop per claim. The stop names
 -- its pause by (pause_id, project), as a pod's hold does, so a stop of one project can never name
--- another project's pause, and its issue must be an issue of that project. The open stops are
--- what the state names as the roles the pause still waits on. The second index serves the reads
--- by claim (the newest stop of a claim, whatever its pause) as well as by pause and claim.
+-- another project's pause, and its claim must be a claim of that project
+-- (project_pause_stops_claim_of_project): a role token is `legion-<project token>-…`
+-- (claim.NewToken), and the project token of every key project_pauses admits
+-- (^[A-Z][A-Z0-9]*$) is the key lowercased (claim.ProjectToken), so the check reads
+-- lower(project). Its issue may be another project's: the operator's spawn makes a claim of any
+-- issue key under the daemon's own project token, and the daemon's pause stops it as it stops
+-- every other claim. The open stops are what the state names as the roles the pause still waits
+-- on. The second index serves the reads by claim (the newest stop of a claim, whatever its pause)
+-- as well as by pause and claim.
 --
 -- project_pause_pod_holds holds one row for each pod a pause keeps: the pause, its project, the
 -- issue whose pod it is, when the hold began, and when and why it ended (`resumed`: the resume
 -- found a live role in the pod; `ready`: a role of the pod became ready; `deleted`: a close, a
 -- park, a linger, a production check's look or a teardown deleted the pod). A pod has at most one
 -- open hold. The hold names its pause by (pause_id, project), so a hold of one project can never
--- name another project's pause, and its issue must be an issue of that project.
+-- name another project's pause. Its issue may be another project's, the pod of such a claim, and
+-- every read of a hold is by its project, never by its issue key's prefix.
 --
 -- pod_resumes.clock_at is when a resume's stuck clock starts. Every row has one: the backfill
 -- copies at, and a trigger copies at into a row inserted without it. The trigger is for a daemon
@@ -60,7 +67,9 @@
 --     and payload->>'kind' in ('project-paused', 'project-resumed');
 --
 -- The stops of the pause go too (a resume deletes the ones that have not run, so this finds only
--- a stop that was running at the resume):
+-- a stop that was running at the resume), the stops of claims of another project's issue among
+-- them, which are keyed by the project and name their claim's issue (record.SuperviseRequest's
+-- Issue), a key the earlier release does not know either:
 --
 --   delete from outbox where kind = 'supervise' and payload->>'op' = 'pause_stop';
 --
@@ -101,7 +110,7 @@ create table project_pause_stops (
   ended_as text check (ended_as in ('stopped', 'taken_over', 'failed', 'cancelled')),
   launch_owed boolean not null default false,
   foreign key (pause_id, project) references project_pauses (id, project),
-  constraint project_pause_stops_issue_of_project check (split_part(issue, '-', 1) = project),
+  constraint project_pause_stops_claim_of_project check (claim like 'legion-' || lower(project) || '-%'),
   constraint project_pause_stops_end_has_its_kind check ((ended_at is null) = (ended_as is null)),
   constraint project_pause_stops_owed_only_when_stopped check (not launch_owed or ended_as = 'stopped')
 );
@@ -117,7 +126,6 @@ create table project_pause_pod_holds (
   ended_at timestamptz,
   ended_why text check (ended_why in ('resumed', 'ready', 'deleted')),
   foreign key (pause_id, project) references project_pauses (id, project),
-  constraint project_pause_pod_holds_issue_of_project check (split_part(issue, '-', 1) = project),
   constraint project_pause_pod_holds_end_has_its_why check ((ended_at is null) = (ended_why is null))
 );
 create unique index project_pause_pod_holds_one_open on project_pause_pod_holds (project, issue) where ended_at is null;

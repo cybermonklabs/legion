@@ -16,8 +16,12 @@ import (
 // the issue's lock every writer of a hold takes first, the open and the ends of a hold, and its
 // reads. A hold keeps the pod of a role the pause stopped, with that role's unpushed work, from an
 // update round past its bound and from the idle rule. A hold's project is the pause's Dispatch
-// key ("LEGION"), which the table holds to its issue's (project_pause_pod_holds_issue_of_project);
-// each function below says which spelling of the project it takes.
+// key ("LEGION"), which may differ from the project its issue's key names: the pod of a claim of
+// another project's issue, which the operator's spawn makes under this project's token, is held
+// by this project's pause. So every read of a hold is by the project, never by the issue key's
+// prefix, and each function below says which spelling of the project it takes: the Dispatch key,
+// or the token (claim.ProjectToken), which is the key lowercased for every key project_pauses
+// admits (^[A-Z][A-Z0-9]*$).
 
 // LockIssueForPause takes the transaction-scoped advisory lock every writer of issue's pod hold
 // takes first, after treelifecycle.Serialize where that writer takes it at all (decisions 6 and 13
@@ -85,7 +89,7 @@ func scanPausePodHold(row pgx.Row) (PausePodHold, error) {
 // stands (project_pause_pod_holds_one_open), and answers whether it opened one. The caller holds
 // issue's lock (LockIssueForPause) and has read held, as the stop transaction and a paused
 // cancel of a release do. The hold carries held's project, so a pause of one project cannot hold
-// another project's pod (project_pause_pod_holds_issue_of_project).
+// a pod under another project's pause (the table's foreign key on (pause_id, project)).
 func OpenPausePodHoldTx(ctx context.Context, tx pgx.Tx, held Pause, issue string, at time.Time) (bool, error) {
 	var id int64
 	err := tx.QueryRow(ctx, `insert into project_pause_pod_holds (pause_id, project, issue, held_at)
@@ -101,28 +105,28 @@ func OpenPausePodHoldTx(ctx context.Context, tx pgx.Tx, held Pause, issue string
 
 // EndPausePodHold ends the hold of issue's pod in a transaction of its own; see
 // EndPausePodHoldTx.
-func (s *Store) EndPausePodHold(ctx context.Context, issue string, end PausePodHoldEnd, at time.Time) (bool, error) {
+func (s *Store) EndPausePodHold(ctx context.Context, project, issue string, end PausePodHoldEnd, at time.Time) (bool, error) {
 	var ended bool
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
 		var err error
-		ended, err = EndPausePodHoldTx(ctx, tx, issue, end, at)
+		ended, err = EndPausePodHoldTx(ctx, tx, project, issue, end, at)
 		return err
 	})
 	return ended, err
 }
 
 // EndPausePodHoldTx takes issue's lock (LockIssueForPause) and ends the hold that stands on
-// issue's pod, whichever pause put it there, at at for the reason end, and answers whether one
-// stood.
-func EndPausePodHoldTx(ctx context.Context, tx pgx.Tx, issue string, end PausePodHoldEnd, at time.Time) (bool, error) {
+// issue's pod under project's pauses, whichever of them put it there, at at for the reason end,
+// and answers whether one stood. project is the Dispatch key.
+func EndPausePodHoldTx(ctx context.Context, tx pgx.Tx, project, issue string, end PausePodHoldEnd, at time.Time) (bool, error) {
 	if err := validPausePodHoldEnd(issue, end); err != nil {
 		return false, err
 	}
 	if err := LockIssueForPause(ctx, tx, issue); err != nil {
 		return false, err
 	}
-	tag, err := tx.Exec(ctx, `update project_pause_pod_holds set ended_at = $2, ended_why = $3
-		where project = split_part($1, '-', 1) and issue = $1 and ended_at is null`, issue, at, string(end))
+	tag, err := tx.Exec(ctx, `update project_pause_pod_holds set ended_at = $3, ended_why = $4
+		where project = $1 and issue = $2 and ended_at is null`, project, issue, at, string(end))
 	if err != nil {
 		return false, fmt.Errorf("end the pod hold of %s: %w", issue, err)
 	}
@@ -137,10 +141,11 @@ func validPausePodHoldEnd(issue string, end PausePodHoldEnd) error {
 	return fmt.Errorf("end the pod hold of %s: %q is no reason a hold ends", issue, end)
 }
 
-// PausePodHoldOf is the hold that stands on issue's pod, and whether one does.
-func (s *Store) PausePodHoldOf(ctx context.Context, issue string) (PausePodHold, bool, error) {
+// PausePodHoldOf is the hold that stands on issue's pod under project's pauses, and whether one
+// does. project is the Dispatch key.
+func (s *Store) PausePodHoldOf(ctx context.Context, project, issue string) (PausePodHold, bool, error) {
 	h, err := scanPausePodHold(s.pool.QueryRow(ctx, `select `+pausePodHoldColumns+` from project_pause_pod_holds
-		where project = split_part($1, '-', 1) and issue = $1 and ended_at is null`, issue))
+		where project = $1 and issue = $2 and ended_at is null`, project, issue))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PausePodHold{}, false, nil
 	}
@@ -204,7 +209,7 @@ func scanPausePodHolds(rows pgx.Rows) ([]PausePodHold, error) {
 // (LockIssueForPause) and then ends the hold in one statement that reads the live role itself, so
 // a stop transaction of a role of the same pod commits first and the statement sees it: a hold
 // that stop opened stays, since no role of the pod runs then. project is the project token, as
-// the claims table holds it.
+// the claims table holds it; the hold's own Dispatch key is read as the key it lowercases.
 func (s *Store) EndLivePausePodHold(ctx context.Context, project, issue string, end PausePodHoldEnd, at time.Time) (bool, error) {
 	if err := validPausePodHoldEnd(issue, end); err != nil {
 		return false, err
@@ -215,7 +220,7 @@ func (s *Store) EndLivePausePodHold(ctx context.Context, project, issue string, 
 			return err
 		}
 		tag, err := tx.Exec(ctx, `update project_pause_pod_holds h set ended_at = $3, ended_why = $4
-			where h.project = split_part($2, '-', 1) and h.issue = $2 and h.ended_at is null
+			where lower(h.project) = $1 and h.issue = $2 and h.ended_at is null
 			and exists (select 1 from claims c where c.project = $1 and c.issue = h.issue and c.state <> all($5))`,
 			project, issue, at, string(end), goneStates())
 		if err != nil {
@@ -229,20 +234,31 @@ func (s *Store) EndLivePausePodHold(ctx context.Context, project, issue string, 
 
 // endTreePausePodHoldsTx ends, at at, the hold that stands on the pod of each issue of tree: the
 // tree's cleanup has deleted every Sandbox of the tree (CleanupReservedTree), so a hold of one of
-// its pods holds nothing (PausePodHoldDeleted, decision 13 of dispatch://INFRA-3759). Each hold
-// ends under its issue's lock, in key order.
-func endTreePausePodHoldsTx(ctx context.Context, tx pgx.Tx, tree string, at time.Time) error {
-	rows, err := tx.Query(ctx, `select h.issue from project_pause_pod_holds h join issues i on i.key = h.issue
-		where i.tree = $1 and h.ended_at is null order by h.issue`, tree)
+// its pods holds nothing (PausePodHoldDeleted, decision 13 of dispatch://INFRA-3759). An issue of
+// the tree is one the issues table files under it, or one a claim of project's names under it: a
+// claim of the operator's spawn has no issue record, of this project's issue or of another's. Each
+// hold ends under its issue's lock, in key order. project is the project token, as the claims
+// table holds it.
+func endTreePausePodHoldsTx(ctx context.Context, tx pgx.Tx, project, tree string, at time.Time) error {
+	rows, err := tx.Query(ctx, `select h.project, h.issue from project_pause_pod_holds h
+		where lower(h.project) = $1 and h.ended_at is null
+		and (exists (select 1 from issues i where i.key = h.issue and i.tree = $2)
+			or exists (select 1 from claims c where c.project = $1 and c.issue = h.issue and c.tree = $2))
+		order by h.issue`, project, tree)
 	if err != nil {
 		return fmt.Errorf("read the pod holds of tree %s: %w", tree, err)
 	}
-	issues, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	type held struct{ project, issue string }
+	holds, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (held, error) {
+		var h held
+		err := row.Scan(&h.project, &h.issue)
+		return h, err
+	})
 	if err != nil {
 		return fmt.Errorf("read the pod holds of tree %s: %w", tree, err)
 	}
-	for _, issue := range issues {
-		if _, err := EndPausePodHoldTx(ctx, tx, issue, PausePodHoldDeleted, at); err != nil {
+	for _, h := range holds {
+		if _, err := EndPausePodHoldTx(ctx, tx, h.project, h.issue, PausePodHoldDeleted, at); err != nil {
 			return err
 		}
 	}
