@@ -329,11 +329,18 @@ function CommentThreadBody({
     <ThreadTurns
       composer={
         root === undefined ? null : (
+          // Keyed by the thread its send is named for (`threadSendKey`): the column draws this
+          // body for one thread after another, and the composer holds the draft and the uploads
+          // made in it - an upload's refusal and its Retry with them - so the next thread is
+          // drawn with a composer of its own, never under this one's refusal. The key names the
+          // composer too: the thread's root is drawn beside it under the thread's id, and
+          // siblings are told apart by their keys.
           <MentionComposer
             closed={issue.data !== undefined && issue.data.closed_at !== null}
             frame="mt-2"
             inline
             kind="comment"
+            key={`composer:${thread.thread_id}`}
             mutationKey={threadSendKey(thread.thread_id)}
             onClose={noReturn}
             onSent={() => {
@@ -413,10 +420,12 @@ function MessageThreadBody({
     <ThreadTurns
       composer={
         root === undefined ? null : (
+          // Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`).
           <MentionComposer
             closed={issue.data !== undefined && issue.data.closed_at !== null}
             frame="mt-2"
             inline
+            key={`composer:${thread.thread_id}`}
             mutationKey={threadSendKey(thread.thread_id)}
             onClose={noReturn}
             onSent={() => {
@@ -476,9 +485,14 @@ function AskThreadBody({
   }
   return (
     <div className="mt-2" data-inbox-thread={thread.thread_id} ref={markNewest}>
+      {/* Keyed by the ask: the column draws this body for one ask's thread after another, and
+          the card holds the writes it made - an answer, a question back, a reply, a decline, a
+          hand-on, an upload, an unfollow, an unsubscribe - each with its refusal and its Retry,
+          so the next ask is drawn with a card of its own, never under this one's refusal. */}
       <AskCard
         ask={read.data.ask}
         initialThread={read.data}
+        key={read.data.ask.id}
         owner={thread.document}
         thread="inline"
         unread={unreadWrites(thread, read.data.replies ?? [])}
@@ -561,9 +575,13 @@ function AgentThreadBody({
                   </p>
                 </>
               ) : null}
+              {/* Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`):
+                  the send is the session's (`agentSendKey`), the draft and its uploads are this
+                  thread's. */}
               <AgentMessageComposer
                 agent={agent}
                 hold={hold}
+                key={`composer:${thread.thread_id}`}
                 onCancelReply={noReturn}
                 onClose={noReturn}
                 replyTo={agentReplyTo(agent, read, newest)}

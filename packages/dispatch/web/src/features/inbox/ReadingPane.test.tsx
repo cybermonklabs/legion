@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import type { ChangeDecorations } from "@legion/proof-editor";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: a file pasted, which user-event has no form for
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
@@ -14,6 +15,7 @@ import type {
   Artifact,
   ArtifactVersionText,
   AskSnooze,
+  Comment,
   DisplayTree,
   InboxRow,
   IssueDetails,
@@ -1204,7 +1206,7 @@ function renderThread(thread: MyReplyRow, seed: (client: QueryClient) => void = 
   const client = createQueryClient();
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   seed(client);
-  const view = render(
+  const tree = (row: MyReplyRow) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <DocumentRuntime.Provider value={fake.runtime}>
@@ -1212,7 +1214,7 @@ function renderThread(thread: MyReplyRow, seed: (client: QueryClient) => void = 
             <ReadingPane
               onAnswered={() => {}}
               onSnoozeLive={() => {}}
-              row={{ kind: "thread", thread }}
+              row={{ kind: "thread", thread: row }}
               viewer="alice"
             />
           </MarginProvider>
@@ -1220,7 +1222,14 @@ function renderThread(thread: MyReplyRow, seed: (client: QueryClient) => void = 
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { client, runtime: fake, view };
+  const view = render(tree(thread));
+  return {
+    client,
+    /** The column moved to another row, as the Inbox moves it: the same column, drawn again. */
+    rerender: (row: MyReplyRow) => view.rerender(tree(row)),
+    runtime: fake,
+    view,
+  };
 }
 
 /** Which of the column's four thread bodies is drawn. */
@@ -1358,5 +1367,155 @@ test("an orphaned anchor falls back to the thread alone, with its quote", async 
     realClock();
     view.unmount();
     listArtifactComments.mockRestore();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// One column for one thread after another: a write made in one thread's body is that thread's,
+// and the next thread is drawn with none of it.
+// ---------------------------------------------------------------------------------------------
+
+// The column draws a card for one ask's thread after another. An answer Dispatch refused on the
+// first is that ask's: the next ask's card, drawn at once from the thread read it already holds,
+// shows no refusal of it, so no Retry that would answer the first ask from the second's screen,
+// and the Retry it does show is of its own answer, to its own ask.
+test("the next ask's card shows no answer refused on the ask before it, and its Retry answers its own ask", async () => {
+  const first = issueAsk({ id: "ask-x" });
+  const next = issueAsk({
+    id: "ask-y",
+    issue: { assignee: "alice", key: "CORE-2", title: "Other issue" },
+    issue_key: "CORE-2",
+    question: "Which format?",
+  });
+  const getAsk = mockAskReads([first, next]);
+  const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(
+    new ApiError(400, { error: "Dispatch refused this answer." })
+  );
+  const user = userEvent.setup();
+  const { rerender, view } = renderThread(
+    threadRow({
+      issue: { key: "CORE-1", title: "Fix the thing" },
+      kind: "ask",
+      ref: "/issues/CORE-1/asks/ask-x",
+      thread_id: "ask-x",
+      unread: false,
+    }),
+    // The second ask's thread is read already, as it is once the reader has been on its row, so
+    // the column draws its card at once, with no skeleton between the two.
+    (client) => client.setQueryData(["ask-thread", next.id], { ask: next, ...next.thread })
+  );
+  try {
+    const card = await screen.findByTestId("ask-ask-x");
+    await user.click(within(card).getByLabelText("Your answer"));
+    await user.paste("JSON");
+    await user.click(within(card).getByRole("button", { name: "Answer" }));
+    expect((await within(card).findByRole("alert")).textContent).toContain(
+      "Could not save your answer."
+    );
+
+    rerender(
+      threadRow({
+        issue: { key: "CORE-2", title: "Other issue" },
+        kind: "ask",
+        ref: "/issues/CORE-2/asks/ask-y",
+        thread_id: "ask-y",
+        unread: false,
+      })
+    );
+    const nextCard = screen.getByTestId("ask-ask-y");
+    expect(within(nextCard).queryByRole("alert")).toBeNull();
+
+    await user.click(within(nextCard).getByLabelText("Your answer"));
+    await user.paste("YAML");
+    await user.click(within(nextCard).getByRole("button", { name: "Answer" }));
+    await user.click(await within(nextCard).findByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(3));
+    expect(answerAsk.mock.calls.map(([askId]) => askId)).toEqual(["ask-x", "ask-y", "ask-y"]);
+  } finally {
+    view.unmount();
+    answerAsk.mockRestore();
+    getAsk.mockRestore();
+  }
+});
+
+/** A thread's root comment on `issueKey`, as the issue's comments read answers it. */
+function rootComment(id: string, issueKey: string): Comment {
+  return {
+    anchor: null,
+    answers: null,
+    artifact_id: null,
+    ask_id: null,
+    author: { id: "bob", kind: "user" },
+    body: "The retry budget is too small.",
+    created_at: "2026-10-12T00:00:00Z",
+    deliveries: [],
+    edited_at: null,
+    id,
+    issue_key: issueKey,
+    mentions: [],
+    reply_block: null,
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+  };
+}
+
+/** A picture pasted into a reply. */
+const shot = new File(["bytes"], "shot.png", { type: "image/png" });
+
+// The column draws a reply box for one comment thread after another. An upload Dispatch refused
+// in the first thread's box is that thread's: the next thread's box, drawn at once from the
+// comments already read, shows no refusal of it, so no Retry that would upload the file to the
+// first thread's issue, and the Retry it does show is of its own upload, to its own issue.
+test("the next thread's reply box shows no upload refused in the thread before it, and its Retry uploads to its own issue", async () => {
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    new ApiError(413, { code: "FILE_TOO_LARGE", error: "That file is too large." })
+  );
+  const { rerender, view } = renderThread(
+    threadRow({ issue: { key: "CORE-1", title: "Fix the thing" }, unread: false }),
+    (client) => {
+      client.setQueryData(["comments", "CORE-1"], [rootComment("comment-1", "CORE-1")]);
+      // The second thread's comments are read already, as they are once the reader has been on
+      // its row, so the column draws its box at once, with no skeleton between the two.
+      client.setQueryData(["comments", "CORE-2"], [rootComment("comment-9", "CORE-2")]);
+    }
+  );
+  try {
+    // user-event's paste carries text, never the file this field uploads.
+    fireEvent.paste(await screen.findByRole("textbox", { name: "Reply" }), {
+      clipboardData: { files: [shot] },
+    });
+    await within(screen.getByTestId("inbox-pane")).findByRole("alert");
+
+    rerender(
+      threadRow({
+        issue: { key: "CORE-2", title: "Other issue" },
+        ref: "/issues/CORE-2?comment=comment-9",
+        thread_id: "comment-9",
+        unread: false,
+      })
+    );
+    const pane = screen.getByTestId("inbox-pane");
+    expect(pane.querySelector('[data-inbox-thread="comment-9"]')).not.toBeNull();
+    expect(within(pane).queryByRole("alert")).toBeNull();
+
+    fireEvent.paste(within(pane).getByRole("textbox", { name: "Reply" }), {
+      clipboardData: { files: [shot] },
+    });
+    await userEvent.setup().click(await within(pane).findByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(3));
+    expect(uploadArtifact.mock.calls.map(([owner]) => owner)).toEqual([
+      { issue: "CORE-1" },
+      { issue: "CORE-2" },
+      { issue: "CORE-2" },
+    ]);
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
+    uploadArtifact.mockRestore();
   }
 });

@@ -29,6 +29,8 @@ import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import type { AskPress } from "./outstanding-answers";
+import { askArtifactId } from "./owner-reads";
 import { clearReplyDraft, setReplyDraft, useReplyDraft } from "./reply-drafts";
 
 export type CreateReply = (
@@ -71,6 +73,11 @@ function AskReply({
   );
 }
 
+/** One press of a reply: the ask it is of (`AskPress`) and the text it posts. */
+interface ReplyPress extends AskPress {
+  readonly text: string;
+}
+
 /** AskCard owns the `["ask-thread", ask.id]` query, initializing it from an Inbox row when
  *  available; every card renders the shared thread without a duplicate read. */
 export type AskThreadQuery = UseQueryResult<AskRead, Error>;
@@ -108,24 +115,28 @@ export function AskReplyComposer({
     setReplyDraft(askId, (current) => appendToDraft(current, text))
   );
   const uploading = upload.pending > 0;
-  // The form shows a refused reply itself, with Retry, under the draft it kept.
+  // The form shows a refused reply itself, with Retry, under the draft it kept. Each press
+  // carries the ask it replies to, as an answer's does (`useAskAnswerForm`): where it posts, and
+  // the draft and the thread its landing clears and reads again, are that ask's, whichever ask a
+  // host draws this composer for by then.
   const submit = useKeyedWrite({
     method: "POST",
-    write: (text: string, bounds) => {
-      if (ask.issue_key === null) {
-        if (ask.artifact_id === null || ask.artifact_id === undefined) {
-          throw new Error("document ask is missing its artifact id");
-        }
-        return api.createArtifactComment(ask.artifact_id, { ask_id: ask.id, body: text }, bounds);
+    write: (press: ReplyPress, bounds) => {
+      if (press.ask.issue_key === null) {
+        return api.createArtifactComment(
+          askArtifactId(press.ask),
+          { ask_id: press.ask.id, body: press.text },
+          bounds
+        );
       }
-      return reply(ask.issue_key, { ask_id: ask.id, body: text }, bounds);
+      return reply(press.ask.issue_key, { ask_id: press.ask.id, body: press.text }, bounds);
     },
     inline: true,
-    label: () => `Reply on “${ask.question}”`,
+    label: (press: ReplyPress) => `Reply on “${press.ask.question}”`,
     mutationKey,
-    onSuccess: (_comment, text) => {
-      clearReplyDraft(ask.id, text);
-      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+    onSuccess: (_comment, press) => {
+      clearReplyDraft(press.ask.id, press.text);
+      void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
     },
   });
 
@@ -136,7 +147,7 @@ export function AskReplyComposer({
     if (text === "" || sending || uploading) {
       return;
     }
-    submit.mutate(text);
+    submit.mutate({ ask, text });
   };
 
   return (
