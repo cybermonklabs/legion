@@ -1156,7 +1156,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if err := hydrateCommentReplyBlocks(r.Context(), tx, actor, &reply); err != nil {
+		if err := hydrateCommentReplyBlocks(r.Context(), tx, who, &reply); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1221,7 +1221,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// ask the thread hangs under, which a reply naming `ask_id` on the comments route names.
 	var block *namedBlock
 	if input.ReplyToBlock != nil {
-		block, err = s.namedReplyBlock(r.Context(), tx, actor, refs.ItemComment, comment.ID, *input.ReplyToBlock)
+		block, err = s.namedReplyBlock(r.Context(), tx, who, refs.ItemComment, comment.ID, *input.ReplyToBlock)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

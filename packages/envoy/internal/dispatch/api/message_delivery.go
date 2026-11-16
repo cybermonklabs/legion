@@ -996,14 +996,14 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		read, posted, err := s.replyAfterAnswer(r.Context(), tx, answer, actor, input.Body, followUp, wantsDisplayTrees(r))
+		read, posted, err := s.replyAfterAnswer(r.Context(), tx, answer, actor, who, input.Body, followUp, wantsDisplayTrees(r))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 		// A message handed back as it is stored reads the block it answers as every read does.
 		if posted == nil {
-			if err := hydrateMessageReplyBlocks(r.Context(), tx, actor, &read.Message); err != nil {
+			if err := hydrateMessageReplyBlocks(r.Context(), tx, who, &read.Message); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
@@ -1037,13 +1037,13 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	default:
 		var block *namedBlock
 		if input.InReplyToBlock != nil {
-			block, err = s.replyBlockOf(r.Context(), tx, actor, refs.ItemMessage, message.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE")
+			block, err = s.replyBlockOf(r.Context(), tx, who, refs.ItemMessage, message.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE")
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
 		}
-		reply, answered, err := s.insertSessionReply(r.Context(), tx, message, actor, *input.Body, block)
+		reply, answered, err := s.insertSessionReply(r.Context(), tx, message, actor, who, *input.Body, block)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1083,7 +1083,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 // session already posted in this conversation (its first reply, or an earlier follow-up) is a
 // resend and posts nothing; any other is posted under the first reply, and its event is returned.
 func (s *server) replyAfterAnswer(
-	ctx context.Context, tx pgx.Tx, answer model.Message, actor model.Actor, body *string, followUp, trees bool,
+	ctx context.Context, tx pgx.Tx, answer model.Message, actor, reader model.Actor, body *string, followUp, trees bool,
 ) (replyRead, *model.Event, error) {
 	if body == nil || !followUp {
 		return replyRead{shapedMessage: newShapedMessage(answer, trees), Duplicate: true}, nil, nil
@@ -1101,7 +1101,7 @@ func (s *server) replyAfterAnswer(
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return replyRead{}, nil, err
 	}
-	followUpReply, event, err := s.insertSessionReply(ctx, tx, answer, actor, *body, nil)
+	followUpReply, event, err := s.insertSessionReply(ctx, tx, answer, actor, reader, *body, nil)
 	if err != nil {
 		return replyRead{}, nil, err
 	}
@@ -1142,8 +1142,9 @@ func followUpRequested(r *http.Request) (bool, error) {
 // insertSessionReply writes a session's reply to parent in parent's conversation - its issue,
 // or none, and its target - with the reply's references and its message.answered event. A reply
 // naming a block of parent stores it and previews that block's text in place of the parent's.
+// actor is the session the reply records, and reader that session as the block is read.
 func (s *server) insertSessionReply(
-	ctx context.Context, tx pgx.Tx, parent model.Message, actor model.Actor, body string, block *namedBlock,
+	ctx context.Context, tx pgx.Tx, parent model.Message, actor, reader model.Actor, body string, block *namedBlock,
 ) (model.Message, model.Event, error) {
 	author, err := json.Marshal(actor)
 	if err != nil {
@@ -1166,7 +1167,7 @@ func (s *server) insertSessionReply(
 	}
 	replyParent := messageReplyParentOf(parent)
 	if block != nil {
-		if err := hydrateMessageReplyBlocks(ctx, tx, actor, &reply); err != nil {
+		if err := hydrateMessageReplyBlocks(ctx, tx, reader, &reply); err != nil {
 			return model.Message{}, model.Event{}, err
 		}
 		replyParent.ReplyBody = messageReplyPreview(block.excerpt)

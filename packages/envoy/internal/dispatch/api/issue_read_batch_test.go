@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -171,7 +172,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the design gates: %v", err)
 	}
-	counts, err := refs.BacklinkCounts(ctx, pool, model.Actor{}, "issue", []string{issue.Key}, nil)
+	counts, err := refs.BacklinkCounts(ctx, pool, model.Actor{Viewer: model.ServerViewer}, "issue", []string{issue.Key}, nil)
 	if err != nil {
 		t.Fatalf("count the issue's backlinks: %v", err)
 	}
@@ -317,7 +318,10 @@ func (r *roundTrips) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQ
 func (r *roundTrips) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
 // The issue read costs two round trips, and one for an issue with nothing the second batch is
-// for, where the sequential loaders spent a statement on each part of the answer.
+// for, where the sequential loaders spent a statement on each part of the answer. The request
+// makes one more before the read, every read request's own: it resolves its caller's viewer
+// once (readerOf, access.Resolve), which every statement of the read then binds; that round trip
+// is held to being exactly that one statement, and the read to its two (dispatch://INFRA-3862).
 func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
 	database := storetest.Open(t)
 	counter := &roundTrips{}
@@ -336,7 +340,7 @@ func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
 	fixture := buildFullIssueRead(t, handler)
 
 	response := countedIssueRead(t, handler, fixture.key)
-	batched := counter.take()
+	batched := withoutViewerRead(t, counter.take())
 	if response.Code != http.StatusOK {
 		t.Fatalf("read the issue: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -368,13 +372,23 @@ func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
 		}
 	}
 	bareRead := countedIssueRead(t, handler, bareKey)
-	bareTrips := counter.take()
+	bareTrips := withoutViewerRead(t, counter.take())
 	if bareRead.Code != http.StatusOK {
 		t.Fatalf("read the bare issue: status=%d body=%s", bareRead.Code, bareRead.Body.String())
 	}
 	if len(bareTrips) != 1 {
 		t.Fatalf("the bare issue's read made %d round trips, want 1: %v", len(bareTrips), bareTrips)
 	}
+}
+
+// withoutViewerRead is a request's round trips past its first, which must be the one statement
+// that resolves the caller's viewer (access.VisibleProjectsSQL), read once before anything else.
+func withoutViewerRead(t *testing.T, trips []string) []string {
+	t.Helper()
+	if len(trips) == 0 || !strings.Contains(trips[0], access.Marker+"VisibleProjectsSQL") {
+		t.Fatalf("the request's first round trip is not its caller's viewer: %v", trips)
+	}
+	return trips[1:]
 }
 
 // A key no issue carries answers what it always has: the issue row's callback records the missing

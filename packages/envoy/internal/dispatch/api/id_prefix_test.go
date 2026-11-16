@@ -409,10 +409,11 @@ func TestAWriteRouteThatParsesNoIDActsOnTheResolvedItem(t *testing.T) {
 	}
 }
 
-// TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk: the project check runs behind the
-// prefix layer, so it judges the item the prefix named. A credential scoped to one project is
-// refused another project's ask by its prefix exactly as it is by its whole id, and the refusal
-// names both projects.
+// TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk: a credential scoped to one project
+// is refused another project's ask. By its whole id the project check behind the prefix layer
+// refuses it, and the refusal names both projects. By its prefix the layer itself finds nothing:
+// a credential that lists one project sees no other (refs' project clause), so another project's
+// ask is no candidate, and the prefix answers exactly what a prefix nobody holds answers.
 func TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -426,19 +427,24 @@ func TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk(t *testing.T) {
 	seedAsk(t, rig.database, other.issue, id, "Which way?")
 
 	body := map[string]any{"kind": "resolved", "reason": "Answered elsewhere."}
-	for _, spelling := range []struct{ name, written string }{{"the whole id", id}, {"its prefix", prefix}} {
-		name, written := spelling.name, spelling.written
-		refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+written+"/resolve", token, body))
-		if refused.Code != http.StatusForbidden {
-			t.Fatalf("%s: status=%d body=%s, want 403", name, refused.Code, refused.Body.String())
-		}
-		refusal := decodeBody[refusalAnswer](t, refused)
-		if refusal.Code != codeProjectScope {
-			t.Fatalf("%s: refusal = %+v, want %s", name, refusal, codeProjectScope)
-		}
-		if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, other.key) {
-			t.Fatalf("%s: refusal %q names neither %s nor %s", name, refusal.Error, brokerTestProject, other.key)
-		}
+	refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+id+"/resolve", token, body))
+	if refused.Code != http.StatusForbidden {
+		t.Fatalf("the whole id: status=%d body=%s, want 403", refused.Code, refused.Body.String())
+	}
+	refusal := decodeBody[refusalAnswer](t, refused)
+	if refusal.Code != codeProjectScope {
+		t.Fatalf("the whole id: refusal = %+v, want %s", refusal, codeProjectScope)
+	}
+	if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, other.key) {
+		t.Fatalf("the whole id: refusal %q names neither %s nor %s", refusal.Error, brokerTestProject, other.key)
+	}
+
+	hidden := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+prefix+"/resolve", token, body))
+	const nobodys = "b00000ff"
+	missing := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+nobodys+"/resolve", token, body))
+	if hidden.Code != http.StatusNotFound || strings.ReplaceAll(hidden.Body.String(), prefix, nobodys) != missing.Body.String() {
+		t.Fatalf("its prefix: status=%d body=%s, want what a prefix nobody holds answers: status=%d body=%s",
+			hidden.Code, hidden.Body.String(), missing.Code, missing.Body.String())
 	}
 }
 

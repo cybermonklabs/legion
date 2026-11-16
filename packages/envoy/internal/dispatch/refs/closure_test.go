@@ -154,7 +154,7 @@ func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 	if len(want) < 9 {
 		t.Fatalf("main's closure answered %d rows, too few for the comparison to decide anything: %v", len(want), want)
 	}
-	if got := closureStatementRows(t, fixture.database, closureQuery(), "CORE-1", VisibilityArg(model.Actor{})); !reflect.DeepEqual(got, want) {
+	if got := closureStatementRows(t, fixture.database, closureQuery(), "CORE-1", VisibilityArg(serverReader)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the closure answered\n%v\nwant main's rows\n%v", got, want)
 	}
 
@@ -178,7 +178,7 @@ func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 	if !wantTruncated {
 		t.Fatal("main's closure reached no ninth hop, so the fixture decides nothing about truncation")
 	}
-	members, truncated, err := Closure(context.Background(), fixture.database.Pool, model.Actor{}, "CORE-1")
+	members, truncated, err := Closure(context.Background(), fixture.database.Pool, serverReader, "CORE-1")
 	if err != nil {
 		t.Fatalf("read the closure: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
 		t.Fatalf("set local enable_seqscan = off: %v", err)
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+closureQuery(), "CORE-1", VisibilityArg(model.Actor{})).Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+closureQuery(), "CORE-1", VisibilityArg(serverReader)).Scan(&raw); err != nil {
 		t.Fatalf("explain the closure: %v", err)
 	}
 	plan := explaintest.OnePlan(t, raw)

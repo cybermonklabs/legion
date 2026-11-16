@@ -694,15 +694,15 @@ func requireAPointerReadsItsTargetsTypeAtEachRead(t *testing.T, ctx context.Cont
 // backlink count.
 func requirePointerListed(t *testing.T, ctx context.Context, pool *store.Pool, stage, document, task, requirement string, listed bool) {
 	t.Helper()
-	in, err := refs.Edges(ctx, pool, model.Actor{}, refs.Query{Direction: "in", Kind: "block", ID: requirement})
+	in, err := refs.Edges(ctx, pool, model.Actor{Viewer: model.ServerViewer}, refs.Query{Direction: "in", Kind: "block", ID: requirement})
 	if err != nil {
 		t.Fatalf("%s: read the edges in at %s: %v", stage, requirement, err)
 	}
-	out, err := refs.Edges(ctx, pool, model.Actor{}, refs.Query{Direction: "out", Kind: "artifact", ID: document})
+	out, err := refs.Edges(ctx, pool, model.Actor{Viewer: model.ServerViewer}, refs.Query{Direction: "out", Kind: "artifact", ID: document})
 	if err != nil {
 		t.Fatalf("%s: read the edges out of %s: %v", stage, document, err)
 	}
-	counts, err := refs.BacklinkCounts(ctx, pool, model.Actor{}, "block", []string{requirement}, nil)
+	counts, err := refs.BacklinkCounts(ctx, pool, model.Actor{Viewer: model.ServerViewer}, "block", []string{requirement}, nil)
 	if err != nil {
 		t.Fatalf("%s: count the backlinks of %s: %v", stage, requirement, err)
 	}
