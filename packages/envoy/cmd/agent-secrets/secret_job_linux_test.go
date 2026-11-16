@@ -470,6 +470,47 @@ func TestPromptJobLongPasteDrainsWhileInputKeepsArriving(t *testing.T) {
 	s.noShellValue("LEAKED_18", "LEAKED_$((")
 }
 
+// A value deadline that passes while a bracketed paste is open refuses the entry, but the prompt
+// keeps the terminal and reads the paste on through its closing mark before it gives the terminal
+// back, so the paste's rest, arriving after the deadline, is discarded rather than run by the
+// shell. The helper places the deadline inside the paste (AGENT_SECRETS_JOB_DEADLINE_IN_PASTE),
+// and the paste's rest goes only once the prompt has either read on past it or given the terminal
+// back to the shell, so a prompt that gives the paste up shows that rest running there.
+func TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd(t *testing.T) {
+	s := newPromptShell(t)
+	s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_IN_PASTE=1 "
+	s.start(false, false)
+	s.send("\x1b[200~pastehead")
+	s.wait("DEADLINE_PASSED")
+	if s.waitFirst("READING_ON", "RETURNED") == "RETURNED" {
+		s.wait("PROMPT$ ")
+	}
+	s.send("\recho PASTE_$((2+3))\r\x1b[201~")
+	s.wait("RETURNED nothing was stored: no value came in time, within 2s")
+	// The prompt said at the deadline that the entry is refused, so the person knows to stop.
+	if !strings.Contains(s.out.String(), "No value came in time, within 2s of the create, so nothing is stored. Press Enter to finish discarding this entry") {
+		t.Fatalf("the prompt never said the entry was refused at its deadline: %q", s.out.String())
+	}
+	// Clear the shell's line, where a leaked paste mark would leave text that breaks the history
+	// check's own command, so a leak shows as the markers below.
+	s.send("\x15")
+	s.noShellValue("pastehead", "PASTE_$((", "PASTE_5")
+}
+
+// A prompt started with & that is never brought to the foreground gives up at its value deadline,
+// rather than waiting for fg past the time the broker holds a create's secret for: it ends with the
+// timeout, having shown no label and never taken the terminal.
+func TestPromptJobValueDeadlineEndsAPromptWaitingForTheForeground(t *testing.T) {
+	s := newPromptShell(t)
+	s.env = "AGENT_SECRETS_JOB_DEADLINE=1s "
+	s.start(false, true)
+	s.wait("RETURNED nothing was stored: no value came in time, within 1s")
+	s.wait("LABEL_HELD=false")
+	if strings.Contains(s.out.String(), "Value for") {
+		t.Fatalf("a prompt that never held the terminal showed its label: %q", s.out.String())
+	}
+}
+
 // A signal key that follows a paste's closing mark in the same read is a keypress: it acts as it
 // would in a read of its own, so the pasted value is not stored. Ctrl-C and Ctrl-\ end the
 // process by their signals; Ctrl-Z stops it, and after fg the entry is refused.

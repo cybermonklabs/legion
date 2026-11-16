@@ -4,6 +4,6 @@ package main
 
 import "time"
 
-func readHiddenAtTerminal(int, time.Time, func(), func()) ([]byte, error) {
+func readHiddenAtTerminal(int, time.Time, func(), func(error)) ([]byte, error) {
 	return nil, errNoValuePrompt
 }

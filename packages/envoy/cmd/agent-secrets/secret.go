@@ -336,8 +336,9 @@ func pipeCommand(prefix, profile string, words ...string) string {
 
 // readSecretValue reads the value of the secret name for a form, to be stored under shape, the
 // secret's shape tag (policy.TagShape), which is "" for a secret carrying none, giving up with
-// errValueTimedOut at deadline, or never where deadline is the zero time. At a terminal it
-// prompts on stderr, once it holds the terminal with echo off, and reads one line (readHidden),
+// errValueTimedOut at deadline, or never where deadline is the zero time; a value read whole only
+// after deadline is refused the same way. At a terminal it prompts on stderr, once it holds the
+// terminal with echo off, naming deadline where there is one, and reads one line (readHidden),
 // as `gh secret set` does, so the value never shows on the screen; a value of more than one line
 // is refused there, naming pipeTo, the form's own command line (pipeCommand) with the value piped
 // in. Otherwise it reads all of secretStdin.
@@ -361,9 +362,16 @@ func readSecretValue(name, pipeTo, shape string, deadline time.Time, stderr io.W
 		prompted := false
 		line, err := readHidden(fd, deadline, func() {
 			prompted = true
+			if !deadline.IsZero() {
+				fmt.Fprintf(stderr, "Enter the value by %s, %s after the create, or nothing is stored.\n", deadline.Format("15:04:05 MST"), valueWindowText())
+			}
 			fmt.Fprintf(stderr, "Value for %s: ", name)
-		}, func() {
-			fmt.Fprintf(stderr, "\nNothing was stored. Press Enter to finish discarding this entry, then run %s again and type the whole value.\n", pipeTo)
+		}, func(reason error) {
+			why := "Nothing was stored"
+			if errors.Is(reason, errValueTimedOut) {
+				why = fmt.Sprintf("No value came in time, within %s of the create, so nothing is stored", valueWindowText())
+			}
+			fmt.Fprintf(stderr, "\n%s. Press Enter to finish discarding this entry, then run %s again and type the whole value.\n", why, pipeTo)
 		})
 		if prompted {
 			// Echo is off, so the line ending the person typed never reached the screen.
@@ -399,6 +407,12 @@ func readSecretValue(name, pipeTo, shape string, deadline time.Time, stderr io.W
 		}
 		value, empty = string(data), "the value is read from standard input, which was empty"
 	}
+	// The prompt reads on through a paste, and through what follows the line, however long that
+	// takes, so a value can come whole only after the deadline: it did not come in time, and a
+	// create stores no value once the broker has stopped holding its secret as waiting for one.
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
+		return "", valueTimedOut(pipeTo)
+	}
 	if !utf8.ValidString(value) {
 		return "", usageErr{errors.New("the value must be valid UTF-8")}
 	}
@@ -416,11 +430,16 @@ func readSecretValue(name, pipeTo, shape string, deadline time.Time, stderr io.W
 // stored, how long the read lasted, and the command to run again. It is no usage error: the
 // command was right, and the person or the pipe was too slow.
 func valueTimedOut(pipeTo string) error {
-	window := valueReadWindow.String()
+	return fmt.Errorf("nothing was stored: %w, within %s of the create, as long as the broker holds a new secret waiting for its value, so the create gave up; run %s again", errValueTimedOut, valueWindowText(), pipeTo)
+}
+
+// valueWindowText is valueReadWindow as a line says it: whole minutes as such ("10 minutes"), any
+// other length as Go writes it.
+func valueWindowText() string {
 	if valueReadWindow >= time.Minute && valueReadWindow%time.Minute == 0 {
-		window = fmt.Sprintf("%d minutes", valueReadWindow/time.Minute)
+		return fmt.Sprintf("%d minutes", valueReadWindow/time.Minute)
 	}
-	return fmt.Errorf("nothing was stored: %w, within %s of the create, as long as the broker holds a new secret waiting for its value, so the create gave up; run %s again", errValueTimedOut, window, pipeTo)
+	return valueReadWindow.String()
 }
 
 // readAllBy reads all of r, or answers errValueTimedOut at deadline when r has not ended by then;

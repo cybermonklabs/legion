@@ -56,7 +56,7 @@ var (
 // a prompt started in the background shows nothing until fg gives it the terminal.
 // It holds promptBusy from its start to its very end, an end by a signal included, so
 // create's own watch on the signals (watchCreateSignals) leaves a signal to the prompt.
-func readHiddenAtTerminal(fd int, deadline time.Time, prompt, onStop func()) (line []byte, err error) {
+func readHiddenAtTerminal(fd int, deadline time.Time, prompt func(), onDiscard func(reason error)) (line []byte, err error) {
 	promptBusy.Lock()
 	defer promptBusy.Unlock()
 	if err := disableCoreDumps(); err != nil {
@@ -66,7 +66,7 @@ func readHiddenAtTerminal(fd int, deadline time.Time, prompt, onStop func()) (li
 	if err != nil {
 		return nil, err
 	}
-	tty := promptTerminal{fd: fd, controlling: controlling, wait: -1, onStop: onStop}
+	tty := promptTerminal{fd: fd, controlling: controlling, deadline: deadline, wait: -1, onDiscard: onDiscard}
 	watch, ignored, err := watchPromptSignals(tty.flushInput)
 	if err != nil {
 		return nil, err
@@ -146,22 +146,37 @@ func readHiddenAtTerminal(fd int, deadline time.Time, prompt, onStop func()) (li
 	}); err != nil {
 		return nil, err
 	}
-	tty.stopped, tty.notice = false, false
+	tty.stopped, tty.notice = false, nil
 	r := newPromptReader(saved, controlling, ignored)
 	buf := make([]byte, 512)
+	// entered is whether any byte of the entry has come; expired, whether the value deadline has
+	// passed with the entry under way.
+	entered, expired := false, false
 	for {
 		// Outside a paste the read blocks until input; an open paste bounds each read at
 		// maxPasteDrain, so it is the quiet since the last input that gives a still-arriving
 		// paste up, not the time since it began. A create's value deadline bounds every read, in
-		// a paste or not: at it the prompt gives up, through the same restore as any other end.
+		// a paste or not, until it passes. With nothing of the entry come, the prompt then ends,
+		// errValueTimedOut. With the entry under way, a byte read, a paste or a paste mark open, or
+		// a stop's refusal waiting for Enter, it ends only as a stop's refused entry does: it says
+		// at once that the entry is refused (onDiscard), and reads on to the line's end, an open
+		// paste through its closing mark, so no part of the value, typed or pasted, is echoed or
+		// reaches the shell; the entry's refusal is then errValueTimedOut.
 		tty.wait = -1
 		if r.inPaste {
 			tty.wait = int(maxPasteDrain.Milliseconds())
 		}
-		if !deadline.IsZero() {
+		if !deadline.IsZero() && !expired {
 			left := time.Until(deadline)
 			if left <= 0 {
-				return nil, errValueTimedOut
+				if !entered && !r.inPaste && len(r.pending) == 0 && r.err == nil {
+					return nil, errValueTimedOut
+				}
+				expired, r.err, tty.notice = true, errValueTimedOut, errValueTimedOut
+				if err := tty.whenHeld(tty.noticeDiscard); err != nil {
+					return nil, err
+				}
+				continue
 			}
 			if ms := int(left.Milliseconds()) + 1; tty.wait < 0 || ms < tty.wait {
 				tty.wait = ms
@@ -176,15 +191,21 @@ func readHiddenAtTerminal(fd int, deadline time.Time, prompt, onStop func()) (li
 			// The stop discarded unread bytes or paste marks, with no count of what
 			// was lost. Drain a fresh line instead of keeping a partial value.
 			r = promptReader{special: r.special, keys: r.keys, err: errPromptStopped}
+			if expired {
+				r.err = errValueTimedOut
+			}
 			tty.stopped = false
 		}
 		if n == 0 {
-			if !deadline.IsZero() && !time.Now().Before(deadline) {
-				return nil, errValueTimedOut
+			if !deadline.IsZero() && !expired && !time.Now().Before(deadline) {
+				continue // the deadline has passed: the check above decides how the read ends
 			}
 			if r.inPaste && time.Since(began) >= maxPasteDrain {
 				// The paste fell quiet for the whole bound without closing, so the signal
 				// keys pressed since were pasted text: give it up rather than read it forever.
+				if expired {
+					return nil, errValueTimedOut
+				}
 				return nil, errPasteCutShort
 			}
 			switch {
@@ -197,6 +218,7 @@ func readHiddenAtTerminal(fd int, deadline time.Time, prompt, onStop func()) (li
 			}
 			return nil, errValueCutShort
 		}
+		entered = true
 		done, sig := r.feed(buf[:n])
 		if sig != 0 {
 			if err := tty.raise(sig); err != nil {
@@ -228,14 +250,15 @@ type promptTerminal struct {
 	current     *unix.Termios // the reader's own mode; nil until it has read the settings it restores
 	watch       *promptWatch
 	death       syscall.Signal
-	wait        int // poll timeout in milliseconds; -1 until the line ends
+	wait        int       // poll timeout in milliseconds; -1 until the line ends
+	deadline    time.Time // the value deadline (readHiddenAtTerminal's), or the zero time
 	stopped     bool
-	onStop      func()
+	onDiscard   func(reason error)
 	// mayBeBackground is set at the first stop or resume and never cleared: the reader may
 	// since have been put in the background, so it holds the terminal again before each poll.
 	mayBeBackground bool
-	notice          bool
-	applied         bool // whether t.current and bracketed paste are already in effect
+	notice          error // why the entry was refused, for onDiscard once the reader holds the terminal; nil for no notice
+	applied         bool  // whether t.current and bracketed paste are already in effect
 }
 
 // apply puts the reader's mode and bracketed paste in effect. One resume can reach here more than
@@ -304,7 +327,7 @@ func (t *promptTerminal) signal(event promptSignal) error {
 		return event.err
 	}
 	if promptStopSignal(event.sig) {
-		t.stopped, t.notice, t.applied = true, true, false
+		t.stopped, t.notice, t.applied = true, errPromptStopped, false
 	} else if event.sig != syscall.SIGCONT {
 		t.death = event.sig
 		return fmt.Errorf("value prompt ended by %s", event.sig)
@@ -433,6 +456,9 @@ func controllingTerminal(fd int) (bool, error) {
 // us, and nothing sends a second SIGCONT. So every caller touches the
 // terminal only after this has independently confirmed foreground with a
 // read-only ioctl of its own, which never triggers that stop.
+//
+// A value deadline ends the wait too: the prompt waits in the background then, so what the
+// terminal sends is the shell's, and nothing of the entry is the prompt's to drain.
 func (t *promptTerminal) waitForeground() error {
 	for {
 		held, err := t.holdsTerminal()
@@ -449,6 +475,9 @@ func (t *promptTerminal) waitForeground() error {
 			return err
 		} else if orphaned {
 			return errNoForeground
+		}
+		if !t.deadline.IsZero() && !time.Now().Before(t.deadline) {
+			return errValueTimedOut
 		}
 		// fg need not send SIGCONT to a job that bg already left running, so the
 		// wait rechecks every 50 ms; an event ends it at once.
@@ -468,13 +497,13 @@ func (t *promptTerminal) nextEvent(timeout int) (bool, error) {
 	return true, t.signal(event)
 }
 
-// noticeStop tells the person, once the reader holds the terminal again, that a stop discarded
-// the entry.
-func (t *promptTerminal) noticeStop() error {
-	if t.notice {
-		t.notice = false
-		if t.onStop != nil {
-			t.onStop()
+// noticeDiscard tells the person, once the reader holds the terminal again, that the entry under
+// way is refused and why (onDiscard): a stop discarded it, or the value deadline passed.
+func (t *promptTerminal) noticeDiscard() error {
+	if reason := t.notice; reason != nil {
+		t.notice = nil
+		if t.onDiscard != nil {
+			t.onDiscard(reason)
 		}
 	}
 	return nil
@@ -526,7 +555,7 @@ func (t *promptTerminal) read(buf []byte) (int, error) {
 		// in the background since: either way it goes on only once it holds the terminal
 		// in its own mode.
 		if event || t.mayBeBackground {
-			if err := t.whenHeld(t.noticeStop); err != nil {
+			if err := t.whenHeld(t.noticeDiscard); err != nil {
 				return 0, err
 			}
 		}

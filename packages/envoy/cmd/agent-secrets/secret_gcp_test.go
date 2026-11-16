@@ -1158,7 +1158,7 @@ func TestGCPSecretPipeCommandKeepsTheGcloudAccountChoice(t *testing.T) {
 			t.Setenv("CLOUDSDK_CORE_ACCOUNT", row.named)
 			broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 			useTerminal(t)
-			readHidden = func(int, time.Time, func(), func()) ([]byte, error) { return nil, errMoreThanOneLine }
+			readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errMoreThanOneLine }
 
 			_, stderr, code := runSecret("create", "SCRATCH_TEST", "--owner", "me", "--tier", "agent")
 			if code != exitUsageError || !strings.Contains(stderr, row.want) {

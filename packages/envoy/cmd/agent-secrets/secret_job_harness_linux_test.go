@@ -107,6 +107,30 @@ func (s *promptShell) wait(want string) {
 	}
 }
 
+// waitFirst waits until the terminal has shown one of wants, and answers the one it showed first.
+func (s *promptShell) waitFirst(wants ...string) string {
+	s.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	buf := make([]byte, 4096)
+	for {
+		first, at := "", -1
+		for _, want := range wants {
+			if i := strings.Index(s.out.String(), want); i >= 0 && (at < 0 || i < at) {
+				first, at = want, i
+			}
+		}
+		if at >= 0 {
+			return first
+		}
+		if time.Now().After(deadline) {
+			s.t.Fatalf("waiting for one of %q; terminal showed %q", wants, s.out.String())
+		}
+		_ = s.controller.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+		n, _ := s.controller.Read(buf)
+		s.out.Write(buf[:n])
+	}
+}
+
 func (s *promptShell) start(wrapper bool, background bool) {
 	s.t.Helper()
 	command := s.env + "AGENT_SECRETS_JOB_HELPER=1 " + shellWord(os.Args[0]) + " -test.run='^TestPromptJobHelper$'"
@@ -285,6 +309,22 @@ func TestPromptJobHelper(t *testing.T) {
 			}
 		}
 	}
+	// AGENT_SECRETS_JOB_DEADLINE gives the read a deadline that long after it starts, as a create's
+	// window does, and names it so in the timeout's message. AGENT_SECRETS_JOB_DEADLINE_IN_PASTE
+	// places that deadline inside a paste: the reader's first wait after it has read input, with a
+	// bound below the paste's own (the deadline's), lasts until the deadline has passed and then
+	// ends with nothing read, as a paste that falls quiet across the deadline does. The helper
+	// prints DEADLINE_PASSED then, and READING_ON at the reader's next wait, if it waits again.
+	var window time.Duration
+	if d := os.Getenv("AGENT_SECRETS_JOB_DEADLINE"); d != "" {
+		var err error
+		if window, err = time.ParseDuration(d); err != nil {
+			t.Fatal(err)
+		}
+		valueReadWindow = window
+	}
+	var deadline time.Time
+	inPaste, held, readOn := os.Getenv("AGENT_SECRETS_JOB_DEADLINE_IN_PASTE") != "", false, false
 	real := readTerminal
 	quiet, readSome := false, false
 	readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
@@ -297,6 +337,16 @@ func TestPromptJobHelper(t *testing.T) {
 				timeout = -1
 			}
 		}
+		if held && !readOn {
+			readOn = true
+			fmt.Println("READING_ON")
+		}
+		if inPaste && readSome && !held && timeout >= 0 && timeout < int(maxPasteDrain.Milliseconds()) {
+			held = true
+			time.Sleep(time.Until(deadline))
+			fmt.Println("DEADLINE_PASSED")
+			timeout = 0
+		}
 		n, err := real(fd, wake, buf, timeout)
 		if n > 0 && !readSome {
 			readSome = true
@@ -305,7 +355,10 @@ func TestPromptJobHelper(t *testing.T) {
 		return n, err
 	}
 	label := &labelCheck{}
-	value, err := readSecretValue("DEMO_KEY", "agent-secrets secret set DEMO_KEY", "", time.Time{}, label)
+	if window != 0 {
+		deadline = time.Now().Add(window)
+	}
+	value, err := readSecretValue("DEMO_KEY", "agent-secrets secret set DEMO_KEY", "", deadline, label)
 	restored, restoreErr := unix.IoctlGetTermios(0, unix.TCGETS)
 	fmt.Printf("RETURNED %v MATCH=%t EMPTY=%t RESTORED=%t LABEL_HELD=%t\n", err, value == "headtail", value == "",
 		restoreErr == nil && termiosKey(restored) == reference, label.shown && label.held)
