@@ -43,20 +43,19 @@ const privateRoster = `[
 	{"session_id":"session-idle","title":"Idle","capabilities":["btw","steer"],"last_seen":100}
 ]`
 
-// seedSessionWork has the roster's sessions act in the seed's projects, each through a personal
-// token of carol's that may write there: what a session writes in a project is what makes it one
-// of the project's agents (session_projects).
+// seedSessionWork has the roster's sessions act in the seed's projects, each under a credential
+// that proves the session (asSession): what a proven session writes in a project is what makes it
+// one of the project's agents (session_projects).
 func seedSessionWork(t *testing.T, seed privateSeed) {
 	t.Helper()
-	act := func(caller privateCaller, project, route, session string, body map[string]any) {
+	act := func(project, route, session string, body map[string]any) {
 		t.Helper()
-		body["actor"] = map[string]any{"kind": "session", "id": session}
-		seed.mustRequest(t, caller, http.MethodPost, "/api/v1/issues/"+seed.issue[project]+"/"+route, body, http.StatusCreated)
+		seed.asSession(t, session, project, http.MethodPost, "/api/v1/issues/"+seed.issue[project]+"/"+route, body, http.StatusCreated)
 	}
-	act(callerCarolToken, seedPublic, "comments", sessionOfPublic, map[string]any{"body": "Done on PUB."})
-	act(callerCarolPrivToken, seedPrivate, "comments", sessionOfPrivate, map[string]any{"body": "Done on PRIV."})
-	act(callerCarolToken, seedPublic, "asks", sessionOfBoth, map[string]any{"question": "Ship PUB?"})
-	act(callerCarolPrivToken, seedPrivate, "asks", sessionOfBoth, map[string]any{"question": "Ship PRIV?"})
+	act(seedPublic, "comments", sessionOfPublic, map[string]any{"body": "Done on PUB."})
+	act(seedPrivate, "comments", sessionOfPrivate, map[string]any{"body": "Done on PRIV."})
+	act(seedPublic, "asks", sessionOfBoth, map[string]any{"question": "Ship PUB?"})
+	act(seedPrivate, "asks", sessionOfBoth, map[string]any{"question": "Ship PRIV?"})
 }
 
 // TestARestrictedMemberSeesOnlyThePeopleAndAgentsOfItsProjects: GET /api/v1/users, GET
@@ -90,12 +89,15 @@ func TestARestrictedMemberSeesOnlyThePeopleAndAgentsOfItsProjects(t *testing.T) 
 		users  []string
 		agents []string
 		// pages is which of alice's and carol's pages the caller opens; the other answers as a
-		// login nobody holds. carol's one comment is on PRIV, so a caller that sees nothing of PRIV
-		// cannot open her page (personPageHeldQuery), though it reads her in the people list;
-		// carol's own token, which sees nothing of PRIV, opens her own page, as every caller does.
+		// login nobody holds. carol's one comment is on PRIV, but her agents' sessions, which her
+		// broker token proved (seedSessionWork), wrote on PUB too, and a write of a session proved
+		// hers is one of hers (personPageHeldQuery's session_authored): a caller that sees PUB or
+		// PRIV opens her page, and one that sees neither does not, though it may read her in the
+		// people list. alice's one comment is on PUB, so a caller that sees only PRIV cannot open
+		// hers. Every caller opens its own person's page.
 		pages []string
 	}{
-		{callerAlice, everyone, every(1), []string{seedAlice}},
+		{callerAlice, everyone, every(1), []string{seedAlice, seedCarol}},
 		{callerBob, ofPrivate, privateOnly, []string{seedCarol}},
 		{callerCarol, everyone, every(2), []string{seedAlice, seedCarol}},
 		{callerCarolPrivToken, ofPrivate, privateOnly, []string{seedCarol}},

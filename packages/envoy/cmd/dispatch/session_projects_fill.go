@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 
@@ -12,20 +13,45 @@ import (
 // `envoy-dispatch backfill-session-projects` reads.
 const sessionProjectsFillBatch = 10_000
 
-// backfillSessionProjects runs `envoy-dispatch backfill-session-projects`: it records in
+// backfillSessionProjects runs `envoy-dispatch backfill-session-projects [--reset]`: it records in
 // session_projects the (session, project) pair of every event written before the live insert
 // existed (fillSessionProjects), then writes the one session_projects_filled row. It runs after the
 // deploy whose events.Broker.AppendAll records each new event's pair, so every event is covered by
 // the one or the other. It is safe to run again, and at any time: a pair a row holds already is
-// not written again. It exits 0 once it has read every event, and 1 when the database cannot be
-// opened or written.
-func backfillSessionProjects(ctx context.Context, databaseURL string, stdout, stderr io.Writer) int {
+// not written again.
+//
+// --reset first empties session_projects and session_projects_filled, each in a statement of its
+// own, as migration 20261116081157_session_projects_proven does at boot, and then fills. A
+// deployment that rolls keeps an old build recording pairs under the old rule while the new one
+// starts, and a fill never takes a pair away, so its operator runs it once the last old pod is
+// gone. It exits 0 once it has read every event, 1 when the database cannot be opened or written,
+// and 2 for an argument it does not take.
+func backfillSessionProjects(ctx context.Context, args []string, databaseURL string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("backfill-session-projects", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	reset := flags.Bool("reset", false, "empty session_projects and its marker first, then fill")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() > 0 {
+		fmt.Fprintf(stderr, "backfill-session-projects: unexpected argument %q; the one flag is --reset\n", flags.Arg(0))
+		return 2
+	}
 	database, ok := openMigrated(ctx, "backfill-session-projects", databaseURL, stderr)
 	if !ok {
 		return 1
 	}
 	defer database.Pool.Close()
-	report, err := fillSessionProjects(store.WithTransactionTracking(ctx), database.Pool, sessionProjectsFillBatch)
+	ctx = store.WithTransactionTracking(ctx)
+	if *reset {
+		for _, statement := range []string{`delete from session_projects`, `delete from session_projects_filled`} {
+			if _, err := database.Pool.Exec(ctx, statement); err != nil {
+				fmt.Fprintf(stderr, "backfill-session-projects: --reset: %s: %v\n", statement, err)
+				return 1
+			}
+		}
+	}
+	report, err := fillSessionProjects(ctx, database.Pool, sessionProjectsFillBatch)
 	if err != nil {
 		fmt.Fprintf(stderr, "backfill-session-projects: %v\n", err)
 		return 1
@@ -41,11 +67,12 @@ type sessionProjectsFill struct {
 
 // fillSessionProjects reads every event in id order, batch at a time, one statement and so one
 // transaction each, and records each pair the live insert (events.queueSessionProjects) records:
-// an event whose actor is a session (`kind` session and a non-empty `id`; a personal token's actor
-// has an empty one) on a project, which is the event's own project_key, else its issue's for an
-// issue's event, else its document's for a document's event. A person's event, and an event of no
-// project, records nothing. The project is the one the issue or document is in when the fill reads
-// it. A pair is written only where no row holds it, as the live insert writes it, since
+// an event whose actor is a session its credential proved - `kind` session, a non-empty `id`, and
+// an `act` naming that same session and no personal token (events.provedSession) - on a project,
+// which is the event's own project_key, else its issue's for an issue's event, else its
+// document's for a document's event. A person's event, a session a request body named, and an
+// event of no project record nothing. The project is the one the issue or document is in when the
+// fill reads it. A pair is written only where no row holds it, as the live insert writes it, since
 // session_projects has no unique key (migration 20261116015736_project_access). Once a batch comes
 // back short, every event is read, and it writes the one session_projects_filled row, unless a
 // run before it did.
@@ -69,6 +96,8 @@ func fillSessionProjects(ctx context.Context, pool *store.Pool, batch int) (sess
 				left join issues i on i.key = b.issue_key
 				left join artifacts a on a.id = b.artifact_id
 				where b.actor->>'kind' = 'session' and b.actor->>'id' <> ''
+					and b.actor->'act'->>'session' = b.actor->>'id'
+					and coalesce(b.actor->'act'->>'token_id', '') = ''
 			), inserted as (
 				insert into session_projects (session_id, project_key)
 				select p.session_id, p.project_key

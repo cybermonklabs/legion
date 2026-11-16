@@ -7,7 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -66,6 +69,10 @@ type privateSeed struct {
 	issue map[string]string
 	// tokens are the plaintext personal tokens, by the caller each one is.
 	tokens map[privateCaller]string
+	// broker is the stub secrets broker the server asks about a DPoP-bound token, and agent the
+	// key an agent of carol's presents such a token with (asSession).
+	broker *brokertokentest.StubBroker
+	agent  *brokerCaller
 }
 
 // seedPrivateProject stands up a test server holding verification v16's seed.
@@ -74,13 +81,18 @@ func seedPrivateProject(t *testing.T) privateSeed {
 	return seedPrivateProjectWith(t, testServerOptions{})
 }
 
-// seedPrivateProjectWith is seedPrivateProject on a test server built from options.
+// seedPrivateProjectWith is seedPrivateProject on a test server built from options. The server
+// takes broker-issued tokens from a stub broker, so a seed's session can act under a credential
+// that proves it (asSession).
 func seedPrivateProjectWith(t *testing.T, options testServerOptions) privateSeed {
 	t.Helper()
+	broker := brokertokentest.NewStubBroker(t)
+	options.brokerTokens = stubBrokerTokens(t, broker)
 	handler, database, deps, served := newRegisteredTestServer(t, options)
 	seed := privateSeed{
 		handler: handler, database: database, deps: deps, server: served,
 		issue: map[string]string{}, tokens: map[privateCaller]string{},
+		broker: broker, agent: newBrokerCaller(t),
 	}
 	seedPeople(t, database, seedBob, seedCarol)
 	markRestricted(t, database, seedBob)
@@ -206,6 +218,28 @@ func (s privateSeed) mustRequest(t *testing.T, caller privateCaller, method, tar
 	response := s.request(t, caller, method, target, body)
 	if response.Code != status {
 		t.Fatalf("%s: %s %s = %d %s, want %d", caller, method, target, response.Code, response.Body.String(), status)
+	}
+	return response
+}
+
+// asSession makes one request as session, an agent of carol's working in project, under the one
+// credential that proves a session: a broker-issued token the stub broker answers for session,
+// carol's and scoped to project, presented under DPoP with a fresh proof of the seed's agent key.
+// Only such a write makes the session one of the project's agents (session_projects,
+// events.provedSession); a session a request body names under a token that proves none is
+// recorded nowhere. It fails the test unless the answer is status.
+func (s privateSeed) asSession(t *testing.T, session, project, method, target string, body any, status int) *httptest.ResponseRecorder {
+	t.Helper()
+	token := "broker-token-of-" + session + "-in-" + project
+	s.broker.Says(token, brokertoken.Introspection{
+		Active: true, Session: session, Person: seedCarol,
+		ProjectScope: brokertoken.ProjectScopeNamed, Project: project, Scope: "dispatch.write",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: brokertoken.ExchangeClientID, Thumbprint: s.agent.jkt,
+	})
+	response := httptest.NewRecorder()
+	s.handler.ServeHTTP(response, s.agent.presenting(t, method, target, token, body))
+	if response.Code != status {
+		t.Fatalf("session %s in %s: %s %s = %d %s, want %d", session, project, method, target, response.Code, response.Body.String(), status)
 	}
 	return response
 }

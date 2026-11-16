@@ -171,28 +171,32 @@ type brokerTokenRig struct {
 func newBrokerTokenRig(t *testing.T, options ...func(*brokertoken.Options)) *brokerTokenRig {
 	t.Helper()
 	broker := brokertokentest.NewStubBroker(t)
-	handler, database, deps := newTestServer(t, testServerOptions{
-		brokerTokens: func(database *store.Store) *brokertoken.Verifier {
-			opts := brokertoken.Options{
-				BrokerURL: broker.Server.URL,
-				Account:   brokertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
-				Origin:    testServerURL,
-				Replay:    store.NewDPoPProofs(database.Pool),
-				// What Dispatch itself passes: the check keys its bucket on the address
-				// Dispatch's own proxy-trust rule reads, never one of its own.
-				Address: auth.ForwardedAddress,
-			}
-			for _, option := range options {
-				option(&opts)
-			}
-			verifier, err := brokertoken.New(opts)
-			if err != nil {
-				t.Fatalf("build the broker token verifier: %v", err)
-			}
-			return verifier
-		},
-	})
+	handler, database, deps := newTestServer(t, testServerOptions{brokerTokens: stubBrokerTokens(t, broker, options...)})
 	return &brokerTokenRig{handler: handler, deps: deps, database: database, broker: broker}
+}
+
+// stubBrokerTokens is the broker-token check a test server builds on its database, asking broker
+// whether a token is live, with each option applied to the verifier's options before it is built.
+func stubBrokerTokens(t *testing.T, broker *brokertokentest.StubBroker, options ...func(*brokertoken.Options)) func(*store.Store) *brokertoken.Verifier {
+	return func(database *store.Store) *brokertoken.Verifier {
+		opts := brokertoken.Options{
+			BrokerURL: broker.Server.URL,
+			Account:   brokertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
+			Origin:    testServerURL,
+			Replay:    store.NewDPoPProofs(database.Pool),
+			// What Dispatch itself passes: the check keys its bucket on the address
+			// Dispatch's own proxy-trust rule reads, never one of its own.
+			Address: auth.ForwardedAddress,
+		}
+		for _, option := range options {
+			option(&opts)
+		}
+		verifier, err := brokertoken.New(opts)
+		if err != nil {
+			t.Fatalf("build the broker token verifier: %v", err)
+		}
+		return verifier
+	}
 }
 
 // serve carries one request through the server under test.

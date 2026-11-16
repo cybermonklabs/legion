@@ -290,9 +290,9 @@ func (b *Broker) AppendAll(ctx context.Context, tx pgx.Tx, events []model.Event)
 // queueSessionProjects queues into b the record that each session among events' actors acted in
 // the project its event belongs to (session_projects), which is how a session is one of a
 // project's agents (access.SessionClause): a read model of the event log, not a node, so it is
-// written here, where every event is appended, rather than by each route. An event of a person,
-// of a credential that names no session (a personal token's actor has an empty id) or of no
-// project records nothing.
+// written here, where every event is appended, rather than by each route. Only a session the
+// event's credential proved is recorded (provedSession); an event of a person, of a session a
+// request body named, or of no project records nothing.
 //
 // A pair is written only where no committed row holds it, and session_projects has no unique
 // key, so the write never waits for another transaction: with a unique key, a second open write
@@ -306,7 +306,7 @@ func queueSessionProjects(b *pgx.Batch, events []model.Event) {
 	seen := make(map[pair]struct{})
 	var sessions, projects []string
 	for _, e := range events {
-		if e.Actor.Kind != "session" || e.Actor.ID == "" || e.Project == "" {
+		if !provedSession(e.Actor) || e.Project == "" {
 			continue
 		}
 		p := pair{e.Actor.ID, e.Project}
@@ -328,6 +328,18 @@ func queueSessionProjects(b *pgx.Batch, events []model.Event) {
 			select 1 from session_projects recorded
 			where recorded.session_id = input.session_id and recorded.project_key = input.project_key)
 	`, sessions, projects)
+}
+
+// provedSession reports whether actor is a session the credential behind its write proved: an
+// act naming the actor's own session and no personal token. api.bearerSessionActor sets that act
+// only for a credential whose own session is the actor's id, a broker-issued token. A credential
+// that proves no session names one in the request body: the shared token's actor carries no act,
+// and a personal token's act carries its token id, so neither can make a session it merely named
+// look like one of a project's agents. The act survives Actor.Recorded, and
+// `envoy-dispatch backfill-session-projects` holds stored actors to the same rule in SQL.
+func provedSession(actor model.Actor) bool {
+	return actor.Kind == "session" && actor.ID != "" && actor.Act != nil &&
+		actor.Act.Session == actor.ID && actor.Act.TokenID == ""
 }
 
 // queueOwnerSeq queues into b the write recording e, its owner's last appended event, as that
