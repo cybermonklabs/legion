@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CaseRow, CaseVerdict } from "../build-corpus";
@@ -166,8 +166,14 @@ interface Fake extends FreshDeps {
   lines: string[];
 }
 
-/** A run's world, with the answer the caller chooses for each arm and case. */
-function fake(textOf: (request: AgentRequest) => string): Fake {
+/** The model the command asks the agent for, which a fake agent reports by default. */
+const ASKED = "claude-opus-5-5";
+
+/** A run's world, with the answer and the reported model the caller chooses for each case. */
+function fake(
+  textOf: (request: AgentRequest) => string,
+  modelOf: (request: AgentRequest) => string | null = () => ASKED
+): Fake {
   const deps: Fake = {
     asked: [],
     lines: [],
@@ -175,7 +181,7 @@ function fake(textOf: (request: AgentRequest) => string): Fake {
       deps.asked.push(request);
       return Promise.resolve({
         text: textOf(request),
-        model: "fake-opus",
+        model: modelOf(request),
         latencyMs: 7,
         failure: null,
       });
@@ -373,6 +379,106 @@ describe("an answer in no readable shape", () => {
   });
 });
 
+describe("an answer from another model than the one asked", () => {
+  test("is the model fault and never an agreement, whatever label it gave", async () => {
+    const cases = ["case-0", "case-1", "case-2", "case-3"].map((id) => freshCase(id));
+    // Every answer agrees with the person. On the skill arm, case-0 ran on the asked model,
+    // case-1 on the model a fallback ladder steps down to, case-2 on a dated id the agent was not
+    // started with, and case-3 reported no model.
+    const served: Record<string, string | null> = {
+      "case-0": ASKED,
+      "case-1": "claude-fable-5-2",
+      "case-2": `${ASKED}-20261015`,
+      "case-3": null,
+    };
+    const deps = fake(
+      () => APPROVE,
+      (request) => (request.arm === "with-skill" ? (served[request.caseId] ?? null) : ASKED)
+    );
+    const out = await scratch();
+    const report = await runFresh(
+      {
+        neighbours: "with",
+        cases,
+        out,
+        homes: { "with-skill": "/home-with", "no-skill": "/home-no" },
+        answers: "refuse",
+        round: null,
+        concurrency: 1,
+      },
+      deps
+    );
+    const skill = report.arms[0];
+    expect(skill?.faults).toBe(3);
+    expect(skill?.agreed).toBe(1);
+    expect(skill?.agreement).toBeCloseTo(1 / 4, 10);
+    expect(report.arms[1]?.agreed).toBe(4);
+    const written = (await readFile(answersPath(out, "with"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as AnswerRow)
+      .filter((row) => row.arm === "with-skill");
+    const byCase = new Map(written.map((row) => [row.caseId, row]));
+    expect(byCase.get("case-0")?.fault).toBeNull();
+    expect(byCase.get("case-1")).toMatchObject({
+      fault: "model",
+      agreed: false,
+      chosen: [APPROVE],
+      faultDetail: `asked ${ASKED}, and the agent ran on claude-fable-5-2`,
+    });
+    expect(byCase.get("case-2")?.fault).toBe("model");
+    expect(byCase.get("case-3")).toMatchObject({
+      fault: "model",
+      faultDetail: `asked ${ASKED}, and the agent reported no model`,
+    });
+  });
+
+  test("a kept row is read as the model fault where it is on another model or was never checked", async () => {
+    const out = await scratch();
+    const kept = (arm: ArmName, caseId: string, model: string, checked: boolean): AnswerRow => ({
+      arm,
+      caseId,
+      model,
+      ...(checked ? { modelChecked: true as const } : {}),
+      chosen: [APPROVE],
+      agreed: true,
+      fault: null,
+      faultDetail: null,
+      latencyMs: 7,
+      at: "2026-11-12T09:00:00.000Z",
+    });
+    // case-0: the skill arm's row on a fallback model. case-1: its row as a run before the check
+    // wrote it, whose model may be another message's. The no-skill arm's rows are checked.
+    const lines = [
+      kept("with-skill", "case-0", "claude-fable-5-2", true),
+      kept("no-skill", "case-0", ASKED, true),
+      kept("with-skill", "case-1", ASKED, false),
+      kept("no-skill", "case-1", ASKED, true),
+    ];
+    await writeFile(
+      answersPath(out, "with"),
+      `${lines.map((row) => JSON.stringify(row)).join("\n")}\n`
+    );
+    const deps = fake(() => CHANGES);
+    const report = await runFresh(
+      {
+        neighbours: "with",
+        cases: [freshCase("case-0"), freshCase("case-1")],
+        out,
+        homes: { "with-skill": "/home-with", "no-skill": "/home-no" },
+        answers: "resume",
+        round: null,
+        concurrency: 1,
+      },
+      deps
+    );
+    const asked = deps.asked.map((request) => `${request.arm} ${request.caseId}`).sort();
+    expect(asked).toEqual(["with-skill case-0", "with-skill case-1"]);
+    expect(report.arms[0]?.agreed).toBe(0);
+    expect(report.arms[1]?.agreed).toBe(2);
+  });
+});
+
 describe("the agent's own stream", () => {
   test("the last text it printed is the answer, with the model it says it ran on", () => {
     const stream = [
@@ -397,6 +503,23 @@ describe("the agent's own stream", () => {
 
   test("a stream the agent printed no answer into reads as no text", () => {
     expect(answerOf('{"type":"agent_start"}\n')).toEqual({ text: "", model: null });
+  });
+
+  test("the model is the one of the message the answer came in, and not of a later empty one", () => {
+    const event = (type: string, model: string, text: string | null) =>
+      JSON.stringify({
+        type,
+        message: {
+          role: "assistant",
+          model,
+          content: text === null ? [] : [{ type: "text", text }],
+        },
+      });
+    const stream = [
+      event("message_end", "claude-fable-5-2", APPROVE),
+      event("message_start", "claude-opus-5-5", null),
+    ].join("\n");
+    expect(answerOf(stream)).toEqual({ text: APPROVE, model: "claude-fable-5-2" });
   });
 });
 

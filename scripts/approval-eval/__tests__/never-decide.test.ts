@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CaseRow } from "../build-corpus";
@@ -108,14 +108,17 @@ interface Fake {
   asks: ClaudeAsk[];
 }
 
-/** An asking function that answers `text` to every call and keeps what it was asked. */
+/**
+ * An asking function that answers `text` to every call and keeps what it was asked. Its answer
+ * says the asked model served it, as the gateway's answers do.
+ */
 function fake(text: string): Fake {
   const asks: ClaudeAsk[] = [];
   return {
     asks,
     ask: (ask) => {
       asks.push(ask);
-      return Promise.resolve(modelAnswer(text, ask.prompt.labels));
+      return Promise.resolve({ ...modelAnswer(text, ask.prompt.labels), servedModel: ask.model });
     },
   };
 }
@@ -254,6 +257,24 @@ describe("neverDecide", () => {
     expect([second.inputTokens, second.outputTokens]).toEqual([null, null]);
     expect(second.answer).toBe(first.answer);
     expect(await readdir(directory)).toHaveLength(1);
+  });
+
+  test("keeps the served model, and asks again where a kept answer records none", async () => {
+    const directory = await scratch();
+    const asked = fake("credential\nThe change list asks for a deploy token to be minted.");
+    const input = { text: DOCUMENT, documentId: "artifact-1", documentVersion: 3 };
+    const options = { ask: asked.ask, definition: DEFINITION, cacheDirectory: directory };
+    const first = await neverDecide(input, options);
+    expect(first.servedModel).toBe(asked.asks[0]?.model ?? "");
+    expect((await neverDecide(input, options)).servedModel).toBe(first.servedModel);
+    // An entry as it was kept before entries recorded their served model.
+    const [file] = await readdir(directory);
+    const path = join(directory, file ?? "");
+    const { servedModel: _, ...older } = JSON.parse(await readFile(path, "utf8"));
+    await writeFile(path, JSON.stringify(older), "utf8");
+    const third = await neverDecide(input, options);
+    expect(third.source).toBe("model");
+    expect(asked.asks).toHaveLength(2);
   });
 
   test("asks again when the prose changes, and again when the document's version does", async () => {

@@ -67,6 +67,7 @@ function row(arm: AnswerRow["arm"], caseId: string, agreed: boolean): string {
     arm,
     caseId,
     model: "claude-opus-5-5",
+    modelChecked: true,
     chosen: [agreed ? "Approve" : "Request changes"],
     agreed,
     fault: null,

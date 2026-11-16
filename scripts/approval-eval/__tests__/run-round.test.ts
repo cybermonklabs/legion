@@ -179,7 +179,11 @@ interface Fake extends RoundDeps {
   clock: number;
 }
 
-/** A round's world, with the clock the caller moves and the answer the caller chooses. */
+/**
+ * A round's world, with the clock the caller moves and the answer the caller chooses. An answer
+ * says the asked model served it, as the gateway's answers do, unless the caller's answer names
+ * another.
+ */
 function fake(
   answerOf: (ask: { model: string; user: string }, at: number) => ModelAnswer,
   stepMs = 0
@@ -197,7 +201,10 @@ function fake(
         user: ask.prompt.user,
       });
       deps.clock += stepMs;
-      return answerOf({ model: ask.model, user: ask.prompt.user }, deps.asks.length - 1);
+      return {
+        servedModel: ask.model,
+        ...answerOf({ model: ask.model, user: ask.prompt.user }, deps.asks.length - 1),
+      };
     },
     askJev: async (ask: JevAsk) => {
       deps.asks.push({
@@ -207,7 +214,10 @@ function fake(
         user: ask.state,
       });
       deps.clock += stepMs;
-      return answerOf({ model: ask.model, user: ask.state }, deps.asks.length - 1);
+      return {
+        servedModel: ask.model,
+        ...answerOf({ model: ask.model, user: ask.state }, deps.asks.length - 1),
+      };
     },
     now: () => deps.clock,
     log: (line: string) => {
@@ -502,6 +512,7 @@ describe("the rows file", () => {
       arm: "bare-opus",
       recipe: "bare",
       model: "a-model",
+      servedModel: "a-model",
       endpoint: "claude",
       caseId,
       slice: "report",
@@ -585,5 +596,23 @@ describe("the rows file", () => {
       "case-0",
       "case-1",
     ]);
+  });
+
+  test("a resume asks again a row no served model is recorded for, or another model served", async () => {
+    const round = await scratch();
+    const { servedModel: _, ...unrecorded } = judgementRow("case-0", 0, null);
+    const lines = [
+      JSON.stringify(unrecorded),
+      JSON.stringify({ ...judgementRow("case-1", 0, null), servedModel: "claude-fable-5-2" }),
+      JSON.stringify({ ...judgementRow("case-2", 0, null), servedModel: null }),
+      JSON.stringify(judgementRow("case-3", 0, null)),
+      JSON.stringify({ ...judgementRow("case-4", 0, null), endpoint: "jev", servedModel: null }),
+    ];
+    await writeFile(rowsPath(round), `${lines.join("\n")}\n`, "utf8");
+    const store = await RowStore.open(round);
+    const answered = [0, 1, 2, 3, 4].map((at) =>
+      store.answered(`bare-opus\u0000case-${at}\u00000`)
+    );
+    expect(answered).toEqual([false, false, false, true, true]);
   });
 });

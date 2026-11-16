@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { CaseKind } from "./build-corpus";
 import { numberOf, pool, recordOf, stringOf } from "./corpus-io";
 import type { SliceName } from "./draw-io";
-import type { FaultKind } from "./models";
+import { type FaultKind, servedAsAsked } from "./models";
 import type { RecipeName } from "./recipes";
 import type { ReplayedDocument } from "./replay";
 import type { RetrievalRoute } from "./retrieval";
@@ -24,8 +24,8 @@ import type { RetrievalRoute } from "./retrieval";
  * and one reads it: `run-round.ts` and, of the commands here, `analyze.ts` alone.
  *
  * The types the row and the cache are built from come from the modules that make those values,
- * and every one of those imports is type-only: it is erased, so importing this module runs no
- * model call, no Dispatch read and no command.
+ * and every one of those imports is type-only but `servedAsAsked`, a pure function of two
+ * strings: importing this module runs no model call, no Dispatch read and no command.
  */
 
 /** Which endpoint an arm's model is called on. */
@@ -36,6 +36,11 @@ export interface JudgementRow {
   arm: string;
   recipe: RecipeName;
   model: string;
+  /**
+   * The model the answer says served it (`ModelAnswer.servedModel`), and null where the answer
+   * named none. A row a round wrote before this was recorded has no such field.
+   */
+  servedModel?: string | null;
   endpoint: Endpoint;
   caseId: string;
   slice: SliceName;
@@ -77,6 +82,11 @@ export function rowsPath(round: string): string {
  * carrying anything else would be read as a judgement that chose something unsayable rather
  * than refused. The runner reads such a line as a judgement to ask again, which is what an
  * unreadable row is for.
+ *
+ * A row written as answered that records no served model, as every row written before rows
+ * recorded one does, or a gateway row another model than its arm's served, is read as the
+ * `model` fault (`servedModelFaultOf`), its verdict kept: no reader scores it as its arm's, and
+ * the runner's resume asks it again. Figures a round printed before that stay its own code's.
  */
 export function rowOf(line: string): JudgementRow | null {
   let parsed: unknown;
@@ -90,7 +100,22 @@ export function rowOf(line: string): JudgementRow | null {
   if (typeof record.arm !== "string" || typeof record.caseId !== "string") return null;
   if (typeof record.judgement !== "number" || !Array.isArray(record.verdict)) return null;
   // The rest of the line is what the runner wrote, whose shape is `JudgementRow`.
-  return record as unknown as JudgementRow;
+  const row = record as unknown as JudgementRow;
+  const unserved = row.fault === null ? servedModelFaultOf(row) : null;
+  return unserved === null ? row : { ...row, fault: "model", faultDetail: unserved };
+}
+
+/**
+ * Why a judgement's verdict is not its arm's model's, or null where it is: the row records no
+ * served model, or it is a gateway row whose served model is not its arm's (`servedAsAsked`).
+ * A Jev row is only held to recording one, since its arm asks for an alias.
+ */
+export function servedModelFaultOf(
+  row: Pick<JudgementRow, "endpoint" | "model" | "servedModel">
+): string | null {
+  if (row.servedModel === undefined) return "the row records no served model";
+  if (row.endpoint !== "claude" || servedAsAsked(row.model, row.servedModel ?? "")) return null;
+  return `asked ${row.model}, and the answer ${row.servedModel === null ? "names no model" : `came from ${row.servedModel}`}`;
 }
 
 /** What one reading of `rows.jsonl` found: the rows, and how much of the file they were. */

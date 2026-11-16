@@ -22,7 +22,7 @@ import {
   verdictOf,
   whole,
 } from "./corpus-io";
-import { labelsOf, scrubSecrets } from "./models";
+import { labelsOf, scrubSecrets, servedAsAsked } from "./models";
 import { renderPrompt } from "./recipes";
 import { renderChecked } from "./render";
 import type { ReplayedDocument } from "./replay";
@@ -240,11 +240,20 @@ export interface AnswerRow {
   arm: ArmName;
   caseId: string;
   model: string | null;
+  /**
+   * True on every row this command writes now: `model` is the model of the message the answer
+   * came in (`answerOf`), checked against `MODEL`. A row written before has no such field, and
+   * its `model` may be another message's, so `answerRowOf` reads it as the `model` fault.
+   */
+  modelChecked?: true;
   /** The labels the answer chose, and empty where none could be read. */
   chosen: string[];
   agreed: boolean;
-  /** Why no verdict was read: the agent gave nothing, or what it gave was no label. */
-  fault: "agent" | "unreadable" | null;
+  /**
+   * Why no verdict was read: the agent gave nothing, it ran on another model than `MODEL`
+   * (`servedAsAsked`), so its verdict is not the measured bundle's, or what it gave was no label.
+   */
+  fault: "agent" | "model" | "unreadable" | null;
   faultDetail: string | null;
   latencyMs: number;
   at: string;
@@ -429,8 +438,10 @@ function oneLine(detail: string): string {
 }
 
 /**
- * The last text the agent printed and the model it says it ran on, read from its JSON event
- * stream. A later assistant message replaces an earlier one, so what is left is the answer.
+ * The last text the agent printed and the model that printed it, read from its JSON event
+ * stream. A later assistant message with text replaces an earlier one, so what is left is the
+ * answer, and the model is that same message's: a message with no text never changes it, so an
+ * answer is never read under the model of another message.
  */
 export function answerOf(stdout: string): { text: string; model: string | null } {
   let text = "";
@@ -446,8 +457,9 @@ export function answerOf(stdout: string): { text: string; model: string | null }
     const message = recordOf(recordOf(parsed)?.message);
     if (message === null || message.role !== "assistant") continue;
     const said = textOfContent(message.content);
-    if (said !== "") text = said;
-    model = stringOf(message.model) ?? model;
+    if (said === "") continue;
+    text = said;
+    model = stringOf(message.model);
   }
   return { text, model };
 }
@@ -609,8 +621,24 @@ export function verdictLineOf(paired: PairedComparison): { passes: boolean; line
 }
 
 /**
+ * Why a verdict the agent gave on `model` is not the measured one, or null where `model` is
+ * `MODEL` (`servedAsAsked`): a run on another model, a fallback the agent took included, or one
+ * that reported none.
+ */
+function modelFaultOf(model: string | null): string | null {
+  if (servedAsAsked(MODEL, model ?? "")) return null;
+  return oneLine(
+    `asked ${MODEL}, and the agent ${model === null ? "reported no model" : `ran on ${model}`}`
+  );
+}
+
+/**
  * One line of an `answers-<shape>.jsonl` read back, or null where it is no row this command
- * wrote, which is how a line that does not parse is left where it is.
+ * wrote, which is how a line that does not parse is left where it is. A row written as answered
+ * that is not `modelChecked`, as every row written before the check is, or whose model is not
+ * `MODEL`, is read as the `model` fault, its labels kept: neither a resume nor `pool-runs.ts`
+ * counts its verdict as `MODEL`'s, and a resume asks it again. Figures a run printed before
+ * that stay its own code's.
  */
 export function answerRowOf(line: string): AnswerRow | null {
   let parsed: unknown;
@@ -623,7 +651,14 @@ export function answerRowOf(line: string): AnswerRow | null {
   if (record === null) return null;
   if (typeof record.arm !== "string" || typeof record.caseId !== "string") return null;
   // The rest of the line is this command's own writing, whose shape is `AnswerRow`.
-  return record as unknown as AnswerRow;
+  const row = record as unknown as AnswerRow;
+  if (row.fault !== null) return row;
+  const unchecked =
+    row.modelChecked === true
+      ? modelFaultOf(row.model ?? null)
+      : "the row was written before the agent's model was read from its answer's own message";
+  if (unchecked === null) return row;
+  return { ...row, agreed: false, fault: "model", faultDetail: unchecked };
 }
 
 /**
@@ -660,7 +695,12 @@ export function heldAnswers(rows: readonly AnswerRow[]): Map<string, AnswerRow> 
   return held;
 }
 
-/** One arm's judgement of one case: one run of the agent, read as a verdict. */
+/**
+ * One arm's judgement of one case: one run of the agent, read as a verdict. A run that reports
+ * another model than `MODEL`, or none, is the `model` fault, its labels kept and never a
+ * verdict, so a fallback the agent took counts against its arm and `--answers resume` asks that
+ * case again.
+ */
 async function askOne(
   arm: ArmName,
   one: FreshCase,
@@ -674,18 +714,25 @@ async function askOne(
     directory: one.directory,
     prompt: one.prompt,
   });
+  const wrongModel = answer.failure === null ? modelFaultOf(answer.model) : null;
   const chosen = answer.failure === null ? labelsOf(answer.text, one.labels) : [];
-  const fault = answer.failure !== null ? "agent" : chosen.length === 0 ? "unreadable" : null;
+  const fault =
+    answer.failure !== null
+      ? "agent"
+      : wrongModel !== null
+        ? "model"
+        : chosen.length === 0
+          ? "unreadable"
+          : null;
   const detail =
     answer.failure !== null
       ? oneLine(answer.failure)
-      : fault === null
-        ? null
-        : oneLine(answer.text);
+      : (wrongModel ?? (fault === null ? null : oneLine(answer.text)));
   return {
     arm,
     caseId: one.row.caseId,
     model: answer.model,
+    modelChecked: true,
     chosen,
     agreed: fault === null && labelKey(chosen) === labelKey(one.row.selected),
     fault,
