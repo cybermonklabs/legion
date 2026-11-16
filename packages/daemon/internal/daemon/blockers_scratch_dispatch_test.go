@@ -716,24 +716,28 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 		}
 	}
 
-	// The planner the child's run launched registers, as its plugin does once its agent boots. The
-	// re-entry below suspends it, and a suspend reaching an agent still booting is held until the
-	// agent is ready; this harness boots no agent, so unregistered it would stay launching under
-	// the tree it ran in, and the cleanup of that tree, which step 9's re-admission waits on, would
-	// wait on it in turn.
-	planner, err := claim.NewToken(project, child, claim.RolePlanner)
-	if err != nil {
-		t.Fatalf("the planner claim token of %s: %v", child, err)
-	}
-	testwait.Eventually(t, "the daemon to launch the planner of "+child, func() bool {
-		for _, call := range rt.Calls() {
-			if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == planner {
-				return true
-			}
+	// The two claims the child's run launched register, as their plugins do once their agents
+	// boot: its planner, and its own architect, which every child's first phase start starts beside
+	// the planner. The close of the tree they ran in, below, suspends every claim of that tree's
+	// issues, and a suspend reaching an agent still booting is held until the agent is ready; this
+	// harness boots no agent, so either claim left unregistered would stay launching under that
+	// tree once the child is handed over as a root of its own, and the cleanup of that tree, which
+	// step 9's re-admission waits on, would wait on it in turn.
+	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleArchitect} {
+		token, err := claim.NewToken(project, child, role)
+		if err != nil {
+			t.Fatalf("the %s claim token of %s: %v", role, child, err)
 		}
-		return false
-	})
-	registerLaunch(t, d, lastLaunch(t, rt, planner))
+		testwait.Eventually(t, "the daemon to launch the "+string(role)+" of "+child, func() bool {
+			for _, call := range rt.Calls() {
+				if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == token {
+					return true
+				}
+			}
+			return false
+		})
+		registerLaunch(t, d, lastLaunch(t, rt, token))
+	}
 
 	ran := state.Issues[child].Generation
 	setDispatchStatus(t, baseURL, child, "in_progress")
