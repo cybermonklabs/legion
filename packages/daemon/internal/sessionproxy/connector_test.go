@@ -117,20 +117,7 @@ func TestTheConnectorSignsInAsTheServiceAccountItImpersonates(t *testing.T) {
 
 			// Every Admin API call must carry the expected tokens, so when the proxy impersonates,
 			// no call carries the pod's own.
-			calls := admin.requests()
-			for _, path := range []string{connectSettingsPath, generateEphemeralCertPath} {
-				if !slices.ContainsFunc(calls, func(c adminCall) bool { return c.path == path }) {
-					t.Errorf("the connector never called %s; the Admin API fake saw %+v", path, calls)
-				}
-			}
-			for _, c := range calls {
-				if want := "Bearer " + tc.apiToken; c.authorization != want {
-					t.Errorf("the API source signed %s with %q, want %q", c.path, c.authorization, want)
-				}
-				if c.path == generateEphemeralCertPath && c.accessToken != tc.loginToken {
-					t.Errorf("the login source gave generateEphemeralCert the access_token %q, want %q", c.accessToken, tc.loginToken)
-				}
-			}
+			checkAdminCalls(t, admin, tc.apiToken, tc.loginToken, "")
 
 			if err == nil || !strings.Contains(err.Error(), noPrivateIP) {
 				t.Errorf("Dial = %v, want the connector's refusal %q: the instance has only a public address, and the connector dials the private one", err, noPrivateIP)
@@ -189,12 +176,29 @@ func TestTheImpersonatedTokensAreMintedAgainOnceTheyExpire(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 
-	for _, c := range admin.requests() {
-		if want := "Bearer " + impersonatedAPIToken; c.authorization != want {
-			t.Errorf("the API source signed %s with %q after its token expired, want %q", c.path, c.authorization, want)
+	checkAdminCalls(t, admin, impersonatedAPIToken, impersonatedLoginToken, " after its token expired")
+}
+
+// checkAdminCalls fails the test unless admin saw at least one complete connectSettings call and
+// one complete generateEphemeralCert call, every call carries the bearer token apiToken, and every
+// complete generateEphemeralCert call has the access_token loginToken. It checks the Authorization
+// of an incomplete call too, but not its access_token: the connector abandoned that call before
+// its body ended. when goes after the token in each token message, for example " after its token
+// expired".
+func checkAdminCalls(t *testing.T, admin *adminAPIFake, apiToken, loginToken, when string) {
+	t.Helper()
+	calls := admin.requests()
+	for _, path := range []string{connectSettingsPath, generateEphemeralCertPath} {
+		if !slices.ContainsFunc(calls, func(c adminCall) bool { return c.path == path && c.complete }) {
+			t.Errorf("the connector never completed a call to %s; the Admin API fake saw %+v", path, calls)
 		}
-		if c.path == generateEphemeralCertPath && c.accessToken != impersonatedLoginToken {
-			t.Errorf("the login source gave generateEphemeralCert the access_token %q after its token expired, want %q", c.accessToken, impersonatedLoginToken)
+	}
+	for _, c := range calls {
+		if want := "Bearer " + apiToken; c.authorization != want {
+			t.Errorf("the API source signed %s with %q%s, want %q", c.path, c.authorization, when, want)
+		}
+		if c.path == generateEphemeralCertPath && c.complete && c.accessToken != loginToken {
+			t.Errorf("the login source gave generateEphemeralCert the access_token %q%s, want %q", c.accessToken, when, loginToken)
 		}
 	}
 }
@@ -319,14 +323,20 @@ func (h handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 // adminCall is one Admin API request: its path, its Authorization header and, for
-// generateEphemeralCert, the access_token of its body.
+// generateEphemeralCert, the access_token of its body. complete says that the fake read the whole
+// request. A generateEphemeralCert call is incomplete when its body ended early, because the
+// connector abandoned it; it then has no access_token. A connectSettings call, which has no body,
+// is complete. A call the fake does not answer is not.
 type adminCall struct {
 	path, authorization, accessToken string
+	complete                         bool
 }
 
 // adminAPIFake is the Cloud SQL Admin API for testInstance, on loopback. The instance has a public
 // address and no private one, and a server CA of the fake's own, which signs the ephemeral
-// certificates. The fake records each request and fails the test on a call it does not answer.
+// certificates. The fake records each request when its headers arrive, before it reads the body,
+// so a request the connector abandons stays recorded. It fails the test on a call it does not
+// answer.
 type adminAPIFake struct {
 	t     *testing.T
 	url   string
@@ -373,6 +383,7 @@ func (f *adminAPIFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	call := adminCall{path: r.URL.Path, authorization: r.Header.Get("Authorization")}
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == connectSettingsPath:
+		call.complete = true
 		f.record(call)
 		writeJSON(f.t, w, &sqladmin.ConnectSettings{
 			Region:          "us-central1",
@@ -384,12 +395,16 @@ func (f *adminAPIFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ServerCaCert: &sqladmin.SslCert{Cert: f.caPEM},
 		})
 	case r.Method == http.MethodPost && r.URL.Path == generateEphemeralCertPath:
+		// The fake records the request before it reads the body. So the test checks the
+		// request's Authorization whether or not the connector abandons the request.
+		i := f.record(call)
 		var body sqladmin.GenerateEphemeralCertRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			// A body that ends early is a request the connector abandoned: it cancels a refresh
 			// it no longer needs, such as one in flight when a failed dial drops the instance
 			// from its cache, and the cancel can land between the headers and the body. That is
-			// no defect of the code under test, so the fake records nothing and answers nothing.
+			// no defect of the code under test. The recorded call stays incomplete, so the test
+			// does not check its empty access_token, and the fake answers nothing.
 			if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
 				return
 			}
@@ -397,8 +412,7 @@ func (f *adminAPIFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		call.accessToken = body.AccessToken
-		f.record(call)
+		f.completeCall(i, body.AccessToken)
 		cert, err := f.issue(body.PublicKey)
 		if err != nil {
 			f.t.Errorf("issue the ephemeral certificate: %v", err)
@@ -439,10 +453,22 @@ func (f *adminAPIFake) issue(publicKeyPEM string) (string, error) {
 	return certificatePEM(der), nil
 }
 
-func (f *adminAPIFake) record(call adminCall) {
+// record adds call to the calls the fake saw and returns its index, with which completeCall
+// finds it again.
+func (f *adminAPIFake) record(call adminCall) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, call)
+	return len(f.calls) - 1
+}
+
+// completeCall gives the recorded call at index i the access_token of its body and marks the call
+// complete: the fake read its whole body.
+func (f *adminAPIFake) completeCall(i int, accessToken string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls[i].accessToken = accessToken
+	f.calls[i].complete = true
 }
 
 func (f *adminAPIFake) requests() []adminCall {

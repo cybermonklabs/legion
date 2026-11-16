@@ -14,9 +14,17 @@ package api
 // number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
 // gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
 //
-// Bump rule: a change to any of these surfaces bumps this constant and the manifest field in the
-// same commit; `packages/contracts/fixtures/daemon-api/version.json`, written by this package's
-// golden test and read by the plugin's, holds the two together.
+// Bump rule: a change to any of these surfaces bumps this constant. The same commit writes the
+// number in every other file that holds it: `legion.daemonApiVersion` in
+// `packages/pi-legion/package.json` and `packages/claude-envoy/package.json`, and the two fixtures
+// that this package's golden tests write, `packages/contracts/fixtures/daemon-api/version.json`
+// and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
+// `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
+// the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
+// and the plugin's field together. The same commit also writes this bump into the contract
+// history of `packages/pi-legion/AGENTS.md` as the last bump.
+// `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
+// disagrees with this constant.
 //
 // 8: secrets broker enrollment -- AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR on an enrolled pod's worker
 // container, and the shim's hello2.
@@ -1949,6 +1957,9 @@ package api
 // merge of 2026-11-16 that brought main in at 545b2116331a, which carries #4021's 144, the entry
 // right above: the reading of every open head at 2026-11-16T01:57Z found 144 (#4089), 145
 // (#3659), 146 (#3711), 147 (#4017), 148 (#3519), 149 (#2731), 150 (#4049), 151 (#4106) and 152
-// (#3730). Read the base's own number and every open pull request again at every forward merge
-// rather than from this line.)
+// (#3730). It keeps 153 at the forward merge that brings main in at 5f658978b127, where main still
+// declares 144: the reading of every open head at 2026-11-16T07:41Z found 145 (#3659), 146
+// (#3711), 147 (#4017), 148 (#3519), 149 (#2731), 150 (#4049 and #4065), 151 (#4106) and 152
+// (#3730), and none declares 153. Read the base's own number and every open pull request again at
+// every forward merge rather than from this line.)
 const DaemonAPIVersion = 153

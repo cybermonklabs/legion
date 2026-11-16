@@ -187,7 +187,7 @@ func TestRequestMachineCountsEachMintAttemptOnItsRegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer service.Close()
-	stand := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: map[string]int64{"acme-org": 7}, Answer: airlocktest.GitHubTokensFailOnce})
+	stand := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: map[string]int64{"acme-org": 7}, Answer: airlocktest.GitHubAnswer{Mode: airlocktest.GitHubTokensFailOnce}})
 	service.AnswerWith(stand.Answer)
 	registry := metrics.New()
 	machine := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: service.URL()}, nil, nil, nil, nil, airlock.Rules{}, "", secrets.NewRetry(registry))
