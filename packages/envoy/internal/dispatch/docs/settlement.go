@@ -124,6 +124,28 @@ func skipUnreadableSettlement(room string, err error) bool {
 	return true
 }
 
+// documentRemovedStatement reads whether a document's artifacts row has gone.
+const documentRemovedStatement = `select not exists(select 1 from artifacts where id = $1)`
+
+// documentRemoved reports whether the document this settlement stopped short on has been
+// removed since it started (settleRoomWithin). The read runs through the settlement's own
+// transaction once it has one, since a pooled read beside it is the second connection that
+// deadlocks the pool, and through the pool before. In that transaction it is a statement of its
+// own, so it reads a removal that committed while an earlier statement waited behind it. A read
+// that fails, as every statement of a transaction an error aborted does, answers false, and the
+// settlement stops short as it would have.
+func (st *settlement) documentRemoved(ctx context.Context) bool {
+	var q Queryer = st.service.store.Pool
+	if st.tx != nil {
+		q = st.tx
+	}
+	var removed bool
+	if err := q.QueryRow(ctx, documentRemovedStatement, st.room).Scan(&removed); err != nil {
+		return false
+	}
+	return removed
+}
+
 // settleRoomWithin settles room under parent and reports how the settlement ended (settleOutcome),
 // leaving what follows to its caller. A timer's settlement runs under no deadline; the one
 // Shutdown runs gets its drain budget. When parent ends first the settlement's database work is
@@ -155,6 +177,15 @@ func skipUnreadableSettlement(room string, err error) bool {
 // nothing of it, fails no room and counts no failure, and the room's close and the resumption
 // after it settle the document from the store (endOnRefusedUpdate).
 //
+// A removed document owes no settlement: its removal (api.removeArtifact) deletes its versions,
+// its stored updates and its pending-settlement row with its artifacts row, and closes its room on
+// every process once it has committed. A settlement already past its generation check when that
+// commit lands - one that queued behind the removal for the document's owner row, or that started
+// before this process's eviction or another process's announcement reached its room - stops short
+// on the row that has gone: the latest version, the owner row, or the room's load reads nothing.
+// It ends there, saying nothing and retrying nothing, so no retry warms a room over the row
+// (documentRemoved).
+//
 // The settlement runs in stages, each of which answers settleOn where the settlement goes on and
 // the step and outcome it ends on otherwise: it takes the room's live instance (take), reads the
 // document under the document's locks (readLocked), stamps the block ids the document lacks
@@ -165,11 +196,11 @@ func skipUnreadableSettlement(room string, err error) bool {
 func (s *Service) settleRoomWithin(parent context.Context, room string, generation uint64, mayLoad bool) settleOutcome {
 	settle := &settlement{service: s, room: room, generation: generation}
 	// stoppedShort is the outcome of a settlement that stopped short with err having written
-	// nothing into the room: a retry, unless parent has ended or Shutdown refused the write. The
-	// generation it counts that retry's failure against is the one the settlement stands at now,
-	// which its take reads again once the room is warm. An err that is the append gate's refusal
-	// of an update the room took after its issue closed is no fault to retry: it ends the
-	// settlement (endOnRefusedUpdate).
+	// nothing into the room: a retry, unless parent has ended, the document has been removed or
+	// Shutdown refused the write. The generation it counts that retry's failure against is the one
+	// the settlement stands at now, which its take reads again once the room is warm. An err that
+	// is the append gate's refusal of an update the room took after its issue closed is no fault
+	// to retry: it ends the settlement (endOnRefusedUpdate).
 	settle.stoppedShort = func(err error) settleOutcome {
 		if errors.Is(err, ErrIssueClosed) {
 			return settle.endOnRefusedUpdate()
@@ -178,6 +209,8 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 		switch {
 		case parent.Err() != nil:
 			next = settleOutOfBudget
+		case settle.documentRemoved(parent):
+			return settleOutcome{}
 		case s.shuttingDown(room) && errors.Is(err, ErrServiceUnavailable):
 			next = settleRefusedInShutdown
 		}
