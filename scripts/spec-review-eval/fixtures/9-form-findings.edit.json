@@ -1,0 +1,12 @@
+[
+  {
+    "op": "replace",
+    "find": "The locker sends no notice to a tenant in the quiet hours, and it sends each such notice at 07:00.",
+    "with": "The locker sends no notice to a tenant in the quiet hours. It keeps each such notice. It sends the notice at 07:00."
+  },
+  {
+    "op": "insert",
+    "after": "heading:Terms",
+    "markdown": "- **parcel**: A package that a courier puts in a compartment for one tenant."
+  }
+]

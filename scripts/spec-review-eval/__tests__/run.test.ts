@@ -390,13 +390,29 @@ describe("the fixtures", () => {
     }
   });
 
-  // The form check reads a term line that starts with -, * or +. A Terms part that Dispatch
-  // stores after an insert holds two lists, the second of them with *, so this fixture fails a
-  // reviewer whose skill reads - lines alone.
-  test("fixture 9 defines its own term on a * line, which the form check reads as a term", () => {
+  // The tester's scenario 7: a clean request, then an agent's edit that breaks the form and
+  // inserts a second term line above the request's own one. Dispatch stores that Terms part as
+  // two lists, the second with *, which the form check reads as a term line. So a reviewer whose
+  // skill reads - lines alone can name the request's own term, and the run fails.
+  test("fixture 9 is a clean request that an agent's edit breaks, with a term line inserted above its own", () => {
     const nine = fixture("9-form-findings");
-    expect(nine.specText).toMatch(/^\* \*\*quiet hours\*\*: /m);
-    expect(termNames(nine.specText)).toEqual(["parcel", "quiet hours"]);
+    expect(termNames(nine.specText)).toEqual(["quiet hours"]);
+    expect(nine.editOps).toEqual([
+      {
+        op: "replace",
+        find: "The locker sends no notice to a tenant in the quiet hours, and it sends each such notice at 07:00.",
+        with: "The locker sends no notice to a tenant in the quiet hours. It keeps each such notice. It sends the notice at 07:00.",
+      },
+      {
+        op: "insert",
+        after: "heading:Terms",
+        markdown: "- **parcel**: A package that a courier puts in a compartment for one tenant.",
+      },
+    ]);
+    expect(blockText(nine.specText, "night-quiet")).toContain(nine.editOps[0]?.find ?? "-");
+    for (const other of plan.fixtures.filter((one) => one.id !== "9-form-findings")) {
+      expect(other.editOps, other.id).toEqual([]);
+    }
   });
 
   test("each planted, listed and form node is in its fixture's text", () => {
@@ -405,9 +421,13 @@ describe("the fixtures", () => {
       for (const item of [...one.planted, ...one.mustNotName]) {
         expect(ids, `${one.id}: ${item.node}`).toContain(item.node);
       }
+      const edited = [one.specText, ...one.editOps.map((op) => op.markdown ?? op.with ?? "")];
       for (const finding of one.form) {
-        const names = finding.kind === "definition" ? termNames(one.specText) : ids;
-        expect(names, `${one.id}: ${finding.kind} ${finding.node}`).toContain(finding.node);
+        if (finding.kind === "definition") {
+          expect(edited.join("\n"), `${one.id}: definition`).toContain(`**${finding.node}**: `);
+        } else {
+          expect(ids, `${one.id}: ${finding.kind} ${finding.node}`).toContain(finding.node);
+        }
       }
     }
   });

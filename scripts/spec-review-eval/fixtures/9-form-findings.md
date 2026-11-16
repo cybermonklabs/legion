@@ -2,14 +2,12 @@
 
 ## Terms
 
-- **parcel**: A package that a courier puts in a compartment for one tenant.
-
-* **quiet hours**: The hours from 22:00 to 07:00 in the time zone of the building.
+- **quiet hours**: The hours from 22:00 to 07:00 in the time zone of the building.
 
 ## Statements
 
 :::requirement{#night-quiet}
-The locker sends no notice to a tenant in the quiet hours. It keeps each such notice. It sends the notice at 07:00.
+The locker sends no notice to a tenant in the quiet hours, and it sends each such notice at 07:00.
 :::
 
 :::requirement{#voucher-print}

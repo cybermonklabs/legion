@@ -123,6 +123,7 @@
       "id": "9-form-findings",
       "root": "locker",
       "spec": "9-form-findings.md",
+      "edit": "9-form-findings.edit.json",
       "form": [
         { "kind": "statement", "node": "night-quiet" },
         { "kind": "definition", "node": "parcel" }

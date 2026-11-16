@@ -9,7 +9,9 @@
  * naming the roots of expected.json, and seeds it over HTTP. It creates the project ACME, each
  * root with its terms.md, which the person person@example.com approves, and each fixture as the
  * spec of a child of its root, with a Verification document where the fixture has one. In both
- * documents, `@ISSUE@` becomes the key of the fixture's own issue.
+ * documents, `@ISSUE@` becomes the key of the fixture's own issue. Where a fixture names an
+ * `edit`, an agent session then applies those ops to the spec (`POST /api/v1/artifacts/{id}/edits`,
+ * the route of `dispatch doc-edit`), so the agent reviews the version that Dispatch stored.
  * Before any agent runs, it reads `GET /api/v1/artifacts/{id}/spec-form` for each fixture
  * document. Each must be in scope, and its form check must give exactly the findings that the
  * fixture declares in `form`: most declare none, because a fixture holds the faults that no
@@ -99,6 +101,9 @@ export interface Fixture {
   readonly root: string;
   readonly spec: string;
   readonly verification?: string;
+  /** A file of edit ops, as `dispatch doc-edit --ops-json-file` takes them, for the spec. */
+  readonly edit?: string;
+  readonly editOps: readonly Readonly<Record<string, string>>[];
   readonly planted: readonly PlantedItem[];
   readonly mustNotName: readonly Item[];
   /** The findings that the form check must give on the spec, which the reviewer must not name. */
@@ -328,7 +333,7 @@ export function withIssueKey(markdown: string, key: string): string {
 export async function readPlan(directory: string = HERE): Promise<Plan> {
   const raw = JSON.parse(await readFile(join(directory, "expected.json"), "utf8")) as {
     roots: Omit<Root, "termsText">[];
-    fixtures: (Omit<Fixture, "specText" | "verificationText" | "form"> & {
+    fixtures: (Omit<Fixture, "specText" | "verificationText" | "form" | "editOps"> & {
       form?: FormFinding[];
     })[];
   };
@@ -353,6 +358,7 @@ export async function readPlan(directory: string = HERE): Promise<Plan> {
         return {
           ...fixture,
           form: fixture.form ?? [],
+          editOps: fixture.edit === undefined ? [] : JSON.parse(await text(fixture.edit)),
           specText: await text(fixture.spec),
           ...(fixture.verification === undefined
             ? {}
@@ -504,6 +510,15 @@ async function seed(
     if (issue.key !== key) {
       throw new CannotRunError(
         `the fixture ${fixture.id} got the key ${issue.key}, and its spec names ${key}`
+      );
+    }
+    if (fixture.editOps.length > 0) {
+      await call(
+        stack,
+        "POST",
+        `/api/v1/artifacts/${issue.primary_artifact_id}/edits`,
+        { ops: fixture.editOps, actor: { kind: "session", id: crypto.randomUUID() } },
+        "agent"
       );
     }
     const documents: SeededDocument[] = [{ name: "spec.md", artifact: issue.primary_artifact_id }];
