@@ -81,7 +81,16 @@ func workflowRunsOfOneCommit(rawQuery string) bool {
 // GitHub's answer to the token mint or to the read, or a limit another request or process already
 // met (githubapp.Limits), in which case GitHub is not asked. The caller has already established
 // that a person is asking.
-func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client) {
+//
+// hidden answers whether the person asking may not see the repository (its owner and name as the
+// path spells them). A hidden repository answers exactly what one the App is not installed on
+// answers, step for step: a deployment with no App key still answers that it has none, as it does
+// for every repository, and a rate limit still answers the rate limit; every other outcome of the
+// token mint, a minted token included, answers that the App is not installed on it, and the token
+// is dropped with no read of GitHub made. So a hidden repository is never answered as a
+// deployment with no App key answers every repository, nor as anything a visible one answers.
+// hidden is asked only after those two shared answers, and an error from it is a 500.
+func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client, hidden func(owner, repo string) (bool, error)) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		api.WriteJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "the GitHub proxy reads only: use GET", "code": "METHOD_NOT_ALLOWED"})
@@ -100,11 +109,17 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client)
 		rateLimited(w, limited)
 		return
 	}
-	switch {
-	case errors.Is(err, githubapp.ErrNoAppKey):
+	if errors.Is(err, githubapp.ErrNoAppKey) {
 		unavailable(w, "the GitHub App is not configured")
 		return
-	case errors.Is(err, githubapp.ErrNoInstallation):
+	}
+	concealed, hiddenErr := hidden(owner, repo)
+	switch {
+	case hiddenErr != nil:
+		slog.Error("dispatch: GitHub proxy could not read whether the caller sees the repository", "repository", owner+"/"+repo, "error", hiddenErr)
+		api.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error", "code": "INTERNAL"})
+		return
+	case concealed, errors.Is(err, githubapp.ErrNoInstallation):
 		unavailable(w, "the GitHub App is not installed on "+owner+"/"+repo)
 		return
 	case err != nil:
