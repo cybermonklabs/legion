@@ -362,7 +362,9 @@ test("a kill takes a running child through child.kill, and what it started by pa
   // child's pid alone finds each: the first in the table, and the last, which ended already.
   // Each is signalled, the one that ended as well, and all three are gone at read 2. The child
   // gets SIGKILL, which no process can trap: the `bun --eval` of `e2e/global-setup.ts` that
-  // `second-global-setup.test.ts` bounds traps SIGTERM (`e2e/harness-pool.ts`) and would live on.
+  // `second-global-setup.test.ts` bounds traps SIGTERM (`e2e/harness-pool.ts`), and ends only
+  // once its listener has stopped its stacks, or never where that listener cannot run, while
+  // the kill signals the child once.
   const [left, ended] = [process.pid + 2, process.pid + 3];
   const child: Listed = {
     pid: scriptedChild.pid,
@@ -482,14 +484,16 @@ test("a kill never signals this process, even where its table reads it as one of
 });
 
 test("a kill with its own signal and pause sends SIGKILL through process.kill and waits execPause", () => {
-  // Every row above hands `stopTree` its own `signal` and `pause`, so none reaches the defaults,
-  // which call `process.kill` and `Bun.sleepSync`. This row hands `read` and `procfs` alone, and
-  // stands in for those two globals while the kill runs, each recording every argument it is
-  // given. Its table is the first row's: a process started since the child, unknown at read 1
-  // and carrying the child's token at read 2, here between an unknown process older than the
-  // child and a process of the sibling. Every pid is above 2 ** 22, Linux's `PID_MAX_LIMIT` and
-  // the most `/proc/sys/kernel/pid_max` can hold, so no process holds one, and a stand-in that
-  // failed to take its global's place would signal nothing real.
+  // Every scripted row above hands `stopTree` a stand-in `signal` and `pause`, so none of them
+  // reaches the defaults, which call `process.kill` and `Bun.sleepSync`. The setsid row above
+  // reaches them through `runBounded`, but its `sleep` dies of SIGTERM as of SIGKILL. This row
+  // hands `read` and `procfs` alone, and stands in for those two globals while the kill runs,
+  // each recording every argument it is given. Its table is that of the first scripted row: a
+  // process started since the child, unknown at read 1 and carrying the child's token at read
+  // 2, here between an unknown process older than the child and a process of the sibling. Every
+  // pid its table lists is above 2 ** 22, Linux's `PID_MAX_LIMIT` and the most
+  // `/proc/sys/kernel/pid_max` can hold, so no process holds one, and a stand-in that failed to
+  // take its global's place would signal nothing real.
   const pid = 2 ** 30 + 2;
   const older: Listed = {
     pid: 2 ** 30 + 1,
@@ -568,7 +572,7 @@ const ordinaryFlags = 0x00400100;
 /** The text Linux gives for the `/proc/<pid>/stat` of `readProcess`, named `name`, in `state`,
  *  with `flags`: its pid, its name in parentheses, and fields 3 to 52 of proc(5), each 0 but the
  *  state, the parent, the flags and the start time. So each of the four, read one place off,
- *  reads a neighbour (0, the state or the parent) and not its own value. */
+ *  reads something other than its own value. */
 function statText({ flags = ordinaryFlags, name = "sleep", state = "R" } = {}): string {
   const fields: Record<number, string> = {
     1: String(readProcess.pid),
