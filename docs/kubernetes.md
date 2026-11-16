@@ -6209,6 +6209,7 @@ each issue's pod (every role of it alike) and the image probe's.
   A write that fails, or that the broker refuses for a reason a retry can change, is logged naming the pod and the session and written again at 15 seconds, doubling to 5 minutes;
   that includes `403 POD_REGISTRAR_NOT_LISTED`, which a broker answers until the deployment lists the daemon's account as a registrar for its pods' account.
   Any other refusal is logged and not written again for that process.
+  So is an answer that registered another pod than the one the daemon named: the broker answers the pod uid it read from the token (`pod_uid`), and the daemon logs the session and both uids and stops writing that registration.
   Unset, the daemon makes no registration call.
   The exchange token is the pod's, not a role's: every role reads it at the same path, and every role's session is registered for the same pod, so any role of the pod can trade it for a sibling role's session ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) says what that reaches); binding each registration to the role's own key is planned in dispatch://INFRA-840 and is not in this release.
 
