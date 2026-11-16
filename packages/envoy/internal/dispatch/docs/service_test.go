@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // testSigningKey is the one-key set the package's people stores seal refresh tokens under.
@@ -48,11 +49,11 @@ func headerIdentity(database *store.Store) identity.HeaderIdentity {
 // directly.
 func testServiceDeps(database *store.Store) Deps {
 	return Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  headerIdentity(database),
-		ServerURL: "https://dispatch.example",
-		Settle:    20 * time.Millisecond,
+		Store:    database,
+		Events:   events.NewBroker(),
+		Identity: headerIdentity(database),
+		Origins:  text.NewOrigins("https://dispatch.example"),
+		Settle:   20 * time.Millisecond,
 	}
 }
 

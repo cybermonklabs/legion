@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	dispatchstore "github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -209,11 +210,11 @@ func dispatchMux(t *testing.T, database *dispatchstore.Store, envoyURL string) h
 	// down: an issue's spec schedules a settlement, and a service nobody ended would still be
 	// warming that document after the database pool had closed.
 	documents := docs.New(docs.Deps{
-		Store:     database,
-		Events:    broker,
-		Identity:  caller,
-		ServerURL: "https://dispatch.example",
-		Settle:    20 * time.Millisecond,
+		Store:    database,
+		Events:   broker,
+		Identity: caller,
+		Origins:  text.NewOrigins("https://dispatch.example"),
+		Settle:   20 * time.Millisecond,
 	})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {

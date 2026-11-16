@@ -78,11 +78,11 @@ type Deps struct {
 	Persistence VersionedStore
 	Events      *events.Broker
 	Identity    identity.Identity
-	// ServerURL is the canonical origin (DISPATCH_SERVER_URL), and OutsideOrigin the other one the
-	// server answers at (DISPATCH_OUTSIDE_ORIGIN; empty for none): a dashboard URL of either that a
-	// text writes is read as the reference its page names (text.Origins).
-	ServerURL         string
-	OutsideOrigin     string
+	// Origins is the web origins the server answers at, the canonical one (DISPATCH_SERVER_URL)
+	// first, then the outside one (DISPATCH_OUTSIDE_ORIGIN) when it has one: a dashboard URL of
+	// either that a text writes is read as the reference its page names. The zero value reads only
+	// `dispatch://` references.
+	Origins           text.Origins
 	Settle            time.Duration
 	MarkWait          time.Duration
 	UnrecordedMarkTTL time.Duration
@@ -857,7 +857,7 @@ func New(deps Deps) *Service {
 		processID:         processID,
 		events:            deps.Events,
 		identity:          deps.Identity,
-		origins:           text.NewOrigins(deps.ServerURL, deps.OutsideOrigin),
+		origins:           deps.Origins,
 		settle:            settle,
 		markWait:          markWait,
 		now:               time.Now,

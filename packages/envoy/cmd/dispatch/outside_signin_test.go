@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/weborigin"
 )
@@ -617,8 +618,11 @@ func outsideOriginReachesItsReaders(t *testing.T) {
 			t.Errorf("GET /auth/start with Host %s: %d, Location %q (%v); want a redirect_uri of %s", host, recorder.Code, recorder.Header().Get("Location"), err, want)
 		}
 	}
-	if got := documentDeps(boot, docs.Deps{}).OutsideOrigin; got != boot.OutsideOrigin {
-		t.Errorf("the document service is handed OutsideOrigin %q, want %q", got, boot.OutsideOrigin)
+	deps := documentDeps(boot, "https://dispatch.example", docs.Deps{})
+	for _, page := range []string{"https://dispatch.example/issues/ABC-1", "https://outside.example/issues/ABC-1"} {
+		if refs := text.Extract(page, deps.Origins); len(refs) != 1 || refs[0].Kind != "issue" {
+			t.Errorf("the document service reads %s as %+v, want the issue it names", page, refs)
+		}
 	}
 	origin, err := rebuildRefsOutsideOrigin(envGetter(map[string]string{"DISPATCH_OUTSIDE_ORIGIN": "https://outside.example/"}), "https://dispatch.example")
 	if err != nil || origin != "https://outside.example" {

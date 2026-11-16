@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -56,7 +57,7 @@ func newCredentialTestHandlerReading(t *testing.T, brokerURL, tokenFile string) 
 	t.Helper()
 	database := storetest.Open(t)
 	documentService := docs.New(docs.Deps{
-		Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond,
+		Store: database, Events: events.NewBroker(), Origins: text.NewOrigins("https://dispatch.example"), Settle: 20 * time.Millisecond,
 	})
 	t.Cleanup(func() { _ = documentService.Shutdown(t.Context()) })
 	seedPeople(t, database, "alice", "bob")
