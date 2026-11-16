@@ -297,6 +297,66 @@ test("RepoControl sends null for an emptied box", async () => {
   }
 });
 
+// The box writes what was typed when it is left, so a press on the clear control must not take
+// focus from it: the press would write the typed repository, which the reader is throwing away,
+// and the click after it would write the clear. One action is one write.
+test("RepoControl sends the clear alone when a repository was typed first", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    repo: null,
+    resolved_repo: "acme/widgets",
+  });
+  const { unmount, user } = renderControl({ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" });
+  try {
+    await user.clear(box());
+    await user.click(box());
+    await user.paste("zed/other");
+    expect(box().value).toBe("zed/other");
+    await user.click(screen.getByRole("button", { name: "Clear the repository of CORE-1" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
+    );
+    // Cleared, the box is empty and inherits, with what was typed gone from it.
+    await waitFor(() => expect(box().placeholder).toBe("acme/widgets"));
+    expect(box().value).toBe("");
+    expect(patchIssue.mock.calls.map(([, patch]) => patch)).toEqual([{ repo: null }]);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// A browser compiles the box's `pattern` as `^(?:…)$` with the `v` flag, and under that flag a
+// bare hyphen in a character class is a syntax error, which makes the browser ignore the
+// attribute and log the error. So the attribute is compiled here as a browser compiles it, and
+// held to the names the box's own check takes and refuses.
+test("RepoControl's pattern compiles as a browser compiles it", () => {
+  const { unmount } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
+  try {
+    const compiled = new RegExp(`^(?:${box().getAttribute("pattern") ?? ""})$`, "v");
+    // Names GitHub holds, which the pattern must take, and names it could hold no repository at,
+    // which the pattern must refuse: each list keeps the names the pattern got wrong.
+    const held = [
+      "acme/widgets",
+      "Sjawhar/.knives-ledger",
+      "mona-cat_octo/hello--world",
+      "artofcode-/x",
+    ];
+    const notHeld = [
+      "acme gadgets",
+      "x/..",
+      "x/.",
+      "-bad/x",
+      "own%er/x",
+      `owner/${"a".repeat(101)}`,
+    ];
+    expect(held.filter((name) => !compiled.test(name))).toEqual([]);
+    expect(notHeld.filter((name) => compiled.test(name))).toEqual([]);
+  } finally {
+    unmount();
+  }
+});
+
 // A typo belongs at the box, not in a 400 a round trip later: the control reads `owner/name`
 // itself, writes nothing, and keeps what was typed for the reader to correct.
 test("RepoControl refuses a value that is not owner/name without writing it", async () => {

@@ -1,6 +1,7 @@
 package cireconcile
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -14,6 +15,18 @@ const absentRow = "acme/absent"
 // repository under it, so every read of it is a 404, as GitHub answers for a name a repository
 // no longer has.
 const renamedAwayRow = "acme/widgets-before"
+
+// uninstalledRow is a repository the App is not installed on: the GitHub stand-in knows no
+// repository under it, so its installation lookup answers 404, as GitHub answers for a
+// repository the App was never installed on. It sorts before the mapped repository, so a pass
+// reads it first and has to go on from it.
+const uninstalledRow = "acme/elsewhere"
+
+// installationPath is the lookup a pass asks GitHub whether the App is installed on a
+// repository with.
+func installationPath(repository string) string {
+	return "/repos/" + repository + "/installation"
+}
 
 // A mapping GitHub does not answer for is skipped, counted and named, and the pass goes on to
 // the repositories after it: one repository GitHub has stopped answering about must not cost
@@ -91,6 +104,110 @@ func TestARenamedMappingIsReconciledUnderTheNameItHasNow(t *testing.T) {
 	}
 	if asked := h.queriesFor(gitHubRepository); asked != 1 {
 		t.Errorf("%s was queried %d times, want once for two rows naming it", gitHubRepository, asked)
+	}
+}
+
+// A repository only an issue names that the App is not installed on is no skipped mapping. An
+// issue's own repository is any `owner/name`, so one the App is not on is expected, and it
+// stays in the order for as long as an issue names it, closed or not. A pass that counted it
+// in mappings_skipped and named it at WARN would do both at every pass for ever, and neither
+// would mean a mapping to mend any longer. So it is counted apart and named once at INFO, and
+// GitHub is asked about it once rather than once a pass: githubapp keeps only an installation
+// it found, so the pass holds this answer itself.
+func TestAnIssuesRepositoryWithoutTheAppIsNoSkippedMappingAndIsAskedAboutOnce(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	h.issueInRepository(uninstalledRow)
+	h.listHead()
+	h.github.setCheckRuns(gitHubRepository, headSHA,
+		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
+	)
+
+	const passes = 3
+	for range passes {
+		h.pass()
+	}
+
+	lines := h.lines("ci reconcile pass")
+	if len(lines) != passes {
+		t.Fatalf("%d passes logged %d pass lines:\n%s", passes, len(lines), h.logs.String())
+	}
+	for pass, line := range lines {
+		if got := number(t, line, "mappings_skipped"); got != 0 {
+			t.Errorf("pass %d reports %d mappings skipped, want none, since no mapping names %s: %v", pass+1, got, uninstalledRow, line)
+		}
+		if got := number(t, line, "heads"); got != 1 {
+			t.Errorf("pass %d read %d heads, want the one head of the mapped repository: %v", pass+1, got, line)
+		}
+	}
+	if warned := h.lines("ci reconcile skipped a repository it holds no token for"); len(warned) != 0 {
+		t.Errorf("the passes named a repository at WARN %d times, want never:\n%s", len(warned), h.logs.String())
+	}
+	if asked := h.github.countPath(installationPath(uninstalledRow)); asked != 1 {
+		t.Errorf("GitHub was asked %d times whether the App is installed on %s, want once for %d passes", asked, uninstalledRow, passes)
+	}
+	named := h.lines("ci reconcile passed over a repository the App is not installed on")
+	if len(named) != 1 {
+		t.Fatalf("the repository was named %d times, want once, by the pass that asked GitHub:\n%s", len(named), h.logs.String())
+	}
+	if named[0]["repository"] != uninstalledRow || named[0]["level"] != "INFO" {
+		t.Errorf("the line names repository %v at %v, want %s at INFO", named[0]["repository"], named[0]["level"], uninstalledRow)
+	}
+	for pass, line := range lines {
+		if got := number(t, line, "repositories_without_app"); got != 1 {
+			t.Errorf("pass %d reports %d repositories without the App, want 1: %v", pass+1, got, line)
+		}
+	}
+}
+
+// A mapped repository the App is not installed on is still a mapping to mend. It is named at
+// WARN and counted in mappings_skipped at every pass the fault stands for, whether or not an
+// issue names it too, and it is no part of the count of repositories only an issue names.
+// GitHub is asked about it once all the same: the answer is held whoever names the repository.
+func TestAMappedRepositoryWithoutTheAppIsSkippedAtEveryPassAndAskedAboutOnce(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(uninstalledRow)
+	h.issueInRepository(uninstalledRow)
+	h.mapRepository(rowRepository)
+	h.listHead()
+	h.github.setCheckRuns(gitHubRepository, headSHA,
+		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
+	)
+
+	const passes = 2
+	for range passes {
+		h.pass()
+	}
+
+	if asked := h.github.countPath(installationPath(uninstalledRow)); asked != 1 {
+		t.Errorf("GitHub was asked %d times whether the App is installed on %s, want once for %d passes", asked, uninstalledRow, passes)
+	}
+	warned := h.lines("ci reconcile skipped a repository it holds no token for")
+	if len(warned) != passes {
+		t.Fatalf("the mapped repository was named at WARN %d times, want once a pass for %d passes:\n%s", len(warned), passes, h.logs.String())
+	}
+	for pass, line := range warned {
+		if line["repository"] != uninstalledRow || line["level"] != "WARN" {
+			t.Errorf("pass %d names repository %v at %v, want %s at WARN", pass+1, line["repository"], line["level"], uninstalledRow)
+		}
+		if text := fmt.Sprint(line["error"]); !strings.Contains(text, "not installed") {
+			t.Errorf("pass %d gives the error %q, want GitHub's answer that the App is not installed", pass+1, text)
+		}
+	}
+	lines := h.lines("ci reconcile pass")
+	if len(lines) != passes {
+		t.Fatalf("%d passes logged %d pass lines:\n%s", passes, len(lines), h.logs.String())
+	}
+	for pass, line := range lines {
+		if got := number(t, line, "mappings_skipped"); got != 1 {
+			t.Errorf("pass %d reports %d mappings skipped, want the 1 the App is missing from: %v", pass+1, got, line)
+		}
+		if got := number(t, line, "heads"); got != 1 {
+			t.Errorf("pass %d read %d heads, want the one head of the other mapped repository: %v", pass+1, got, line)
+		}
+		if got := number(t, line, "repositories_without_app"); got != 0 {
+			t.Errorf("pass %d reports %d repositories without the App, want none, since a mapping names this one: %v", pass+1, got, line)
+		}
 	}
 }
 

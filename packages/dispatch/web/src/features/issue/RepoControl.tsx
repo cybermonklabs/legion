@@ -20,8 +20,13 @@ import { useIssueRepo } from "./useIssueRepo";
  *  repository name is at most 100 letters, digits, `.`, `-` and `_`, and is neither `.` nor
  *  `..`. It is written here rather than taken from `ownerRepoPattern`, the looser `owner/name`
  *  shape the settings forms share, because those forms write a repository mapping, which the
- *  server holds to that looser shape alone. */
-const ownerRepoPattern = "[A-Za-z0-9][A-Za-z0-9_-]{0,38}/(?!\\.{1,2}$)[A-Za-z0-9._-]{1,100}";
+ *  server holds to that looser shape alone.
+ *
+ *  The hyphen is written `\-` in both classes because this is also the box's `pattern`, which a
+ *  browser compiles with the `v` flag, and under that flag a bare hyphen in a class is a syntax
+ *  error: the browser then ignores the attribute and logs the error, and only the check below
+ *  holds the box. */
+const ownerRepoPattern = "[A-Za-z0-9][A-Za-z0-9_\\-]{0,38}/(?!\\.{1,2}$)[A-Za-z0-9._\\-]{1,100}";
 
 /** `ownerRepoPattern` as a test of a whole value: the check this control makes before it writes,
  *  so a typo shows at the box rather than coming back as the server's 400 a round trip later. */
@@ -172,6 +177,10 @@ export function RepoControl({
               restore();
               write.submit(null);
             }}
+            // A press here must not take focus from the box. The box writes what was typed
+            // when it is left, so the press would write a repository the reader is throwing
+            // away and the click after it would write the clear: two writes for one action.
+            onMouseDown={(event) => event.preventDefault()}
             title="Clear it, and the issue inherits a repository again"
             type="button"
           >

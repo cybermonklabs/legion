@@ -19,8 +19,8 @@ import (
 // (delivery/pull_request_heads.go: RefreshPullRequestHead, ReadThroughCommitPulls and
 // Intake.recordPullRequestHead), the settings route reads it to decide whether a rename's
 // target is itself renamed (api/repo_projects.go, refuseRepoRenameChain), and the CI reconcile
-// reads every mapping under the name its repository has now, so no pass asks GitHub about a
-// name it cannot read (cireconcile/cireconcile.go, Reconciler.mapped).
+// reads every repository it covers under the name it has now, so no pass asks GitHub about a
+// name it cannot read (cireconcile/repositories.go, Reconciler.covered).
 //
 // One step is enough: the settings route refuses a pair pointing at a repository that is itself
 // renamed, and refuses renaming a repository another row already points at, so no chain and no

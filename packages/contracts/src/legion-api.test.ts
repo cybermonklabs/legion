@@ -1531,10 +1531,11 @@ test("a Stage 3 issue without its Dispatch status is refused", () => {
 // daemon serves it, each left-out repository named with the App it lacks. Contract 32: each served
 // repository carries its cache under the Kubernetes runtime, Ready with its last health read or
 // the read's failure, and the caches of repositories no longer served are listed with when they go.
-// Contract 80: the block is every repository the daemon serves, the mapping's and the records'
+// Contract 152: the block is every repository the daemon serves, the mapping's and the records'
 // alike, and each entry says which role App is installed on it (`apps`), which is what decides
-// whether the project can work there. A state without the mapping, without its caches, or with an
-// entry that does not answer for both Apps, is refused.
+// whether the project can work there. A state without the block, or without its caches, is
+// refused. An entry without `apps` is read all the same, with that one answer absent: a daemon
+// of an earlier contract writes none.
 test("the state golden carries each issue's repository and the repositories it serves", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 

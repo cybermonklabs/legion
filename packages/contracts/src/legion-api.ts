@@ -1000,7 +1000,7 @@ const legionCacheView = z.object({
   retainedUntil: timestamp.optional(),
 });
 
-/** `api.RepositoriesView` — every repository the daemon works in, as it serves them (contract 88):
+/** `api.RepositoriesView` — every repository the daemon works in, as it serves them (contract 152):
  * the owner accounts of the repositories Dispatch maps to the project, each repository it serves (as GitHub names it,
  * `default` the project's default in Dispatch, `apps` each role App's installation on it, `cache`
  * its repository cache under the Kubernetes runtime), each repository it leaves out with
@@ -1015,7 +1015,7 @@ const legionCacheView = z.object({
  * the mapped ones and no repository is refused for want of a mapping. Every list sorted and never
  * null (contracts 31, 32).
  *
- * `apps` is optional here and is written by every daemon of contract 88 and above. It is read as
+ * `apps` is optional here and is written by every daemon of contract 152 and above. It is read as
  * absent rather than refused so that a plugin of this contract reading a daemon of an earlier one
  * — the window a roll of the daemon and the worker image opens, since the two ship apart — loses
  * that one answer and keeps the rest of the state, where a required key would refuse the whole
@@ -1361,8 +1361,14 @@ export const LegionControllerSecretResponse = z.object({
 /** `api.ControllerCredentialResponse`, the answer of `POST /legion/v1/controller/github-credential`:
  * the review App's read-only token for every GitHub owner of the project, each rendered as the two
  * files gh reads (`ghconfig.Rendered`) and keyed by lowercased owner, the owner whose directory
- * `GH_CONFIG_DIR` names, and the soonest of the tokens' expiries. `legion controller start` writes
- * them under `<state_dir>/gh/<owner>` and refreshes them every minute. The plugin never reads it. */
+ * `GH_CONFIG_DIR` names, the soonest of the tokens' expiries, `renames`, the configured pairs the
+ * bundle routes a moved repository by, each `<owner>/<name>` as GitHub spells it, which a project
+ * configuring none answers without, and `installed`, the owner accounts the review App is
+ * installed on, lowercased and sorted, read with the bundle (contract 152).
+ * `legion controller start` writes the files under `<state_dir>/gh/<owner>`, refreshes them every
+ * minute, and tells its controller which owners its App is installed on from `installed`: `owners`
+ * cannot say it, since a bundle also holds a directory for an owner a configured rename moved a
+ * repository away from. The plugin never reads it. */
 export const LegionControllerCredentialResponse = z.object({
   owners: z.record(
     nonEmptyString,
@@ -1374,6 +1380,8 @@ export const LegionControllerCredentialResponse = z.object({
   default: nonEmptyString,
   app: z.enum(["implement", "review"]),
   expiresAt: timestamp,
+  renames: z.array(z.object({ from: nonEmptyString, to: nonEmptyString })).optional(),
+  installed: z.array(nonEmptyString),
 });
 
 /** Claim routes refuse with only a sentence; credential and workflow routes add a stable code.
