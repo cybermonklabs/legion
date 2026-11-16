@@ -1,15 +1,19 @@
 package identity
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -445,8 +449,12 @@ func (l *stubLister) set(email string, listed bool, err error) {
 
 // The hourly confirmation runs the outside rule again: once no access list names the account, the
 // refresh ends every session, as a person who left the domain's Workspace ends under the domain
-// rule, and its row keeps no refresh token.
+// rule, and its row keeps no refresh token. The log line says the confirmation no longer admits
+// the person, with the reason, rather than that Google did not confirm a membership of the domain,
+// which this person never had.
 func TestOutsideSignInMembershipEndsWhenNoListNamesTheAccount(t *testing.T) {
+	var logs bytes.Buffer
+	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 	lister := &stubLister{listed: map[string]bool{memberEmail: true}}
 	rig := newOutsideMembershipRig(t, lister)
 	rig.now = rig.now.Add(30 * time.Minute)
@@ -462,6 +470,12 @@ func TestOutsideSignInMembershipEndsWhenNoListNamesTheAccount(t *testing.T) {
 		t.Fatalf("the lister was asked %q, want the sign-in's question and the hourly check's", asked)
 	}
 	assertSessionEnded(t, rig)
+	logged := logs.String()
+	if !strings.Contains(logged, "sign-in ended: the hourly confirmation no longer admits the person") ||
+		!strings.Contains(logged, "no Dispatch project's access list names this account") ||
+		strings.Contains(logged, "membership of the domain") {
+		t.Errorf("the delisting's log line = %q, want it to say the confirmation no longer admits the person, with the reason, and nothing of a membership of the domain", logged)
+	}
 }
 
 // A list that cannot be read at the hourly confirmation ends nothing: the request fails with an

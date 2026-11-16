@@ -29,8 +29,9 @@ func (f ListerFunc) Listed(ctx context.Context, email string) (bool, error) {
 
 // OutsideRule signs in Domain's people as DomainRule does, and also a verified Google account
 // outside the domain while some project names its email directly (People), as a restricted member.
-// Every method but Person is Domain's: the sign-in records the Google account's subject, and the
-// hourly confirmation runs Person again, so an account no list names any more is signed out there.
+// Every method but Person and End is Domain's: the sign-in records the Google account's subject,
+// and the hourly confirmation runs Person again, so an account no list names any more is signed
+// out there.
 type OutsideRule struct {
 	Domain DomainRule
 	People Lister
@@ -113,9 +114,12 @@ func (r OutsideRule) ConfirmSubject(claims oidc.Claims, stored string) (string, 
 	return r.Domain.ConfirmSubject(claims, stored)
 }
 
-// End is DomainRule.End: it ends the sign-in only while the row still records subject.
+// End is DomainRule.End, logged in words that fit both kinds of person this rule signs in: one
+// from outside the domain was never admitted by a Workspace membership, so "Google did not confirm
+// the person's membership of the domain" would misname why it ended. The reason names what the
+// hourly confirmation found: most often, for such a person, that no project names them any more.
 func (r OutsideRule) End(ctx context.Context, people auth.PeopleStore, sessions auth.SessionStore, email, subject, reason string) error {
-	return r.Domain.End(ctx, people, sessions, email, subject, reason)
+	return endSubject(ctx, people, email, subject, reason, "dispatch: sign-in ended: the hourly confirmation no longer admits the person")
 }
 
 // ConfirmCookie is DomainRule.ConfirmCookie.

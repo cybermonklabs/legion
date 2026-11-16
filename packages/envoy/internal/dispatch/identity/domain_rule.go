@@ -89,19 +89,25 @@ func (r DomainRule) ConfirmSubject(claims oidc.Claims, stored string) (string, e
 }
 
 // End ends email's sign-in only while the address's row still records subject, the Google
-// account this refresh read (auth.PeopleStore.EndSubject); when another account has signed in to
-// the address since, the failure was the old account's, so it writes nothing and the old
-// account's request is simply not signed in.
+// account this refresh read (endSubject).
 func (r DomainRule) End(ctx context.Context, people auth.PeopleStore, sessions auth.SessionStore, email, subject, reason string) error {
-	ended, err := people.EndSubject(ctx, email, subject)
+	return endSubject(ctx, people, email, subject, reason, "dispatch: sign-in ended: Google did not confirm the person's membership of the domain")
+}
+
+// endSubject ends email's sign-in only while the address's row still records subject
+// (auth.PeopleStore.EndSubject), and logs ended, the rule's own words for what ended it; when
+// another account has signed in to the address since, the failure was the old account's, so it
+// writes nothing and the old account's request is simply not signed in.
+func endSubject(ctx context.Context, people auth.PeopleStore, email, subject, reason, ended string) error {
+	done, err := people.EndSubject(ctx, email, subject)
 	if err != nil {
 		return err
 	}
-	if !ended {
+	if !done {
 		slog.Info("dispatch: a failed confirmation ended nothing: another Google account has signed in to the address since", "email", email, "reason", reason)
 		return ErrNoIdentity
 	}
-	slog.Warn("dispatch: sign-in ended: Google did not confirm the person's membership of the domain", "email", email, "reason", reason)
+	slog.Warn(ended, "email", email, "reason", reason)
 	return ErrNoIdentity
 }
 
