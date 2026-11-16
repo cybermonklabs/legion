@@ -57,7 +57,7 @@ func TestASecretWithoutAValueIsPendingForItsFirstTenMinutes(t *testing.T) {
 			set := cur.Get()
 			_, served := set.Secrets["WAITING_KEY"]
 			_, refused := set.Refused[id]
-			if served || refused || set.Pending[id] != (policy.Refusal{Reason: policy.ReasonPendingValue, Owner: owner, Created: created}) {
+			if served || refused || set.Pending[id] != (policy.Pending{Owner: owner, Created: created}) {
 				t.Fatalf("%s: served %t, refused %+v, pending %+v; want WAITING_KEY pending alone", when, served, set.Refused, set.Pending)
 			}
 			if got := samplesOf(t, registry, "broker_unservable_secrets"); got != "" {

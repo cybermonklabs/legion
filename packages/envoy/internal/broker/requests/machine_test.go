@@ -509,7 +509,7 @@ func TestCreateRefusesASecretPendingItsFirstValueUntilTheValueLands(t *testing.T
 	if !errors.Is(err, policy.ErrPendingValue) || errors.Is(err, policy.ErrUnknownSecret) || !strings.Contains(err.Error(), "TYPED_KEY") {
 		t.Fatalf("Create(TYPED_KEY) while it waits for its value = %v; want policy.ErrPendingValue naming TYPED_KEY, not ErrUnknownSecret", err)
 	}
-	if pending := m.Policy.Get().Pending[policytest.ID("TYPED_KEY")]; pending.Reason != policy.ReasonPendingValue {
+	if pending, waits := m.Policy.Get().Pending[policytest.ID("TYPED_KEY")]; !waits {
 		t.Fatalf("the policy holds TYPED_KEY as %+v; want it waiting for its value (pending-value), the reason the request was refused", pending)
 	}
 	var requests, records int

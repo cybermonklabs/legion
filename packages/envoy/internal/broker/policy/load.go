@@ -247,7 +247,7 @@ func (l Loader) Load(ctx context.Context) (*Set, error) {
 	if err != nil {
 		return nil, err
 	}
-	served, refused, pending, versions := map[string]Secret{}, map[string]Refusal{}, map[string]Refusal{}, map[string]string{}
+	served, refused, pending, versions := map[string]Secret{}, map[string]Refusal{}, map[string]Pending{}, map[string]string{}
 	for _, ls := range listings {
 		// The namespace is the prefix as written: a name outside it is skipped, whatever the
 		// lister answered.
@@ -262,7 +262,7 @@ func (l Loader) Load(ctx context.Context) (*Set, error) {
 		switch reason {
 		case "":
 		case ReasonPendingValue:
-			pending[ls.ID] = refusalOf(ls, reason)
+			pending[ls.ID] = pendingOf(ls)
 			continue
 		default:
 			refused[ls.ID] = refusalOf(ls, reason)
@@ -277,16 +277,19 @@ func (l Loader) Load(ctx context.Context) (*Set, error) {
 }
 
 // refusalOf is the Refusal of the secret ls lists for reason: its owner tag as the store holds
-// it, or "" for the two reasons that tag is itself the fault, missing or malformed; for
-// ReasonPendingValue, also when the store created it.
+// it, or "" for the two reasons that tag is itself the fault, missing or malformed.
 func refusalOf(ls secrets.Listing, reason string) Refusal {
 	switch reason {
 	case ReasonOwnerTagMissing, ReasonOwnerTagMalformed:
 		return Refusal{Reason: reason}
-	case ReasonPendingValue:
-		return Refusal{Reason: reason, Owner: ls.Tags[TagOwner], Created: ls.Created}
 	}
 	return Refusal{Reason: reason, Owner: ls.Tags[TagOwner]}
+}
+
+// pendingOf is the Pending of the secret ls lists waiting for its value: its owner tag and when
+// the store created it.
+func pendingOf(ls secrets.Listing) Pending {
+	return Pending{Owner: ls.Tags[TagOwner], Created: ls.Created}
 }
 
 // Lookup is LoadOne's answer: Served with the Secret; or Reason, a Reason* refusal constant, with
@@ -312,12 +315,12 @@ func (lk Lookup) refusal() Refusal {
 	return Refusal{Reason: lk.Reason, Owner: lk.Owner}
 }
 
-// pending is the Set.Pending entry lk answers, and the zero Refusal for a secret not pending.
-func (lk Lookup) pending() Refusal {
+// pending is the Set.Pending entry lk answers, and the zero Pending for a secret not pending.
+func (lk Lookup) pending() Pending {
 	if lk.Reason != ReasonPendingValue {
-		return Refusal{}
+		return Pending{}
 	}
-	return Refusal{Reason: lk.Reason, Owner: lk.Owner, Created: lk.created}
+	return Pending{Owner: lk.Owner, Created: lk.created}
 }
 
 // secretName is the one place that answers whether name can name a secret under the prefix: its
@@ -357,9 +360,13 @@ func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 	if err != nil {
 		return Lookup{}, err
 	}
+	if reason == ReasonPendingValue {
+		waiting := pendingOf(ls)
+		return Lookup{Reason: reason, Owner: waiting.Owner, created: waiting.Created}, nil
+	}
 	if reason != "" {
 		refusal := refusalOf(ls, reason)
-		return Lookup{Reason: refusal.Reason, Owner: refusal.Owner, created: refusal.Created}, nil
+		return Lookup{Reason: refusal.Reason, Owner: refusal.Owner}, nil
 	}
 	lk := Lookup{Secret: secret, Served: true}
 	if secret.Kind() != "" {

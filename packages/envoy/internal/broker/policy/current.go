@@ -362,11 +362,11 @@ func merge(set *Set, name, id string, lk Lookup) {
 	} else {
 		delete(set.Refused, id)
 	}
-	if pending := lk.pending(); pending.Reason != "" {
+	if lk.Reason == ReasonPendingValue {
 		if set.Pending == nil {
-			set.Pending = map[string]Refusal{}
+			set.Pending = map[string]Pending{}
 		}
-		set.Pending[id] = pending
+		set.Pending[id] = lk.pending()
 	} else {
 		delete(set.Pending, id)
 	}
@@ -583,7 +583,8 @@ func (c *Current) withhold() *Set {
 // owner tag now says: next carries the new tag, and broker_unservable_secrets with it. A publish
 // that changes no refusal and no wait allocates nothing here.
 func (c *Current) publish(next *Set, first bool) {
-	var before, waited map[string]Refusal
+	var before map[string]Refusal
+	var waited map[string]Pending
 	if live := c.set.Load(); live != nil {
 		before, waited = live.Refused, live.Pending
 	}
@@ -616,7 +617,7 @@ func (c *Current) publish(next *Set, first bool) {
 		case refused:
 			slog.Error(RefusedMessage, "name", id, "reason", now.Reason, "owner", now.Owner, "first_load", false, "was", was.Reason)
 		case waits && !wasRefused:
-			slog.Info(PendingMessage, "name", id, "reason", pending.Reason, "owner", pending.Owner, "first_load", first)
+			slog.Info(PendingMessage, "name", id, "reason", ReasonPendingValue, "owner", pending.Owner, "first_load", first)
 		case waits:
 			slog.Info(ServableMessage, "name", id, "reason", was.Reason, "owner", was.Owner, "now", "pending")
 		case c.serves(next, id):
