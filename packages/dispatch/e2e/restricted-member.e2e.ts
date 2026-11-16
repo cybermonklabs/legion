@@ -1,3 +1,10 @@
+/** A restricted member against the real server: Dispatch answers bob's `/auth/whoami` with
+ *  `member_kind: "restricted"` and lists him PRIV, which names him, and not the public CORE; the
+ *  rail draws what those answers say, and the views over every project answer Page not found.
+ *
+ *  The full lane runs it. The pull-request lane's real-stack rows are at their budget of 150
+ *  (e2e/__tests__/pull-request-lane.test.ts), so the lane's copy of what the page does with
+ *  those answers is the stubbed row of `restricted-member.stub.e2e.ts`. */
 import { baseUrl, createProject, userHeaders } from "./api";
 import { sql } from "./psql";
 import { expect, type Page, test } from "./test";
@@ -17,8 +24,7 @@ function railTargets(page: Page): Promise<(string | null)[]> {
     .evaluateAll((links) => links.map((link) => link.getAttribute("href")));
 }
 
-// @pr: Private projects: a restricted member's rail is Inbox, Agents, their own projects and Settings, and the views over every project answer Page not found.
-test("a restricted member's rail is Inbox, Agents, their projects and Settings, and the views over every project are not found @pr", async ({
+test("a restricted member's rail is Inbox, Agents, their projects and Settings, and the views over every project are not found", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
