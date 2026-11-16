@@ -1,3 +1,4 @@
+import { SEND_DEADLINE_MS } from "../web/src/features/writes/keyed-write";
 import {
   createAsk,
   createIssue,
@@ -9,6 +10,7 @@ import {
   putRepoProject,
 } from "./api";
 import { filterPicker, pickFilterOption } from "./filters";
+import { nextFrames } from "./frames";
 import {
   detailRead,
   expectReadWhileHeld,
@@ -17,8 +19,11 @@ import {
   lastEventSeq,
   logReads,
   pagePicker,
+  readAnsweredSince,
+  refuseIssuePatches,
   revealPagePicker,
   savesEnded,
+  stopTrying,
   storedValues,
   watchShown,
 } from "./pick-writes";
@@ -444,6 +449,76 @@ test("picker keeps a pick on screen: a reload shows the newest pick from its fir
     ).toEqual(["2"]);
     expect(await getIssue(key)).toMatchObject({ priority: 2 });
     await expect(picker).toHaveValue("2");
+  } finally {
+    await context.close();
+  }
+});
+
+// A pick Dispatch keeps answering `503` passes the write store's deadline and is still tried,
+// under its key, each second: it is late, and the shell offers Stop trying for it. A late pick is
+// as live as one within its deadline, so a read of the issue answered while it is late, carrying
+// P3, never reaches the badge, and the pick is stored once a save of it gets through.
+// SLOW(>=2s): the pick waits out the write store's 30 s deadline (`SEND_DEADLINE_MS`) on the wall
+// clock before the row reads it late.
+test("a pick that is late and still being tried stays on screen over a read, and is stored once a save gets through", async ({
+  browser,
+}) => {
+  // The deadline is waited out on the wall clock, on top of the suite's budget for the rest of
+  // the row.
+  test.setTimeout(SEND_DEADLINE_MS + 60_000);
+  const key = await issueAtP3();
+  const seq = await lastEventSeq(key);
+  const renamed = "Priority under a late save, renamed while it is late";
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Priority of ${key}`, "main");
+    const busy = await refuseIssuePatches(page, key);
+    const reads = logReads(page, detailRead(key));
+    const picker = pagePicker(page, `Priority of ${key}`);
+    const late = stopTrying(page, `${key} set to P1`);
+    await page.goto(`/issues/${key}`);
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    const fromPick = shown.values.length - 1;
+    await expect(
+      late,
+      "the shell offers Stop trying once the pick is past its deadline"
+    ).toBeVisible({ timeout: SEND_DEADLINE_MS + 15_000 });
+    // A rename of the issue, straight to the server: its live event has the page read the issue
+    // again, and the answer, carrying P3, lands while the pick is late.
+    const renamedAt = Date.now();
+    await patchIssue(key, { title: renamed });
+    await expect(page.getByRole("heading", { name: renamed })).toBeVisible();
+    await expect
+      .poll(() => readAnsweredSince(reads, renamedAt), "the page read the issue after the rename")
+      .toBe(true);
+    await expect(late, "the pick was still late once that read was answered").toBeVisible();
+    const answeredBy = Date.now();
+    await expect
+      .poll(() => busy.refused.some((at) => at >= answeredBy), "the store still tries the pick")
+      .toBe(true);
+    // The answer is drawn by now, and the badge read at the frames after it.
+    await nextFrames(page);
+    expect(
+      shown.values.slice(fromPick),
+      "every value the badge showed from the pick on, while it was late"
+    ).toEqual(["1"]);
+
+    busy.admit();
+    await expect.poll(async () => (await getIssue(key)).priority).toBe(1);
+    await expect(page.getByRole("region", { name: "Pending changes" })).toHaveCount(0);
+    expect(
+      await storedValues(key, "priority", seq),
+      `the server stored the pick once; the route passed on ${JSON.stringify(busy.forwarded)}`
+    ).toEqual([1]);
+    expect(await getIssue(key)).toMatchObject({ priority: 1, title: renamed });
+    await expect(picker).toHaveValue("1");
+    expect(shown.values.slice(fromPick), "every value the badge showed from the pick on").toEqual([
+      "1",
+    ]);
   } finally {
     await context.close();
   }

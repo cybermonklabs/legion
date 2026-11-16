@@ -1,13 +1,15 @@
 /** What the browser rows of dispatch://INFRA-299 ("picker keeps the newest pick", "picker keeps a
- *  pick on screen") hold, log and read: each save of an issue held by Playwright's route control
- *  with the window it was held in, each read of a list or of the issue with when it was sent and
- *  answered, what the server stored from the issue's own events, every value a control or a
- *  table's cell shows at every animation frame, and the issue page's own picker, with the controls
- *  that reach it and the Inbox drawer on either issue page: the one with the sidebar, which holds
- *  Peek, and whose `main` holds every picker, and that of dispatch://INFRA-1196, whose icon rail
- *  opens the navigation that holds Peek and whose Details holds the repository. The rows live in
- *  the spec files of the pages they drive (`project.e2e.ts`, `board.e2e.ts`, `issues-table.e2e.ts`,
- *  `inbox-drawer.e2e.ts`, `inbox-reading-pane.e2e.ts`); this module holds no row. */
+ *  pick on screen", "a pick that is late and still being tried") hold, log and read: each save of
+ *  an issue held by Playwright's route control with the window it was held in, or answered `503`
+ *  until the row lets it through, with the shell's Stop trying for a pick gone late; each read of
+ *  a list or of the issue with when it was sent and answered, what the server stored from the
+ *  issue's own events, every value a control or a table's cell shows at every animation frame,
+ *  and the issue page's own picker, with the controls that reach it and the Inbox drawer on either
+ *  issue page: the one with the sidebar, which holds Peek, and whose `main` holds every picker,
+ *  and that of dispatch://INFRA-1196, whose icon rail opens the navigation that holds Peek and
+ *  whose Details holds the repository. The rows live in the spec files of the pages they drive
+ *  (`project.e2e.ts`, `board.e2e.ts`, `issues-table.e2e.ts`, `inbox-drawer.e2e.ts`,
+ *  `inbox-reading-pane.e2e.ts`); this module holds no row. */
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { expect, type Locator, type Page, type Request } from "@playwright/test";
@@ -86,6 +88,60 @@ export async function savesEnded(page: Page, held: HeldPatches): Promise<void> {
   await expect
     .poll(async () => held.holding() === 0 && (await keptWrites(page)) === 0, { timeout: 30_000 })
     .toBe(true);
+}
+
+/** The saves of one issue a page makes while `refuseIssuePatches` answers them. */
+export interface RefusedPatches {
+  /** When the route answered each attempt it refused, in order (`Date.now()` in the runner). */
+  readonly refused: number[];
+  /** The body of each save the route let through to the server, in the order it let them. */
+  readonly forwarded: unknown[];
+  /** Lets each save the page makes from now on through to the server. */
+  readonly admit: () => void;
+}
+
+/**
+ * Answers every save of `issueKey` the page makes as Dispatch answers one its database is too busy
+ * to take, `503 DATABASE_BUSY` with `Retry-After: 1`, until the row lets the saves through
+ * (`admit`), then passes each on to the server. The write store makes a save so answered again
+ * under its key once that second is out (`busyRetryAfterMs`, `web/src/features/writes/
+ * keyed-write.ts`), so a pick is still being tried when it passes `SEND_DEADLINE_MS` and goes
+ * late, and its first attempt after `admit` reaches the server about a second later.
+ */
+export async function refuseIssuePatches(page: Page, issueKey: string): Promise<RefusedPatches> {
+  const refused: number[] = [];
+  const forwarded: unknown[] = [];
+  let refusing = true;
+  await page.route(`**/api/v1/issues/${issueKey}`, async (route) => {
+    const request = route.request();
+    if (request.method() !== "PATCH") return route.fallback();
+    if (refusing) {
+      refused.push(Date.now());
+      return route.fulfill({
+        headers: { "Retry-After": "1" },
+        json: { code: "DATABASE_BUSY", error: "the database is too busy to take this request" },
+        status: 503,
+      });
+    }
+    await route.fallback();
+    forwarded.push(request.postDataJSON());
+  });
+  const admit = () => {
+    refusing = false;
+  };
+  return { admit, forwarded, refused };
+}
+
+/** The Stop trying the shell's Pending changes offers for the write it names `label` (a pick's
+ *  is `CORE-1 set to P1`, `pickLabel`): drawn while that write is late, past `SEND_DEADLINE_MS`
+ *  and still being tried, and gone once it ends (`web/src/features/writes/
+ *  PendingWritesIndicator.tsx`). */
+export function stopTrying(page: Page, label: string): Locator {
+  return page
+    .getByRole("region", { name: "Pending changes" })
+    .getByRole("listitem")
+    .filter({ hasText: label })
+    .getByRole("button", { name: "Stop trying", exact: true });
 }
 
 /** One read the page made, with when it was sent and when its answer's body landed
