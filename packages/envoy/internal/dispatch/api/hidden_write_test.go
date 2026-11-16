@@ -126,6 +126,134 @@ func TestNoBodyReachesAHiddenObject(t *testing.T) {
 	t.Logf("walked %d body fields that name an object", len(bodyReferences))
 }
 
+// hiddenPerson is a full member no list of PRIV names, so a caller that sees PRIV alone does not
+// see them (access.PersonClause), and an open viewer does.
+const hiddenPerson = "dana@example.com"
+
+// walkedRole is a role the walk's listener says s-pub holds; every other role it answers unclaimed.
+const walkedRole = "walked-role"
+
+// probeRole fills a role a delivery's target names: walkedRole, or one no session claims.
+const probeRole probeObject = "role"
+
+// personAndSessionReferences is every field of a write's body that names a person or a session,
+// with a call a caller that sees PRIV alone may make that names it, on PRIV's objects: the row,
+// the path, the body with %s where the person or session goes. owner is a call only PRIV's owner
+// makes, walked as carol's token alone. writes is a call that writes either way - a message or a
+// mention, each recorded and its delivery failed - and is compared by its deliveries
+// (deliveryPart); every other call is refused either way, writing nothing, and compared whole. A
+// delivery's `target` (POST /api/v1/comments/{id}/deliveries) names no session of its own: it picks
+// one of the comment's mentions, and its send resolves through the same resolveDeliveryTarget.
+var personAndSessionReferences = []struct {
+	row, field string
+	path       func(w hiddenWriteSeed) string
+	object     probeObject
+	body       string
+	owner      bool
+	writes     bool
+}{
+	{"POST /api/v1/issues", "assignee", func(hiddenWriteSeed) string { return "/api/v1/issues" }, probePerson,
+		`{` + probeActor + `,"project":"PRIV","title":"A walked issue","assignee":"%s"}`, false, false},
+	{"PATCH /api/v1/issues/{key}", "assignee", func(w hiddenWriteSeed) string { return "/api/v1/issues/" + w.issue[seedPrivate] }, probePerson,
+		`{` + probeActor + `,"assignee":"%s"}`, false, false},
+	{"PUT /api/v1/asks/{id}/asked-of", "asked_of", func(w hiddenWriteSeed) string { return "/api/v1/asks/" + w.fills[probeAsk].hidden + "/asked-of" }, probePerson,
+		`{"asked_of":"%s"}`, false, false},
+	{"PUT /api/v1/projects/{key}/default-assignee", "assignee", func(hiddenWriteSeed) string { return "/api/v1/projects/PRIV/default-assignee" }, probePerson,
+		`{"assignee":"%s"}`, false, false},
+	{"PATCH /api/v1/projects/{key}/access", "owner", func(hiddenWriteSeed) string { return "/api/v1/projects/PRIV/access" }, probePerson,
+		`{"owner":"%s"}`, true, false},
+	{"POST /api/v1/priorities", "owner", func(hiddenWriteSeed) string { return "/api/v1/priorities" }, probePerson,
+		`{` + probeActor + `,"title":"A walked priority","owner":"%s"}`, false, false},
+	{"PUT /api/v1/access-groups/{name}", "members", func(hiddenWriteSeed) string { return "/api/v1/access-groups/walked-group" }, probePerson,
+		`{"members":["%s"]}`, false, false},
+	{"POST /api/v1/issues/{key}/messages", "target", func(w hiddenWriteSeed) string { return "/api/v1/issues/" + w.issue[seedPrivate] + "/messages" }, probeSession,
+		`{` + probeActor + `,"body":"A walked message.","target":"session:%s","delivery":"btw"}`, false, true},
+	{"POST /api/v1/issues/{key}/comments", "mentions[].target", func(w hiddenWriteSeed) string { return "/api/v1/issues/" + w.issue[seedPrivate] + "/comments" }, probeSession,
+		`{` + probeActor + `,"body":"A walked mention.","mentions":[{"target":"session:%s"}]}`, false, true},
+	{"POST /api/v1/issues/{key}/messages", "target (a role)", func(w hiddenWriteSeed) string { return "/api/v1/issues/" + w.issue[seedPrivate] + "/messages" }, probeRole,
+		`{` + probeActor + `,"body":"A walked message.","target":"role:%s","delivery":"btw"}`, false, true},
+	{"POST /api/v1/issues/{key}/comments", "mentions[].target (a role)", func(w hiddenWriteSeed) string { return "/api/v1/issues/" + w.issue[seedPrivate] + "/comments" }, probeRole,
+		`{` + probeActor + `,"body":"A walked mention.","mentions":[{"target":"role:%s"}]}`, false, true},
+	{"POST /api/v1/broadcasts", "session_ids", func(hiddenWriteSeed) string { return "/api/v1/broadcasts" }, probeSession,
+		`{"body":"To walked sessions.","delivery":"btw","session_ids":["%s"]}`, false, false},
+	{"POST /api/v1/delivery/session-groups", "sessions", func(hiddenWriteSeed) string { return "/api/v1/delivery/session-groups" }, probeSession,
+		`{` + probeActor + `,"name":"walked","sessions":["%s"]}`, false, false},
+}
+
+// TestNoBodyNamesAHiddenPersonOrSession: every field of a write's body that names a person or a
+// session (personAndSessionReferences) answers one the caller may not see exactly as one nobody
+// holds, to the callers that see PRIV alone and are not open - bob, a restricted member, and
+// carol's token that lists PRIV - and a role whose holder it may not see as a role nobody holds.
+// An open viewer is answered as before: alice's message to s-pub and to the role it holds are
+// delivered, which also shows the walk's listener holds both, and she assigns dana.
+func TestNoBodyNamesAHiddenPersonOrSession(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	for _, reference := range personAndSessionReferences {
+		callers := []privateCaller{callerBob, callerCarolPrivToken}
+		if reference.owner {
+			callers = []privateCaller{callerCarolPrivToken}
+		}
+		fill := walk.fills[reference.object]
+		method, _, _ := strings.Cut(reference.row, " ")
+		for _, caller := range callers {
+			name := reference.row + " (" + reference.field + ")"
+			hidden := walk.request(t, caller, method, reference.path(walk), json.RawMessage(fmt.Sprintf(reference.body, fill.hidden)))
+			missing := walk.request(t, caller, method, reference.path(walk), json.RawMessage(fmt.Sprintf(reference.body, fill.missing)))
+			got, want := hidden.Body.String(), strings.ReplaceAll(missing.Body.String(), fill.missing, fill.hidden)
+			if reference.writes {
+				got, want = deliveryPart(t, hidden.Body.Bytes()), strings.ReplaceAll(deliveryPart(t, missing.Body.Bytes()), fill.missing, fill.hidden)
+			}
+			if hidden.Code != missing.Code || got != want {
+				t.Errorf("%s as %s: %s answers %d %s, and one nobody holds %d %s", name, caller, fill.hidden,
+					hidden.Code, strings.TrimSpace(hidden.Body.String()), missing.Code, strings.TrimSpace(missing.Body.String()))
+			}
+			if succeeded := missing.Code < http.StatusBadRequest; succeeded != reference.writes {
+				t.Errorf("%s as %s: one nobody holds answered %d %s; want a write: %t", name, caller,
+					missing.Code, strings.TrimSpace(missing.Body.String()), reference.writes)
+			}
+		}
+	}
+	for _, target := range []string{"session:s-pub", "role:" + walkedRole} {
+		sent := walk.request(t, callerAlice, http.MethodPost, "/api/v1/issues/"+walk.issue[seedPublic]+"/messages",
+			json.RawMessage(`{"body":"An open viewer's message.","target":"`+target+`","delivery":"btw"}`))
+		if part := deliveryPart(t, sent.Body.Bytes()); sent.Code != http.StatusCreated || strings.Contains(part, "no live session") ||
+			strings.Contains(part, "no holder") || !strings.Contains(part, `"s-pub"`) {
+			t.Errorf("alice, an open viewer, messaging %s: %d %s, want it delivered to s-pub", target, sent.Code, strings.TrimSpace(sent.Body.String()))
+		}
+	}
+	if assigned := walk.request(t, callerAlice, http.MethodPatch, "/api/v1/issues/"+walk.issue[seedPublic],
+		json.RawMessage(`{"assignee":"`+hiddenPerson+`"}`)); assigned.Code != http.StatusOK {
+		t.Errorf("alice, an open viewer, assigning %s: %d %s, want 200", hiddenPerson, assigned.Code, strings.TrimSpace(assigned.Body.String()))
+	}
+	t.Logf("walked %d body fields that name a person or a session", len(personAndSessionReferences))
+}
+
+// deliveryPart is what a write that records a delivery answers about it: each delivery's state,
+// session and failure, each mention's session, or the one attempt's, as JSON.
+func deliveryPart(t *testing.T, body []byte) string {
+	t.Helper()
+	type attempt struct {
+		State     string  `json:"state"`
+		SessionID *string `json:"session_id"`
+		Error     *string `json:"error"`
+	}
+	var answer struct {
+		attempt
+		Deliveries []attempt `json:"deliveries"`
+		Mentions   []struct {
+			SessionID *string `json:"session_id"`
+		} `json:"mentions"`
+	}
+	if err := json.Unmarshal(body, &answer); err != nil {
+		t.Fatalf("decode a delivery's answer %s: %v", body, err)
+	}
+	encoded, err := json.Marshal(answer)
+	if err != nil {
+		t.Fatalf("encode a delivery's answer: %v", err)
+	}
+	return string(encoded)
+}
+
 // TestAnIDThatIsNoUUIDAnswersAsAnIDNobodyHolds walks every route whose {id} names an item by uuid -
 // a document, an ask, a comment or a message, which the prefix layer resolves (idRoutes), and every
 // other route idRoutes says takes a uuid - and calls it, as alice, with an id that is neither a uuid
@@ -335,12 +463,23 @@ var volatileColumns = map[string]string{"public.agent_tokens": "last_used_at"}
 func walkListener(t *testing.T, topics *[]string) *httptest.Server {
 	t.Helper()
 	const s1 = `{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}`
+	// s-pub is live too, so a delivery a caller may not make to it would reach it: the person and
+	// session walk holds a delivery to it to the failure one to a session nobody holds records.
+	const sPub = `{"session_id":"s-pub","title":"pub worker","dir":"/w/pub","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}`
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			_, _ = w.Write([]byte(s1))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s-pub":
+			_, _ = w.Write([]byte(sPub))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/"+walkedRole:
+			_, _ = w.Write([]byte(`{"role":"` + walkedRole + `","holder":"s-pub","holder_state":"live",` + sPub[1:]))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/roles/"):
+			role := strings.TrimPrefix(r.URL.Path, "/v1/roles/")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no holder for role ` + role + `","reason":"unclaimed","claim_revision":0}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
-			_, _ = w.Write([]byte(`[` + s1 + `]`))
+			_, _ = w.Write([]byte(`[` + s1 + `,` + sPub + `]`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/interests/s1":
@@ -411,6 +550,8 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	// every caller that sees PRIV alone.
 	createdID(t, seed.request(t, callerSharedToken, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/comments",
 		map[string]any{"body": "s-pub works on PUB.", "actor": map[string]any{"kind": "session", "id": "s-pub"}}))
+	// dana is a full member no list of PRIV names: hidden from every caller that sees PRIV alone.
+	seedPeople(t, seed.database, hiddenPerson)
 	var carolsToken string
 	if err := seed.database.Pool.QueryRow(context.Background(), `select id::text from agent_tokens where name = $1`,
 		string(callerCarolPrivToken)).Scan(&carolsToken); err != nil {
@@ -435,6 +576,8 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 		probeHandoffPhase:    same("build"),
 		probeSession:         {hidden: "s-pub", missing: "s-nobody", beside: "s1"},
 		probeEmail:           same(seedBob),
+		probePerson:          {hidden: hiddenPerson, missing: "nobody@example.com"},
+		probeRole:            {hidden: walkedRole, missing: "nobody-role"},
 		probeGroup:           same(group),
 		probeRepositoryOwner: same("acme"),
 		probeRepositoryName:  same("walked"),

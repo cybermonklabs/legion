@@ -245,25 +245,48 @@ func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) ht
 		if !ok {
 			return
 		}
-		if !reader.Viewer.Open {
-			pool, err := s.readyPool()
-			if err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-			var sees bool
-			if err := pool.QueryRow(r.Context(), `select `+access.SessionClause("$1::text", "$2"),
-				addressed, refs.VisibilityArg(reader)).Scan(&sees); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-			if !sees {
-				writeError(w, codeSessionNotFound, http.StatusNotFound, "no session "+addressed)
-				return
-			}
+		r = r.WithContext(withReader(r.Context(), reader))
+		hidden, err := s.sessionHiddenFromReader(r.Context(), addressed)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
 		}
-		handler(w, r.WithContext(withReader(r.Context(), reader)))
+		if hidden {
+			writeError(w, codeSessionNotFound, http.StatusNotFound, "no session "+addressed)
+			return
+		}
+		handler(w, r)
 	}
+}
+
+// sessionHiddenFromReader reports whether the request's reader - the one a check put in ctx
+// (withReader) - may not see session id (access.SessionClause): a restricted member's or a
+// listing credential's, for a session that is neither its own nor has acted in a project it sees.
+// An open reader sees every session and costs no read, and so does work with no reader in ctx,
+// which the server does for itself; a server with no database sees none, failing closed.
+func (s *server) sessionHiddenFromReader(ctx context.Context, id string) (bool, error) {
+	reader, ok := readerFromContext(ctx)
+	if !ok || reader.Viewer == nil || reader.Viewer.Open {
+		return false, nil
+	}
+	if s.deps.Store == nil || s.deps.Store.Pool == nil {
+		return true, nil
+	}
+	var sees bool
+	err := s.deps.Store.Pool.QueryRow(ctx, `select `+access.SessionClause("$1::text", "$2"), id, refs.VisibilityArg(reader)).Scan(&sees)
+	return !sees, err
+}
+
+// personHiddenFromReader reports, through q, whether the request's reader may not see the person
+// login names (access.PersonClause), as sessionHiddenFromReader does for a session.
+func personHiddenFromReader(ctx context.Context, q queryer, login string) (bool, error) {
+	reader, ok := readerFromContext(ctx)
+	if !ok || reader.Viewer == nil || reader.Viewer.Open {
+		return false, nil
+	}
+	var sees bool
+	err := q.QueryRow(ctx, `select `+access.PersonClause("$1::text", "$2"), model.CanonicalLogin(login), refs.VisibilityArg(reader)).Scan(&sees)
+	return !sees, err
 }
 
 // addressesOneSession answers whether route is a write to the rows of the one session its path

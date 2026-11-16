@@ -225,7 +225,10 @@ An object of a project the caller does not see is a row that read does not find,
 — the same status and the same bytes, and nothing written — whether the path names it or a field of the body does (a parent, a `blocked_by` target, a rank neighbour, a reply's parent).
 A credential that lists projects sees no project outside its list, so this is what holds it to its list.
 `TestNoWriteReachesAHiddenObject` calls every write row that names an object, and `TestNoBodyReachesAHiddenObject` every body field that does, on a private project's object and on one nobody holds.
-A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT` to a viewer that is not open — a restricted member, or a credential that lists projects — naming the route and the credential's list:
+A person or a session a body names is read the same way for a viewer that is not open: an assignee, an `asked_of`, a default assignee or a new owner it may not see is refused as a login that has not signed in,
+a message's or a mention's `session:` target it may not see is recorded as `no live session <id>`, and a `role:` target whose holder it may not see as `no holder for role <role>`, the listener's words for a role nobody claims;
+an open viewer sees every person and session and is answered as before (`TestNoBodyNamesAHiddenPersonOrSession`).
+A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT` to a credential that lists projects and `403 RESTRICTED_MEMBER` to a restricted member, naming the route and the credential's list:
 what it writes belongs to no project such a viewer could be held to.
 `POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so a credential that lists projects is refused one outside its list, `403 PROJECT_SCOPE`, naming its list and the project the body named, before anything is read.
 

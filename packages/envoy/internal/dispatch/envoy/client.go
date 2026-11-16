@@ -467,6 +467,13 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 	return responseBody.Session, nil
 }
 
+// NoRoleHolder is the error Role answers for a role no session claims: the listener's own words
+// for it (cmd/listener writeRoleHolderError, roles.Unclaimed; TestNoRoleHolderIsTheListenersWords
+// holds the two equal), so a caller that must answer a role as unheld answers it as Role would.
+func NoRoleHolder(role string) error {
+	return fmt.Errorf("no holder for role %s", role)
+}
+
 // lapsedRoleHolder answers a role lookup the listener refused, having read nothing of its body
 // yet. The refusal shape is cmd/listener's roleHolderError: a reason, and for a lapsed holder
 // the holder's id, the state its record puts it in, and claim_released false.

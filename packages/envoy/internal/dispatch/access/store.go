@@ -204,9 +204,15 @@ func fullMemberOwner(ctx context.Context, q Querier, owner string) (string, erro
 		return "", err
 	}
 	if kind != model.MemberFull {
-		return "", fmt.Errorf("%w: %s is not one", ErrOwnerNotAllowed, login)
+		return "", OwnerNotAllowed(login)
 	}
 	return login, nil
+}
+
+// OwnerNotAllowed is the refusal of login as an owner: one who is no full member who has signed in,
+// or, to a caller that may not see them, a person it is answered for exactly as for such a one.
+func OwnerNotAllowed(login string) error {
+	return fmt.Errorf("%w: %s is not one", ErrOwnerNotAllowed, model.CanonicalLogin(login))
 }
 
 // SetVisibility makes project key public or private. It appends project.access_changed in tx.

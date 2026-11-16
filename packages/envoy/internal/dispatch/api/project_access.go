@@ -86,6 +86,15 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 			answer, appended = written, append(appended, event)
 		}
 		if input.Owner != nil {
+			// A person the writer may not see is refused as one who is not a full member, before
+			// anything is read of them (personHiddenFromReader).
+			hidden, err := personHiddenFromReader(ctx, tx, *input.Owner)
+			if err != nil {
+				return model.ProjectAccess{}, nil, err
+			}
+			if hidden {
+				return model.ProjectAccess{}, nil, access.OwnerNotAllowed(*input.Owner)
+			}
 			written, event, err := access.SetOwner(ctx, tx, s.deps.Events, key, *input.Owner, by)
 			if err != nil {
 				return model.ProjectAccess{}, nil, err
