@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -122,6 +123,72 @@ func TestAWebSocketUpgradeIsSwappedAndThenJoined(t *testing.T) {
 	}
 	if want := "the service read a frame from the command\n"; frame != want {
 		t.Fatalf("the service's frame is %q; want %q: the bytes pass both ways", frame, want)
+	}
+}
+
+// TestNoProtocolSwitchIsCarriedOnADecryptedConnection: on a connection the proxy has decrypted, a
+// CONNECT asks the service to open a tunnel and an Upgrade naming h2c asks it to speak HTTP/2 in
+// the clear on that connection; either way what crosses after the answer is no request the proxy
+// reads, so the decision would be made for one request and the value carried with every byte
+// after it. Each is refused with its own words, under PROTOCOL_SWITCH_REFUSED, and the service is
+// sent nothing - under an entry that allows every method and path, so what refuses them is the
+// proxy and not the entry's methods. These are HTTP/1.1 requests; their HTTP/2 forms are
+// TestEachStreamOfOneH2ConnectionIsDecidedOnItsOwn's CONNECT stream, and an Upgrade header, which
+// net/http's HTTP/2 server answers 400 before any handler runs. The named revert: the refusal
+// taken out of serveBound, which carries both to the service.
+func TestNoProtocolSwitchIsCarriedOnADecryptedConnection(t *testing.T) {
+	for _, row := range []struct {
+		name, request, reason string
+	}{
+		{
+			name: "a CONNECT",
+			request: "CONNECT " + boundHost + ":443 HTTP/1.1\r\n" +
+				"Host: " + boundHost + ":443\r\n" +
+				"Authorization: Bearer " + workerPlaceholder + "\r\n\r\n",
+			reason: "a CONNECT inside a connection the proxy decrypted",
+		},
+		{
+			name: "an upgrade to h2c",
+			request: "GET /v1/things HTTP/1.1\r\n" +
+				"Host: " + boundHost + "\r\n" +
+				"Connection: Upgrade, HTTP2-Settings\r\n" +
+				"Upgrade: h2c\r\n" +
+				"HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n" +
+				"Authorization: Bearer " + workerPlaceholder + "\r\n\r\n",
+			reason: "an upgrade to h2c",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r := newRig(t, Options{Rules: airlock.Rules{Secrets: []airlock.SecretRule{{
+				Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"},
+			}}}})
+			answer, conn, _ := r.connectRaw(net.JoinHostPort(boundHost, "443"), basic(workerPlaceholder))
+			if answer.StatusCode != http.StatusOK {
+				t.Fatalf("the CONNECT answered %d; want 200", answer.StatusCode)
+			}
+			decrypted := tls.Client(conn, &tls.Config{RootCAs: r.trust, ServerName: boundHost})
+			t.Cleanup(func() { decrypted.Close() })
+			if _, err := decrypted.Write([]byte(row.request)); err != nil {
+				t.Fatalf("write the request: %v", err)
+			}
+			if err := decrypted.SetReadDeadline(time.Now().Add(20 * time.Second)); err != nil {
+				t.Fatalf("set the read deadline: %v", err)
+			}
+			refused, err := http.ReadResponse(bufio.NewReader(decrypted), &http.Request{Method: http.MethodGet})
+			if err != nil {
+				t.Fatalf("read the answer: %v", err)
+			}
+			body, _ := io.ReadAll(refused.Body)
+			if refused.StatusCode != http.StatusForbidden || !strings.Contains(string(body), row.reason) {
+				t.Fatalf("the request was answered %d %q; want 403 naming %q", refused.StatusCode, body, row.reason)
+			}
+			if seen := r.requests(); len(seen) != 0 {
+				t.Fatalf("the service was sent %v; want nothing", seen)
+			}
+			if refusals := r.logs.refusals(); len(refusals) != 1 || refusals[0].fields["code"] != codeProtocolSwitch {
+				t.Fatalf("the refusal recorded %v; want one record coded %s", refusals, codeProtocolSwitch)
+			}
+		})
 	}
 }
 
@@ -661,7 +728,7 @@ func (s *copySink) waitFor(t *testing.T, want, when string) {
 // close does to the bytes in flight under it, which is decided by those two halves alone.
 type joinedStandIn struct {
 	command *tls.Conn     // the command's side, which writes the frames
-	joined  *tls.Conn     // the side watchJoined closes
+	joined  *tls.Conn     // the side watchCarried closes (cutJoined)
 	cut     *cutConn      // the connection under that side's TLS, which the cut stops
 	sink    *copySink     // the service the join copies the command's side to
 	copied  chan struct{} // closed when that copy returns

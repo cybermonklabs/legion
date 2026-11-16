@@ -100,11 +100,13 @@ A refusal comes from the proxy, not from the service:
 - An HTTP error naming the rule that refused it: a TLS name or `Host` that is not the host the
   command asked for, a method or a path outside the entry's `allow`, a path with a `.` or `..`
   segment, an `X-HTTP-Method-Override`, `X-HTTP-Method` or `X-Method-Override` header where the
-  entry lists methods, plain `http://` to a host an entry binds, or a private address.
+  entry lists methods, a `CONNECT` or an `h2c` upgrade inside the proxied connection, plain
+  `http://` to a host an entry binds, or a private address. gRPC clients work through the proxy,
+  and a gRPC refusal shows the same text in its error message.
 
-- `407` once the grant ends, on every call to any host. A WebSocket open at that moment is
-  closed with the grant. A tunnel to a host no entry binds carries no value, so it runs to its
-  idle limit instead.
+- `407` once the grant ends, on every call to any host. A call still running at that moment (a
+  WebSocket, a gRPC stream, a long poll) is ended with the grant. A tunnel to a host no entry binds
+  carries no value, so it runs to its idle limit instead.
 
 - `503` when the broker could not read the grant at all. The grant has not ended and the call
   can be made again.

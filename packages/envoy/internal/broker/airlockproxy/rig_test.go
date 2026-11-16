@@ -3,9 +3,12 @@
 // The world a row runs in, and nothing that asserts anything about it: the proxy on a loopback
 // listener, the fake GrantSource behind it, the stand-in service behind the bound host, the two
 // tunnelled services, the certificate authority the rows sign with, and the log they read back.
-// proxy_test.go, aws_test.go, azure_test.go and upgrade_test.go each build one with newRig, and
-// ca_test.go takes the authority helpers alone. Why the rig is built out of real listeners and
-// real TLS rather than mocks is in proxy_test.go's own comment.
+// proxy_test.go, aws_test.go, azure_test.go, upgrade_test.go and h2_test.go each build one with
+// newRig, and ca_test.go takes the authority helpers alone. Why the rig is built out of real
+// listeners and real TLS rather than mocks is in proxy_test.go's own comment.
+//
+// TestMain runs the whole suite twice: once with every rig's client speaking HTTP/1.1 to a bound
+// host, and once speaking HTTP/2 alone, as a gRPC client does (rig.protocol).
 package airlockproxy
 
 import (
@@ -55,6 +58,36 @@ const (
 // workerPlaceholder is a placeholder in the shape the broker mints them, so a row that asserts a
 // body never names the placeholder is asserting about the real thing.
 var workerPlaceholder = requests.PlaceholderPrefix + "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPp"
+
+// The two protocols a command's client may speak to a bound host, by their ALPN names:
+// HTTP/1.1, which every client that offers it is answered in, and HTTP/2, which a client that
+// offers nothing else - every gRPC client - is answered in (connectBound).
+const (
+	protocolHTTP1 = "http/1.1"
+	protocolH2    = "h2"
+)
+
+// suiteProtocol is the protocol every rig's client speaks unless its row names one: TestMain sets
+// it before each of its two runs of the suite.
+var suiteProtocol = protocolHTTP1
+
+// TestMain runs every row of this package under each protocol a client may speak to a bound host,
+// so each row whose call goes through r.client is a row of HTTP/1.1 and a row of HTTP/2: the swap,
+// the refusals, the AWS signature, the Azure exchange and the lines and counts are the same
+// request handling whichever framing carried the request. A row that speaks to the proxy on a
+// socket of its own - a CONNECT written by hand, an upgrade, a frame written by hand - runs the
+// same bytes in both runs. The banner before each run names the protocol of the run below it.
+func TestMain(m *testing.M) {
+	code := 0
+	for _, protocol := range []string{protocolHTTP1, protocolH2} {
+		suiteProtocol = protocol
+		fmt.Printf("airlockproxy: every rig's client speaks %s to a bound host in the run below\n", protocol)
+		if run := m.Run(); run != 0 {
+			code = run
+		}
+	}
+	os.Exit(code)
+}
 
 // testRules is the rules file every row but the two-name one runs under.
 func testRules() airlock.Rules {
@@ -277,6 +310,10 @@ func (c *logCapture) refusals() []logLine { return c.lines(answer.RefusalMessage
 // joins is every line the close of a joined connection logged, read the same way.
 func (c *logCapture) joins() []logLine { return c.lines(joinMessage) }
 
+// cuts is every line the end of a carried call its grant stopped carrying logged, read the same
+// way.
+func (c *logCapture) cuts() []logLine { return c.lines(cutMessage) }
+
 // lines is every line the proxy wrote under one message, with the attributes it wrote them with.
 func (c *logCapture) lines(message string) []logLine {
 	var lines []logLine
@@ -345,6 +382,11 @@ type rig struct {
 	dialed   []string
 
 	service *airlocktest.Service
+
+	// protocol is what the command's own client speaks to a bound host (clientAt): protocolHTTP1,
+	// or protocolH2 alone, as a gRPC client offers it. newRig sets the suite's, and a row about
+	// one of the two sets its own after newRig.
+	protocol string
 }
 
 // wrapListener is the seam a row puts a connection of its own under the proxy with: every
@@ -373,7 +415,7 @@ func (l *wrapListener) Accept() (net.Conn, error) {
 // listener accepts.
 func newRig(t *testing.T, o Options, wrap ...func(net.Conn) net.Conn) *rig {
 	t.Helper()
-	r := &rig{t: t, grants: newFakeGrants(), logs: &logCapture{}, trust: x509.NewCertPool()}
+	r := &rig{t: t, grants: newFakeGrants(), logs: &logCapture{}, trust: x509.NewCertPool(), protocol: suiteProtocol}
 
 	// The stand-in service behind the bound host, with a certificate of its own naming that
 	// host and an authority of the rig's own behind it, which is the only thing the proxy
@@ -536,20 +578,30 @@ func (r *rig) client(password string) *http.Client {
 }
 
 // clientAt is that client pointed at one proxy address, which a row with a second pod of its
-// own needs.
+// own needs. It speaks r.protocol to a bound host: HTTP/1.1 as net/http's client does with a TLS
+// configuration of its own, or HTTP/2 alone, whose handshake offers h2 and nothing else, as a
+// gRPC client's does, so a proxy that does not answer h2 fails the handshake rather than falling
+// back to HTTP/1.1.
 func (r *rig) clientAt(addr, password string) *http.Client {
 	r.t.Helper()
 	proxyURL, err := url.Parse("http://agent:" + password + "@" + addr)
 	if err != nil {
 		r.t.Fatalf("the proxy URL: %v", err)
 	}
-	return &http.Client{
-		Timeout: 20 * time.Second,
-		Transport: &http.Transport{
-			Proxy:           http.ProxyURL(proxyURL),
-			TLSClientConfig: &tls.Config{RootCAs: r.trust},
-		},
+	transport := &http.Transport{
+		Proxy:           http.ProxyURL(proxyURL),
+		TLSClientConfig: &tls.Config{RootCAs: r.trust},
 	}
+	switch r.protocol {
+	case protocolHTTP1:
+	case protocolH2:
+		var protocols http.Protocols
+		protocols.SetHTTP2(true)
+		transport.Protocols = &protocols
+	default:
+		r.t.Fatalf("the rig's protocol is %q, want %q or %q", r.protocol, protocolHTTP1, protocolH2)
+	}
+	return &http.Client{Timeout: 20 * time.Second, Transport: transport}
 }
 
 // get is one GET on a bound host through the proxy, with the headers given as name/value pairs.

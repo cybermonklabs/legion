@@ -44,6 +44,9 @@ const (
 	codeTargetLost = "CONNECT_TARGET_LOST"
 	// serveBound: a bound connection on which no name of the grant binds the host any more.
 	codeNoBoundName = "NO_NAME_BOUND"
+	// serveBound: a CONNECT, or an upgrade to h2c, on a connection the proxy decrypted - a request
+	// for a protocol whose bytes after the answer are no request the proxy reads.
+	codeProtocolSwitch = "PROTOCOL_SWITCH_REFUSED"
 	// serveBound: a name or slot the broker released no value for.
 	codeNoValue = "NO_VALUE_RELEASED"
 	// serveBound: an azure access slot whose token this pod neither holds nor could exchange for

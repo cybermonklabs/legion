@@ -436,6 +436,10 @@ var airlockBundleVars = []string{
 	"GIT_SSL_CAINFO",                     // git over HTTPS
 	"CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE", // gcloud
 	"AWS_CA_BUNDLE",                      // the AWS CLI and SDKs
+	// gRPC's C core, under its Python, Ruby, C++ and PHP clients, which reads its roots from
+	// this file in place of its own (https://github.com/grpc/grpc/blob/master/doc/environment_variables.md).
+	// grpc-go reads the system roots, which SSL_CERT_FILE names.
+	"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
 }
 
 // airlockVars are the environment variables an airlock release adds to the command's
