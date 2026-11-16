@@ -689,7 +689,6 @@ func TestProbeImageRefusesARoleConfigFilesValueNoRoleCarries(t *testing.T) {
 		{[]string{"--role-config-files", "coder=/etc/a.yml"}, `"coder" is not a Legion role`},
 		{[]string{"--role-config-files", "tester=a.yml"}, `tester's overlay "a.yml" is not an absolute path`},
 		{[]string{"--role-config-files", "tester"}, `--role-config-files "tester" is not <role>=<file>[:<file>…]`},
-		{[]string{"--role-config-files", "tester=/a.yml", "--role-config-files", "tester=/b.yml"}, "tester is given twice"},
 	} {
 		seen := filepath.Join(t.TempDir(), "seen")
 		t.Setenv("LEGION_TEST_SEEN", seen)

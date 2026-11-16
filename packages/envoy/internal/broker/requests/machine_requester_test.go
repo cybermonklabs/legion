@@ -52,7 +52,7 @@ func TestAMachinesSessionIsItsFleetsAndNoPersons(t *testing.T) {
 		{name: "a shared agent-tier secret", secret: "SHARED_TOKEN", state: "granted", value: "shared-token-v1"},
 	} {
 		t.Run(want.name, func(t *testing.T) {
-			granted, err := m.Create(ctx, machine, signRequest(t, m, machineKey, "need it", want.secret), "")
+			granted, err := m.Create(ctx, machine, signRequest(t, m, machineKey, "need it", want.secret), "", nil)
 			if err != nil || granted.State != want.state || granted.GrantID == nil {
 				t.Fatalf("Create(a machine's session, %s) = %+v, %v; want %s at once", want.secret, granted, err, want.state)
 			}
@@ -63,7 +63,7 @@ func TestAMachinesSessionIsItsFleetsAndNoPersons(t *testing.T) {
 	}
 
 	t.Run("a person's agent-tier secret is that person's to approve", func(t *testing.T) {
-		asked, err := m.Create(ctx, machine, signRequest(t, m, machineKey, "need it", "AUTO_TOKEN"), "")
+		asked, err := m.Create(ctx, machine, signRequest(t, m, machineKey, "need it", "AUTO_TOKEN"), "", nil)
 		if err != nil || asked.State != "pending" || asked.GrantID != nil {
 			t.Fatalf("Create(a machine's session, AUTO_TOKEN) = %+v, %v; want it pending with no grant: %s owns it and no one has signed in on this machine", asked, err, operator)
 		}
@@ -71,7 +71,7 @@ func TestAMachinesSessionIsItsFleetsAndNoPersons(t *testing.T) {
 
 	t.Run("an account the setting no longer binds is nobody's", func(t *testing.T) {
 		m.VMServicesByAccount = map[string]string{}
-		denied, err := m.Create(ctx, machine, signRequest(t, m, machineKey, "need it again", "SERVICE_KEY"), "")
+		denied, err := m.Create(ctx, machine, signRequest(t, m, machineKey, "need it again", "SERVICE_KEY"), "", nil)
 		if err != nil || denied.State != "denied" {
 			t.Fatalf("Create(a machine whose account is no longer bound, SERVICE_KEY) = %+v, %v; want it denied", denied, err)
 		}

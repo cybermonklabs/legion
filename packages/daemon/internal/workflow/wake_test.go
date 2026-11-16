@@ -589,6 +589,33 @@ func TestWakeTaskNamesItsWake(t *testing.T) {
 	}
 }
 
+// A role message wake tells the woken role what Envoy kept for it (dispatch://INFRA-2846/spec
+// R7): a message kept for the role reaches the woken session as an Envoy card that shows kept_at,
+// possibly before the wake's task, unless its hour ended first; Envoy keeps a role message for one
+// hour and tells its sender when it drops one; and a message sent with keep: false is not kept, so
+// its sender sends it again. Each clause is matched on its own, so a sentence that drops one fails
+// and names it.
+func TestTheRoleMessageWakeTaskSaysWhatWasKept(t *testing.T) {
+	task := WakeTask(pods.WakeRoleMessage, "legion-LEGION-208-implementer")
+	for _, clause := range []struct{ rule, want string }{
+		{rule: "a message kept for the role reaches the woken session as a card", want: "a message kept for your role reaches this session as an Envoy card"},
+		{rule: "the card shows kept_at", want: "shows kept_at"},
+		{rule: "the card can arrive before the task", want: "possibly before this task"},
+		{rule: "a copy whose hour ended before the role came back does not reach it", want: "unless its hour ended before you came back"},
+		{rule: "Envoy keeps a role message for one hour", want: "Envoy keeps a role message for one hour"},
+		{rule: "Envoy tells the sender when it drops one", want: "Envoy tells its sender when it drops one"},
+		{rule: "a message sent with keep: false is not kept", want: "A message sent with keep: false is not kept"},
+		{rule: "the sender of such a message sends it again", want: "its sender sends it again"},
+	} {
+		if !strings.Contains(task, clause.want) {
+			t.Errorf("WakeTask(%s) = %q, want it to say %s (%q)", pods.WakeRoleMessage, task, clause.rule, clause.want)
+		}
+	}
+	if strings.Contains(task, "which nothing kept") {
+		t.Errorf("WakeTask(%s) = %q, want no %q: Envoy keeps a role message for the role's next holder", pods.WakeRoleMessage, task, "which nothing kept")
+	}
+}
+
 // A settlement that wakes a released worker also tells the roles what it says (tellChecks), and
 // one of those roles is the very worker it woke. Its message's listener report then arrives while
 // the claim is still released, and the mark's key, the wake's own identity, does not hold it: a

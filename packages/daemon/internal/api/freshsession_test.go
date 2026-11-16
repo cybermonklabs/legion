@@ -591,6 +591,54 @@ func TestAFreshSessionOutrunsTheRuleResumeThePhaseFactWakes(t *testing.T) {
 	}
 }
 
+// A phase worker that holds only the daemon's own delivery of a relaunch's record owes no task:
+// that delivery carries no run, phase or entry, only the sentence of what the relaunch ended
+// (supervise.Delivery.Relaunch). So its fresh session restarts its issue's phase
+// (restartWorkedPhase), as the fresh session of a worker holding nothing does, rather than bring
+// it back in a new session with nothing to do. Both doors are held to it, since the effect behind
+// them is one.
+func TestAFreshSessionOfAWorkerHoldingOnlyARelaunchDeliveryRestartsItsPhase(t *testing.T) {
+	for _, door := range freshSessionDoors() {
+		t.Run(door.name, func(t *testing.T) {
+			facts := &phaseRestarter{}
+			h := freshSessionHarness(t, facts)
+			token := readyImplementer(t, h)
+			m, _ := h.supervisor.Machine(token)
+			// The worker's process dies in a turn of the agent's own, so the relaunch records what
+			// it cut off, and the relaunched agent's ready, holding no task, is given the daemon's
+			// own delivery of that record (supervise's queueRelaunch). No shim is connected, so
+			// that delivery waits unsent.
+			if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
+				t.Fatalf("start the agent's own turn: %v", err)
+			}
+			h.relaunch(token)
+			h.ready(token, "ses_implementer", 2)
+			if held := h.stored(token).Pending; held == nil || !held.Relaunch() {
+				t.Fatalf("the relaunched worker holds %+v, want the daemon's own delivery of the relaunch's record alone", held)
+			}
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+				t.Fatalf("the fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
+			}
+			if note := freshSessionNote(t, recorder); note != "" {
+				t.Errorf("the answer says %q, want nothing: the phase was restarted", note)
+			}
+			applied := facts.recorded()
+			if len(applied) != 1 {
+				t.Fatalf("the fresh session applied %#v, want the phase's restart alone", applied)
+			}
+			if fact, ok := applied[0].(intake.RestartPhase); !ok || fact.Issue != "LEGION-209" || fact.Role != claim.RoleImplementer {
+				t.Errorf("the fresh session applied %#v, want RestartPhase{LEGION-209, implementer}", applied[0])
+			}
+			if after := h.stored(token); after.Session != "" || after.State != supervise.StateLaunching {
+				t.Errorf("the claim is %s recording session %q, want it launching in a new session", after.State, after.Session)
+			}
+		})
+	}
+}
+
 // A claim in a turn is refused through either door, word for word: suspending it would cut the
 // turn off, and that turn may be the one that ends the run of provider errors. The claim is left
 // exactly as it was, its session included.

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -18,14 +19,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -183,7 +188,10 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	if err != nil {
 		return err
 	}
-	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, o.githubAPI)
+	// The memory guards' kill holder (memoryGuardKills), on the plan by pointer, so the plan's own
+	// copy carries the one holder the factory closed over, as plan.repositories does.
+	p.memoryGuardKills = &memoryGuardKills{}
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, o.githubAPI, p.memoryGuardKills)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -300,9 +308,11 @@ func kubeClient(k config.Kubernetes) (*rest.Config, error) {
 // stream's address, the connection directory and the token source, which boot hands the factory.
 // The issue pod's one container gets runtime.kubernetes.resources.issue as its requirements, and
 // the daemon-launched controller's container runtime.kubernetes.resources.controller (requirements).
-// The project's memory overlays (`memory.config_files`) reach the runtime whatever its mode is,
-// as they reach tmuxOptions: a tree already drawn into the memory group names them under any
-// mode, and a project with no block hands over none.
+// Every arm of every experiment the project declares reaches the runtime whatever the
+// experiment's mode is (experiment.DeclaredVariants), as they reach tmuxOptions: a unit already
+// drawn into an arm names that arm's overlays under any mode. A project that declares no
+// experiment of its own still declares the memory experiment and hands over its two arms, which
+// name no file where the project writes no `memory` block and so add nothing to a launch.
 // lookup is the daemon's environment, which can name the NATS nkey seed (launchSecrets).
 func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchToken string, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
 	issueVolume, err := resource.ParseQuantity(k.IssueVolume)
@@ -331,6 +341,17 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 	if err != nil {
 		return sandbox.Options{}, err
 	}
+	// The guard's settings reach an accepted issue-pod launcher on the answer to its hello
+	// (sandbox Runtime.LauncherResolver). Nil is what the launcher reads as "run no guard", so a
+	// deployment that turned runtime.kubernetes.memory_guard.issue_pods off and a daemon built
+	// before the guard write the same ack (shimwire.LauncherHelloAck.MemoryGuard, INFRA-3557).
+	var memoryGuard *shimwire.LauncherMemoryGuard
+	if g := k.MemoryGuard.IssuePods; g.Enabled {
+		memoryGuard = &shimwire.LauncherMemoryGuard{
+			ActPercent: g.ActPercent, FloorPercent: g.FloorPercent,
+			WaitSeconds: g.WaitSeconds, IntervalMilliseconds: g.IntervalMilliseconds,
+		}
+	}
 	opts := sandbox.Options{
 		Namespace: k.Namespace, Project: project, Image: k.Image, StorageClass: k.StorageClass, IssueVolume: issueVolume,
 		Scheduling: sandbox.Scheduling{NodeSelector: k.Scheduling.NodeSelector, Tolerations: tolerations, PriorityClass: k.Scheduling.PriorityClass},
@@ -350,6 +371,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		Setup:                   k.Setup,
 		SkillsRepository:        k.SkillsRepository,
 		TestPostgres:            k.TestPostgres,
+		MemoryGuard:             memoryGuard,
 		BootTimeout:             cfg.WorkerBootTimeout,
 		RegistrationIntervals:   cfg.WorkerBootRegistrationDeadlineIntervals,
 		BusyBackoff:             busyBackoffFirst,
@@ -360,7 +382,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		RepositoryCache:         cache,
 		Log:                     log,
 	}
-	opts.MemoryConfigFiles = cfg.Projects[cfg.Project].Memory.ConfigFiles
+	opts.ExperimentVariants = experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	return opts, nil
 }
 
@@ -501,8 +523,10 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // one — per-claim pods, or issue pods on one tree volume — remains. githubAPI is GitHub's REST
 // root ("" is https://api.github.com), which the shared public leak check is read under
 // (leakCheckSource).
+//
+// kills is the memory guards' kill holder (memoryGuardKills).
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
-	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, githubAPI string) runtimeFactory {
+	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, githubAPI string, kills *memoryGuardKills) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
@@ -520,6 +544,9 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// a daemon with no Apps reads none, and the runtime refuses the start of a role whose
 		// launcher names a tag with the cause that says so.
 		opts.LeakCheck = leakCheckSource(apps, githubAPI)
+		// Each process an issue pod's memory guard ends reaches the daemon through the kill
+		// holder (memoryGuardKills).
+		opts.MemoryGuardKilled = kills.killed
 		if apps != nil {
 			// One record per project, written by the two credentials and read by the directory
 			// set for the Apps of the pod it answers for, so no pod is replaced for a directory
@@ -541,11 +568,79 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 	}
 }
 
+// memoryGuardKills turns one process an issue pod's memory guard ended, as the pod's launcher
+// reported it, into the fact the workflow applies (intake.MemoryGuardKill). It is the seam between
+// the Kubernetes runtime factory (sandboxRuntime), which prepareSandbox builds before the workflow
+// opens, and the fact path, which exists only after it: prepareSandbox makes one and hands it to
+// the factory, and the boot fills it the moment the workflow is open (plan.memoryGuardKills,
+// daemon.run). A holder nobody filled refuses every report with errMemoryGuardKillsUnbound, which
+// the launcher session logs with the report it drops.
+//
+// It is filled once, in the boot's own goroutine, before the runtime is built and so before any
+// launcher can connect: there is nothing to lock, and nothing ever replaces what was filled.
+type memoryGuardKills struct {
+	pool     *store.Pool
+	handlers []intake.Handler
+}
+
+// errMemoryGuardKillsUnbound is what a holder the boot never filled answers every report with. Its
+// text names the line that fills it, since a log line is then the only place the drop shows: the
+// role whose process was ended is told nothing. An unbound holder can only be a boot bug, never a
+// daemon that runs no workflow: prepareSandbox makes the holder only under runtime: kubernetes, and
+// configuration load refuses a runtime: kubernetes file that names no dispatch_url (config's
+// checkKubernetesKeys, "the workflow is what launches every pod"), so every daemon with a holder
+// opens the workflow whose boot fills it.
+var errMemoryGuardKillsUnbound = errors.New("the daemon's memory guard kill holder was never bound to the workflow " +
+	"(daemon.go, plan.memoryGuardKills.bind), so this report and every later one is dropped")
+
+// bind gives the holder the daemon's guarded pool (store.Pool) and the handlers a fact applies
+// through, which is what the workflow has and the factory does not.
+func (m *memoryGuardKills) bind(pool *store.Pool, handlers []intake.Handler) {
+	m.pool, m.handlers = pool, handlers
+}
+
+// killed applies one kill of issue's pod as one intake fact (runtime.MemoryGuardKilled), crediting
+// it to token, the role whose connection carried the report, and to podUID, the pod that launcher
+// runs in, both the session's and never the report's. It runs on the launcher's own frame loop
+// under that loop's bounded context, so an apply that cannot be made is returned to the launcher
+// session, which logs it and drops the report. Every launcher's frame loop runs beside the others
+// and beside the daemon's own loops, so each report applies under a hold mark of its own
+// (store.ForConcurrentWorker): this is a fact source, and a fact source marks its context where
+// it starts (store.ErrNestedAcquire).
+//
+// The event id is the kill's own identity, the guard's id and its sequence
+// (memoryGuardKillEventID), and never the daemon's receipt: a launcher that wrote a report on a
+// connection it then lost sends it again on the next, and ApplyFact applies one id once, so the
+// role is told of one kill once however often its report arrives.
+func (m *memoryGuardKills) killed(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error {
+	if m.pool == nil || len(m.handlers) == 0 {
+		// Nothing bound the holder to the workflow, so there is no fact path to apply the report
+		// through. That is a boot that skipped plan.memoryGuardKills.bind, never a daemon that runs
+		// no workflow: only a runtime: kubernetes daemon has a holder, and configuration load refuses
+		// one whose file names no dispatch_url (errMemoryGuardKillsUnbound). Every report of every
+		// pod meets it, so it is returned rather than swallowed: the launcher session logs it with
+		// the report it dropped (sandbox's memoryKilled), which is what makes the drop findable.
+		return errMemoryGuardKillsUnbound
+	}
+	fact := intake.MemoryGuardKill{Issue: issue, Token: token, PodUID: podUID, Report: report}
+	if _, err := intake.ApplyFact(store.ForConcurrentWorker(ctx), m.pool, "launcher", memoryGuardKillEventID(report), fact, m.handlers...); err != nil {
+		return fmt.Errorf("apply the memory guard's kill of pid %d in %s's pod %s: %w", report.PID, issue, podUID, err)
+	}
+	return nil
+}
+
+// memoryGuardKillEventID is the event id a memory guard's kill report is applied under:
+// `memory-guard-kill:<guard>:<sequence>`, the guard's own id (minted once per launcher process)
+// and its count of kills, which together name one kill of one pod's guard.
+func memoryGuardKillEventID(report shimwire.LauncherMemoryKill) string {
+	return fmt.Sprintf("memory-guard-kill:%s:%d", report.Guard, report.Sequence)
+}
+
 // implementTokens is the workflow's implement App as a sandbox's provisioning token source: every
 // pod's workspace-fetch clones with an installation token minted for the owner of the repository
-// it fetches and narrowed to reading (contents, pull requests, Actions and metadata at read,
-// appauth.Tokens.ReadToken), which is all a clone, a fetch and a repository cache do. Every
-// refusal is returned as it came, with no second mint: GitHub's trouble
+// it fetches and narrowed to reading (contents, pull requests, issues, Actions and metadata at
+// read, appauth.Tokens.ReadToken), nothing a clone, a fetch or a repository cache could write
+// with. Every refusal is returned as it came, with no second mint: GitHub's trouble
 // (appauth.TransientError, a 5xx or a rate-limited 422), an App with no installation on the
 // owner (appauth.ErrNotInstalled), and an installation that is not granted what the reading
 // lease asks for (appauth.ErrNarrowingRefused) alike.
@@ -614,7 +709,7 @@ func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckRea
 }
 
 // leakCheckToken mints the token the shared public leak check is read with: the implement App's
-// read lease on the check's owner (appauth.Tokens.ReadToken, whose four read permissions are all a
+// read lease on the check's owner (appauth.Tokens.ReadToken, whose read permissions hold all a
 // tarball read needs). No request names a repository any longer (INFRA-2543), so the lease reaches
 // every repository that owner's installation holds and the reading permissions are the whole of
 // what keeps it from writing. It mints nothing else: an installation the account has not granted

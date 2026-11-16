@@ -20,12 +20,13 @@ The stream captures every agent subject, so it stores each forward there, and th
 consumer delivers it once — also after a restart or a dropped connection (below). No session
 answers a receipt: a message sent through the listener's `POST /v1/messages/publish` waits only
 for the stream's acknowledgement that it stored the forward, and answers the sender with an error
-once four seconds pass without one. A role message no live holder can take is kept for the
-session that claims the role next: that session is handed it once, within one hour of the keep,
-and the publish answers 202 to say the listener kept it. A
-`notifications.team.<name>` topic is stored like any other followed topic; every other
-`notifications.` topic the stream does not capture is refused by name, at publish and at
-subscribe, because no session would ever be delivered it.
+once four seconds pass without one. A role message no live holder can take is kept for one
+hour: the next session to hold the role live in that hour is handed it once, and the publish
+answers 202 with `kept_until`, the end of that hour. If no session takes it, the listener drops
+it and sends a dead letter, an Envoy card that names it, to the session the publish named as its
+source, unless it drops it more than an hour late. A `notifications.team.<name>` topic is stored
+like any other followed topic; every other `notifications.` topic the stream does not capture is
+refused by name, at publish and at subscribe, because no session would ever be delivered it.
 
 This extension claims the role for the session the host has open, and every automatic claim is
 soft: it names the session it continues, which is a fork's or branch's parent, or the session
@@ -138,7 +139,7 @@ threads, comments on its documents and routed issues, mentions, and messages, ne
 word for word. A subagent reads its parent's list. The list stays under 8,000 characters (at most 7,999): the oldest
 items that do not fit are left out, and its last line says how many and that `dispatch answers`
 prints them all. It is read on every request and waits at most 800 ms for Dispatch. Past that,
-or when the read fails, the request carries the last list read, with the time it was read and why
+or when the read fails, the read gives the last list read, with the time it was read and why
 this read failed, or, when no list read has an item from the last 72 hours, one line saying the
 list could not be read and why. A Dispatch build older than the answers route answers it with its
 own `404 NOT_FOUND` "no route for …". Against that Dispatch a request carries no such line, since
@@ -148,12 +149,31 @@ route; and that Dispatch is not asked again for 5 minutes. Any other answer, a p
 a 200 that is no answers list included, is a failed read.
 
 The list goes after the request's last message only on the request where it first shows an item,
-or new words in one. On every request after that it stays right after the message it followed
-there, so the request ends with its own last message and the model does not take a list with
-nothing new in it for a new turn; it keeps that place when it only loses items or its header
-changes. After a compaction summarizes that message, or in a new process, the list goes after the
-last message once more. It is never at the head, so a change in it costs only the bytes after it,
-and a list that keeps its place is inside the cached prefix of the next request.
+new words in one, or an item taken back. Items the 8,000-character limit leaves out count too: a
+new message longer than the limit, or a comment an edit made too long to fit, moves the list,
+whose last line then says how many items were left out. An answer a person retracted leaves the
+list while its time is still inside the 72 hours, and that moves the list too; an item that only
+aged out of the 72 hours does not. On every request after that the list stays right after the
+message it followed there, with the bytes it had then, so the request ends with its own last
+message and the model does not take a list with nothing new in it for a new turn. It keeps that
+place and those bytes when it only loses items to the 72 hours or names another read, so a kept
+list can name an older read than the request's own and still show an item that has since left
+the 72 hours. A list an older copy of the extension added keeps its place only when nothing but
+its read time and reason changed. A read with no list to give, the line saying the list could not
+be read, is never hidden behind a kept list: that line goes after the last message, and the list
+goes there again once a read gives it. A read that fails but still gives the last list read, with
+the same items, keeps the kept list's place and bytes, so that request does not say that its read
+failed, unless the kept bytes are that read's own text, which say it; otherwise the log says it
+instead, with the reason, on the first such request and not again until a read has answered, so a
+failure that lasts is one line. A read that finds nothing for the session takes a kept list out of
+the request when an item it shows was taken back inside the 72 hours, as when a person retracts
+the only answer, and leaves it where it is when its items only aged out; it takes a kept failure
+line out. A Dispatch with no answers route, when no list read before from it has an item from the
+last 72 hours (none was read, or every item of it has aged out), or no Dispatch at all, leaves a
+kept list where it is. Moving the list empties its old place.
+After a compaction summarizes the message it followed, or in a new process, the list goes after
+the last message once more. It is never at the head, so a change in it costs only the bytes from
+its place on, and a list that keeps its place is inside the cached prefix of the next request.
 
 Oh My Pi also builds requests that are not turns of the conversation from it; those carry the
 skill but no list, and wait on no read: a side turn (a Dispatch BTW, the stop-time self-check,
@@ -496,12 +516,12 @@ gated write only when it consumes one, so a write sent any other way is refused 
   help only: the gate refuses nothing for it.
 - **The unmarked write that carries an ask.** The `unmarked` entry reaches only this machine's
   disk. Where such a write carries at least one ask for a person, the CLI counts those asks from
-  the write's own text (`newAsks` in `@legion/envoy-client/askgate-new-asks`) and writes the count
-  into the session's ledger as `asksCarried`, and pi-envoy publishes one decision record for it on
-  Dispatch (below), with the tool, the mode and that count and no ask text. The count is of the
-  asks the write carries, so a re-upload of ask blocks the stored version already holds counts
-  them as carried: in `warn` mode the write has already posted when the ledger is read, so a read
-  of the stored version would see the new text and count nothing.
+  the write's own text (`newAskCount` in `@legion/envoy-client/askgate-new-asks`) and writes the
+  count into the session's ledger as `asksCarried`, and pi-envoy publishes one decision record
+  for it on Dispatch (below), with the tool, the mode and that count and no ask text.
+  The count is of the asks the write carries, so a re-upload of ask blocks the stored version
+  already holds counts them as carried: in `warn` mode the write has already posted when the
+  ledger is read, so a read of the stored version would see the new text and count nothing.
 
 The gated writes are the same list for the gate and the CLI (`gatedWrite` in
 `@legion/envoy-client/askgate-marker`): the six commands above, an `issue` with a spec and an
@@ -839,9 +859,16 @@ documents and prints the day's refusals by rule, the refusals the agent overrode
 judged on part of their asks and those that judged none, the unmarked writes by mode with the asks
 they carried, and the rules-call error rate, each split by `source`, with the documents and lines
 it could not read, and the records it read twice, counted beside them. An unmarked write is in no
-rules-call count and in no override count: no check judged it. Its `asksCarried` counts every ask
-and ask block the write carries, so a re-upload of blocks a stored version already holds counts
-them as carried. The same script's `--sessions <dir>` mode still reports the entries on disk, the
+rules-call count and in no override count: no check judged it.
+Its `asksCarried` counts each ask and ask block the write carries as one, and groups none of them
+by id or by text, so two ask blocks that open with the same words count two.
+`newAskCount` reads a `doc-edit` `replace`'s `with` as every string the server might parse it as,
+and the server parses one of them, so a `replace` counts as the most asks any one of those
+readings opens.
+The count is taken before the write goes out, so it cannot know which reading the server takes,
+and the largest can only over-count.
+A re-upload of blocks a stored version already holds counts them as carried.
+The same script's `--sessions <dir>` mode still reports the entries on disk, the
 decision records not confirmed among them. Each flag is given once: the
 script refuses a flag given twice by name, rather than reading only its last value.
 

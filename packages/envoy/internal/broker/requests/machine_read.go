@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -24,8 +25,10 @@ import (
 
 // MintFailedMessage is logged, at ERROR, each time a kind secret's minter fails a release,
 // followed by name=<the secret's name>, kind=<its kind>, class=<secrets.MintErrorClass of the
-// error> and error=<the minter's message>, which never holds the stored value or a token. The
-// session's answer is 502 MINT_FAILED; this line is the operator's.
+// error>, attempts=<secrets.MintAttempts of the error: the attempts the upstream call the mint
+// failed at made, 1 to 3, and 0 for a failure that was no call's> and error=<the minter's
+// message>, which never holds the stored value or a token. The session's answer is 502
+// MINT_FAILED; this line is the operator's.
 const MintFailedMessage = "broker: mint failed"
 
 // TrailingLineEndingRemovedMessage is logged, at INFO, in release, each time the shape rule
@@ -35,12 +38,15 @@ const MintFailedMessage = "broker: mint failed"
 // an owner whose value it reads wrongly can retag that secret shape=document.
 const TrailingLineEndingRemovedMessage = "broker: a stored value's trailing line ending was removed"
 
-// NarrowingRefusedMessage is logged, at WARN, each time a release's narrowing of its GitHub App
-// tokens is refused for what it names: an account a github-app secret of the grant does not list
-// (403 NARROWING_OWNER_NOT_LISTED, before any minter runs), or GitHub's 422 to the narrowed token
-// (422 NARROWING_REFUSED). It is followed by grant=, enrollment=, name=<the secret's name> and
-// error=, which never holds a value or a token. A refused authorization the caller fixes, not a
-// mint failure the operator acts on.
+// NarrowingRefusedMessage is logged, at WARN, each time a narrowing of a GitHub App token is
+// refused for what it names, which happens in two places. A release's refusal is one: an account
+// a github-app secret of the grant does not list (403 NARROWING_OWNER_NOT_LISTED, before any
+// minter runs), or GitHub's 422 to the narrowed token (422 NARROWING_REFUSED); that case carries
+// grant=, enrollment=, name=<the secret's name> and error=. Create's check of a request's
+// narrowing is the other (narrowing_check.go): every refusal it makes before anybody is asked to
+// approve the request, which carries enrollment=, name= and error= and no grant= key at all,
+// since no grant exists and the refusal is why none will. Neither case holds a value or a token
+// in any key. A refused authorization the caller fixes, not a mint failure the operator acts on.
 const NarrowingRefusedMessage = "broker: narrowing refused"
 
 // Release is one release of a grant: the values the session may hold, when the grant expires,
@@ -110,6 +116,12 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 	granted, err := requestedSecrets(ctx, m.Store.Pool, requestID)
 	if err != nil {
 		return grantRelease{}, err
+	}
+	// The grant's names, once the grant is the caller's and its chain verifies, so a refusal of
+	// the release from here on names them (answer.Recorder.NoteSecrets).
+	recorder := answer.FromContext(ctx)
+	for _, g := range granted {
+		recorder.NoteSecrets(g.name)
 	}
 	// One policy snapshot serves both the grant re-check and the minters' name, tier and owners.
 	set := m.Policy.Get()
@@ -240,9 +252,16 @@ func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g
 // narrowingRefusal is why narrowing cannot reach granted, with the name it refuses for, in the
 // order the three are reported: the grant holds no github-app secret
 // (ErrNarrowingNotApplicable), a github-app secret of it does not list the narrowing's owner in
-// its github-owners tag in set, the snapshot the release mints from (ErrNarrowingOwnerNotListed),
-// or the airlock holds back a granted name (ErrNarrowingBehindAirlock, naming the first such
-// name). GitHubApp.Mint refuses that owner too, as a second barrier.
+// its github-owners tag in set, the snapshot the names are judged against
+// (ErrNarrowingOwnerNotListed), or the airlock holds back one of those names
+// (ErrNarrowingBehindAirlock, naming the first such name). GitHubApp.Mint refuses that owner
+// too, as a second barrier.
+//
+// Both places a narrowing is judged make these three refusals through this one function, so
+// neither can answer one of them differently: the release of a grant (Values, where set is the
+// snapshot the release mints from and granted its granted names) and Create's check before
+// anybody is asked (checkNarrowing, where set is the snapshot the request is evaluated against
+// and granted the names it asks for).
 //
 // The airlock's refusal is there because the broker would answer that it applied the narrowing
 // while the proxy went on swapping in the value it holds for that grant, which is minted
@@ -378,8 +397,14 @@ func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) er
 // An Azure login also requires this name's grant decision to be approval, never automatic.
 // Only the github-app minter reads narrowing. A minter's refusal of the narrowing itself
 // (secrets.ErrMintNarrowingRefused) is returned as it is,
-// for Values to log as a refused narrowing, and is no mint failure. A deleted secret stops
-// releasing once the policy drops it: `agent-secrets secret delete` rereads the name at once.
+// for Values to log as a refused narrowing, and is no mint failure. A minter that refuses the
+// stored value itself (secrets.ErrMintStoredValue, its secrets.ParseValue) also has the policy
+// refuse the secret as value-malformed (policy.Current.RefuseValue), at the version the live
+// policy listed when this release read the value and under the kind and shape it was decoded
+// under, so the grants of it pause until a new value is stored; a retag since leaves the secret
+// to the decode of its new kind or shape. The failure line and this release's answer are every
+// other mint failure's. A deleted secret stops releasing once the policy drops it:
+// `agent-secrets secret delete` rereads the name at once.
 func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.Secret, narrowing *secrets.GitHubNarrowing) (secrets.Minted, error) {
 	kind, source, minted, err := policy.ParseKindSource(g.source)
 	if err != nil {
@@ -399,25 +424,46 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	if mint == nil {
 		return secrets.Minted{}, fmt.Errorf("secret %s is a minted kind %q, but this broker has no token minter for it", g.name, kind)
 	}
+	// The version the policy lists for the value this release reads, which a refusal of that
+	// value below is keyed on: a load that lists a newer one meanwhile decodes that one itself.
+	version := m.Policy.Get().ValueVersion(g.name)
 	value, err := m.Secrets.Read(ctx, source)
 	if err != nil {
 		return secrets.Minted{}, err
 	}
-	token, err := mint(ctx, secrets.MintRequest{
-		Name: g.name, HumanTier: served.Tier == policy.TierHuman, Value: shapedValue(value, served.Shape, g.name),
-		GitHubOwners: served.GitHubOwnerLogins(), GoogleScopes: served.ScopeURLs(),
-		GitHubNarrowing: narrowing,
-	})
+	token, err := mint(ctx, mintRequest(g.name, kind, served, shapedValue(value, served.Shape, g.name), narrowing))
 	if errors.Is(err, secrets.ErrMintNarrowingRefused) {
 		return secrets.Minted{}, err
 	}
 	if err != nil {
 		// The minter's error names its class and why, never the stored value or a token, so the
 		// line is safe to log; the session sees the same words as MINT_FAILED.
-		slog.Error(MintFailedMessage, "name", g.name, "kind", kind, "class", secrets.MintErrorClass(err), "error", err)
+		slog.Error(MintFailedMessage, "name", g.name, "kind", kind, "class", secrets.MintErrorClass(err), "attempts", secrets.MintAttempts(err), "error", err)
+		if errors.Is(err, secrets.ErrMintStoredValue) {
+			m.Policy.RefuseValue(ctx, g.name, version, kind, served.Shape)
+		}
 		return secrets.Minted{}, fmt.Errorf("%w: %w", ErrMintFailed, err)
 	}
 	return token, nil
+}
+
+// mintRequest is the input one granted name's release gives its minter: the name, the kind tag
+// its minters count their attempts under, the stored value as the shape rule spends it, the
+// tier, GitHub owners and Google OAuth scopes of the policy snapshot the release was checked
+// against, and the narrowing the caller asked for, nil where it asked for none. Create's check
+// builds its request here too and sets Check on it (checkNarrowingMint), which is the whole
+// worth of the check: it asks GitHub about the same secret, with the same owners and the same
+// narrowing, as the release it stands for.
+func mintRequest(name, kind string, served policy.Secret, value string, narrowing *secrets.GitHubNarrowing) secrets.MintRequest {
+	return secrets.MintRequest{
+		Name:            name,
+		Kind:            kind,
+		HumanTier:       served.Tier == policy.TierHuman,
+		Value:           value,
+		GitHubOwners:    served.GitHubOwnerLogins(),
+		GoogleScopes:    served.ScopeURLs(),
+		GitHubNarrowing: narrowing,
+	}
 }
 
 // shapedValue answers the value release spends for a stored value it has just read, under that

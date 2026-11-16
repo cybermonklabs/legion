@@ -654,8 +654,6 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     `/api/v1/issues/${issue.key}/events?limit=1&order=desc`,
     // The Conversation's live-agent query.
     `/api/v1/issues/${issue.key}/subscribers`,
-    // The one block-schema fetch every document surface shares for the session.
-    "/api/v1/schema/blocks",
     // The header's read of the project's architecture sources: the `Components:` line offers
     // its picker only when the project has one. The component tree itself,
     // `/api/v1/projects/CORE/architecture`, is fetched only once the picker opens, never on

@@ -1,10 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import type { ArchitectureSource, IssueSummary, ItemBlocks } from "@legion/contracts";
-import { bearerCredential } from "../bearer";
+import {
+  type ArchitectureSource,
+  type IssueSummary,
+  type ItemBlocks,
+  NO_ROUTE_ROLLING_RELEASE_MESSAGE,
+  type Sleep,
+  sleep,
+} from "@legion/contracts";
+import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
   DispatchClient,
   DispatchGatewayError,
+  DispatchNoRouteError,
   type SearchOptions,
 } from "../dispatch-http";
 import { fakeSearchResponse } from "./fake-search-response";
@@ -34,6 +42,14 @@ function fakeFetch(responses: readonly Response[]) {
 
 function requestBody(request: RecordedRequest): unknown {
   return JSON.parse(request.init.body as string);
+}
+
+/** A sleep that returns at once, for a test that does not time the waits. */
+const noWait = async (_ms: number): Promise<void> => {};
+
+/** Four no-route answers, one for each attempt of a request, so its fallback runs next. */
+function noRoutes(answer: Response): Response[] {
+  return Array.from({ length: 4 }, () => answer.clone());
 }
 
 const actor = {
@@ -744,12 +760,7 @@ describe("DispatchClient", () => {
       "http://dispatch.test",
       bearerCredential("secret"),
       fetchImpl,
-      undefined,
-      {
-        ...DISPATCH_WRITE_RETRY,
-        pausesMs: [],
-        withinMs: 0,
-      }
+      { writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [], withinMs: 0 } }
     );
     const refusal = () =>
       client.message("DSP-1", { body: "Shipped.", actor }).then(
@@ -847,6 +858,100 @@ describe("DispatchClient", () => {
       expect(message).not.toContain(token);
       expect(message).not.toContain("dXNlcjpwYXNz");
       expect(message).not.toContain("other.jwt-value");
+    }
+  });
+
+  // A Dispatch URL may carry a user and a password: the config accepts such a URL, and the
+  // requests go to it as configured. Every message that names the request or the Dispatch names
+  // the URL without them: a gateway's answer, a refused listing, a write whose answer was lost, a
+  // review route the build lacks, and a write whose attempt heard nothing.
+  test("names the Dispatch URL without its user and password in every refusal that names it", async () => {
+    const user = "user-7f2a";
+    const secret = "pw-4c7e19";
+    const configured = `https://${user}:${secret}@host.example`;
+    const { fetchImpl, requests } = fakeFetch([
+      new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
+        status: 502,
+        statusText: "Bad Gateway",
+        headers: { "Content-Type": "text/html" },
+      }),
+      jsonResponse([]),
+      jsonResponse({ issues: [], total: 0, limit: 2, offset: 0 }),
+      jsonResponse({ code: "KEY_COMMITTED", error: "the write was made" }, 409),
+      jsonResponse(
+        { code: "NOT_FOUND", error: "no route for POST /api/v1/artifacts/a-1/versions/2/reviews" },
+        404
+      ),
+    ]);
+    const client = new DispatchClient(configured, bearerCredential("bearer-1"), fetchImpl, {
+      writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [], withinMs: 0 },
+      retryNoRoute: false,
+    });
+    // An attempt that hears nothing until the client cuts it off for silence.
+    const silent = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const { promise, reject } = Promise.withResolvers<Response>();
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      return promise;
+    }) as typeof fetch;
+    const unanswered = new DispatchClient(configured, bearerCredential("bearer-1"), silent, {
+      writeRetry: {
+        ...DISPATCH_WRITE_RETRY,
+        pausesMs: [],
+        withinMs: 0,
+        inFlightWithinMs: 0,
+        silenceMs: 20,
+      },
+    });
+    const refusal = (call: Promise<unknown>) =>
+      call.then(
+        () => {
+          throw new Error("expected a refusal");
+        },
+        (error: Error) => error.message
+      );
+
+    const messages = [
+      await refusal(client.getIssue("DSP-1")),
+      await refusal(client.listIssuePage({}, { limit: 2, offset: 0 })),
+      await refusal(client.listAllIssues({})),
+      await refusal(client.message("DSP-1", { body: "Shipped.", actor })),
+      await refusal(client.reviewArtifact("a-1", 2, { state: "approved" })),
+      await refusal(unanswered.message("DSP-1", { body: "Shipped.", actor })),
+    ];
+
+    expect(requests.map((request) => request.url)).toEqual([
+      `${configured}/api/v1/issues/DSP-1`,
+      `${configured}/api/v1/issues?limit=2&offset=0`,
+      `${configured}/api/v1/issues`,
+      `${configured}/api/v1/issues/DSP-1/messages`,
+      `${configured}/api/v1/artifacts/a-1/versions/2/reviews`,
+    ]);
+    expect(messages[0]).toStartWith(
+      "GET https://host.example/api/v1/issues/DSP-1 answered 502 Bad Gateway with a body"
+    );
+    expect(messages[1]).toStartWith(
+      "GET https://host.example/api/v1/issues?limit=2&offset=0 asked for a page"
+    );
+    expect(messages[2]).toBe(
+      "GET https://host.example/api/v1/issues asked for the unpaged listing and got a page, so " +
+        "this Dispatch pages a request that carries no limit and no offset."
+    );
+    expect(messages[3]).toStartWith(
+      "POST https://host.example/api/v1/issues/DSP-1/messages was made, but its answer was lost"
+    );
+    expect(messages[4]).toStartWith(
+      "Dispatch at https://host.example answered no route for " +
+        "POST /api/v1/artifacts/a-1/versions/2/reviews each time the review was sent"
+    );
+    expect(messages[4]).toContain("GET https://host.example/healthz names the commit");
+    expect(messages[5]).toBe(
+      "POST https://host.example/api/v1/issues/DSP-1/messages made no progress for 0.02 s, so it " +
+        "was cut off (its only attempt), and an attempt of the write may have reached Dispatch, " +
+        "so it may or may not have taken effect: check whether it did before retrying it."
+    );
+    for (const message of messages) {
+      expect(message).not.toContain(user);
+      expect(message).not.toContain(secret);
     }
   });
 
@@ -1334,8 +1439,9 @@ test("syncArchitectureSource refuses a repository with an empty owner or name wi
   expect(requests).toEqual([]);
 });
 
-// A server older than the list route answers it with no route; the client reads the singular
-// route that server does serve, so a rollout that mixes versions still reads the project's model.
+// A server older than the list route answers it with no route at each of the four attempts; the
+// client then reads the singular route that server does serve, so a rollout that mixes versions
+// still reads the project's model.
 describe("listArchitectureSources against a server older than the list route", () => {
   const noRoute = jsonResponse(
     {
@@ -1367,29 +1473,31 @@ describe("listArchitectureSources against a server older than the list route", (
     ],
     ["a row as that one source", jsonResponse(source), [source]],
   ])("reads the singular route's %s", async (_answer, singular, want) => {
-    const { fetchImpl, requests } = fakeFetch([noRoute.clone(), singular]);
+    const { fetchImpl, requests } = fakeFetch([...noRoutes(noRoute), singular]);
     const client = new DispatchClient(
       "http://dispatch.test",
       bearerCredential("secret"),
-      fetchImpl
+      fetchImpl,
+      { sleep: noWait }
     );
 
     expect(await client.listArchitectureSources("CORE")).toEqual(want);
     expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
-      "/api/v1/projects/CORE/architecture-sources",
+      ...Array.from({ length: 4 }, () => "/api/v1/projects/CORE/architecture-sources"),
       "/api/v1/projects/CORE/architecture-source",
     ]);
   });
 
   test("throws any other answer to the singular read", async () => {
     const { fetchImpl } = fakeFetch([
-      noRoute.clone(),
+      ...noRoutes(noRoute),
       jsonResponse({ code: "NOT_FOUND", error: "not found" }, 404),
     ]);
     const client = new DispatchClient(
       "http://dispatch.test",
       bearerCredential("secret"),
-      fetchImpl
+      fetchImpl,
+      { sleep: noWait }
     );
 
     await expect(client.listArchitectureSources("CORE")).rejects.toMatchObject({
@@ -1418,8 +1526,9 @@ describe("listArchitectureSources against a server older than the list route", (
   });
 });
 
-// A server older than the every-source sync route answers it with no route; the client asks that
-// server's singular sync, so a rollout that mixes versions still syncs the project's one source.
+// A server older than the every-source sync route answers it with no route at each of the four
+// attempts; the client then asks that server's singular sync, so a rollout that mixes versions
+// still syncs the project's one source.
 describe("syncArchitectureSources against a server older than the every-source sync route", () => {
   const noRoute = jsonResponse(
     {
@@ -1443,31 +1552,33 @@ describe("syncArchitectureSources against a server older than the every-source s
   };
 
   test("returns the singular sync's row as that one source", async () => {
-    const { fetchImpl, requests } = fakeFetch([noRoute.clone(), jsonResponse(source)]);
+    const { fetchImpl, requests } = fakeFetch([...noRoutes(noRoute), jsonResponse(source)]);
     const client = new DispatchClient(
       "http://dispatch.test",
       bearerCredential("secret"),
-      fetchImpl
+      fetchImpl,
+      { sleep: noWait }
     );
 
     expect(await client.syncArchitectureSources("CORE")).toEqual([source]);
     expect(
       requests.map((request) => `${request.init.method} ${new URL(request.url).pathname}`)
     ).toEqual([
-      "POST /api/v1/projects/CORE/architecture-sources/sync",
+      ...Array.from({ length: 4 }, () => "POST /api/v1/projects/CORE/architecture-sources/sync"),
       "POST /api/v1/projects/CORE/architecture-source/sync",
     ]);
   });
 
   test("throws the singular sync's 404 SOURCE_NOT_FOUND for a project with no source", async () => {
     const { fetchImpl } = fakeFetch([
-      noRoute.clone(),
+      ...noRoutes(noRoute),
       jsonResponse({ code: "SOURCE_NOT_FOUND", error: "no architecture source configured" }, 404),
     ]);
     const client = new DispatchClient(
       "http://dispatch.test",
       bearerCredential("secret"),
-      fetchImpl
+      fetchImpl,
+      { sleep: noWait }
     );
 
     await expect(client.syncArchitectureSources("CORE")).rejects.toMatchObject({
@@ -1493,5 +1604,270 @@ describe("syncArchitectureSources against a server older than the every-source s
       message: "not found",
     });
     expect(requests).toHaveLength(1);
+  });
+});
+
+// While a release rolls out, an older Dispatch process answers a route only the newer build serves
+// with no route. No handler ran, so the client sends the request again, and the next attempt may
+// reach the newer process.
+describe("a request a Dispatch process answers with no route", () => {
+  const noRoute = (method: string, path: string) =>
+    jsonResponse(
+      {
+        code: "NOT_FOUND",
+        error: `no route for ${method} ${path}`,
+        hint: "GET /api/v1 lists every route",
+      },
+      404
+    );
+  const recordedSleep = () => {
+    const waits: number[] = [];
+    return {
+      sleep: async (ms: number) => {
+        waits.push(ms);
+      },
+      waits,
+    };
+  };
+
+  test("is sent again, and the next answer resolves it", async () => {
+    const { fetchImpl, requests } = fakeFetch([
+      noRoute("GET", "/api/v1/projects"),
+      jsonResponse([{ key: "CORE", name: "Core" }]),
+    ]);
+    const wait = recordedSleep();
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl,
+      { sleep: wait.sleep }
+    );
+
+    expect(await client.listProjects()).toEqual([{ key: "CORE", name: "Core" }] as never);
+    expect(requests).toHaveLength(2);
+    // One wait of a second, jittered by a quarter either way.
+    expect(wait.waits).toHaveLength(1);
+    expect(wait.waits[0]).toBeGreaterThanOrEqual(750);
+    expect(wait.waits[0]).toBeLessThanOrEqual(1_250);
+  });
+
+  test("throws the message that a release is in progress after four attempts", async () => {
+    const { fetchImpl, requests } = fakeFetch(
+      Array.from({ length: 4 }, () => noRoute("GET", "/api/v1/projects"))
+    );
+    const wait = recordedSleep();
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl,
+      { sleep: wait.sleep }
+    );
+
+    const error = await client.listProjects().catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(DispatchNoRouteError);
+    expect(error).toMatchObject({
+      code: "NOT_FOUND",
+      status: 404,
+      message: NO_ROUTE_ROLLING_RELEASE_MESSAGE,
+    });
+    expect(NO_ROUTE_ROLLING_RELEASE_MESSAGE).toBe(
+      "The Dispatch process that answered does not offer this action yet, because a new release " +
+        "of Dispatch is in progress. Try again in one minute."
+    );
+    expect(requests).toHaveLength(4);
+    // Waits of 1 s, 2 s and 4 s, each jittered by a quarter either way.
+    expect(wait.waits).toHaveLength(3);
+    for (const [index, base] of [1_000, 2_000, 4_000].entries()) {
+      expect(wait.waits[index]).toBeGreaterThanOrEqual(base * 0.75);
+      expect(wait.waits[index]).toBeLessThanOrEqual(base * 1.25);
+    }
+  });
+
+  test("sends a POST again with the same body", async () => {
+    const { fetchImpl, requests } = fakeFetch([
+      noRoute("POST", "/api/v1/projects"),
+      jsonResponse({ key: "CORE", name: "Core" }, 201),
+    ]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl,
+      { sleep: noWait }
+    );
+
+    await client.createProject({ key: "CORE", name: "Core" });
+    expect(requests).toHaveLength(2);
+    expect(requests.map((request) => request.init.method)).toEqual(["POST", "POST"]);
+    expect(requestBody(requests[1] as RecordedRequest)).toEqual({ key: "CORE", name: "Core" });
+    expect(requests[1]?.init.body).toBe(requests[0]?.init.body);
+  });
+
+  test("rejects at once with the abort, and is not sent again, when aborted during the wait", async () => {
+    const { fetchImpl, requests } = fakeFetch([
+      noRoute("GET", "/api/v1/projects"),
+      jsonResponse([{ key: "CORE", name: "Core" }]),
+    ]);
+    const controller = new AbortController();
+    const reason = new Error("a newer read replaced this one");
+    // The shared wait, with the caller's abort arriving once the wait has begun.
+    const wait: Sleep = (ms, signal) => {
+      const waiting = sleep(ms, signal);
+      controller.abort(reason);
+      return waiting;
+    };
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl,
+      { signal: controller.signal, sleep: wait }
+    );
+
+    await expect(client.listProjects()).rejects.toBe(reason);
+    expect(requests).toHaveLength(1);
+  });
+});
+
+// A broker token the broker ended before it lapsed — a person's revoke of their sign-in does that
+// — is answered `401 BROKER_TOKEN_NOT_ACTIVE`. Dispatch authenticates before any handler runs, so
+// that answer says it did nothing: the client tells the credential, presents it afresh and sends
+// the request once more, a write under its own key.
+describe("a broker token Dispatch says is not live", () => {
+  const notLive = () =>
+    jsonResponse(
+      {
+        code: "BROKER_TOKEN_NOT_ACTIVE",
+        error: "the secrets broker does not hold this access token as live",
+      },
+      401
+    );
+
+  /**
+   * A credential like the broker's: each presentation carries the token it holds now, and
+   * `stale`, which records what it was told, moves it to the next of `tokens`. `refusal`, where
+   * given, is what a presentation after `stale` throws, as a trade the broker refuses does.
+   */
+  function brokered(tokens: readonly string[], refusal?: Error) {
+    const stales: (string | undefined)[] = [];
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => {
+        if (refusal !== undefined && stales.length > 0) throw refusal;
+        return { Authorization: `DPoP ${tokens[stales.length]}`, DPoP: "proof" };
+      },
+      stale: (session) => {
+        stales.push(session);
+      },
+      secret: () => tokens[stales.length] ?? "",
+    };
+    return { credential, stales };
+  }
+
+  /** What each request presented, in order. */
+  const presented = (requests: readonly RecordedRequest[]) =>
+    requests.map((request) => (request.init.headers as Record<string, string>).Authorization);
+
+  test("a read is sent once more with a fresh token", async () => {
+    const listed = [{ key: "DSP-1", title: "DSP-1", status: "todo" }];
+    const { fetchImpl, requests } = fakeFetch([notLive(), jsonResponse(listed)]);
+    const { credential, stales } = brokered(["dead", "fresh"]);
+    const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
+
+    expect(await client.listAllIssues({})).toEqual(listed as unknown as IssueSummary[]);
+    expect(stales).toEqual([undefined]);
+    expect(presented(requests)).toEqual(["DPoP dead", "DPoP fresh"]);
+  });
+
+  test("a write is sent once more with a fresh token, under the same Idempotency-Key", async () => {
+    const { fetchImpl, requests } = fakeFetch([notLive(), jsonResponse({ id: "message-1" }, 201)]);
+    const { credential, stales } = brokered(["dead", "fresh"]);
+    const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
+
+    await client.message("DSP-1", { body: "Shipped.", actor });
+    expect(stales).toEqual([undefined]);
+    expect(presented(requests)).toEqual(["DPoP dead", "DPoP fresh"]);
+    const keys = requests.map(
+      (request) => (request.init.headers as Record<string, string>)["Idempotency-Key"]
+    );
+    expect(keys[0]).toBeString();
+    expect(keys[1]).toBe(keys[0] as string);
+    expect(requests.map(requestBody)).toEqual([
+      { body: "Shipped.", actor },
+      { body: "Shipped.", actor },
+    ]);
+  });
+
+  test("a second such answer is the call's: no third send", async () => {
+    for (const call of [
+      (client: DispatchClient) => client.listAllIssues({}),
+      (client: DispatchClient) => client.message("DSP-1", { body: "Shipped.", actor }),
+    ]) {
+      const { fetchImpl, requests } = fakeFetch([notLive(), notLive()]);
+      const { credential, stales } = brokered(["dead", "also-dead"]);
+      const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
+
+      await expect(call(client)).rejects.toMatchObject({
+        status: 401,
+        code: "BROKER_TOKEN_NOT_ACTIVE",
+        message: "the secrets broker does not hold this access token as live",
+      });
+      expect(stales).toHaveLength(1);
+      expect(requests).toHaveLength(2);
+    }
+  });
+
+  test("a 401 with another code is not sent again", async () => {
+    const { fetchImpl, requests } = fakeFetch([
+      jsonResponse(
+        {
+          code: "BROKER_TOKEN_PROOF_INVALID",
+          error: "the DPoP proof does not meet RFC 9449",
+        },
+        401
+      ),
+    ]);
+    const { credential, stales } = brokered(["live", "unused"]);
+    const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
+
+    await expect(client.listAllIssues({})).rejects.toMatchObject({
+      status: 401,
+      code: "BROKER_TOKEN_PROOF_INVALID",
+    });
+    expect(stales).toEqual([]);
+    expect(requests).toHaveLength(1);
+  });
+
+  test("a bearer, which has no other token to present, is not sent again", async () => {
+    const { fetchImpl, requests } = fakeFetch([notLive()]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    await expect(client.listAllIssues({})).rejects.toMatchObject({
+      status: 401,
+      code: "BROKER_TOKEN_NOT_ACTIVE",
+    });
+    expect(requests).toHaveLength(1);
+  });
+
+  test("a credential that cannot present again fails the call in its own words", async () => {
+    // After a revoke the broker refuses the new trade, and its words name `agent-secrets login`,
+    // which Dispatch's 401 does not.
+    const refusal = new Error(
+      "the secrets broker refused ada@example.com's sign-in on this machine: HTTP 400 invalid_grant: ada@example.com revoked this machine's sign-in, so the key this proof was signed with trades nothing. Sign in again with `agent-secrets login`."
+    );
+    for (const call of [
+      (client: DispatchClient) => client.listAllIssues({}),
+      (client: DispatchClient) => client.message("DSP-1", { body: "Shipped.", actor }),
+    ]) {
+      const { fetchImpl, requests } = fakeFetch([notLive()]);
+      const { credential, stales } = brokered(["dead"], refusal);
+      const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
+
+      await expect(call(client)).rejects.toThrow(refusal.message);
+      expect(stales).toHaveLength(1);
+      expect(requests).toHaveLength(1);
+    }
   });
 });

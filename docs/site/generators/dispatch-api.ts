@@ -2,9 +2,9 @@
 // Writes <content dir>/dispatch/reference/api.md from Dispatch's route table
 // (packages/envoy/internal/dispatch/api/routes_table.go), read through `envoy-dispatch routes`,
 // which prints the body GET /api/v1 serves without a database or a listener. Contract:
-// scripts/generate.ts; lib/envoy-dispatch.ts runs the binary.
-import { readEnvoyDispatch } from "./lib/envoy-dispatch.ts";
+// scripts/generate.ts; lib/reference.ts runs the binary.
 import { inline, writePage } from "./lib/markdown.ts";
+import { readTable } from "./lib/reference.ts";
 
 /** Who may call a route, by the table's auth value (`routeAuth` in the source). */
 const CALLERS: Record<string, { label: string; meaning: string }> = {
@@ -37,25 +37,28 @@ interface Route {
 }
 
 function readRoutes(): Route[] {
-  return readEnvoyDispatch("routes", "routes", ["method", "path", "auth", "description"]).map(
-    (route) => {
-      if (!Object.hasOwn(CALLERS, route.auth as string)) {
-        throw new Error(`route ${route.method} ${route.path} has unknown auth ${route.auth}`);
-      }
-      // A route that needs no scope leaves the field out, so only a present one is read.
-      if (route.scopes !== undefined) {
-        if (!Array.isArray(route.scopes) || route.scopes.length === 0) {
-          throw new Error(`route ${route.method} ${route.path} has unreadable scopes`);
-        }
-        for (const scope of route.scopes) {
-          if (typeof scope !== "string" || !Object.hasOwn(SCOPES, scope)) {
-            throw new Error(`route ${route.method} ${route.path} needs unknown scope ${scope}`);
-          }
-        }
-      }
-      return route as unknown as Route;
+  return readTable("envoy-dispatch", ["routes"], "routes", [
+    "method",
+    "path",
+    "auth",
+    "description",
+  ]).map((route) => {
+    if (!Object.hasOwn(CALLERS, route.auth as string)) {
+      throw new Error(`route ${route.method} ${route.path} has unknown auth ${route.auth}`);
     }
-  );
+    // A route that needs no scope leaves the field out, so only a present one is read.
+    if (route.scopes !== undefined) {
+      if (!Array.isArray(route.scopes) || route.scopes.length === 0) {
+        throw new Error(`route ${route.method} ${route.path} has unreadable scopes`);
+      }
+      for (const scope of route.scopes) {
+        if (typeof scope !== "string" || !Object.hasOwn(SCOPES, scope)) {
+          throw new Error(`route ${route.method} ${route.path} needs unknown scope ${scope}`);
+        }
+      }
+    }
+    return route as unknown as Route;
+  });
 }
 
 /** The scopes of one route as its line names them: `` `person` `` or `` `person` and `approve` ``. */

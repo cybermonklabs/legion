@@ -848,7 +848,7 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 			t.Fatalf("begin: %v", err)
 		}
 		defer tx.Rollback(ctx)
-		moved, err := docs.MoveApprovalAsk(ctx, tx, events.NewBroker(), doc.artifactID, model.Version{Number: 2}, docs.SettlementActor, "")
+		moved, err := docs.MoveApprovalAsk(ctx, tx, events.NewBroker(), doc.artifactID, model.Version{Number: 2}, "A spec, as a settlement wrote it.\n", docs.SettlementActor, true, "")
 		if err != nil {
 			t.Fatalf("move with no known writer: %v", err)
 		}

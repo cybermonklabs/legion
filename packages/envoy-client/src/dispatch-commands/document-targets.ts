@@ -292,27 +292,66 @@ export function anchor(
   const occurrence = optionalNumber(args, "occurrence");
   return { artifact: artifact.id, quote, ...(occurrence === undefined ? {} : { occurrence }) };
 }
+/** Whether a document is its issue's plan, read off the artifact as Dispatch answers it: its role
+ *  is `plan`, or it is an issue's document that carries no role and its slug is `plan-md`. It is
+ *  the server's own rule, `documentPlays(artifact, model.ArtifactRolePlan)` in
+ *  packages/envoy/internal/dispatch/api/artifacts.go, slug fallback included: an issue's row whose
+ *  role column is still null, because the build that created it did not know the column, is a
+ *  plan by its slug there and so here. A role belongs to an issue's documents alone, so a project
+ *  document named plan.md (`issue_key` null) plays no role and is a plain document, there and
+ *  here. It is what decides whether Dispatch refuses a request for a person's approval of the
+ *  document (409 PLAN_APPROVED_BY_REVIEW): it refuses one on every plan, whoever approved it. */
+export function documentPlaysPlan(
+  artifact: Pick<Artifact, "role" | "slug" | "issue_key">
+): boolean {
+  return (
+    artifact.role === "plan" ||
+    ((artifact.role ?? "") === "" &&
+      typeof artifact.issue_key === "string" &&
+      artifact.slug === "plan-md")
+  );
+}
 /** One line describing a document's approval, or undefined for a draft nobody has asked about. An
  *  awaiting approval says whom its request waits on: the agent once a version moved it, the
- *  agent's own revision included, which sends that agent no event. */
-export function approvalLine(artifact: Pick<Artifact, "approval">): string | undefined {
+ *  agent's own revision included, which sends that agent no event. A plan review's approval names
+ *  the plan review, never a person, as the approver. A stale approval's tail is chosen by the
+ *  document being a plan (`documentPlaysPlan`), not by who approved it: on a plan it names a plan
+ *  review of the new version as the way to approve it again, since Dispatch refuses a request for
+ *  a person's approval on every plan (409 PLAN_APPROVED_BY_REVIEW), a plan a person approved from
+ *  its document header included. A closed issue takes no approval request, plan review or review
+ *  (409 ISSUE_CLOSED), so on the document of a closed issue (`issueClosed`) the stale line names
+ *  no command and says the issue is closed instead. */
+export function approvalLine(
+  artifact: Pick<Artifact, "approval" | "role" | "slug" | "issue_key">,
+  issueClosed: boolean
+): string | undefined {
   const approval = artifact.approval;
   if (approval === undefined || approval.state === "draft") return undefined;
   const content =
     approval.content_sha256 === undefined
       ? ""
       : `, content sha256:${approval.content_sha256}${approval.content_sha256_source === "backfill" ? " (hashed after approval)" : ""}`;
+  const by = approval.by?.id ?? "unknown";
+  const approver = approval.kind === "plan_review" ? `plan review (${by})` : by;
   switch (approval.state) {
     case "awaiting": {
       const turn = approval.waiting_on === undefined ? "" : `, waiting on ${approval.waiting_on}`;
       return `Approval: awaiting${turn} (requested by ${approval.requested_by?.id ?? "unknown"}, ask ${approval.ask_id ?? "?"})`;
     }
     case "approved":
-      return `Approval: approved v${approval.version} by ${approval.by?.id ?? "unknown"}${content}`;
-    case "stale":
-      return `Approval: approved v${approval.version} by ${approval.by?.id ?? "unknown"}, changed since (now v${approval.latest_version}) - the human's own answer to a decision block carries the approval when that answer is the whole change since v${approval.version}; for any other change, request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v${approval.version}${content}`;
+      return `Approval: approved v${approval.version} by ${approver}${content}`;
+    case "stale": {
+      const changed = `Approval: approved v${approval.version} by ${approver}, changed since (now v${approval.latest_version})`;
+      if (issueClosed) {
+        return `${changed} - its issue is closed, and Dispatch records no approval of a closed issue's document${content}`;
+      }
+      if (documentPlaysPlan(artifact)) {
+        return `${changed} - a plan review of this version records a new approval with dispatch plan-approve${content}`;
+      }
+      return `${changed} - the human's own answer to a decision block carries the approval when that answer is the whole change since v${approval.version}; for any other change, request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v${approval.version}${content}`;
+    }
     case "changes_requested":
-      return `Approval: changes requested on v${approval.version} by ${approval.by?.id ?? "unknown"}: ${approval.reason ?? ""}${content}`;
+      return `Approval: changes requested on v${approval.version} by ${by}: ${approval.reason ?? ""}${content}`;
     // The route states an approval's state as a plain string, so a state this build does not know
     // prints no line at all rather than a line half of whose fields it would have to guess at.
     default:
