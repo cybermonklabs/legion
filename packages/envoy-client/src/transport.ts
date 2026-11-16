@@ -78,8 +78,8 @@ const DeliveryAnswerWireSchema = z.object({
 
 // A list the listener may write as null (a session with no interest record, dispatch://INFRA-742),
 // as an absent key (a listener that predates the field), or as a real array. The reader answers []
-// for the first two and still refuses a wrong type, so a changed JSON type fails the tests rather
-// than passing as empty.
+// for the first two and still refuses a wrong element type, so listSessions refuses such a row
+// rather than reading it as empty.
 const StringListWireSchema = z
   .array(z.string())
   .nullish()

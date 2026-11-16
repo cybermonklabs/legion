@@ -1058,10 +1058,11 @@ jobs:
               - 'packages/broker-client/src/**'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
-              # src/__tests__/delivery.test.ts:18 and dispatch-config.test.ts:5.
+              # src/__tests__/delivery.test.ts:17 and dispatch-text.test.ts:128 read the first,
+              # dispatch-config.test.ts:5 the second.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               - 'packages/contracts/fixtures/dispatch-public-url.json'
-              # src/__tests__/transport.test.ts:27.
+              # src/__tests__/transport.test.ts:3.
               - 'packages/contracts/fixtures/envoy-session-no-interests.json'
               # src/__tests__/dispatch-execute.test.ts holds goBlankPattern to this list, which
               # the Go test of packages/envoy/internal/dispatch/text holds unicode.IsSpace to:
@@ -1144,7 +1145,7 @@ jobs:
               - 'packages/contracts/src/**'
               # Its tests import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
-              # extensions/envoy.test.ts:297.
+              # extensions/envoy.test.ts:296.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               - 'skills/**'
               - 'packages/daemon/internal/prompts/**'

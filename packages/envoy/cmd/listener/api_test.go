@@ -4522,12 +4522,12 @@ func readNoInterestRecordFixture(t *testing.T) noInterestRecordFixture {
 	return fixture
 }
 
-// noInterestRecordSessionID is the session the fixture's rows describe.
-func noInterestRecordSessionID(t *testing.T, row map[string]json.RawMessage) string {
+// rowSessionID is the session_id a row names.
+func rowSessionID(t *testing.T, row map[string]json.RawMessage) string {
 	t.Helper()
 	var sessionID string
 	if err := json.Unmarshal(row["session_id"], &sessionID); err != nil {
-		t.Fatalf("read the fixture row's session_id: %v", err)
+		t.Fatalf("read a row's session_id: %v", err)
 	}
 	return sessionID
 }
@@ -4541,33 +4541,25 @@ func noInterestRecordSessionID(t *testing.T, row map[string]json.RawMessage) str
 // (session.StateOf), so a session written here is live.
 func seedNoInterestRecordSession(t *testing.T, sessions *session.SessionRegistry, row map[string]json.RawMessage) string {
 	t.Helper()
-	var fields struct {
-		SessionID      string `json:"session_id"`
-		MachineID      string `json:"machine_id"`
-		Dir            string `json:"dir"`
-		Port           int    `json:"port"`
-		Title          string `json:"title"`
-		SelfSubscribed bool   `json:"self_subscribed"`
-		Delivery       string `json:"delivery"`
-	}
+	var listed session.ListEntry
 	raw, err := json.Marshal(row)
 	if err != nil {
 		t.Fatalf("re-encode the fixture row: %v", err)
 	}
-	if err := json.Unmarshal(raw, &fields); err != nil {
+	if err := json.Unmarshal(raw, &listed); err != nil {
 		t.Fatalf("read the fixture row's session entry fields: %v", err)
 	}
-	if err := sessions.Put(fields.SessionID, session.SessionEntry{
-		Port:           fields.Port,
-		MachineID:      fields.MachineID,
-		Dir:            fields.Dir,
-		Title:          fields.Title,
-		SelfSubscribed: fields.SelfSubscribed,
-		Delivery:       fields.Delivery,
+	if err := sessions.Put(listed.SessionID, session.SessionEntry{
+		Port:           listed.Port,
+		MachineID:      listed.MachineID,
+		Dir:            listed.Dir,
+		Title:          listed.Title,
+		SelfSubscribed: listed.SelfSubscribed,
+		Delivery:       listed.Delivery,
 	}); err != nil {
-		t.Fatalf("register %s: %v", fields.SessionID, err)
+		t.Fatalf("register %s: %v", listed.SessionID, err)
 	}
-	return fields.SessionID
+	return listed.SessionID
 }
 
 // noInterestRecordClockKeys are the two values the listener takes from the clock, so the fixture
@@ -4601,9 +4593,8 @@ func sameNoInterestRecordRowValues(t *testing.T, gotName, wantName string, got, 
 }
 
 // compareNoInterestRecordRow holds got, the listener's row decoded key by key, to want, the
-// fixture's row: the same keys, no key more and no key less, and for each key the same JSON bytes,
-// so a null and an empty list are different answers. The two clock keys are only required to be
-// integers equal to each other, since the listener writes the moment it registered the session.
+// fixture's row, by sameNoInterestRecordRowValues; the two clock keys are only required to be
+// integers equal to each other.
 func compareNoInterestRecordRow(t *testing.T, what string, got, want map[string]json.RawMessage) {
 	t.Helper()
 	sameNoInterestRecordRowValues(t, what+": the answer", "the fixture row", got, want, noInterestRecordClockKeys)
@@ -4652,7 +4643,7 @@ func TestSessionsListRowForASessionWithNoInterestRecordMatchesTheFixture(t *test
 	}
 	var row map[string]json.RawMessage
 	for _, candidate := range rows {
-		if noInterestRecordSessionID(t, candidate) == sessionID {
+		if rowSessionID(t, candidate) == sessionID {
 			row = candidate
 		}
 	}
@@ -4712,16 +4703,12 @@ func TestSessionInfoKeysForASessionWithNoInterestRecordAreTheFixtureRowsKeys(t *
 			alwaysWritten[name] = true
 		}
 	}
-	rowKeys := map[string]bool{}
-	for key := range fixture.AfterThisChange {
-		rowKeys[key] = true
-	}
 	for key := range alwaysWritten {
-		if !rowKeys[key] {
+		if _, ok := fixture.AfterThisChange[key]; !ok {
 			t.Errorf("sessionInfo always writes %q, which the fixture row does not state; capture the fixture again", key)
 		}
 	}
-	for key := range rowKeys {
+	for key := range fixture.AfterThisChange {
 		if !alwaysWritten[key] {
 			t.Errorf("the fixture row states %q, which sessionInfo does not always write", key)
 		}
@@ -4740,9 +4727,9 @@ func TestSessionInfoKeysForASessionWithNoInterestRecordAreTheFixtureRowsKeys(t *
 }
 
 // The fixture's before row is what the listener used to write for this session. The after row is
-// pinned to the listener itself by the two route tests above; nothing else reads the before row, so
-// this holds it to the same values and to the one difference the change made: topics was
-// null and is now the empty list.
+// pinned to the listener itself by the two route tests above; no Go test pins the before row to a
+// listener, so this test holds it to the after row's values and to the one difference, topics,
+// which was null and is now the empty list.
 func TestFixtureBeforeRowForASessionWithNoInterestRecordDiffersOnlyInTopics(t *testing.T) {
 	fixture := readNoInterestRecordFixture(t)
 	before, after := fixture.BeforeThisChange, fixture.AfterThisChange

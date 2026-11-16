@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS, MINTED_DEDUPE_KEY_PATTERN } from "@legion/contracts";
+import noInterestsFixture from "../../../contracts/fixtures/envoy-session-no-interests.json";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import { machineID } from "../machine";
@@ -21,16 +21,6 @@ import {
  *  refuses a claim take by: a change of that constant must change the rule's text, and these
  *  expectations with it, rather than leaving the text saying a number nothing enforces. */
 const GRACE_MINUTES = ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS / 60_000;
-
-const noInterestsFixture = JSON.parse(
-  readFileSync(
-    new URL("../../../contracts/fixtures/envoy-session-no-interests.json", import.meta.url),
-    "utf8"
-  )
-) as {
-  readonly before_this_change: Record<string, unknown>;
-  readonly after_this_change: Record<string, unknown>;
-};
 
 type RecordedFetch = {
   readonly fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -1105,8 +1095,8 @@ describe("EnvoyClient", () => {
     ]);
   });
 
-  // The tolerance reads a null, nothing more: a wrong element type is still a contract break and
-  // must fail rather than read as empty.
+  // The tolerance reads a null or an absent key, nothing more: a wrong element type is still a
+  // contract break and must fail rather than read as empty.
   test("still rejects a session row whose topics hold a wrong element type", async () => {
     const recorded = recordFetch([
       jsonResponse([

@@ -1236,12 +1236,12 @@ func sessionInfoFor(ctx context.Context, registry *store.Registry, entry session
 	return info, nil
 }
 
-// sessionInfoWith is the row entry makes, holding roles and topics as the empty list, never null:
-// the one shape both sessionInfoFor and listedSessionInfo fill in, each with the topics of the
-// interest record its route may read. The entry's state is what its last registration says about
-// the session, which every row carries so that a caller reading a list, or one session's answer,
-// can tell a session that is answering from one that has stopped without comparing timestamps
-// itself.
+// sessionInfoWith is the row entry makes, holding the roles it is given, and topics as the empty
+// list, never null: the one shape both sessionInfoFor and listedSessionInfo fill in, each with
+// the topics of the interest record its route may read. The entry's state is what its last
+// registration says about the session, which every row carries so that a caller reading a list,
+// or one session's answer, can tell a session that is answering from one that has stopped without
+// comparing timestamps itself.
 func sessionInfoWith(entry session.ListEntry, held []string) sessionInfo {
 	return sessionInfo{
 		SessionID:        entry.SessionID,
@@ -1502,12 +1502,12 @@ func writeSessionRegistration(ctx context.Context, w http.ResponseWriter, d *lis
 // writeBusUnavailable writes. A live session whose id only the interest bucket refuses (a legacy id
 // past envoy_interests' get bound that envoy_sessions still serves, or one outside nats.go's key
 // alphabet) is answered 200 with topics as the empty list, as GET /v1/sessions lists it, and
-// logged at WARN as the list logs it: Dispatch reads a 413 or 400 here as a session that cannot
-// exist. A read that did not answer — the session's, its interest record's, or the claims view's
-// (sessionInfoFor), all within sendRequestBudget — is a 503 to retry and never a row: neither a
-// session a caller may take for ended, nor one whose empty topics and roles it may take for a
-// session that holds none. An interest record this build cannot decode is the 500
-// writeInterestRecordUnreadable writes: the bus answered it.
+// logged at WARN: Dispatch reads a 413 or 400 here as a session that cannot exist. A read that
+// did not answer — the session's, its interest record's, or the claims view's (sessionInfoFor),
+// all within sendRequestBudget — is a 503 to retry and never a row: neither a session a caller
+// may take for ended, nor one whose empty topics and roles it may take for a session that holds
+// none. An interest record this build cannot decode is the 500 writeInterestRecordUnreadable
+// writes: the bus answered it.
 //
 // view=registration is answered by writeSessionRegistration, whose comment says what it reads
 // and answers; any other value of view is refused 400 naming the selector, and no view at all is
