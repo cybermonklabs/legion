@@ -31,6 +31,7 @@ import {
   type ActiveDispatchConfig,
   activeDispatchSettings,
 } from "../packages/envoy-client/src/dispatch-config";
+import { DISPATCH_TOOL_DEADLINE_MS } from "../packages/envoy-client/src/dispatch-http";
 import { parseDispatchRef } from "../packages/envoy-client/src/dispatch-owner";
 import {
   sessionConfigFile,
@@ -331,13 +332,17 @@ async function request(
           ...((body ?? {}) as Record<string, unknown>),
           actor: { id: config.session, kind: "session" },
         };
+  // One deadline for the credential and the request, the bound DispatchClient puts on each of
+  // its own: a broker credential waiting on a pod's missing registration stops at it.
+  const deadline = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS);
   return fetch(url, {
     method,
     headers: {
-      ...(await config.credential.headers(method, url)),
+      ...(await config.credential.headers(method, url, undefined, deadline)),
       ...(stated === undefined ? {} : { "Content-Type": "application/json" }),
     },
     ...(stated === undefined ? {} : { body: JSON.stringify(stated) }),
+    signal: deadline,
   });
 }
 
