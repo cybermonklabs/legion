@@ -1,4 +1,5 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { fstatSync, readdirSync } from "node:fs";
 import { connect, createServer } from "node:net";
 import { holdRefusedPort, type RefusedPort, refusingOrigin } from "./refused-port";
 
@@ -46,6 +47,26 @@ function inChild(code: string): string {
   return child.stdout.toString();
 }
 
+/**
+ * Every socket this process holds, each as `<descriptor>:<device>:<inode>`: the descriptors
+ * `/dev/fd` lists (Linux links it to `/proc/self/fd`, macOS mounts its own), kept when `fstat`
+ * says socket. The listing's own directory is in what it lists and closed once it is read, so its
+ * descriptor answers `EBADF` and is passed over.
+ */
+function socketDescriptors(): string[] {
+  const sockets: string[] = [];
+  for (const entry of readdirSync("/dev/fd")) {
+    const descriptor = Number(entry);
+    try {
+      const stats = fstatSync(descriptor);
+      if (stats.isSocket()) sockets.push(`${descriptor}:${stats.dev}:${stats.ino}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EBADF") throw error;
+    }
+  }
+  return sockets;
+}
+
 test("a connection to the held port is refused, and its origin names it", async () => {
   const refused = hold();
   expect(refused.port).toBeGreaterThan(0);
@@ -79,16 +100,24 @@ s.listen(${refused.port}, "127.0.0.1", () => { console.log("listened"); s.close(
 });
 
 describe("refusingOrigin", () => {
-  /** The port the row below held, 0 until it runs. */
-  let port = 0;
-  afterAll(async () => {
-    // The row has finished, so its port is free again.
-    expect(await listenOutcome(port)).toBe("listened");
+  /** The held socket, as socketDescriptors names it; empty until the row below runs. */
+  let socket = "";
+  afterAll(() => {
+    // The row has finished, so the fixture has closed its socket: no descriptor of this process
+    // is that socket any more. A bind of the port would not say so, since any other process on the
+    // machine may bind a port once it is free.
+    expect(socket).not.toBe("");
+    expect(socketDescriptors()).not.toContain(socket);
   });
 
-  test("holds a refused port for the row that calls it, and frees it once the row is done", async () => {
+  test("holds a refused port for the row that calls it, and closes its socket once the row is done", async () => {
+    const before = new Set(socketDescriptors());
     const origin = new URL(refusingOrigin());
-    port = Number(origin.port);
+    // The call opens one socket and nothing else, and no other code runs while it does.
+    const opened = socketDescriptors().filter((descriptor) => !before.has(descriptor));
+    expect(opened).toHaveLength(1);
+    socket = opened[0] ?? "";
+    const port = Number(origin.port);
     expect(origin.origin).toBe(`http://127.0.0.1:${port}`);
     expect(await dial(port)).toBe("ECONNREFUSED");
     expect(await listenOutcome(port)).toBe("EADDRINUSE");
