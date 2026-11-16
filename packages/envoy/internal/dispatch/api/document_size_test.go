@@ -43,9 +43,9 @@ func (w *renderWatch) Text(ctx context.Context, artifactID string) (string, erro
 	return w.API.Text(ctx, artifactID)
 }
 
-func (w *renderWatch) TextWithToken(ctx context.Context, artifactID string) (string, string, error) {
+func (w *renderWatch) TextWithToken(ctx context.Context, who model.Actor, artifactID string) (string, string, error) {
 	w.record("TextWithToken", artifactID)
-	return w.API.TextWithToken(ctx, artifactID)
+	return w.API.TextWithToken(ctx, who, artifactID)
 }
 
 func (w *renderWatch) Blocks(ctx context.Context, artifactID string) ([]model.ArtifactBlock, error) {

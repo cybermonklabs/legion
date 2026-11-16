@@ -487,12 +487,12 @@ func TestAcceptingASuggestionStoresBlocksTheDocumentReadsBack(t *testing.T) {
 				// An emptied paragraph stays in the live document where the markdown drops it.
 				return
 			}
-			_, token, err := documentService.TextWithToken(context.Background(), artifactID)
+			_, token, err := documentService.TextWithToken(context.Background(), everyReader, artifactID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			seeded := createInteractionIssue(t, handler, "S"+string(rune('A'+index/26))+string(rune('A'+index%26)), "seeded "+test.name, test.want)
-			if _, readBack, err := documentService.TextWithToken(context.Background(), seeded.PrimaryArtifactID); err != nil || readBack != token {
+			if _, readBack, err := documentService.TextWithToken(context.Background(), everyReader, seeded.PrimaryArtifactID); err != nil || readBack != token {
 				t.Fatalf("the accepted document's token = %s, but its markdown reads back as %s (%v)", token, readBack, err)
 			}
 		})
@@ -545,7 +545,7 @@ func checkAccept(t *testing.T, handler http.Handler, documentService *docs.Servi
 		t.Fatal(err)
 	}
 	accepted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/accept", map[string]any{}, "alice")
-	stored, token, err := documentService.TextWithToken(context.Background(), issue.PrimaryArtifactID)
+	stored, token, err := documentService.TextWithToken(context.Background(), everyReader, issue.PrimaryArtifactID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +572,7 @@ func checkAccept(t *testing.T, handler http.Handler, documentService *docs.Servi
 		return
 	}
 	seeded := createInteractionIssue(t, handler, "S"+key, "seeded "+test.name, stored)
-	if _, readBack, err := documentService.TextWithToken(context.Background(), seeded.PrimaryArtifactID); err != nil || readBack != token {
+	if _, readBack, err := documentService.TextWithToken(context.Background(), everyReader, seeded.PrimaryArtifactID); err != nil || readBack != token {
 		t.Fatalf("the accepted document's token = %s, but its markdown reads back as %s (%v)", token, readBack, err)
 	}
 }

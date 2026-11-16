@@ -279,7 +279,7 @@ func queueAskDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() er
 	openedEventIDs := make(map[string]int64, len(askIDs))
 	counts := map[string]int{}
 	partIDs := make([]refs.AskIDs, len(asks))
-	events.QueueOpenedEventIDs(b, askIDs, openedEventIDs)
+	events.QueueOpenedEventIDs(b, askIDs, readableEvents(who), openedEventIDs)
 	countsErr := refs.QueueBacklinkCounts(b, who, "ask", askIDs, refs.AskBacklinkExclusions, counts)
 	refs.QueueAskPartIDs(b, asks, partIDs)
 	return func() error {

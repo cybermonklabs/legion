@@ -185,7 +185,7 @@ func TestStoredRenderOnlySchemaViolationLoadsForRepair(t *testing.T) {
 			return err
 		}},
 		{"text with token", func() error {
-			_, _, err := service.TextWithToken(context.Background(), artifactID)
+			_, _, err := service.TextWithToken(context.Background(), serverReader, artifactID)
 			return err
 		}},
 		{"text with blocks", func() error {

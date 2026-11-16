@@ -67,7 +67,7 @@ func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	bob := model.Actor{Kind: "user", ID: "bob"}
 
-	_, token, err := service.TextWithToken(ctx, id)
+	_, token, err := service.TextWithToken(ctx, serverReader, id)
 	if err != nil {
 		t.Fatalf("read token: %v", err)
 	}

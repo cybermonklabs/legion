@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -177,7 +178,7 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	body, _, found, err := sourceText(ctx, tx, fromKind, fromID, true)
+	body, _, found, err := sourceText(ctx, tx, nil, fromKind, fromID, true)
 	if err != nil || !found {
 		return false, err
 	}
@@ -195,6 +196,10 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 // exists: a deleted row, a document with no markdown version, a direct message, which nothing
 // indexes.
 //
+// who is the reader of a document's text, which is read only while who may see the document (its
+// artifact predicate), as a document no row holds; nil is the server's own read, the re-index's
+// and a drain's, which answers no reader.
+//
 // forUpdate takes the lock an edit of that text takes, so the caller's index of the text and a
 // concurrent edit of it are ordered rather than racing. Which row that is differs by kind,
 // because the two kinds of writer differ: an edit of an ask, a comment or a message updates the
@@ -204,7 +209,9 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 // project document, the issue row for an issue document (`lockArtifactOwner`,
 // internal/dispatch/docs/service.go, and `ownerRowLock`, internal/dispatch/api/owner.go) - and
 // that is the row lockDocumentOwner takes below, before this read, in the writer's own order.
-func sourceText(ctx context.Context, q Queryer, kind, id string, forUpdate bool) (body string, writtenAt time.Time, found bool, err error) {
+func sourceText(ctx context.Context, q Queryer, who *model.Actor, kind, id string, forUpdate bool) (body string, writtenAt time.Time, found bool, err error) {
+	var args queryArgs
+	key := args.param(id)
 	var query string
 	switch kind {
 	case "artifact":
@@ -214,20 +221,22 @@ func sourceText(ctx context.Context, q Queryer, kind, id string, forUpdate bool)
 			}
 		}
 		query = `select markdown, created_at from artifact_versions
-			where artifact_id = $1::uuid and markdown is not null order by number desc limit 1`
+			where artifact_id = ` + key + `::uuid and markdown is not null` +
+			args.andVisible(who, "artifact", `(select read_document.ref_key from artifacts read_document where read_document.id = `+key+`::uuid)`) + `
+			order by number desc limit 1`
 	case "ask":
-		query = `select question, coalesce(edited_at, created_at) from asks where id = $1::uuid`
+		query = `select question, coalesce(edited_at, created_at) from asks where id = ` + key + `::uuid`
 	case "comment":
-		query = `select body, coalesce(edited_at, created_at) from comments where id = $1::uuid`
+		query = `select body, coalesce(edited_at, created_at) from comments where id = ` + key + `::uuid`
 	case "message":
-		query = `select body, created_at from messages where id = $1::uuid and issue_key is not null`
+		query = `select body, created_at from messages where id = ` + key + `::uuid and issue_key is not null`
 	default:
 		return "", time.Time{}, false, fmt.Errorf("read the text of %s %s: not a reference source", kind, id)
 	}
 	if forUpdate && kind != "artifact" {
 		query += " for no key update"
 	}
-	switch err := q.QueryRow(ctx, query, id).Scan(&body, &writtenAt); {
+	switch err := q.QueryRow(ctx, query, args.values...).Scan(&body, &writtenAt); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", time.Time{}, false, nil
 	case err != nil:
@@ -383,7 +392,7 @@ func ReindexOwed(ctx context.Context, pool Pool, source Owed, serverURL string) 
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	body, writtenAt, found, err := sourceText(ctx, tx, source.Kind, source.ID, true)
+	body, writtenAt, found, err := sourceText(ctx, tx, nil, source.Kind, source.ID, true)
 	if err != nil {
 		return false, err
 	}
@@ -466,7 +475,7 @@ func ReindexScopeSource(ctx context.Context, pool Pool, kind, id, serverURL stri
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	body, writtenAt, found, err := sourceText(ctx, tx, kind, id, true)
+	body, writtenAt, found, err := sourceText(ctx, tx, nil, kind, id, true)
 	if err != nil || !found {
 		return false, err
 	}
@@ -483,7 +492,7 @@ func ReindexScopeSource(ctx context.Context, pool Pool, kind, id, serverURL stri
 // lock: what a drain reads to decide whether that text has anything a re-index would move. found
 // is false for a source that is gone, a document with no markdown version and a direct message.
 func SourceText(ctx context.Context, q Queryer, kind, id string) (body string, writtenAt time.Time, found bool, err error) {
-	return sourceText(ctx, q, kind, id, false)
+	return sourceText(ctx, q, nil, kind, id, false)
 }
 
 // HoldsQuestionCandidate reports whether body writes a `#id` the whole grammar would resolve

@@ -25,7 +25,7 @@ func BenchmarkColdDocumentRead(b *testing.B) {
 			read func(*Service, string) error
 		}{
 			{"text", func(service *Service, artifactID string) error {
-				_, _, err := service.TextWithToken(context.Background(), artifactID)
+				_, _, err := service.TextWithToken(context.Background(), serverReader, artifactID)
 				return err
 			}},
 			{"blocks", func(service *Service, artifactID string) error {

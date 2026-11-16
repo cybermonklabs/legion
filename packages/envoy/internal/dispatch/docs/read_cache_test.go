@@ -371,7 +371,7 @@ func readCold(t *testing.T, service *Service, artifactID string) coldReading {
 	if err != nil {
 		t.Fatalf("read text: %v", err)
 	}
-	tokenMarkdown, token, err := service.TextWithToken(context.Background(), artifactID)
+	tokenMarkdown, token, err := service.TextWithToken(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read text and token: %v", err)
 	}

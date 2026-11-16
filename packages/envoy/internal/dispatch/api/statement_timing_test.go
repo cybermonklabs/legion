@@ -274,9 +274,10 @@ func TestStatementTimings(t *testing.T) {
 		benchtime.Statement{SQL: relatedMeaningQueryOverMainsDocumentArm, Args: relatedMeaningArguments, Setup: meaningSetup},
 		benchtime.Statement{SQL: relatedMeaningScopedExcludingQuery, Args: relatedMeaningExcludingArguments, Setup: meaningSetup})
 
+	// This release's probe reads the reader's viewer at $5, one that sees every project.
 	runner.Pair(t, "relatedProbeSQL",
 		benchtime.Statement{SQL: mainRelatedProbeSQL, Args: probeArguments},
-		benchtime.Statement{SQL: relatedProbeSQL, Args: probeArguments})
+		benchtime.Statement{SQL: relatedProbeSQL, Args: append(slices.Clone(probeArguments), relatedViewer(everyReader))})
 }
 
 // documentLegStatement is the smallest statement that runs one keyword document arm and nothing

@@ -202,7 +202,7 @@ func TestAReadOfARoomBehindTheStoredHeadReadsTheStoreAndOfACurrentOneReadsTheRoo
 	})
 
 	before := pair.loads.loads.Load()
-	text, token, err := pair.reader.TextWithToken(ctx, pair.artifactID)
+	text, token, err := pair.reader.TextWithToken(ctx, serverReader, pair.artifactID)
 	if err != nil || !strings.Contains(text, written) {
 		t.Fatalf("the reader's read right after the writer's edit = %q, %v; want the edit, which the store holds", text, err)
 	}
@@ -440,7 +440,7 @@ func TestTheTokenOfARoomBehindTheHeadHoldingItsOwnUpdateIsTheWholeDocuments(t *t
 	})
 	land := pair.typeIntoTheRoomBehindTheHead(t, typed)
 
-	_, token, err := pair.reader.TextWithToken(ctx, pair.artifactID)
+	_, token, err := pair.reader.TextWithToken(ctx, serverReader, pair.artifactID)
 	if err != nil {
 		t.Fatalf("the reader's read while its room is behind the head and holds an unstored keystroke: %v", err)
 	}

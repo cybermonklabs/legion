@@ -121,7 +121,7 @@ func (s *server) itemBlocks(ctx context.Context, who model.Actor, kind refs.Item
 			ChangedAt:       row.changedAt,
 		}
 	}
-	embedding, err := refs.BlockEmbeddingStates(ctx, s.deps.Store.Pool, kind.WindowKind(), kind.WindowOwnerKey(id))
+	embedding, err := refs.BlockEmbeddingStates(ctx, s.deps.Store.Pool, who, kind.WindowKind(), kind.WindowOwnerKey(id))
 	if err != nil {
 		return model.ItemBlocks{}, err
 	}

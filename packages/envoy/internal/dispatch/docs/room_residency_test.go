@@ -153,7 +153,7 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 			defer readers.Done()
 			for running() {
 				round := rounds.Add(1)
-				if _, _, err := service.TextWithToken(context.Background(), artifactID); err != nil {
+				if _, _, err := service.TextWithToken(context.Background(), serverReader, artifactID); err != nil {
 					refuse("read %d: %v", round, err)
 				}
 				if _, err := service.currentToken(context.Background(), artifactID); err != nil {

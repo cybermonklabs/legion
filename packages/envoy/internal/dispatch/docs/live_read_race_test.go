@@ -45,7 +45,7 @@ func TestReadsOfALiveDocumentRunBesideItsPeers(t *testing.T) {
 		read func(ctx context.Context, service *Service, artifactID, headingID string) error
 	}{
 		{"GET text", func(ctx context.Context, service *Service, artifactID, _ string) error {
-			_, _, err := service.TextWithToken(ctx, artifactID)
+			_, _, err := service.TextWithToken(ctx, serverReader, artifactID)
 			return err
 		}},
 		{"GET blocks", func(ctx context.Context, service *Service, artifactID, _ string) error {
@@ -285,7 +285,7 @@ func TestColdReadsRunBesideStoredWrites(t *testing.T) {
 			readers.Add(1)
 			go func() {
 				defer readers.Done()
-				markdown, _, err := reader.TextWithToken(context.Background(), artifactID)
+				markdown, _, err := reader.TextWithToken(context.Background(), serverReader, artifactID)
 				if err == nil && !strings.HasPrefix(markdown, "# Heading\n\nwrite ") {
 					err = fmt.Errorf("text = %q, want one complete written state", markdown)
 				}

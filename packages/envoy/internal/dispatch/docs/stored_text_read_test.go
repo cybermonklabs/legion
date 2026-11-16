@@ -9,6 +9,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
+// serverReader is the server's own viewer, which reads every document: the reader of a test that
+// reads a document's text for no person (TextWithToken).
+var serverReader = model.Actor{Viewer: model.ServerViewer}
+
 // storedTextReadRenders is how often a text read of a document a room holds renders it: not at
 // all. The version written from that very state stored its markdown and its document token beside
 // what they were rendered from, and the read answers them without reading the document
@@ -47,7 +51,7 @@ func TestStoredTextReadCountsTheRendersOfAReadOfAVersionedDocument(t *testing.T)
 	stored := latestVersionMarkdown(t, service, artifactID)
 
 	renders := countRenders(t)
-	markdown, token, err := service.TextWithToken(context.Background(), artifactID)
+	markdown, token, err := service.TextWithToken(context.Background(), serverReader, artifactID)
 	counted := len(renders())
 	if err != nil {
 		t.Fatalf("read the document's text: %v", err)
@@ -86,7 +90,7 @@ func TestStoredTextReadRendersARoomHoldingAnUnstoredUpdate(t *testing.T) {
 	defer release()
 
 	renders := countRenders(t)
-	markdown, token, err := service.TextWithToken(context.Background(), artifactID)
+	markdown, token, err := service.TextWithToken(context.Background(), serverReader, artifactID)
 	counted := len(renders())
 	if err != nil {
 		t.Fatalf("read the document's text: %v", err)
@@ -115,7 +119,7 @@ func TestStoredTextReadRendersAfterAnAnchorWriteMovedTheStamp(t *testing.T) {
 	}
 
 	renders := countRenders(t)
-	markdown, token, err := service.TextWithToken(context.Background(), artifactID)
+	markdown, token, err := service.TextWithToken(context.Background(), serverReader, artifactID)
 	counted := len(renders())
 	if err != nil {
 		t.Fatalf("read the document's text: %v", err)
@@ -146,7 +150,7 @@ func TestStoredTextReadRendersAVersionOfAnotherRendererVersion(t *testing.T) {
 	}
 
 	renders := countRenders(t)
-	markdown, token, err := service.TextWithToken(context.Background(), artifactID)
+	markdown, token, err := service.TextWithToken(context.Background(), serverReader, artifactID)
 	counted := len(renders())
 	if err != nil {
 		t.Fatalf("read the document's text: %v", err)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -197,7 +198,7 @@ func sessionsTitled(ctx context.Context, tx pgx.Tx, name string, members []strin
 	if err != nil {
 		return nil, err
 	}
-	titles, err := ResolveSessionTitles(ctx, tx, sessionIDs)
+	titles, err := ResolveSessionTitles(ctx, tx, sessionIDs, events.EveryEvent)
 	if err != nil {
 		return nil, err
 	}

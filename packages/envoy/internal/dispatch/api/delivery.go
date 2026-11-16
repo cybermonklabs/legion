@@ -428,7 +428,7 @@ func (s *server) readDeliveryRows(ctx context.Context, reader model.Actor, setti
 		}
 	}
 	var err error
-	if pop.titles, err = delivery.ResolveSessionTitles(ctx, pool, sessionIDs); err != nil {
+	if pop.titles, err = delivery.ResolveSessionTitles(ctx, pool, sessionIDs, readableEvents(reader)); err != nil {
 		return deliveryPopulation{}, err
 	}
 	if pop.issues, err = s.deliveryIssueFacts(ctx, viewer, issueKeys); err != nil {

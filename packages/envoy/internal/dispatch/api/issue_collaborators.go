@@ -189,7 +189,7 @@ func (s *server) getIssueCollaborators(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	agents, err := s.collaboratorAgents(ctx, sessions, registry)
+	agents, err := s.collaboratorAgents(ctx, who, sessions, registry)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -306,10 +306,11 @@ func (s *server) issueLegionAgents(ctx context.Context, key string) ([]envoy.Leg
 // collaboratorAgents merges the event-derived sessions with the registry's entries by session id:
 // the registry's sessions first, in its order (by role in workflow order, then newest first), then
 // the other sessions newest first. Each agent's title is the registry entry's title, else the
-// newest title the session stamped on anything it wrote (delivery.ResolveSessionTitles), which a
-// later write carrying none does not take away; null for a session that never stamped one.
+// newest title the session stamped on anything it wrote that who may read
+// (delivery.ResolveSessionTitles), which a later write carrying none does not take away; null for
+// a session that never stamped one.
 func (s *server) collaboratorAgents(
-	ctx context.Context, sessions map[string]*collaboratorTally, registry []envoy.LegionAgent,
+	ctx context.Context, who model.Actor, sessions map[string]*collaboratorTally, registry []envoy.LegionAgent,
 ) ([]collaboratorAgent, error) {
 	agents := make([]collaboratorAgent, 0, len(sessions)+len(registry))
 	listed := make(map[string]struct{}, len(sessions)+len(registry))
@@ -353,7 +354,7 @@ func (s *server) collaboratorAgents(
 	if len(untitled) == 0 {
 		return agents, nil
 	}
-	titles, err := delivery.ResolveSessionTitles(ctx, s.deps.Store.Pool, untitled)
+	titles, err := delivery.ResolveSessionTitles(ctx, s.deps.Store.Pool, untitled, readableEvents(who))
 	if err != nil {
 		return nil, fmt.Errorf("resolve collaborator titles: %w", err)
 	}
