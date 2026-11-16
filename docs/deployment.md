@@ -141,7 +141,12 @@ gh acts on another's, or a workspace whose remotes name two), one naming an owne
 holds no directory for, every command where `PATH`'s first `gh` is not Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
-and send nothing. The real gh runs with `GH_PATH`
+and send nothing.
+Under a set `GH_TOKEN` or `GITHUB_TOKEN` the leak guard's own visibility reads still run,
+each exactly for the repository `PUBLIC_LEAK_CHECK_VISIBILITY_READ` names, with that token:
+a push made with the token writes the repository they read,
+and the bundle may hold no directory for that repository's owner.
+The real gh runs with `GH_PATH`
 naming the pane's wrapper, so the git gh runs itself (a clone, the fetch of a fork's parent, `pr
 checkout`) authenticates through the helper gh names after it, `legion gh auth git-credential`,
 which answers as `legion git-credential` does, with `credential.useHttpPath` on for `github.com`;
