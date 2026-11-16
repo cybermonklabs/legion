@@ -3,9 +3,9 @@
 // The bound on the azure kind's exchange: the federated token is the broker pod's own, and
 // Entra takes it as the assertion of every application whose federated credential trusts the
 // broker, so the proxy exchanges it only at the token authority, only as the application and
-// only in the tenant the grant's own secret document names, in a form of its own. Every row
-// counts what reached the stand-in token endpoint, because a refusal that still made the
-// exchange would be no bound at all.
+// only in the tenant the grant's own secret document names, in a form of its own, and sends it
+// in nothing but that exchange. Every row counts what reached the stand-in token endpoint,
+// because a refusal that still made the exchange would be no bound at all.
 package airlockproxy
 
 import (
@@ -407,6 +407,100 @@ func TestAnAccessSlotOfAnotherApplicationOrTenantIsNotExchanged(t *testing.T) {
 	}
 }
 
+// TestTheFederatedTokenLeavesOnlyInAnExchange: Entra takes the federated token as the assertion
+// of every application federated with the broker, so the token leaves the broker in an exchange
+// at the token authority and in nothing else. A request that is no token request and carries
+// its placeholder is refused before anything is sent, whether it goes to the authority or to
+// another host the entry binds, and whether or not the grant holds an access slot beside it; a
+// request that carries an access token's placeholder is swapped as every other kind's is; and
+// one that carries no placeholder, which is how az reads a tenant's OpenID configuration before
+// its first token request, goes on with nothing swapped into it.
+func TestTheFederatedTokenLeavesOnlyInAnExchange(t *testing.T) {
+	access := requests.PlaceholderPrefix + "slotAccessSlotAccessSlotAccess01"
+	own := azureExchange{Endpoint: "https://" + boundHost + azureTokenPath, Scope: azureScope, ClientID: azureClientID}
+	federated := []string{"Authorization", "Bearer " + azureFederatedPlaceholder}
+	for _, row := range []struct {
+		name string
+		// authority is the token authority the proxy is given, "" for the rig's bound host; a
+		// row that names another binds both (azureRulesBindingAnAuthority) and sends its
+		// request to the bound host, the entry's other one.
+		authority string
+		// slot is whether the grant holds an access slot of the document's own exchange, whose
+		// placeholder is access.
+		slot    bool
+		path    string
+		headers []string
+		// refused is whether the call is refused with nothing sent. For one that is not, calls
+		// is how many calls reach the bound host, the pod's own exchange among them, and
+		// authorization the Authorization the last of them carries.
+		refused       bool
+		calls         int
+		authorization string
+	}{
+		{name: "the federated placeholder, to the token authority", path: "/v1/subscriptions", headers: federated, refused: true},
+		{name: "the federated placeholder, to the entry's other host", authority: azureAuthorityHost, path: "/v1/subscriptions", headers: federated, refused: true},
+		{name: "the federated placeholder, beside an access slot", slot: true, path: "/v1/subscriptions", headers: federated, refused: true},
+		{name: "the federated placeholder, to a token endpoint's path but no POST", path: azureTokenPath, headers: federated, refused: true},
+		{
+			name: "an access token's placeholder", slot: true, path: "/v1/subscriptions",
+			headers: []string{"Authorization", "Bearer " + access}, calls: 2, authorization: "Bearer " + azureRealAccess,
+		},
+		{name: "no placeholder, as az's read of the tenant's OpenID configuration", path: "/" + azureTenantID + "/v2.0/.well-known/openid-configuration", calls: 1},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			o := Options{}
+			if row.authority != "" {
+				o = Options{AzureAuthority: row.authority, Rules: azureRulesBindingAnAuthority()}
+			}
+			r, stand := newAzureRig(t, o)
+			if row.slot {
+				r.grants.connections[azureFederatedPlaceholder].Names[azureName].Slots[azureAccessSlot(own)] = access
+			}
+			answer, body := r.get(r.client(azureFederatedPlaceholder), "https://"+boundHost+row.path, row.headers...)
+
+			if row.refused {
+				if answer.StatusCode != http.StatusForbidden {
+					t.Errorf("the call answered %d; want 403", answer.StatusCode)
+				}
+				var reason string
+				if records := r.logs.refusals(); len(records) != 1 {
+					t.Errorf("the proxy wrote %d refusal records; want one", len(records))
+				} else {
+					reason, _ = records[0].fields["reason"].(string)
+					if got := records[0].fields["code"]; got != codeFederatedSwap {
+						t.Errorf("the refusal record's code is %v; want %s", got, codeFederatedSwap)
+					}
+				}
+				for _, place := range []struct{ what, words string }{{"the answer", body}, {"the logged reason", reason}} {
+					if strings.Contains(place.words, azureRealFederated) || strings.Contains(place.words, azureFederatedPlaceholder) {
+						t.Errorf("%s carries the federated token or its placeholder", place.what)
+					} else if !strings.Contains(place.words, azureName) || !strings.Contains(place.words, "federated token") {
+						t.Errorf("%s %q does not name the entry %s and its federated token", place.what, place.words, azureName)
+					}
+				}
+				noExchange(t, r, stand)
+				return
+			}
+			seen := r.requests()
+			if len(seen) != row.calls {
+				t.Fatalf("the bound host saw %d calls; want %d", len(seen), row.calls)
+			}
+			for _, call := range seen {
+				for name, values := range call.Header {
+					for _, value := range values {
+						if strings.Contains(value, azureRealFederated) {
+							t.Errorf("the bound host was sent the real federated token in %s", name)
+						}
+					}
+				}
+			}
+			if got := seen[len(seen)-1].Header.Get("Authorization"); got != row.authorization {
+				t.Errorf("the service was sent Authorization %q; want %q", got, row.authorization)
+			}
+		})
+	}
+}
+
 // TestAzureBoundReadsTheWholePathAndTheDocumentsOwnIDs: the bound itself, on what no request
 // through the proxy reaches it with. A dot segment the decision refuses first in a command's own
 // request, but a slot's endpoint never passes the decision; a document that names no tenant or
@@ -437,7 +531,6 @@ func TestAzureBoundReadsTheWholePathAndTheDocumentsOwnIDs(t *testing.T) {
 		{"another host", azureAuthorityHost, app, boundHost, one, azureTokenPath, "host"},
 		{"the authority's host on another port", boundHost, app, boundHost + ":8443", one, azureTokenPath, "host"},
 		{"a host that ends with the authority's", boundHost, app, "login." + boundHost, one, azureTokenPath, "host"},
-		{"no authority at all", "", app, "", one, azureTokenPath, "host"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			err := azureBound(azureName, row.authority, row.app, row.host, row.clientIDs, row.path)

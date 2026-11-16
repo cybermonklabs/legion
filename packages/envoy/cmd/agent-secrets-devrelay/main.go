@@ -86,29 +86,18 @@ type commonFlags struct {
 	login     string
 }
 
+// registerCommonFlags registers the flags every subcommand shares; --broker is a
+// brokeraddr.Address from the moment flag parses it.
 func registerCommonFlags(fs *flag.FlagSet) *commonFlags {
 	c := &commonFlags{}
-	fs.Var(brokerFlag{&c.broker}, "broker", "broker base `URL` (default $AGENT_SECRETS_URL)")
+	fs.Func("broker", "broker base `URL` (default $AGENT_SECRETS_URL)", func(raw string) error {
+		c.broker = brokeraddr.New(raw)
+		return nil
+	})
 	fs.StringVar(&c.tokenFile, "account-token-file", os.Getenv("AGENT_SECRETS_ACCOUNT_TOKEN_FILE"),
 		"file holding the token of a ServiceAccount the broker lists in BROKER_API_ACCOUNTS (default $AGENT_SECRETS_ACCOUNT_TOKEN_FILE)")
 	fs.StringVar(&c.login, "login", os.Getenv("AGENT_SECRETS_APPROVER"), "the deciding human's login (default $AGENT_SECRETS_APPROVER)")
 	return c
-}
-
-// brokerFlag is --broker as a flag.Value, so the address is a brokeraddr.Address from the moment
-// flag parses it, and flag prints it, in its usage text or anywhere else, as the Address prints.
-type brokerFlag struct{ addr *brokeraddr.Address }
-
-func (f brokerFlag) String() string {
-	if f.addr == nil {
-		return ""
-	}
-	return f.addr.String()
-}
-
-func (f brokerFlag) Set(raw string) error {
-	*f.addr = brokeraddr.New(raw)
-	return nil
 }
 
 func (c *commonFlags) validate() error {
@@ -155,21 +144,18 @@ type apiClient struct {
 	http  *http.Client
 }
 
-// apiError is the broker's {"code":...,"error":...} error envelope, plus the HTTP status it came
-// with. Reason is the broker's words as a message may print them: beside an address that is not
-// clean (brokeraddr.Address.Clean), the broker, or anyone who answers at that address, can repeat
-// the credential the address carries back in them, so there it is wordsNotPrinted.
+// apiError is a refusal in the broker's {"code":...,"error":...} error envelope: the HTTP status
+// it came with, and Answer, its code and words as a message may print them
+// (brokeraddr.Address.Words). Beside an address that is not clean, whoever answers at that
+// address can repeat the credential it carries in any text of its answer, so there Answer is
+// brokeraddr.WordsNotPrinted, and of the answer the refusal prints its status alone.
 type apiError struct {
 	Status int
-	Code   string
-	Reason string
+	Answer string
 }
 
-// wordsNotPrinted is an apiError's Reason where the broker's address is not clean.
-const wordsNotPrinted = "(not printed: the broker's address carries a credential)"
-
 func (e *apiError) Error() string {
-	return fmt.Sprintf("%s: %s (HTTP %d)", e.Code, e.Reason, e.Status)
+	return fmt.Sprintf("%s (HTTP %d)", e.Answer, e.Status)
 }
 
 // do sends a request carrying the caller's ServiceAccount token and, on a 2xx response, returns
@@ -208,10 +194,7 @@ func (c *apiClient) do(ctx context.Context, method, path string, body any) ([]by
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(raw, &envelope)
-		if !c.base.Clean() {
-			envelope.Error = wordsNotPrinted
-		}
-		return nil, &apiError{Status: resp.StatusCode, Code: envelope.Code, Reason: envelope.Error}
+		return nil, &apiError{Status: resp.StatusCode, Answer: c.base.Words(envelope.Code + ": " + envelope.Error)}
 	}
 	return raw, nil
 }

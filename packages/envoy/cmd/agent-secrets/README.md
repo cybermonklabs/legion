@@ -29,9 +29,12 @@ output of `agent-secrets`,
 `agent-secrets-helper` or `agent-secrets-devrelay` prints a credential the broker's URL carries:
 the URL prints only when it is provably a plain http(s) URL (no user info, query, fragment,
 escape or control byte), and as `(not printed: the value carries a credential or is not a plain
-http(s) URL)` otherwise. Beside a URL that does not print, a refusal the broker answers keeps its
-status and its code and prints neither its words nor its answer id, which whoever answers at that
-URL could fill with the credential it carries. People and launchers use its other forms to log a
+http(s) URL)` otherwise. Beside a URL that does not print, a refusal the broker answers prints its
+status and `(not printed: the broker's address is not clean)`, and none of its words, its answer
+id or its code, which whoever answers at that URL could fill with the credential it carries. A
+code prints there only where it is one the program matched against its own list: `renew`'s exit
+on a terminal refusal, and the helper's log of a refusal it acts on. People and
+launchers use its other forms to log a
 machine in
 (`agent-secrets machine
 login`), register an agent session (`agent-secrets register --exec -- <agent>`), and inspect a

@@ -425,8 +425,8 @@ func TestModelAgreesOnHostShapes(t *testing.T) {
 				gj, _ := json.Marshal(got)
 				t.Fatalf("Go and the Lean model disagree on host %q\nlean: %s\ngo:   %s", host, wj, gj)
 			}
-			if want.Valid != hostShapeOK(host) {
-				t.Errorf("the model calls the file valid=%v for host %q, and hostShapeOK says %v", want.Valid, host, hostShapeOK(host))
+			if want.Valid != HostShapeOK(host) {
+				t.Errorf("the model calls the file valid=%v for host %q, and HostShapeOK says %v", want.Valid, host, HostShapeOK(host))
 			}
 		})
 	}

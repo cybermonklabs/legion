@@ -495,7 +495,9 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 	}
 	var answer tokenAnswer
 	if err := json.Unmarshal(body, &answer); err != nil && resp.StatusCode/100 == 2 {
-		return nil, fmt.Errorf("the broker's answer from %s is not JSON: %w", shown, err)
+		// The decoder's error quotes the value it could not read, which is the answer's own
+		// text, so it prints as the address lets that text print (brokeraddr.Address.Words).
+		return nil, fmt.Errorf("the broker's answer from %s is not JSON: %s", shown, c.brokerURL.Words(err.Error()))
 	}
 	if resp.StatusCode/100 != 2 {
 		// The broker's own words are its answer's text, and a caller prints what it is
@@ -503,16 +505,14 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 		// this client's own log. So they are redacted here, where the configured address
 		// is known, rather than at each of those. On a clean address the redactor prints
 		// the refusal whole - it is an answered OAuth error with a code and no error_uri
-		// (RefusedError.Unwrap) - and on one carrying a credential it prints the status
-		// alone, since a broker, or anyone answering for it, can repeat that credential
-		// back in the words it answers with.
+		// (RefusedError.Unwrap) - and on one that is not clean it prints the status alone,
+		// since a broker, or anyone answering for it, can repeat the credential the address
+		// carries in the words it answers with; any other answer prints its words as the
+		// address lets them (brokeraddr.Address.Words).
 		if resp.StatusCode/100 == 4 && answer.Error != "" {
 			return nil, c.brokerURL.Error(newRefusedError(resp.StatusCode, answer.Error, answer.ErrorDescription))
 		}
-		if !c.brokerURL.Clean() {
-			return nil, fmt.Errorf("the broker at %s answered HTTP %d", shown, resp.StatusCode)
-		}
-		return nil, fmt.Errorf("the broker at %s answered HTTP %d %s", shown, resp.StatusCode, answer.Error)
+		return nil, fmt.Errorf("the broker at %s answered HTTP %d %s", shown, resp.StatusCode, c.brokerURL.Words(answer.Error))
 	}
 	return c.read(shown, answer)
 }
@@ -522,16 +522,11 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 // that kept one would hold a credential this contract says is never minted. shown is the token
 // endpoint as a message may print it (brokeraddr.Address.Call), never the endpoint as built.
 //
-// The three values these messages quote are the broker's own answer, so they are quoted only
-// where the redactor would print the broker's words: beside an address that carries a
-// credential, whoever answers for the broker could put that credential in them (quoted is why).
+// The three values these messages quote are the broker's own answer, so they print as the
+// address lets them (brokeraddr.Address.Words): beside an address that is not clean, whoever
+// answers for the broker could put the credential the address carries in them.
 func (c *Client) read(shown string, answer tokenAnswer) (*Token, error) {
-	quoted := func(value string) string {
-		if !c.brokerURL.Clean() {
-			return "(not printed: the broker's address carries a credential)"
-		}
-		return strconv.Quote(value)
-	}
+	quoted := func(value string) string { return c.brokerURL.Words(strconv.Quote(value)) }
 	switch {
 	case answer.AccessToken == "":
 		return nil, fmt.Errorf("the broker at %s answered no access token", shown)

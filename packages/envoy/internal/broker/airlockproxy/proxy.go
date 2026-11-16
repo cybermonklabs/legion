@@ -168,7 +168,8 @@ type Options struct {
 	// negative control of the check the two kinds belong to.
 	NoKind bool
 	// AzureAuthority is the host of the token authority every exchange of the azure kind is
-	// made at (azure.go): a host name with no port, and "" for Microsoft's,
+	// made at (azure.go): a host name in lower case with no port, which the host of a token
+	// request's connection, ASCII lower-cased, must equal exactly, and "" for Microsoft's,
 	// login.microsoftonline.com. A token request to any other host an azure entry binds is
 	// refused, and so is an access slot that names one, since the exchange carries the broker's
 	// federated token. BROKER_AIRLOCK_TEST_AZURE_AUTHORITY is it in the broker's local stack,
@@ -204,8 +205,7 @@ type Server struct {
 	dialAllow  []string
 	keepValues bool
 	noKind     bool
-	// azureAuthority is Options.AzureAuthority, ASCII lower-cased, and microsoftAuthority for a
-	// proxy given none.
+	// azureAuthority is Options.AzureAuthority, and microsoftAuthority for a proxy given none.
 	azureAuthority string
 
 	// outer serves the bound listener: CONNECT and absolute-URL proxy requests. inner serves
@@ -321,7 +321,7 @@ func New(o Options) *Server {
 	if s.watch <= 0 {
 		s.watch = watchInterval
 	}
-	s.azureAuthority = fold.ASCII(o.AzureAuthority)
+	s.azureAuthority = o.AzureAuthority
 	if s.azureAuthority == "" {
 		s.azureAuthority = microsoftAuthority
 	}

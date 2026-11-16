@@ -269,6 +269,24 @@ func TestRawEmptyAndClean(t *testing.T) {
 	}
 }
 
+// TestAnAnswersWordsPrintOnlyBesideACleanAddress: Words prints an answer's text as it came beside
+// a clean address, and beside one that is not clean - a credential, a query, a fragment, no plain
+// URL, none at all - prints WordsNotPrinted, which holds no marker, whatever the text repeats.
+func TestAnAnswersWordsPrintOnlyBesideACleanAddress(t *testing.T) {
+	for _, raw := range cleanAddresses {
+		const words = "the request object names another broker"
+		if got := brokeraddr.New(raw).Words(words); got != words {
+			t.Errorf("New(%q).Words(%q) = %q, want the text as it came", raw, words, got)
+		}
+	}
+	for _, raw := range append(slices.Clone(credentialed), "not a url", "") {
+		words := "the request object names " + raw
+		if got := brokeraddr.New(raw).Words(words); got != brokeraddr.WordsNotPrinted || leaked(got) != "" {
+			t.Errorf("New(%q).Words(%q) = %q, want %q", raw, words, got, brokeraddr.WordsNotPrinted)
+		}
+	}
+}
+
 // TestARequestsURLAndErrorPrintAsTheRedactorPrintsThem: Call, Error and Cause are redact's own
 // with the address as the base. On a credentialed address the request URL prints as
 // redact.NotPrinted, the error as its operation, that URL and its class, and the cause as its

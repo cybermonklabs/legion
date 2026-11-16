@@ -75,9 +75,11 @@ func tradeOnce(t *testing.T, address string, httpClient *http.Client) (string, e
 // password, a query or a fragment, neither the log of a trade the broker takes nor any error of
 // one that fails - a broker that never answers, an answer that is not JSON, a non-2xx status, a
 // token the answer makes invalid, each branch of the answer's reading - holds any part of it,
-// and neither does the renewal loop's line about it. Each trade reaches the broker, so none of
-// this passes on a request that was never made.
+// and neither does the renewal loop's line about it, even where the answer repeats it. Each
+// trade reaches the broker, so none of this passes on a request that was never made.
 func TestATradePrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
+	// repeated is every marker, as an answer that repeats the credential writes them.
+	repeated := strings.Join(credentialMarkers, " ")
 	for _, answer := range []struct {
 		name   string
 		status int
@@ -86,13 +88,17 @@ func TestATradePrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
 	}{
 		{"a trade the broker takes", 200, `{"access_token":"demo-access-not-a-secret","token_type":"DPoP","expires_in":3600}`, true},
 		{"a body that is not JSON", 200, `<html>a proxy's page</html>`, false},
+		{"an expiry that is not a number and repeats the credential", 200, `{"access_token":"demo-access-not-a-secret","token_type":"DPoP","expires_in":"` + repeated + `"}`, false},
 		{"a non-2xx status", 503, `{"error":"temporarily_unavailable"}`, false},
+		{"a non-2xx status whose words repeat the credential", 503, `{"error":"` + repeated + `"}`, false},
 		{"a non-2xx status with no body", 500, ``, false},
 		{"no access token", 200, `{"token_type":"DPoP","expires_in":3600}`, false},
 		{"a token type that is not DPoP", 200, `{"access_token":"demo-access-not-a-secret","token_type":"Bearer","expires_in":3600}`, false},
+		{"a token type that repeats the credential", 200, `{"access_token":"demo-access-not-a-secret","token_type":"` + repeated + `","expires_in":3600}`, false},
 		{"a refresh token", 200, `{"access_token":"demo-access-not-a-secret","token_type":"DPoP","expires_in":3600,"refresh_token":"r"}`, false},
 		{"no usable expiry", 200, `{"access_token":"demo-access-not-a-secret","token_type":"DPoP","expires_in":0}`, false},
 		{"a credential expiry that is no time", 200, `{"access_token":"demo-access-not-a-secret","token_type":"DPoP","expires_in":3600,"credential_expires_at":"soon"}`, false},
+		{"a credential expiry that repeats the credential", 200, `{"access_token":"demo-access-not-a-secret","token_type":"DPoP","expires_in":3600,"credential_expires_at":"` + repeated + `"}`, false},
 	} {
 		var asked atomic.Int64
 		base := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -150,13 +156,16 @@ func TestATradeTheBrokerNeverAnswersPrintsNoPartOfTheBrokerURLCredential(t *test
 }
 
 // TestACleanBrokerURLStillPrintsAsWritten is the control for the two above: an address that
-// carries nothing prints whole, in the log line of a trade and in the error of one that fails.
+// carries nothing prints whole, in the log line of a trade and in the error of one that fails,
+// and so do the broker's words that error quotes.
 func TestACleanBrokerURLStillPrintsAsWritten(t *testing.T) {
 	base := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"temporarily_unavailable"}`))
 	})
 	logged, tokenErr := tradeOnce(t, base, HTTPClient())
-	want := "the broker at " + base + TokenPath + " answered HTTP 503"
+	want := "the broker at " + base + TokenPath + " answered HTTP 503 temporarily_unavailable"
 	if tokenErr == nil || !strings.Contains(tokenErr.Error(), want) {
 		t.Errorf("Token: %v, want it to read %q", tokenErr, want)
 	}

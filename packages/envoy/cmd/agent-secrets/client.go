@@ -95,15 +95,16 @@ func (c *client) route(path string) string { return c.baseURL.Raw() + path }
 // names it. A broker from before the id sends neither, and neither does an answer net/http writes
 // before any of the broker's code runs, such as its 400 for a malformed request, 431 and 417.
 //
-// Message and AnswerID are the broker's words as a message may print them. Beside an address
-// that is not clean (brokeraddr.Address.Clean), the broker, or anyone who answers at that address,
-// can repeat the credential the address carries back in any text it answers, so doStatus keeps
-// the status and the code, puts wordsNotPrinted in Message and leaves AnswerID empty, as the token
-// client prints such an answer (internal/brokerclient). said is the broker's error text as it
-// came, whatever the address: the refusals this client tells apart by their words read it
-// (enrollmentEnded, callRefused), and nothing prints it. It is a *string, as brokeraddr.Address's
-// address is, so fmt prints the pointer, never the text, where it prints this struct field by
-// field (%#v).
+// Code is the answer's code as it came, which the refusals this client tells apart compare, and
+// said its words as they came, which they read (says): nothing prints said, a *string, as
+// brokeraddr.Address's address is, so fmt prints the pointer, never the text, where it prints this
+// struct field by field (%#v). Message and AnswerID are the words and the answer id as a message
+// may print them (brokeraddr.Address.Words): beside an address that is not clean, whoever answers
+// can repeat the credential the address carries in any text it answers, so there Message is
+// brokeraddr.WordsNotPrinted and the refusal prints as its status and Message alone (withheld),
+// with neither its code nor its answer id, as the token client prints such an answer
+// (internal/brokerclient). The one line that names a code whatever the address, renew's exit on a
+// terminal refusal, names one of terminalRenewal's, which this client matched it against.
 type apiError struct {
 	Status   int
 	Code     string
@@ -112,14 +113,14 @@ type apiError struct {
 	said     *string
 }
 
-// wordsNotPrinted is an apiError's Message where the broker's address is not clean.
-const wordsNotPrinted = "(not printed: the broker's address carries a credential)"
-
-// Error is the broker's message and code, and the answer id to quote when it named one. A body
-// that was not the envelope is the message as it came, a line ending and all (the mux's
-// "404 page not found\n"), so the message is cut at its trailing line endings before the id goes
-// after it on the same line.
+// Error is the broker's message and code, and the answer id to quote when it named one; where
+// the answer's text is withheld, the status and Message alone. A body that was not the envelope is
+// the message as it came, a line ending and all (the mux's "404 page not found\n"), so the message
+// is cut at its trailing line endings before the id goes after it on the same line.
 func (e *apiError) Error() string {
+	if e.withheld() {
+		return fmt.Sprintf("HTTP %d: %s", e.Status, e.Message)
+	}
 	message := strings.TrimRight(e.Message, "\r\n")
 	var text string
 	if e.Code == "" {
@@ -132,6 +133,11 @@ func (e *apiError) Error() string {
 	}
 	return text
 }
+
+// withheld reports whether doStatus withheld the answer's text, its address not being clean: its
+// Message is then brokeraddr.WordsNotPrinted, and its code and answer id, which the same answerer
+// wrote, print nowhere either.
+func (e *apiError) withheld() bool { return e.Message == brokeraddr.WordsNotPrinted }
 
 // says reports whether the broker's error text holds phrase. A refusal this client made itself
 // (a redirect) holds no broker text, and says nothing.
@@ -332,13 +338,15 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 		if envelope.AnswerID == "" {
 			envelope.AnswerID = resp.Header.Get(answerIDHeader)
 		}
-		refusal := &apiError{Status: resp.StatusCode, Code: envelope.Code, Message: envelope.Error, AnswerID: envelope.AnswerID, said: &envelope.Error}
-		// Beside an address that carries a credential, whoever answers can repeat it in any
-		// text of its answer: the status and the code print, its words and answer id do not.
-		if !c.baseURL.Clean() {
-			refusal.Message, refusal.AnswerID = wordsNotPrinted, ""
+		// Beside an address that is not clean, whoever answers can repeat its credential in
+		// any text of its answer: the refusal prints as its status alone (apiError.withheld).
+		return resp.StatusCode, nil, &apiError{
+			Status:   resp.StatusCode,
+			Code:     envelope.Code,
+			Message:  c.baseURL.Words(envelope.Error),
+			AnswerID: c.baseURL.Words(envelope.AnswerID),
+			said:     &envelope.Error,
 		}
-		return resp.StatusCode, nil, refusal
 	}
 	return resp.StatusCode, data, nil
 }

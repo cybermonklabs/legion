@@ -365,6 +365,40 @@ func TestARefusedPodLoginExitsAndNamesTheIdentity(t *testing.T) {
 	}
 }
 
+// TestARefusedPodLoginBesideAnAddressThatIsNotCleanPrintsItsStatusAlone: beside an
+// AGENT_SECRETS_URL that carries a credential, the refusal line still names the pod and the HTTP
+// status, and none of what the answerer wrote - the words, which repeat that credential, or the
+// code - since whoever answers at that address can fill any of them with it.
+func TestARefusedPodLoginBesideAnAddressThatIsNotCleanPrintsItsStatusAlone(t *testing.T) {
+	token := fakePodToken(t, testPodAccount, testPodUID)
+	tokenFile := writePodToken(t, token)
+	var words string
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{"code": "ACCOUNT_NOT_LISTED", "error": words})
+	}))
+	defer broker.Close()
+	credentialed := strings.Replace(broker.URL, "://", "://demouser7q:demopass9z-not-a-secret@", 1)
+	words = "the login names " + credentialed + ", which lists no service"
+	t.Setenv("AGENT_SECRETS_URL", credentialed)
+	var stdout, stderr bytes.Buffer
+	if code := cmdEnroll([]string{"--pod", "--service", testPodService, "--pod-token-file", tokenFile, "--out", t.TempDir()}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit %d, want 1 (stderr %q)", code, stderr.String())
+	}
+	for _, want := range []string{testPodAccount, testPodUID, "HTTP 403", "could not log in"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr %q does not name %q", stderr.String(), want)
+		}
+	}
+	for _, withheld := range []string{"demouser7q", "demopass9z-not-a-secret", "ACCOUNT_NOT_LISTED", "lists no service"} {
+		if strings.Contains(stderr.String(), withheld) {
+			t.Errorf("stderr %q names %q, which the answerer wrote", stderr.String(), withheld)
+		}
+	}
+}
+
 // TestARefusedEnrolmentLeavesTheRefusalBesideTheKey: a pod whose enrolment the broker refuses
 // keeps its key — a new key while the old enrollment is live is ALREADY_ENROLLED — and that
 // leaves the one state a later call cannot read on its own: key.pem with no enrollment, which

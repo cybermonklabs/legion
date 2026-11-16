@@ -241,14 +241,21 @@ type SignIns interface {
 }
 
 // BrokerError is a non-success answer, with the contract's code.
+//
+// Code is the answer's code as it came, which the helper acts on, and said its words as they
+// came, which enrollmentNotLive reads (says): nothing prints said, a *string, as
+// brokeraddr.Address's address is, so fmt prints the pointer, never the text, where it prints this
+// struct field by field (%#v). Message is the words as a message may print them
+// (brokeraddr.Address.Words): beside an address that is not clean, whoever answers can repeat the
+// credential the address carries in any text it answers, so there do makes Message
+// brokeraddr.WordsNotPrinted and the refusal prints as its status and Message alone (withheld),
+// without its code. A log line that names a code whatever the address names one the helper
+// matched against its own (isLauncherInvalid, enrollmentNotLive, revokeOnce).
 type BrokerError struct {
 	Status  int
 	Code    string
 	Message string
-	// saysNotLive is the broker's own words saying "not live", an older broker's word for an
-	// ended enrollment under PROOF_INVALID (enrollmentNotLive). do reads it from those words, so
-	// it holds where Message is empty because do withheld them.
-	saysNotLive bool
+	said    *string
 }
 
 // Error names only the fields it has: the status always, then the code where there is one, then
@@ -256,16 +263,27 @@ type BrokerError struct {
 // not "broker 502 : ", and an unknown outcome's answer shows that text to an operator
 // (mayHaveReachedCause, server.go). With both fields set it reads "broker 403 SESSION_HELD: the
 // session … belongs to …", which nocredential_test.go matches as a prefix ("broker 401
-// LAUNCHER_INVALID").
+// LAUNCHER_INVALID"). A refusal whose text is withheld names no code.
 func (e *BrokerError) Error() string {
 	s := fmt.Sprintf("broker %d", e.Status)
-	if e.Code != "" {
+	if e.Code != "" && !e.withheld() {
 		s += " " + e.Code
 	}
 	if e.Message != "" {
 		s += ": " + e.Message
 	}
 	return s
+}
+
+// withheld reports whether do withheld the answer's text, its address not being clean: its
+// Message is then brokeraddr.WordsNotPrinted, and its code, which the same answerer wrote, prints
+// nowhere either.
+func (e *BrokerError) withheld() bool { return e.Message == brokeraddr.WordsNotPrinted }
+
+// says reports whether the broker's words hold phrase. A BrokerError do did not make (an OAuth
+// refusal, oauthBrokerError) holds none, and says nothing.
+func (e *BrokerError) says(phrase string) bool {
+	return e.said != nil && strings.Contains(*e.said, phrase)
 }
 
 // readOperator reads OperatorFile, trimmed, per call: it names the login_hint for a machine
@@ -1601,12 +1619,10 @@ func (b *Broker) revokeUnder(ctx context.Context, authority *brokerclient.Author
 // do sends req and decodes the broker's answer. A failed exchange - the request, or the read of
 // its answer - goes through the address's Error (brokeraddr.Address.Error). A refusal is a
 // BrokerError with the answer's status and code, which the helper acts on, and with the broker's
-// own words (the answer's error) only beside an address that prints as written
-// (brokeraddr.Address.Clean): beside one that carries a credential, the broker, or whoever answers
-// for that address, can repeat the credential back in its words, so they are withheld here, as
-// oauthBrokerError and brokerclient's token exchange withhold theirs. Beside such an address, the
-// only text of the broker's own that a message or log line made from do's error can carry is the
-// answer's code.
+// own words (the answer's error) as the address lets them print (brokeraddr.Address.Words):
+// beside an address that is not clean, the broker, or whoever answers for that address, can
+// repeat the credential back in any text of its answer, so the refusal prints as its status alone
+// (BrokerError.withheld), as oauthBrokerError and brokerclient's token exchange print theirs.
 func (b *Broker) do(req *http.Request, ok []int, out any) error {
 	resp, err := b.httpClient().Do(req)
 	if err != nil {
@@ -1623,11 +1639,7 @@ func (b *Broker) do(req *http.Request, ok []int, out any) error {
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(data, &e)
-		be := &BrokerError{Status: resp.StatusCode, Code: e.Code, saysNotLive: strings.Contains(e.Error, "not live")}
-		if b.URL.Clean() {
-			be.Message = e.Error
-		}
-		return be
+		return &BrokerError{Status: resp.StatusCode, Code: e.Code, Message: b.URL.Words(e.Error), said: &e.Error}
 	}
 	if out != nil && len(data) > 0 {
 		return json.Unmarshal(data, out)

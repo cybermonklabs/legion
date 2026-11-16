@@ -106,7 +106,7 @@ const maxJudgeSeconds = 900
 // Validate reports why the file is not valid, naming the entry by its secret name and its
 // index. It reads the entries in order and reports the first failure: a repeated name, an
 // entry with no host, a judge above 900 seconds, a kind other than "", "aws" or "azure", or
-// a host that binds the secret nowhere (hostShapeOK).
+// a host that binds the secret nowhere (HostShapeOK).
 // Whether it answers nil is the same answer as the Lean model's validate, so a new refusal
 // here is a new refusal there.
 func Validate(rules Rules) error {
@@ -122,10 +122,10 @@ func Validate(rules Rules) error {
 		case s.Kind != "" && s.Kind != "aws" && s.Kind != "azure":
 			return fmt.Errorf("%s: kind %q is not %q, %q or %q", entry(i, s), s.Kind, "", "aws", "azure")
 		}
-		// A host hostShapeOK refuses binds the secret nowhere, exactly as an entry with no host
+		// A host HostShapeOK refuses binds the secret nowhere, exactly as an entry with no host
 		// at all does: the command gets its placeholder and no call of it is ever swapped.
 		for _, h := range s.Hosts {
-			if !hostShapeOK(h) {
+			if !HostShapeOK(h) {
 				return fmt.Errorf("%s: host %q is not a DNS name or a %q suffix, so the airlock binds the secret nowhere", entry(i, s), h, "*.")
 			}
 		}
@@ -211,10 +211,12 @@ func HostBound(hosts []string, host string) bool {
 	}
 }
 
-// hostShapeOK reports whether an entry host is one the airlock can bind a request to: a host
+// HostShapeOK reports whether an entry host is one the airlock can bind a request to: a host
 // name, which HostBound holds exactly, or "*." and one, a suffix it looks up. A label is
 // letters, digits and hyphens, never empty and never starting or ending with a hyphen, and the
-// last label is not all digits.
+// last label is not all digits. Validate holds every entry host to it, and config holds the
+// local stack's stand-in token authority (BROKER_AIRLOCK_TEST_AZURE_AUTHORITY) to it, since a
+// token request reaches the proxy only at a host an entry binds.
 //
 // The host a request carries is a name alone: the CONNECT target's host, with its port taken
 // off and compared against 443 on its own. So a host written with a scheme, a path, a port, or
@@ -229,7 +231,7 @@ func HostBound(hosts []string, host string) bool {
 // digits (RFC 1123 section 2.1), and that is the test here: it refuses an IPv4 literal, "*."
 // over a suffix only an address ends in, and any other host whose last label is all digits,
 // which is no host name either. An IPv6 literal holds a ':' that no label takes.
-func hostShapeOK(host string) bool {
+func HostShapeOK(host string) bool {
 	name := strings.TrimPrefix(host, "*.")
 	if name == "" {
 		return false

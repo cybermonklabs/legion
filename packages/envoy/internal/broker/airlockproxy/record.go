@@ -55,6 +55,9 @@ const (
 	codeAWSSignature = "AWS_SIGNATURE_REFUSED"
 	// serveBound: a request the swap refused although the decision allowed it.
 	codeSwapRefused = "SWAP_REFUSED"
+	// serveBound: a request that is no token request and carries an azure name's federated
+	// token's placeholder, which the header swap would hand the host the request goes to.
+	codeFederatedSwap = "FEDERATED_TOKEN_SWAP_REFUSED"
 	// exchangeToken: a token request whose form cannot be read.
 	codeTokenRequest = "TOKEN_REQUEST_INVALID"
 	// exchangeToken: a token request whose client_assertion is not this grant's placeholder.

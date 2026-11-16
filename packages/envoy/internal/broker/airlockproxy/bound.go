@@ -270,7 +270,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, info.callFor(pair{}), http.StatusForbidden, codeNoBoundName, "no name of this grant is bound to "+info.host)
 		return
 	}
-	chosen := choosePair(candidates, info.grant, request)
+	chosen, carried := choosePair(candidates, info.grant, request)
 	// The entry's kind is what the value behind this name is: "" a string a header carries,
 	// which the swap below puts there; "aws" a key pair the call itself has to be signed with
 	// (aws.go); "azure" a federated token that has to be exchanged at a token endpoint for an
@@ -290,6 +290,17 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// so what it is handled for is the federated slot whatever choosePair read of its
 		// headers. The exchange below checks the form itself.
 		chosen.slot = requests.SlotAzureFederated
+	} else if kind == airlock.KindAzure && carried && chosen.slot == requests.SlotAzureFederated {
+		// The federated token leaves the broker inside an exchange at the token authority and
+		// nowhere else (exchangeToken, azureBound): Entra takes it as the assertion of every
+		// application federated with the broker, so the header swap below would hand the host
+		// this request goes to - the authority or any other host the entry binds - the
+		// assertion of each of them. A request that carries no placeholder of the grant is
+		// still handled for this slot while the grant holds no access slot, and goes on with
+		// nothing swapped into it: az reads the tenant's OpenID configuration that way before
+		// its first token request.
+		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeFederatedSwap, "refusing to swap "+chosen.name+"'s federated token into a request that is no token request: that token leaves the broker only in an exchange at the token authority")
+		return
 	}
 	placeholder := info.grant.Names[chosen.name].Slots[chosen.slot]
 	values, err := s.valuesFor(r.Context(), info.grant.GrantID)
@@ -706,7 +717,9 @@ func (s *Server) candidates(grant requests.AirlockConnection, host string, port 
 }
 
 // choosePair is the one (name, slot) pair a request is handled for: the first candidate a header
-// of the request already carries the placeholder of, and otherwise the first candidate.
+// of the request already carries the placeholder of, and otherwise the first candidate. carried
+// is whether the request carries the placeholder of the pair answered, so the caller tells the
+// request that asks for that pair's value from the one that only fell to it.
 //
 // Why one pair at all. The decision and the swap are over one grant and one secret
 // (airlock.Grant), and the model that is proved is over that pair, so a request is decided for
@@ -721,7 +734,7 @@ func (s *Server) candidates(grant requests.AirlockConnection, host string, port 
 // candidate: the entry's hosts, method and path rules apply to it, and it is forwarded with
 // nothing swapped. That is what makes an entry's allow list a bound on the whole connection
 // rather than on the requests that happen to ask for a swap.
-func choosePair(candidates []pair, grant requests.AirlockConnection, request *airlock.Request) pair {
+func choosePair(candidates []pair, grant requests.AirlockConnection, request *airlock.Request) (chosen pair, carried bool) {
 	for _, candidate := range candidates {
 		placeholder := grant.Names[candidate.name].Slots[candidate.slot]
 		if placeholder == "" {
@@ -729,11 +742,11 @@ func choosePair(candidates []pair, grant requests.AirlockConnection, request *ai
 		}
 		for _, header := range request.Headers {
 			if airlock.Carries(placeholder, header[1]) {
-				return candidate
+				return candidate, true
 			}
 		}
 	}
-	return candidates[0]
+	return candidates[0], false
 }
 
 // sniOf is the name the command asked for in its TLS handshake, "" for a client that sent none.

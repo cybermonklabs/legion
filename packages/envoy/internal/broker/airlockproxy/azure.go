@@ -17,7 +17,10 @@
 // Entra takes it as the assertion of every application whose federated credential trusts the
 // broker, so an exchange made as whatever application the command named would sell the grant
 // of one name for a token of any of them, and one made at another host the entry binds would
-// hand that host the token itself.
+// hand that host the token itself. Nor does the federated token leave the broker any other way:
+// a request that is no token request and carries its placeholder is refused before anything is
+// sent (serveBound), since the header swap would put the token itself in it, whether it goes to
+// the authority or to another host the entry binds.
 //
 // The exchange is the one place the proxy writes an answer of its own. It still reads no answer
 // of any API service, which is what the design's rule is about: what it reads here is the
@@ -111,7 +114,7 @@ func (x azureExchange) form(federated string) url.Values {
 
 // azureAccessSlot is the slot the access token of x lives under.
 func azureAccessSlot(x azureExchange) string {
-	// Three strings, so the marshal cannot fail.
+	// Four strings, so the marshal cannot fail.
 	encoded, _ := json.Marshal(x)
 	return requests.SlotAzureAccessPrefix + base64.RawURLEncoding.EncodeToString(encoded)
 }
@@ -178,7 +181,7 @@ const microsoftAuthority = "login.microsoftonline.com"
 // never reads one application or tenant as another. The refusal names the name and the field
 // and no value, the document's, the command's or the authority's.
 func azureBound(name, authority string, app secrets.AzureLoginValue, host string, clientIDs []string, path string) error {
-	if authority == "" || host != authority {
+	if host != authority {
 		return errors.New("refusing an exchange of " + name + "'s federated token whose host is not the token authority's")
 	}
 	if app.ClientID == "" || len(clientIDs) != 1 || clientIDs[0] != app.ClientID {

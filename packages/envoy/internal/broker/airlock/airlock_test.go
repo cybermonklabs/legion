@@ -264,7 +264,7 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// TestHostShapeOK holds hostShapeOK to what Decide carries a value on. Each row is read against
+// TestHostShapeOK holds HostShapeOK to what Decide carries a value on. Each row is read against
 // the request a TLS client makes to one host: that host as the CONNECT target and the Host
 // header, and the name the client sends in its SNI, which for an address is none (RFC 6066
 // section 3; Go's crypto/tls decides it with net.ParseIP). A refused entry is read against the
@@ -306,8 +306,8 @@ func TestHostShapeOK(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.host, func(t *testing.T) {
-			if got := hostShapeOK(c.host); got != c.want {
-				t.Fatalf("hostShapeOK(%q) = %v, want %v", c.host, got, c.want)
+			if got := HostShapeOK(c.host); got != c.want {
+				t.Fatalf("HostShapeOK(%q) = %v, want %v", c.host, got, c.want)
 			}
 			sni := c.request
 			if net.ParseIP(c.request) != nil {
@@ -321,10 +321,10 @@ func TestHostShapeOK(t *testing.T) {
 			}
 			carried, why := Decide(rules, grant, "the-value", r)
 			if c.want && !carried {
-				t.Errorf("hostShapeOK accepts %q, but Decide refuses a request to %q by it: %s", c.host, c.request, why)
+				t.Errorf("HostShapeOK accepts %q, but Decide refuses a request to %q by it: %s", c.host, c.request, why)
 			}
 			if !c.want && carried {
-				t.Errorf("hostShapeOK refuses %q, but Decide carries the value to %q by it", c.host, c.request)
+				t.Errorf("HostShapeOK refuses %q, but Decide carries the value to %q by it", c.host, c.request)
 			}
 		})
 	}

@@ -1418,14 +1418,14 @@ func (s *Server) confirmInherited(ctx context.Context, sess *Session, pass ident
 // the row, and reading one as the end of an enrollment costs a session every pending request
 // and grant that enrollment carries. renewLoop and confirmInherited draw the line in the same
 // place, so a renewal and a confirmation cannot disagree about what ended an enrollment. The
-// fallback reads the broker's words as do found them (BrokerError.saysNotLive), so it holds
-// beside an address whose refusals do not carry the words.
+// fallback reads the broker's words as they came (BrokerError.says), so it holds beside an address
+// whose refusals do not print them.
 func enrollmentNotLive(err error) (string, bool) {
 	var be *BrokerError
 	if !errors.As(err, &be) {
 		return "", false
 	}
-	if be.Code == "ENROLLMENT_NOT_LIVE" || (be.Code == "PROOF_INVALID" && be.saysNotLive) {
+	if be.Code == "ENROLLMENT_NOT_LIVE" || (be.Code == "PROOF_INVALID" && be.says("not live")) {
 		return be.Code, true
 	}
 	return be.Code, false

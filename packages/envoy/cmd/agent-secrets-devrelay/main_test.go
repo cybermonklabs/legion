@@ -241,8 +241,8 @@ func TestABrokerItCannotReachNamesNoCredentialTheURLCarries(t *testing.T) {
 
 // TestABrokerRefusalPrintsNoCredentialItsWordsRepeat: the broker, or whoever answers at its
 // address, refuses the lookup in its error envelope with words that repeat the credential
-// --broker carries. Beside that address devrelay's refusal keeps the code and the status and
-// prints none of the broker's words; beside a clean address it prints them whole.
+// --broker carries. Beside that address devrelay's refusal names the status and none of what the
+// answerer wrote, its words or its code; beside a clean address it prints the words and the code.
 func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 	token := tokenFile(t, "caller-token")
 	var words string
@@ -264,16 +264,19 @@ func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 		return stdout.String() + stderr.String()
 	}
 	out := approve(credentialed)
-	for _, secret := range []string{"tokuser9f3", "hunter2pw"} {
-		if strings.Contains(out, secret) {
-			t.Errorf("the refusal beside a credentialed address names %q: %q", secret, out)
+	for _, withheld := range []string{"tokuser9f3", "hunter2pw", "is not listed", "CALLER_NOT_LISTED"} {
+		if strings.Contains(out, withheld) {
+			t.Errorf("the refusal beside a credentialed address names %q, which the answerer wrote: %q", withheld, out)
 		}
 	}
-	if !strings.Contains(out, "lookup: CALLER_NOT_LISTED: ") || !strings.Contains(out, "(HTTP 403)") {
-		t.Errorf("the refusal beside a credentialed address is %q, want the code and the status", out)
+	if !strings.Contains(out, "HTTP 403") {
+		t.Errorf("the refusal beside a credentialed address is %q, want the status", out)
 	}
-	if out := approve(srv.URL); !strings.Contains(out, "lookup: CALLER_NOT_LISTED: "+words+" (HTTP 403)") {
-		t.Errorf("the refusal beside a clean address is %q, want the broker's words whole", out)
+	out = approve(srv.URL)
+	for _, want := range []string{words, "CALLER_NOT_LISTED", "HTTP 403"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the refusal beside a clean address is %q, want it to carry %q", out, want)
+		}
 	}
 }
 

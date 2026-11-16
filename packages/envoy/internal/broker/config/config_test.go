@@ -1935,7 +1935,8 @@ func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 // TestLoadRefusesAnAirlockTestSettingItCannotActOn pins that a value the proxy or the judge
 // could not act on refuses the start naming the setting, rather than being read as none: an
 // address with no port, an entry that is no IP address, a host resolved twice, a token authority
-// that is no lower-case host name, and a switch that is neither true nor false.
+// that is no lower-case host name a rules entry can bind, and a switch that is neither true nor
+// false.
 func TestLoadRefusesAnAirlockTestSettingItCannotActOn(t *testing.T) {
 	for _, c := range []struct{ setting, value, want string }{
 		{"BROKER_AIRLOCK_TEST_DIAL_ALLOW", "s.airlock.test", "must be <host>:<port>"},
@@ -1949,6 +1950,10 @@ func TestLoadRefusesAnAirlockTestSettingItCannotActOn(t *testing.T) {
 		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "microsoft.airlock.test:443", "must be a host name"},
 		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "Microsoft.Airlock.Test", "must be a host name"},
 		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "microsoft.airlock.test.", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "127.0.0.4", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "-microsoft.airlock.test", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "microsoft-.airlock.test", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "*.airlock.test", "must be a host name"},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", "skip", "must be true or false"},
 	} {
 		e := validEnv()

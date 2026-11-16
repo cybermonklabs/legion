@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -96,10 +95,10 @@ func TestTheCLIsBrokerClientFollowsNoRedirect(t *testing.T) {
 
 // TestABrokerRefusalPrintsNoCredentialItsWordsRepeat: the broker, or whoever answers at its
 // address, refuses a call in its error envelope with words and an answer id that repeat the
-// credential the configured address carries. Beside that address the refusal keeps its status
-// and its code, and no line on stderr and no text of the error holds any part of the credential.
-// Beside a clean address the broker's words and answer id are what a person acts on, and print
-// whole. Either way the client still reads the words it tells refusals apart by.
+// credential the configured address carries. Beside that address the refusal prints its status
+// and none of its words, its answer id or its code: no line on stderr and no text of the error
+// holds any of them. Beside a clean address the broker's words, code and answer id are what a
+// person acts on, and print.
 func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 	const answerID = "demopass9z-not-a-secret"
 	var asked atomic.Int64
@@ -119,7 +118,7 @@ func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 	words = "the request object names " + credentialed + ", which is not this broker"
 	// status is `agent-secrets status req-1` against address: its stderr, and the refusal its
 	// client reads.
-	status := func(t *testing.T, address string) (string, *apiError) {
+	status := func(t *testing.T, address string) (string, error) {
 		t.Helper()
 		t.Setenv("AGENT_SECRETS_URL", address)
 		t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
@@ -133,39 +132,91 @@ func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 			t.Fatalf("status never reached the broker\nstderr: %s", stderr.String())
 		}
 		_, err := newClient(brokeraddr.New(address)).do(context.Background(), http.MethodGet, address+"/v1/requests/req-1", nil, nil)
-		var refusal *apiError
-		if !errors.As(err, &refusal) {
-			t.Fatalf("the refusal read as %v, want an *apiError", err)
+		if err == nil {
+			t.Fatal("the client took the broker's refusal as an answer")
 		}
-		if refusal.Status != http.StatusForbidden || refusal.Code != "REQUEST_INVALID" {
-			t.Errorf("the refusal is %d %s, want the status and the code the broker answered, 403 REQUEST_INVALID", refusal.Status, refusal.Code)
-		}
-		if !refusal.says("which is not this broker") {
-			t.Errorf("the refusal does not read the broker's words it is told apart by")
-		}
-		return stderr.String(), refusal
+		return stderr.String(), err
 	}
 
 	t.Run("an address carrying a credential", func(t *testing.T) {
-		stderr, refusal := status(t, credentialed)
-		printed := stderr + "\n" + refusal.Error() + "\n" + fmt.Sprintf("%+v %#v", refusal, *refusal)
+		stderr, err := status(t, credentialed)
+		printed := stderr + "\n" + err.Error() + "\n" + fmt.Sprintf("%+v %#v", err, err)
 		for _, marker := range []string{"demouser7q", "demopass9z-not-a-secret"} {
 			if strings.Contains(printed, marker) {
 				t.Errorf("the refusal holds %q:\n%s", marker, printed)
 			}
 		}
-		if !strings.Contains(stderr, "REQUEST_INVALID") {
-			t.Errorf("stderr does not name the broker's code:\n%s", stderr)
+		for what, text := range map[string]string{"stderr": stderr, "the error": err.Error()} {
+			if strings.Contains(text, "REQUEST_INVALID") {
+				t.Errorf("%s names the code the answerer wrote: %s", what, text)
+			}
+			if !strings.Contains(text, "HTTP 403") {
+				t.Errorf("%s does not name the status: %s", what, text)
+			}
 		}
 	})
 
 	t.Run("a clean address", func(t *testing.T) {
-		stderr, refusal := status(t, srv.URL)
-		if refusal.Message != words || refusal.AnswerID != answerID {
-			t.Errorf("the refusal is %+v, want the broker's words %q and answer id %q whole", refusal, words, answerID)
-		}
-		if !strings.Contains(stderr, words+" (REQUEST_INVALID) (answer "+answerID+")") {
-			t.Errorf("stderr does not carry the broker's words, code and answer id:\n%s", stderr)
+		stderr, err := status(t, srv.URL)
+		for what, text := range map[string]string{"stderr": stderr, "the error": err.Error()} {
+			for _, want := range []string{words, "REQUEST_INVALID", answerID} {
+				if !strings.Contains(text, want) {
+					t.Errorf("%s does not carry the broker's %q: %s", what, want, text)
+				}
+			}
 		}
 	})
+}
+
+// TestTheRefusalsToldApartByTheirWordsHoldBesideACredentialedAddress: two refusals are told apart
+// by the broker's words as well as their code - an older broker's 400 INVALID_NARROWING naming
+// the release's command as an unknown field (callRefused), and its PROOF_INVALID saying an
+// enrollment is not live (enrollmentNotLive). Beside an address that carries a credential the
+// client prints none of those words, and each still reads as it does beside a clean one; the
+// same codes with other words, another narrowing refusal and a skewed clock's proof failure, read
+// as neither, beside either address.
+func TestTheRefusalsToldApartByTheirWordsHoldBesideACredentialedAddress(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		answers := map[string]struct {
+			status      int
+			code, words string
+		}{
+			"/older-release": {http.StatusBadRequest, "INVALID_NARROWING", `body must be one valid JSON object: json: unknown field "command"`},
+			"/narrowing":     {http.StatusBadRequest, "INVALID_NARROWING", "github_app.owner names no installation"},
+			"/ended":         {http.StatusUnauthorized, "PROOF_INVALID", "proof invalid: not live"},
+			"/skewed":        {http.StatusUnauthorized, "PROOF_INVALID", "iat outside the proof skew"},
+		}
+		answer := answers[r.URL.Path]
+		body, _ := json.Marshal(map[string]string{"code": answer.code, "error": answer.words})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(answer.status)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	for name, address := range map[string]string{
+		"a clean address":                  srv.URL,
+		"an address carrying a credential": strings.Replace(srv.URL, "://", "://demouser7q:demopass9z-not-a-secret@", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := newClient(brokeraddr.New(address))
+			refusal := func(path string) error {
+				t.Helper()
+				_, err := c.do(context.Background(), http.MethodPost, address+path, nil, nil)
+				if err == nil {
+					t.Fatalf("%s: the client took the broker's refusal as an answer", path)
+				}
+				return err
+			}
+			for path, want := range map[string]bool{"/older-release": true, "/narrowing": false} {
+				if err := refusal(path); callRefused(err) != want {
+					t.Errorf("%s answered %v, read as an older broker's refusal of the command %v; want %v", path, err, !want, want)
+				}
+			}
+			for path, want := range map[string]bool{"/ended": true, "/skewed": false} {
+				if err := refusal(path); enrollmentNotLive(err) != want {
+					t.Errorf("%s answered %v, read as an ended enrollment %v; want %v", path, err, !want, want)
+				}
+			}
+		})
+	}
 }
