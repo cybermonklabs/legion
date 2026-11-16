@@ -41,26 +41,14 @@ const skip = skipWithout("tmux");
 // grew with the machine's processes, which no test owns: CI's runner has a few hundred, a devbox
 // tens of thousands, and with the row held to a ninth of one CPU on a devbox of about 20,000 the
 // fixed 30 s it had ran out inside stop_agent_daemons in 20 runs of 20. The row hands both a proc
-// root of its own processes instead (lib/proc-root.ts), so each walk reads those alone. Its bound is
-// then the code's own, with no term the host sets: stop_agent_daemons's wait for its TERM to land,
-// read from the function (50 polls 0.2 s apart, 10 s), and the row's own five waits on its
-// processes' events, each held to `until`'s 100 polls 0.1 s apart (10 s). The row's other steps (a
-// tmux server and pane, the stand-in broker, three shells running the code under test) are a few
-// process starts, which those waits' 50 s exceed many times over; no wait is ever meant to use its
-// bound. It is set as the file's default above every hook, since Bun 1.4.4 gives a hook the default
-// in force where it is registered, and the hooks end what the row started.
+// root of its own processes instead (lib/proc-root.ts), so each walk reads those alone, and the
+// row keeps the 30 s it had: what is left of its work is a few process starts (a tmux server and
+// pane, the stand-in broker, three shells running the code under test) and waits on its processes'
+// events, none of which grows with the host. It is set as the file's default above every hook,
+// since Bun 1.4.4 gives a hook the default in force where it is registered, and the hooks end what
+// the row started.
+setDefaultTimeout(30_000);
 const stopAgentDaemons = fn("stop_agent_daemons");
-const termWait = /for i in \$\(seq 1 (\d+)\); do[\s\S]*?\bsleep ([\d.]+)\n/.exec(stopAgentDaemons);
-if (termWait === null) {
-  throw new Error(
-    `stop_agent_daemons in ${scriptPath} has no TERM wait of the form \`for i in $(seq 1 N); do … sleep S\``
-  );
-}
-const termWaitMs = Number(termWait[1]) * Number(termWait[2]) * 1000;
-const untilPolls = 100;
-const untilIntervalMs = 100;
-const rowWaits = 5;
-setDefaultTimeout(termWaitMs + rowWaits * untilPolls * untilIntervalMs);
 
 const dir = temporaryDirectory("parked-decision-teardown-test");
 const started: number[] = [];
@@ -174,9 +162,9 @@ const killSession = (sid: number) => {
 };
 // until polls real processes, which no fake clock moves, for the condition it names.
 async function until(what: string, ok: () => boolean) {
-  for (let i = 0; i < untilPolls; i++) {
+  for (let i = 0; i < 100; i++) {
     if (ok()) return;
-    await Bun.sleep(untilIntervalMs);
+    await Bun.sleep(100);
   }
   throw new Error(`timed out waiting for ${what}`);
 }
