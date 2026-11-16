@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -74,8 +75,16 @@ const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclin
 // so the actor check runs on those few rows: with it inside the scan, the planner ANDs in
 // events_person_words_with_declines, whose predicate the check implies, and reads every entry of
 // that index for each ask.
-const query = `
-	with reached as (
+//
+// $4 is the reader's viewer (refs.VisibilityArg). The list of a session the reader may not see
+// (access.SessionClause) is the empty list a session nobody knows has, and of the rest each item
+// passes its own rule: an answer, a decline and a comment that of what owns its ask or itself
+// (access.ItemOwnerClause), and a message that of its issue or its conversation
+// (access.MessageClause).
+var query = `
+	with session_seen as (
+		select ` + access.SessionClause("$1::text", "$4") + ` as seen
+	), reached as (
 		select e.type, e.payload->>'id' as id, e.payload->'resolution' as resolution
 		from events e
 		where e.actor->>'kind' = 'user'
@@ -135,6 +144,7 @@ const query = `
 	left join issues i on i.key = a.issue_key
 	left join artifacts ar on ar.id = a.artifact_id
 	where a.answer is not null and (a.answer->>'at')::timestamptz >= $2
+	  and (select seen from session_seen) and ` + access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$4") + `
 	union all
 	select 'comment', c.id::text, c.created_at, c.edited_at, c.author, c.body, null, null, false,
 	       q.id::text, q.question,
@@ -149,6 +159,7 @@ const query = `
 	left join issues i on i.key = c.issue_key
 	left join artifacts ar on ar.id = c.artifact_id
 	where c.author->>'kind' = 'user' and c.created_at >= $2
+	  and (select seen from session_seen) and ` + access.ItemOwnerClause("c.issue_key", "c.artifact_id", "$4") + `
 	union all
 	select 'message', m.id::text, m.created_at, null, m.author, m.body, null, null, false,
 	       null, null,
@@ -160,6 +171,7 @@ const query = `
 	join messages m on m.id::text = x.id
 	left join issues i on i.key = m.issue_key
 	where m.author->>'kind' = 'user' and m.created_at >= $2
+	  and (select seen from session_seen) and ` + access.MessageClause("m", "$4") + `
 	union all
 	-- A decline has no answer to take a time from, so it sits at the resolution's own time, and
 	-- that time, not the event's, is what the window holds it to: the event is written moments
@@ -176,11 +188,13 @@ const query = `
 	left join issues i on i.key = a.issue_key
 	left join artifacts ar on ar.id = a.artifact_id
 	where (x.resolution->>'at')::timestamptz >= $2
+	  and (select seen from session_seen) and ` + access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$4") + `
 	order by at desc, id desc`
 
 // List lists what people wrote that Dispatch delivered to session since since, newest first by
 // time, then by id descending: an ask's current answer, a comment at its current body, a message,
-// or a person's decline of an ask, each (kind, id) once (query).
+// or a person's decline of an ask, each (kind, id) once (query), of what the reader whose viewer
+// is bound as viewer (refs.VisibilityArg) may read.
 //
 // An item reached several ways carries one relation, the most specific to the session, in this
 // order of precedence: a comment is mentioned_you when a mention delivered it to the session (it
@@ -191,8 +205,8 @@ const query = `
 // sent_you_a_message. An answer is always answered_your_ask and a decline declined_your_ask: an
 // ask's answer, and the word that nobody will answer it, reach its asker and its followers, and
 // the session route reaches the session an issue is routed to.
-func List(ctx context.Context, pool *store.Pool, session string, since time.Time) ([]model.SessionAnswer, error) {
-	rows, err := pool.Query(ctx, query, session, since, contracts.AgentSubject(session))
+func List(ctx context.Context, pool *store.Pool, viewer any, session string, since time.Time) ([]model.SessionAnswer, error) {
+	rows, err := pool.Query(ctx, query, session, since, contracts.AgentSubject(session), viewer)
 	if err != nil {
 		return nil, fmt.Errorf("read session %q answers: %w", session, err)
 	}

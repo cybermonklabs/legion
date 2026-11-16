@@ -699,7 +699,10 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 // `urn:uuid:<uuid>` on the uuid column, and the raw value would answer 500 where the canonical
 // one answers this route's own 404.
 func (s *server) getBroadcast(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingPerson(w, r)
+	if _, ok := s.actingPerson(w, r); !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -783,7 +786,7 @@ func (s *server) loadBroadcastRecipients(ctx context.Context, who model.Actor, b
 	if err != nil {
 		return nil, err
 	}
-	replies, err := s.loadMessageReplyChains(ctx, s.deps.Store.Pool, ids)
+	replies, err := s.loadMessageReplyChains(ctx, s.deps.Store.Pool, who, ids)
 	if err != nil {
 		return nil, err
 	}

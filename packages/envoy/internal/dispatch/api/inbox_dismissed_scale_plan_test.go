@@ -161,8 +161,9 @@ func dismissedScaleStatements(shape *dismissedScaleShape) []dismissedScaleExplai
 	var everyRow *int
 	page := myRepliesDismissedPage
 	one := 1
+	// The Reply reads bind the viewer at $4 (myRepliesSeen), before the page's own parameters.
 	replyArgs := func(extra ...any) []any {
-		return append([]any{dismissedScaleLogin, "", nil}, extra...)
+		return append([]any{dismissedScaleLogin, "", nil, planViewer}, extra...)
 	}
 	agentArgs := func(extra ...any) []any {
 		return append([]any{dismissedScaleLogin, dismissedScaleLogin, nil}, extra...)

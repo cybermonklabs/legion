@@ -296,7 +296,7 @@ func (s *server) claimCommentDeliveryAttempt(
 		return claimedCommentDelivery{}, err
 	}
 	defer tx.Rollback(ctx)
-	stored, err := s.lockedCommentForDelivery(ctx, tx, comment.ID)
+	stored, err := s.lockedCommentForDelivery(ctx, tx, everyReader, comment.ID)
 	if err != nil {
 		return claimedCommentDelivery{}, err
 	}
@@ -950,7 +950,11 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "MENTION_INPUT", http.StatusBadRequest, "delivery must be one of btw, aside, steer")
 		return
 	}
-	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
 		return
@@ -1065,13 +1069,19 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The writer's reader, resolved before the transaction holds a connection
+	// (lockedCommentForDelivery).
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	comment, err := s.lockedCommentForDelivery(r.Context(), tx, r.PathValue("id"))
+	comment, err := s.lockedCommentForDelivery(r.Context(), tx, who, r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
@@ -1141,7 +1151,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// reply as it is, with no ask_waiting_on: that names whom the ask waits on once a reply is its
 	// newest, which a replayed reply need no longer be.
 	if attempt.ReplyID != nil {
-		reply, err := s.loadComment(r.Context(), tx, *attempt.ReplyID)
+		reply, err := s.loadComment(r.Context(), tx, who, *attempt.ReplyID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

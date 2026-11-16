@@ -46,7 +46,11 @@ func (s *server) createDelivery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "MESSAGE_INPUT", http.StatusBadRequest, "delivery must be one of btw, aside, steer")
 		return
 	}
-	message, err := s.loadMessage(r.Context(), s.deps.Store.Pool, "", r.PathValue("id"))
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	message, err := s.loadMessage(r.Context(), s.deps.Store.Pool, who, "", r.PathValue("id"))
 	if err != nil || message.Target == nil {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
 		return
@@ -149,7 +153,11 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	message, err := s.loadMessage(ctx, s.deps.Store.Pool, "", r.PathValue("id"))
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	message, err := s.loadMessage(ctx, s.deps.Store.Pool, who, "", r.PathValue("id"))
 	if err != nil {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
 		return
@@ -926,6 +934,12 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The writer's reader is resolved before the transaction holds a connection: the answer a
+	// repeat reads back is loaded as the writer may read it (loadMessage).
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -977,7 +991,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 				"a follow-up is filed under the session's first reply, so it names no block of message "+message.ID)
 			return
 		}
-		answer, err := s.loadMessage(r.Context(), tx, messageIssueKey(message), *attempt.ReplyID)
+		answer, err := s.loadMessage(r.Context(), tx, who, messageIssueKey(message), *attempt.ReplyID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

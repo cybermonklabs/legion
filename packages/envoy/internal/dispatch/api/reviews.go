@@ -381,6 +381,12 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 			return
 		}
 	}
+	// What the reviewer sees, resolved before the transaction holds a connection: the approval
+	// request it answers is read as the reviewer may read it (closeAskTx).
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -450,7 +456,7 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 		if state == "changes_requested" {
 			selected = docs.ApprovalOptionRequestChanges
 		}
-		answered, answeredEvents, err := s.closeAskTx(r.Context(), tx, open.ID, actor, answerTransition(actor, []string{selected}, reason, answerOptions{}))
+		answered, answeredEvents, err := s.closeAskTx(r.Context(), tx, who, open.ID, actor, answerTransition(actor, []string{selected}, reason, answerOptions{}))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

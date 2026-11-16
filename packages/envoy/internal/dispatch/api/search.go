@@ -1176,7 +1176,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// the ranking (runFusedSearch) but never show it. TookMS counts the read.
 	started := time.Now()
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	if err := s.attachAskStates(r.Context(), s.deps.Store.Pool, response.Results, reader); err != nil {
+	if err := s.attachAskStates(r.Context(), s.deps.Store.Pool, who, response.Results, reader); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

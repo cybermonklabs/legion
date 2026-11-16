@@ -113,11 +113,11 @@ func TestStatementTimings(t *testing.T) {
 		oneSide = runner.Before
 	}
 	oneSide(t, "listIssueAsksQueryAll",
-		benchtime.Statement{SQL: listIssueAsksQueryAll, Args: []any{subjects.Issue}})
+		benchtime.Statement{SQL: listIssueAsksQueryAll, Args: []any{subjects.Issue, planViewer}})
 	oneSide(t, "listIssueRootMessagesQuery",
-		benchtime.Statement{SQL: listIssueRootMessagesQuery, Args: []any{subjects.Issue}})
+		benchtime.Statement{SQL: listIssueRootMessagesQuery, Args: []any{subjects.Issue, planViewer}})
 	oneSide(t, "listArtifactAsksQueryOpen",
-		benchtime.Statement{SQL: listArtifactAsksQueryOpen, Args: []any{subjects.AnchoredDocument}})
+		benchtime.Statement{SQL: listArtifactAsksQueryOpen, Args: []any{subjects.AnchoredDocument, planViewer}})
 
 	// Search is measured on the middling word: a word in a handful of items ranks almost
 	// nothing, and the commonest word is a query nobody runs. The related-item check is measured

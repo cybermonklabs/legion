@@ -184,7 +184,7 @@ func (s *server) replayComment(w http.ResponseWriter, r *http.Request, point com
 		return
 	}
 	ctx, pool := r.Context(), s.deps.Store.Pool
-	comment, err := s.loadComment(ctx, pool, point.CommentID)
+	comment, err := s.loadComment(ctx, pool, who, point.CommentID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -635,6 +635,14 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
+	// What the writer sees, resolved before any transaction holds a connection: the thread target
+	// below lists the owner's open asks as the writer may read them (askIDInputForOwner).
+	reader, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	writer := actor
+	writer.Viewer = reader.Viewer
 
 	// Every Envoy listener lookup this comment needs happens here, with no transaction and no
 	// pooled connection held (resolveCommentDeliveries). beginCommentWrite re-reads the issue's
@@ -692,7 +700,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	if !isSuggestion {
 		documentCtx = docs.WithCommentMarks(documentCtx)
 	}
-	threadTarget, err := s.normalizeCommentThreadTarget(r.Context(), tx, actor, owner, input)
+	threadTarget, err := s.normalizeCommentThreadTarget(r.Context(), tx, writer, owner, input)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

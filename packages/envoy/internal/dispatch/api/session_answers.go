@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 )
 
@@ -48,7 +49,11 @@ func (s *server) listSessionAnswers(w http.ResponseWriter, r *http.Request) {
 			"max_chars must be one integer from 1 to %d", sessionAnswersMaxChars))
 		return
 	}
-	items, err := sessionanswers.List(r.Context(), s.deps.Store.Pool, session, since)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	items, err := sessionanswers.List(r.Context(), s.deps.Store.Pool, refs.VisibilityArg(who), session, since)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

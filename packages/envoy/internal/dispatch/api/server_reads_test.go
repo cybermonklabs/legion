@@ -109,6 +109,18 @@ var serverReads = map[string]string{
 		"every reader of that document reads, which the document's own read gates by its project",
 	"comment_queries.go:answerCommentList": "the comment list is kept under its owner and its ETag and handed to the next reader " +
 		"who names the same pair, so it is read for no one reader; the owner's check runs before the kept answer is looked up",
+	"event_stream_relay.go:page": "the relay reads one page of the event log for every subscriber at once, which each live socket " +
+		"gates by its own viewer (eventReadableSQL) where it sends an event on",
+	"live_events.go:replayThrough": "an events subscription's catch-up reads the log it replays before its socket sends any of it, " +
+		"which the socket gates by its own viewer (eventReadableSQL) where it sends an event on",
+	"delivery_sweep.go:resumeOwedDelivery": "the delivery sweep resends an owed attempt of a comment or a message a writer already " +
+		"wrote, as that write's own send would, to the one session the attempt names; no caller reads what it loads",
+	"delivery_sweep.go:settleSupersededMention": "the delivery sweep settles an owed mention attempt of a comment a writer already " +
+		"wrote; it answers no caller, and the receipt it appends is read through the event log's rule",
+	"delivery_sweep.go:settleUndeliverableMention": "the delivery sweep settles an owed mention attempt nothing can send; it answers " +
+		"no caller, and the receipt it appends is read through the event log's rule",
+	"comment_delivery.go:claimCommentDeliveryAttempt": "a mention's sender locks the comment it is already sending, which its writer " +
+		"or the delivery sweep loaded, to claim the one attempt it sends; no caller reads what it locks",
 }
 
 // TestEveryServerReadIsNamed holds every use of everyReader to serverReads. everyReader is the

@@ -61,6 +61,12 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// What the writer sees, resolved before the transaction for the same reason: the ask is
+	// loaded as the writer may read it (loadAsk).
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -71,7 +77,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// The locks, in the order the ask writes take them: the owner row, then the ask row. A
 	// closed issue is 409 ISSUE_CLOSED here; a project document is always open, so a document
 	// ask passes.
-	unlockedAsk, err := s.loadAsk(r.Context(), tx, askID)
+	unlockedAsk, err := s.loadAsk(r.Context(), tx, who, askID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -154,7 +160,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// ask write answers (display_trees.go), so a caller that sent `Dispatch-Trees: 1` reads the
 	// trees of this ask's texts here as it does from an edit or an answer. The event payload
 	// stays the locked row, which is the shape every ask.* payload has (ask_rows.go).
-	answer, err := s.loadAsk(r.Context(), tx, ask.ID)
+	answer, err := s.loadAsk(r.Context(), tx, who, ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

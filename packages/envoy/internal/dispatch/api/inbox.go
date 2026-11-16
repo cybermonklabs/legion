@@ -6,7 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 type inboxIssue struct {
@@ -85,8 +87,14 @@ func (s *server) inboxAssigneeFilter(ctx context.Context, raw string, caller mod
 	}
 }
 
+// listInbox answers the open asks waiting on someone, as the caller may read them
+// (access.ItemOwnerClause): an ask of a project the caller does not see is in no one's Inbox it reads.
 func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -119,9 +127,10 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		  and ($2 = ''
 		       or ($2 = 'unassigned' and `+askedOfPersonExpression+` is null)
 		       or ($2 = 'login' and `+askedOfPersonExpression+` = $3))
+		  and `+access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$5")+`
 		order by i.priority asc nulls last, waiting_on desc,
 		         coalesce(lr.created_at, a.created_at) desc, a.id desc
-	`, project, assigneeMode, assigneeLogin, model.CanonicalLogin(caller.ID))
+	`, project, assigneeMode, assigneeLogin, model.CanonicalLogin(caller.ID), refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -161,14 +170,14 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		askPointers[index] = &asks[index].Ask
 		askIDs[index] = asks[index].ID
 	}
-	if err := loadAskDetails(r.Context(), s.deps.Store.Pool, caller, askPointers); err != nil {
+	if err := loadAskDetails(r.Context(), s.deps.Store.Pool, who, askPointers); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	// The Inbox's asks and the threads under them are one read of the stored trees: each row
 	// registers its texts with this reader, and one query answers the page.
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	threads, err := s.loadAskThreads(r.Context(), caller, askIDs, reader)
+	threads, err := s.loadAskThreads(r.Context(), who, askIDs, reader)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

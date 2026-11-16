@@ -294,7 +294,11 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 		}
 		return events, nil
 	}
-	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, transition)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	ask, err := s.closeAsk(r.Context(), who, r.PathValue("id"), actor, transition)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -351,7 +355,11 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 			"reason may not begin with "+strconv.Quote(docs.SettlementRetractionReason)+", which marks a retraction the document's settlement wrote")
 		return
 	}
-	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	ask, err := s.closeAsk(r.Context(), who, r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
 		Apply: func(ctx context.Context, tx pgx.Tx, ask model.Ask) (model.Ask, error) {
 			if err := s.writeClosedBlockState(ctx, ask, actor); err != nil {
@@ -432,7 +440,11 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	// (docs.settlementRetraction, which reads that prefix on a retraction alone). A decline is
 	// no retraction, so no note written here can be read as settlement's work and nothing of a
 	// person's words is refused for how they open.
-	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	ask, err := s.closeAsk(r.Context(), who, r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
 		Apply: func(ctx context.Context, tx pgx.Tx, ask model.Ask) (model.Ask, error) {
 			// The kind is refused here, inside Apply, for the reason answerAsk states for its
@@ -457,7 +469,10 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
 }
 
-func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, transition askTransition) (model.Ask, error) {
+// closeAsk applies a transition to the open ask id, which it reads as who may read it (loadAsk),
+// in a transaction of its own, and publishes what it appended. who is resolved before the
+// transaction holds a connection.
+func (s *server) closeAsk(ctx context.Context, who model.Actor, id string, actor model.Actor, transition askTransition) (model.Ask, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return model.Ask{}, err
@@ -465,7 +480,7 @@ func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, tra
 	defer tx.Rollback(ctx)
 	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
 	defer ledger.Discard()
-	ask, events, err := s.closeAskTx(documentCtx, tx, id, actor, transition)
+	ask, events, err := s.closeAskTx(documentCtx, tx, who, id, actor, transition)
 	if err != nil {
 		return model.Ask{}, err
 	}
@@ -484,9 +499,9 @@ func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, tra
 
 // closeAskTx applies a transition to an open ask inside the caller's transaction, indexes the
 // ask's parts, appends the transition's event and runs its After; the caller commits and
-// publishes the events.
-func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, id string, actor model.Actor, transition askTransition) (model.Ask, []model.Event, error) {
-	ask, err := s.transitionAskTx(ctx, tx, id, transition)
+// publishes the events. The ask is read as who may read it (transitionAskTx).
+func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, who model.Actor, id string, actor model.Actor, transition askTransition) (model.Ask, []model.Event, error) {
+	ask, err := s.transitionAskTx(ctx, tx, who, id, transition)
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
@@ -532,9 +547,9 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, id string, actor mod
 }
 
 // transitionAskTx locks an open ask and applies a transition inside the caller's
-// transaction; it appends no event.
-func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, id string, transition askTransition) (model.Ask, error) {
-	unlockedAsk, err := s.loadAsk(ctx, tx, id)
+// transaction; it appends no event. An ask who may not read is pgx.ErrNoRows (loadAsk).
+func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, who model.Actor, id string, transition askTransition) (model.Ask, error) {
+	unlockedAsk, err := s.loadAsk(ctx, tx, who, id)
 	if err != nil {
 		return model.Ask{}, err
 	}

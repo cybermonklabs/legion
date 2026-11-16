@@ -12,7 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // listComments answers an issue's comment list, scoped by ?artifact= to the comments anchored in
@@ -54,8 +56,18 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 //
 // name is the owner as the request spells it: the key the kept answer is filed under beside its
 // ETag, and the subject the display tree read is logged against.
+//
+// The owner's check comes first, in the validator's own read (commentListWatermark): an owner of
+// a project the caller does not see reads as an owner no row holds - watermark 0, last_seq 0, not
+// held - so its list is the empty list under the ETag a missing owner answers, and nothing is
+// kept. Only then is the kept answer looked up, so an answer kept for a reader who sees the owner
+// is never handed to one who does not, whatever the cache holds.
 func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter, name string) {
-	watermark, lastSeq, ownerHeld, err := s.commentListWatermark(r.Context(), owner)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	watermark, lastSeq, ownerHeld, err := s.commentListWatermark(r.Context(), who, owner)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -71,11 +83,15 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	}
 	// The answer is kept and handed to every reader whose request names this owner and ETag
 	// (listAnswers), so it is read as everyReader: one reader's view of a block reserved for its
-	// author must never be the answer kept for the next.
-	comments, err := s.loadOwnerComments(r.Context(), s.deps.Store.Pool, everyReader, owner, artifactFilter)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// author must never be the answer kept for the next. An owner the check did not find holds no
+	// comment to read.
+	comments := []model.Comment{}
+	if ownerHeld {
+		comments, err = s.loadOwnerComments(r.Context(), s.deps.Store.Pool, everyReader, owner, artifactFilter)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	reader := s.readDisplayTrees(r.Context(), trees)
 	reads := shapedComments(comments, reader)
@@ -95,31 +111,48 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 // refusal, as this route has always done - so a list that has never been written and one whose
 // owner does not exist are one case in the answer, as they have always been. They are two cases
 // for the server's own keeping: the empty list of an owner no row holds is kept under no key,
-// since that key is the path the caller spelled (writeListAnswer).
-func (s *server) commentListWatermark(ctx context.Context, owner owner) (int64, int64, bool, error) {
+// since that key is the path the caller spelled (writeListAnswer). An owner of a project who does
+// not see is read as an owner no row holds (ownerClause).
+func (s *server) commentListWatermark(ctx context.Context, who model.Actor, owner owner) (int64, int64, bool, error) {
 	var query, value string
 	switch {
 	case owner.IssueKey != nil:
 		query, value = `
-			select coalesce((select seq from comment_watermarks where issue_key = $1), 0),
-			       coalesce((select last_seq from issues where key = $1), 0),
-			       exists(select 1 from issues where key = $1)
+			with seen as (select `+ownerClause(owner, "$1", "$2")+` as owner_seen)
+			select case when owner_seen then coalesce((select seq from comment_watermarks where issue_key = $1), 0) else 0 end,
+			       case when owner_seen then coalesce((select last_seq from issues where key = $1), 0) else 0 end,
+			       owner_seen and exists(select 1 from issues where key = $1)
+			from seen
 		`, *owner.IssueKey
 	case owner.ArtifactID != nil:
 		query, value = `
-			select coalesce((select seq from comment_watermarks where artifact_id = $1), 0),
-			       coalesce((select max(seq) from events where artifact_id = $1), 0),
-			       exists(select 1 from artifacts where id = $1)
+			with seen as (select `+ownerClause(owner, "$1", "$2")+` as owner_seen)
+			select case when owner_seen then coalesce((select seq from comment_watermarks where artifact_id = $1), 0) else 0 end,
+			       case when owner_seen then coalesce((select max(seq) from events where artifact_id = $1), 0) else 0 end,
+			       owner_seen and exists(select 1 from artifacts where id = $1)
+			from seen
 		`, *owner.ArtifactID
 	default:
 		return 0, 0, false, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
 	var watermark, lastSeq int64
 	var ownerHeld bool
-	if err := s.deps.Store.Pool.QueryRow(ctx, query, value).Scan(&watermark, &lastSeq, &ownerHeld); err != nil {
+	if err := s.deps.Store.Pool.QueryRow(ctx, query, value, refs.VisibilityArg(who)).Scan(&watermark, &lastSeq, &ownerHeld); err != nil {
 		return 0, 0, false, fmt.Errorf("read the comment list's watermark: %w", err)
 	}
 	return watermark, lastSeq, ownerHeld, nil
+}
+
+// ownerClause is the rule of the owner a comment list is keyed on, the issue's key or the
+// document's id bound at keyParam, so a statement tests its owner once rather than every row: an
+// issue when the viewer sees its project (access.IssueProjectClause), and a document as an item
+// it owns is read (access.ItemOwnerClause). A document no row holds passes an open viewer alone,
+// which reads it as the empty owner it is.
+func ownerClause(listOwner owner, keyParam, viewerParam string) string {
+	if listOwner.IssueKey != nil {
+		return access.IssueProjectClause(keyParam, viewerParam)
+	}
+	return access.ItemOwnerClause("null::text", keyParam, viewerParam)
 }
 
 // commentListETag is a comment list answer's validator: the list it is of, the watermark every
@@ -134,6 +167,9 @@ func (s *server) commentListETag(owner owner, artifactFilter string, watermark, 
 	return s.listETag(hash, trees)
 }
 
+// loadOwnerComments is every comment of one owner, oldest first, scoped by artifactFilter to the
+// comments anchored in one document, read for who: an owner of a project who does not see holds
+// none (ownerClause).
 func (s *server) loadOwnerComments(ctx context.Context, q queryer, who model.Actor, owner owner, artifactFilter string) ([]model.Comment, error) {
 	var ownerColumn, ownerValue string
 	switch {
@@ -144,12 +180,12 @@ func (s *server) loadOwnerComments(ctx context.Context, q queryer, who model.Act
 	default:
 		return nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
-	rows, err := q.Query(ctx, fmt.Sprintf(`
+	rows, err := q.Query(ctx, `
 		select `+commentColumns+`
 		from comments
-		where %s = $1 and ($2 = '' or anchor->>'artifact_id' = $2)
+		where `+ownerColumn+` = $1 and ($2 = '' or anchor->>'artifact_id' = $2) and `+ownerClause(owner, "$1", "$3")+`
 		order by created_at, id
-	`, ownerColumn), ownerValue, artifactFilter)
+	`, ownerValue, artifactFilter, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +225,7 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -218,26 +254,30 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 }
 
 // replyChainQuery is every comment transitively replying to the row(s) matching
-// "<seedColumn> = $1", oldest first; %s is that seed column. comments.reply_to has no
-// acyclicity constraint, so the walk unions on the visited row: a cycle repeats a row already
-// in the set and adds nothing, rather than spinning the request. query_plan_test.go plans
-// this exact text, so the plan it checks is the one the server runs.
-const replyChainQuery = `
+// "<seedColumn> = $1", oldest first, of those the viewer bound at $2 may read (access.ItemOwnerClause).
+// comments.reply_to has no acyclicity constraint, so the walk unions on the visited row: a cycle
+// repeats a row already in the set and adds nothing, rather than spinning the request.
+// query_plan_test.go plans this exact text, so the plan it checks is the one the server runs.
+func replyChainQuery(seedColumn string) string {
+	return `
 		with recursive replies as (
 			select ` + commentThreadColumns + `
-			from comments c where c.%s = $1
+			from comments c where c.` + seedColumn + ` = $1
 			union
 			select ` + commentThreadColumns + `
 			from comments c join replies r on c.reply_to = r.id
 		)
 		select ` + commentColumns + `
 		from replies
+		where ` + access.ItemOwnerClause("replies.issue_key", "replies.artifact_id", "$2") + `
 		order by created_at, id`
+}
 
 // inboxAskReplyChainsQuery hydrates every Inbox card's thread in one walk: the same recursion
 // as replyChainQuery, seeded from a set of asks and carrying the ask each row belongs to, so a
-// comment under two asks yields one row per ask. Planned by query_plan_test.go too.
-const inboxAskReplyChainsQuery = `
+// comment under two asks yields one row per ask, of those the viewer bound at $2 may read.
+// Planned by query_plan_test.go too.
+var inboxAskReplyChainsQuery = `
 		with recursive replies as (
 			select c.ask_id as thread_id, ` + commentThreadColumns + `
 			from comments c
@@ -248,16 +288,17 @@ const inboxAskReplyChainsQuery = `
 		)
 		select ` + commentColumns + `, thread_id::text
 		from replies
+		where ` + access.ItemOwnerClause("replies.issue_key", "replies.artifact_id", "$2") + `
 		order by thread_id, created_at, id`
 
 // loadReplyChain returns every comment transitively replying to the row(s)
-// matching "<seedColumn> = seedValue", ordered oldest first, each reply's block read for who.
-// seedColumn selects the thread root: "reply_to" for a comment's own replies, "ask_id"
-// for an ask's directly-replying comments (plus, either way, every comment
+// matching "<seedColumn> = seedValue", ordered oldest first, of those who may read, each reply's
+// block read for who. seedColumn selects the thread root: "reply_to" for a comment's own
+// replies, "ask_id" for an ask's directly-replying comments (plus, either way, every comment
 // that replies to one of those via reply_to). seedColumn is caller-controlled
 // and never derived from request input.
 func (s *server) loadReplyChain(ctx context.Context, q queryer, who model.Actor, seedColumn, seedValue string) ([]model.Comment, error) {
-	rows, err := q.Query(ctx, fmt.Sprintf(replyChainQuery, seedColumn), seedValue)
+	rows, err := q.Query(ctx, replyChainQuery(seedColumn), seedValue, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}
@@ -276,11 +317,13 @@ func (s *server) loadReplyChain(ctx context.Context, q queryer, who model.Actor,
 	return s.hydrateCommentSideTables(ctx, q, who, replies)
 }
 
-func (s *server) loadComment(ctx context.Context, q queryer, id string) (model.Comment, error) {
+// loadComment reads comment id as who may read it (access.ItemOwnerClause): a comment of a project who
+// does not see is pgx.ErrNoRows, as an id no row holds is.
+func (s *server) loadComment(ctx context.Context, q queryer, who model.Actor, id string) (model.Comment, error) {
 	return scanComment(q.QueryRow(ctx, `
 		select `+commentColumns+`
-		from comments where id = $1
-	`, id))
+		from comments c where c.id = $1 and `+access.ItemOwnerClause("c.issue_key", "c.artifact_id", "$2"),
+		id, refs.VisibilityArg(who)))
 }
 func (s *server) loadCommentForUpdate(ctx context.Context, tx pgx.Tx, id string) (model.Comment, error) {
 	return scanComment(tx.QueryRow(ctx, `

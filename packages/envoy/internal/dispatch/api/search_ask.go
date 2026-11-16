@@ -15,7 +15,7 @@ import (
 // events are read only when the page holds a resolved ask. One query reads every ask hit's row,
 // and a page with no ask hit reads nothing. An ask removed after the search ran has no row left
 // and keeps Ask nil.
-func (s *server) attachAskStates(ctx context.Context, q queryer, results []model.SearchResult, reader *displayTreeReader) error {
+func (s *server) attachAskStates(ctx context.Context, q queryer, who model.Actor, results []model.SearchResult, reader *displayTreeReader) error {
 	indexByID := map[string]int{}
 	var askIDs []string
 	for index := range results {
@@ -53,7 +53,7 @@ func (s *server) attachAskStates(ctx context.Context, q queryer, results []model
 	}
 
 	if len(resolvedIDs) > 0 {
-		answers, err := s.loadAskAnswersByAsk(ctx, q, resolvedIDs)
+		answers, err := s.loadAskAnswersByAsk(ctx, q, who, resolvedIDs)
 		if err != nil {
 			return fmt.Errorf("load search ask answers: %w", err)
 		}

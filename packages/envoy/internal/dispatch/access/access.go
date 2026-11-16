@@ -111,6 +111,13 @@ func ProjectClause(projectExpr, viewerParam string) string {
 		viewerFlag(viewerParam, "all"), viewerParam, projectExpr))
 }
 
+// OpenClause passes an open viewer: one that is not a restricted member and holds no list, which
+// reads every row that belongs to no project and to no conversation, as every caller did before a
+// project could be private. The server's own viewer is open.
+func OpenClause(viewerParam string) string {
+	return clause("OpenClause", viewerFlag(viewerParam, "open"))
+}
+
 // PersonClause passes a person, by login, to an open viewer; to any other viewer, when it is the
 // viewer's own person or a person of a project the viewer sees: one that the rule lets see it.
 func PersonClause(loginExpr, viewerParam string) string {

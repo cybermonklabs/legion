@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -854,7 +855,15 @@ func (s *server) fillRelatedItems(
 			candidates = append(candidates, result)
 		}
 	}
-	if err := s.attachAskStates(ctx, s.deps.Store.Pool, candidates, input.trees); err != nil {
+	// The answers are read as the writer whose write ran the check sees them; a viewer that does not
+	// resolve reads none, and the items carry no ask state, as any other failed read leaves them.
+	who := input.source.actor.Reader()
+	viewer, err := access.Resolve(ctx, s.deps.Store.Pool, input.source.actor)
+	if err == nil {
+		who.Viewer = &viewer
+		err = s.attachAskStates(ctx, s.deps.Store.Pool, who, candidates, input.trees)
+	}
+	if err != nil {
 		// attachAskStates sets each row's state before it reads resolved asks' answers, so a
 		// failure partway would leave a resolved ask that was answered showing no answer.
 		slog.Warn("dispatch: related items carry no ask state", "error", err)

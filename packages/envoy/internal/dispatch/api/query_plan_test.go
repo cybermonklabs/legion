@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -106,13 +105,13 @@ func TestCommentQueriesAvoidSequentialCommentsScan(t *testing.T) {
 		},
 		{
 			name: "load comment reply chain",
-			sql:  fmt.Sprintf(replyChainQuery, "reply_to"),
-			args: []any{"10000000-0000-0000-0000-000000000001"},
+			sql:  replyChainQuery("reply_to"),
+			args: []any{"10000000-0000-0000-0000-000000000001", planViewer},
 		},
 		{
 			name: "load inbox ask reply chains",
 			sql:  inboxAskReplyChainsQuery,
-			args: []any{[]string{"20000000-0000-0000-0000-000000000002"}},
+			args: []any{[]string{"20000000-0000-0000-0000-000000000002"}, planViewer},
 		},
 	} {
 		t.Run(query.name, func(t *testing.T) {
@@ -120,6 +119,12 @@ func TestCommentQueriesAvoidSequentialCommentsScan(t *testing.T) {
 		})
 	}
 }
+
+// planViewer is the viewer a plan test binds where a statement reads through the project clause:
+// an open full member of a deployment that holds a private project, who sees one project (the
+// visibility argument, refs.VisibilityArg), so every arm of the clause is planned rather than
+// folded away as the server's own viewer would fold it.
+var planViewer = []byte(`{"author": null, "person": "alice", "sees": ["TEST"], "open": true, "all": false, "private": true}`)
 
 func assertPlanAvoidsSequentialRelation(t *testing.T, ctx context.Context, tx queryer, query, relation string, args ...any) {
 	t.Helper()

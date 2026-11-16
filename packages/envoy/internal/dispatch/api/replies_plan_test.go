@@ -53,8 +53,9 @@ func TestMyRepliesQueriesReadTheirStatesIndex(t *testing.T) {
 	dismissedPage := myRepliesDismissedPage
 	cursorAt := "2026-11-05T09:00:00Z"
 	cursorThread := "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	// The Reply reads bind the viewer at $4 (myRepliesSeen), before the page's own parameters.
 	replyArgs := func(extra ...any) []any {
-		return append([]any{"alice", "", nil}, extra...)
+		return append([]any{"alice", "", nil, planViewer}, extra...)
 	}
 	agentArgs := func(extra ...any) []any {
 		return append([]any{"alice", "alice", nil}, extra...)
@@ -71,7 +72,7 @@ func TestMyRepliesQueriesReadTheirStatesIndex(t *testing.T) {
 	}{
 		{"the unread count", myRepliesCountQuery, replyArgs(), "user_threads_unread", "user_threads", ""},
 		{"every unread row", myRepliesPageQuery, replyArgs(everyRow), "user_threads_unread", "user_threads", ""},
-		{"one issue's unread set", myRepliesPageQuery, append([]any{"alice", "TEST-1", nil}, &oneIssuesPage), "user_threads_unread", "user_threads", ""},
+		{"one issue's unread set", myRepliesPageQuery, append([]any{"alice", "TEST-1", nil, planViewer}, &oneIssuesPage), "user_threads_unread", "user_threads", ""},
 		{"the inbox count", myRepliesInboxCountQuery, replyArgs(), "user_threads_inbox", "user_threads", ""},
 		{"every row under state=inbox", myRepliesInboxPageQuery, replyArgs(everyRow), "user_threads_inbox", "user_threads", ""},
 		// The Dismissed view has no count: its total is the page it answers (listMyReplies).

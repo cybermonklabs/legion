@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // Every read behind an ask card's initial data: the orchestrator, its reply chain, and the
@@ -16,7 +18,9 @@ import (
 // recursion over `comments`, so the two can be read against each other; query_plan_test.go pins
 // both from there.
 
-func (s *server) loadInboxAskEdits(ctx context.Context, q queryer, askIDs []string) (map[string][]model.AskEdit, error) {
+// loadInboxAskEdits reads each listed ask's rewordings from its ask.edited events, oldest first,
+// of the events who may read (eventReadableSQL).
+func (s *server) loadInboxAskEdits(ctx context.Context, q queryer, who model.Actor, askIDs []string) (map[string][]model.AskEdit, error) {
 	edits := make(map[string][]model.AskEdit, len(askIDs))
 	for _, askID := range askIDs {
 		edits[askID] = []model.AskEdit{}
@@ -24,9 +28,9 @@ func (s *server) loadInboxAskEdits(ctx context.Context, q queryer, askIDs []stri
 	rows, err := q.Query(ctx, `
 		select payload->>'id', payload->'previous', payload->'edited_by', created_at
 		from events
-		where type = 'ask.edited' and payload->>'id' = any($1::text[])
+		where type = 'ask.edited' and payload->>'id' = any($1::text[]) and `+eventReadableSQL("events", "$2")+`
 		order by payload->>'id', id
-	`, askIDs)
+	`, askIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("load inbox ask edits: %w", err)
 	}
@@ -111,7 +115,7 @@ func (s *server) loadAskThreads(ctx context.Context, who model.Actor, askIDs []s
 	if err != nil {
 		return nil, err
 	}
-	edits, err := s.loadInboxAskEdits(ctx, q, askIDs)
+	edits, err := s.loadInboxAskEdits(ctx, q, who, askIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +123,7 @@ func (s *server) loadAskThreads(ctx context.Context, who model.Actor, askIDs []s
 	if err != nil {
 		return nil, err
 	}
-	reaches, err := s.loadAskReaches(ctx, askIDs)
+	reaches, err := s.loadAskReaches(ctx, who, askIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -146,8 +150,8 @@ func (s *server) loadAskThreads(ctx context.Context, who model.Actor, askIDs []s
 // with a null holder and never fails the read, since the ask itself was read. A route whose
 // holder has missed its heartbeats reads holder_unresponsive, naming that holder: the ask still
 // reaches it, since what is sent to it waits for it.
-func (s *server) loadAskReaches(ctx context.Context, askIDs []string) (map[string]askReach, error) {
-	reaches, err := scanAskReaches(ctx, s.deps.Store.Pool, askIDs)
+func (s *server) loadAskReaches(ctx context.Context, who model.Actor, askIDs []string) (map[string]askReach, error) {
+	reaches, err := scanAskReaches(ctx, s.deps.Store.Pool, who, askIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -171,8 +175,9 @@ func (s *server) loadAskReaches(ctx context.Context, askIDs []string) (map[strin
 
 // scanAskReaches reads every listed ask's claimant and route in one query and returns with the
 // pooled connection released; an empty id or route is none. A project document's ask joins no
-// issue, and an ask the query does not find keeps the zero askReach, so every key is null.
-func scanAskReaches(ctx context.Context, q queryer, askIDs []string) (map[string]askReach, error) {
+// issue, and an ask the query does not find, or who may not read (access.ItemOwnerClause), keeps the
+// zero askReach, so every key is null.
+func scanAskReaches(ctx context.Context, q queryer, who model.Actor, askIDs []string) (map[string]askReach, error) {
 	reaches := make(map[string]askReach, len(askIDs))
 	rows, err := q.Query(ctx, `
 		select a.id::text,
@@ -180,8 +185,8 @@ func scanAskReaches(ctx context.Context, q queryer, askIDs []string) (map[string
 			nullif(i.route, '')
 		from asks a
 		left join issues i on i.key = a.issue_key
-		where a.id = any($1::uuid[])
-	`, askIDs)
+		where a.id = any($1::uuid[]) and `+access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$2")+`
+	`, askIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("load ask reach: %w", err)
 	}
@@ -207,7 +212,7 @@ func (s *server) loadInboxAskReplyChains(ctx context.Context, q queryer, who mod
 	for _, askID := range askIDs {
 		replies[askID] = []model.Comment{}
 	}
-	rows, err := q.Query(ctx, inboxAskReplyChainsQuery, askIDs)
+	rows, err := q.Query(ctx, inboxAskReplyChainsQuery, askIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("load inbox ask replies: %w", err)
 	}
