@@ -205,8 +205,10 @@ conversionsGlobal[CONVERSIONS_KEY] = conversions;
  *  undefined when the read gave none; when the read gave them, what the people wrote in every item
  *  Dispatch sent inside the read's window (`SessionAnswersRead.words`) and where that window starts
  *  (`SessionAnswersRead.since`); when the read failed and gave the cached list instead, why it
- *  failed (`SessionAnswersRead.reason`, or for an older copy's list the failure its read line
- *  names, `placedLegacy`); and whether Dispatch answered it (`source: "fresh"`). */
+ *  failed, from one of two sources: this copy's read gives `SessionAnswersRead.reason`, and a list
+ *  an older copy rendered from its cache gives the sentence its read line names (`placedLegacy`),
+ *  which ends with the full stop the renderer adds; and whether Dispatch answered the read
+ *  (`source: "fresh"`). */
 export interface CarriedAnswers {
   readonly text: string | undefined;
   readonly words?: readonly string[] | undefined;
@@ -258,7 +260,8 @@ placementsGlobal[PLACEMENTS_KEY] = placements;
 /** The sessions, by `sessionManager` and then session id as `placements` keys them, whose kept
  *  bytes already hid a failed read that `SessionAnswersRequest.unshownFailure` was told of, and
  *  that no read of theirs has answered since. A session leaves it when one of its reads answers,
- *  so the next failure hidden that way is told again. On `globalThis` as `placements` is. */
+ *  or an older copy's list with no read line arrives (`placedLegacy`), so the next failure hidden
+ *  that way is told again. On `globalThis` as `placements` is. */
 const UNSHOWN_KEY: unique symbol = Symbol.for("legion.pi-envoy.session-answers-unshown.v1");
 const unshownGlobal = globalThis as typeof globalThis & {
   [UNSHOWN_KEY]?: WeakMap<object, Set<string>>;
@@ -266,14 +269,30 @@ const unshownGlobal = globalThis as typeof globalThis & {
 const unshown = unshownGlobal[UNSHOWN_KEY] ?? new WeakMap<object, Set<string>>();
 unshownGlobal[UNSHOWN_KEY] = unshown;
 
-/** `text` without the line naming the read that produced it, which `renderSessionAnswers` writes
- *  under the marker when it answers from the cache. Two texts whose rest is the same show the same
- *  items. */
+/** How the line naming the read that produced a list begins (`As read at <time>; this read failed:
+ *  <reason>`), which `renderSessionAnswers` writes on the list's second line, under the marker,
+ *  when it answers from the cache, and only then. */
+const READ_LINE_PREFIX = "As read at ";
+
+/** `text` without the line naming the read that produced it (`READ_LINE_PREFIX`). Two texts whose
+ *  rest is the same show the same items. */
 function withoutReadLine(text: string): string {
   const lines = text.split("\n");
-  return lines[1]?.startsWith("As read at ") === true
+  return lines[1]?.startsWith(READ_LINE_PREFIX) === true
     ? [lines[0], ...lines.slice(2)].join("\n")
     : text;
+}
+
+/** Why the read that produced `text` failed, as the line naming that read (`READ_LINE_PREFIX`)
+ *  says it: the sentence after `this read failed: `, with the full stop the renderer adds.
+ *  Undefined when `text` has no such line: a list rendered from a read Dispatch answered, or the
+ *  failure line. */
+function failedRead(text: string): string | undefined {
+  const line = text.split("\n")[1];
+  if (line?.startsWith(READ_LINE_PREFIX) !== true) return undefined;
+  const failed = "; this read failed: ";
+  const at = line.indexOf(failed);
+  return at < 0 ? undefined : line.slice(at + failed.length);
 }
 
 /** Whether `carried` is a list of what people wrote, rather than the failure line, which says the
@@ -414,7 +433,8 @@ function placeList(
   if (placed !== undefined && !showsNew(placed.carried, carried)) {
     const kept = keepPlaced(messages, placed);
     if (kept !== undefined) {
-      if (carried.reason !== undefined) {
+      // Placed bytes that are this read's own text name its failure, and the model reads that.
+      if (carried.reason !== undefined && carried.text !== placed.carried.text) {
         const told = unshown.get(request.session) ?? new Set<string>();
         unshown.set(request.session, told);
         if (!told.has(request.id)) {
@@ -447,11 +467,12 @@ export interface SessionAnswersRequest {
   readonly read: () => Promise<CarriedAnswers | undefined>;
   /** Told why this request's read failed (`CarriedAnswers.reason`) when that read gave the cached
    *  list, or an older copy's list names a failed read (`placedLegacy`), and the request keeps the
-   *  placed bytes, which do not name this read's failure: on the first such request of the
-   *  session, and not again until one of its reads has answered (`CarriedAnswers.answered`), so a
-   *  lasting failure, such as a Dispatch with no answers route, is told once. Nothing else that a
-   *  read gives is told here: a newer list, a retraction and the failure line each reach the
-   *  model. The extension logs it. */
+   *  placed bytes, which do not name this read's failure; not told when those bytes are this
+   *  read's own text, which names it. Told on the first such request of the session, and not again
+   *  until one of its reads has answered (`CarriedAnswers.answered`, or an older copy's list with
+   *  no read line), so a lasting failure, such as a Dispatch with no answers route, is told once.
+   *  Nothing else that a read gives is told here: a newer list, a retraction and the failure line
+   *  each reach the model. The extension logs it. */
   readonly unshownFailure: (reason: string) => void;
 }
 
@@ -537,8 +558,11 @@ export async function withSessionAnswers(
  * every request, already gave its list: that list moved where `placeList` puts it, with no read of
  * this copy's own. The older copy decided which requests carry one. A list it rendered from its
  * cache names the failed read on its second line (`As read at …; this read failed: …`); that
- * failure goes to `placeList` as the read's `reason`, so where the placed bytes stay and the line
- * leaves the request, `unshownFailure` is told it under the same rule as this copy's own reads.
+ * failure goes to `placeList` as the read's `reason` (`failedRead`), so where the placed bytes stay
+ * and the line leaves the request, `unshownFailure` is told it under the same rule as this copy's
+ * own reads. Every renderer writes a list without that line only for a read Dispatch answered, so
+ * such a list takes the session out of `unshown`, as this copy's own answered read does, and the
+ * next failure an older copy's list names is told again.
  */
 function placedLegacy(
   messages: readonly unknown[],
@@ -553,10 +577,10 @@ function placedLegacy(
   if (text === undefined || !added) return undefined;
   const recorded = conversions.get(request.session);
   const compacting = (typeof recorded === "object" && recorded.afterCut) || request.compacting();
-  const readLine = text.split("\n")[1] ?? "";
-  const failed = "; this read failed: ";
-  const at = readLine.startsWith("As read at ") ? readLine.indexOf(failed) : -1;
-  const reason = at < 0 ? undefined : readLine.slice(at + failed.length);
+  const reason = failedRead(text);
+  if (reason === undefined && text.startsWith(SESSION_ANSWERS_MARKER)) {
+    unshown.get(request.session)?.delete(request.id);
+  }
   const placed = placeList(messages.slice(0, -1), { text, reason }, request, compacting);
   decided.add(placed);
   return placed;

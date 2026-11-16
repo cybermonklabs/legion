@@ -547,6 +547,20 @@ test("a request an older copy already gave the list gets no second one and no re
 const CAPPED = `${SESSION_ANSWERS_MARKER}\nAs read at 2026-10-27T11:00:00.000Z; this read failed: Dispatch did not answer within 800 ms.\n\n2026-10-27T11:00:00.000Z · bob sent you a message\nAlso check the docs.\n\n1 older item left out to stay under 8,000 characters: run \`dispatch answers\` to read every one in full.`;
 const cappedList = { role: "user", content: [{ type: "text", text: CAPPED }], timestamp: 0 };
 
+// The list `LIST` as a copy renders it from its cache when a read fails, and the same list for a
+// read that failed for another reason.
+const CACHED = `${SESSION_ANSWERS_MARKER}\nAs read at 2026-10-27T11:00:00.000Z; this read failed: Dispatch did not answer within 800 ms.\n\n2026-10-27T10:00:00.000Z · alice answered your ask\nShip it.`;
+const cachedList = { role: "user", content: [{ type: "text", text: CACHED }], timestamp: 0 };
+const WAITING = CACHED.replace(
+  "Dispatch did not answer within 800 ms.",
+  "an earlier read is still waiting on Dispatch."
+);
+const waitingList = {
+  role: "user",
+  content: [{ type: "text", text: WAITING }],
+  timestamp: 0,
+};
+
 test("an older copy's list the cap shortened is re-rendered, not kept", async () => {
   const session = {};
   const fresh = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T11:00:00.000Z · bob sent you a message\nAlso check the docs.\n\n2026-10-27T10:00:00.000Z · alice answered your ask\nShip it.`;
@@ -604,7 +618,8 @@ test("a read with no text that gives words takes out a list an older copy placed
 
 // An older copy's list rendered from its cache names the read that failed. Over a placed list with
 // the same items it keeps the placed bytes, so that line leaves the request, and the failure it
-// names is told to `unshownFailure` instead, once, as this copy's own failed reads are.
+// names is told to `unshownFailure` instead, once, as this copy's own failed reads are. An older
+// copy's list with no read line names no failure, and tells nothing.
 test("an older copy's list naming a failed read, kept behind the placed bytes, tells that failure once", async () => {
   const session = {};
   const told: string[] = [];
@@ -615,37 +630,98 @@ test("an older copy's list naming a failed read, kept behind the placed bytes, t
     },
   };
   expect(await withSessionAnswers([skill, ask], request)).toEqual([skill, ask, list]);
-  const older = {
-    role: "user",
-    content: [
-      {
-        type: "text",
-        text: `${SESSION_ANSWERS_MARKER}\nAs read at 2026-10-27T11:00:00.000Z; this read failed: Dispatch did not answer within 800 ms.\n\n2026-10-27T10:00:00.000Z · alice answered your ask\nShip it.`,
-      },
-    ],
-    timestamp: 0,
-  };
   const turn = [skill, ask, readCall, readResult];
-  expect(await withSessionAnswers([...turn, older], request)).toEqual([
-    skill,
-    ask,
-    list,
-    readCall,
-    readResult,
-  ]);
+  const kept = [skill, ask, list, readCall, readResult];
+  expect(await withSessionAnswers([...turn, list], request)).toEqual(kept);
+  expect(told).toEqual([]);
+  expect(await withSessionAnswers([...turn, cachedList], request)).toEqual(kept);
   expect(told).toEqual(["Dispatch did not answer within 800 ms."]);
   // The next such list keeps the placed bytes too, and is not told again.
   const tools = [...turn, grepCall, grepResult];
-  expect(await withSessionAnswers([...tools, older], request)).toEqual([
-    skill,
-    ask,
-    list,
-    readCall,
-    readResult,
+  expect(await withSessionAnswers([...tools, cachedList], request)).toEqual([
+    ...kept,
     grepCall,
     grepResult,
   ]);
   expect(told).toEqual(["Dispatch did not answer within 800 ms."]);
+});
+
+// Every renderer writes a list with no read line only for a read Dispatch answered, so an older
+// copy's list with no read line is an answered read: when an older copy decides every request of
+// a session, the next failure after it is told too.
+test("an older copy's list with no read line lets the next failure it names be told again", async () => {
+  const session = {};
+  const told: string[] = [];
+  const request = {
+    ...requestOf(readingEach(LIST), noBranch, session),
+    unshownFailure: (reason: string) => {
+      told.push(reason);
+    },
+  };
+  expect(await withSessionAnswers([skill, ask, list], request)).toEqual([skill, ask, list]);
+  const turn = [skill, ask, readCall, readResult];
+  const tools = [...turn, grepCall, grepResult];
+  for (const older of [cachedList, list, waitingList]) {
+    await withSessionAnswers([...turn, older], request);
+  }
+  expect(await withSessionAnswers([...tools, list], request)).toEqual([
+    skill,
+    ask,
+    list,
+    ...tools.slice(2),
+  ]);
+  expect(told).toEqual([
+    "Dispatch did not answer within 800 ms.",
+    "an earlier read is still waiting on Dispatch.",
+  ]);
+});
+
+// A list placed from a cached read names that read's failure. A later read that fails the same
+// way renders the same text, and the request then carries this read's failure itself, so nothing
+// is told; a read that fails for another reason is told once.
+test("a cached list placed with this read's own text tells nothing; another failure after it is told once", async () => {
+  const session = {};
+  const told: string[] = [];
+  // `CACHED` and `WAITING` show the items of `LIST`, so their reads give its words.
+  const words = carry(LIST)?.words;
+  const timedOut = {
+    text: CACHED,
+    words,
+    since: SINCE,
+    reason: "Dispatch did not answer within 800 ms",
+  };
+  const waiting = {
+    text: WAITING,
+    words,
+    since: SINCE,
+    reason: "an earlier read is still waiting on Dispatch",
+  };
+  const request = {
+    ...requestOf(readingEach(timedOut, timedOut, waiting), noBranch, session),
+    unshownFailure: (reason: string) => {
+      told.push(reason);
+    },
+  };
+  expect(await withSessionAnswers([skill, ask], request)).toEqual([skill, ask, cachedList]);
+  const turn = [skill, ask, readCall, readResult];
+  expect(await withSessionAnswers([...turn], request)).toEqual([
+    skill,
+    ask,
+    cachedList,
+    readCall,
+    readResult,
+  ]);
+  expect(told).toEqual([]);
+  const tools = [...turn, grepCall, grepResult];
+  for (let call = 0; call < 2; call += 1) {
+    expect(await withSessionAnswers([...tools], request)).toEqual([
+      skill,
+      ask,
+      cachedList,
+      ...tools.slice(2),
+    ]);
+  }
+  expect(told).toEqual(["an earlier read is still waiting on Dispatch"]);
 });
 
 // A person's own paragraph can read like the line the renderer writes when the cap dropped older

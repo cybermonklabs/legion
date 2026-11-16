@@ -1076,11 +1076,14 @@ read that fails but gives the cached list is a list: with the same items it keep
 bytes, which do not name this read's failure; the extension logs that read's reason with
 `logger.warn` instead (`unshownFailure`), on the session's first such request and not again until
 one of its reads has answered, so a lasting failure, such as a Dispatch with no answers route, is
-one line beside that Dispatch's own notice. A list an older copy placed after the last message
-names its own failed read on its second line (`As read at …; this read failed: …`); where it
-keeps the placed bytes, that line leaves the request, and `placedLegacy` hands its failure on as
-the reason, logged under the same rule. The state is each session's, by `sessionManager` and
-session id as the placements are (on `globalThis` under
+one line beside that Dispatch's own notice. Nothing is logged when the placed bytes are this
+read's own text, which names its failure. A list an older copy rendered from its cache, placed
+after the last message, names its failed read on its second line (`As read at …; this read
+failed: …`); where it keeps the placed bytes, that line leaves the request, and `placedLegacy`
+hands its failure on as the reason (`failedRead`), the sentence with its full stop. An older
+copy's list with no such line comes only from a read Dispatch answered, so it counts as an
+answered read, and that path is logged under the same rule. The state is each session's, by
+`sessionManager` and session id as the placements are (on `globalThis` under
 `Symbol.for("legion.pi-envoy.session-answers-unshown.v1")`). The extension logs no newer list,
 no retraction and no read that answers, since those reach the model. A read that gives no text
 leaves a placed list where it is rather than taking it out, and takes a placed failure line out
