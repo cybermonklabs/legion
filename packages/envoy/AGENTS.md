@@ -2646,7 +2646,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   done = `status='done'`), `active_at` (the subtree's newest `updated_at`), and its own `external_links`, still ordered by key.
 
 - Every issue has a nullable `assignee`: the **lowercase** email of the person every ask on it waits on until somebody hands that ask to another person, or, while it holds nobody, its project's default assignee (`issues.assignee`, migration `0034`, indexed on open issues).
-  Both identity implementations name a person by lowercase email, so `model.CanonicalLogin` (`strings.ToLower(strings.TrimSpace(login))`) is the stored form and plain `=` compares it;
+  Both identity implementations name a person by lowercase email, so `model.CanonicalLogin` (`fold.ASCII(strings.TrimSpace(login))`, which lowers ASCII letters alone, so no Unicode letter such as U+212A KELVIN SIGN is folded onto another person's `k`) is the stored form and plain `=` compares it;
   the SPA lowercases the `/auth/whoami` viewer once and compares exact.
   `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` accept `assignee` (the PATCH's `json.RawMessage` tri-state:
   absent leaves it, `null` clears, a string is canonicalised and must name a row of `people` (migration `0068`:
@@ -3049,7 +3049,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A `comment.created` payload that replies to an ask carries `ask_state` (the ask's state at posting time) beside `ask_question`, so an agent can tell a clarification request on its open ask from discussion after the answer.
 
 - `GET /api/v1/inbox?assignee=me|unassigned|<email>` (one value, combining with `project`) narrows the inbox, which needs the `person` scope, by the person each ask waits on (`inboxAssigneeFilter`, `api/inbox.go`):
-  `me` is the caller's lowercase email; an `<email>` is canonicalised (`strings.ToLower(strings.TrimSpace(...))`) before it is looked up in `people`, so a shared `?assignee=Alice@example.com` link never 400s, while an email nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`;
+  `me` is the caller's lowercase email; an `<email>` is canonicalised (`model.CanonicalLogin`) before it is looked up in `people`, so a shared `?assignee=Alice@example.com` link never 400s, while an email nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`;
   `me` / `<email>` keep the asks whose `coalesce(a.asked_of, i.assignee, p.default_assignee)` is that login — the asks handed to them, the asks on the issues assigned to them that nobody has handed on, and, for the person a project defaults to, the asks nobody has handed on that project's issues nobody holds and on its documents (`askedOfPersonExpression` in `api/ask_rows.go`, the one expression this filter, `listOpenAsks` and the Replies read's exclusion all share); `unassigned` keeps the asks the expression names nobody for, which every project naming a default assignee leaves none of; no value returns everything.
   This is the contract for shareable links and humans' scripts: the SPA asks for no assignee at all.
   It fetches the unfiltered inbox once (the one `["inbox"]` query every surface shares) and splits it client-side by the reader's own `?assignee=` filter, whose values are repeated on the page's URL and are a lowercase login or the literal `unassigned` (`features/refs/routes.ts`, `inAssigneeFilter` in `features/inbox/sections.ts`):
@@ -5504,16 +5504,46 @@ the outbox marks them published without republishing an agent-topic envelope, wh
 They are excluded from global `/search` and issue reference closures.
 Targeted issue `message.created` skips bound-route and author fan-out because the synchronous listener call records the sent or failed attempt instead of blind republishing.
 
-`/v1` accepts two bearer kinds: the `ENVOY_API_TOKEN` shared token, and
+`/v1` accepts three bearer kinds: the `ENVOY_API_TOKEN` shared token;
 — when `ENVOY_OIDC_ISSUER` and `ENVOY_OIDC_AUDIENCE` are both set, one without the other being a startup refusal naming the missing variable
-— a projected service-account token that issuer signed for that audience.
-The exempt paths (`/healthz`, `/metrics`, `/webhook/*`) require neither, and `/livez`, which the mux answers in front of `apiAuth`, never reaches the check.
-`/v1` is open only when neither is configured, so an empty `ENVOY_API_TOKEN` opens it only while no verifier is configured, and a listener whose address is not loopback refuses to start with neither unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is set.
+— a projected service-account token that issuer signed for that audience;
+and — when `ENVOY_OIDC_GOOGLE_AUDIENCE` and `ENVOY_OIDC_GOOGLE_ACCOUNTS` are both set — a Google identity token.
+`ENVOY_OIDC_ACCOUNTS`, `system:serviceaccount:<namespace>:<name>` subjects separated by commas or white space, holds the projected-token branch to the subjects it lists:
+any pod of the cluster can project a token for any audience, and that branch names no session, so a verified token alone does not say which caller it is.
+Unset or empty, the branch admits every subject the issuer signed for, as it did before the list existed;
+set beside no `ENVOY_OIDC_ISSUER` it refuses the start naming the pair it needs, and holding an entry of any other shape it refuses the start naming the entry.
+A value that names no account (only blanks or commas) refuses the start naming the setting, so a list emptied by mistake never admits every pod.
+Both account lists take commas and white space alike between entries (`splitAccountList`), so `A, B`, `A,B` and `A B` each name A and B, as `ENVOY_ALLOWED_HOSTS` beside them is written with commas;
+a comma that leaves an entry empty (a leading or trailing comma, or two commas with nothing between them) refuses the start naming the setting and which entry is empty, so no list starts holding an entry no token carries.
+An unlisted subject gets the same 401 as every other refused credential, and its warning carries the class `not_listed` and the subject as `account`.
+The Google pair is for a caller on Google's platform that holds no Kubernetes token, such as the alert sink on Cloud Run.
+The listener admits a token that Google (`https://accounts.google.com`, `oidc.GoogleIssuer`) signed for `ENVOY_OIDC_GOOGLE_AUDIENCE`
+and that names, in its `email` claim, an account `ENVOY_OIDC_GOOGLE_ACCOUNTS` lists (addresses separated by commas or white space, both sides lowered in ASCII alone by `fold.ASCII`, so no Unicode fold makes another address a listed one) whose address Google verified,
+so the caller asks its metadata server for the token with `format=full`, the form that carries the address (`oidc.Verifier.VerifyGoogleIdentity`).
+Every claim a caller is admitted on, the address and `email_verified` among them, is read from the payload the verified signature covers (`oidc.Verifier.VerifyClaims`, `IDToken.Claims`), never from the token's text;
+a token in any serialization but the compact one (the JWS JSON form go-jose also verifies, whose text can carry an unsigned claim set beside the signed members) is refused as `malformed` before its signature is checked; white space in a compact token is removed first, as go-jose removed it, so such a token verifies as it always did.
+One of the pair without the other refuses the start, naming the missing one, and so does an entry that is not an address.
+A refused Google token is one `listener: Google identity token rejected` warning carrying the class
+— `oidc.Reason`'s, `no_email`, `email_not_verified` or `not_listed` —
+the path, and, for a token that verifies, the account it names, never the token.
+The token's own issuer decides which of the two identity-token branches judges it (`oidc.Verifier.Issues`, which takes Google's scheme-less `accounts.google.com` as Google's too, as the verifier does), and a listener that takes only one of them gives it every token.
+The exempt paths (`/healthz`, `/metrics`, `/webhook/*`) require none of them, and `/livez`, which the mux answers in front of `apiAuth`, never reaches the check.
+`/v1` is open only when none is configured, so an empty `ENVOY_API_TOKEN` opens it only while no verifier is configured, and a listener whose address is not loopback refuses to start with none unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is set.
 That flag is how an operator declares that something else fences the listener's port.
 The clustered hub's session listener is the deployment in this repository that sets it: it binds `0.0.0.0` in a pod of its own, behind a NetworkPolicy that admits TCP 9020 from the tailnet entry's pods alone (`infra/gcp/clusteredhub_listener.go`).
-The boot log names what is on: `shared token`, `oidc <issuer>`, both, or `disabled`.
+The boot log names what is on, joined by `and`: `shared token`, `oidc <issuer>` (with ` for <subjects>` when `ENVOY_OIDC_ACCOUNTS` is set), `google <audience> for <accounts>`, and the broker's credential below; or `disabled`.
 
-Beside the two bearers it takes one credential that is not a bearer: an access token the secrets broker issued, presented under RFC 9449's DPoP scheme as `Authorization: DPoP <token>` with a `DPoP:` proof header (`internal/brokertoken`, `cmd/listener/brokerauth.go`).
+Every request `/v1` admits is counted in `envoy_listener_requests_total{credential,path}` on `/metrics`.
+`credential` is the one that admitted it:
+`shared_token`, `none` (the open `/v1`, which admits a request that presents no credential it knows), `oidc`, `google` or `broker`.
+`path` is the pattern of the route that serves the request (`startingGate.route`), never the path itself, so a session id never becomes a series of its own;
+before `/v1` opens, and for a path no route matches, it is the pattern that routed the request to the gate, `/v1` or `/v1/`.
+A refused request is counted nowhere.
+`shared_token` and `none` are the census the removal of the shared token and of the open `/v1` waits on: each must read zero on every deployed listener for 72 hours before they go.
+An admission on either also logs a warning, at most once a minute for each:
+`listener: request admitted on the shared token` or `listener: request admitted with no credential`, carrying the credential, the route, the caller's address (`remote`), and `held`, how many admissions of that credential it held back since its last line.
+
+Beside the bearers it takes one credential that is not a bearer: an access token the secrets broker issued, presented under RFC 9449's DPoP scheme as `Authorization: DPoP <token>` with a `DPoP:` proof header (`internal/brokertoken`, `cmd/listener/brokerauth.go`).
 Four variables configure it, all or none, and any of them set without the rest is a startup refusal naming what is missing:
 
 | Variable | Form | Default |
@@ -5524,7 +5554,7 @@ Four variables configure it, all or none, and any of them set without the rest i
 | `ENVOY_PUBLIC_URL` | this listener's own origin, an absolute http(s) URL with no path, which a proof's `htu` is checked against plus the request's path and never a forwarded header | unset |
 
 The account identity is the file or the audience and never both: the broker resolves the calling service from whichever token it is presented (`BROKER_API_ACCOUNTS`, which takes a Kubernetes subject or a Google account's email).
-Configuring the credential opens nothing and closes nothing: a request presenting no token is judged exactly as it was before it existed, so an open listener still serves one, the `Host` and `Content-Type` fences still apply, and the non-loopback fence still counts only the two bearers — a broker token says who is calling, never whether `/v1` may be reached.
+Configuring the credential opens nothing and closes nothing: a request presenting no token is judged exactly as it was before it existed, so an open listener still serves one, the `Host` and `Content-Type` fences still apply, and the non-loopback fence still counts only the bearers — a broker token says who is calling, never whether `/v1` may be reached.
 A listener with none of the four variables set takes no such credential and reads `Authorization: DPoP` as it read every header it did not know before this credential existed: the open listener serves the request with no session bound, and a listener that requires a bearer answers the 401 it always answered, with nothing asked of any broker and no refusal logged.
 That is what keeps the no-bearer listeners a GCP VM and the clustered hub run serving their clients, which send `Authorization: DPoP` to whatever listener they are pointed at whenever they have a broker and an identity to trade and no Envoy bearer is set (`packages/envoy-client/src/envoy-settings.ts`).
 The VM's listener is on loopback and the clustered hub's serves off loopback behind its NetworkPolicy, and neither takes a bearer.
@@ -6917,6 +6947,8 @@ A TypeScript client's trade of a person's sign-in sends no parameter, since the 
 It proves the sign-in's box key, so it re-uses the one credential that sign-in holds rather than minting another (`oauth.Provider.personCredential`), and each such trade writes one `launcher_credential.token_login` audit row.
 
 A person's sign-in on a machine is a row of `person_signins` (migration 0025, `internal/broker/store/person_signin.go`): the person, the RFC 7638 thumbprint of the box key `agent-secrets login` made and keeps with Google's refresh token, the machine's Google account, and the times it was made, last used and revoked, under a unique index on the person and the thumbprint that counts a revoked row too.
+The person is stored and compared exactly as the caller folded it (`fold.ASCII`, through `oidc.WorkspaceLogin` for the trade and `record.CanonicalLogin` for the list and the revoke): the statements apply no SQL `lower()` to it, since Postgres lowers by the database's collation, which under `en_US.utf8` maps U+212A KELVIN SIGN onto `k`, and the table's own check refuses any login that is not lowercase.
+The machine account is still lowered there.
 The first trade of a person and a box key writes the row, in the exchange's own transaction (`store.RecordPersonSignIn`, `oauth.ExchangeConfig.PersonSignIns`), and every later trade of that pair from that same machine moves its last use;
 a thumbprint that is simply new is a second sign-in of its own, which is the person signing in on a second box, and a thumbprint the person has **revoked** is refused for good — the revoked row keeps that pair's slot, so the trade's own insert conflicts with it and is refused by the update's `where revoked_at is null` rather than by a read a concurrent revoke could commit behind, and the refusal names `agent-secrets login`.
 A row's `machine_account` never changes: the credential a sign-in holds is keyed by the person, the machine and the key together (`exchange.PersonSubject`), so a row that followed its key to another machine would ask for a subject no live credential has and every trade of it from then on would collide on `launcher_credentials_live_key`;
@@ -7110,6 +7142,16 @@ a name withheld from the session that its request got automatically is judged as
 and a grant the model judge decided, whose `decided_by` `record.JudgeLogin` reads, is held to the rules rather than to a login (`judgeStillDecides`): the rules in force must still give that name a judge of at least the seconds the grant was given, so a secret handed to another person leaves a judged grant alone, while a rules file that stops letting the judge decide the name, or lowers it below what the grant holds, ends it), and that no granted name's `max-grant` is now shorter than the request's lifetime (`overMaxGrant`, which ends the grant for good, `GRANT_NOT_LIVE`, as a moved source does, through `Machine.endGrant`;
 `currentPolicyAdmits` refuses approving such a pending request `NOT_APPROVER`);
 a source missing from the secrets store is `404 SECRET_NOT_IN_STORE`, and so is one scheduled for deletion, which Secrets Manager keeps until its recovery window passes and answers `GetSecretValue` for with `InvalidRequestException` rather than `ResourceNotFoundException` (`secrets.AWS.Read` reads both as `ErrNotFound`, `secrets.GCP.Read` reads `NOT_FOUND` and a disabled or destroyed latest version's `FAILED_PRECONDITION` the same way, and `secrets.Local` answers each as it does).
+Each release writes one `grant.used` audit row and then one INFO line, `broker: released a grant` (`requests.ReleasedMessage`, `auditGrantUsed`), both naming the reason of the grant's request, which `checkRelease` reads with the grant.
+The session's release (`Values`, which takes a `ReleaseCall`) adds the command it starts, which the exec form sends as `command` in the release's body, cut first to the 32 arguments of 256 bytes the broker records (`record.ClipCommand`), so no command takes the body past the broker's 1 MiB cap.
+The broker cuts each argument again (`record.ClipArgument`) before it redacts, so the redaction reads no more of a body than a release records, then replaces every secret `redactArgument` (`redact.go`) names with `[redacted]`; a secret the cut ran through is caught by the rule at the cut (`record.ReachesTheCut`).
+`redactArgument` marks every byte before it writes, so two secrets that overlap are one run, and a marker it writes is never matched again.
+What it names: each value of `handedOut` of eight bytes or more, which is each released name's whole value, each slot of it as `airlockSplitOf` takes it apart (a minted document's tokens and not its other fields), every string of a stored JSON value, and each placeholder and filled value of a name the airlock holds back; every match of `knownCredential` (GitHub tokens, AWS access key ids, Google OAuth access tokens, Slack tokens, a PEM private key), whatever its source; and, in an argument as long as the client's cut, an end that starts a value or a token shape.
+A secret of no such kind is logged as typed, which `ReleasedMessage`, the operator guide and the exec help say, and `GET /v1/grant-log` answers each `grant.used` detail, command and call reason included.
+The session's release also adds `call_reason`, the reason its own call gave, which the exec form sends as `reason` in the release's body, where it differs from the grant's: a session that asks again for names it holds a live grant of gets that grant back (`reuseLiveGrant`), and its new reason goes into no request row.
+The broker holds it to a request's rules with `record.Sanitize`, which the model judge's text goes through too.
+The proxy's release (`AirlockValues`) adds `airlock=true` in place of both, since it starts no command.
+The command and the call's reason are the session's own word: they decide nothing about the release, a client from before the fields sends neither and records an empty command, and a broker from before either field refuses a body holding it as `400 INVALID_NARROWING` naming the unknown field, which the CLI answers by sending the same release once more without both (`callRefused`).
 Migration 0009 defaults `request_secrets.delivery` to `inject`, which this broker neither writes nor reads, so a binary from before it can still be rolled back to.
 `RevokeGrant` lets a session end only its own grant (session proof);
 `RevokeByApprover` ends a grant on a person's login (a Dispatch email, or the operator of the machine login calling `/v1/operator/grants/{id}/revoke`), allowed when that login is the grant's approver or its enrollment's operator, and allowed to every signed-in person for a grant whose approver is the sentinel `anyone` (`mayRevoke`, which also answers whether it is the operator, else `403 NOT_APPROVER`).
