@@ -88,6 +88,7 @@ func sweepSuggestionOutcomes(t *testing.T, srv *server) error {
 // it has gone quiet.
 type idleSweep struct {
 	handler        http.Handler
+	database       *store.Store
 	server         *server
 	counter        *storetest.StatementCounter
 	target, source string
@@ -132,12 +133,14 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 	case <-time.After(10 * time.Second):
 		t.Fatal("the hub did not connect within 10s")
 	}
-	waitUntil(t, 10*time.Second, "the boot pass to set the cursor", func() bool { return outcomeCursor(t, database) != nil })
+	// The boot pass awaits the event horizon before it sets the cursor (suggestionOutcomePass), and
+	// a transaction open anywhere on the instance holds that back, so the wait is the horizon's.
+	pollBehindHorizon(t, database, "the boot pass to set the cursor", func() bool { return outcomeCursor(t, database) != nil })
 	// The hub's signal after its LISTEN earns one more pass, no sooner than the gap after the boot
 	// pass began; after it the loop is idle.
 	time.Sleep(time.Until(started.Add(idleSweepGap + 300*time.Millisecond)))
 	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, 10*time.Second)
-	return idleSweep{handler: handler, server: srv, counter: counter, target: target, source: source}
+	return idleSweep{handler: handler, database: database, server: srv, counter: counter, target: target, source: source}
 }
 
 // With no event written, the sweep makes no statement at all - no pass on a timer, no lease
@@ -157,14 +160,20 @@ func TestTheSuggestionSweepMakesNoStatementWithNoEvents(t *testing.T) {
 }
 
 // An event the suggestion's actor writes on the suggested issue wakes the idle sweep through its
-// notification on a real pglisten.Hub, and the suggestion is marked acted_on within seconds.
+// notification on a real pglisten.Hub, and the suggestion is marked acted_on by the first pass
+// whose safe horizon has passed that event: the sweep reads the log only up to it, so the wait is
+// the horizon's.
 func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *testing.T) {
 	sweep := startIdleSweep(t, "OWAKE", idleSweepGap)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 	time.Sleep(10 * time.Millisecond) // the event must postdate the suggestion row
 
 	postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
-	waitUntil(t, 5*time.Second, "the suggestion to be marked acted_on", func() bool {
+	// A pass judges by the message once it is settle old by the database's clock, which the pass
+	// reads every age by, and once the pass's safe horizon has passed it. The first is waited out
+	// here, so what the wait below waits on is the horizon alone.
+	awaitEventSettled(t, sweep.database, lastEventID(t, sweep.database), idleSweepGap)
+	pollBehindHorizon(t, sweep.database, "the suggestion to be marked acted_on", func() bool {
 		return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome == "acted_on"
 	})
 	if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Detail != "the suggested issue was updated directly" {
@@ -185,7 +194,10 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	postOutcomeMessage(t, sweep.handler, sweep.source, "alice", "Looking into this here first.")
 	time.Sleep(300 * time.Millisecond)
 	postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
-	waitUntil(t, 10*time.Second, "the suggestion to be judged", func() bool {
+	// The settle waited out on the database's clock, which the pass reads every age by; then the
+	// horizon alone, which the pass reads up to.
+	awaitEventSettled(t, sweep.database, lastEventID(t, sweep.database), settle)
+	pollBehindHorizon(t, sweep.database, "the suggestion to be judged", func() bool {
 		return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome != "ignored"
 	})
 	if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Outcome != "acted_on" {

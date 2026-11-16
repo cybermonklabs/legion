@@ -21,11 +21,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // The tests that read GET /auth/whoami's event_head off a real event log open a database of their
@@ -44,7 +44,7 @@ func standInEventLog(ctx *AppContext, head int64) {
 // table, as main's are: a header names a person by recording them there, and a project create
 // names its default from that same table (allowedLogin), so an in-memory store here would leave
 // the person the header names unknown to the create. Its event horizon warns of a stall at
-// testHorizonStallWarning, as a cmd/dispatch test process's does, so a wait on the event feed
+// horizontest.StallWarning, as a cmd/dispatch test process's does, so a wait on the event feed
 // (waitEventsStart) hears that the horizon is held inside its own patience.
 func storeRouter(t *testing.T, database *store.Store) http.Handler {
 	t.Helper()
@@ -60,8 +60,8 @@ func storeRouter(t *testing.T, database *store.Store) http.Handler {
 		Docs:              documents,
 		Events:            broker,
 		Lifetime:          t.Context(),
-		HorizonStallAfter: testHorizonStallWarning,
-		HorizonWarnEvery:  testHorizonStallWarning,
+		HorizonStallAfter: horizontest.StallWarning,
+		HorizonWarnEvery:  horizontest.StallWarning,
 	})
 	if err != nil {
 		t.Fatalf("build context: %v", err)
@@ -145,10 +145,6 @@ func TestWhoamiCarriesTheNewestEventID(t *testing.T) {
 // answer, before the subscription -- reaches it during catch-up, and the subscription's
 // events_start names that head.
 func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testing.T) {
-	// The router's event horizon warns of a stall through the default logger, and the wait for
-	// the events_start reads those warnings (waitEventsStart).
-	logged := &logtest.Recorder{}
-	logtest.SetDefault(t, logged)
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)
 	server := httptest.NewServer(handler)
@@ -193,7 +189,7 @@ func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testi
 		}
 	}
 
-	data := waitEventsStart(t, conn, logged, database.Pool.Config().ConnConfig.Database)
+	data := waitEventsStart(t, conn, database.Pool.Config().ConnConfig.Database)
 	var start api.LiveEventsStart
 	if err := json.Unmarshal(data, &start); err != nil || start.Type != "events_start" || start.Sub != "events" || start.Since != head {
 		t.Fatalf("first frame = %s (%v), want events' events_start from whoami's head %s", data, err, head)
@@ -591,10 +587,6 @@ func TestWhoamiDoesNotSendAPageToReplayTheWholeLogWhileAWriteFromBeforeBootIsOpe
 // horizon the process before it persisted is final, so whoami answers that at once, below the open
 // event, rather than waiting for the insert or answering 503.
 func TestWhoamiAnswersThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(t *testing.T) {
-	// The horizon below warns of a stall through the default logger, and the wait for its
-	// persisted value reads those warnings (waitBehindHorizon).
-	logged := &logtest.Recorder{}
-	logtest.SetDefault(t, logged)
 	database := storetest.Open(t)
 	ctx := t.Context()
 	for _, key := range []string{"ONE", "TWO"} {
@@ -608,9 +600,9 @@ func TestWhoamiAnswersThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(
 	newest := newestEventID(t, database)
 	before := events.NewHorizon(database.Pool)
 	before.PersistProven()
-	before.SetStallWarning(testHorizonStallWarning, testHorizonStallWarning)
-	if err := waitBehindHorizon(t, fmt.Sprintf("a persisted horizon of %d", newest), persistedThrough(ctx, before, newest),
-		logged, database.Pool.Config().ConnConfig.Database); err != nil {
+	before.SetStallWarning(horizontest.StallWarning, horizontest.StallWarning)
+	if err := horizontest.WaitInProcess(t, fmt.Sprintf("a persisted horizon of %d", newest), horizontest.PersistedThrough(ctx, before, newest),
+		database.Pool.Config().ConnConfig.Database); err != nil {
 		t.Fatal(err)
 	}
 

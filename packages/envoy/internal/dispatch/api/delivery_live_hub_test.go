@@ -335,17 +335,14 @@ func (r *hubRig) cursors() (changeSeq, eventCursor int64) {
 	return r.changeCursor(), r.eventsThrough()
 }
 
-// waitForEventCursor waits until the hub holds every event through want. The wait is generous: an
-// open write anywhere on the test cluster holds back the safe horizon the relay publishes up to.
+// waitForEventCursor waits until the hub holds every event through want. The relay publishes an
+// event to the hub only once the server's event horizon has passed it, and an open write anywhere
+// on the Postgres instance holds that back, so the wait is the horizon's (pollBehindHorizon).
 func (r *hubRig) waitForEventCursor(t *testing.T, want int64, what string) {
 	t.Helper()
-	var got int64
-	if !testwait.Holds(eventFeedWait, 10*time.Millisecond, func() bool {
-		got = r.eventsThrough()
-		return got >= want
-	}) {
-		t.Fatalf("the hub holds the event log through %d after %s, want %d (%s)", got, eventFeedWait, want, what)
-	}
+	pollBehindHorizon(t, r.database, fmt.Sprintf("the hub's event log through %d (%s)", want, what), func() bool {
+		return r.eventsThrough() >= want
+	})
 }
 
 // waitNoRecompute waits until the hub has begun or ended no recompute for quiet. It counts no
@@ -407,12 +404,19 @@ func (r *hubRig) count(since int, match func(deliveryHubNote) bool) int {
 	return n
 }
 
-// waitFor waits up to within for a note since mark that matches.
+// waitFor waits up to within for a note since mark that matches; what names the note.
 func (r *hubRig) waitFor(t *testing.T, since int, within time.Duration, what string, match func(deliveryHubNote) bool) {
 	t.Helper()
 	if !testwait.Holds(within, 10*time.Millisecond, func() bool { return r.count(since, match) > 0 }) {
-		t.Fatalf("no %s within %s", what, within)
+		t.Fatalf("%s: no such note of the hub's within %s", what, within)
 	}
+}
+
+// waitForEvent waits for a note since mark that matches, made as the hub acted on what its event
+// feed carried: that feed stands behind the server's event horizon, so the wait is the horizon's.
+func (r *hubRig) waitForEvent(t *testing.T, since int, what string, match func(deliveryHubNote) bool) {
+	t.Helper()
+	pollBehindHorizon(t, r.database, what, func() bool { return r.count(since, match) > 0 })
 }
 
 func recomputeBegin(cause string) func(deliveryHubNote) bool {
@@ -453,6 +457,13 @@ func (c *fakeLiveConn) next(t *testing.T, within time.Duration, what string) any
 	}
 }
 
+// eventNext is the next frame the conn is sent once the hub has acted on an event of its feed,
+// which stands behind database's event horizon, so the wait is the horizon's.
+func (c *fakeLiveConn) eventNext(t *testing.T, database *store.Store, what string) any {
+	t.Helper()
+	return waitBehindHorizon(t, database, what, c.frames)
+}
+
 // none fails when the conn is sent a frame within within.
 func (c *fakeLiveConn) none(t *testing.T, within time.Duration, after string) {
 	t.Helper()
@@ -478,6 +489,18 @@ func (c *fakeLiveConn) snapshot(t *testing.T, within time.Duration, sub string) 
 func (c *fakeLiveConn) delta(t *testing.T, within time.Duration, sub string) DeliveryLiveDelta {
 	t.Helper()
 	frame := c.next(t, within, "a delta of "+sub)
+	delta, ok := frame.(DeliveryLiveDelta)
+	if !ok || delta.Sub != sub {
+		raw, _ := json.Marshal(frame)
+		t.Fatalf("frame = %s, want a delta of %s", raw, sub)
+	}
+	return delta
+}
+
+// eventDelta is eventNext, which must be a delta of sub.
+func (c *fakeLiveConn) eventDelta(t *testing.T, database *store.Store, sub string) DeliveryLiveDelta {
+	t.Helper()
+	frame := c.eventNext(t, database, "a delta of "+sub)
 	delta, ok := frame.(DeliveryLiveDelta)
 	if !ok || delta.Sub != sub {
 		raw, _ := json.Marshal(frame)
@@ -1077,7 +1100,7 @@ func TestAnIssueTitleChangeReachesPagesThatNameTheIssue(t *testing.T) {
 	rig.settle(t)
 	start := rig.mark()
 	patchHubIssue(t, rig.handler, named, map[string]any{"title": "Ship the widgets"})
-	delta := conn.delta(t, eventFeedWait, "names")
+	delta := conn.eventDelta(t, rig.database, "names")
 	if got := liveMapValues(t, delta, "issue_titles"); got[named] != "Ship the widgets" {
 		t.Fatalf("the delta's issue_titles = %v, want %s retitled", got, named)
 	}
@@ -1103,7 +1126,7 @@ func TestAParentsComponentChangeReachesPagesHoldingItsChildren(t *testing.T) {
 
 	// The child inherits what its parent chooses.
 	patchHubIssue(t, rig.handler, parent, map[string]any{"components": map[string]any{"mode": "explicit", "ids": []string{"api"}}})
-	delta := conn.delta(t, eventFeedWait, "t")
+	delta := conn.eventDelta(t, rig.database, "t")
 	if got := liveUpsertIDs(t, delta, "prs"); !slices.Equal(got, []string{"acme/widgets#1"}) {
 		t.Fatalf("the parent's component change upserts %v, want the child's pull request", got)
 	}
@@ -1148,7 +1171,7 @@ func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 	if err := rig.database.Pool.QueryRow(t.Context(), `select max(id) from events`).Scan(&newest); err != nil {
 		t.Fatalf("read the newest event: %v", err)
 	}
-	rig.waitFor(t, start, 3*time.Second, "the retitle on the hub's feed", func(note deliveryHubNote) bool {
+	rig.waitForEvent(t, start, "the retitle on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == newest
 	})
 	releaseOnce()
@@ -1213,7 +1236,7 @@ func TestASessionWriteDuringAViewsReadThatItsAnswerDoesNotShowRecomputesNothing(
 	start := rig.mark()
 	written := appendHubEvent(t, rig, projectOwner("HUB").event("user_state.updated",
 		model.Actor{Kind: "session", ID: "session-not-shown"}, map[string]any{}))
-	rig.waitFor(t, start, 3*time.Second, "the session's event on the hub's feed", func(note deliveryHubNote) bool {
+	rig.waitForEvent(t, start, "the session's event on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == written.ID
 	})
 	releaseOnce()
@@ -1296,7 +1319,7 @@ func TestAnUnownedP0ChangeReachesEveryTimelineAndMeasuresView(t *testing.T) {
 	} {
 		step.act()
 		for range 2 {
-			delta, ok := conn.next(t, 3*time.Second, "each view's delta after "+step.name).(DeliveryLiveDelta)
+			delta, ok := conn.eventNext(t, rig.database, "each view's delta after "+step.name).(DeliveryLiveDelta)
 			if !ok {
 				t.Fatalf("after %s: want a delta for each view", step.name)
 			}
@@ -1324,7 +1347,7 @@ func TestAnArchitectureSyncReachesEveryView(t *testing.T) {
 	start := rig.mark()
 	appendHubEvent(t, rig, projectOwner("HUB").event("architecture.synced", model.Actor{Kind: "system", ID: "architecture-importer"}, map[string]any{"commit": "c2"}))
 	for _, kind := range []string{deliveryLiveTimeline, deliveryLiveMeasures, deliveryLivePipeline} {
-		rig.waitFor(t, start, 3*time.Second, "the "+kind+" view's recompute", func(note deliveryHubNote) bool {
+		rig.waitForEvent(t, start, "the "+kind+" view's recompute", func(note deliveryHubNote) bool {
 			return note.what == "recompute begin" && strings.HasPrefix(note.view, kind)
 		})
 	}
@@ -1364,9 +1387,13 @@ func TestAResetEventLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
 	held := conn.snapshot(t, 5*time.Second, "t").Body
+	// The hub takes its feed on a goroutine of its own once the relay's first cursor stands, which
+	// waits on the event horizon; each reset below is of a feed it holds.
+	rig.waitForEvent(t, 0, "the hub's event feed", func(note deliveryHubNote) bool { return note.what == "events seeded" })
 
 	// The event log restarts at id 1, as e2e/seed.ts:20 and :150 reset it; then a title the view
 	// names changes, its event (id 1) below the relay's cursor.
+	firstReset := rig.mark()
 	if _, err := rig.database.Pool.Exec(t.Context(), `truncate events restart identity cascade`); err != nil {
 		t.Fatalf("truncate events: %v", err)
 	}
@@ -1376,10 +1403,22 @@ func TestAResetEventLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 		t.Fatalf("after the event log's reset the delta's issue_titles = %v, want %s retitled", got, key)
 	}
 	held = requireLandsOnGET(t, rig.handler, deliveryLiveTimeline, held, delta, "")
+	// The hub takes a feed again once the relay's next generation stands, behind the horizon. The
+	// reset below is told from a quiet log by the row at the relay's cursor, so the cursor must
+	// stand on a row of this log first, and the relay publishes only up to the horizon.
+	rig.waitForEvent(t, firstReset, "the hub's event feed after the reset", func(note deliveryHubNote) bool { return note.what == "events seeded" })
+	firstOfNewLog := eventHead(t, rig.database)
+	pollBehindHorizon(t, rig.database, "the relay's cursor on the reset log's newest event", func() bool {
+		return relayPublished(rig.relay) >= firstOfNewLog
+	})
 
 	// Again, with the log refilled past the relay's cursor in the commit that resets it: the row at
 	// its cursor was created at another time than the relay read, so that is a reset too. The title
-	// changes in that commit with no event of its own, so only the recompute can show it.
+	// changes in that commit with no event of its own, so only the recompute can show it. The relay
+	// finds this reset at a read that a transaction held anywhere on the instance can put off, so
+	// the wait for the hub to lose its feed is the horizon's; the recompute after it waits on
+	// nothing more.
+	reset := rig.mark()
 	if _, err := rig.database.Pool.Exec(t.Context(), `
 		truncate events restart identity cascade;
 		update issues set title = 'Ship every widget' where key = '`+key+`';
@@ -1390,6 +1429,7 @@ func TestAResetEventLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("reset and refill the event log: %v", err)
 	}
+	rig.waitForEvent(t, reset, "the hub losing its feed to the second reset", func(note deliveryHubNote) bool { return note.what == "feed closed" })
 	delta = conn.delta(t, 3*time.Second, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship every widget" {
 		t.Fatalf("after the second reset the delta's issue_titles = %v, want %s retitled", got, key)
@@ -1420,7 +1460,7 @@ func TestEventsNoViewReadsRecomputeNothing(t *testing.T) {
 	if err := rig.database.Pool.QueryRow(t.Context(), `select max(id) from events`).Scan(&newest); err != nil {
 		t.Fatalf("read the newest event: %v", err)
 	}
-	rig.waitFor(t, start, 3*time.Second, "the newest event on the hub's feed", func(note deliveryHubNote) bool {
+	rig.waitForEvent(t, start, "the newest event on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == newest
 	})
 	if n := rig.count(start, func(note deliveryHubNote) bool { return note.what == "event" }); n != 500 {
@@ -1503,9 +1543,17 @@ func TestAClosedFeedReloadsTheOpenP0sAndRecomputesEveryView(t *testing.T) {
 	rig.waitFor(t, start, 3*time.Second, "the hub losing its feed", func(note deliveryHubNote) bool { return note.what == "feed closed" })
 	patchHubIssue(t, rig.handler, raised, map[string]any{"priority": 0})
 	releaseOnce()
+	// The hub takes its feed again once the relay's next generation has started, which waits on
+	// the event horizon; the recompute of every view that follows waits on nothing more.
+	rig.waitForEvent(t, start, "the hub's feed taken again", func(note deliveryHubNote) bool { return note.what == "events seeded" })
 	requireEveryViewShowsTheUnownedP0s("a P1 raised to P0 while the hub had no feed")
 
+	lowering := rig.mark()
 	patchHubIssue(t, rig.handler, raised, map[string]any{"priority": 1})
+	lowered := eventHead(t, rig.database)
+	rig.waitForEvent(t, lowering, "the lowering on the hub's feed", func(note deliveryHubNote) bool {
+		return note.what == "event" && note.eventID >= lowered
+	})
 	requireEveryViewShowsTheUnownedP0s("the reloaded P0 lowered to P1")
 }
 
@@ -1604,7 +1652,7 @@ func TestAFreshHubServesDeliveryChangesWhileATransactionHoldsTheEventHorizon(t *
 		t.Fatalf("the retitle committed %s after the transaction began, once its %s hold could have ended", elapsed, hold)
 	}
 	release()
-	delta = conn.delta(t, eventFeedWait, "t")
+	delta = conn.eventDelta(t, rig.database, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship the widgets" {
 		t.Fatalf("after the hold the delta's issue_titles = %v, want %s retitled", got, key)
 	}
@@ -1637,6 +1685,76 @@ func waitForBackends(t *testing.T, database *store.Store, want int, where string
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// listenerDials records the connections one listener dials, so a test reads pg_stat_activity for
+// those backends alone. A predicate on the test's database and a backend's last statement
+// (listenBackend) also takes in any other backend of that database whose last statement reads as a
+// listener's: a pooled connection that pgxpool pinged ("-- ping") as it was acquired, before the
+// statement it was acquired for, is one.
+type listenerDials struct {
+	mu    sync.Mutex
+	conns []*pgx.Conn
+}
+
+// wrap is dial, recording each connection it opens.
+func (l *listenerDials) wrap(dial func(context.Context) (*pgx.Conn, error)) func(context.Context) (*pgx.Conn, error) {
+	return func(ctx context.Context) (*pgx.Conn, error) {
+		conn, err := dial(ctx)
+		if err == nil {
+			l.mu.Lock()
+			l.conns = append(l.conns, conn)
+			l.mu.Unlock()
+		}
+		return conn, err
+	}
+}
+
+// dialed is every connection dialed so far.
+func (l *listenerDials) dialed() []*pgx.Conn {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.conns)
+}
+
+// waitListening waits for one of the connections dials recorded to hold a LISTEN: its backend's last
+// statement was the listener's LISTEN (pglisten.Listener). The idle ping a listener sends after
+// pglisten.DefaultListenIdle does not count, since a connection that never listened sends it too; a
+// caller waits within seconds of the dial, well inside that idle period.
+func waitListening(t *testing.T, database *store.Store, what string, dials *listenerDials) {
+	t.Helper()
+	testwait.Eventually(t, what, func() bool {
+		var pids []int32
+		for _, conn := range dials.dialed() {
+			pids = append(pids, int32(conn.PgConn().PID()))
+		}
+		var count int
+		if err := database.Pool.QueryRow(context.Background(),
+			`select count(*) from pg_stat_activity where pid = any($1) and query like 'listen %'`, pids,
+		).Scan(&count); err != nil {
+			t.Fatalf("count the backends of %s: %v", what, err)
+		}
+		return count > 0
+	})
+}
+
+// waitReturned waits for every goroutine running counts to have returned, failing the test with
+// what when the run's own deadline comes first (testwait.Eventually).
+func waitReturned(t *testing.T, what string, running *sync.WaitGroup) {
+	t.Helper()
+	returned := make(chan struct{})
+	go func() {
+		running.Wait()
+		close(returned)
+	}()
+	testwait.Eventually(t, what, func() bool {
+		select {
+		case <-returned:
+			return true
+		default:
+			return false
+		}
+	})
 }
 
 // TestAHubWithNoViewReadsNothingAndHoldsNoListener: the hub runs only while a page holds a view.
@@ -1723,7 +1841,7 @@ func TestAnEventAnotherTaskCommittedReachesThisHub(t *testing.T) {
 	otherTask := http.NewServeMux()
 	t.Cleanup(Register(otherTask, t.Context(), deps).Wait)
 	patchHubIssue(t, otherTask, key, map[string]any{"title": "Ship the widgets"})
-	delta := conn.delta(t, eventFeedWait, "t")
+	delta := conn.eventDelta(t, rig.database, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship the widgets" {
 		t.Fatalf("the delta's issue_titles = %v, want %s retitled by the other task", got, key)
 	}
@@ -1740,7 +1858,7 @@ func acquires(database *store.Store) int64 { return database.Pool.Stat().Acquire
 func (r *hubRig) waitConnected(t *testing.T) {
 	t.Helper()
 	r.waitFor(t, 0, 5*time.Second, "the listener's connection", func(note deliveryHubNote) bool { return note.what == "connected" })
-	r.waitFor(t, 0, eventFeedWait, "the hub's event feed", func(note deliveryHubNote) bool { return note.what == "events seeded" })
+	r.waitForEvent(t, 0, "the hub's event feed", func(note deliveryHubNote) bool { return note.what == "events seeded" })
 	deadline := time.Now().Add(eventFeedWait)
 	for last, since := acquires(r.deps.Store), time.Now(); time.Since(since) < 300*time.Millisecond; {
 		if time.Now().After(deadline) {
