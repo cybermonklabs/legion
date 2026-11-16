@@ -1,11 +1,14 @@
 package sandbox
 
 import (
+	"maps"
+	"path/filepath"
 	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // baselineRoleFiles are the fixture's role_config_files: one shared overlay and one of the role's
@@ -58,52 +61,71 @@ func baselineSpec(t *testing.T, role claim.Role) runtime.SpawnSpec {
 	return testSpec(t, token, role, testTree)
 }
 
-// launchBaseline is what the golden records for one role: the two values a launch hands the role's
-// Oh My Pi.
+// launchBaseline is what the golden records for one role: the values a launch hands the role's Oh
+// My Pi — its PI_CONFIG_FILES, the path its --append-system-prompt names, and the text of the
+// file at that path, which the start command carries for the launcher to write.
 type launchBaseline struct {
 	PiConfigFiles      string `json:"PI_CONFIG_FILES"`
 	AppendSystemPrompt string `json:"--append-system-prompt"`
+	SystemPrompt       string `json:"system-prompt.md"`
 }
 
-// appendSystemPromptOf is the value of the one --append-system-prompt word of argv, the start
-// command's agent argv (launcherCommand, agentArgv).
-func appendSystemPromptOf(t *testing.T, role claim.Role, argv []string) string {
+// systemPromptOf is the system prompt start hands its role's agent: path, the value of the one
+// --append-system-prompt (Oh My Pi) or --append-system-prompt-file (Claude Code) word of its argv
+// (launcherCommand, agentArgv), and text, the file of that name its Files carry, which the
+// launcher writes at path before the agent starts. The path must name a file of the generation's
+// own directory, the one directory the launcher writes Files into.
+func systemPromptOf(t *testing.T, role claim.Role, start shimwire.LauncherStart) (path, text string) {
 	t.Helper()
-	i := slices.Index(argv, "--append-system-prompt")
-	if i < 0 || i+1 >= len(argv) {
-		t.Fatalf("the %s's start command names no --append-system-prompt value: %q", role, argv)
+	i := slices.IndexFunc(start.Argv, func(word string) bool {
+		return word == "--append-system-prompt" || word == "--append-system-prompt-file"
+	})
+	if i < 0 || i+1 >= len(start.Argv) {
+		t.Fatalf("the %s's start command names no system prompt file: %q", role, start.Argv)
 	}
-	return argv[i+1]
+	path = start.Argv[i+1]
+	if filepath.Dir(path) != generationDir(start.Generation) {
+		t.Fatalf("the %s's %s names %s, want a file of its generation's directory %s", role, start.Argv[i], path, generationDir(start.Generation))
+	}
+	text, carried := start.Files[filepath.Base(path)]
+	if !carried {
+		t.Fatalf("the %s's start command names %s and carries the files %v, none of them %s",
+			role, path, slices.Sorted(maps.Keys(start.Files)), filepath.Base(path))
+	}
+	return path, text
 }
 
 // The launch bytes a deployment with no experiment of its own and no `memory` block produces
-// today, for every role Legion launches: the golden pins two values per role — the role's
-// PI_CONFIG_FILES, the operator's own overlays first and then the role's own, and the value of
-// the one --append-system-prompt word its Oh My Pi is started with. Both are kept non-empty for
-// all seven roles by the fixture (operatorPod's PI_CONFIG_FILES entry and baselineRoleFiles), so
-// a later change that drops an overlay, reorders the list, or moves a prompt fragment shows here
-// as a diff to read.
+// today, for every role Legion launches: the golden pins three values per role — the role's
+// PI_CONFIG_FILES, the operator's own overlays first and then the role's own; the path of the one
+// --append-system-prompt word its Oh My Pi is started with; and the text of the system prompt
+// file at that path, which its start command carries. Each is kept non-empty for all seven roles
+// by the fixture (operatorPod's PI_CONFIG_FILES entry and baselineRoleFiles), so a later change
+// that drops an overlay, reorders the list, moves the prompt file or moves a prompt fragment
+// shows here as a diff to read.
 //
-// The two values are read off workerOf's container rather than off manifestOf's Sandbox because
-// neither rides the pod manifest: the pod template carries the operator's PI_CONFIG_FILES entry
-// alone and no prompt at all, since a role's own overlays and its prompt ride the launcher's start
-// command (launcherCommand). workerOf is that whole process — the pod's container as the pod runs
-// it, with the start command's argv and environment applied over it — which is what a rewrite of
-// the launch path must leave unchanged for such a deployment.
+// The values are read off workerOf's container and the launcher's start command rather than off
+// manifestOf's Sandbox because none rides the pod manifest: the pod template carries the
+// operator's PI_CONFIG_FILES entry alone and no prompt at all, since a role's own overlays and
+// its prompt ride the launcher's start command (launcherCommand). workerOf is that whole process —
+// the pod's container as the pod runs it, with the start command's argv and environment applied
+// over it — and the start command's Files are what its launcher writes before that process
+// starts, which is what a rewrite of the launch path must leave unchanged for such a deployment.
 func TestLaunchBaselineOfADeploymentWithNoExperiment(t *testing.T) {
 	r := baselineRuntime(t)
 	baseline := map[string]launchBaseline{}
 	for _, role := range baselineRoles() {
-		worker := workerOf(t, r, baselineSpec(t, role))
+		spec := baselineSpec(t, role)
+		worker := workerOf(t, r, spec)
 		files := envOf(worker)["PI_CONFIG_FILES"]
 		if files == "" {
 			t.Fatalf("the %s's PI_CONFIG_FILES is empty; the baseline pins a non-empty value", role)
 		}
-		prompt := appendSystemPromptOf(t, role, worker.Command)
+		path, prompt := systemPromptOf(t, role, launcherCommand(launchOf(t, r, spec), r))
 		if prompt == "" {
-			t.Fatalf("the %s's --append-system-prompt value is empty; the baseline pins a non-empty value", role)
+			t.Fatalf("the %s's system prompt file is empty; the baseline pins a non-empty value", role)
 		}
-		baseline[string(role)] = launchBaseline{PiConfigFiles: files, AppendSystemPrompt: prompt}
+		baseline[string(role)] = launchBaseline{PiConfigFiles: files, AppendSystemPrompt: path, SystemPrompt: prompt}
 	}
 	if len(baseline) != len(baselineRoles()) {
 		t.Fatalf("the baseline holds %d roles, want %d", len(baseline), len(baselineRoles()))

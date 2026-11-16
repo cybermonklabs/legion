@@ -237,7 +237,8 @@ func TestALineUnderTermsThatIsNoTermLineIsAFinding(t *testing.T) {
 	if got.Counts[line] != 2 || got.Counts[KindDefinition] != 2 {
 		t.Errorf("Counts = %v, want 2 lines and 2 definitions", got.Counts)
 	}
-	detail := `it is no term line, and a term line has the form "- **<term>**: <definition>"`
+	detail := `it is no term line, and a term line has the form "- **<term>**: <definition>". ` +
+		`Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading`
 	want := []Finding{finding(prose, "term-line", detail), finding(drift, "term-line", detail)}
 	if findings := Check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); !sameFindings(findings, want) {
 		t.Fatalf("Check =\n%#v\nwant\n%#v", findings, want)
@@ -295,6 +296,43 @@ func TestATermsHeadingInAnotherFormIsAFinding(t *testing.T) {
 		}
 		if findings := Check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); len(findings) != 0 || got.Counts[KindHeading] != 0 {
 			t.Errorf("control %q: Check = %#v, Counts = %v, want no finding and no heading text", heading, findings, got.Counts)
+		}
+	}
+}
+
+// Under a heading Terms each line is a term line, so a decision block there breaks the form at its
+// question line, and the finding tells the writer the way out: the block stands above the heading,
+// and the chosen definition goes under it after the answer. The control: the same block above the
+// heading gives no finding, and the term line under the heading is the one term.
+func TestADecisionBlockUnderTermsIsAFindingThatNamesTheWayOut(t *testing.T) {
+	block := ":::ask{#which urgency=\"med\" multiple=\"false\"}\nWhich definition does the spec keep?\n\n- Keep it: The spec keeps the definition.\n:::\n"
+	term := "- **lease**: The right of one session to one work unit for a time.\n"
+	for _, test := range []struct {
+		name, markdown string
+		want           []string
+	}{
+		{"under the heading", "# Spec\n\n## Terms\n\n" + block + "\n" + term, []string{
+			`"Which definition does the spec keep?"`, `"- Keep it: The spec keeps the definition."`,
+		}},
+		{"above the heading", "# Spec\n\n" + block + "\n## Terms\n\n" + term, nil},
+	} {
+		got, err := ExtractDocument("spec.md", 12, test.markdown)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Terms) != 1 || got.Terms[0].Name != "lease" {
+			t.Errorf("%s: Terms = %#v, want the one term lease", test.name, got.Terms)
+		}
+		findings := Check(planted(), Input{Texts: got.Texts, Proposed: got.Terms})
+		var nodes []string
+		for _, finding := range findings {
+			nodes = append(nodes, finding.Node)
+			if finding.Rule != "term-line" || !strings.Contains(finding.Detail, "Put a decision block above the heading Terms") {
+				t.Errorf("%s: finding %#v, want rule term-line with the way out for a decision block", test.name, finding)
+			}
+		}
+		if !reflect.DeepEqual(nodes, test.want) {
+			t.Errorf("%s: the findings name %q, want %q", test.name, nodes, test.want)
 		}
 	}
 }

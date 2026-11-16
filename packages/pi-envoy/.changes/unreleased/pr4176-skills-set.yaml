@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  `dispatch-writing-specs` names a whole test suite by its CI job (`ci_check`), and says an ask is
+  short and self-contained instead of naming a device; AskGate's rubric names that category
+  "self-contained" and no longer assumes the person answers from a phone. `envoy` and
+  `agent-secrets` give `curl` its token header on standard input or through a process
+  substitution, so the token is in no command's arguments, and `plain-words` gives a date only
+  with the measured rate it rests on.

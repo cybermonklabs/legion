@@ -111,7 +111,7 @@ func TestAnApprovalAfterTheMoveGrantsToTheEnrollmentTheRequestNamesNow(t *testin
 	if holder != second {
 		t.Fatalf("grant %s hangs off enrollment %s, want the moved session's %s", dec.GrantID, holder, second)
 	}
-	if released, err := m.Values(ctx, dec.GrantID, second, nil); err != nil || released.Values["DEEL_API_KEY"] != "deel-v1" {
+	if released, err := m.Values(ctx, dec.GrantID, second, nil, ReleaseCall{}); err != nil || released.Values["DEEL_API_KEY"] != "deel-v1" {
 		t.Fatalf("the moved session reading its new grant = %v, %v; want DEEL_API_KEY=deel-v1", released.Values, err)
 	}
 }

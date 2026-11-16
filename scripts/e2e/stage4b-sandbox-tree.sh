@@ -5987,13 +5987,14 @@ until_true 600 "$tree3's pods to be gone" sh -c \
 # The controller's slot wakes reach it, and it takes nothing for them (LEGION-392).
 # (1) The controller was launched with the daemon's own design gate steps, none here (the run's
 # `gates.design` is `off`, the empty list): the Oh My Pi running in the controller's directory
-# carries the line in its --append-system-prompt.
+# carries the line in its system prompt, the file its --append-system-prompt names.
 steps_line='Design gate steps: none.'
 controller_launched_with_steps() {
-  local proc
+  local proc file
   for proc in /proc/[0-9]*; do
     [ "$(readlink "$proc/cwd" 2>/dev/null)" = "$work/controller-state/controller" ] || continue
-    tr '\0' '\n' <"$proc/cmdline" 2>/dev/null | grep -qF "$steps_line" && return 0
+    file=$(tr '\0' '\n' <"$proc/cmdline" 2>/dev/null | awk 'p{print;exit} $0=="--append-system-prompt"{p=1}')
+    [ -n "$file" ] && grep -qF "$steps_line" "$file" && return 0
   done
   return 1
 }

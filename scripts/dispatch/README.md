@@ -284,9 +284,10 @@ first that applies:
 An unknown pair is one that the report cannot judge. The transcript store cannot show whether the
 pair got the comment. The reason is one of these:
 
-- `session_not_in_store`: the store does not hold the session. The store holds only the Oh My Pi
-  sessions of the two dev boxes. It does not hold Claude Code sessions or the sessions of Legion
-  pods.
+- `session_not_in_store`: the store does not hold the session. The store holds the Oh My Pi
+  sessions of the dev boxes and of the Legion pods, and no Claude Code session of either. It loads
+  each machine on its own schedule, so a session newer than its machine's last load is not in it
+  yet.
 - `role`: the pair is a role, and no mention of the role resolved to a session. No session's
   transcript can show the receipt.
 - `btw`: Dispatch delivered a mention as a BTW, and has no reply from the side turn. A BTW side

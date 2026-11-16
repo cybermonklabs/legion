@@ -6,7 +6,9 @@ The secrets broker's client. An agent session runs it to use a secret:
 agent-secrets DEMO_API_KEY --reason "Deploy the example service" -- ./deploy.sh
 ```
 
-It asks the broker for the named secrets, waits while a person approves them on the broker's own
+It looks the command up on `PATH` first, and refuses one it does not find (exit 1) before it asks
+the broker anything, so no request waits on an approver for a command that could not run. It then
+asks the broker for the named secrets, waits while a person approves them on the broker's own
 approval page if the secret's owner and tier require it, and runs the command with each granted
 value in its
 environment, writing one line to standard error first: the names it injected, that the broker
@@ -37,7 +39,18 @@ session's grants (`agent-secrets self`). People and agents manage the agent secr
 store (AWS Secrets Manager or GCP Secret Manager) under whatever cloud credential its environment
 gives it - the store's own IAM decides what that credential may do - and then asks the broker to
 reread each secret written, so the change
-is served at once; those forms need no helper and no session. From their own shell on a machine
+is served at once; those forms need no helper and no session. On GCP, `secret create` makes the
+secret, empty and with its tags, before it asks for the value, so a store that refuses the create
+asks for none; until the value is added, a failure or a hang-up, interrupt, quit or termination
+deletes that empty secret again, and a secret that may hold the value, where the store's answer to
+the add leaves that open, is kept. Each store call from the create until the value is stored or
+the empty secret deleted has a deadline of 60 seconds, Secret Manager's Go client's own default
+for those calls, which AWS's `CreateSecret` takes too, its SDK setting none. That bound is per
+call, not per signal: a signal waits out the call in flight, and then its cleanup makes its own
+calls, each with the same deadline, so a first signal against a store that answers nothing can
+take a few minutes. A second signal ends the command at once, by that signal, naming what the
+store may be left holding and the command that clears or checks it. From their own shell on a
+machine
 that runs the helper, people list and end their own machines' logins and their live grants with
 `agent-secrets machine list|revoke` and `agent-secrets grant list|revoke`, under that machine's
 login; a service's login is revoked on Dispatch's machine-login page. The helper refuses these

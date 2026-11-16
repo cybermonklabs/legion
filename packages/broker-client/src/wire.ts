@@ -28,6 +28,12 @@ export const FORM_LAUNCHER_CREDENTIAL = "launcher_credential";
 /** The one value of {@link FORM_LAUNCHER_CREDENTIAL} that declines the credential. */
 export const FORM_LAUNCHER_CREDENTIAL_DECLINED = "false";
 
+/** The broker's third form parameter: the projects the minted token names, project keys
+ *  separated by one space, sorted and each once (`oauthwire.FormProjects`). Only a trade that acts
+ *  as its person sends it, and the broker names only projects that person may see; absent is no
+ *  projects. */
+export const FORM_PROJECTS = "projects";
+
 /** The `subject_token_type` a pod presents its projected Kubernetes service-account token under. */
 export const SUBJECT_TOKEN_TYPE_KUBERNETES =
   "urn:envoy:params:oauth:token-type:kubernetes-service-account";

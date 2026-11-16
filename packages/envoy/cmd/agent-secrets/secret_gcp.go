@@ -231,9 +231,18 @@ func gcloudTokenArgs(account string) []string {
 	}
 }
 
+// Token runs `gcloud auth print-access-token` for the account under a deadline of its own,
+// storeCallDeadline: a refresh runs inside a store call, under that call's context only where
+// oauth2 passes one, which it does not, so without its own bound a gcloud that never answered would
+// hold the call past its deadline.
 func (s gcloudToken) Token() (*oauth2.Token, error) {
 	started := time.Now()
-	out, err := runGcloud(s.ctx, s.gcloud, gcloudTokenArgs(s.account)...)
+	ctx, cancel := withStoreDeadline(s.ctx)
+	defer cancel()
+	out, err := runGcloud(ctx, s.gcloud, gcloudTokenArgs(s.account)...)
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return nil, fmt.Errorf("`gcloud auth print-access-token` did not answer within %s for %s", storeCallDeadlineText(), s.account)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("`gcloud auth print-access-token` failed for %s: %w", s.account, err)
 	}
@@ -270,12 +279,19 @@ func gcloudEnv() []string {
 	return append(env, "CLOUDSDK_CORE_DISABLE_PROMPTS=1", "CLOUDSDK_CORE_DISABLE_FILE_LOGGING=1", "CLOUDSDK_CORE_LOG_HTTP=false")
 }
 
+// gcloudWaitDelay is how long runGcloud waits for a killed gcloud's output to close before it gives
+// the call up: a second, the standard error kept and nothing else.
+const gcloudWaitDelay = time.Second
+
 // runGcloud runs gcloud with args in gcloudEnv and answers what it wrote on its standard output.
 // gcloud reads /dev/null, never this command's standard input, which can be a secret's value on
-// its way in; what it writes on its standard error is kept only to name a failure.
+// its way in; what it writes on its standard error is kept only to name a failure. Once ctx ends,
+// gcloud is killed and its output waited for no more than gcloudWaitDelay: gcloud is a shell
+// script whose Python child can hold the output open after the script is killed.
 func runGcloud(ctx context.Context, gcloud string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, gcloud, args...)
 	cmd.Env = gcloudEnv()
+	cmd.WaitDelay = gcloudWaitDelay
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -537,29 +553,6 @@ func (b *gcpBackend) show(ctx context.Context, slug string) (secretView, error) 
 	}
 	view.Versions = versions
 	return view, nil
-}
-
-func (b *gcpBackend) create(ctx context.Context, slug string, tags map[string]string, value string) error {
-	secret, err := b.client.CreateSecret(ctx, &secretmanagerpb.CreateSecretRequest{
-		Parent:   b.parent(),
-		SecretId: b.secretID(slug),
-		Secret: &secretmanagerpb.Secret{
-			Replication: &secretmanagerpb.Replication{
-				Replication: &secretmanagerpb.Replication_Automatic_{
-					Automatic: &secretmanagerpb.Replication_Automatic{
-						CustomerManagedEncryption: &secretmanagerpb.CustomerManagedEncryption{
-							KmsKeyName: b.settings.KMSKeyName,
-						},
-					},
-				},
-			},
-			Annotations: tags,
-		},
-	})
-	if err != nil {
-		return err
-	}
-	return b.addVersion(ctx, secret.GetName(), value)
 }
 
 func (b *gcpBackend) set(ctx context.Context, slug, value string) error {

@@ -119,11 +119,15 @@ The daemon keeps this order from its fixed table; you start none of its steps:
    issue and no commit carries one.
 4. The merger reads the pull request and merges that head itself, as the implement App and with the
    head it read as the head GitHub must match
-   (`gh pr merge <n> --squash --match-head-commit <head> --subject '<pull request title> (#<n>)' --body ''`,
+   (into the default branch
+   `gh pr merge <n> --squash --match-head-commit <head> --subject '<pull request title> (#<n>)' --body ''`,
    whose explicit message keeps GitHub's default squash message from joining the branch's commit
-   messages onto the base; or `expectedHeadOid` on a
-   merge-queue base, where it enqueues the pull request); it never turns auto-merge on, and the
-   daemon submits no merge and changes no merge setting. The repository's required reviews and
+   messages onto the base; into another base, a merge commit (`--merge` in place of `--squash`)
+   where the repository allows one, because a squash there gives each pull request built on that
+   branch a conflict of history alone; or `expectedHeadOid` on a merge-queue base, where it
+   enqueues the pull request); it
+   never turns auto-merge on, and the daemon submits no merge and changes no merge setting. The
+   repository's required reviews and
    checks decide when it lands; Legion neither reads nor writes those rules, and a review only a
    person can give is waited for, never bypassed. Nothing compares that head with the approved one:
    a repository that wants a later push reviewed says so in its own rulesets. The merger's
@@ -144,6 +148,12 @@ move and you tell it which; from `accepting` you send an issue back only to `imp
   `squash_merge_commit_message` joins the branch's commit messages among them: the merger tells
   you, and only a person can change it. Ask one with `dispatch ask`, naming the pull request, the
   head and GitHub's refusal; never bypass a rule.
+- A squash into a base other than the default branch, where the repository allows only squash or
+  the base's rules require a linear history: the merger names each open pull request of the tree
+  built on the merged branch. Each one GitHub then reports `CONFLICTING` comes back to
+  `implementing` (*A conflicting head*, below). Tell each one's implementer (`envoy_publish` to its
+  role topic) to expect its pull request back, and to merge that base forward in that implementing
+  round.
 
 ## A conflicting head
 

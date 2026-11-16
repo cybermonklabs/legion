@@ -10,8 +10,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -94,7 +97,7 @@ func typeAtPromptInWrites(t *testing.T, gap time.Duration, writes ...string) (*o
 	controller, terminal := openPTY(t)
 	answer := make(chan promptRead, 1)
 	go func() {
-		line, err := readHidden(terminal, nil, nil)
+		line, err := readHidden(terminal, time.Time{}, nil, nil)
 		answer <- promptRead{line, err}
 	}()
 	awaitEchoOff(t, terminal)
@@ -124,6 +127,165 @@ func awaitEchoOff(t *testing.T, terminal int) {
 			t.Fatal("the reader never turned echo off")
 		}
 	}
+}
+
+// TestPromptEndsAtTheValueDeadline: a prompt handed a deadline (a create's value read) that gets
+// nothing gives up at the deadline, with errValueTimedOut and no line, and gives the terminal back
+// with echo on, as any other end of the prompt does.
+func TestPromptEndsAtTheValueDeadline(t *testing.T) {
+	_, terminal := openPTY(t) // openPTY's cleanup holds the controller open for the whole test
+	deadline := time.Now().Add(500 * time.Millisecond)
+	answer := make(chan promptRead, 1)
+	go func() {
+		line, err := readHidden(terminal, deadline, nil, nil)
+		answer <- promptRead{line, err}
+	}()
+	awaitEchoOff(t, terminal)
+	select {
+	case got := <-answer:
+		if got.line != nil || !errors.Is(got.err, errValueTimedOut) {
+			t.Fatalf("readHidden = %q, %v; want no line and errValueTimedOut", got.line, got.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the prompt was still reading 10s on, past its 500ms deadline")
+	}
+	if lflag(t, terminal)&unix.ECHO == 0 {
+		t.Fatal("the prompt left echo off at its deadline")
+	}
+}
+
+// TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd: a deadline that passes once part of the
+// entry has been typed refuses the entry, but the prompt keeps the terminal: it says so at once
+// (onDiscard, with errValueTimedOut), reads the rest of the entry to the line's end, and only then
+// answers errValueTimedOut, so what is typed after the deadline is neither echoed nor left for the
+// shell. The rest is typed once the prompt has either said so or answered, whichever comes first,
+// so a prompt that gives the entry up at the deadline shows the rest reaching the shell. The
+// pseudo-terminal is not this process's controlling terminal, so no key of it sends a signal: the
+// reason the notice reads names no interrupt key, and no open paste.
+func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
+	controller, terminal := openPTY(t)
+	deadline := time.Now().Add(2 * time.Second)
+	noticed := make(chan error, 1)
+	answer := make(chan promptRead, 1)
+	go func() {
+		line, err := readHidden(terminal, deadline, nil, func(reason error) { noticed <- reason })
+		answer <- promptRead{line, err}
+	}()
+	awaitEchoOff(t, terminal)
+	if _, err := controller.Write([]byte("fakehead-")); err != nil {
+		t.Fatal(err)
+	}
+	var early *promptRead
+	select {
+	case reason := <-noticed:
+		var notice valueDeadlineNotice
+		if !errors.Is(reason, errValueTimedOut) || !errors.As(reason, &notice) || notice.interrupt != 0 || notice.inPaste {
+			t.Fatalf("the prompt refused the entry for %#v; want a valueDeadlineNotice naming no interrupt key and no open paste, on a terminal that is not the controlling one", reason)
+		}
+	case got := <-answer:
+		early = &got
+	case <-time.After(10 * time.Second):
+		t.Fatal("the prompt neither refused the entry nor answered 10s on, past its 2s deadline")
+	}
+	if _, err := controller.Write([]byte("FAKETAIL\r")); err != nil {
+		t.Fatal(err)
+	}
+	got := early
+	if got == nil {
+		select {
+		case read := <-answer:
+			got = &read
+		case <-time.After(10 * time.Second):
+			t.Fatal("the prompt had not answered 10s after the entry's line ended")
+		}
+	}
+	if got.line != nil || !errors.Is(got.err, errValueTimedOut) {
+		t.Fatalf("readHidden = %q, %v; want no line and errValueTimedOut", got.line, got.err)
+	}
+	if n := unread(t, terminal); n != 0 || bytes.Contains(shown(t, controller), []byte("FAKETAIL")) {
+		t.Fatalf("the rest of the entry reached the shell: %d bytes left unread, or it was echoed", n)
+	}
+}
+
+// TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow: a value typed at the prompt inside the
+// create's window, whose drain then runs past it - a bracketed paste that opens after the line and
+// closes only once the window is over - is not stored: the prompt reads that paste through its
+// closing mark, and the create then refuses the value as one that did not come in time, never
+// calling AddSecretVersion, deletes the empty secret it made, asks the broker to reread the name,
+// and exits 1 naming the window and the command to run again.
+func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
+	controller, terminal := openPTY(t)
+	const window = 2 * time.Second
+	restoreWindow := valueReadWindow
+	valueReadWindow = window
+	t.Cleanup(func() { valueReadWindow = restoreWindow })
+	fake := newFakeSecretManager()
+	startFakeSecretManager(t, fake)
+	useGCPIdentity(t, "authorized_user", "ada@example.com")
+	broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+	useTerminal(t)
+	stdinTerminal = func(io.Reader) (int, bool) { return terminal, true }
+	readHidden = readHiddenAtTerminal
+	real := readTerminal
+	t.Cleanup(func() { readTerminal = real })
+	// draining closes at the reader's first wait after the read that ended the line: the drain of
+	// what follows the line. The terminal turns the typed carriage return into a line feed.
+	draining := make(chan struct{})
+	lineEnded, drainSeen := false, false
+	readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
+		if lineEnded && !drainSeen {
+			drainSeen = true
+			close(draining)
+		}
+		n, err := real(fd, wake, buf, timeout)
+		if n > 0 && bytes.ContainsAny(buf[:n], "\r\n") {
+			lineEnded = true
+		}
+		return n, err
+	}
+	type result struct {
+		stderr string
+		code   int
+	}
+	done := make(chan result, 1)
+	go func() {
+		_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
+		done <- result{stderr, code}
+	}()
+	awaitEchoOff(t, terminal)
+	// The create asked the store for the secret before the prompt turned echo off, so its window
+	// is over by then.
+	windowEnds := time.Now().Add(window)
+	if _, err := controller.Write([]byte("typed-value\r")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-draining:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the prompt never drained what follows the line")
+	}
+	if _, err := controller.Write([]byte("\x1b[200~")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Until(windowEnds) + 300*time.Millisecond)
+	if _, err := controller.Write([]byte("\x1b[201~")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		if got.code != 1 || !strings.Contains(got.stderr, "no value came in time, within 2s") || !strings.Contains(got.stderr, "agent-secrets secret create NEW_TEST") {
+			t.Fatalf("exit %d, stderr %q; want 1 naming the window and the command to run again", got.code, got.stderr)
+		}
+		if !regexp.MustCompile(`Enter the value by \d\d:\d\d:\d\d \S+, 2s after the create, or nothing is stored\.\nValue for NEW_TEST: `).MatchString(got.stderr) {
+			t.Fatalf("stderr %q; want the prompt to name the time its value must come by, then its label", got.stderr)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the create had not ended 20s after the paste closed")
+	}
+	if calls := fake.called(); slices.Contains(calls, "AddSecretVersion") {
+		t.Fatalf("Secret Manager calls %v; want no AddSecretVersion for a value that ended past its window", calls)
+	}
+	requireNothingLeft(t, fake, broker, "NEW_TEST")
 }
 
 // unread is how many bytes the terminal holds unread, which the shell would read once the form
@@ -196,7 +358,7 @@ func TestPromptClearsIEXTENWhileItReads(t *testing.T) {
 	}
 	answer := make(chan promptRead, 1)
 	go func() {
-		line, err := readHidden(terminal, nil, nil)
+		line, err := readHidden(terminal, time.Time{}, nil, nil)
 		answer <- promptRead{line, err}
 	}()
 	awaitEchoOff(t, terminal)
@@ -307,6 +469,24 @@ func TestPromptWordEraseAndControlBytes(t *testing.T) {
 	}
 }
 
+// TestPromptNamesATabAPasteEndsWith: a key pasted at a real terminal with a Tab after it, as a copy
+// out of a web page's table often carries, is refused, neither stored nor trimmed, with a refusal
+// that names the Tab, says it is at the end of the value, and says that a paste often adds one
+// there; the terminal is left with nothing unread.
+func TestPromptNamesATabAPasteEndsWith(t *testing.T) {
+	_, terminal, got := typeAtPromptInWrites(t, 50*time.Millisecond, "\x1b[200~sk-live-key\t\x1b[201~", "\r")
+	var refused promptControlByteError
+	if got.line != nil || !errors.As(got.err, &refused) || refused.c != '\t' || !refused.textBefore || refused.textAfter {
+		t.Fatalf("readHidden = %q, %v; want no line and a refusal of the Tab at the value's end", got.line, got.err)
+	}
+	if text := got.err.Error(); !strings.Contains(text, "0x09") || !strings.Contains(text, "Tab") || !strings.Contains(text, "end of the value") || !strings.Contains(text, "paste") {
+		t.Fatalf("refusal %q; want it to name 0x09, the Tab, the value's end and the paste", text)
+	}
+	if n := unread(t, terminal); n != 0 {
+		t.Fatalf("the terminal holds %d bytes unread, want none", n)
+	}
+}
+
 // TestPromptRefusesFlowControlBytes: Ctrl-S and Ctrl-Q reach the reader as control bytes rather
 // than stopping and starting the terminal's output, so a paste holding one is refused, never stored
 // without it, and never leaves the prompt waiting with its output suspended.
@@ -354,7 +534,7 @@ func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
 			}
 			answer := make(chan promptRead, 1)
 			go func() {
-				line, err := readHidden(terminal, nil, nil)
+				line, err := readHidden(terminal, time.Time{}, nil, nil)
 				answer <- promptRead{line, err}
 			}()
 			awaitEchoOff(t, terminal)
@@ -388,7 +568,7 @@ func TestPromptSignalHelper(t *testing.T) {
 	if os.Getenv("AGENT_SECRETS_PROMPT_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}
-	_, err := readHidden(0, nil, nil)
+	_, err := readHidden(0, time.Time{}, nil, nil)
 	fmt.Printf("RETURNED %v\n", err)
 }
 

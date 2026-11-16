@@ -104,10 +104,11 @@ func drawnIntoBoth(t *testing.T, dir string, role claim.Role, reversed bool) run
 
 // A tree drawn into an arm of each of two experiments is told, for every role of the workflow,
 // the operator's own overlays, then the role's own, then each arm's, in the order the project's
-// file declares the experiments; and its system prompt ends with the deployment's instructions
-// and then each arm's text in that same order. The second half of the table is the negative
-// control: the same deployment with its two experiments declared the other way round produces
-// the other order in both values, so the order comes from the file and from nothing else.
+// file declares the experiments; and the system prompt file its start command carries ends with
+// the deployment's instructions and then each arm's text in that same order. The second half of
+// the table is the negative control: the same deployment with its two experiments declared the
+// other way round produces the other order in both values, so the order comes from the file and
+// from nothing else.
 //
 // Twelve launches, two readings of each: the six roles of claim.Roles under each of the two
 // orders. The count is asserted, so a table that stopped covering a role would fail rather than
@@ -136,7 +137,7 @@ func TestATreeInTwoExperimentsNamesEveryArmInTheFilesOrder(t *testing.T) {
 				if got := envOf(worker)["PI_CONFIG_FILES"]; got != want {
 					t.Errorf("the %s's PI_CONFIG_FILES = %q, want %q", role, got, want)
 				}
-				prompt := appendSystemPromptOf(t, role, worker.Command)
+				_, prompt := systemPromptOf(t, role, launcherCommand(launchOf(t, r, spec), r))
 				if tail := "\n\nDeployment instructions.\n\n" + strings.Join(tc.prompt, "\n\n"); !strings.HasSuffix(prompt, tail) {
 					t.Errorf("the %s's system prompt =\n%q\nwant it to end\n%q", role, prompt, tail)
 				}
@@ -149,8 +150,9 @@ func TestATreeInTwoExperimentsNamesEveryArmInTheFilesOrder(t *testing.T) {
 }
 
 // A tree drawn into a control arm — one that names neither an overlay nor an instructions file —
-// launches the bytes a tree in no experiment launches, pod and process alike: a launch names the
-// files its arms name, and a control arm names none.
+// launches the bytes a tree in no experiment launches, pod, process and the files its launcher
+// writes alike, its system prompt file among them: a launch names the files its arms name, and a
+// control arm names none.
 func TestATreeInAControlVariantLaunchesTheBytesOfATreeInNoExperiment(t *testing.T) {
 	r := twoExperimentRuntime(t, false)
 	control := workerSpec(t)
@@ -161,6 +163,9 @@ func TestATreeInAControlVariantLaunchesTheBytesOfATreeInNoExperiment(t *testing.
 	}
 	if got, want := workerOf(t, r, control), workerOf(t, r, none); !reflect.DeepEqual(got, want) {
 		t.Errorf("a control tree's process =\n%+v\nwant the one a tree in no experiment gets:\n%+v", got, want)
+	}
+	if got, want := launcherCommand(launchOf(t, r, control), r).Files, launcherCommand(launchOf(t, r, none), r).Files; !reflect.DeepEqual(got, want) {
+		t.Errorf("a control tree's launcher writes\n%q\nwant the files a tree in no experiment's writes:\n%q", got, want)
 	}
 }
 

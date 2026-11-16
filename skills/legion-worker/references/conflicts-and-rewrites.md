@@ -1,9 +1,9 @@
-# Conflicts, retargets, fingerprints, and rewriting pushed commits
+# Conflicts, retargets, fingerprints, and a wrong pushed commit
 
 Part of `skill://legion-worker`. Read it when GitHub reports the pull request `CONFLICTING`, the
 controller asks you to resolve a conflict, the change needs something only the base has, the pull
-request is retargeted to a new base, you compare two heads after such a merge, or you are about to
-rewrite a commit you already pushed.
+request is retargeted to a new base, you compare two heads after such a merge, or a commit you
+already pushed is wrong.
 Every path it cites is in cybermonklabs/legion.
 
 ## Reintegrating the base
@@ -17,8 +17,8 @@ Every path it cites is in cybermonklabs/legion.
   base. Otherwise, never reintegrate the base to pick up the default branch or refresh CI. Each
   merge is a new head, reruns CI and can void a review. A single failed CI job is re-run on its
   own (*Never waiting on CI* in `skill://legion-worker/references/pr-body.md`). After any forward merge, build the branch and
-  record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict: a clean merge once changed a
-  function's arity under the branch's own callers. Before you race another tree's pull request on
+  record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict: a clean merge can change a
+  function's signature under the branch's own callers. Before you race another tree's pull request on
   shared files, `envoy_publish` to its implementer's role topic, ask when its next push lands, and
   merge once, after it. A forward merge that leaves the branch's diff unchanged is a
   confirmation, not a new round (see *The unchanged-diff check* below). The check compares the
@@ -72,11 +72,11 @@ Every path it cites is in cybermonklabs/legion.
   only new commit. Then `jj -R "$LEGION_WORKSPACE" new` to move off it, and push it (*Every role
   pushes its own commits* in `skill://legion-worker`; a merge is a code push like any other): the
   merge descends from both the bookmark's old position and the destination, so it is a genuine
-  fast-forward and *Rewriting pushed commits* never applies.
+  fast-forward.
 - **After a retarget.** Retargeting a pull request to a new base does not re-run Tests. Read
   `base` again and merge the bookmark onto it in one command
   (`base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"`, its `<message>` in the repository's own commit convention, as above) and push it the
-  ordinary way — a genuine fast-forward, never `--allow-backwards` — so the new head runs Tests
+  ordinary way, a genuine fast-forward, so the new head runs Tests
   against the new merge result, and cite that run in the PR body.
 
 ## The unchanged-diff check
@@ -126,41 +126,12 @@ Legion check compares that head with the approved one.
 The fingerprint is not the whole check: a file the merge adds only moves the hash, exactly as an ordinary round of work does.
 So beside it, compare the *set* of files the pull request changes against its base, before and after the merge (`gh pr diff <n> --name-only`, or `jj diff --stat` at each of the two heads), and explain every path that appears or disappears.
 Remove a path that belongs to an already-merged pull request.
-The case that named this rule: #2588's forward merge, made after #2446 was squashed into main, re-added changelog fragments under `packages/envoy/.changes/unreleased/` whose entries main's fold had already written into `packages/envoy/CHANGELOG.md` 27.1.0, so the next fold would have written every one of them a second time.
 
-## Rewriting pushed commits
+## A wrong pushed commit
 
-**Rewriting pushed commits** — a `jj squash --into` a commit already on GitHub, or any other
-rewrite of a commit you already pushed — is the hazard *Reintegrating the base* describes, in a
-second shape: jj rebases every descendant of any commit it rewrites, and in the one shared
-repository a descendant can be another tree's branch stacked on your pushed commit, which then
-moves, with its bookmark, onto a rewritten copy. So look for a descendant outside your own chain
-first, after a fetch and while your chain still descends from the pushed tip:
-
-```bash
-cd -- "$LEGION_WORKSPACE" && \
-  jj -R "$LEGION_WORKSPACE" git fetch && \
-  foreign=$(jj -R "$LEGION_WORKSPACE" log --no-graph -T 'commit_id.short() ++ "\n"' \
-    -r 'descendants(<the commit you are about to rewrite>) ~ ::@') && \
-  { [ -z "$foreign" ] || { echo "not mine, and descends from the commit to rewrite: $foreign" >&2; false; }; }
-```
-
-`descendants(<commit>) ~ ::@` is everything built on the commit you are about to rewrite that is
-not on your own chain. Non-empty means the rewrite would move work that is not yours: do not
-rewrite it. Put the change in a new commit on top instead, and report the listed commits to the
-architect.
-
-Once the guard has cleared, rewrite, resolve, and push once, moving the bookmark backwards onto
-the rewritten head — the one sanctioned non-fast-forward move, and the only place
-`--allow-backwards` is ever used:
-
-```bash
-cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" bookmark set legion/<KEY> -r @- --allow-backwards && jj -R "$LEGION_WORKSPACE" git push --bookmark legion/<KEY>
-```
-
-A rewrite head is a code push like any other. `jj git push` still refuses a remote branch another
-role moved since your fetch: report the refusal to the architect with its output, never force.
-
-Once a base is frozen for others to stack on, never rewrite it: fixes land as new commits on top,
-and the PR body's `Chain` line records what is frozen.
-
+A commit you pushed is never rewritten: no `jj squash --into` it, no new description of it, no
+backwards bookmark move and no force push. A rewrite moves every commit built on it, another
+tree's branch included, and leaves a review, a CI run or a link that names a commit GitHub no
+longer holds. Answer a wrong pushed commit with a follow-up commit on top, and a wrong commit
+message with a line in the pull request body. A base frozen for others to stack on takes its fixes
+the same way, and the PR body's `Chain` line records what is frozen.

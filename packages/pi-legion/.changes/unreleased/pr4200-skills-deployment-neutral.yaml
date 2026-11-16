@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The Legion skills hold nothing that is true of only one deployment: measured counts and
+  timings, the dates and clock times of incidents, and a deployment's issue keys, pull request
+  numbers and repository name are gone, and each rule keeps its reason. The controller skill no
+  longer carries the rule on a message to more than four role topics or its token counts.

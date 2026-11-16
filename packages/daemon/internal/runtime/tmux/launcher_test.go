@@ -20,17 +20,18 @@ func ompOnly(invocation string) map[runtime.Backend]Launcher {
 }
 
 // The Oh My Pi launcher's command is innerCommand's, byte for byte (TestInnerCommand pins those
-// bytes), and its pane carries no pairs of its own.
+// bytes), on the prompt file the launch hands it, and its pane carries no pairs of its own.
 func TestOmpLauncherLaunchIsInnerCommand(t *testing.T) {
 	spec := testSpec()
+	const promptFile = "/state/secrets/legion-omp-legion-43-tester-system-prompt.md"
 	prefix := []string{"env", "K=v", "--"}
 	for _, resume := range []string{"", "/state/trees/x/.omp/s 1.jsonl"} {
 		spec.ResumeSessionFile = resume
-		inner, pairs, err := NewOmpLauncher(prefix, "/opt/oh-my-pi/18.0.3/omp").Launch(spec, Host{StateDir: "/state", Legion: "/opt/legion"})
+		inner, pairs, err := NewOmpLauncher(prefix, "/opt/oh-my-pi/18.0.3/omp").Launch(spec, Host{StateDir: "/state", Legion: "/opt/legion"}, promptFile)
 		if err != nil || pairs != nil {
 			t.Fatalf("Launch = %v, %q", err, pairs)
 		}
-		if want := innerCommand(prefix, "/opt/oh-my-pi/18.0.3/omp", resume, spec.Prompt); inner != want {
+		if want := innerCommand(prefix, "/opt/oh-my-pi/18.0.3/omp", resume, promptFile); inner != want {
 			t.Errorf("Launch(resume %q) = %q, want %q", resume, inner, want)
 		}
 	}
@@ -76,21 +77,23 @@ func TestEachLauncherNamesWhereItsPaneKeepsSessions(t *testing.T) {
 	}
 }
 
-// The live pane's root process, as /proc/<pane pid>/cmdline held it on a real tmux server: `sh -c`
+// The live pane's root process, as /proc/<pane pid>/cmdline holds it on a real tmux server: `sh -c`
 // on the pane's whole shell command, with the shim's inner command spliced in. The harness itself
 // is a descendant, never the pane's pid. Every pane's command holds "omp", if only in
 // `--append-system-prompt`; a Claude Code pane's alone holds ` claude-bridge -- ` (its Marker).
 const (
 	livePaneOmp = "/bin/sh\x00-c\x00tmux set-option -w -t \"$TMUX_PANE\" @legion_owner legion-t1 && export PATH=/state/bin:/usr/bin:/bin && " +
 		"cd /state/workspaces/LEGION-1 && /opt/legion/legion worker-shim --connect unix:///state/stream.sock " +
-		"--boot-token-file /state/secrets/legion-t1-legion-1-architect -- /opt/bin/omp --mode rpc --append-system-prompt \"$(cat /roles/architect.md)\"\x00"
+		"--boot-token-file /state/secrets/legion-t1-legion-1-architect -- /opt/bin/omp --mode rpc " +
+		"--append-system-prompt /state/secrets/legion-t1-legion-1-architect-system-prompt.md\x00"
 	livePaneClaude = "/bin/sh\x00-c\x00tmux set-option -w -t \"$TMUX_PANE\" @legion_owner legion-t1 && export PATH=/state/bin:/usr/bin:/bin && " +
 		"cd /state/workspaces/LEGION-2 && /opt/legion/legion worker-shim --connect unix:///state/stream.sock " +
 		"--boot-token-file /state/secrets/legion-t1-legion-2-implementer -- /opt/legion/legion claude-bridge -- /opt/claude/bin/claude -p " +
 		"--input-format stream-json --output-format stream-json --verbose --replay-user-messages " +
 		"--thinking-display summarized --permission-mode bypassPermissions --strict-mcp-config " +
 		"--mcp-config /state/claude/legion-t1-legion-2-implementer/mcp.json --plugin-dir /opt/claude-envoy --plugin-dir /opt/claude-envoy/legion " +
-		"--session-id a1917bc9-2989-441e-9eef-c65e0d51bfbf --append-system-prompt \"$(cat /roles/implementer.md)\"\x00"
+		"--session-id a1917bc9-2989-441e-9eef-c65e0d51bfbf " +
+		"--append-system-prompt-file /state/secrets/legion-t1-legion-2-implementer-system-prompt.md\x00"
 )
 
 // verifyPane's command-line tier accepts a pane holding the marker of a harness the daemon launches,
@@ -153,7 +156,8 @@ func TestAgentMarkersNameEveryConfiguredHarness(t *testing.T) {
 // A launch whose backend the daemon resolved no launcher for is refused naming it, before any
 // file is written or tmux is run, and, with `take_over` unset as this runtime has it, a resume of
 // a session found nowhere is the refusal to start fresh, naming the harness it
-// was recorded for and every sessions directory searched.
+// was recorded for and every sessions directory searched. A launch whose prompt file cannot be
+// read is refused there too, before anything is written.
 func TestLaunchRefusesWhatItsLaunchersCannotRun(t *testing.T) {
 	stateDir := t.TempDir()
 	bin := t.TempDir()
@@ -191,6 +195,13 @@ func TestLaunchRefusesWhatItsLaunchersCannotRun(t *testing.T) {
 		filepath.Join(stateDir, "home", ".omp", "agent", "sessions") + " holds that session"
 	if _, err := rt.Resume(context.Background(), nil, resumed); !errors.Is(err, runtime.ErrSessionFileMissing) || err.Error() != want {
 		t.Errorf("Resume from a missing session = %v, want %q", err, want)
+	}
+
+	unreadable := spec
+	unreadable.Prompt.RolePromptPaths = []string{filepath.Join(t.TempDir(), "absent.md")}
+	want = "spawn legion-omp-legion-43-tester: prompt file: open " + unreadable.Prompt.RolePromptPaths[0] + ": no such file or directory"
+	if _, err := rt.Spawn(context.Background(), unreadable); !errors.Is(err, os.ErrNotExist) || err.Error() != want {
+		t.Errorf("Spawn over a missing prompt file = %v, want %q", err, want)
 	}
 	if entries, _ := os.ReadDir(filepath.Join(stateDir, "secrets")); len(entries) != 0 {
 		t.Errorf("a refused launch wrote %d secret files", len(entries))

@@ -124,9 +124,10 @@ name the merged commit. Read the other repositories with your gh's read-only acc
 
 ## Recording a wait on other work
 
-Set an issue's `blocked_by` list when its work must wait on an issue outside this tree
-(`dispatch issue-update --issue <key> --blocked-by <a> --blocked-by <b>`, which replaces the whole
-list, so read the issue's existing links first).
+Set an issue's `blocked_by` list when its work must wait on an issue outside this tree, of any
+Dispatch project (`dispatch issue-update --issue <key> --blocked-by <a> --blocked-by <b>`, which
+replaces the whole list, so read the issue's existing links first); Dispatch refuses a link to
+another project's issue only to a credential that names one project (`PROJECT_SCOPE`).
 That list is how Legion learns of the wait.
 An issue the daemon has already started returns its admission slot while a blocker of it is not
 `done`, so the deployment's cap goes to work that can move,

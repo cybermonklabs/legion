@@ -47,9 +47,14 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
+// issueKeyShape is a Dispatch issue key, `INFRA-431`, unanchored. Go's regular expressions and
+// Postgres's read it alike, so issueKeyPattern and the near-copy gate's title rule
+// (duplicateTitleKeyPattern) take the same shape from it.
+const issueKeyShape = `[A-Z][A-Z0-9]{1,9}-[0-9]+`
+
 var (
 	projectKeyPattern = regexp.MustCompile(contracts.ProjectKeyPattern)
-	issueKeyPattern   = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}-[0-9]+$`)
+	issueKeyPattern   = regexp.MustCompile(`^` + issueKeyShape + `$`)
 )
 
 // projectKeyProblem is every route's refusal of a value that is not a project key: the field it
@@ -410,6 +415,11 @@ type server struct {
 	// (the forced create whose check does not answer), so a case's outcome is its own choice
 	// rather than its machine's speed.
 	duplicateBound time.Duration
+	// nearCopyRowID overrides how a near_copy_checks row gets its id; nil, which every server the
+	// deployment builds leaves it, means a random uuid. Only a test sets it, to put a refused row in
+	// place under the id a create will write, as a refusal whose insert landed but whose answer the
+	// server never read.
+	nearCopyRowID func() string
 	// broadcastResolveBudget overrides the budget a broadcast's recipient resolution runs under;
 	// zero, which every server the deployment builds leaves it, means broadcastResolveTimeout.
 	// Only a test sets it, so a budget that ends before every selected session is read is the
@@ -510,9 +520,9 @@ type server struct {
 	// termStats is the per-project term-statistics refreshes a related-item check started
 	// (ensureSearchTermStats), keyed by project, so a project's many checks start one.
 	termStats singleflight.Group
-	// relatedRecordRetrying is how many related_checks records being retried in the background
-	// (recordRelatedChecks, run as detached work) hold or wait on a pool connection right now, at
-	// most relatedRecordRetryLimit.
+	// relatedRecordRetrying is how many records being retried in the background (retryRecord:
+	// related_checks and near_copy_checks rows, run as detached work) hold or wait on a pool
+	// connection right now, at most relatedRecordRetryLimit.
 	relatedRecordRetrying atomic.Int32
 	// branches is what the results reads last learned about each repository's default branch
 	// (delivery.Branches), held across requests so the Verification tab's refetch on every

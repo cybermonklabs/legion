@@ -167,12 +167,17 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	if caller.Service != "" {
 		actor.Service = &caller.Service
 	}
-	// Only a token the broker scoped to one project names one, which brokertoken.callerOf has
-	// already read. The two it scopes to a person instead carry no project at all: a dev box
-	// session's token, whose person may write wherever they may, and the token of a machine
-	// naming a service and no person, which its fleet entry holds to no project either.
-	if caller.Project != "" {
-		actor.Project = &caller.Project
+	// Only a token an operator's entry mapped to one project names that project as the one it
+	// may write, which is today's named-scope rule; a named token naming none (the shared
+	// public-session account's) writes, as a token naming no project does, wherever Dispatch's
+	// own rules let it, and brokertoken refuses a named token naming two.
+	// A token acting as its person carries the list
+	// its trade asked for (brokertoken.Caller.Projects), and that list limits no write here: a
+	// dev box session's person writes wherever they may, and the token of a machine naming a
+	// service and no person names no project at all.
+	if caller.ProjectScope == brokertoken.ProjectScopeNamed && len(caller.Projects) == 1 {
+		project := caller.Projects[0]
+		actor.Project = &project
 	}
 	// The writer the line names: the person, or the service for a token that names none, under
 	// the `service:` prefix requestKeyLogin spells a service with, so one field never reads a

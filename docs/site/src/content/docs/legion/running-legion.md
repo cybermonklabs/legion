@@ -457,7 +457,7 @@ What each part is for:
   the control the others are measured against.
   A role of a drawn unit names each arm's `config_files` in its `PI_CONFIG_FILES` after the
   operator's own and the role's own, in the order the project's file declares the experiments, and
-  ends its one `--append-system-prompt` value with each arm's `instructions` in that same order.
+  ends its system prompt with each arm's `instructions` in that same order.
   The draw is made once, when the unit is opened, and is recorded with the arm, the mode in force
   and the instant; the launch then follows that record and not the mode, so moving a mode to `off`
   stops new draws and takes nothing from a unit already running.

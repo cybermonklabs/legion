@@ -4,9 +4,10 @@
 // record, and releases granted values. Its HTTP API is documented at
 // https://cybermonklabs.github.io/legion/broker/reference/api/. The broker opens no Dispatch ask
 // and issues nothing in Dispatch: Dispatch's server lists pending requests and links each to the
-// broker's page, and relays a machine login's decision with its typed code. The one thing the
-// broker reads in Dispatch is its model judge's, whether an issue is open
-// (BROKER_JUDGE_DISPATCH_URL), with the broker's own projected ServiceAccount token.
+// broker's page, and relays a machine login's decision with its typed code. The broker reads
+// Dispatch in two places, each with its own projected ServiceAccount token: its model judge,
+// whether an issue is open (BROKER_JUDGE_DISPATCH_URL), and its token exchange, whether a
+// person may see the projects a token names (BROKER_PROJECT_ACCESS_URL).
 package main
 
 import (
@@ -52,6 +53,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
@@ -507,6 +509,16 @@ func main() {
 		keys, err := issuerKeys(serving, cfg.ExchangeGitHubIssuer)
 		fatal(err)
 		exchangeConfig.GitHub = oauth.IssuerConfig{Issuer: cfg.ExchangeGitHubIssuer, Audience: cfg.ExchangeGitHubAudience, Keys: keys}
+	}
+	if cfg.ProjectAccessURL != "" {
+		// The broker's own projected ServiceAccount token for Dispatch's audience, read at call
+		// time through the reader every projected token here goes through, so a rotation needs no
+		// restart. config.Load holds the two settings to both or neither.
+		exchangeConfig.Projects = projectaccess.New(cfg.ProjectAccessURL, brokertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+		slog.Info("project access check", "state", "on", "url", redact.URL(cfg.ProjectAccessURL))
+	} else {
+		slog.Info("project access check", "state", "off",
+			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token naming no project is minted as before and a person's trade naming one is refused")
 	}
 	if cfg.ExchangeK8sAudience == "" && cfg.ExchangeGitHubIssuer == "" && cfg.GoogleOIDCAudience == "" {
 		slog.Info("token exchange", "state", "unconfigured", "detail", "no subject token issuer is set, so no pod, workflow run or machine exchanges")

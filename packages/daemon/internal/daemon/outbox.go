@@ -1708,9 +1708,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// something to rewrite.
 		//
 		// Only a row that carries an entry and names a phase is held to it: a production check's
-		// look carries neither and is fenced on its check above, and every other start of no
-		// entry (record.SuperviseRequest.Entry, which lists them) is held to the generation
-		// alone.
+		// look carries neither and is fenced on its check above, every start of no entry
+		// (record.SuperviseRequest.Entry, which lists them) is held to the generation alone, and
+		// so is a root architect's start, which carries an entry and names no phase, since that
+		// architect serves every phase of its tree and its row must act whatever phase the root
+		// stands in. What keeps one entry to one task for the architect is the claim's own rule:
+		// a delivery of an entry it was already queued a task of queues no second one
+		// (supervise.Claim.GivenEntry).
 		if payload.Entry > 0 && payload.Phase != "" {
 			entry, err := r.phaseEntry(ctx, row.Issue, payload.Role)
 			if err != nil {
@@ -1818,11 +1822,48 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return fmt.Errorf("create claim %s: %w", token, err)
 			}
 		}
+		// The task this start gives the claim, nil for a start that carries none. It is built here,
+		// before the start is recorded, because the record reads it: a task the claim holds back
+		// for a root that had no architect to hear it goes at the start, unless this start's own
+		// task takes its place (supervise.Machine.StartedBy), and that is decided against the
+		// request delivered below, so the two never read different starts.
+		//
+		// The row's phase, already held to the issue's above, travels with the delivery: it is
+		// what says the task is still the work to do once the delivery has outlived its id. The
+		// row's entry travels with it too, the number the start's own transaction raised on the
+		// role's phases row (record.PhaseRow.Entry): it is what the completion this task's turn
+		// reports is held to (api/handoff.go), and what says a later row carrying the same
+		// entry queues no second task of it (supervise.Claim.GivenEntry). A start that hands
+		// the role the work of the entry its row already names travels with the mark that
+		// says so (record.SuperviseRequest.ResendEntry), and the claim takes its task though
+		// it was given that entry. A check start's look
+		// and check instance travel the same way, and are what say the completion this task's
+		// turn reports is a report on that look rather than a phase completion
+		// (supervise.Claim.ServingCheck, api/handoff.go). The row travels as well: the claim
+		// writes it with the delivery, so a retry of this row (a
+		// settle or a ClaimReady below that failed, a crash before the row finished) queues the
+		// task again neither while it is pending nor once the claim has retired it
+		// (supervise.Claim.DeliveredRows), and that same record is what says, when the row
+		// settles what its task named, that the claim has it (settleKept). What the task names
+		// of what its tree is owed travels with it as well (supervise.Delivery.Kept): the
+		// claim's write of the delivery takes those rows from this start row and holds them
+		// under that claim and delivery id, and the write recording the turn's confirmation
+		// tells them (the claim store's putDelivery, 20261101163106_parked_decisions).
+		var task *supervise.RequestDeliver
+		if payload.Task != "" {
+			kept, err := keptJSON(payload.Kept)
+			if err != nil {
+				return err
+			}
+			task = &supervise.RequestDeliver{Claim: token, Task: payload.Task, Phase: payload.Phase, Generation: payload.Generation,
+				Entry: payload.Entry, ResendEntry: payload.ResendEntry, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
+				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}
+		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim
 		// this row created has no older stop to fence, and recording it here rather than only for
 		// a claim that already existed keeps one rule instead of a special case.
-		if err := machine.StartedBy(ctx, row.ID); err != nil {
+		if err := machine.StartedBy(ctx, row.ID, task); err != nil {
 			return fmt.Errorf("record the start of claim %s: %w", token, err)
 		}
 		state := machine.Claim().State
@@ -1925,35 +1966,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 					return fmt.Errorf("record entry %d as given to claim %s: %w", payload.Entry, token, err)
 				}
 			}
-		} else if payload.Task != "" {
-			// The row's phase, already held to the issue's above, travels with the delivery: it is
-			// what says the task is still the work to do once the delivery has outlived its id. The
-			// row's entry travels with it too, the number the start's own transaction raised on the
-			// role's phases row (record.PhaseRow.Entry): it is what the completion this task's turn
-			// reports is held to (api/handoff.go), and what says a later row carrying the same
-			// entry queues no second task of it (supervise.Claim.GivenEntry). A start that hands
-			// the role the work of the entry its row already names travels with the mark that
-			// says so (record.SuperviseRequest.ResendEntry), and the claim takes its task though
-			// it was given that entry. A check start's look
-			// and check instance travel the same way, and are what say the completion this task's
-			// turn reports is a report on that look rather than a phase completion
-			// (supervise.Claim.ServingCheck, api/handoff.go). The row travels as well: the claim
-			// writes it with the delivery, so a retry of this row (a
-			// settle or a ClaimReady below that failed, a crash before the row finished) queues the
-			// task again neither while it is pending nor once the claim has retired it
-			// (supervise.Claim.DeliveredRows), and that same record is what says, when the row
-			// settles what its task named, that the claim has it (settleKept). What the task names
-			// of what its tree is owed travels with it as well (supervise.Delivery.Kept): the
-			// claim's write of the delivery takes those rows from this start row and holds them
-			// under that claim and delivery id, and the write recording the turn's confirmation
-			// tells them (the claim store's putDelivery, 20261101163106_parked_decisions).
-			kept, err := keptJSON(payload.Kept)
-			if err != nil {
-				return err
-			}
-			if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: payload.Task, Phase: payload.Phase, Generation: payload.Generation,
-				Entry: payload.Entry, ResendEntry: payload.ResendEntry, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}); err != nil {
+		} else if task != nil {
+			if err := machine.Handle(ctx, *task); err != nil {
 				return fmt.Errorf("deliver to claim %s: %w", token, err)
 			}
 			gave = true

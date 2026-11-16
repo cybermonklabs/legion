@@ -119,6 +119,8 @@ type dispatchInput struct {
 // DispatchArgs itself.
 func dispatchClusterOnlyRefusals() []dispatchInput {
 	return slices.Concat(dispatchSandboxTailnetGroup, dispatchSandboxSignInGroup, []dispatchInput{
+		{"outsideOrigin", func(a *gcp.DispatchArgs) { a.OutsideOrigin = dispatchOutsideOrigin }},
+		{"signInOutside", func(a *gcp.DispatchArgs) { a.SignInOutside = true }},
 		{"envoyImage", func(a *gcp.DispatchArgs) { a.EnvoyImage = dispatchEnvoyImage }},
 		{"cloudSqlProxyImage", func(a *gcp.DispatchArgs) { a.CloudSqlProxyImage = dispatchProxyImage }},
 		{"natsUrl", func(a *gcp.DispatchArgs) { a.NatsUrl = pulumi.String("nats://example-hub.example-tailnet.ts.net:4222") }},

@@ -114,6 +114,10 @@ type valueOutcome struct {
 // failed load and writes nothing.
 func NewCurrent(ctx context.Context, loader Loader, every time.Duration) (*Current, error) {
 	c := &Current{loader: loader, mu: make(chan struct{}, 1), recent: map[string]time.Time{}, values: map[string]*valueState{}, now: time.Now}
+	// The loader weighs a secret waiting for its value by c's clock, which PendingValue reads too,
+	// so the two never answer differently. Load and LoadOne run under the writer lock, which SetNow
+	// holds while it changes the clock.
+	c.loader.now = func() time.Time { return c.now() }
 	if err := c.Refresh(ctx); err != nil {
 		return nil, err
 	}
@@ -217,7 +221,7 @@ func (c *Current) reload(ctx context.Context) (reads []valueRead, first bool, er
 				c.recent[name] = c.now()
 			}
 		}
-		set = setOf(set.Secrets, set.Refused, set.versions)
+		set = setOf(set.Secrets, set.Refused, set.Pending, set.versions)
 	}
 	first = c.base == nil
 	c.base = set
@@ -297,9 +301,9 @@ func (c *Current) reread(ctx context.Context, name string) (Lookup, []valueRead,
 	id := c.storeID(name)
 	changed := !answers(c.base, name, id, lk)
 	if changed {
-		merged := &Set{Secrets: maps.Clone(c.base.Secrets), Refused: maps.Clone(c.base.Refused), versions: maps.Clone(c.base.versions)}
+		merged := &Set{Secrets: maps.Clone(c.base.Secrets), Refused: maps.Clone(c.base.Refused), Pending: maps.Clone(c.base.Pending), versions: maps.Clone(c.base.versions)}
 		merge(merged, name, id, lk)
-		c.base = setOf(merged.Secrets, merged.Refused, merged.versions)
+		c.base = setOf(merged.Secrets, merged.Refused, merged.Pending, merged.versions)
 		c.recent[name] = c.now()
 	}
 	read, unread := c.listOne(name)
@@ -324,9 +328,24 @@ func (c *Current) CheckName(name string) error {
 // CheckName passed: the key its refusal has in Set.Refused.
 func (c *Current) storeID(name string) string { return c.loader.Prefix + slugOf(name) }
 
+// PendingValue reports whether set holds the secret a session asks for as name waiting for its
+// first value (Set.Pending, ReasonPendingValue), not served, and still waiting by c's clock
+// (pendingAt), which c's loads and rereads weigh it by too (NewCurrent): a request for it is refused
+// ErrPendingValue rather than ErrUnknownSecret. The age is checked here, not only at load, so a set
+// no load or reread has replaced since (a reread the miss-path limit refused, or one that failed)
+// stops answering pending at the window, as the policy's own reason would.
+func (c *Current) PendingValue(set *Set, name string) bool {
+	if _, served := set.Secrets[name]; served || c.CheckName(name) != nil {
+		return false
+	}
+	waiting, ok := set.Pending[c.storeID(name)]
+	return ok && pendingAt(waiting.Created, c.now())
+}
+
 // merge sets name, whose whole name in the store is id, in set's maps as lk found it: the served
-// secret or no entry in Secrets, its value's version or no entry in versions, and its refusal or
-// no entry in Refused. set's Version is not recomputed.
+// secret or no entry in Secrets, its value's version or no entry in versions, its refusal or no
+// entry in Refused, and its wait for a value or no entry in Pending. set's Version is not
+// recomputed.
 func merge(set *Set, name, id string, lk Lookup) {
 	if lk.Served {
 		set.Secrets[name] = lk.Secret
@@ -343,13 +362,22 @@ func merge(set *Set, name, id string, lk Lookup) {
 	} else {
 		delete(set.Refused, id)
 	}
+	if lk.Reason == ReasonPendingValue {
+		if set.Pending == nil {
+			set.Pending = map[string]Pending{}
+		}
+		set.Pending[id] = lk.pending()
+	} else {
+		delete(set.Pending, id)
+	}
 }
 
 // answers reports whether set already answers name, whose whole name in the store is id, as lk
-// does: the same secret served at the same value version, or the same refusal, or neither.
+// does: the same secret served at the same value version, the same refusal, the same wait for a
+// value, or none of them.
 func answers(set *Set, name, id string, lk Lookup) bool {
 	secret, served := set.Secrets[name]
-	return served == lk.Served && secret == lk.Secret && set.versions[name] == lk.version && set.Refused[id] == lk.refusal()
+	return served == lk.Served && secret == lk.Secret && set.versions[name] == lk.version && set.Refused[id] == lk.refusal() && set.Pending[id] == lk.pending()
 }
 
 // list records, for each kind secret base serves, the key a read of its value decodes under now
@@ -537,7 +565,7 @@ func (c *Current) withhold() *Set {
 	if served == nil {
 		return c.base
 	}
-	return setOf(served, refused, c.base.versions)
+	return setOf(served, refused, c.base.Pending, c.base.versions)
 }
 
 // publish makes next the live policy, first writing a line for each secret whose state next
@@ -546,14 +574,19 @@ func (c *Current) withhold() *Set {
 // come in the order the sets do. first is the pod's first load, every line of which says so
 // (first_load). A secret next refuses and live did not writes RefusedMessage, and one next
 // refuses for another reason than live did writes it with was. One live refused and next does not
-// writes ServableMessage, with now=servable when next serves it and now=absent when next neither
-// serves nor refuses it, which is a secret gone from the store. A secret refused for the reason
-// live held writes nothing, whatever its owner tag now says: next carries the new tag, and
-// broker_unservable_secrets with it. A publish that changes no refusal allocates nothing here.
+// writes ServableMessage, with now=servable when next serves it, now=pending when next holds it
+// waiting for its value, and now=absent when next neither serves, refuses nor holds it, which is a
+// secret gone from the store. A secret next holds waiting for its value (Set.Pending) that live
+// neither held so nor refused writes PendingMessage, once: the loads that find it still waiting
+// write nothing, nor does its value landing, since a secret coming to be served writes no line,
+// nor its leaving the store. A secret refused for the reason live held writes nothing, whatever its
+// owner tag now says: next carries the new tag, and broker_unservable_secrets with it. A publish
+// that changes no refusal and no wait allocates nothing here.
 func (c *Current) publish(next *Set, first bool) {
 	var before map[string]Refusal
+	var waited map[string]Pending
 	if live := c.set.Load(); live != nil {
-		before = live.Refused
+		before, waited = live.Refused, live.Pending
 	}
 	var changed []string
 	for id, now := range next.Refused {
@@ -566,15 +599,27 @@ func (c *Current) publish(next *Set, first bool) {
 			changed = append(changed, id)
 		}
 	}
+	for id := range next.Pending {
+		_, waiting := waited[id]
+		_, refused := before[id]
+		if !waiting && !refused {
+			changed = append(changed, id)
+		}
+	}
 	slices.Sort(changed)
 	for _, id := range changed {
 		was, wasRefused := before[id]
 		now, refused := next.Refused[id]
+		pending, waits := next.Pending[id]
 		switch {
 		case refused && !wasRefused:
 			slog.Error(RefusedMessage, "name", id, "reason", now.Reason, "owner", now.Owner, "first_load", first)
 		case refused:
 			slog.Error(RefusedMessage, "name", id, "reason", now.Reason, "owner", now.Owner, "first_load", false, "was", was.Reason)
+		case waits && !wasRefused:
+			slog.Info(PendingMessage, "name", id, "reason", ReasonPendingValue, "owner", pending.Owner, "first_load", first)
+		case waits:
+			slog.Info(ServableMessage, "name", id, "reason", was.Reason, "owner", was.Owner, "now", "pending")
 		case c.serves(next, id):
 			slog.Info(ServableMessage, "name", id, "reason", was.Reason, "owner", was.Owner, "now", "servable")
 		default:

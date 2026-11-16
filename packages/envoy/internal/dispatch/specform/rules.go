@@ -28,8 +28,10 @@ const (
 const ruleTermLine Rule = "term-line"
 
 // termLineDetail is the detail of a line under Terms that is no term line: it shows the one form
-// of a term line.
-const termLineDetail = `it is no term line, and a term line has the form "- **<term>**: <definition>"`
+// of a term line, and the way out for a decision block, whose question line is such a line: the
+// block stands above the heading, and the chosen definition goes under it after the answer.
+const termLineDetail = `it is no term line, and a term line has the form "- **<term>**: <definition>". ` +
+	`Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading`
 
 // maxWords is R49's bound on a sentence, which is also ste-lint's.
 const maxWords = 25

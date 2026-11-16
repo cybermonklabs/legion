@@ -36,8 +36,8 @@ Each time you read it:
   `withdrawn`; a reopen brings them back), and Dispatch refuses an ask there
   (`409 ISSUE_CLOSED`). Reopen it with `set_status` to `icebox`, where the issue holds no work
   and its asks stay answerable, and say so in the day's report.
-- `Assignee: unassigned` with a person known: assign it, naming your session (`dispatch whoami`):
-  `curl -sS -X PATCH -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" -H 'Content-Type: application/json' -d '{"assignee": "<email>", "actor": {"kind": "session", "id": "<session id>"}}' "$DISPATCH_URL/api/v1/issues/<REPORT KEY>"`.
+- `Assignee: unassigned` with a person known: assign it, naming your session (`dispatch whoami`), in bash:
+  `curl -sS -X PATCH -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") -H 'Content-Type: application/json' -d '{"assignee": "<email>", "actor": {"kind": "session", "id": "<session id>"}}' "$DISPATCH_URL/api/v1/issues/<REPORT KEY>"`.
   An answer that does not print the issue with its new `assignee` left the assignee as it was
   (`400 ASSIGNEE_NOT_ALLOWED` names an email nobody has signed in to Dispatch with): name it, with
   its first line, in your summary.
@@ -118,8 +118,7 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   parked descendants; each nudge you sent, by its tree; and the consolidation passes' three counts
   summed over the week, with the link of the report issue's `consolidation.md` artifact, which
   lists each pair and group with what was done about it or what settles it. Name beside each
-  number the command that recounts it. When you lead a stream that keeps a scoreboard, the same
-  two measures go on it under `forced_creates_by_filer` and `tree_sizes`.
+  number the command that recounts it.
 
 A day with nothing finished says so in one sentence. When the lists do not fit, give each list's
 count and name its issues of `--priority 0` and `--priority 1`, in board rank order.

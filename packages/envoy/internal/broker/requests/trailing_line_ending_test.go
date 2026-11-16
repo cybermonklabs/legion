@@ -34,7 +34,7 @@ func grantAndRelease(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.P
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create(%s) = state %q, grant %v, %v; want an automatic grant", name, request.State, request.GrantID, err)
 	}
-	release, err := m.Values(t.Context(), *request.GrantID, enrollmentID, nil)
+	release, err := m.Values(t.Context(), *request.GrantID, enrollmentID, nil, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("Values(%s): %v", name, err)
 	}

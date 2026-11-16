@@ -87,37 +87,25 @@ func TestAMemoryGroupRoleIsToldTheMemoryOverlaysLast(t *testing.T) {
 	}
 }
 
-// The system prompt of a memory-group role ends with the project's memory instructions: the role
-// prompts, the addressing sentence, the deployment's own instructions, then the memory's, each
-// separated by a blank line and its trailing newlines dropped. A launch given none ends at the
-// deployment's own.
+// The system prompt file a memory-group role's start command carries ends with the project's
+// memory instructions: the role prompts, the addressing sentence, the deployment's own
+// instructions, then the memory's, each separated by a blank line and its trailing newlines
+// dropped. A launch given none ends at the deployment's own.
 func TestTheMemoryInstructionsAreTheLastFragmentOfTheSystemPrompt(t *testing.T) {
-	dir := t.TempDir()
-	write := func(name, text string) string {
-		t.Helper()
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return path
-	}
-	parts := runtime.PromptParts{
-		RolePromptPaths:            []string{write("role.md", "You are the tester.\n")},
-		Addressing:                 "Legion addressing: your role topic is `notifications.role.worker`.",
-		DeploymentInstructionsPath: write("instructions.md", "Deployment instructions.\n"),
-		VariantInstructionsPaths:   []string{write("memory.md", "Read the tree's memory.\n\n")},
-	}
-	got, err := systemPrompt(parts)
-	if err != nil {
+	r := memoryRuntime(t, memoryOverlays)
+	spec := memorySpec(t)
+	memory := filepath.Join(t.TempDir(), "memory.md")
+	if err := os.WriteFile(memory, []byte("Read the tree's memory.\n\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	want := "You are the tester.\n\n" + parts.Addressing + "\n\nDeployment instructions.\n\nRead the tree's memory."
-	if got != want {
+	spec.Prompt.VariantInstructionsPaths = []string{memory}
+	want := "You are the tester.\n\n" + spec.Prompt.Addressing + "\n\nDeployment instructions.\n\nRead the tree's memory."
+	if _, got := systemPromptOf(t, spec.Role, launcherCommand(launchOf(t, r, spec), r)); got != want {
 		t.Errorf("the memory-group role's system prompt =\n%q\nwant\n%q", got, want)
 	}
-	parts.VariantInstructionsPaths = nil
-	if got, err := systemPrompt(parts); err != nil || got != strings.TrimSuffix(want, "\n\nRead the tree's memory.") {
-		t.Errorf("a launch told no memory instructions = %q, %v, want the prompt to end at the deployment's own", got, err)
+	spec.Prompt.VariantInstructionsPaths = nil
+	if _, got := systemPromptOf(t, spec.Role, launcherCommand(launchOf(t, r, spec), r)); got != strings.TrimSuffix(want, "\n\nRead the tree's memory.") {
+		t.Errorf("a launch told no memory instructions = %q, want the prompt to end at the deployment's own", got)
 	}
 }
 

@@ -2,8 +2,11 @@ package api
 
 import (
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
 
 // The carry of an approval (docs/approval_carry.go) writes an approval in the person's name, so
@@ -108,6 +111,71 @@ func TestTheRestoreCarryApprovesNoVersionThatBreaksTheForm(t *testing.T) {
 		}
 		if got := approvedVersions(t, tree, document.PrimaryArtifactID); len(got) != 1 || got[0] != 1 {
 			t.Errorf("%q: the approved versions are %v; want only version 1, which the person approved outside the root", test.statement, got)
+		}
+	}
+}
+
+// The person approves a spec and its Verification document outside every root, the agent changes
+// the spec and requests approval of both, and the issue moves under a root, where the
+// Verification document's claim breaks the form. The agent's edit then puts the approved spec
+// text back with a decision block, and the person answers it: the carry would approve that
+// version of the spec in her name and answer the request, which names both documents. An
+// approval of that request covers both, so the carry judges both, as her own Approve does: it
+// carries nothing, and the request stays open. The controls: her own Approve of the request is
+// refused for the Verification document, and the same steps with a claim that keeps the form
+// carry the spec's approval and answer the request, as they always did.
+func TestTheCarryJudgesEachDocumentOfTheRequestItWouldAnswer(t *testing.T) {
+	for _, test := range []struct {
+		claim  string
+		breaks bool
+	}{
+		{"The check passes when pull request #12 merges.", true},
+		{"The check passes when the change merges.", false},
+	} {
+		tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1", settle: 20 * time.Millisecond})
+		issue := createFormIssue(t, tree.handler, tree.outside, "Keep each message", carrySpec("Dispatch keeps each message."))
+		verification := uploadFormDocument(t, tree.handler, issue.Key, "verification.md", "# Verification\n\n:::check{#c-merge}\n"+test.claim+"\n:::\n")
+		reviewDocument(t, tree.handler, issue.PrimaryArtifactID, "alice", "approved", "")
+		reviewDocument(t, tree.handler, verification.ID, "alice", "approved", "")
+		agentEdit(t, tree.handler, issue.PrimaryArtifactID, 2, replaceOp("Dispatch keeps each message.", "Dispatch stores each message."))
+		request := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, map[string]any{"include_verification": true})).Ask
+		if len(request.Approval.Documents) != 2 {
+			t.Fatalf("%q: the request names %+v, want the spec and the Verification document", test.claim, request.Approval.Documents)
+		}
+		reparentFormIssue(t, tree.handler, issue.Key, tree.root)
+		if broken := len(specFormReadAtVersion(t, tree, verification.ID, 1).Findings) > 0; broken != test.breaks {
+			t.Fatalf("%q: verification.md version 1 under the root breaks the form: %t, want %t", test.claim, broken, test.breaks)
+		}
+		if test.breaks {
+			refused := answerFormApproval(t, tree.handler, request.ID, docs.ApprovalOptionApprove, "")
+			if refused.Code != http.StatusConflict {
+				t.Fatalf("control: the person's own Approve of the request: status=%d body=%s, want 409", refused.Code, refused.Body.String())
+			}
+			body := decodeBody[specFormError](t, refused)
+			if body.Code != "SPEC_FORM" || len(body.Findings) != 1 || body.Findings[0].Document != "verification.md" || body.Findings[0].Version != 1 {
+				t.Fatalf("control: the person's own Approve of the request is refused with %+v, want SPEC_FORM for verification.md version 1", body)
+			}
+		}
+
+		agentEdit(t, tree.handler, issue.PrimaryArtifactID, 3, replaceOp("Dispatch stores each message.", "Dispatch keeps each message."),
+			map[string]string{"op": "insert", "after": "end", "markdown": waveAsk})
+		asks := indexedDecisionBlocks(t, tree.handler, issue.Key, issue.PrimaryArtifactID, map[string]string{"wave": "How many regions take the first wave?"})
+		answerDecisionBlock(t, tree.handler, asks["wave"], "alice", []string{"Two"}, "", nil)
+		waitForArtifactVersion(t, tree.handler, issue.PrimaryArtifactID, 4)
+
+		state := readBlockAsk(t, tree.handler, request.ID).State
+		if !test.breaks {
+			requireCarriedReview(t, tree.handler, issue.PrimaryArtifactID, 4, 1, &request.ID)
+			if state != "answered" {
+				t.Fatalf("%q: the request after the carry is %q, want answered", test.claim, state)
+			}
+			continue
+		}
+		if got := approvedVersions(t, tree, issue.PrimaryArtifactID); len(got) != 1 || got[0] != 1 {
+			t.Errorf("%q: the approved versions of the spec are %v; want only version 1, which the person approved", test.claim, got)
+		}
+		if state != "open" {
+			t.Errorf("%q: the carry answered the request that names verification.md version 1, which breaks the form: the request is %q, want open", test.claim, state)
 		}
 	}
 }

@@ -19,8 +19,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/fileowner"
 )
 
 // The slots of an airlock name, spelled as the broker's answer spells them
@@ -266,8 +267,8 @@ func checkAirlockRoot(root string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("the airlock directory %s is not a directory, so the grant's files have nowhere to go; remove it", root)
 	}
-	if st, ok := info.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
-		return fmt.Errorf("the airlock directory %s is owned by uid %d, not this user (uid %d), so the trust bundle written there is one its owner can replace; remove it, or run as its owner", root, st.Uid, os.Getuid())
+	if uid, ok := fileowner.Of(info); ok && uid != os.Getuid() {
+		return fmt.Errorf("the airlock directory %s is owned by uid %d, not this user (uid %d), so the trust bundle written there is one its owner can replace; remove it, or run as its owner", root, uid, os.Getuid())
 	}
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		return fmt.Errorf("the airlock directory %s is mode %04o, which lets other users write the trust bundle this command verifies its direct calls against; run: chmod 700 %s", root, perm, root)

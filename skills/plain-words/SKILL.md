@@ -5,8 +5,7 @@ description: "Use before you send or publish any text a person reads: an ask, a 
 
 # Say the literal thing
 
-The operator made this a rule: delete the empty verb phrases agents keep using, and say the literal
-thing instead.
+Delete the empty verb phrases agents keep using, and say the literal thing instead.
 
 Run this over your text before you send it. It takes a minute and it is not optional.
 
@@ -23,8 +22,7 @@ Run this over your text before you send it. It takes a minute and it is not opti
 
 A fresh session that has only what the reader has removes what the reader does not need, and lists
 every term it cannot define. Fix each listed term. A reviewer that reads only to approve has not
-done this step, and an instruction alone did not make it happen, so the two lists are what show it
-ran. The check runs on the text going to the reader, never on the instructions you give that
+done this step, so the two lists are what show it ran. The check runs on the text going to the reader, never on the instructions you give that
 session or on what it sends back, which would never end.
 
 ## The test
@@ -32,23 +30,23 @@ session or on what it sends back, which would never end.
 Take the verb phrase out and ask: **what literally happens?** Write that. If you cannot say what
 happens, you did not know, and the phrase hid it from you as well as from the reader.
 
-## The phrases, commonest first
+## The phrases
 
 | Never | What to write |
 |---|---|
 | land the change, land the PR | merge it, release it, deploy it, apply it — whichever one it is |
 | unblock the work | X can start once Y merges |
-| name the problem, name the owner, name a date | say the problem; who owns it is X; it is due on <date> |
+| name the problem, name the owner, name a date | say the problem; who owns it is X; Y is left, and at the measured rate it ends on <date> |
 | it pays for itself, that pays | it costs $16,306 and returns $60,379 a month |
 | carry it to X, carry the finding | tell X; send it to X; put it on the issue |
 | this shows the gap, the number shows | the gap is 12 of 30; the number is 1.17 |
 
-The rows are in the order agents write them, so look for the first row first: you reach for "land"
+You reach for "land"
 when you cannot say whether the thing merged, released or deployed. If you can say which, say it.
 If you cannot, that is the sentence — "it is approved and not merged" — and it is more useful than
 any verb.
 
-On the "name the X" row an instruction alone does not work, so use the test: delete "name". If the
+On the "name the X" row, use the test: delete "name". If the
 sentence then says what happens, keep it that way; if it says nothing, you had not decided the
 action, so decide it and write it.
 

@@ -29,8 +29,8 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
    leave it. Note its `Assignee:`: that person answers the tree's asks, because their Inbox opens on the
    issues they hold. Never reassign it, because who holds an issue is the people's decision, made
    from the issue header.
-2. Find who set the label. `dispatch read` does not show who set a label, so list its events:
-   `curl -sS -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<issue>/events?limit=200"`,
+2. Find who set the label. `dispatch read` does not show who set a label, so list its events in bash:
+   `curl -sS -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/<issue>/events?limit=200"`,
    oldest first, 200 a page. When a page holds 200 events, read the next with
    `&after=<the last event's seq>` until a page holds fewer: the setter is the newest transition,
    and the daemon reads the whole log. The event that added the label set it, and its `actor` is

@@ -24,18 +24,19 @@ import (
 // file is the one place that judges its form. The list of a root is the term lines of the latest
 // version of each covered document under it that a person approved, its terms.md among them, with
 // one definition of each term (approvedSpecTexts), and a covered document that defines a term of
-// the list again is refused. Three calls refuse: refuseSpecForm, at the two call sites, the
-// opening or hand-back of an approval request (requestArtifactApproval) and a person's approval
-// (writeApprovalReviews); and carryBreaksForm, which the carry of an approval to a new version
-// asks before it writes that approval in the person's name (docs.FormGate), and which carries
-// nothing over a break. A person's approval decides against the list and then changes it, so it
-// takes the lock of the root's list before it reads the list (lockSpecTerms), and two approvals
-// under one root take turns. A move into a root changes the list too, and takes the same lock
-// before it appends its event (lockSpecTermsOfMove), and the list reads that event. Two calls read
-// findings and refuse nothing: the read route (getArtifactSpecForm) and the restore of a reopen
-// and of the repair pass (restoreIssueAsksTx), which leaves a broken approval request resolved
-// rather than open it again. Every route that opens an approval request or answers one reaches
-// one of these calls;
+// the list again is refused. refuseSpecForm refuses, at its two call sites: the opening or
+// hand-back of an approval request (requestArtifactApproval), and an approval in a person's name
+// (approvalDocuments), which gives the documents that approval covers and judges each of them.
+// Every writer of an approval in a person's name asks approvalDocuments: her review on either
+// review route and her answer to an approval request (writeApprovalReviews), and the carry of an
+// approval to a new version (carryBreaksForm, docs.FormGate), which carries nothing over a break.
+// A person's approval decides against the list and then changes it, so it takes the lock of the
+// root's list before it reads the list (lockSpecTerms), and two approvals under one root take
+// turns. A move into a root changes the list too, and takes the same lock before it appends its
+// event (lockSpecTermsOfMove), and the list reads that event. Two calls read findings and refuse
+// nothing: the read route (getArtifactSpecForm) and the restore of a reopen and of the repair pass
+// (restoreIssueAsksTx), which leaves a broken approval request resolved rather than open it again.
+// Every route that opens an approval request or answers one reaches one of these calls;
 // TestOnlyTheFormGateOpensOrAnswersAPersonsApproval holds the code to that census.
 //
 // One way past the gate stays open, and it is known: an approval given before the setting named
@@ -365,7 +366,7 @@ func (s *server) specFormOf(ctx context.Context, q queryer, documents []model.As
 
 // refuseSpecForm judges documents (specFormOf) and answers the judgment, with a *specFormRefusal
 // of act when a text of a document in scope breaks the form. It has two call sites: the opening or
-// hand-back of an approval request, and a person's approval.
+// hand-back of an approval request, and an approval in a person's name (approvalDocuments).
 func (s *server) refuseSpecForm(ctx context.Context, tx pgx.Tx, documents []model.AskApprovalDocument, act specform.Act) (specFormResult, error) {
 	result, err := s.specFormOf(ctx, tx, documents, act)
 	if err != nil {
@@ -377,15 +378,51 @@ func (s *server) refuseSpecForm(ctx context.Context, tx pgx.Tx, documents []mode
 	return result, nil
 }
 
-// carryBreaksForm is the form gate on the version that a carry of an approval would approve in
-// the person's name (docs.FormGate): whether a text of that version of artifactID breaks the form,
-// judged as a person's approval is (specFormOf). A document no root covers reads nothing more.
-func (s *server) carryBreaksForm(ctx context.Context, tx pgx.Tx, artifactID string, version int) (bool, error) {
-	result, err := s.specFormOf(ctx, tx, []model.AskApprovalDocument{{ArtifactID: artifactID, Version: version}}, specform.ActApproval)
-	if err != nil {
-		return false, err
+// approvalDocuments is every document a review in a person's name of document covers, each at
+// the version the review records for it, judged for the form when the review approves. With
+// request, the approval request open on document, the review answers that request, so it covers
+// every document request names, each at the version it names, and document at document.Version
+// in its place; with none, document alone. An approval is judged as call site 2 judges
+// (refuseSpecForm at ActApproval): a text of one of those documents that breaks the form refuses
+// the whole approval. A request for changes is never judged. This is the one answer to which
+// documents an approval covers, and the one judgment of them: the person's review on either
+// review route and her answer to an approval request write a review of each document it returns
+// (writeApprovalReviews), and the carry of an approval in her name asks it before it answers the
+// request or writes its own review (carryBreaksForm).
+func (s *server) approvalDocuments(ctx context.Context, tx pgx.Tx, request *model.AskApproval, document model.AskApprovalDocument, state string) ([]model.AskApprovalDocument, error) {
+	documents := []model.AskApprovalDocument{document}
+	if request != nil {
+		documents = make([]model.AskApprovalDocument, 0, len(request.Documents)+1)
+		named := false
+		for _, other := range request.Documents {
+			if other.ArtifactID == document.ArtifactID {
+				other.Version, named = document.Version, true
+			}
+			documents = append(documents, other)
+		}
+		if !named {
+			documents = append(documents, document)
+		}
 	}
-	return result.refusal(specform.ActApproval) != nil, nil
+	if state == "approved" {
+		if _, err := s.refuseSpecForm(ctx, tx, documents, specform.ActApproval); err != nil {
+			return nil, err
+		}
+	}
+	return documents, nil
+}
+
+// carryBreaksForm is the form gate of the carry of an approval (docs.FormGate): whether the
+// approval that the carry would write in the person's name - of document, at its version, which
+// answers request when one is open - is refused (approvalDocuments), as her own Approve of the
+// same request is. A document that no root covers reads nothing more.
+func (s *server) carryBreaksForm(ctx context.Context, tx pgx.Tx, request *model.AskApproval, document model.AskApprovalDocument) (bool, error) {
+	_, err := s.approvalDocuments(ctx, tx, request, document, "approved")
+	var refusal *specFormRefusal
+	if errors.As(err, &refusal) {
+		return true, nil
+	}
+	return false, err
 }
 
 // FormGate is the gate of the carry (carryBreaksForm) for a document service that a process

@@ -231,8 +231,10 @@ const GrantLogMessage = "broker: grant log"
 // constructions against each other.
 //
 // The line holds no secret value and no token: a GrantLogEvent holds none, because every field it
-// carries is a name, a login, an id, a state or a decision, and Raw is an audit row's detail,
-// which the broker writes with no value in it.
+// carries is a name, a login, an id, a state or a decision, and Raw is the detail of a decision,
+// a judge's verdict or a grant's end, which the broker writes with no value in it. A grant.used
+// row, which writes no such line, is the one row whose detail holds a session's own words, its
+// command and its call's reason, which ReadGrantLog answers as stored.
 //
 // A line is lost if the process dies between the transaction's commit and this call. That is the
 // right way round: the audit row is the record the review reads, and the line is the copy the log

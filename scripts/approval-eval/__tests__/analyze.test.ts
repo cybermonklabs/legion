@@ -131,10 +131,13 @@ function judgementRow(
 ): JudgementRow {
   const faulted = options.fault === true;
   const endpoint = options.endpoint ?? "claude";
+  const model = options.model ?? (endpoint === "jev" ? "jev-latest" : "anthropic/claude-opus-5-5");
   return {
     arm,
     recipe: options.recipe ?? "bare",
-    model: options.model ?? (endpoint === "jev" ? "jev-latest" : "anthropic/claude-opus-5-5"),
+    model,
+    // The model the gateway answers under, which is the asked one, as a round now records it.
+    servedModel: model,
     endpoint,
     caseId,
     slice: options.slice ?? "report",

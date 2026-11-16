@@ -535,23 +535,36 @@ type AirlockName struct {
 	Hosts []string `json:"hosts"`
 }
 
+// releaseCall is what this client says of one release to the broker, which logs it with the
+// grant's reason and decides nothing by it: the command the release starts, nil for none, and
+// the reason this call gave, "" for none. That reason can differ from the grant's, since a call
+// that asks again for names its session holds a live grant of gets that grant back. The exec form
+// sends the command as record.ClipCommand leaves it, the 32 arguments of at most 256 bytes the
+// broker records, so no command takes the body past the broker's 1 MiB cap and fails a release
+// that would have succeeded without it.
+type releaseCall struct {
+	Command []string `json:"command,omitempty"`
+	Reason  string   `json:"reason,omitempty"`
+}
+
+// says reports whether call names anything, which is what puts it in a release's body.
+func (call releaseCall) says() bool { return len(call.Command) > 0 || call.Reason != "" }
+
 // GrantValues releases grantID's values, asking the broker to narrow its GitHub App tokens when
-// narrowing is not nil; nil sends no body, the release as the grant holds it.
-func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing) (GrantValues, error) {
+// narrowing is not nil, and naming what call says of the release; with neither it sends no body,
+// the release as the grant holds it. A broker from before the command or the reason field
+// refuses a body holding it, 400 INVALID_NARROWING naming the unknown field, and releases nothing
+// (callRefused), so the same release is sent once more without either: a newer client releases
+// from an older broker as before, only unlogged. This stays: a client can meet an older broker
+// on every future independent rollout.
+func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing, call releaseCall) (GrantValues, error) {
 	if err := pathID("a grant id", grantID); err != nil {
 		return GrantValues{}, err
 	}
-	var body []byte
-	if narrowing != nil {
-		encoded, err := json.Marshal(struct {
-			GitHubApp *GitHubNarrowing `json:"github_app"`
-		}{narrowing})
-		if err != nil {
-			return GrantValues{}, fmt.Errorf("encode the narrowing: %w", err)
-		}
-		body = encoded
+	raw, err := c.release(ctx, signer, grantID, narrowing, call)
+	if call.says() && callRefused(err) {
+		raw, err = c.release(ctx, signer, grantID, narrowing, releaseCall{})
 	}
-	raw, err := c.doProof(ctx, signer, http.MethodPost, "/v1/grants/"+grantID+"/values", body)
 	if err != nil {
 		return GrantValues{}, err
 	}
@@ -560,6 +573,33 @@ func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string,
 		return GrantValues{}, fmt.Errorf("decode grant values: %w", err)
 	}
 	return values, nil
+}
+
+// release is one POST /v1/grants/{id}/values, its body holding narrowing and what call says
+// where each is given, and no body when none is.
+func (c *client) release(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing, call releaseCall) ([]byte, error) {
+	var body []byte
+	if narrowing != nil || call.says() {
+		encoded, err := json.Marshal(struct {
+			GitHubApp *GitHubNarrowing `json:"github_app,omitempty"`
+			releaseCall
+		}{narrowing, call})
+		if err != nil {
+			return nil, fmt.Errorf("encode the release: %w", err)
+		}
+		body = encoded
+	}
+	return c.doProof(ctx, signer, http.MethodPost, "/v1/grants/"+grantID+"/values", body)
+}
+
+// callRefused reports whether err is a broker from before the command or the reason field
+// refusing a release for holding one: its body reader answers 400 INVALID_NARROWING, the release
+// route's code for a body it cannot read, with the JSON decoder's own words for a field it does
+// not declare, before anything is released.
+func callRefused(err error) bool {
+	var refusal *apiError
+	return errors.As(err, &refusal) && refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_NARROWING" &&
+		(strings.Contains(refusal.Message, `unknown field "command"`) || strings.Contains(refusal.Message, `unknown field "reason"`))
 }
 
 func (c *client) RevokeGrant(ctx context.Context, signer Signer, grantID string) error {

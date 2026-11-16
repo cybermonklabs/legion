@@ -50,7 +50,8 @@ is still going (below). Each read is made at the head, so a push needs no write 
 ## The tester
 
 Read `dispatch results --issue <issue>` first. Then run and record only the checks that carry no
-`ci_check`, and the proofs on a real surface that CI cannot make. A check with `ci_check` needs no
+`ci_check` and whose `run` is no whole test suite, and the proofs on a real surface that CI cannot
+make. A check with `ci_check` needs no
 pass from the implementer. It is an entry in `failures` only when its derived result is a fail, or
 its run concluded `skipped`, `neutral` or `cancelled`.
 
@@ -72,10 +73,26 @@ The reviewer waits for that run by its name, as it waits for a required check th
 request changes for that check. The named run is usually not one the base branch requires, so the
 wait on required checks does not cover it.
 
+## A job held back from an ordinary pull request
+
+A `ci_check` can name a job that the repository runs on a pull request only on request: on
+cybermonklabs/legion, the slow suites and the full browser lane run only under the label `full-ci`
+(`.github/workflows/ci.yaml`). Such a check is proved in CI too, never in the pod. Without the
+label, such a job is at the head and reads `skipped`, which leaves the check no pass. The
+implementer adds that label and then pushes, because the workflow starts on a push and not on a
+label, and the run at that head is the check's proof. The label stays on for as long as a
+`ci_check` of the issue names a held-back job, because every later head (a review fix, a forward
+merge) needs its own run; where it came off, it goes on again before the next push. The tester
+takes the check's result from that run, as from any other.
+
 ## A name that no run answers
 
-When the head's checks have settled and no run of the named name answers, the words of the check
-are wrong. The tester and the reviewer each send this to the architect as a finding, with
+When the head's checks have settled and no run of the named name answers, read the pull request's
+merge state first (*Never waiting on CI* in `skill://legion-worker/references/pr-body.md`): a head
+that conflicts with its base gets no `pull_request` run, and the forward merge cures it. A
+held-back job (above) is not absent without the label: it reads `skipped`, and the label cures it.
+Otherwise the words of the check are wrong. The tester and the reviewer each send this to the
+architect as a finding, with
 `envoy_publish` to its role topic. The architect corrects the name or gives the check a command.
 Neither role fails the round or requests changes for it, because the change under review is not
 what is wrong.

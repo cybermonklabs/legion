@@ -1,8 +1,19 @@
 // Package oauthwire is the wire contract of the broker's OAuth endpoints that the broker and the
 // callers it answers share: the clients they present, the scope a machine login asks for, the
-// names the token exchange knows a subject token by, and the fields the broker adds to a token
-// answer. It imports nothing, so the agent-secrets helper reads it without the broker's storage.
+// names the token exchange knows a subject token by, the fields the broker adds to a token
+// answer, and the one grammar of a token's list of projects. It imports nothing of the broker —
+// only the standard library and the project-key rule internal/contracts generates — so the
+// agent-secrets helper reads it without the broker's storage.
 package oauthwire
+
+import (
+	"fmt"
+	"regexp"
+	"slices"
+	"strings"
+
+	"github.com/sjawhar/envoy/internal/contracts"
+)
 
 const (
 	// ClientID is the OAuth client the agent-secrets helper logs a machine in as, and the client
@@ -46,6 +57,13 @@ const (
 	FormLauncherCredential = "launcher_credential"
 	// FormLauncherCredentialDeclined is the one value of FormLauncherCredential that declines.
 	FormLauncherCredentialDeclined = "false"
+	// FormProjects is the exchange request's third broker-defined form parameter: the projects
+	// the minted token names, as project keys separated by white space (ParseProjects). A trade
+	// that acts as its person names any of the projects that person may see, and the broker asks
+	// Dispatch whether they may before it mints; a trade an operator's entry maps names that
+	// entry's one project or none, and a trade that names no person names none. Absent or blank
+	// is no projects.
+	FormProjects = "projects"
 	// SubjectTokenTypeKubernetes is the subject_token_type a pod presents its projected
 	// Kubernetes service-account token under. RFC 8693 registers no name for one, so the broker
 	// defines this one and the exchange client is the only client that may present it.
@@ -82,12 +100,69 @@ const (
 // They are short and fixed so a reader of either reads one word rather than the prose
 // exchange.ProjectScope.String prints for an operator.
 const (
-	// ProjectScopeNamed is a token that may write the one project it names.
+	// ProjectScopeNamed is a token an operator's entry mapped: it acts for the entry's person and
+	// its Projects holds the entry's one project, or none for an account entry naming none (the
+	// shared public-session account's). It never holds two.
 	ProjectScopeNamed = "named"
-	// ProjectScopePerson is a token that may write every project its person may write, and names
-	// no project.
+	// ProjectScopePerson is a token that acts as its person: its Projects holds the 0 to
+	// MaxProjects projects the trade asked for, each one its person could see at the trade.
 	ProjectScopePerson = "person"
 )
+
+// MaxProjects is the most projects one token names.
+const MaxProjects = 16
+
+// projectKey is a whole project key, the one rule Dispatch creates keys by.
+var projectKey = regexp.MustCompile(contracts.ProjectKeyPattern)
+
+// ParseProjects reads a list of projects as the exchange's form parameter, the stored claim and
+// AGENT_SECRETS_PROJECTS all spell it: project keys separated by white space. It answers the keys
+// sorted, each once, and nil for a blank list. A key that is not a project key, a key named twice
+// and a list of more than MaxProjects are refused, naming the rule, so a list that is not one is
+// never read as some part of it.
+func ParseProjects(raw string) ([]string, error) {
+	fields := strings.Fields(raw)
+	if len(fields) == 0 {
+		return nil, nil
+	}
+	if len(fields) > MaxProjects {
+		return nil, fmt.Errorf("%d projects are named, and a token names at most %d", len(fields), MaxProjects)
+	}
+	for _, key := range fields {
+		if !projectKey.MatchString(key) {
+			return nil, fmt.Errorf("%q is not a project key: %s", key, contracts.ProjectKeyRule)
+		}
+	}
+	slices.Sort(fields)
+	for i := 1; i < len(fields); i++ {
+		if fields[i] == fields[i-1] {
+			return nil, fmt.Errorf("%s is named twice, and a list names each project once", fields[i])
+		}
+	}
+	return fields, nil
+}
+
+// ValidProjects holds a list to exactly what ParseProjects answers: at most MaxProjects project
+// keys, sorted, each once. It is how a reader of a list it did not parse itself — an
+// introspection answer — refuses one no exchange could have minted.
+func ValidProjects(projects []string) error {
+	if len(projects) > MaxProjects {
+		return fmt.Errorf("%d projects are named, and a token names at most %d", len(projects), MaxProjects)
+	}
+	for i, key := range projects {
+		if !projectKey.MatchString(key) {
+			return fmt.Errorf("%q is not a project key: %s", key, contracts.ProjectKeyRule)
+		}
+		if i > 0 && key <= projects[i-1] {
+			return fmt.Errorf("the projects %q and %q are not sorted and named once each", projects[i-1], key)
+		}
+	}
+	return nil
+}
+
+// JoinProjects is a list in its stored and wire spelling: the keys separated by one space, and
+// the empty string for none. ParseProjects reads it back to the same list.
+func JoinProjects(projects []string) string { return strings.Join(projects, " ") }
 
 // Introspection is what the broker knows about one of its access tokens: the RFC 7662 answer the
 // broker's introspection route serialises and a resource server reads a presented token back
@@ -118,11 +193,14 @@ type Introspection struct {
 	// as the actor token's issuer spells it, which is a Google subject rather than an account,
 	// so this is the name a reader can act on.
 	Machine string `json:"machine,omitempty"`
-	// ProjectScope is what Project means: ProjectScopeNamed or ProjectScopePerson. A machine
-	// login's own token, which no exchange decided for, carries neither this nor Project.
+	// ProjectScope is what Projects means: ProjectScopeNamed or ProjectScopePerson. A machine
+	// login's own token, which no exchange decided for, carries neither this nor Projects.
 	ProjectScope string `json:"project_scope,omitempty"`
-	// Project is the one project key a ProjectScopeNamed token may write.
-	Project string `json:"project,omitempty"`
+	// Projects is the token's list of projects: for a ProjectScopeNamed token, the entry's one
+	// project, or none for an account entry naming none; for a ProjectScopePerson token, the 0 to
+	// MaxProjects projects its trade asked for, each one its person could see then. Sorted, each
+	// once; absent for none.
+	Projects []string `json:"projects,omitempty"`
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it.
 	Scope string `json:"scope,omitempty"`
 	// ExpiresAt is when the token expires, in seconds since the epoch (RFC 7662's 'exp'), so a
