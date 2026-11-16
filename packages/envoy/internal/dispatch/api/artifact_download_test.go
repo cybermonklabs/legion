@@ -78,12 +78,19 @@ func downloadRoutes(t *testing.T) (http.Handler, []downloadRoute) {
 // name under owner, and answers the artifact. The name goes in the form's name field, which is
 // what names the artifact. The file part's own filename is written raw into its header
 // (apitest.MultipartUpload), so it is a plain stand-in rather than a name that holds a quote or a
-// line break.
+// line break. A version after the first replaces a document the owner already holds, so it names
+// the token of the version it replaces (uploadBaseNamed); a file or an image has no document tree
+// and is asked no token, which is why the base is read per upload and left out where there is
+// none.
 func uploadVersions(t *testing.T, handler http.Handler, owner, name, contentType string, contents ...[]byte) model.Artifact {
 	t.Helper()
 	var artifact model.Artifact
 	for index, content := range contents {
-		response := multipartRequest(t, handler, owner+"/artifacts", map[string]string{"name": name}, "upload.bin", contentType, content, "alice")
+		fields := map[string]string{"name": name}
+		if base := uploadBaseNamed(t, handler, owner+"/artifacts", name); base != nil {
+			fields["precondition"] = encodeUploadBase(t, base)
+		}
+		response := multipartRequest(t, handler, owner+"/artifacts", fields, "upload.bin", contentType, content, "alice")
 		if response.Code != http.StatusCreated {
 			t.Fatalf("upload %q to %s: status=%d body=%s", name, owner, response.Code, response.Body.String())
 		}
