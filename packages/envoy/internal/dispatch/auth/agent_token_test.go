@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -264,12 +265,23 @@ func TestThePreviousTokenLogIsBounded(t *testing.T) {
 // the previous-token log remembers up to previousTokenCallers of them for ten minutes, so a
 // remembered caller may cost it no more than the first previousTokenCallerBytes of each field,
 // however long the header it sent.
+//
+// The heap is read so that the machine's processor count does not move the reading. HeapAlloc
+// counts the whole process, and much of a process's heap is per P: each sync.Pool keeps an array
+// as long as GOMAXPROCS and up to an entry on each P, and a collection keeps the pools' contents
+// alive once more, as their victim cache. Read after one collection on a 288-CPU host, the same
+// 64 callers grew the heap by 57 KB to 167 KB from run to run. So the test runs on one P, as
+// testing.AllocsPerRun does; each reading follows two collections, after which a pool holds only
+// what was put in it between them; and the log goes to io.Discard, so its lines are not counted
+// as remembered. On that host the reading then moved by 16 bytes at most in 20 runs.
 func TestARememberedCallerHoldsOnlyItsClippedFields(t *testing.T) {
-	_ = warnings(t)
+	logtest.SetDefault(t, slog.NewJSONHandler(io.Discard, nil))
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 	tokens := sharedTokens(t, "new-token old-token")
 	const callers = 64
 	const headerBytes = 1 << 20
 	heap := func() int64 {
+		runtime.GC()
 		runtime.GC()
 		var stats runtime.MemStats
 		runtime.ReadMemStats(&stats)
@@ -287,9 +299,8 @@ func TestARememberedCallerHoldsOnlyItsClippedFields(t *testing.T) {
 	grown := heap() - before
 	runtime.KeepAlive(tokens)
 	// 2x the worst-case clipped bytes covers the previousTokenCaller struct (two string headers)
-	// and the map's own bucket overhead; the fixed 32 KiB covers GC scheduling noise in the
-	// measurement (observed growth across 70 runs: 12 KB to 69 KB, most 25-35 KB).
-	if limit := int64(callers*2*previousTokenCallerBytes*2) + 32*1024; grown > limit {
+	// and the map's own slot overhead. The 64 callers hold 25.7 KB of these 64 KiB.
+	if limit := int64(callers * 2 * previousTokenCallerBytes * 2); grown > limit {
 		t.Errorf("remembering %d callers, each sending a %d-byte User-Agent and X-Forwarded-For, grew the heap by %d bytes, want at most %d: a remembered caller keeps the whole header it sent, not its first %d bytes",
 			callers, headerBytes, grown, limit, previousTokenCallerBytes)
 	}
