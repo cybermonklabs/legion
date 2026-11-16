@@ -492,13 +492,17 @@ reread_phase() {
 # run_reread registers old and both through the listener, then recreates the session bucket
 # holding both with changed titles and new, the interest bucket holding both with changed topics
 # and new, and the session bucket again with the very records it holds, so only its creation time
-# changes. A phase that could not recreate its bucket ends the scenario: what the next phase
-# expects the buckets to hold is unknown.
+# changes. The read of each recreated bucket writes back the old records its copy held and the new
+# bucket does not (INFRA-4094), so after the first two phases each list holds old as it was beside
+# the new bucket's records (kept), and the third phase's bucket holds exactly that. A phase that
+# could not recreate its bucket ends the scenario: what the next phase expects the buckets to hold
+# is unknown.
 run_reread() {
-  local n=$reread_count phases=() universe first second phase label name kind before after steady
+  local n=$reread_count phases=() universe first second kept phase label name kind before after steady
   universe="old=${n},both=${n},new=${n}"
   first="old=${n}:1,both=${n}:1"
   second="both=${n}:2,new=${n}:2"
+  kept="old=${n}:1,${second}"
   fresh reread
   start_listener
   wait_ready
@@ -508,8 +512,8 @@ run_reread() {
   wait_whole interests $((2 * n))
   # Each phase: label|poll file name|bucket|the copy before|the bucket after|the other list's records.
   for phase in "session bucket|sessions|sessions|${first}|${second}|${first}" \
-    "interest bucket|interests|interests|${first}|${second}|${second}" \
-    "identical records|identical|sessions|${second}|${second}|${second}"; do
+    "interest bucket|interests|interests|${first}|${second}|${kept}" \
+    "identical records|identical|sessions|${kept}|${kept}|${kept}"; do
     IFS='|' read -r label name kind before after steady <<<"$phase"
     reread_phase "$name" "$kind" "$before" "$after" "$steady" "$universe"
     phases+=("${label}: ${phase_result}")

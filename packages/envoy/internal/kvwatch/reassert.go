@@ -40,9 +40,9 @@ type Held[V any] struct {
 // Reasserted is what one re-assert did with the records a cache held: how many it held, how many
 // the new bucket took, how many keys the new bucket already held a record of (a write made in the
 // new incarnation, a delete marker, or another listener's re-assert), and how many writes failed or
-// did not answer within reassertBudget. Window is the time from the new bucket's creation, as its
-// stream reports it, to the end of the re-assert, the bound on how long the records stood missing,
-// and zero when the stream could not be read.
+// were not answered before the bus went silent for reassertIdle. Window is the time from the new
+// bucket's creation, as its stream reports it, to the end of the re-assert, the bound on how long
+// the records stood missing, and zero when the stream could not be read.
 type Reasserted struct {
 	Held    int
 	Written int
@@ -57,11 +57,13 @@ type Reasserted struct {
 // is larger than this.
 const reassertWorkers = 16
 
-// reassertBudget bounds one re-assert, every write in it: the hook it runs from holds the read's
-// apply lock (Watcher.applyMu), so the new bucket's read waits for it, and a bus that stopped
-// answering must not hold that read for good. It is the one JetStream request's bound the bus
-// gives every request (bus.RequestTimeout).
-const reassertBudget = bus.RequestTimeout
+// reassertIdle bounds one re-assert by the bus answering it: once no write of it has been answered
+// for this long, every write still in flight or not yet sent fails. The hook it runs from holds the
+// read's apply lock (Watcher.applyMu), so the new bucket's read waits for it, and a bus that stopped
+// answering must not hold that read for good; a bucket of many records on a bus that answers is
+// written whole, however long that takes. It is the bound the bus gives one JetStream request
+// (bus.RequestTimeout).
+const reassertIdle = bus.RequestTimeout
 
 // Reassert writes each held record into the bucket read reads, a bucket deleted and created
 // again, and stores in the copy each one the bucket took (took), so the read's sweep keeps it. A
@@ -86,8 +88,10 @@ func Reassert[V any](w *Watcher, read Read, held []Held[V], took func(held Held[
 	if epoch != read.Epoch {
 		return result
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), reassertBudget)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	silent := time.AfterFunc(reassertIdle, cancel)
+	defer silent.Stop()
 	var (
 		mu       sync.Mutex
 		firstErr error
@@ -101,6 +105,7 @@ func Reassert[V any](w *Watcher, read Read, held []Held[V], took func(held Held[
 				if answered && err == nil {
 					took(h, revision)
 				}
+				silent.Reset(reassertIdle)
 				mu.Lock()
 				switch {
 				case answered && err == nil:

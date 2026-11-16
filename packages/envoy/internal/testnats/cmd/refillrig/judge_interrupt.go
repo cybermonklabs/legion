@@ -31,6 +31,9 @@ func judgeInterrupt(args []string) (verdict, error) {
 	if err != nil {
 		return v, err
 	}
+	// The interrupted read wrote back what the copy held that the bucket did not before its
+	// install line, which the rig interrupts at (INFRA-4094), so every list after it holds those.
+	e = e.reasserted()
 	lines, err := readLog(*path, *offset)
 	if err != nil {
 		return v, err
@@ -105,6 +108,6 @@ func judgeInterrupt(args []string) (verdict, error) {
 	v.notes = append(v.notes,
 		fmt.Sprintf("interrupted by %s at +%s into the read: %s", *mode, ms(*interrupted-begin.at), strings.Join(outcomes, "; ")),
 		fmt.Sprintf("%d polls during the incomplete read each held every record of the old copy", during),
-		fmt.Sprintf("a complete read of %d records followed at +%s with no action of the rig's, and %d polls after it listed exactly the bucket", completed.entries, ms(completed.at-begin.at), afterSweep))
+		fmt.Sprintf("a complete read of %d records followed at +%s with no action of the rig's, and %d polls after it listed exactly the bucket, with the old copy's records it lacked written back", completed.entries, ms(completed.at-begin.at), afterSweep))
 	return v, nil
 }

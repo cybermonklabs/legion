@@ -12,6 +12,8 @@ import (
 // nothing changed. The script stops the listener while it recreates and fills the bucket, so the
 // read the listener begins once it runs again (its watcher's probe finds the recreate) reads the
 // whole bucket; one that delivered less began before the fill was done, and the run is INVALID.
+// That read first writes back every record the copy held that the bucket does not (INFRA-4094),
+// so the list holds those as well once it completes (expectation.reasserted).
 func judgeReread(args []string) (verdict, error) {
 	flags := flag.NewFlagSet("judge reread", flag.ContinueOnError)
 	path := flags.String("log", "", "listener log")
@@ -57,6 +59,8 @@ func judgeReread(args []string) (verdict, error) {
 		v.invalid = "the read timed out before the read that completed: not the one uninterrupted read this scenario observes"
 		return v, nil
 	}
+	written := e.total(e.reasserted().after) - e.total(e.after)
+	e = e.reasserted()
 	judgeList(&v, *registry, obs, e, begin.at, end.at, end.at, *settle)
 	inside, partial := 0, 0
 	for _, o := range obs {
@@ -86,7 +90,7 @@ func judgeReread(args []string) (verdict, error) {
 	if line, ok := firstLine(lines, 0, foundLine(*registry)); ok && line.at <= begin.at {
 		found = fmt.Sprintf("the watcher's probe found the recreate %s before the read began", ms(begin.at-line.at))
 	}
-	v.notes = append([]string{fmt.Sprintf("%d of %d polls fell inside the %s read of %d records, %d of them with the new records partly delivered; every record of the old copy held until the read completed, exactly the bucket's after it; %s",
-		inside, len(obs), ms(end.at-begin.at), end.entries, partial, found)}, v.notes...)
+	v.notes = append([]string{fmt.Sprintf("%d of %d polls fell inside the %s read of %d records, %d of them with the new records partly delivered; every record of the old copy held until the read completed, exactly the bucket's after it, with the %d records the old copy held and the new bucket did not written back; %s",
+		inside, len(obs), ms(end.at-begin.at), end.entries, partial, written, found)}, v.notes...)
 	return v, nil
 }

@@ -57,6 +57,23 @@ func (e expectation) names() []string {
 	return names
 }
 
+// reasserted is e as the listener's write-back leaves it (kvwatch.Reassert, INFRA-4094): the read
+// that finds a recreated bucket first writes into it every record the copy held, where the bucket
+// holds nothing for the key, so each set before names and after does not stays, at its value
+// before, in the bucket and so in the copy once the read completes. A set both name is the
+// bucket's: the write-back never writes over a record the bucket holds. Every record the rig
+// seeds is a live one, which the listener writes back.
+func (e expectation) reasserted() expectation {
+	out := expectation{before: e.before, after: map[string]recordSet{}}
+	for name, set := range e.before {
+		out.after[name] = set
+	}
+	for name, set := range e.after {
+		out.after[name] = set
+	}
+	return out
+}
+
 func variantIn(sets map[string]recordSet, name string, index int) (byte, bool) {
 	set, ok := sets[name]
 	if !ok || index >= set.count {
