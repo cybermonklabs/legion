@@ -5,12 +5,15 @@
 // pod's own work, read and write the conversation of every agent of the deployment, or have its
 // own push refused by the pod's leak guard. Guard takes them out of a test process's own
 // environment, so every command it starts and everything it runs in-process inherits none;
-// Isolated hands one command none of the variables and a home of the test's.
+// Isolated hands one command none of the variables and a home of the test's; RealGitAndJJ puts
+// the git and jj a machine's own wrappers of them run first on the process's PATH, so a command
+// under that home meets no wrapper that needs another.
 package fixtureenv
 
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -158,6 +161,103 @@ func MustGuard(keep ...string) {
 func guardFailed(err error) {
 	fmt.Fprintln(os.Stderr, "TestMain:", err)
 	os.Exit(1)
+}
+
+// parentExe is the shell command that prints the executable of the process it runs under, from
+// Linux's /proc: the parent of the shell that runs it is that process.
+const parentExe = `readlink "/proc/$PPID/exe"`
+
+// RealGitAndJJ puts first on the process's PATH a directory of its own holding git and jj: links
+// to the programs the git and jj already on PATH run. The first git or jj of a machine's PATH can
+// be a wrapper that finds its tool by, or changes what that tool does by, the home of whoever runs
+// it: a mise shim finds its version under the caller's HOME and none under a fixture's (`mise
+// ERROR No version is set for shim: jj`), and a person's own git or jj shim can check every commit
+// against a list it decrypts with that HOME's keys and refuse the commit where it cannot. A
+// fixture runs git and jj under a home of the test's (Isolated), and so does the code under test,
+// which looks each up by name on this PATH, so a test's result depended on what the machine put
+// first on PATH (dispatch://INFRA-3904).
+//
+// Each program is read from itself while it runs: the executable /proc names for the parent of a
+// shell it starts (a git shell alias; `jj util exec`), started as the first git or jj on PATH in
+// the process's own environment, where a wrapper finds its tool, with no configuration of the
+// machine's (GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM and an empty JJ_CONFIG). A tool PATH does not
+// hold is left out, so a test that needs it skips or fails as it did; one that PATH holds and that
+// cannot be read that way (no /proc, a wrapper that runs no tool) is an error naming it. A
+// package calls it from TestMain after Guard, which has already taken Legion's image wrappers off
+// PATH, and calls what it returns once m.Run is done, which removes the directory.
+func RealGitAndJJ() (remove func(), err error) {
+	dir, err := os.MkdirTemp("", "fixtureenv-tools-")
+	if err != nil {
+		return nil, fmt.Errorf("fixtureenv: make the directory of the real git and jj: %w", err)
+	}
+	remove = func() { _ = os.RemoveAll(dir) }
+	bin := filepath.Join(dir, "bin")
+	emptyConfig := filepath.Join(dir, "jj-config.toml")
+	if err := os.Mkdir(bin, 0o755); err != nil {
+		remove()
+		return nil, fmt.Errorf("fixtureenv: make the directory of the real git and jj: %w", err)
+	}
+	if err := os.WriteFile(emptyConfig, nil, 0o600); err != nil {
+		remove()
+		return nil, fmt.Errorf("fixtureenv: write the empty jj configuration: %w", err)
+	}
+	for _, tool := range []struct {
+		name string
+		args []string
+		env  []string
+	}{
+		{"git", []string{"-c", "alias.binary=!" + parentExe, "binary"}, []string{"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1"}},
+		{"jj", []string{"util", "exec", "--", "sh", "-c", parentExe}, []string{"JJ_CONFIG=" + emptyConfig}},
+	} {
+		onPath, err := exec.LookPath(tool.name)
+		if err != nil {
+			continue
+		}
+		binary, err := runningBinary(dir, onPath, tool.args, tool.env)
+		if err == nil {
+			err = os.Symlink(binary, filepath.Join(bin, tool.name))
+		}
+		if err != nil {
+			remove()
+			return nil, fmt.Errorf("fixtureenv: %w", err)
+		}
+	}
+	if err := os.Setenv("PATH", bin+string(filepath.ListSeparator)+os.Getenv("PATH")); err != nil {
+		remove()
+		return nil, fmt.Errorf("fixtureenv: set PATH: %w", err)
+	}
+	return remove, nil
+}
+
+// MustRealGitAndJJ is RealGitAndJJ for a TestMain, which fails as MustGuard does.
+func MustRealGitAndJJ() (remove func()) {
+	remove, err := RealGitAndJJ()
+	if err != nil {
+		guardFailed(err)
+	}
+	return remove
+}
+
+// runningBinary runs onPath with args, which make it run parentExe in a shell under itself, in dir,
+// under the process's environment with env over it, and answers the absolute path that prints: the
+// program onPath ran. A run that prints no such path is an error naming the command, its status,
+// what it printed and its stderr.
+func runningBinary(dir, onPath string, args, env []string) (string, error) {
+	cmd := exec.Command(onPath, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	binary := strings.TrimSpace(string(out))
+	if err == nil && filepath.IsAbs(binary) {
+		_, err = os.Stat(binary)
+		if err == nil {
+			return binary, nil
+		}
+	}
+	return "", fmt.Errorf("could not read the program %s runs: `%s %s` answered %q (%v), and reading it needs Linux's /proc; stderr: %s",
+		onPath, onPath, strings.Join(args, " "), binary, err, stderr.String())
 }
 
 // Live gives the test the process's own values back of every variable Guard took out or set, its

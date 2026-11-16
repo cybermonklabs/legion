@@ -41,6 +41,11 @@ var helperChildVariables = []string{
 // and OMP_SESSION_STORAGE name the deployment's shared sessions database, a test of this package
 // would connect to and query the store every agent of the deployment reads and writes. Each test
 // here that needs a session database names its own (testdb.DSNFile).
+//
+// Then it puts the real git and jj first on PATH (fixtureenv.RealGitAndJJ): the bundle fixture,
+// the sweep's jj rows and this package's own restore run git and jj by name under a home of the
+// test's, where a machine's wrapper of either (a mise shim, a person's commit-checking shim) can
+// find no tool or refuse the command.
 func TestMain(m *testing.M) {
 	for _, name := range helperChildVariables {
 		if os.Getenv(name) != "" {
@@ -54,7 +59,10 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 	}
-	os.Exit(m.Run())
+	removeTools := fixtureenv.MustRealGitAndJJ()
+	code := m.Run()
+	removeTools()
+	os.Exit(code)
 }
 
 // No test of this package can reach the workspace of the pod it runs in. The first two cases fail

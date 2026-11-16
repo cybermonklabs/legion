@@ -238,3 +238,71 @@ func TestIsolatedReachesNoNetworkRemoteWhateverTheRepositoryAllows(t *testing.T)
 		t.Fatal("the push without GIT_ALLOW_PROTOCOL never reached the loopback server, so this test proves nothing")
 	}
 }
+
+// writeWrapper writes an executable shell script named name holding body into dir.
+func writeWrapper(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// RealGitAndJJ puts first on PATH the git that the PATH's own git runs, read from that git as it
+// runs, so a wrapper first on PATH no longer stands between a test and git: here one that refuses
+// every commit, as a machine's own git shim can under a fixture's home. The same commit through
+// the wrapper is refused first, so the wrapper is in the way until RealGitAndJJ runs.
+func TestRealGitAndJJPutsTheGitAWrapperRunsFirstOnPath(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("this test drives a real git: %v", err)
+	}
+	wrappers := t.TempDir()
+	wrapper := writeWrapper(t, wrappers, "git",
+		"case \" $* \" in *\" commit \"*) echo 'the wrapper refuses every commit' >&2; exit 3 ;; esac\nexec '"+git+"' \"$@\"\n")
+	t.Setenv("PATH", wrappers+string(filepath.ListSeparator)+os.Getenv("PATH"))
+	env := fixtureenv.Isolated(t.TempDir())
+	repo := t.TempDir()
+	mustRun(t, repo, env, fixturegit.InitWorkTree(repo, "main")...)
+	commit := []string{"git", "commit", "--quiet", "--allow-empty", "-m", "one"}
+	if out, err := run(repo, env, commit...); err == nil {
+		t.Fatalf("the commit through the wrapper succeeded, so this test proves nothing:\n%s", out)
+	}
+
+	remove, err := fixtureenv.RealGitAndJJ()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(remove)
+	first, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, err := filepath.EvalSymlinks(first); err != nil || target == wrapper || first == wrapper {
+		t.Fatalf("the first git on PATH is %s (%s, %v), want a link to the git the wrapper runs", first, target, err)
+	}
+	if out, err := run(repo, env, commit...); err != nil {
+		t.Fatalf("the commit after RealGitAndJJ = %v, want the real git's:\n%s", err, out)
+	}
+}
+
+// A git or jj on PATH whose program cannot be read from it, here a jj that runs no jj, is an error
+// naming it, and PATH is left as it was.
+func TestRealGitAndJJNamesAToolItCannotRead(t *testing.T) {
+	wrappers := t.TempDir()
+	broken := writeWrapper(t, wrappers, "jj", "echo 'no jj here' >&2\nexit 1\n")
+	path := wrappers + string(filepath.ListSeparator) + os.Getenv("PATH")
+	t.Setenv("PATH", path)
+	remove, err := fixtureenv.RealGitAndJJ()
+	if err == nil {
+		remove()
+		t.Fatal("RealGitAndJJ answered no error over a jj that runs no jj")
+	}
+	if !strings.Contains(err.Error(), broken) || !strings.Contains(err.Error(), "no jj here") {
+		t.Errorf("the error is %q, want it to name %s and what it printed", err, broken)
+	}
+	if got := os.Getenv("PATH"); got != path {
+		t.Errorf("PATH after the error is %q, want it as it was, %q", got, path)
+	}
+}
