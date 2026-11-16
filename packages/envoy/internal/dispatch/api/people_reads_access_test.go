@@ -454,9 +454,11 @@ func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
 // and by a caller that may see every one of its recipients; to anyone else GET
 // /api/v1/broadcasts leaves it out and GET /api/v1/broadcasts/{id} answers it as an id nobody
 // holds. The replies under a copy are a conversation of no project, read by its parties or an open
-// viewer (PartyClause): bob, who sees the PRIV session a broadcast reached, reads the broadcast but
-// not what that session answered carol, neither in the reply list, nor as the attempt's reply id,
-// nor in the list's count of recipients who answered.
+// viewer (PartyClause): no caller reads what session-priv answered carol unless it reads that
+// conversation, neither in the reply list, nor as the attempt's reply id, nor in the list's count
+// of recipients who answered. Both routes are deployment reads (plan A, "Read classes"), so a
+// viewer that is not open, a restricted member or a credential that lists projects, is refused
+// them whole, the same bytes for a broadcast it wrote, one it could not see and an id nobody holds.
 func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
@@ -481,19 +483,36 @@ func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 
 	for _, test := range []struct {
 		caller privateCaller
+		// refused is a viewer that is not open, which the deployment class refuses both routes.
+		refused bool
 		// listed is the broadcasts the caller reads, newest first, and replies whether it reads
 		// session-priv's answer under the broadcast to PRIV's session.
 		listed  []string
 		replies bool
 	}{
-		{callerAlice, []string{toBoth.ID, toPrivate.ID}, true},
-		{callerBob, []string{toPrivate.ID}, false},
-		{callerCarol, []string{toBoth.ID, toPrivate.ID}, true},
-		{callerCarolPrivToken, []string{toBoth.ID, toPrivate.ID}, true},
-		{callerAlicePrivToken, []string{}, false},
-		{callerCarolToken, []string{toBoth.ID, toPrivate.ID}, true},
+		{callerAlice, false, []string{toBoth.ID, toPrivate.ID}, true},
+		{callerBob, true, nil, false},
+		{callerCarol, false, []string{toBoth.ID, toPrivate.ID}, true},
+		{callerCarolPrivToken, true, nil, false},
+		{callerAlicePrivToken, true, nil, false},
+		{callerCarolToken, false, []string{toBoth.ID, toPrivate.ID}, true},
 	} {
 		t.Run(string(test.caller), func(t *testing.T) {
+			if test.refused {
+				list := seed.request(t, test.caller, http.MethodGet, "/api/v1/broadcasts", nil)
+				if list.Code != http.StatusForbidden || !strings.Contains(list.Body.String(), `"code":"DEPLOYMENT_READ_REFUSED"`) {
+					t.Errorf("%s: GET /api/v1/broadcasts = %d %s, want 403 DEPLOYMENT_READ_REFUSED", test.caller, list.Code, list.Body.String())
+				}
+				missing := seed.request(t, test.caller, http.MethodGet, "/api/v1/broadcasts/"+uuid.NewString(), nil)
+				for _, sent := range []broadcastResponse{toBoth, toPrivate} {
+					read := seed.request(t, test.caller, http.MethodGet, "/api/v1/broadcasts/"+sent.ID, nil)
+					if read.Code != http.StatusForbidden || read.Body.String() != missing.Body.String() {
+						t.Errorf("%s: GET /api/v1/broadcasts/%s = %d %s, want the refusal an id nobody holds gets: %d %s",
+							test.caller, sent.ID, read.Code, read.Body.String(), missing.Code, missing.Body.String())
+					}
+				}
+				return
+			}
 			got := []string{}
 			for _, summary := range decodeBody[[]broadcastSummary](t, seed.mustRequest(t, test.caller, http.MethodGet, "/api/v1/broadcasts", nil, http.StatusOK)) {
 				got = append(got, summary.ID)
