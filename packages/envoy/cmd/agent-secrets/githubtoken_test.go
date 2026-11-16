@@ -74,7 +74,7 @@ func TestTheGitHubTokenFlagWithoutAnOwnerExitsTwo(t *testing.T) {
 	if exit != 2 || strings.Contains(stdout, "ran-the-child") || !strings.Contains(stderr, "--github-token") || !strings.Contains(stderr, "--github-owner") {
 		t.Fatalf("exit %d, stdout %q, stderr %q; want exit 2 naming --github-token and --github-owner", exit, stdout, stderr)
 	}
-	if requests, releases := b.takeRequests(), len(b.take()); requests != 0 || releases != 0 {
+	if requests, releases := len(b.takeRequests(t)), len(b.take()); requests != 0 || releases != 0 {
 		t.Fatalf("the broker was asked %d requests and %d releases, want none", requests, releases)
 	}
 }

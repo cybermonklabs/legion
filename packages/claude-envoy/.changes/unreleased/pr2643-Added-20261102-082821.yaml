@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  `envoy_send` says whether its target was running or the message was queued for a stopped
+  session, with `state` and, when the listener names one, `last_seen` in the result, and
+  `envoy_publish` says how many other sessions get the message and how many of those are running
+  now (`recipients`, `recipients_connected`). The channel server's relay subscription answers the
+  listener's connection probe, so a send to this session reads `connected` while the server holds
+  its NATS connection, and `stopped` once that connection closes or a `/clear` handoff moves the
+  relay to the new id.
+time: 2026-11-02T08:28:21.660279396Z
+custom:
+    Issue: pr2643

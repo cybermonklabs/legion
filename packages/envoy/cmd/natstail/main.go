@@ -65,7 +65,10 @@ func main() {
 	}
 }
 
-// tail writes count envelopes received on subject as one JSON line each.
+// tail writes count envelopes received on subject as one JSON line each. The listener's connection
+// probe (bus.ConnectionProbeHeader), a header-only request on a session's relay subject that a
+// pattern such as notifications.> also matches, carries no envelope: tail passes it over without
+// answering, since a tail is no session and must not answer for one, and does not count it.
 func tail(ctx context.Context, urls []string, subject string, count int, out io.Writer) error {
 	if count <= 0 {
 		return fmt.Errorf("count must be positive")
@@ -79,6 +82,9 @@ func tail(ctx context.Context, urls []string, subject string, count int, out io.
 	messages := make(chan []byte)
 	done := make(chan struct{})
 	subscription, err := client.SubscribeCore(subject, func(message *natsgo.Msg) {
+		if message.Header.Get(bus.ConnectionProbeHeader) == "1" {
+			return
+		}
 		select {
 		case messages <- message.Data:
 		case <-done:

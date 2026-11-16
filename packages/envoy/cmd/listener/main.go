@@ -42,6 +42,14 @@ type listenerDeps struct {
 	client   *bus.Client
 	registry *store.Registry
 	sessions *session.SessionRegistry
+	// known is the store of every session that registered in the last 30 days
+	// (session.KnownSessions). It keeps a cache of its own outside caches below, so the
+	// self-health monitor never restarts a listener over it. A listener whose NATS user may not
+	// open its bucket holds a store that answers no record and writes none until an attempt of its
+	// own opens the bucket; nil here is a listener that could not build a JetStream context and a
+	// test that builds the handlers without a store. Every method of it is safe on a nil store,
+	// so no call site checks.
+	known *session.KnownSessions
 	// legionAgents is the Legion agent registry the /v1/legion/agents routes serve, or why it is
 	// unavailable. It keeps no cache, so it is in no list of caches.
 	legionAgents *legionAgentRegistry
@@ -1095,9 +1103,11 @@ func main() {
 	// kernel chose (PORT=0 or a socket a harness opened on port 0).
 	logger.Info("envoy-listener listening", slog.String("addr", ln.Addr().String()))
 
-	// Phase 5: Connect to NATS (main goroutine — log.Fatal is safe here). The listener owns
-	// ENVOY_NOTIFICATIONS: this start reconciles the stream (bus.ConnectOwningStream) at the
-	// deployment's replica count and byte limit (listenerStreamOptions).
+	// Phase 5: Connect to NATS (main goroutine — log.Fatal is safe here). The listener and
+	// Dispatch's server both own ENVOY_NOTIFICATIONS: this client ensures the stream on this
+	// connect and after every reconnect, at the deployment's replica count and byte limit
+	// (listenerStreamOptions), and leaves as it is a stream that a newer build stamped with a
+	// higher generation (bus.ConnectOwningStream).
 	client, err := bus.ConnectOwningStream(cfg.NATSURLs, listenerStreamOptions(cfg)...)
 	if err != nil {
 		// Named, because this step and the two below it are the whole of the start-up between the
@@ -1273,6 +1283,44 @@ func main() {
 	// handle onto a connection the bus dialled to replace a closed one; its drain hook ends the retry.
 	legionAgents := openLegionAgentRegistry(client.Conn, logger, legionagents.WithReplicas(cfg.NATSReplicas), legionagents.WithLogger(logger.Slog()))
 
+	// The known-session store answers which sessions registered in the last 30 days, whether or
+	// not they are registered now; no delivery depends on it, so it never stops a start, and it is
+	// opened the way the Legion agent registry above is. A listener whose NATS user may not open
+	// the bucket - on a hub whose grant does not carry it - keeps the store, which logs the bucket
+	// it could not open once, answers no record and writes none, and retries the open in the
+	// background with a backoff and at once after each connection event
+	// (session.OpenKnownSessions), so a grant applied after this start is picked up with no
+	// restart. This line is the one failure that leaves no store at all, a connection that gives
+	// no JetStream context, which answers as an empty store does.
+	known, knownErr := session.OpenKnownSessions(
+		client.Conn,
+		session.WithKnownSessionReplicas(cfg.NATSReplicas),
+		session.WithKnownSessionLogger(logger.Slog()),
+	)
+	if knownErr != nil {
+		logger.Error("the known-session store was not built; no session's 30-day record is written or read for the life of this listener",
+			slog.String("bucket", bus.KnownSessionBucket), slog.String("error", knownErr.Error()))
+	}
+
+	// The store's watcher fills the records in the background, so wait for a read that delivered
+	// every one of them before serving, as the caches above are waited for (the state
+	// session.KnownSessions.Opened reads). Until that read this listener knows no stopped session
+	// beyond the live entries: a send to a session with no live entry is the 404 this store exists
+	// to stop answering, GET /v1/registry/<id>?include=unresponsive,stopped is that 404 too, and a
+	// publish's recipient counts are left out.
+	//
+	// Bounded at 30s, as its neighbours are, and it fails open: the store answers from whatever the
+	// watcher has delivered once a read completes, the counts stay out until Opened says the view
+	// is whole, and the warn below says so. Nothing here stops a start. A store whose bucket is
+	// not open, and a nil one, wait for nothing: neither has a cache to fill, and a start must not
+	// spend this budget on a bucket it may not open.
+	knownCacheReadyCtx, knownCacheReadyCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := known.WaitForCacheReady(knownCacheReadyCtx); err != nil {
+		logger.Warn("known-session cache warm-up did not complete; until it does a send to a session with no live entry answers 404 and a publish carries no recipient counts",
+			slog.String("bucket", bus.KnownSessionBucket), slog.String("error", err.Error()))
+	}
+	knownCacheReadyCancel()
+
 	// KV watchers are not bus subscriptions: tie them to the connection, so a disconnect stops each
 	// copy following its bucket, every recovered connection reads each bucket again, and the drain
 	// ends them before the connection's own.
@@ -1280,6 +1328,31 @@ func main() {
 	hookListenerKVWatchers(client, caches)
 	client.AddReconnectHook(legionAgents.reconnect)
 	client.AddDrainHook(legionAgents.close)
+	// The known-session store's watcher is tied to the connection the same way, outside
+	// listenerCaches: the self-health monitor restarts a listener whose cache does not answer, and
+	// on a hub without the bucket's grant this one never answers, so a listener there would restart
+	// in a loop over a cache no delivery reads. Every hook is safe on a store whose bucket is not
+	// open and on no store at all.
+	//
+	// A failed move is logged and the hook answers nil, for the same reason: a hook's error fails
+	// the whole hook run, which the bus runs again on backoff with every other hook, reports
+	// /healthz degraded after its repair grace and writes the ERROR a metric filter alarms on
+	// (internal/bus/recovery.go) - over a bucket whose grant was rolled back or which was deleted
+	// under its watcher, neither of which a delivery reads. What repairs it instead is the store
+	// itself: a move that failed is retried in the background on the store's own backoff until
+	// one succeeds, the store is stopped, or a later connection event's move makes it
+	// (session.KnownSessions.Rewatch). Until a move lands, the store serves its copy for the stale
+	// bound and then answers nothing (Opened), so a publish leaves its counts out rather than
+	// answer from a copy that stopped following the bucket.
+	client.AddDisconnectHook(known.Disconnected)
+	client.AddReconnectHook(func(conn *nats.Conn) error {
+		if err := known.Rewatch(conn); err != nil {
+			logger.Warn("the known-session cache did not move to the recovered connection; the store retries the move on its own backoff",
+				slog.String("bucket", bus.KnownSessionBucket), slog.String("error", err.Error()))
+		}
+		return nil
+	})
+	client.AddDrainHook(known.EndWatch)
 
 	dedupeCache := dedupe.New(10 * time.Minute)
 
@@ -1385,7 +1458,7 @@ func main() {
 	// consumer the listener's own delete had not reached, and with it the only record of where
 	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
 	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
-	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, logger)
+	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger)
 	if err != nil {
 		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own", slog.String("error", err.Error()))
 		client.Conn.Close()
@@ -1409,6 +1482,7 @@ func main() {
 		delivery:  delivery,
 		relays:    relays,
 		caches:    caches,
+		known:     known,
 		stopWakes: stopWakeReports,
 	}
 
@@ -1429,6 +1503,7 @@ func main() {
 		consumers:    delivery,
 		registry:     registry,
 		sessions:     sessions,
+		known:        known,
 		legionAgents: legionAgents,
 		ciStore:      ciStore,
 		caches:       caches,
@@ -1700,6 +1775,9 @@ type listenerParts struct {
 	delivery *sessionDelivery
 	relays   *sessionRelays
 	caches   []listenerCache
+	// known is the known-session store, whose watcher is retired with the caches' but which is
+	// none of them (listenerDeps.known); nil on a listener with no store, which retires nothing.
+	known *session.KnownSessions
 	// stopWakes ends the wake reports still retrying (wakeReporter), nil on a shutdown reached
 	// before the reporter was built.
 	stopWakes func()
@@ -1807,6 +1885,7 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	for _, c := range parts.caches {
 		c.cache.StopWatch()
 	}
+	parts.known.StopWatch()
 	if err := parts.client.Drain(stopClientDrain); err != nil {
 		logger.Warn("nats drain error", slog.String("error", err.Error()))
 	}

@@ -52,6 +52,14 @@ func TestSearchLinksAnAskBlockOnlyWhileTheBlockIsANode(t *testing.T) {
 	for index := range asks {
 		asks[index].id = blockAskID(t, handler, issue.Key, asks[index].block)
 	}
+	// A batch whose result drops a block an open ask points at is refused (R5 of
+	// dispatch://INFRA-1520), so the question is closed first and the block deleted after, which
+	// is the order a caller takes a decision out of a document in.
+	if resolved := sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/"+asks[2].id+"/resolve", map[string]any{
+		"kind": "retracted", "reason": "asked elsewhere", "actor": sessionActor(),
+	}); resolved.Code != http.StatusOK {
+		t.Fatalf("retract the ask of the block gone: status=%d body=%s", resolved.Code, resolved.Body.String())
+	}
 	if deleted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
 		"ops": []map[string]string{{"op": "delete", "block": "gone"}},
 	}, "alice"); deleted.Code != http.StatusOK {

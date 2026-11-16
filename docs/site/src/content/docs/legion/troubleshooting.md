@@ -45,6 +45,20 @@ legion start --config legion.yaml --check-config
 | `projects.<KEY>.memory.config_files names <file>, which a memory-group role's Oh My Pi could not read: …` | Under tmux the file must exist on the host and be readable by the daemon's user, as every pane is. |
 | `projects.<KEY>.memory.config_files …` or `projects.<KEY>.memory.instructions …` (another refusal) | The message names the entry: an empty list, a relative or unclean path, a path holding `:`, which separates the overlays `PI_CONFIG_FILES` names, or a path named twice. |
 | `memory instructions file <path> could not be read: …` or `memory instructions file <path> is empty` | Boot reads that file from the daemon's own disk and puts its text in every memory-group role's prompt, so give it a readable file with text in it, or take `instructions` out, which appends nothing. Boot reads it whatever the mode is, since a tree already drawn into the memory group is given it. |
+| `projects.<KEY>.memory and projects.<KEY>.experiments.memory are one experiment written twice: the memory block is the experiment named memory, so write the block or the key, not both` | The `memory` block **is** the experiment named `memory`, so the file declares it twice. Keep one spelling: the block, or `experiments.memory`. The block is accepted and refused in no other new way. |
+| `projects.<KEY>.experiments.memory names the variants …: its variants must be exactly memory and none, since a draw of it is served to every pod as the issue state's memoryGroup, whose wire enum is those two words, and a third makes the whole body fail to parse` | Name that experiment's two arms `memory` and `none`, or declare your own experiment under another name, which may name whatever arms it likes. |
+| `projects.<KEY>.experiments.memory is unit issue: its unit must be tree, since a draw of it is served to every pod as the issue state's memoryGroup, memoryDrawMode and memoryDrawnAt, which are the draw of the issue's tree, one answer for every issue of it` | The experiment named `memory` is drawn once for a whole tree, as the `memory` block always has been: take `unit` out, or set `unit: tree`. To draw something for each issue on its own, declare it under another name. |
+| `projects.<KEY>.experiments must be a mapping of an experiment's name to its block` (or `projects.<KEY>.experiments.<NAME> must be a mapping`, `projects.<KEY>.experiments.<NAME>.variants must be a sequence of variant blocks`, or `projects.<KEY>.experiments.<NAME>.variants[<n>] names no name: a draw records the variant it drew by name`) | The shape: `experiments` is a mapping of a name to a block, a block is a mapping, its `variants` is a sequence of mappings, and each arm names a `name`. |
+| `projects.<KEY>.experiments key "…" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes` (or `projects.<KEY>.experiments.<NAME>.variants[<n>] name "…" must match ^[a-z0-9-]{1,32}$: a draw records the variant it drew by name`, or `projects.<KEY>.experiments.<NAME>.variants names <name> twice`) | An experiment's name and an arm's name are 1 to 32 characters of `a-z`, `0-9` and `-`, and each is named once, because every draw records both. |
+| `projects.<KEY>.experiments.<NAME>.mode must be off, on, or random (got "…")` | The mode is one of three words: `off` (the default, and what a block that names no mode gets), `on`, or `random`. |
+| `projects.<KEY>.experiments.<NAME>.unit must be tree or issue (got "…")` | The unit is `tree`, the default, which draws once for a whole tree and gives every issue of it the same arm, or `issue`, which draws for each issue on its own. |
+| `projects.<KEY>.experiments.<NAME>.variants is required: an experiment draws among the variants its block lists` (or `projects.<KEY>.experiments.<NAME>.variants lists no variant: …`, or `projects.<KEY>.experiments.<NAME> is <mode> and lists one variant: …`) | List the arms the experiment compares. A mode other than `off` needs at least two of them: a draw among one arm measures nothing, so list the arm it is compared against, or set `mode: off`. |
+| `projects.<KEY>.experiments.<NAME> is on and names no on_variant: …` (or `projects.<KEY>.experiments.<NAME>.on_variant names "…", which is no variant of the experiment (…)`) | `mode: on` gives every new unit one arm, so name that arm in `on_variant`, and name one this experiment lists. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM>.weight must be a whole number above zero (got <n>): …` | A weight is the arm's share of a random draw against its siblings'. An arm of no weight is never drawn, so take it out of the list instead. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM> names config_files, and worker_backends.<role> is claude, which reads no PI_CONFIG_FILES: …` | An arm that names overlays hands them to every role of a unit drawn into it whatever the mode is, and Claude Code reads no `PI_CONFIG_FILES`: put every issue role on Oh My Pi, or take the overlays out of the arm. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files entry <file> is under no runtime.kubernetes.pod.volume_mounts mount_path: …` (or `… is not among the items volume <name> projects …`) | As for a role's overlay: under Kubernetes an arm's overlay must be a file the operator's mounts carry, so mount the ConfigMap holding it, or add the item. It is refused at `mode: off` too, since a unit already drawn into the arm still names it. Mounting it replaces every live issue pod of the deployment, so add it when no role of an affected issue is mid-turn. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files …` or `projects.<KEY>.experiments.<NAME>.variants.<ARM>.instructions …` (another refusal) | The message names the entry: an empty list, a relative or unclean path, a path holding `:`, which separates the overlays `PI_CONFIG_FILES` names, a path named twice, or, under tmux, an overlay no role drawn into the arm could read. |
+| `instructions file <path> of experiment <experiment> variant <variant> could not be read: …` or `instructions file <path> of experiment <experiment> variant <variant> is empty` | Boot reads every declared arm's `instructions` from the daemon's own disk and puts its text in the prompt of every role of a unit drawn into that arm, so give it a readable file with text in it, or take the key out, which appends nothing. Boot reads it whatever the experiment's mode is, since a unit already drawn into the arm is given it. |
 | `projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")` or `projects.<KEY>.commit_issue_trailer_repos names <owner>/<name> twice` | Each entry is one repository, written `owner/name`, and one repository is named once: names are compared as GitHub compares them, without case, so a second spelling of one name is the file saying the same thing twice. |
 | `projects.<KEY>.commit_issue_trailer_repos[<n>] (<owner>/<name>) and projects.<KEY>.commit_issue_trailer_repos[<m>] (<owner>/<name>) name one repository: repository_renames makes … one repository, so the list names it twice; name it once` | A configured rename makes the two entries select the same repository. Keep the one the project uses now and delete the other. |
 | `<PROJECT> is already running (pid <n>)` (from `legion start` itself) | A daemon for this project is already registered on the machine: `legion status <PROJECT>`, `legion legions`. |
@@ -1047,7 +1061,7 @@ If the commit is older than that line, read the daemon's lines from the log stor
 A search that finds no line for a time before the first line does not show that no adoption occurred.
 
 - `supervise: the working copy was adopted for the phase task` is one adoption that the shim answered `ok`.
-  It names the `claim`, the `delivery`, the `phase`, the App's git name as `identity`, and the time the shim took as `took`, in nanoseconds.
+  It names the `claim`, the `delivery`, the `phase`, the App's git name as `identity`, and, as `took` in nanoseconds, how long the daemon's call to adopt took: the daemon's own check of where the claim's process runs, then the round trip to the shim and back, with the shim's own work inside it.
   The release that carries cybermonklabs/legion#3971 is the first to write this line.
 
 - `supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share` is a phase task that waits.
@@ -1057,8 +1071,9 @@ A search that finds no line for a time before the first line does not show that 
   The task stays queued, and the refusal counts against the prompt budget of the claim.
 
 - `supervise: the prompt was lost to the transport; the delivery waits` is a send that got no answer.
-  When its `error` starts `adopt <claim>'s working copy for <identity>`, the daemon sent the adoption to the shim, and the answer did not come back: the connection closed, or the daemon stopped its wait.
-  The shim runs jj on a time limit of its own, so jj can have run all the same, and the author can have moved.
+  When its `error` starts `adopt <claim>'s working copy for <identity>`, the daemon asked over the claim's connection, and the call did not succeed.
+  That does not show that the adoption reached the shim: the frame can fail its own check, the write can fail, or the connection can close before the frame goes out, and the shim can also answer with a frame of another type.
+  When the frame went out and its answer did not come back, because the connection closed or the daemon stopped its wait, the shim runs jj on a time limit of its own, so jj can have run all the same, and the author can have moved.
   The task stays queued.
 
 Compare the time of the commit with these lines.
@@ -1173,6 +1188,10 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   write that decision makes of the claim as the daemon holds it: the daemon's memory is ahead of
   the row. The mark is held in memory only, so a daemon that stops while a write is owed loses
   that write and the reports it carried, as a stop between a decision and its write always has.
+  A write the daemon's own stop cut short writes the same line at Info, with `owed=true` and a
+  `context canceled` error: the database refused nothing, and the next boot takes the claim up
+  from its row, as it does every decision the stop ends. A write that ran out its own deadline
+  while the daemon stopped did wait on the database, and stays at Warn.
   The line comes again with `owed=true` at each decision whose repair fails again. With
   `owed=false` a repair's write reached the server, which judged the statement and would judge it
   the same way again, so the owed write and the reports it carried are dropped and the row stays
@@ -1209,8 +1228,9 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   decision whose write landed, except one of a generation the claim has left (`supervise: an owed
   report is dropped; the claim has left the generation it was owed at`, at Info with its `state=`
   and `generation=`). A claim whose last `owed=true` line has no such line after it is still
-  behind, and its next decision will try again; one whose last line is `owed=false` has dropped
-  the write, and nothing tries it again.
+  behind: while that daemon runs, the claim's next decision tries the write again, and a daemon
+  that stopped since lost the mark, so its next boot takes the claim up from its row. One whose
+  last line is `owed=false` has dropped the write, and nothing tries it again.
 - **`supervise: a turn started`** and **`supervise: a turn ended`** at Info, each with the claim
   and its `generation`, and with `delivery=` where the turn is a task's, are how a reader tells a
   turn that started from one the daemon never saw, and a turn that ended from one still running.
@@ -1219,6 +1239,77 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   `supervise: claim failed`, `supervise: the agent reported its exit`, `supervise: the process
   speaks another plugin contract; relaunching it onto the current plugin`, or `supervise: the
   update round is over for this claim`, each of which says what became of the turn instead.
+- **`supervise: the agent's busy answer records the claim working; its task waits for the end of
+  the turn the agent is in`** at Info, with the `delivery` and the prompts still `outstanding`, is
+  Oh My Pi answering a prompt with `Agent is already processing`: at the send, after its
+  acknowledgement, or in the prompt's result. That answer means the session is in a prompt, so a
+  ready or idle claim is recorded `working`, with a `supervise: a turn started` line that names no
+  delivery, and its task is held for that turn's end rather than sent again at every sweep and
+  hello. When the turn's own start comes, **`supervise: the turn a busy answer recorded has
+  begun`** says so, with the delivery it confirms, and writes no second start line. When no start
+  or end of the turn is ever read, the next sweep asks the agent: **`supervise: the agent is in no
+  prompt; the turn its busy answer recorded is over`** ends the turn and sends the task, and
+  `supervise: the agent did not say whether the turn its busy answer recorded is over; the claim
+  stays working and the next sweep asks again` is an ask nobody answered. Nothing to do.
+- **`supervise: the agent refused the prompt; it is busy with the turn of an earlier prompt of
+  this task, whose result settles the task`** (and the same line for an acknowledged prompt, and
+  for `Oh My Pi ran no turn for the prompt`) is a re-send of a task whose first prompt Oh My Pi
+  acknowledged and is still preparing: its pre-turn work, such as a memory recall, outlasted the
+  daemon's five-second wait for the turn. The first prompt stays outstanding, its late turn
+  confirms the task, and its result retires it, so a completion made in that turn is accepted and
+  the task is not sent again after it. Nothing to do.
+- **`supervise: the relaunch ended work the agent had running`** at Warn, with the `cause`,
+  whether a `turn` and the task's turn (`taskTurn`) were cut off, the `background` work and its
+  `kinds` the process last reported, and whether a report covers its last turn (`reported`), is
+  a relaunch, a suspension, a failure or a stop that ended the process while work of its agent
+  ran. A stop is `legion claims stop`, the operator's close of a tree stopping its other claims,
+  or the daemon stopping a controller it launched, and its cause is `its claim was stopped`:
+  every retry that keeps the session resumes the stopped claim's session, which is told what the
+  stop ended. That is `legion claims retry` without `--fresh-session`, the daemon's own retry of
+  a retired controller it keeps, and the daemon's start of a retired worker's phase. A suspension
+  that lands over a process the daemon had already found gone, as a fresh session over a dead
+  role does, records the death in the runtime's words, not the suspension. The claim
+  records it (the `ended_work` column of its row), and the first prompt the next process is sent
+  carries a sentence naming it: in front of the task the claim holds, or, for a claim that holds
+  none, alone
+  in a delivery of the daemon's own (`supervise: the claim holds no task; a delivery of the
+  daemon's own tells its agent what the relaunch ended`, whose id starts `relaunch:` and which a
+  newer task replaces while no prompt of it is outstanding). That delivery is also given when the
+  claim's held task is dropped at its send: the issue left the task's phase, the task is an ask
+  an older daemon queued for an update round, or a root architect's held task names nothing any
+  more. A root
+  architect's catch-up opens with the same sentence, and the daemon-launched controller reads it
+  in front of its start message. Every turn cut off is told that its subagents and background
+  jobs are gone. A process whose newest activity report is older than the start of its last
+  turn is told the background work that report named, and that the daemon has no report of what
+  that turn started. A process in no turn that has no report of its last turn (it left no report,
+  or only one older than that turn) is told that the daemon has no report of the background work
+  of its last turn, and so that every subagent and background job it started is gone. Nothing to
+  do; the agent checks what that work did before it repeats it.
+- **`supervise: a turn took the prompt that told the agent what its relaunch ended`** and
+  **`supervise: a turn took the prompt that told the agent of the session its claim abandoned`**
+  at Info, each with the `delivery`, mark the claim's record told. A record is told when a turn
+  confirms a prompt that carried its sentence, and never when Oh My Pi only acknowledges the
+  prompt, since it can acknowledge and then answer busy. Nothing to do.
+- **`supervise: the confirmation of the prompt that told the agent what became of its earlier
+  work was taken back; the next prompt tells it again`** at Info, with the `delivery`, is the
+  turn that confirmed the task no longer counted as the agent reading that prompt: the turn was
+  another input's (an Envoy notice's, say), the prompt came to nothing (a refusal, a busy answer,
+  or no turn), a provider error failed a model call of the turn, a compaction aborted the turn,
+  or the process ended in a turn that confirmed the task before the prompt's result came (while
+  its send was in flight or it waited on its result), since only that result says the turn was
+  the prompt's. The record is untold again, and the next prompt carries the sentence. Nothing to
+  do.
+- **`supervise: the claim abandons its session, so the record of what the old session's process
+  ended is not told to the fresh agent; the abandoned session's sentence says that work is
+  gone`** at Info is a fresh session: the claim's first task names the session it left behind,
+  and the record of the old process's end is marked told with no prompt. A record written later,
+  of the fresh session's own process, is told after the abandoned session's sentence, in the
+  same prompt. Nothing to do.
+- **`supervise: the daemon's own delivery of a relaunch's record has nothing to say, since that
+  record no longer tells; it is dropped rather than sent`** at Info is a `relaunch:` delivery
+  that the claim still held when its record was told by other means, as a fresh session's
+  start tells it. Nothing to do.
 - **`supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no
   process is recorded for it`** at boot names a claim the store held live with no process, with the
   state it was stored in (`stored=`): a launch the previous daemon began and never recorded. The

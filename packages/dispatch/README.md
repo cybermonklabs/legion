@@ -106,7 +106,10 @@ states that
 rule in full — the accepted values and what a bad or duplicated port does. The
 harness starts `e2e/fake-envoy.ts` and that listener is the only Envoy the
 server ever talks to; tests seed its
-live sessions with `setLiveSessions` from `e2e/agents.ts`. It starts
+live sessions with `setLiveSessions` from `e2e/agents.ts`, stop one of them with
+`setSessionStopped` (the listener still knows it, so a send to it is stored and
+Dispatch records the attempt `queued`), and say what a send answers it was with
+`setSessionSendState`. It starts
 `e2e/fake-broker.ts` as the secrets broker, so the
 credential-request feature is on, and tests seed its pending requests with
 `setPendingCredentialRequests` from `e2e/fake-broker-helpers.ts`; an empty
@@ -262,17 +265,37 @@ the servers, since both serve its origin, so A's and B's ports are held first (a
 `held-port.py keep` each) and each server serves on its keeper's port. Both servers sign
 cookies with one key the run generates, so a person stays signed in whichever answers.
 `DISPATCH_E2E_SERVER_BIN` runs a prebuilt `envoy-dispatch` instead of the one `run-server.sh`
-builds from this checkout, and `DISPATCH_E2E_SERVER_BIN_B` gives Dispatch B one of its own, so a
-run can put two builds of the server against the one database as `DISPATCH_E2E_WEB_DIST_B` puts
-two builds of the dashboard there; `scripts/e2e/dispatch-two-builds.sh` is the proof that uses
+builds from this checkout, and `DISPATCH_E2E_BINARY_B` gives Dispatch B one of its own (the
+harness hands it on as B's `DISPATCH_E2E_SERVER_BIN`), so a run can put two builds of the server
+against the one database as `DISPATCH_E2E_WEB_DIST_B` puts two builds of the dashboard there;
+`scripts/e2e/dispatch-two-builds.sh` and the cross-build spec below are the proofs that use
 them. It runs
 the `*.multiprocess.e2e.ts` specs but the sign-in spec below, in Chromium, which the default run
 leaves out; arguments after `--` reach Playwright
 (`bun run e2e:multiprocess -- <name>.multiprocess.e2e.ts`). A spec
 pins a request to one process with the `X-Dispatch-E2E-Process: a|b` header or a whole browser
-context with the `dispatch-e2e-process` cookie, and reads which process served what from the
-proxy's `/_proxy/requests` and `/_proxy/sockets`; `AGENTS.md`'s end-to-end section has the whole
-contract. Any `DISPATCH_E2E_PROCESSES` other than `1`, `2` or unset is refused.
+context with the `dispatch-e2e-process` cookie, or splits a context with the `dispatch-e2e-page`
+and `dispatch-e2e-api` cookies (its page from one process, its API, sockets and `/auth` from the
+other), and reads which process served what from the proxy's `/_proxy/requests` and
+`/_proxy/sockets`; `AGENTS.md`'s end-to-end section has the whole contract. Any
+`DISPATCH_E2E_PROCESSES` other than `1`, `2` or unset is refused.
+
+To run one build's page against another build's server, give B a previous release, as CI's
+`dispatch-two-builds` job does with the directory `packages/envoy/scripts/build-dispatch-build.sh`
+writes:
+
+```bash
+DISPATCH_E2E_BINARY_B=<dir>/envoy-dispatch DISPATCH_E2E_WEB_DIST_B=<dir>/web \
+  bun run e2e:multiprocess -- cross-build.multiprocess
+```
+
+B then runs that envoy-dispatch and serves that web dist (both paths absolute or from
+`packages/envoy`). That build must be `legion-envoy-v30.11.0` or later, which
+`build-dispatch-build.sh` refuses to go below: it writes the default assignee every project needs
+since migration `20261111210103`, it serves on the port the harness holds for it, as
+A does, and signs cookies with the run's shared key, so no run names a port for B and the run's
+global setup checks it like any other B. `e2e/cross-build.multiprocess.e2e.ts` splits each browser
+context, its page from one build and its API, sockets and `/auth` from the other.
 
 `DISPATCH_E2E_SIGNIN=oidc` signs people in as a deployment does instead of through dev sign-in:
 the harness also starts `packages/envoy/cmd/dev-oidc-issuer` (`e2e/run-signin-issuer.sh`), and
@@ -522,6 +545,36 @@ lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists non
 `documents=<n> indexed=<n> not_indexed=<n>`, then each not-indexed document's reference. A document
 with no blocks counts as indexed, since it owes no nodes.
 
+`e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
+names blocks: a list written over a paragraph's whole text, a list written over the text of a
+nested list item, the refusals in a heading, in a table cell and for a `with` opening with the
+matched item's own marker, and the markdown each edit answers with. It takes the first three
+inputs, with `PROJECT` optional (unset, it makes a project of its own), and writes one issue in
+that project. The create of that project names `DISPATCH_DEFAULT_ASSIGNEE`, the person its
+unowned work lands on: the bearer acts for no person, so the server refuses a project that names
+none (`400 INVALID_PROJECT`). That input is required with `DISPATCH_URL` and no `PROJECT`; with
+`DATABASE_URL` it defaults to `alice`, whom the instance this run starts seeds and signs in; and
+with a `PROJECT` the server already holds, nothing is created and it is not read. It is the one
+driver that can start its own server: given `DATABASE_URL`, a
+loopback database of the run's own, it starts `bun run dispatch:local` and stops it again from
+its own trap. That command truncates and reseeds the database it is given, so before anything
+starts the run asks the server the connection string reaches, through `psql`, which database it
+is (`current_database()`) and which port it answers on (`inet_server_port()`), and asks the same
+through `LEGION_TEST_PG_DSN` where that is set. It refuses a connection string it gets no answer
+through, and a database of the same name as the shared one on a server it cannot prove is
+another: two names that differ pass, and two equal names pass only where both servers answered a
+port and the ports differ. It parses neither string itself, so the database it judges is the one
+libpq connects to, however the string spells it; it reads `DATABASE_URL` with no `PG*` variable
+set, as the instance reads it.
+The connection string the run is given must carry everything libpq needs to connect — host, port,
+user, password and TLS settings among them — since the run unsets every `PG*` variable before it
+starts the instance, so none survives into it.
+
+```bash
+createdb -h 127.0.0.1 -p 5433 -U legion_test dispatch_local_replace
+DATABASE_URL=postgres://legion_test@127.0.0.1:5433/dispatch_local_replace?sslmode=disable \
+  bash packages/dispatch/e2e/acceptance/replace-blocks.sh
+```
 `e2e/acceptance/create-document.sh` drives the command line's own create, the one that makes a
 document from a title with no file and no text, through the same real CLI. It takes `DISPATCH_URL`,
 the bearer and `DISPATCH_DEFAULT_ASSIGNEE`, a person who has signed in to that server: the bearer
@@ -559,7 +612,7 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All five source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
+All six source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
 missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
 without printing it, unsetting both so no process the script starts inherits it.
 
@@ -631,7 +684,7 @@ engine, viewport, origin and server-process count. The iPhone project uses Chrom
 same projects but the two stubbed ones and the three `-alone` ones, so its `iphone` project also
 runs only the `@phone` tests, and it holds no wall-clock row: that command names no project, and
 the three wall-clock projects are out of the default selection. Listed at this head, a deployed
-run holds 1,238 rows in 160 files, and the other 54 are a wall-clock run of its own, under the
+run holds 1,302 rows in 169 files, and the other 51 are a wall-clock run of its own, under the
 same base URL:
 `bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`,
 which is `bun run e2e:clock` less the SPA build that script runs first and a deployed run has
@@ -646,6 +699,10 @@ well, `@webkit` and `@firefox`: each tagged row exercises one engine behaviour t
 the project in `e2e/playwright.config.ts` names, and a comment beside the tag names which.
 `webkit` covers where a caret lands beside a collaborator's cursor, and `firefox` covers text
 typed over what follows a block's last line break, which that engine's own editing mishandles.
+Both run `e2e/download-names.e2e.ts`, which reads how the engine names a download from the
+`filename*` and `filename` of its `Content-Disposition`, and whether it asks the server again
+for a download address it holds. WebKit writes each space of the name it reads from `filename*`
+as `_`, which that file's row of a name with spaces expects.
 `firefox-download-navigation` runs the one row of
 `e2e/shell.e2e.ts` that follows a Download link before a chunk fails. `webkit-iphone` runs the
 phone-layout rows of `e2e/agent-view.e2e.ts`, `e2e/agent-view-settings.e2e.ts` and
@@ -671,7 +728,7 @@ stream's worst case comes back inside 1.2 seconds on the fastest of up to eight 
 the Agents page paints six hundred sessions inside 100 milliseconds while holding the main
 thread under 150 ms, the first load inside both of those bounds of up to twenty taken), and
 `firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines.
-Each sets `default: false`, so a run that names no project holds none of their 54 rows, and each
+Each sets `default: false`, so a run that names no project holds none of their 51 rows, and each
 caps its own workers at one.
 What holds a reading to a quiet machine is the run being one worker wide, and the three files
 reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of

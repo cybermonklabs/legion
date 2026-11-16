@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -134,14 +135,21 @@ type Options struct {
 	// operator's mounts', which every pod and the image probe's carry, and the image probe reads
 	// every role's (probeManifest). Nil is none.
 	RoleConfigFiles map[claim.Role][]string
-	// MemoryConfigFiles is the project's `memory.config_files`: absolute paths of Oh My Pi
-	// settings overlays a role whose tree is in the memory group (runtime.SpawnSpec.Memory) names
-	// last in PI_CONFIG_FILES, after the operator's own and the role's own, so they outrank both
-	// (roleOperatorEnv). The files are the operator's mounts', as a role's own are, and the image
-	// probe reads them with every workflow role's (probeManifest). The daemon hands them over
-	// whatever the project's mode is, since a tree already drawn into the memory group names them
-	// under any mode; a project with no block names none. Nil is none.
-	MemoryConfigFiles []string
+	// ExperimentVariants is every arm of every experiment the project declares
+	// (config.Project.ExperimentsDeclared), in the order the file declares the experiments and,
+	// within one experiment, the order it declares the arms. A role names the overlays of the
+	// arms its own unit was drawn into (runtime.SpawnSpec.Variants) last in PI_CONFIG_FILES,
+	// after the operator's own and the role's own, so they outrank both (roleOperatorEnv); this
+	// list is every arm any role could be given, which is what the readers that hold a pod or the
+	// deployment and no tree take — the pod's own overlay drift (movedRoleOverlays), what a kept
+	// pod holds (heldRoleOverlays) and the image probe, which reads one value per role per arm
+	// (probeManifest). The files are the operator's mounts', as a role's own are. The daemon
+	// hands them over whatever each experiment's mode is, since a unit already drawn into an arm
+	// names its files under any mode. Every project declares the memory experiment, so the list
+	// always holds its two arms, and a project that writes no `memory` block and no experiment of
+	// its own names no file in any arm. Nil is none.
+	// A variant's InstructionsPath is the daemon's to inline in the prompt and is not read here.
+	ExperimentVariants []runtime.Variant
 	// ProviderKeys maps each variable Oh My Pi reads to the key of the providers Secret
 	// (ProvidersSecretName) that holds its value. With any, every pod mounts exactly those keys at
 	// ProvidersDir and the worker's shim exports them into Oh My Pi's environment alone; with none,
@@ -174,9 +182,11 @@ type Options struct {
 	// key the pod and the image probe mount at ProvidersDir/OMP_SESSION_SQL_DSN, which the shim,
 	// seeing the pointer, never exports; under cloudsql-iam no pod mounts a session key at all —
 	// each pod's launcher container (an issue pod's `roles`, the controller pod's `controller`)
-	// is told the instance, database and login once (sessionProxyFlags), proxies a socket of each
-	// generation's own to Cloud SQL as the pod itself, and writes the URL file in that
-	// generation's private directory.
+	// is told the instance, database and login once, and the Google service account to
+	// impersonate where the store names one (sessionProxyFlags), proxies a socket of each
+	// generation's own to Cloud SQL as the pod itself or, impersonating it with the pod's own
+	// credentials, as that account, and writes the URL file in that generation's private
+	// directory.
 	SessionStore ompsessions.Store
 	// Agent is the command the shim wraps, before the Oh My Pi arguments the runtime appends
 	// (`--extension <envoy plugin> --extension <legion plugin> --model @default`, `--resume`,
@@ -201,6 +211,17 @@ type Options struct {
 	// every process in it, so a server a role started would die with that generation and take
 	// every sibling role's test database with it.
 	TestPostgres bool
+	// MemoryGuard is what the memory guard in an issue pod's launcher runs by
+	// (runtime.kubernetes.memory_guard.issue_pods), handed to it on the daemon's answer to each
+	// of its roles' hellos (LauncherResolver). Nil is a deployment that turned the guard off, and
+	// the launcher reads the absent member as "run none", as it reads a daemon that does not know
+	// the guard. The controller's pod takes none however this is set: its settings are its own
+	// block's, which this runtime does not carry.
+	//
+	// It is no part of the pod shape a template records (podShapeRecord): nothing of a running
+	// pod is built from it, since a launcher is told it on every hello, a reconnect after a
+	// daemon restart included, so a changed setting reaches every pod without replacing one.
+	MemoryGuard *shimwire.LauncherMemoryGuard
 	// BootTimeout bounds each wait of a relaunch, its wait for the API server to answer one of its
 	// requests other than overloaded included (resend), and is how long a pod may stay unscheduled
 	// before it counts as gone (worker_boot_timeout_seconds).
@@ -274,6 +295,13 @@ type Options struct {
 	// neither restores nothing, which is what a pod whose issue was never released does anyway.
 	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle
 	WorkspaceBundleRestored runtime.WorkspaceBundleRestored
+	// MemoryGuardKilled takes one process an issue pod's memory guard ended, as that pod's
+	// launcher reported it on the connection of the role whose process it was
+	// (runtime.MemoryGuardKilled): the daemon turns it into the note that tells that role why its
+	// process is gone. A runtime given none reads the frame, logs a warning naming where the
+	// daemon sets this field, and drops it; it never closes the connection on it, since the
+	// launcher would redial a second later and send its waiting reports into the same refusal.
+	MemoryGuardKilled runtime.MemoryGuardKilled
 	// LeakCheck reads the shared public leak check at the tag a pod's launcher names in its hello
 	// (shimwire.LauncherHello.LeakCheckTag), which the runtime pushes to that launcher before it
 	// starts any role of it (launchers.serveLeakCheck): the launcher installs the check once for
