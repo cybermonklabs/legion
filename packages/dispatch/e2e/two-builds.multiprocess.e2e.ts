@@ -31,6 +31,7 @@ import {
   processPinHeader,
   webDistOf,
 } from "./harness-processes";
+import { withIssuePage } from "./issue-page-option";
 import { sql } from "./psql";
 import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
@@ -304,6 +305,8 @@ interface Visit {
   readonly url: string;
   readonly shows: (page: Page) => readonly Locator[];
   readonly loads?: readonly LazyPiece[];
+  /** Runs before the visit's `goto`, and what it sets stays on the walk's one context. */
+  readonly prepare?: (page: Page) => Promise<void>;
 }
 
 function heading(page: Page, name: string): Locator {
@@ -539,6 +542,19 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     { route: "/pipeline", shows: (page) => [heading(page, "Pipeline")], url: "/pipeline" },
     { route: "*", shows: (page) => [heading(page, "Page not found")], url: "/no-such-page" },
+    {
+      // Only a reader with the new issue page turned on loads its chunk (`IssueOutlinePage`), so
+      // no visit above loads it. This visit is last because the init script stays on the walk's
+      // one context: an issue visit after it would draw the new page rather than today's.
+      prepare: (page) => withIssuePage(page.context(), "alice"),
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page
+          .locator("[data-issue-page]")
+          .getByRole("heading", { exact: true, level: 1, name: shown.issue }),
+      ],
+      url: issue,
+    },
   ];
 }
 
@@ -632,6 +648,7 @@ async function walk(
       problems = [];
       const shows = visit.shows(page);
       try {
+        await visit.prepare?.(page);
         awaitingCommit = true;
         await page.goto(visit.url);
         // A failed asset ends the visit at once: the landmark it keeps from rendering would

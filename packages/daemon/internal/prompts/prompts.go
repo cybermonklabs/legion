@@ -25,9 +25,9 @@ var roleParts embed.FS
 //go:embed go/*.md
 var goParts embed.FS
 
-// Parts is the ordered role-prompt files a runtime concatenates before its addressing and
-// deployment-instruction fragments. A runtime must keep this list in one --append-system-prompt
-// argument because OMP applies only the final occurrence of that flag.
+// Parts is the ordered role-prompt files a launch concatenates before its addressing and
+// deployment-instruction fragments (runtime.ComposePrompt). The whole text rides one file that one
+// --append-system-prompt names, because OMP applies only the final occurrence of that flag.
 type Parts struct {
 	RolePromptPaths []string
 }

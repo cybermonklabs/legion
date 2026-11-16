@@ -309,6 +309,12 @@ type Machine struct {
 	// (narrowingCheckLimiter).
 	narrowingChecks     *ratelimit.Keyed
 	narrowingChecksOnce sync.Once
+	// leftOut is, by record id, each pending record PendingForApprover has logged as left out of
+	// a list because it does not verify for this broker, with when to forget it: the later of the
+	// record's expiry and leftOutRetention after the last list that left it out. It is logged once
+	// rather than on every poll (leaveOut).
+	leftOutMu sync.Mutex
+	leftOut   map[string]time.Time
 	// testAdoptionHook, when set, runs in applyDecisionAttempt between the read that locks the
 	// requesting enrollment and the read that locks the request. It exists only so a test can
 	// deterministically move the request to another enrollment in that window, which is where an

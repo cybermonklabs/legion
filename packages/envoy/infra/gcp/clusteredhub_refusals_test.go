@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/gcp"
+	"github.com/sjawhar/envoy/infra/nats"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -240,6 +241,12 @@ func clusteredSeedRows() []clusteredSeedRow {
 		}},
 		{"tailnet.listener.cpu", "tailnet.listener.cpu", func(a *A, s string) { listener(a).Cpu = str(s) }},
 		{"tailnet.listener.memory", "tailnet.listener.memory", func(a *A, s string) { listener(a).Memory = str(s) }},
+		{"authCallout.issuer", "authCallout.issuer", func(a *A, s string) { a.AuthCallout = authCallout(); a.AuthCallout.Issuer = s }},
+		{"authCallout.xkey", "authCallout.xkey", func(a *A, s string) { a.AuthCallout = authCallout(); a.AuthCallout.XKey = strings.ToLower(s) }},
+		{"authCallout.serviceUser", "authCallout.serviceUser", func(a *A, s string) {
+			a.AuthCallout = authCallout()
+			a.AuthCallout.ServiceUser = splitSeed(s, "-")
+		}},
 		// core's refusals, passed on: a seed in a name names the user; a seed as an nkey is refused
 		// as no public key, without quoting it.
 		{"a user's name", "users", func(a *A, s string) { a.Users[1].Name = s }},
@@ -285,7 +292,7 @@ func TestClusteredNatsHubHasASeedRowForEveryStringInput(t *testing.T) {
 			switch f.Type {
 			case reflect.TypeFor[int](), reflect.TypeFor[*int](), reflect.TypeFor[bool](), reflect.TypeFor[*bool]():
 				continue
-			case reflect.TypeFor[*gcp.ClusteredHubTailnetArgs](), reflect.TypeFor[*gcp.ClusteredHubListenerArgs]():
+			case reflect.TypeFor[*gcp.ClusteredHubTailnetArgs](), reflect.TypeFor[*gcp.ClusteredHubListenerArgs](), reflect.TypeFor[*nats.AuthCalloutArgs]():
 				names = append(names, stringFields(f.Type.Elem(), prefix+name+".")...)
 				continue
 			}

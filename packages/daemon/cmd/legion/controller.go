@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -114,12 +115,14 @@ func runControllerStart(ctx context.Context, args []string, stdout, stderr io.Wr
 // `<state_dir>/github-credential.log` rather than this process's streams, and stopping when Oh My
 // Pi exits or the daemon says the capability is no longer current
 // (controllerCredentialSuperseded); then run Oh My Pi interactive — the launch prefix and the
-// resolved invocation with one joined `--append-system-prompt` and the one positional word
-// daemon.ControllerStartCommand, no `--resume`, no `--mode rpc`, and daemon.ControllerStartMessage
-// as LEGION_CONTROLLER_START_MESSAGE in its environment for that pi-legion command to send as the
-// first turn — in the foreground with the same environment, and answer
-// its exit code. A refusal before the secret is written removes the directories made for the
-// probe, so the state directory is as it was.
+// resolved invocation with one `--append-system-prompt` naming the file the joined controller
+// prompt is written to (`<state_dir>/secrets/<controller claim>-<run>-system-prompt.md`, this
+// run's own, removed when Oh My Pi exits), and the one
+// positional word daemon.ControllerStartCommand, no `--resume`, no `--mode rpc`, and
+// daemon.ControllerStartMessage as LEGION_CONTROLLER_START_MESSAGE in its environment for that
+// pi-legion command to send as the first turn — in the foreground with the same environment, and
+// answer its exit code. A refusal before the secret is written removes the directories made for
+// the probe, so the state directory is as it was.
 func controllerStart(ctx context.Context, configPath, daemonURL string, stderr io.Writer) (int, error) {
 	absolute, err := filepath.EvalSymlinks(configPath)
 	if err == nil {
@@ -300,11 +303,27 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	// The start message travels as LEGION_CONTROLLER_START_MESSAGE (controllerEnvironment) and the
 	// command line ends with the word daemon.ControllerStartCommand, whose doc says why.
 	addressing := daemon.DesignGateFragment(designSteps) + " " + daemon.RepositoriesSentence(repositories)
-	command := omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation) + " " + omplaunch.SystemPromptArgument(runtime.PromptParts{
+	prompt, err := runtime.ComposePrompt(runtime.PromptParts{
 		RolePromptPaths:            controllerPrompts,
 		Addressing:                 addressing,
 		DeploymentInstructionsPath: instructionsFile,
-	}) + " " + shellprefix.Word(daemon.ControllerStartCommand)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("compose the controller's system prompt: %w", err)
+	}
+	// The prompt rides a file (runtime.SystemPromptFile), written before Oh My Pi starts. Oh My Pi
+	// reads it once, at startup, so the file goes when this command ends. It is this run's own,
+	// named for the run: the command is run again while an earlier controller still runs (the new
+	// capability revokes the old), and a file both runs shared would be removed by the earlier
+	// run's exit, maybe before the later run's Oh My Pi had read it, which would then start with
+	// the path as its prompt and say nothing.
+	promptFile, err := runtime.WriteSystemPrompt(stateDir, token+"-"+rand.Text(), prompt)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = os.Remove(promptFile) }()
+	command := omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation) + " " + omplaunch.SystemPromptArgument(promptFile) +
+		" " + shellprefix.Word(daemon.ControllerStartCommand)
 	fmt.Fprintf(stderr, "[legion] starting the controller for %s against %s; state in %s\n", cfg.Project, cfg.DaemonURL, stateDir)
 	// Interactive and in the foreground: the operator's terminal is Oh My Pi's. The child is not
 	// bound to ctx — a Ctrl-C reaches Oh My Pi through the terminal's process group and is its to

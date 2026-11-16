@@ -256,7 +256,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 				defer cancel()
 				ctx = bounded
 			}
-			release, err := f.Values(ctx, decision.GrantID, f.enrollmentID, narrowing)
+			release, err := f.Values(ctx, decision.GrantID, f.enrollmentID, narrowing, requests.ReleaseCall{})
 			if release.Values != nil {
 				t.Fatalf("the release handed over %v; want no value: the narrowing it asked for was never served", release.Values)
 			}

@@ -37,8 +37,9 @@ role's environment: TLS is verified against the root-owned CA store, so a rewrit
 request and cannot answer one.
 
 What goes back is facts, never values: the pid, argv[0], the argument count and a sha256 of the
-whole /proc/<pid>/cmdline (the agent runs with `--append-system-prompt <the composed prompt, the
-deployment's own instructions>`), whether the agent's gh variables are the image's, the `gh` read of
+whole /proc/<pid>/cmdline (the agent runs with `--append-system-prompt <its prompt file>`, and one
+of an older daemon with the composed prompt itself as that argument), whether the agent's gh
+variables are the image's, the `gh` read of
 T, and, for each of O and T, the HTTP status, content type and body (never the token) GitHub answers
 to the receive-pack advertisement request a `git push` opens with. A token that can push to a
 repository gets 200 and the advertisement; one that cannot gets 403.
