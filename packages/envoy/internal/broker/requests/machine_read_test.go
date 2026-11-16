@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestGrantsForApproverNamesWhoApproved pins that the approver list names each grant's approver:
@@ -192,6 +195,72 @@ func TestReadRecordAndPendingNameBothSessionIDsWhenTheyDiffer(t *testing.T) {
 	rows, err := m.PendingForApprover(ctx, approver)
 	if err != nil || len(rows) != 1 || rows[0].Session != want {
 		t.Fatalf("PendingForApprover = %+v, %v, want one row naming %+v", rows, err, want)
+	}
+}
+
+// TestPendingForApproverLeavesOutARecordThatDoesNotVerify pins INFRA-3950's first part: a
+// pending record signed for another audience — the broker's BROKER_PUBLIC_URL before it changed,
+// or a second broker's on the same database — is left out of the approver's list and logged once
+// with its id and the reason, and the other records are listed and can be decided. Before, the
+// list returned that record's "aud does not match" and the approval page and GET /v1/pending
+// answered 503 for every request of that approver until the record expired.
+func TestPendingForApproverLeavesOutARecordThatDoesNotVerify(t *testing.T) {
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	m, first, firstKey, approver := newFixture(t)
+	ctx := context.Background()
+
+	current := m.Audience
+	m.Audience = "https://the-old-public-url.example"
+	stale, err := m.Create(ctx, first, signRequest(t, m, firstKey, "asked before the URL moved", "DEEL_API_KEY"), "", nil)
+	if err != nil || stale.RecordID == nil {
+		t.Fatalf("Create under the old audience = %+v, %v", stale, err)
+	}
+	m.Audience = current
+	var valid []string
+	for _, box := range []string{"box-b", "box-c"} {
+		enr, key := newEnrollment(t, m.Store, "session", box+"-"+t.Name(), new(fixtureOperator), nil)
+		req, err := m.Create(ctx, enr, signRequest(t, m, key, "asked after the move", "DEEL_API_KEY"), "", nil)
+		if err != nil || req.RecordID == nil {
+			t.Fatalf("Create(%s) = %+v, %v", box, req, err)
+		}
+		valid = append(valid, *req.RecordID)
+	}
+
+	// Twice, as the approval page's poll asks: the second list logs nothing new.
+	for range 2 {
+		rows, err := m.PendingForApprover(ctx, approver)
+		if err != nil {
+			t.Fatalf("PendingForApprover = %v; want the records that verify, without the one that does not", err)
+		}
+		var listed []string
+		for _, r := range rows {
+			listed = append(listed, r.RecordID)
+		}
+		slices.Sort(listed)
+		want := slices.Sorted(slices.Values(valid))
+		if !slices.Equal(listed, want) {
+			t.Fatalf("PendingForApprover listed %q; want %q, and never the stale record %s", listed, want, *stale.RecordID)
+		}
+	}
+	var lines []slog.Record
+	for _, r := range capture.Records() {
+		if r.Message == PendingLeftOutMessage {
+			lines = append(lines, r)
+		}
+	}
+	if len(lines) != 1 {
+		t.Fatalf("%d %q lines after two lists; want exactly one", len(lines), PendingLeftOutMessage)
+	}
+	attrs := map[string]string{}
+	lines[0].Attrs(func(a slog.Attr) bool { attrs[a.Key] = a.Value.String(); return true })
+	if lines[0].Level != slog.LevelWarn || attrs["record_id"] != *stale.RecordID || !strings.Contains(attrs["reason"], "aud does not match") {
+		t.Fatalf("the line is %s %v; want WARN naming record_id %s and the reason aud does not match", lines[0].Level, attrs, *stale.RecordID)
+	}
+
+	dec, err := m.ApplyDecision(ctx, valid[0], true, approver)
+	if err != nil || dec.State != "granted" {
+		t.Fatalf("ApplyDecision on a listed record = %+v, %v; want granted", dec, err)
 	}
 }
 
