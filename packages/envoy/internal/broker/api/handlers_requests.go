@@ -59,9 +59,11 @@ type createRequestResponse struct {
 	RecordID *string `json:"record_id"`
 	// Who decides it, as its record names them: a person's login (their lowercase email), or
 	// "anyone" for a shared secret, which anyone signed in to the broker's approval page may
-	// decide. While it is pending it is listed in that person's Dispatch Inbox, or in everyone's
-	// for "anyone", linking approve_url. Null when the policy decided it at once, so no record
-	// names one.
+	// decide. While it is pending it is listed in that person's Dispatch Inbox, linking
+	// approve_url; for "anyone", in the Inbox of the person responsible for the agent that asked
+	// (the session's operator, a fleet machine's person, or a Legion pod's issue assignee), or in
+	// everyone's when no such person is found. Null when the policy decided it at once, so no
+	// record names one.
 	Approver *string `json:"approver"`
 	// How many seconds its grant lasts, as the signed request asked; or, when it asked for none, 12
 	// hours; null when every name is tagged default-grant=session and the grant lasts until the

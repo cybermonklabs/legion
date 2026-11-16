@@ -304,8 +304,10 @@ func routes() []apiRoute {
 		{http.MethodPost, "/v1/grants/{id}/values", sessionAuth((*server).grantValues)},
 		// End a grant the calling session holds.
 		{http.MethodPost, "/v1/grants/{id}/revoke", sessionAuth((*server).revokeGrant)},
-		// List the pending requests and machine logins the named person decides, each secret
-		// request with the broker's own page where that person decides it.
+		// List the pending requests and machine logins the named person is asked to decide, each
+		// secret request with the broker's own page where it is decided. A request for a shared
+		// secret is listed for the person responsible for the agent that made it, or for everyone
+		// when no person is.
 		{http.MethodGet, "/v1/pending", accountAuth(relaysDecisions, (*server).listPending)},
 		// Approve a pending machine login as the named person, who must type its code: the broker
 		// takes the person's name on the caller's word, from a listed service's ServiceAccount

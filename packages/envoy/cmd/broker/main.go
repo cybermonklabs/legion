@@ -1071,7 +1071,8 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // newRequestMachine builds the requests.Machine the broker decides every secret request with, from
 // its configuration: the audience and skew every request object is checked against, and, for each
 // service account, the registered service a pod running as it proves, for each Google
-// service account, the one a machine of that fleet proves, and, for each google-service-account
+// service account, the one a machine of that fleet proves and the person its exchange entry
+// names, and, for each google-service-account
 // secret, the one account the deployment binds it to and so the only one its release mints a
 // token for. A grant lasts the lifetime its request signed, or until its session ends. rules and
 // caCertificate are the airlock's, read at boot: a name the rules name is released as
@@ -1079,13 +1080,16 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // one retry policy and process-wide retry budget of the three minters that call an upstream over
 // HTTP (main's is secrets.NewRetry on the process's registry, which broker_mint_attempts_total is
 // counted on), so a GitHub brownout that spends the budget leaves a Google mint's failure
-// unretried too: each holds the one pointer, which kindMinters' copies keep.
+// unretried too: each holds the one pointer, which kindMinters' copies keep. Where
+// BROKER_JUDGE_DISPATCH_URL is set, the judge's read of Dispatch also names a Legion pod's issue's
+// assignee, whose Inbox lists that pod's request for a shared secret.
 func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry) *requests.Machine {
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
+		VMPersonsByAccount:  vmPersonsByAccount(cfg.ExchangeGoogleAccounts),
 		// The two kinds whose minter calls an endpoint of its own carry the local stack's
 		// stand-in endpoints when it named them, and the real ones otherwise: a minter left
 		// zero mints against GitHub and Google themselves.
@@ -1107,7 +1111,34 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		AirlockCACertificate: caCertificate,
 	}
 	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
+	if cfg.JudgeDispatchURL != "" {
+		m.Assignees = judgeDispatch(cfg)
+	}
 	return m
+}
+
+// vmPersonsByAccount is the person each BROKER_VM_EXCHANGE_ACCOUNTS entry names, keyed by its
+// account, an entry that names none left out: whose Inbox lists a request one of that fleet's
+// machines makes for a shared human-tier secret. The entry's person reaches no secret.
+func vmPersonsByAccount(entries []exchange.GoogleEntry) map[string]string {
+	persons := make(map[string]string, len(entries))
+	for _, e := range entries {
+		if e.Person != "" {
+			persons[e.Account] = e.Person
+		}
+	}
+	return persons
+}
+
+// judgeDispatch is the broker's one read of Dispatch, at BROKER_JUDGE_DISPATCH_URL under the token
+// BROKER_JUDGE_DISPATCH_TOKEN_FILE holds: the model judge reads a request's issue with it, and the
+// request machine a Legion pod's issue's assignee.
+func judgeDispatch(cfg config.Config) judge.Dispatch {
+	return judge.Dispatch{
+		BaseURL: cfg.JudgeDispatchURL,
+		Account: brokertoken.NewAccountToken(cfg.JudgeDispatchTokenFile),
+		HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
+	}
 }
 
 // The request machine answers every question the model judge asks of the broker. The assertion
@@ -1120,7 +1151,8 @@ var _ judge.Requests = (*requests.Machine)(nil)
 // budget already ends a read whose server never answers, but that budget is shared with the
 // 20-second model call, so a client with no timeout of its own would let one stalled read eat
 // the whole run. Ten seconds is wake.Envoy's own bound for the same kind of call, an authorized
-// GET against a service inside the cluster.
+// GET against a service inside the cluster. The request machine's assignee read holds itself to
+// a shorter bound of its own (requests' assigneeBound).
 const judgeDispatchTimeout = 10 * time.Second
 
 // wireJudge gives m the broker's model judge, when this deployment configures one, and logs in
@@ -1140,12 +1172,8 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 		return
 	}
 	runner := judge.New(ctx, judge.Options{
-		Rules: rules,
-		Dispatch: judge.Dispatch{
-			BaseURL: cfg.JudgeDispatchURL,
-			Account: brokertoken.NewAccountToken(cfg.JudgeDispatchTokenFile),
-			HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
-		},
+		Rules:      rules,
+		Dispatch:   judgeDispatch(cfg),
 		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, cfg.JudgeModelAudience),
 		Requests:   m,
 		SkipChecks: cfg.JudgeTestSkipChecks,

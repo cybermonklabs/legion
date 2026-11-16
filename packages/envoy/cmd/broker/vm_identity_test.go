@@ -22,6 +22,8 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/config"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
+	"github.com/sjawhar/envoy/internal/broker/exchange"
+	"github.com/sjawhar/envoy/internal/broker/judge"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -189,6 +191,34 @@ func TestTheEnrollmentServiceCarriesTheMachineServices(t *testing.T) {
 	}
 	if want := map[string]string{exampleVMAccount: "example-fleet"}; !maps.Equal(m.VMServicesByAccount, want) {
 		t.Fatalf("request Machine's VMServicesByAccount = %v, want %v: without it no machine's session is ever its fleet's", m.VMServicesByAccount, want)
+	}
+}
+
+// TestTheRequestMachineCarriesWhoIsResponsible pins the two things the broker hands the request
+// decisions to find the person a shared secret's request is listed for: each fleet's person by
+// account (BROKER_VM_EXCHANGE_ACCOUNTS), an entry that names none left out, and the judge's read
+// of Dispatch, which answers a Legion pod's issue's assignee, only where BROKER_JUDGE_DISPATCH_URL
+// is set.
+func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
+	const otherAccount = "example-other@example-project.iam.gserviceaccount.com"
+	cfg := vmConfig(t, "example-vm-audience")
+	cfg.ExchangeGoogleAccounts = []exchange.GoogleEntry{
+		{Account: exampleVMAccount, Service: "example-fleet", Project: "ACME", Person: "ada@example.com"},
+		{Account: otherAccount, Service: "example-fleet"},
+	}
+	m := newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil)
+	if want := map[string]string{exampleVMAccount: "ada@example.com"}; !maps.Equal(m.VMPersonsByAccount, want) {
+		t.Fatalf("request Machine's VMPersonsByAccount = %v, want %v", m.VMPersonsByAccount, want)
+	}
+	if m.Assignees != nil {
+		t.Fatalf("request Machine's Assignees = %#v with no BROKER_JUDGE_DISPATCH_URL; want none", m.Assignees)
+	}
+
+	cfg.JudgeDispatchURL = "https://dispatch.internal.example"
+	cfg.JudgeDispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
+	m = newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil)
+	if dispatch, ok := m.Assignees.(judge.Dispatch); !ok || dispatch.BaseURL != cfg.JudgeDispatchURL || dispatch.Account == nil {
+		t.Fatalf("request Machine's Assignees = %#v; want the judge's Dispatch read at %s", m.Assignees, cfg.JudgeDispatchURL)
 	}
 }
 

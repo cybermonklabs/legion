@@ -1085,20 +1085,29 @@ type PendingSummary struct {
 // on), so that id is the one the enrollment holding the request names too. Which records are
 // pending comes from the requests rows, which move, so a moved card is listed once and the box it
 // moved off lists it no more.
+//
+// An agent_secret record waiting on $2, record.AnyoneApprover, is listed for the person its
+// notify column names, and for everyone where it names none (responsiblePerson). A
+// launcher_credential record carries no notify, and its branch reads none.
 const pendingForApproverQuery = `select cr.id, cr.kind, cr.body, cr.created_at, cr.expires_at, coalesce(req.session_id, ''), coalesce(enr.session_id, '')
 	from credential_requests cr
 	left join requests req on req.record_id = cr.id
 	left join enrollments enr on enr.id = cr.enrollment_id
 	where (
-		cr.approver in ($1, $2) and cr.kind='agent_secret' and cr.id in (select r.record_id from requests r where r.state='pending')
+		(cr.approver = $1 or cr.approver = $2 and (cr.notify is null or cr.notify = $1)) and cr.kind='agent_secret' and cr.id in (select r.record_id from requests r where r.state='pending')
 		or cr.approver in ($1, $2) and cr.kind='launcher_credential' and not exists (
 			select 1 from credential_request_events ev where ev.record_id=cr.id and ev.event in ('approved','denied','expired','cancelled'))
 	) order by cr.created_at desc`
 
 // PendingForApprover lists every still-pending credential-request record — of either kind — that
-// approver may decide, newest first: GET /v1/pending's exact contract. That is every record naming
-// approver, and every record whose approver is record.AnyoneApprover: a request for a shared
-// human-tier secret, and a service's machine login. A service's login a broker from before that
+// approver is asked to decide, newest first: GET /v1/pending's exact contract, which Dispatch
+// relays to each person's Inbox. That is every record naming approver; every request for a shared
+// human-tier secret, whose approver is record.AnyoneApprover, that names approver as the person
+// responsible for the agent that made it, or names no such person (credential_requests.notify,
+// Create's responsiblePerson), so it waits where everyone sees it; and every service's machine
+// login, whose approver is record.AnyoneApprover too. Who may decide is not this list's to say:
+// anyone signed in decides a shared secret's request from its page whether or not it is listed for
+// them (record.MayDecide). A service's login a broker from before that
 // rule opened names a person instead and is listed for that person alone, though anyone who types
 // its code may decide it (record.MayDecide). The rule for
 // pending, which ReadRecord applies too: an agent_secret record is pending while its request is.

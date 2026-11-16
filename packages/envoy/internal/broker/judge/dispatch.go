@@ -25,12 +25,12 @@ var ErrNoIssue = errors.New("dispatch holds no issue with this key")
 // rather than being held in memory.
 const maxDispatchAnswer = 1 << 20
 
-// Dispatch is the broker's read of Dispatch, and it is a read alone. Issue makes two GETs and
-// this type has no other method, no other verb and no body to send: nothing here writes an ask,
-// a comment, a label or a status, and nothing reads a person's own data. Both routes are authAny
-// (internal/dispatch/api/routes_table.go), and the projected ServiceAccount token Account reads
-// authenticates as a service actor holding no scope, which reaches an issue and its documents
-// and nothing that belongs to a person.
+// Dispatch is the broker's read of Dispatch, and it is a read alone. Issue makes two GETs,
+// Assignee one, and this type has no other method, no other verb and no body to send: nothing
+// here writes an ask, a comment, a label or a status, and nothing reads a person's own data. Both
+// routes are authAny (internal/dispatch/api/routes_table.go), and the projected ServiceAccount
+// token Account reads authenticates as a service actor holding no scope, which reaches an issue
+// and its documents and nothing that belongs to a person.
 type Dispatch struct {
 	// BaseURL is the root Dispatch's /api/v1 paths hang off.
 	BaseURL string
@@ -41,15 +41,16 @@ type Dispatch struct {
 	// the reader so a test can stand in for it; cmd/broker wires
 	// brokertoken.NewAccountToken(BROKER_JUDGE_DISPATCH_TOKEN_FILE).
 	Account brokertoken.Account
-	// HTTP is the client both calls are made with; a nil client is http.DefaultClient.
+	// HTTP is the client every call is made with; a nil client is http.DefaultClient.
 	HTTP *http.Client
 }
 
 // Issue is what the judge reads of one issue: enough to tell whether the reason's issue is open
 // and what it is about.
 type Issue struct {
-	// Key, Title and Status are the issue as Dispatch shows it.
-	Key, Title, Status string
+	// Key, Title and Status are the issue as Dispatch shows it, and Assignee the person it is
+	// assigned to, "" for an issue nobody is.
+	Key, Title, Status, Assignee string
 	// Spec is the whole markdown of the issue's spec document, and HasSpec whether Dispatch
 	// holds one at all. An issue with no spec document is judged on its key, title and
 	// status, and the data object in front of the model says the spec is absent (D14).
@@ -70,24 +71,11 @@ func (d Dispatch) Issue(ctx context.Context, key string) (Issue, error) {
 	if err != nil {
 		return Issue{}, err
 	}
-	base := strings.TrimSuffix(d.BaseURL, "/") + "/api/v1/issues/" + url.PathEscape(key)
-	// Only these three fields of the issue read are decoded. The route answers the whole
-	// issue with its artifacts, children and open asks (api.issueDetail), and the judge
-	// reads none of that.
-	var row struct {
-		Key    string `json:"key"`
-		Title  string `json:"title"`
-		Status string `json:"status"`
-	}
-	switch status, err := d.get(ctx, base, token, &row); {
-	case err != nil:
+	base := issueURL(d.BaseURL, key)
+	issue, err := d.readIssue(ctx, base, token, key)
+	if err != nil {
 		return Issue{}, err
-	case status == http.StatusNotFound:
-		return Issue{}, fmt.Errorf("%w: %s", ErrNoIssue, key)
-	case status != http.StatusOK:
-		return Issue{}, fmt.Errorf("dispatch answered %d for issue %s", status, key)
 	}
-	issue := Issue{Key: row.Key, Title: row.Title, Status: row.Status}
 
 	var doc struct {
 		Markdown string `json:"markdown"`
@@ -106,6 +94,47 @@ func (d Dispatch) Issue(ctx context.Context, key string) (Issue, error) {
 		return Issue{}, fmt.Errorf("dispatch answered %d for the spec of issue %s", status, key)
 	}
 	return issue, nil
+}
+
+// Assignee is the person the issue key names is assigned to, "" for an issue nobody is: the
+// broker lists a Legion pod's request for a shared secret in that person's Inbox, the pod's claim
+// naming the issue (requests.Machine.Assignees). It reads the issue alone, one GET under the
+// token Account reads, and answers ErrNoIssue and every other failure as Issue does.
+func (d Dispatch) Assignee(ctx context.Context, key string) (string, error) {
+	token, err := d.Account.Read()
+	if err != nil {
+		return "", err
+	}
+	issue, err := d.readIssue(ctx, issueURL(d.BaseURL, key), token, key)
+	return issue.Assignee, err
+}
+
+// issueURL is the address of the issue key names under baseURL.
+func issueURL(baseURL, key string) string {
+	return strings.TrimSuffix(baseURL, "/") + "/api/v1/issues/" + url.PathEscape(key)
+}
+
+// readIssue makes the one issue GET Issue and Assignee share: a 404 is ErrNoIssue and every other
+// answer that is not 200 an error.
+func (d Dispatch) readIssue(ctx context.Context, endpoint, token, key string) (Issue, error) {
+	// Only these four fields of the issue read are decoded. The route answers the whole
+	// issue with its artifacts, children and open asks (api.issueDetail), and the broker
+	// reads none of that. A null assignee decodes as "".
+	var row struct {
+		Key      string `json:"key"`
+		Title    string `json:"title"`
+		Status   string `json:"status"`
+		Assignee string `json:"assignee"`
+	}
+	switch status, err := d.get(ctx, endpoint, token, &row); {
+	case err != nil:
+		return Issue{}, err
+	case status == http.StatusNotFound:
+		return Issue{}, fmt.Errorf("%w: %s", ErrNoIssue, key)
+	case status != http.StatusOK:
+		return Issue{}, fmt.Errorf("dispatch answered %d for issue %s", status, key)
+	}
+	return Issue{Key: row.Key, Title: row.Title, Status: row.Status, Assignee: row.Assignee}, nil
 }
 
 // get makes one authorized GET and, on 200 alone, decodes as much of the answer as into names.

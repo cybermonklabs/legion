@@ -164,3 +164,35 @@ func TestIssueRefusesAnUnreadableToken(t *testing.T) {
 		t.Errorf("Dispatch got %d calls with no token to present; want none", len(calls))
 	}
 }
+
+// TestAssigneeReadsTheIssueAlone: the broker asks Dispatch whose issue a Legion pod's claim names
+// in one GET of the issue, with the projected token, and never reads its spec. The answer is the
+// issue's assignee, and an issue nobody is assigned to answers "". A 404 is ErrNoIssue and any
+// other refusal a failure of the read, as for Issue, which carries the same assignee.
+func TestAssigneeReadsTheIssueAlone(t *testing.T) {
+	stand := newDispatch(t, "doing", testSpec)
+	stand.issue["assignee"] = "ada@example.com"
+	dispatch := newDispatchClient(t, stand, "projected-token")
+	if got, err := dispatch.Assignee(t.Context(), testIssue); err != nil || got != "ada@example.com" {
+		t.Fatalf("Assignee = %q, %v; want ada@example.com", got, err)
+	}
+	if calls := stand.got(); len(calls) != 1 || calls[0] != (dispatchCall{http.MethodGet, "/api/v1/issues/" + testIssue, "Bearer projected-token"}) {
+		t.Fatalf("Dispatch got %+v; want exactly the one issue read", calls)
+	}
+	if issue, err := dispatch.Issue(t.Context(), testIssue); err != nil || issue.Assignee != "ada@example.com" {
+		t.Fatalf("Issue = %+v, %v; want it to carry the assignee too", issue, err)
+	}
+
+	stand.issue["assignee"] = nil
+	if got, err := dispatch.Assignee(t.Context(), testIssue); err != nil || got != "" {
+		t.Fatalf("Assignee of an unassigned issue = %q, %v; want \"\"", got, err)
+	}
+	stand.issueStatus = http.StatusNotFound
+	if _, err := dispatch.Assignee(t.Context(), testIssue); !errors.Is(err, ErrNoIssue) {
+		t.Fatalf("Assignee of an issue Dispatch does not hold = %v; want ErrNoIssue", err)
+	}
+	stand.issueStatus = http.StatusInternalServerError
+	if _, err := dispatch.Assignee(t.Context(), testIssue); err == nil || errors.Is(err, ErrNoIssue) {
+		t.Fatalf("Assignee with Dispatch answering 500 = %v; want a failure of the read", err)
+	}
+}
