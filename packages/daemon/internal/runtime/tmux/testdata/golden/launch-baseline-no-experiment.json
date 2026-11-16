@@ -1,0 +1,30 @@
+{
+  "architect": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/architect.yml",
+    "--append-system-prompt": "\"$(cat /roles/architect.md)\n\nLegion addressing: your role topic is \\`notifications.role.legion-omp-legion-43-architect\\`.\n\n$(cat /state/deployment-instructions.md)\""
+  },
+  "controller": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/controller.yml",
+    "--append-system-prompt": "\"$(cat /roles/controller.md)\n\n$(cat /state/deployment-instructions.md)\""
+  },
+  "implementer": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/implementer.yml",
+    "--append-system-prompt": "\"$(cat /roles/implementer.md)\n\nLegion addressing: your role topic is \\`notifications.role.legion-omp-legion-43-implementer\\`.\n\n$(cat /state/deployment-instructions.md)\""
+  },
+  "merger": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/merger.yml",
+    "--append-system-prompt": "\"$(cat /roles/merger.md)\n\nLegion addressing: your role topic is \\`notifications.role.legion-omp-legion-43-merger\\`.\n\n$(cat /state/deployment-instructions.md)\""
+  },
+  "planner": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/planner.yml",
+    "--append-system-prompt": "\"$(cat /roles/planner.md)\n\nLegion addressing: your role topic is \\`notifications.role.legion-omp-legion-43-planner\\`.\n\n$(cat /state/deployment-instructions.md)\""
+  },
+  "reviewer": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/reviewer.yml",
+    "--append-system-prompt": "\"$(cat /roles/reviewer.md)\n\nLegion addressing: your role topic is \\`notifications.role.legion-omp-legion-43-reviewer\\`.\n\n$(cat /state/deployment-instructions.md)\""
+  },
+  "tester": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/tester.yml",
+    "--append-system-prompt": "\"$(cat /roles/tester.md)\n\nLegion addressing: your role topic is \\`notifications.role.legion-omp-legion-43-tester\\`.\n\n$(cat /state/deployment-instructions.md)\""
+  }
+}

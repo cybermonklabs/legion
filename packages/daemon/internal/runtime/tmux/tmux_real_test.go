@@ -1828,7 +1828,7 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	// The stand-in answers `legion gh`'s reads of a command's help (`[<command>] --help`) with the
 	// real gh's help of that command, gh's own for none, saved beside the wrapper's own tests; the
 	// shared public leak check's own read of a repository's visibility — the one call `legion gh`
-	// hands gh unchecked, and the read the guard makes for every call that names a destination —
+	// hands gh unchecked, and the read the guard makes for every write that names a destination —
 	// with a visibility; and every other run with the GH_CONFIG_DIR it was given. The variable
 	// that read carries is the guard's own exported one (leakguard.VisibilityReadVar), which
 	// `legion gh`'s exemption is written from too, so a rename cannot part this stand-in from the

@@ -15,9 +15,9 @@
 // DISPATCH_PREVIOUS_BUILD. The suite skips only when that variable is unset; a directory it names
 // that lacks a part fails the suite, naming the parts it lacks. One row of the transition file
 // runs another earlier build instead, the first-rollout build named by
-// DISPATCH_FIRST_ROLLOUT_BUILD (firstRolloutRelease), on the same terms. The current side is this
-// tree: its server from cmdtest.Build, its CLI run as `bun packages/envoy-client/bin/dispatch.ts`,
-// its corpus read from the working tree.
+// DISPATCH_FIRST_ROLLOUT_BUILD, on the same terms, and fails when that build is of another commit
+// than firstRolloutRelease. The current side is this tree: its server from cmdtest.Build, its CLI
+// run as `bun packages/envoy-client/bin/dispatch.ts`, its corpus read from the working tree.
 //
 // Its own build tag and its own CI job, dispatch-two-builds in .github/workflows/ci.yaml, for the
 // reason the multiprocess suite has its own: a row waits for durable hand-overs and settings
@@ -47,12 +47,15 @@ const previousBuildVariable = "DISPATCH_PREVIOUS_BUILD"
 // runs as its earlier build.
 const firstRolloutBuildVariable = "DISPATCH_FIRST_ROLLOUT_BUILD"
 
-// firstRolloutRelease is the newest release before the fleet columns (migration
+// firstRolloutRelease is the commit of the first-rollout build, the release tagged
+// legion-envoy-v30.20.2. It is the newest release before the fleet columns (migration
 // 20261101030537_server_processes_schema), which legion-envoy-v30.21.0 is the first to carry and
 // to register its schema numbers in (cybermonklabs/legion#2461): a process of it reads as version
-// 0 in the fleet, which is the first rollout of those numbers. A release that is already out
-// never changes, so this pin and the one in ci.yaml's dispatch-two-builds job stay right.
-const firstRolloutRelease = "legion-envoy-v30.20.2"
+// 0 in the fleet, which is the first rollout of those numbers. The tag is lightweight, and a
+// lightweight tag can be moved, so the pin is the commit. Two other places hold the same commit:
+// FIRST_ROLLOUT_COMMIT in ci.yaml's dispatch-two-builds job, and DISPATCH_E2E_FIRST_ROLLOUT_COMMIT,
+// which that job gives the browser run against the first-rollout build.
+const firstRolloutRelease = "edb69e0d7588ec037847182e74a04a343a0664c9"
 
 // previousBuildParts is every part of a previous build's directory a row reads, as
 // build-dispatch-build.sh lays it out.
@@ -83,9 +86,17 @@ func openPreviousBuild(t *testing.T) previousBuild {
 	return openBuild(t, previousBuildVariable, "--previous-release")
 }
 
+// openFirstRolloutBuild also fails the test when the build's COMMIT is another commit than
+// firstRolloutRelease, before any server starts.
 func openFirstRolloutBuild(t *testing.T) previousBuild {
 	t.Helper()
-	return openBuild(t, firstRolloutBuildVariable, "--commit "+firstRolloutRelease)
+	buildArguments := "--commit " + firstRolloutRelease
+	build := openBuild(t, firstRolloutBuildVariable, buildArguments)
+	if build.commit != firstRolloutRelease {
+		t.Fatalf("%s=%s is a build of commit %s, but the first-rollout build is commit %s (firstRolloutRelease). Build it again with packages/envoy/scripts/build-dispatch-build.sh %s --out <dir>.",
+			firstRolloutBuildVariable, build.dir, build.commit, firstRolloutRelease, buildArguments)
+	}
+	return build
 }
 
 // openBuild reads the build the variable names. It skips the test when the variable is unset,
