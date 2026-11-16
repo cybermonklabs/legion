@@ -3263,7 +3263,7 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 // (defaultBranches.Named).
 //
 // It is called only for a repository neither set names and only for an issue admission would
-// record (prepareUnrecorded), so it never reads GitHub again for one whose read the recorded set
+// record (prepareUnrecorded), so it reads GitHub no second time for one whose read the recorded set
 // keeps, nor for an issue nothing records. With boot set, for the boot's listing, it reads GitHub
 // for nothing and leaves the repository to the recovery (leaveForRecovery; prepareListed says
 // why). Every other one is read at each preparation, which is what keeping no refusal means: an
