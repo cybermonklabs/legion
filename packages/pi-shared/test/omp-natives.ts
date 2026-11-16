@@ -241,7 +241,7 @@ export async function linkTree(
 ): Promise<void> {
   await mkdir(destination, { recursive: true, mode: 0o755 });
   for (const relative of await readdir(source, { recursive: true })) {
-    const from = path.resolve(source, relative);
+    const from = path.resolve(source, relative); // absolute, since a symlink below targets it
     const to = path.join(destination, relative);
     if ((await stat(from)).isDirectory()) {
       await mkdir(to, { recursive: true, mode: 0o755 });

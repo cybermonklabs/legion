@@ -46,6 +46,43 @@ peak() {
   env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 -c "$1"
 }
 
+# drive_run HANDLER COMMAND...: runs COMMAND, the sampler around a stand-in that waits on its
+# stdin, as a coprocess with its stderr merged into its stdout, and calls HANDLER after each line it
+# writes, with the line in $line and the coprocess's stdin in $to_run, which HANDLER closes with
+# close_run. It leaves the output in $out, the last read's status in $read_status (1 once the
+# output ended, over 128 once 60 s passed without a line) and the command's status in $status. The
+# sampler writes a line every 5 s, so 60 s without one is a sampler that stopped, and the case
+# fails then rather than at the job's own timeout. Once the output ends, a stdin HANDLER left open
+# is closed, which lets the stand-in go whatever it was waiting for.
+drive_run() {
+  local handler=$1 pid from_run
+  shift
+  coproc RUN { exec "$@" 2>&1; }
+  pid=$RUN_PID
+  to_run=${RUN[1]}
+  # A copy of the read end, because bash closes its own when it reaps the coprocess, which can be
+  # before the coprocess's last lines are read.
+  exec {from_run}<&"${RUN[0]}"
+  out=""
+  while :; do
+    read_status=0
+    IFS= read -r -t 60 line <&"$from_run" || read_status=$?
+    [ "$read_status" -eq 0 ] || break
+    out+=$line$'\n'
+    "$handler"
+  done
+  close_run
+  exec {from_run}<&-
+  status=0
+  wait "$pid" || status=$?
+}
+
+# close_run: closes drive_run's coprocess's stdin, once.
+close_run() {
+  [ -z "$to_run" ] || exec {to_run}>&-
+  to_run=""
+}
+
 echo "case: a failing command's status passes through"
 run_sampler '' sh -c 'exit 3'
 check "exits 3" "$(is "$status" 3)"
@@ -68,39 +105,22 @@ block = b"x" * (64 * 1024 * 1024)
 sys.stdin.read()
 sys.stdout.write(str(len(block)) + "\n")
 '
-coproc GROWER { exec env RACE_MEM_LIMIT_KB=1 "$sampler" python3 -c "$grower" 2>&1; }
-run_pid=$GROWER_PID
-to_grower=${GROWER[1]}
-# A copy of the read end, because bash closes its own when it reaps the sampler, which can be
-# before the sampler's last lines are read.
-exec {from_run}<&"${GROWER[0]}"
-out=""
-stage=unnamed
-while :; do
-  read_status=0
-  # The sampler writes a line every 5 s, so 60 s without one is a sampler that stopped, and the
-  # case fails then rather than at the job's own timeout.
-  IFS= read -r -t 60 line <&"$from_run" || read_status=$?
-  [ "$read_status" -eq 0 ] || break
-  out+=$line$'\n'
+# on_grower_line: a sample naming the test lets the grower grow, and a later sample that saw it
+# past the 64 MiB lets it end.
+on_grower_line() {
   if [ "$stage" = unnamed ] && [[ $line == *'tests running: TestTheSamplerNamesMe'* ]]; then
-    echo grow >&"$to_grower"
+    echo grow >&"$to_run"
     stage=growing
   elif [ "$stage" = growing ] && [[ $line =~ \ s,\ VmRSS\ ([0-9]+)\ kB ]] &&
     [ "${BASH_REMATCH[1]}" -gt 65536 ]; then
-    exec {to_grower}>&-
+    close_run
     stage=grown
   fi
-done
+}
+stage=unnamed
+drive_run on_grower_line env RACE_MEM_LIMIT_KB=1 "$sampler" python3 -c "$grower"
 check "a sample named the test, and a later one saw it grown" "$(is "$stage" grown)"
 check "the sampler wrote until it ended" "$(is "$read_status" 1)"
-# Short of that, the grower is let go here instead, which ends it whatever it was waiting for.
-if [ "$stage" != grown ]; then
-  exec {to_grower}>&-
-fi
-exec {from_run}<&-
-status=0
-wait "$run_pid" || status=$?
 check "exits 1" "$(is "$status" 1)"
 check "names the limit it was given" "$(contains "$out" 'the limit is 1 kB (RACE_MEM_LIMIT_KB)')"
 check "its decision line names the tests at the highest sample" \
@@ -244,37 +264,25 @@ print("renamed", flush=True)
 sys.stdin.read()
 print("the renamed command spoke", flush=True)
 '
-coproc RENAMED { exec env -u RACE_MEM_LIMIT_KB "$sampler" python3 -c "$renamed" 2>&1; }
-run_pid=$RENAMED_PID
-to_renamed=${RENAMED[1]}
-exec {from_run}<&"${RENAMED[0]}"
-out=""
-stage=unnamed
-samples_after=0
-while :; do
-  read_status=0
-  IFS= read -r -t 60 line <&"$from_run" || read_status=$?
-  [ "$read_status" -eq 0 ] || break
-  out+=$line$'\n'
+# on_renamed_line: the first sample after the command's "renamed" that names it lets it go; two
+# such samples without its name let it go too, and the case fails.
+on_renamed_line() {
   if [ "$stage" = unnamed ] && [ "$line" = renamed ]; then
     stage=renamed
   elif [ "$stage" = renamed ] && [[ $line == 'race memory: at '* ]]; then
     samples_after=$((samples_after + 1))
     if [[ $line == *$' in \xef\xbf\xbd\xef\xbf\xbdA3'[,\;]* ]]; then
       stage=named
-      exec {to_renamed}>&-
+      close_run
     elif [ "$samples_after" -ge 2 ]; then
-      exec {to_renamed}>&-
+      close_run
       stage=unseen
     fi
   fi
-done
-if [ "$stage" = unnamed ] || [ "$stage" = renamed ]; then
-  exec {to_renamed}>&-
-fi
-exec {from_run}<&-
-status=0
-wait "$run_pid" || status=$?
+}
+stage=unnamed
+samples_after=0
+drive_run on_renamed_line env -u RACE_MEM_LIMIT_KB "$sampler" python3 -c "$renamed"
 check "a sample names the command with U+FFFD for each byte that is not UTF-8" "$(is "$stage" named)"
 check "exits 0" "$(is "$status" 0)"
 check "passes the command's own output through" "$(contains "$out" '^the renamed command spoke$')"

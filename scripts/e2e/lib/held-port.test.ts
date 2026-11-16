@@ -228,32 +228,35 @@ async function answerWithin(port: number, milliseconds: number): Promise<string>
   }
 }
 
-// listeningInode returns the inode of the socket listening on 127.0.0.1:port from /proc/net/tcp,
-// or undefined when none listens. local_address is the IPv4 address in the host's byte order
-// (127.0.0.1 is 0100007F on the little-endian machines the tests run on) and the port, in
-// hexadecimal; st 0A is LISTEN, and the tenth field is the inode.
+// listenRows returns the fields of every socket in the LISTEN state in /proc/net/tcp and
+// /proc/net/tcp6: local_address is the address in the host's byte order (127.0.0.1 is 0100007F on
+// the little-endian machines the tests run on) and the port, in hexadecimal; st 0A is LISTEN, and
+// the tenth field is the inode.
+function listenRows(): string[][] {
+  return ["/proc/net/tcp", "/proc/net/tcp6"].flatMap((table) =>
+    readFileSync(table, "utf8")
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/))
+      .filter((fields) => fields.length > 9 && fields[3] === "0A")
+  );
+}
+
+// listeningInode returns the inode of the socket listening on 127.0.0.1:port, or undefined when
+// none listens.
 function listeningInode(port: number): string | undefined {
   const local = `0100007F:${port.toString(16).toUpperCase().padStart(4, "0")}`;
-  const inodes = readFileSync("/proc/net/tcp", "utf8")
-    .split("\n")
-    .map((line) => line.trim().split(/\s+/))
-    .filter((fields) => fields.length > 9 && fields[1] === local && fields[3] === "0A")
+  const inodes = listenRows()
+    .filter((fields) => fields[1] === local)
     .map((fields) => fields[9]);
   if (inodes.length > 1) throw new Error(`${inodes.length} sockets listen on 127.0.0.1:${port}`);
   return inodes[0];
 }
 
 // listens says whether the socket of inode is still in the LISTEN state on any port: a socket
-// whose every holder is gone is gone from /proc/net/tcp and /proc/net/tcp6 with it. It reads the
-// socket itself, not its port, since any other process on the machine may bind a port once it is
-// free.
+// whose every holder is gone is gone from both tables with it. It reads the socket itself, not
+// its port, since any other process on the machine may bind a port once it is free.
 function listens(inode: string): boolean {
-  return ["/proc/net/tcp", "/proc/net/tcp6"].some((table) =>
-    readFileSync(table, "utf8")
-      .split("\n")
-      .map((line) => line.trim().split(/\s+/))
-      .some((fields) => fields.length > 9 && fields[3] === "0A" && fields[9] === inode)
-  );
+  return listenRows().some((fields) => fields[9] === inode);
 }
 
 // sessionMembers returns the pids of the processes in session sid (the sixth field of

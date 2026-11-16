@@ -13,6 +13,7 @@ import {
   type Reply,
   type Request,
   runLegionPane,
+  runTool,
 } from "@legion/pi-shared/test/omp-harness";
 import { versionControlEnvironment } from "@legion/test-fixtures/version-control-environment";
 
@@ -109,25 +110,6 @@ const STALL_RECORD = {
   author: { kind: "agent", session_id: "ses_stall" },
   created_at: "2026-10-09T08:00:00Z",
 };
-
-/** Runs `jj` in `cwd` with `env` — the pane's identity, a home of the test's and no configuration
- * of the machine's (`versionControlEnvironment`) — failing loudly on a non-zero exit, and answers
- * its stdout. */
-async function runJj(
-  jj: string,
-  env: Record<string, string>,
-  cwd: string,
-  args: readonly string[]
-): Promise<string> {
-  const child = Bun.spawn([jj, ...args], { cwd, env, stdout: "pipe", stderr: "pipe" });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  if (code !== 0) throw new Error(`jj ${args.join(" ")} exited ${code}:\n${stderr}`);
-  return stdout.trim();
-}
 
 /** The daemon's state as the pane's `handoff_complete` reads it: STALL-2 at implementing, the
  * phase whose handoff is the `implement` record. */
@@ -271,11 +253,10 @@ async function stallPane(
           ...PANE_IDENTITY,
         };
         const origin = path.join(scratch, "origin.git");
-        const bare = Bun.spawn([git, "init", "--bare", "--quiet", origin], { cwd: scratch, env });
-        if ((await bare.exited) !== 0) throw new Error(`git init --bare ${origin} failed`);
-        await runJj(jj, env, scratch, ["git", "init", workspace]);
+        await runTool(git, scratch, env, ["init", "--bare", "--quiet", origin]);
+        await runTool(jj, scratch, env, ["git", "init", workspace]);
         // From here on, every command runs in the workspace, as the pane's own shell does.
-        const jjIn = (...args: string[]) => runJj(jj, env, workspace, args);
+        const jjIn = (...args: string[]) => runTool(jj, workspace, env, args);
         await jjIn("git", "remote", "add", "origin", origin);
         await writeFile(path.join(workspace, "main.py"), 'print("stall")\n');
         await jjIn("describe", "-m", "implement: the change");

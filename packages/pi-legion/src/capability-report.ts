@@ -292,6 +292,28 @@ const EXTENSION_MODULE = /\.(?:ts|js|mjs|cjs)$/;
 const EXTENSION_INDEXES = ["index.ts", "index.js", "index.mjs", "index.cjs"];
 const SKILL_DIRECTORIES = [path.join(".omp", "skills"), path.join(".claude", "skills")];
 
+/** The production host's `namesIn`: the names `readdir` gives for `directory`, or none where there
+ * is no such directory. */
+async function namesIn(directory: string): Promise<readonly string[]> {
+  try {
+    return await readdir(directory);
+  } catch (error) {
+    if (hasErrnoCode(error, "ENOENT") || hasErrnoCode(error, "ENOTDIR")) return [];
+    throw error;
+  }
+}
+
+/** The production host's `kindOf`: what `stat` (following a link) says `file` is. */
+async function kindOf(file: string): Promise<"file" | "directory" | undefined> {
+  try {
+    const stats = await stat(file);
+    return stats.isFile() ? "file" : stats.isDirectory() ? "directory" : undefined;
+  } catch (error) {
+    if (hasErrnoCode(error, "ENOENT") || hasErrnoCode(error, "ENOTDIR")) return undefined;
+    throw error;
+  }
+}
+
 interface RepositoryEntry {
   /** Absolute. */
   readonly path: string;
@@ -675,28 +697,6 @@ export async function measureCapabilities(
     return { name, ok, detail: cleanDetail(detail) };
   });
   return { measuredAt, elapsedMs: Date.now() - started, rows };
-}
-
-/** The production host's `namesIn`: the names `readdir` gives for `directory`, or none where there
- * is no such directory. */
-async function namesIn(directory: string): Promise<readonly string[]> {
-  try {
-    return await readdir(directory);
-  } catch (error) {
-    if (hasErrnoCode(error, "ENOENT") || hasErrnoCode(error, "ENOTDIR")) return [];
-    throw error;
-  }
-}
-
-/** The production host's `kindOf`: what `stat` (following a link) says `file` is. */
-async function kindOf(file: string): Promise<"file" | "directory" | undefined> {
-  try {
-    const stats = await stat(file);
-    return stats.isFile() ? "file" : stats.isDirectory() ? "directory" : undefined;
-  } catch (error) {
-    if (hasErrnoCode(error, "ENOENT") || hasErrnoCode(error, "ENOTDIR")) return undefined;
-    throw error;
-  }
 }
 
 /** `command` run from PATH in `cwd`, ended by `signal`, with both streams read in full. */

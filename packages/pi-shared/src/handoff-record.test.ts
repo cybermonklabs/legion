@@ -14,7 +14,7 @@ import {
   versionControlIdentity,
   versionControlNames,
 } from "@legion/test-fixtures/version-control-environment";
-import { gitBinary, jjBinary } from "../test/omp-harness";
+import { gitBinary, jjBinary, runTool } from "../test/omp-harness";
 import {
   findHandoffReport,
   findPushedBranchHead,
@@ -908,7 +908,7 @@ async function isolatedHome(root: string): Promise<Record<string, string>> {
 }
 
 /** Runs `program` — `jj` or `git` as `env`'s PATH finds it — in `cwd` with the test's own
- * environment, failing on a non-zero exit. */
+ * environment, failing on a non-zero exit (`runTool`). */
 async function run(
   program: "jj" | "git",
   cwd: string,
@@ -917,19 +917,7 @@ async function run(
 ): Promise<string> {
   const found = Bun.which(program, { PATH: env.PATH ?? "" });
   if (found === null) throw new Error(`no ${program} on ${env.PATH}`);
-  const child = Bun.spawn([found, ...args], {
-    cwd,
-    env,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  if (code !== 0) throw new Error(`${program} ${args.join(" ")} exited ${code}:\n${stderr}`);
-  return stdout.trim();
+  return await runTool(found, cwd, env, args);
 }
 
 /** Runs jj in `cwd` with the test's own environment, failing on a non-zero exit. */

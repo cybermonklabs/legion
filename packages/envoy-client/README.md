@@ -190,10 +190,10 @@ accepted, first subscribed and closed; a real natsd and listener that each stack
 chooses, each read back from the line the process logs once it listens (`reportedPort`), so no
 other process can take a port between its choice and the server's bind (its `monitorUrl` is
 natsd's monitoring port); and `runFreezeScenario`, the freeze both plugins' stall tests put their
-session through. The stack's listener answers `consumer`, so the scenario checks consumer delivery across
-the freeze: the connection nats.js dials in place of the frozen one subscribes the relay subject
-again (`/connz`), the session's `envoy_sessions` entry names a new epoch, and the message sent
-during the freeze and one sent after it are each shown once, neither as a replay. A test that
+session through. The stack's listener answers `consumer`, so the scenario checks consumer delivery
+across the freeze: the connection nats.js dials in place of the frozen one subscribes the relay
+subject again (`/connz`), the session's `envoy_sessions` entry names a new epoch, and the message
+sent during the freeze and one sent after it are each shown once, neither as a replay. A test that
 uses the stack runs only with `LEGION_E2E_ENVOY_STACK=1`.
 
 `@legion/envoy-client/test/dispatch-stack` (Bun only, not built, in `test/`) is the same shape for
@@ -210,7 +210,8 @@ server, the server's record and the client's sentence together. They share
 real CLI's `docEdit`, the person's and the machine's writes, and the issue and document a row
 writes about; each file keeps the constants and the sentences that are its own. A test that uses
 this stack runs only with `LEGION_E2E_DISPATCH_STACK=1`, and it needs `DISPATCH_TEST_DATABASE_URL`,
-`go` and `python3` on `PATH`; with the variable set it fails rather than skips. So, to run them here:
+`go` and `python3` on `PATH`; with the variable set it fails rather than skips. So, to run them
+here:
 
 ```sh
 cd packages/envoy-client

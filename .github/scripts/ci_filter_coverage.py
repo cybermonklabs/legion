@@ -291,13 +291,15 @@ FIELDS = ("Dir,ImportPath,ForTest,Standard,GoFiles,CgoFiles,TestGoFiles,XTestGoF
 # hands on, since a version manager's python3 shim can start this interpreter under a PATH of its
 # own whose first go is another one (mise's puts the Go it would pick first).
 GO = os.environ.get("CI_FILTERS_GO") or "go"
-# The variables the go command reads (`go help environment`): its own, and the C tools that
-# configure cgo.
-GO_VARIABLE = re.compile(r"GO[A-Z0-9]*|CGO_\w+|AR|CC|CXX|FC|GCCGO|PKG_CONFIG")
+# The variables the go command reads (`go help environment`): its own (GO_EXTLINK_ENABLED and
+# GCCGOTOOLDIR among them), GIT_ALLOW_PROTOCOL, and the C tools that configure cgo.
+GO_VARIABLE = re.compile(
+    r"GO[A-Z0-9_]*|CGO_\w+|AR|CC|CXX|FC|GCCGO|GCCGOTOOLDIR|GIT_ALLOW_PROTOCOL|PKG_CONFIG")
 # Those of them that say only where the go command keeps files or fetches modules from, which
 # changes no answer here.
-GO_LOCATIONS = frozenset({"GOAUTH", "GOCACHE", "GOINSECURE", "GOMODCACHE", "GONOPROXY", "GONOSUMDB",
-                          "GOPATH", "GOPRIVATE", "GOPROXY", "GOSUMDB", "GOTMPDIR", "GOVCS"})
+GO_LOCATIONS = frozenset({"GIT_ALLOW_PROTOCOL", "GOAUTH", "GOCACHE", "GOINSECURE", "GOMODCACHE",
+                          "GONOPROXY", "GONOSUMDB", "GOPATH", "GOPRIVATE", "GOPROXY", "GOSUMDB",
+                          "GOTMPDIR", "GOVCS"})
 # The platform every go command here is listed for unless the command sets its own: that of the
 # ubuntu-24.04 runner each job of ci.yaml with a go command runs on, as setup-go's `go env` there
 # prints it (GOOS='linux', GOARCH='amd64', CGO_ENABLED='1' with CC='gcc'; the ci-filters job of
