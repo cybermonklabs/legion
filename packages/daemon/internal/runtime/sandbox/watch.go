@@ -53,20 +53,26 @@ func (r *Runtime) adopt(loc runtime.Locator) {
 	}
 }
 
-// forget drops the claim from the watch, whatever incarnation it held.
+// forget drops the claim from the watch, whatever incarnation it held, and the session its last
+// launch named with it.
 func (r *Runtime) forget(token claim.Token) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.watch, token)
+	delete(r.sessions, token)
 }
 
 // forgetIf drops loc from the watch only while it is still the claim's recorded incarnation, so a
-// stale locator never drops a newer relaunch's.
+// stale locator never drops a newer relaunch's; the session a launch named goes with that
+// launch's incarnation in the same way.
 func (r *Runtime) forgetIf(loc runtime.Locator) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if current, ok := r.watch[loc.Claim]; ok && current.Incarnation == loc.Incarnation {
 		delete(r.watch, loc.Claim)
+	}
+	if named, ok := r.sessions[loc.Claim]; ok && named.incarnation == loc.Incarnation {
+		delete(r.sessions, loc.Claim)
 	}
 }
 
@@ -85,12 +91,14 @@ type launchedSession struct {
 }
 
 // nameSession records the session l's Claude Code launch, starting as loc, runs under: the id
-// prepare chose (claudeInputs), which its `--session-id` or `--resume` names. An Oh My Pi launch
-// names nothing, since its agent mints its id, and leaves no record for the claim.
+// prepare chose (claudeInputs), which its `--session-id` or `--resume` names. Only a deployment
+// that names exchange_audience registers a role's session, so only it keeps the record; an Oh My
+// Pi launch names nothing, since its agent mints its id, and leaves no record for the claim. The
+// record goes when the process is let go, with the watch's (forget, forgetIf).
 func (r *Runtime) nameSession(loc runtime.Locator, l launch) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !l.runsClaude() {
+	if !l.runsClaude() || r.agentSecrets == nil || r.agentSecrets.ExchangeAudience == "" {
 		delete(r.sessions, loc.Claim)
 		return
 	}

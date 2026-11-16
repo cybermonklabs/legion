@@ -166,8 +166,10 @@ type Runtime struct {
 	// observer is the running Observe, nil when none runs.
 	observer *observer
 	// sessions is, by claim, the session the latest Claude Code launch of it started or resumed
-	// under and the incarnation it started as (LaunchSession): written once that launch's start
-	// is sent, replaced by the claim's next launch. Memory only; a restarted daemon answers none.
+	// under and the incarnation it started as (LaunchSession), kept only when agentSecrets names
+	// an exchange audience (nameSession): written once that launch's start is sent, and dropped
+	// with the watch's record when the process is let go or the claim's next launch begins
+	// (forget, forgetIf). Memory only; a restarted daemon answers none.
 	sessions map[claim.Token]launchedSession
 	// podTurns serializes the relaunches, issue suspension, release and orphan deletion of one pod,
 	// keyed by its Sandbox's name (lockPod). Nothing serializes the pods of one tree against each
