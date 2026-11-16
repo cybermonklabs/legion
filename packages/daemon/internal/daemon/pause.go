@@ -88,13 +88,14 @@ func newProjectPause(cfg config.Config, st *store.Store, token string, w *workfl
 }
 
 // releaseBackstop is the idle release's backstop where the deployment releases pods
-// (attachIdleRelease reads the same rule), and zero where it releases none.
+// (idleRelease), and zero where it releases none: what the stop of an open phase's worker arms
+// (projectPause.backstop) and what a release arms (outbox.backstop, set by attachIdleRelease).
 func releaseBackstop(cfg config.Config) time.Duration {
-	k := cfg.Runtime.Kubernetes
-	if cfg.Runtime.Name != "kubernetes" || k == nil || !k.IdleRelease.Releases() {
+	release, ok := idleRelease(cfg)
+	if !ok {
 		return 0
 	}
-	return k.IdleRelease.Backstop()
+	return release.Backstop()
 }
 
 // stopped is the stop transaction (supervise.Deps.PauseStopped, decision 6): the claim write a
@@ -109,23 +110,24 @@ func releaseBackstop(cfg config.Config) time.Duration {
 //     for this transaction rather than meeting it halfway;
 //   - the claim, and its pending delivery where it holds one, as the plain write writes them
 //     (store.PutClaimTx, store.PutClaimAndDeliveryTx);
-//   - the stop (store.RecordPauseStoppedTx), and the claim's `pause_stop` rows made due at once
+//   - the stop's records, through the one writer a paused cancel of a release records its stops
+//     by too (store.RecordPauseStopTx): the stop, and on its first record the pod's hold and the
+//     backstop this transaction decides; then the claim's `pause_stop` rows made due at once
 //     (store.ExpeditePauseStopRowsTx), so a stop that waited for this turn's end ends now.
 //
 // A claim no longer suspended — a later write of a claim whose stop is still owed (the machine's
 // putStops) — stops there: its stop is recorded, and a claim that runs now needs no pod hold, no
 // owed launch and no backstop. A suspended claim then gets, on the first record of its stop:
-// the pod's hold (store.OpenPausePodHoldTx) — always while its pause is still open, whatever the
-// pod's other roles do, since an update round past its bound or an idle rule would otherwise take
-// a pod that holds the stopped role's unpushed work; and, for a stop that ends after its pause
-// ended, only where no role of the pod is live then (store.IssueHasLiveRoleTx, decision 6) — and
-// its role's open resume closed (store.CloseRoleOpenResumeTx); and
-// either the launch it is owed — a held wake of the pause (store.PodRecords.TakeHeldPodWake with
-// pods.WakePause, which cancels the role's own backstop) with its start row
-// (workflow.PauseWakeRow) — or, owed none as the worker of the issue's open phase serving its
-// generation, its backstop (store.ArmPodBackstopTx). A start owed once the pause has ended, with
-// no pause open after it, is logged as a released held row (decision 23), and the outbox runs it
-// at once through the pacing; a later open pause holds it, and that pause's resume logs it.
+// the pod's hold — always while its pause is still open, whatever the pod's other roles do, since
+// an update round past its bound or an idle rule would otherwise take a pod that holds the stopped
+// role's unpushed work; and, for a stop that ends after its pause ended, only where no role of the
+// pod is live then (store.IssueHasLiveRoleTx, decision 6) — and its role's open resume closed
+// (store.CloseRoleOpenResumeTx); and either the launch it is owed — a held wake of the pause
+// (store.PodRecords.TakeHeldPodWake with pods.WakePause, which cancels the role's own backstop)
+// with its start row (workflow.PauseWakeRow) — or, owed none as the worker of the issue's open
+// phase serving its generation, its backstop. A start owed once the pause has ended, with no
+// pause open after it, is logged as a released held row (decision 23), and the outbox runs it at
+// once through the pacing; a later open pause holds it, and that pause's resume logs it.
 //
 // A stop that commits after its pause has ended, with no later pause open, owes the role a launch
 // whatever the stop met (afterResume): the machine decided it while the resume's transaction was
@@ -143,12 +145,13 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // owed under it.
 //
 // It is safe to make again: the machine owes a stop whose commit's answer was lost and makes it
-// again with its next claim write. RecordPauseStoppedTx answers false for a stop already recorded,
-// and then nothing of the first run is written twice: no second hold, no second backstop, and the
-// role's open resume — the first run's held wake — is left open, so the held wake taken again
-// conflicts with it (one open resume per role) and queues no second start. A second resume by
-// rule of a claim the first already launched finds it running and does nothing. It writes no log
-// line of the stop itself: the machine writes supervise.PauseRoleStoppedMessage once it lands.
+// again with its next claim write. store.RecordPauseStopTx answers false for a stop already
+// recorded, and then nothing of the first run is written twice: no second hold, no second
+// backstop, and the role's open resume — the first run's held wake — is left open, so the held
+// wake taken again conflicts with it (one open resume per role) and queues no second start. A
+// second resume by rule of a claim the first already launched finds it running and does nothing.
+// It writes no log line of the stop itself: the machine writes supervise.PauseRoleStoppedMessage
+// once it lands.
 func (p *projectPause) stopped(ctx context.Context, c supervise.Claim, stop supervise.PauseStop) error {
 	at := p.now().UTC()
 	var made pauseStopMade
@@ -210,7 +213,25 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 	}
 	afterResume := c.Released() && held.Ended() && !later
 	owed := stop.LaunchOwed || afterResume
-	first, err := store.RecordPauseStoppedTx(ctx, tx, held.ID, pauseStopClaimOf(c), at, owed)
+	rec := store.PauseStopRecord{Pause: held, Stop: pauseStopClaimOf(c), At: at, LaunchOwed: owed}
+	var issue *record.Issue
+	if c.State == supervise.StateSuspended {
+		rec.HoldPod = !held.Ended()
+		if !rec.HoldPod {
+			live, err := store.IssueHasLiveRoleTx(ctx, tx, p.token, c.Issue)
+			if err != nil {
+				return made, err
+			}
+			rec.HoldPod = !live
+		}
+		if issue, err = p.records.Issue(ctx, tx, c.Issue); err != nil {
+			return made, err
+		}
+		if issue != nil && p.backstop > 0 && c.Role == workflow.OpenPhaseRole(issue.Phase) && c.ServingGeneration == issue.Generation {
+			rec.Backstop = &store.PodWakeBackstop{Project: p.token, Issue: c.Issue, Role: c.Role, DueAt: at.Add(p.backstop)}
+		}
+	}
+	first, err := store.RecordPauseStopTx(ctx, tx, rec)
 	if err != nil {
 		return made, err
 	}
@@ -221,53 +242,32 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 		return made, nil
 	}
 	if first {
-		hold := !held.Ended()
-		if !hold {
-			live, err := store.IssueHasLiveRoleTx(ctx, tx, p.token, c.Issue)
-			if err != nil {
-				return made, err
-			}
-			hold = !live
-		}
-		if hold {
-			if _, err := store.OpenPausePodHoldTx(ctx, tx, held, c.Issue, at); err != nil {
-				return made, err
-			}
-		}
 		if _, err := store.CloseRoleOpenResumeTx(ctx, tx, p.token, c.Issue, c.Role, at); err != nil {
 			return made, err
 		}
-	}
-	issue, err := p.records.Issue(ctx, tx, c.Issue)
-	if err != nil {
-		return made, err
 	}
 	if issue == nil {
 		made.resume = afterResume
 		return made, nil
 	}
-	if owed {
-		taken, err := p.pods.TakeHeldPodWake(ctx, tx, c.Issue, c.Role, pods.WakePause, at, held.ID)
-		if err != nil || !taken {
-			return made, err
-		}
-		row, err := record.NewOutboxRow(c.Issue, workflow.PauseWakeRow(*issue, c.Role, held.ID), at)
-		if err != nil {
-			return made, err
-		}
-		id, err := p.records.EnqueueID(ctx, tx, row)
-		if err != nil {
-			return made, err
-		}
-		made.started = true
-		if held.Ended() && !later {
-			made.released = id
-		}
+	if !owed {
 		return made, nil
 	}
-	if first && p.backstop > 0 && c.Role == workflow.OpenPhaseRole(issue.Phase) && c.ServingGeneration == issue.Generation {
-		return made, store.ArmPodBackstopTx(ctx, tx, store.PodWakeBackstop{Project: p.token, Issue: c.Issue, Role: c.Role,
-			DueAt: at.Add(p.backstop)})
+	taken, err := p.pods.TakeHeldPodWake(ctx, tx, c.Issue, c.Role, pods.WakePause, at, held.ID)
+	if err != nil || !taken {
+		return made, err
+	}
+	row, err := record.NewOutboxRow(c.Issue, workflow.PauseWakeRow(*issue, c.Role, held.ID), at)
+	if err != nil {
+		return made, err
+	}
+	id, err := p.records.EnqueueID(ctx, tx, row)
+	if err != nil {
+		return made, err
+	}
+	made.started = true
+	if held.Ended() && !later {
+		made.released = id
 	}
 	return made, nil
 }
@@ -459,14 +459,11 @@ func (p *projectPause) askBootStops(ctx context.Context, open store.Pause) error
 	return nil
 }
 
-// pausable is whether a pause stops c: a live claim — not suspended, failed or retired — that is
-// not the controller's, which the pause never stops (store's liveClaimsOf reads the same rule).
+// pausable is whether a pause stops c: a live claim — not gone (supervise.Claim.Gone: suspended,
+// failed or retired) — that is not the controller's, which the pause never stops (store's
+// liveClaimsOf reads the same rule).
 func pausable(c supervise.Claim) bool {
-	switch c.State {
-	case supervise.StateSuspended, supervise.StateFailed, supervise.StateRetired:
-		return false
-	}
-	return !claim.IsController(c.Role, c.Issue, c.Tree)
+	return !c.Gone() && !claim.IsController(c.Role, c.Issue, c.Tree)
 }
 
 // stopTokens is the claims of stops, for a log line.
@@ -561,7 +558,7 @@ func (r *outbox) pauseStopEnded(row record.OutboxRow, role claim.Role, pause int
 // one this pause's own suspension stopped was ended by its stop transaction, so what is left open
 // was stopped first by a park, a close, the operator, an earlier pause's late stop or an idle
 // release — or by this pause's suspension whose write the machine still owes, whose stop
-// transaction then records the stop in a row of its own (store.RecordPauseStoppedTx), with its
+// transaction then records the stop in a row of its own (store.RecordPauseStopTx), with its
 // hold, its owed launch or its backstop, when it lands.
 func (r *outbox) pauseStopAnswered(ctx context.Context, row record.OutboxRow, held store.Pause, c supervise.Claim) error {
 	switch {

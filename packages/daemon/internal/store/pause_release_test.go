@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,7 +56,7 @@ func TestAReleaseIsMarkedNothingWhileTheProjectIsPaused(t *testing.T) {
 	st := migratedStore(t)
 	openRunningTree(t, st)
 	pause, _ := pauseLegion(t, st, pausedAt)
-	if _, err := st.OpenPausePodHold(ctx, pause.ID, rootIssue, pausedAt); err != nil {
+	if _, err := holdPod(st, pause, rootIssue, pausedAt); err != nil {
 		t.Fatalf("hold the pod: %v", err)
 	}
 	var seen pods.IdleView
@@ -199,6 +200,26 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 	}
 }
 
+// A cancel names the moment a pause's stops would carry, from its caller's clock: whether the
+// project is paused is read inside the cancel's own transaction, so a cancel with no moment is
+// refused, naming the field, before it reads anything, and the release stays marked.
+func TestAReleaseCancelWithNoMomentIsRefused(t *testing.T) {
+	st := migratedStore(t)
+	openRunningTree(t, st)
+	servingReleasedClaim(t, st, claim.RoleImplementer)
+	markRelease(t, st, 18, 20, 22, 0, claim.RoleImplementer)
+	pauseLegion(t, st, pausedAt)
+
+	_, err := st.CancelIssueRelease(context.Background(), "legion", rootIssue, resumeRow, record.OutOfWorkflow,
+		ReleaseCancelPause{Backstop: time.Hour, OpenPhaseRole: implementingWorker})
+	if err == nil || !strings.Contains(err.Error(), "ReleaseCancelPause.At") {
+		t.Fatalf("a cancel with no moment = %v, want it refused naming ReleaseCancelPause.At", err)
+	}
+	if !releaseMarked(t, st) || pauseCount(t, st, `select count(*) from project_pause_stops where ended_as = 'stopped'`) != 0 {
+		t.Fatal("a cancel refused for want of its moment deleted the mark or recorded a stop")
+	}
+}
+
 // heldOpenResume is the pause that holds role's open resume, and whether role has an open resume,
 // read as the delivery wake reads it (OpenPodResume).
 func heldOpenResume(t *testing.T, st *Store, role claim.Role) (int64, bool) {
@@ -288,7 +309,7 @@ func TestATreesCleanupEndsThePauseHoldsOfItsPods(t *testing.T) {
 	st := migratedStore(t)
 	openLingeringTree(t, st)
 	pause, _ := pauseLegion(t, st, pausedAt)
-	if _, err := st.OpenPausePodHold(ctx, pause.ID, rootIssue, pausedAt); err != nil {
+	if _, err := holdPod(st, pause, rootIssue, pausedAt); err != nil {
 		t.Fatalf("hold the pod: %v", err)
 	}
 	lifecycle, reserved, err := st.ReserveWorkflowTreeCleanup(ctx, "legion", rootIssue, 1)
@@ -314,7 +335,7 @@ func TestAPodHoldEndsAtAReadyOnlyWhereARoleIsLive(t *testing.T) {
 	openRunningTree(t, st)
 	servingReleasedClaim(t, st, claim.RoleImplementer)
 	pause, _ := pauseLegion(t, st, pausedAt)
-	if _, err := st.OpenPausePodHold(ctx, pause.ID, rootIssue, pausedAt); err != nil {
+	if _, err := holdPod(st, pause, rootIssue, pausedAt); err != nil {
 		t.Fatalf("hold the pod: %v", err)
 	}
 	if ended, err := st.EndLivePausePodHold(ctx, "legion", rootIssue, PausePodHoldReady, pausedAt.Add(time.Minute)); err != nil || ended {

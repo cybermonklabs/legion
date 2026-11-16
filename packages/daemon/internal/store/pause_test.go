@@ -93,6 +93,37 @@ func pauseCount(t *testing.T, st *Store, sql string, args ...any) int {
 	return n
 }
 
+// openPauseStops is pause's open stops, read in a transaction of its own (OpenPauseStopsTx).
+func openPauseStops(t *testing.T, st *Store, pause int64) []PauseStop {
+	t.Helper()
+	var open []PauseStop
+	if err := st.Tx(context.Background(), func(tx pgx.Tx) error {
+		var err error
+		open, err = OpenPauseStopsTx(context.Background(), tx, pause)
+		return err
+	}); err != nil {
+		t.Fatalf("read the open stops of pause %d: %v", pause, err)
+	}
+	return open
+}
+
+// holdPod opens pause's hold of issue's pod at at in a transaction of its own, under the issue's
+// lock, as a stop transaction opens one (LockIssueForPause, OpenPausePodHoldTx), and answers
+// whether it opened one.
+func holdPod(st *Store, pause Pause, issue string, at time.Time) (bool, error) {
+	ctx := context.Background()
+	var opened bool
+	err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := LockIssueForPause(ctx, tx, issue); err != nil {
+			return err
+		}
+		var err error
+		opened, err = OpenPausePodHoldTx(ctx, tx, pause, issue, at)
+		return err
+	})
+	return opened, err
+}
+
 // The pause's transaction writes one stop row and one pause_stop outbox row for each live claim
 // of the project, and for none of the rest: not a claim already released, failed or retired, not
 // the controller's, and not another project's on the same database. The operator's pause queues
@@ -116,10 +147,7 @@ func TestAPauseStopsEveryLiveRoleButTheControllerAndRefusesASecond(t *testing.T)
 			t.Fatalf("the pause asked to stop %+v, want %v in token order", stops, want)
 		}
 	}
-	open, err := st.OpenPauseStops(ctx, pause.ID)
-	if err != nil {
-		t.Fatalf("read the open stops: %v", err)
-	}
+	open := openPauseStops(t, st, pause.ID)
 	if len(open) != 2 || open[0].Claim != want[0] || open[1].Claim != want[1] || !open[0].AskedAt.Equal(pausedAt) {
 		t.Fatalf("open stops = %+v, want the two live claims asked at %s", open, pausedAt)
 	}
@@ -282,8 +310,8 @@ func TestAResumeEndsThePauseAndWhatItStillWaitedOn(t *testing.T) {
 	if len(resumed.Cancelled) != 2 || resumed.Cancelled[0].End != PauseStopCancelled || !resumed.Cancelled[0].EndedAt.Equal(resumedAt) {
 		t.Fatalf("cancelled stops = %+v, want both open stops cancelled at %s", resumed.Cancelled, resumedAt)
 	}
-	if open, err := st.OpenPauseStops(ctx, pause.ID); err != nil || len(open) != 0 {
-		t.Fatalf("open stops after the resume = %+v, %v; want none", open, err)
+	if open := openPauseStops(t, st, pause.ID); len(open) != 0 {
+		t.Fatalf("open stops after the resume = %+v; want none", open)
 	}
 	if len(heldRows) != 1 || heldRows[0].ID == 0 || heldRows[0].Kind != record.OutboxKindNotice || heldRows[0].Issue != "LEGION-208" ||
 		heldRows[0].WaitedSeconds != int64(resumedAt.Sub(pausedAt).Seconds()) {
@@ -332,7 +360,10 @@ func TestAResumeEndsThePauseAndWhatItStillWaitedOn(t *testing.T) {
 
 	// The tester's stop ends after the resume: its stop row, which the resume cancelled, ends
 	// stopped, with the launch it was owed.
-	if err := st.RecordPauseStopped(ctx, pause.ID, tester, resumedAt.Add(time.Minute), true); err != nil {
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		_, err := RecordPauseStoppedTx(ctx, tx, pause.ID, tester, resumedAt.Add(time.Minute), true)
+		return err
+	}); err != nil {
 		t.Fatalf("record the tester's late stop: %v", err)
 	}
 	var end string
@@ -354,10 +385,10 @@ func TestAPausePodHoldOpensOnceAndEnds(t *testing.T) {
 	st := migratedStore(t)
 	pause, _ := pauseLegion(t, st, pausedAt)
 
-	if opened, err := st.OpenPausePodHold(ctx, pause.ID, "LEGION-208", pausedAt); err != nil || !opened {
+	if opened, err := holdPod(st, pause, "LEGION-208", pausedAt); err != nil || !opened {
 		t.Fatalf("hold LEGION-208's pod = %t, %v; want it held", opened, err)
 	}
-	if opened, err := st.OpenPausePodHold(ctx, pause.ID, "LEGION-208", pausedAt.Add(time.Minute)); err != nil || opened {
+	if opened, err := holdPod(st, pause, "LEGION-208", pausedAt.Add(time.Minute)); err != nil || opened {
 		t.Fatalf("hold LEGION-208's pod again = %t, %v; want the hold that stands kept", opened, err)
 	}
 	hold, found, err := st.PausePodHoldOf(ctx, "LEGION-208")
@@ -367,7 +398,7 @@ func TestAPausePodHoldOpensOnceAndEnds(t *testing.T) {
 	if holds, err := st.OpenPausePodHolds(ctx, "LEGION"); err != nil || len(holds) != 1 || holds[0].Issue != "LEGION-208" {
 		t.Fatalf("OpenPausePodHolds = %+v, %v; want LEGION-208's", holds, err)
 	}
-	if _, err := st.OpenPausePodHold(ctx, pause.ID, "INFRA-5", pausedAt); err == nil {
+	if _, err := holdPod(st, pause, "INFRA-5", pausedAt); err == nil {
 		t.Fatal("a pause of LEGION held a pod of INFRA, want it refused")
 	}
 
@@ -384,7 +415,7 @@ func TestAPausePodHoldOpensOnceAndEnds(t *testing.T) {
 	if err := st.Pool().QueryRow(ctx, `select ended_why from project_pause_pod_holds where issue = 'LEGION-208'`).Scan(&why); err != nil || why != string(PausePodHoldReady) {
 		t.Fatalf("the ended hold's reason = %q, %v; want %q", why, err, PausePodHoldReady)
 	}
-	if opened, err := st.OpenPausePodHold(ctx, pause.ID, "LEGION-208", pausedAt.Add(2*time.Hour)); err != nil || !opened {
+	if opened, err := holdPod(st, pause, "LEGION-208", pausedAt.Add(2*time.Hour)); err != nil || !opened {
 		t.Fatalf("hold LEGION-208's pod after its hold ended = %t, %v; want it held again", opened, err)
 	}
 }
@@ -443,7 +474,7 @@ func TestTheIssueLockSerializesTwoWritersOfOnePodsHold(t *testing.T) {
 		t.Fatalf("the second writer finished (%t, %v) while the first held the issue's lock", r.ended, r.err)
 	default:
 	}
-	if opened, err := st.OpenPausePodHold(ctx, pause.ID, "LEGION-209", pausedAt); err != nil || !opened {
+	if opened, err := holdPod(st, pause, "LEGION-209", pausedAt); err != nil || !opened {
 		t.Fatalf("hold another issue's pod while LEGION-208's lock is held = %t, %v; want it held at once", opened, err)
 	}
 
@@ -551,7 +582,10 @@ func TestTheResumeNamesTheOperatorsSpawnsItsPauseStoppedOwingALaunch(t *testing.
 	suspended, released := supervise.StateSuspended, supervise.SuspendedByReleased
 	stopped := func(pause int64, stop PauseStopClaim, at time.Time, owed bool) {
 		t.Helper()
-		if err := st.RecordPauseStopped(ctx, pause, stop, at, owed); err != nil {
+		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+			_, err := RecordPauseStoppedTx(ctx, tx, pause, stop, at, owed)
+			return err
+		}); err != nil {
 			t.Fatalf("record the stop of %s: %v", stop.Claim, err)
 		}
 	}

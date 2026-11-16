@@ -210,6 +210,10 @@ func relaunchAgain(m *Machine, ctx context.Context, _ Event) error {
 // only such a claim may move to another tree.
 func (c Claim) RunsNothing() bool { return slices.Contains(runsNothing, c.State) }
 
+// Gone is whether the claim is suspended, failed or retired (GoneStates): its process has been
+// let go, so a project's pause has nothing of it to stop.
+func (c Claim) Gone() bool { return slices.Contains(gone, c.State) }
+
 // Retree re-points a claim to tree, the tree its issue belongs to now: a child of a closed tree
 // re-admitted as a root of its own keeps its roles' claims, which still name the tree it left. The
 // claim drops its old tree's epoch, so its next start binds the new tree's lifecycle and launches

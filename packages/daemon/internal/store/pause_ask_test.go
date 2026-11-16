@@ -47,7 +47,10 @@ func TestThePausesCatchUpAsksOnlyTheStopsItHasNotAsked(t *testing.T) {
 
 	// The implementer stops; a role the boot finds live — its claim written live since the pause
 	// read the claims — has never been asked.
-	if err := st.RecordPauseStopped(ctx, pause.ID, implementer, pausedAt.Add(time.Minute), false); err != nil {
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		_, err := RecordPauseStoppedTx(ctx, tx, pause.ID, implementer, pausedAt.Add(time.Minute), false)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	late := supervise.Claim{Token: "legion-legion-legion-212-tester", Project: "legion", Tree: "LEGION-208", Issue: "LEGION-212",
@@ -146,5 +149,32 @@ func TestAPauseStopRecordedAgainKeepsItsOneRow(t *testing.T) {
 	if got := pauseCount(t, st, `select count(*) from project_pause_stops where claim = $1 and ended_as = 'stopped' and not launch_owed`,
 		string(queued.Claim)); got != 1 {
 		t.Fatalf("the queued claim's stops ended stopped owing nothing = %d, want 1", got)
+	}
+}
+
+// A pause's stop arms the backstop of its own claim's issue and role alone: a record that hands it
+// another role's backstop is refused, and its transaction writes nothing.
+func TestAPauseStopRecordRefusesTheBackstopOfAnotherRole(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	seedPauseClaims(t, st)
+	pause, stops := pauseLegion(t, st, pausedAt)
+	implementer := stops[0]
+
+	err := st.Tx(ctx, func(tx pgx.Tx) error {
+		_, err := RecordPauseStopTx(ctx, tx, PauseStopRecord{Pause: pause, Stop: implementer, At: pausedAt.Add(time.Minute),
+			HoldPod: true, Backstop: &PodWakeBackstop{Project: "legion", Issue: implementer.Issue, Role: claim.RoleTester,
+				DueAt: pausedAt.Add(time.Hour)}})
+		return err
+	})
+	if err == nil {
+		t.Fatal("a stop of the implementer armed the tester's backstop, want it refused")
+	}
+	if got := pauseCount(t, st, `select count(*) from project_pause_stops where claim = $1 and ended_at is not null`,
+		string(implementer.Claim)); got != 0 {
+		t.Fatalf("the implementer's stops recorded by the refused record = %d, want none", got)
+	}
+	if got := pauseCount(t, st, `select count(*) from project_pause_pod_holds`) + pauseCount(t, st, `select count(*) from pod_wake_backstops`); got != 0 {
+		t.Fatalf("holds and backstops written by the refused record = %d, want none", got)
 	}
 }

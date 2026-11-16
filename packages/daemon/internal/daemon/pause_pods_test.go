@@ -68,6 +68,23 @@ func endLegionPause(t *testing.T, pool *store.Pool, id int64, at time.Time) {
 	}
 }
 
+// holdLegionPod opens pause's hold of issue's pod at at, in a transaction of its own and under the
+// issue's lock, as a stop transaction opens one (store.LockIssueForPause,
+// store.OpenPausePodHoldTx). pause is a pause of LEGION (openLegionPause).
+func holdLegionPod(t *testing.T, st *store.Store, pause int64, issue string, at time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.LockIssueForPause(ctx, tx, issue); err != nil {
+			return err
+		}
+		_, err := store.OpenPausePodHoldTx(ctx, tx, store.Pause{ID: pause, Project: "LEGION"}, issue, at)
+		return err
+	}); err != nil {
+		t.Fatalf("hold the pod of %s: %v", issue, err)
+	}
+}
+
 // podHoldEnd is how issue's newest pod hold ended, "" while it stands.
 func podHoldEnd(t *testing.T, pool *store.Pool, issue string) string {
 	t.Helper()
@@ -121,9 +138,7 @@ func TestAPodHoldEndsAtTheReadyOfARoleOfThePod(t *testing.T) {
 	ctx := context.Background()
 	at := time.Now().UTC()
 	pause := openLegionPause(t, pool, at.Add(-time.Hour))
-	if _, err := w.idleStore.OpenPausePodHold(ctx, pause, "LEGION-208", at.Add(-time.Hour)); err != nil {
-		t.Fatalf("hold the pod: %v", err)
-	}
+	holdLegionPod(t, w.idleStore, pause, "LEGION-208", at.Add(-time.Hour))
 	endLegionPause(t, pool, pause, at.Add(-time.Minute))
 	ready := supervise.Claim{Token: mustClaimToken(t, "LEGION-208", claim.RoleImplementer), Project: "legion", Tree: "LEGION-208",
 		Issue: "LEGION-208", Role: claim.RoleImplementer, Generation: 1, ServingGeneration: 1, State: supervise.StateReady}
@@ -166,9 +181,7 @@ func TestAPodHoldEndsWhenTheIssuesSuspensionDeletesThePod(t *testing.T) {
 			st := outboxTreeStore(t, pool, "LEGION-208")
 			ctx := context.Background()
 			pause := openLegionPause(t, pool, time.Now().Add(-time.Hour))
-			if _, err := st.OpenPausePodHold(ctx, pause, "LEGION-208", time.Now().Add(-time.Hour)); err != nil {
-				t.Fatalf("hold the pod: %v", err)
-			}
+			holdLegionPod(t, st, pause, "LEGION-208", time.Now().Add(-time.Hour))
 			rt := &releaseRuntime{Runtime: fake.NewRuntime()}
 			runner := &outbox{supervisor: &supervisor{deps: supervise.Deps{Runtime: rt}}, trees: closeAuthorizingTrees{outboxTrees: st, act: tc.act},
 				project: "legion", log: quietLogger(), now: time.Now}
@@ -193,9 +206,7 @@ func TestPodUpdateOpensNoRoundOverAPodAPauseHolds(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 	pause := openLegionPause(t, rig.pool, podUpdateStart)
-	if _, err := rig.st.OpenPausePodHold(rig.ctx, pause, podUpdateIssue, podUpdateStart); err != nil {
-		t.Fatalf("hold the pod: %v", err)
-	}
+	holdLegionPod(t, rig.st, pause, podUpdateIssue, podUpdateStart)
 
 	rig.tick()
 	rig.tick()
@@ -230,9 +241,7 @@ func TestPodUpdateRoundWaitsOverAPodAPauseHoldsAndItsBoundMovesByTheHeldTime(t *
 
 	heldAt := podUpdateStart.Add(5 * time.Minute)
 	pause := openLegionPause(t, rig.pool, heldAt)
-	if _, err := rig.st.OpenPausePodHold(rig.ctx, pause, podUpdateIssue, heldAt); err != nil {
-		t.Fatalf("hold the pod: %v", err)
-	}
+	holdLegionPod(t, rig.st, pause, podUpdateIssue, heldAt)
 	rig.clockAt(podUpdateBound)
 	rig.tick()
 	rig.tick()

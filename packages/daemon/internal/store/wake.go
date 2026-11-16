@@ -377,7 +377,14 @@ func LatestPodRelease(ctx context.Context, tx pgx.Tx, project, issue string) (in
 // pause's held wake waiting on its start (decision 15 of dispatch://INFRA-3759). It is read rather
 // than remembered so a daemon that restarted between the wake and the first turn still stamps it.
 func (s *Store) OpenPodResume(ctx context.Context, project, issue string, role claim.Role) (id, pause int64, found bool, err error) {
-	err = s.pool.QueryRow(ctx, `select id, coalesce(pause_id, 0) from pod_resumes
+	return openPodResume(ctx, s.pool, project, issue, role)
+}
+
+// openPodResume is OpenPodResume through db: the pool, or the transaction of a cancel of a
+// release made while the project is paused, which reads by it whether a wake already owes a role
+// the release stopped its launch (stopReleasedForPause).
+func openPodResume(ctx context.Context, db queryRower, project, issue string, role claim.Role) (id, pause int64, found bool, err error) {
+	err = db.QueryRow(ctx, `select id, coalesce(pause_id, 0) from pod_resumes
 		where project = $1 and issue = $2 and role = $3 and first_turn_at is null and closed_at is null
 		order by id desc limit 1`, project, issue, string(role)).Scan(&id, &pause)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -387,6 +394,49 @@ func (s *Store) OpenPodResume(ctx context.Context, project, issue string, role c
 		return 0, 0, false, fmt.Errorf("read the open resume of %s's %s: %w", issue, role, err)
 	}
 	return id, pause, true, nil
+}
+
+// CloseRoleOpenResumeTx closes, at at, the open resume of issue's role — the one no first turn has
+// stamped and nothing has closed — and answers whether one was open: the stop transaction of a
+// pause closes it (decision 6), since the role it waited for has stopped again before it took a
+// turn. project is the project token, as pod_resumes holds it.
+func CloseRoleOpenResumeTx(ctx context.Context, tx pgx.Tx, project, issue string, role claim.Role, at time.Time) (bool, error) {
+	tag, err := tx.Exec(ctx, `update pod_resumes set closed_at = $4
+		where project = $1 and issue = $2 and role = $3 and first_turn_at is null and closed_at is null`,
+		project, issue, string(role), at)
+	if err != nil {
+		return false, fmt.Errorf("close the open resume of %s's %s: %w", issue, role, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SetResumeClock moves the stuck clock (pod_resumes.clock_at) of the open resume of issue's role
+// to at, the moment the wake pacing lets that role's launch out (decision 14), and answers whether
+// the role had an open resume. It never moves a clock backwards (greatest): a clock a resume of
+// the project or a later reservation already moved stays. project is the project token, as
+// pod_resumes holds it.
+func (s *Store) SetResumeClock(ctx context.Context, project, issue string, role claim.Role, at time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `update pod_resumes set clock_at = greatest(clock_at, $4)
+		where project = $1 and issue = $2 and role = $3 and first_turn_at is null and closed_at is null`,
+		project, issue, string(role), at)
+	if err != nil {
+		return false, fmt.Errorf("set the stuck clock of %s's %s: %w", issue, role, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SetProjectResumeClocksTx moves the stuck clock of every open resume of project to at, the
+// resume's moment (decision 14), never backwards (greatest), and answers how many resumes are
+// open. A wake that waited out the pause is no wake that is stuck. Only the resume's own
+// transaction (Resume) sets every clock of a project at once, so it has no form on the pool.
+// project is the project token, as pod_resumes holds it.
+func SetProjectResumeClocksTx(ctx context.Context, tx pgx.Tx, project string, at time.Time) (int64, error) {
+	tag, err := tx.Exec(ctx, `update pod_resumes set clock_at = greatest(clock_at, $2)
+		where project = $1 and first_turn_at is null and closed_at is null`, project, at)
+	if err != nil {
+		return 0, fmt.Errorf("set the stuck clocks of %s's open resumes: %w", project, err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // ListenerReadyAt is when the Envoy listener last reported itself ready for project, and whether

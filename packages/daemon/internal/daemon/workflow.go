@@ -1111,13 +1111,23 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.attachIdleRelease(supervision)
 }
 
-// attachIdleRelease wires the idle tick, and leaves it off unless the deployment releases pods:
-// `runtime: kubernetes` with a non-zero idle_minutes, over a runtime that can say whether an
-// issue's pod runs the image the configuration names and whether it still holds the issue's
-// Sandbox (issuePods).
+// idleRelease is the deployment's idle release, and whether the deployment releases pods at all:
+// `runtime: kubernetes` with a non-zero idle_minutes. The idle tick (attachIdleRelease) and the
+// backstop a pause's stop arms (releaseBackstop) both read it.
+func idleRelease(cfg config.Config) (config.IdleReleaseConfig, bool) {
+	k := cfg.Runtime.Kubernetes
+	if cfg.Runtime.Name != "kubernetes" || k == nil || !k.IdleRelease.Releases() {
+		return config.IdleReleaseConfig{}, false
+	}
+	return k.IdleRelease, true
+}
+
+// attachIdleRelease wires the idle tick, and leaves it off unless the deployment releases pods
+// (idleRelease), over a runtime that can say whether an issue's pod runs the image the
+// configuration names and whether it still holds the issue's Sandbox (issuePods).
 func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
-	k := supervision.cfg.Runtime.Kubernetes
-	if supervision.cfg.Runtime.Name != "kubernetes" || k == nil || !k.IdleRelease.Releases() {
+	release, ok := idleRelease(supervision.cfg)
+	if !ok {
 		return
 	}
 	podRuntime, ok := supervision.supervisor.deps.Runtime.(issuePods)
@@ -1125,8 +1135,8 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 		w.log.Warn("idle release: the runtime reads no issue pod, so no pod is released")
 		return
 	}
-	w.idlePeriod, w.idleStore, w.idleRuntime = k.IdleRelease.Idle(), supervision.supervisor.store, podRuntime
-	w.outbox.backstop = k.IdleRelease.Backstop()
+	w.idlePeriod, w.idleStore, w.idleRuntime = release.Idle(), supervision.supervisor.store, podRuntime
+	w.outbox.backstop = releaseBackstop(supervision.cfg)
 }
 
 // replayTerminal applies the ready or failure fact of every stored claim in either state that no

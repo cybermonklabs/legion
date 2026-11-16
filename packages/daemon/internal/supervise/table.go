@@ -854,7 +854,10 @@ var (
 	prompted    = []ClaimState{StateReady, StateIdle}
 	processless = []ClaimState{StateQueued, StateLaunchUncertain, StateSuspended, StateFailed, StateRetired}
 	unready     = []ClaimState{StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered}
-	gone        = []ClaimState{StateSuspended, StateFailed, StateRetired}
+	// gone is where a claim's process has been let go: suspended, failed or retired. It is the one
+	// statement of the set: Claim.Gone reads it in memory, and the store's queries take it as a
+	// parameter (GoneStates).
+	gone = []ClaimState{StateSuspended, StateFailed, StateRetired}
 	// runsNothing is where a claim has no process of its own, running or coming up: queued, for which
 	// nothing was launched, or gone. A launch whose outcome is uncertain may still run, so it is not
 	// here. It is the one statement of the set: Claim.RunsNothing reads it in memory, and the store's
@@ -872,6 +875,12 @@ func LiveStates() []ClaimState {
 // copy, so no caller changes the table's own set.
 func RunsNothingStates() []ClaimState {
 	return slices.Clone(runsNothing)
+}
+
+// GoneStates are the states of a claim whose process has been let go (gone). It is a copy, so no
+// caller changes the table's own set.
+func GoneStates() []ClaimState {
+	return slices.Clone(gone)
 }
 
 // TakesCompaction is whether the machine takes a compaction of a claim in this state, read off
