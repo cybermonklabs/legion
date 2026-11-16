@@ -2603,7 +2603,7 @@ test("the live view's header holds the back link, the name, the live state and t
   expect(within(header).getByText("Live")).toBeTruthy();
   expect(within(header).getByRole("button", { name: "Pin Planner" })).toBeTruthy();
 
-  expect(within(header).queryAllByRole("combobox")).toEqual([]);
+  expect(within(header).queryAllByRole("combobox").length).toBe(0);
   expect(within(header).queryByText(agent.host)).toBeNull();
   expect(within(header).queryByText(agent.dir)).toBeNull();
   expect(screen.queryByText(/relayed while this page is open/)).toBeNull();

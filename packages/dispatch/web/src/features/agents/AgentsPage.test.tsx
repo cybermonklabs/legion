@@ -4230,9 +4230,9 @@ test("the machine filter is a searchable multi-select that keeps the rows of eve
         .getAllByRole("heading", { hidden: false, level: 2 })
         .map((heading) => heading.textContent);
     // No dropdown in the filter row: the three filters are buttons over panels.
-    expect(within(within(region).getByTestId("agents-filters")).queryAllByRole("combobox")).toEqual(
-      []
-    );
+    expect(
+      within(within(region).getByTestId("agents-filters")).queryAllByRole("combobox").length
+    ).toBe(0);
 
     const machine = filterTrigger(region, "machine");
     expect(machine.textContent).toBe("Machine");

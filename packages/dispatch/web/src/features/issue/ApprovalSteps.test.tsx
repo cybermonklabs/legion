@@ -106,7 +106,7 @@ test("a step with no document and a document with no approval both read Not requ
     expect(within(stepItem(view, "criteria")).getByText("Not requested")).not.toBeNull();
     expect(within(stepItem(view, "spec")).getByText("Not requested")).not.toBeNull();
     // Nothing to open: no review was ever given on either document.
-    expect(screen.queryAllByRole("button")).toEqual([]);
+    expect(screen.queryAllByRole("button").length).toBe(0);
   } finally {
     view.unmount();
   }

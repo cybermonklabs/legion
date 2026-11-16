@@ -9,6 +9,7 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { expectSameElements } from "../../__tests__/same-elements";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import type { Comment } from "../../api/types";
@@ -676,7 +677,7 @@ test("an expanded thread is marked read once its newest reply has been on screen
     const newest = (await card.view.findByText("First reply")).closest("li");
     if (newest === null) throw new Error("expected the newest reply's item");
     // The watched element is the newest reply's own, not the card around the whole thread.
-    expect(card.screen.observed()).toEqual([newest]);
+    expectSameElements(card.screen.observed(), [newest]);
     await dwellOn(card.screen, newest);
     expect(card.mark.mock.calls).toEqual([
       [root.id, { read_through: reply.created_at }, keyedAttempt],

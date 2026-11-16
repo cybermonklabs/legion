@@ -1792,6 +1792,13 @@ No row calls either; the first row that wants one supplies that `diff` in
 `__tests__/jest-dom-matchers.ts`.
 An exact `textContent` comparison stays `toBe`, since `toHaveTextContent` matches a substring and
 normalises whitespace.
+DOM elements are never compared with a deep-equality matcher (`toEqual`, `toStrictEqual`,
+`toMatchObject`, `toHaveBeenCalledWith`): once such an assertion fails, Bun formats each
+element's whole object graph — the document, the window and React's fibers — and the run neither
+fails nor ends but fills its machine's memory, which ended an issue pod three times in one hour.
+A list of elements is compared with `__tests__/same-elements.ts`'s `expectSameElements`, an empty
+one by its `length`, and one element with `toBe` or a jest-dom matcher, each of which fails in
+under a second.
 
 No module in the SPA may import, directly or through a chain, a module that imports it back: a
 cycle resolves to `undefined` at whichever edge the bundler evaluates first, so it is a runtime
