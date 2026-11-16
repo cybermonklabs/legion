@@ -22,9 +22,10 @@ type RouteProbe struct {
 }
 
 // RouteProbes is every row of the route table, test hooks included, in table order, with its
-// Probe: a GET row's from readClasses. A row whose Probe no table gives answers a null Probe.
-// internal/dispatch/api/cmd/routeprobes prints it as JSON for the driver, which therefore reads
-// the table the server mounts rather than a list of its own.
+// Probe: a GET row's from readClasses, a write row's and its body from writeProbes. A row whose
+// Probe no table gives answers a null Probe. internal/dispatch/api/cmd/routeprobes prints it as
+// JSON for the driver, which therefore reads the table the server mounts rather than a list of
+// its own.
 func RouteProbes() []RouteProbe {
 	deployed := map[string]bool{}
 	for _, route := range (&server{}).routes() {
@@ -37,6 +38,12 @@ func RouteProbes() []RouteProbe {
 		row := RouteProbe{Method: route.Method, Pattern: route.Pattern, TestHook: !deployed[name]}
 		if entry, ok := readClasses[name]; ok {
 			row.Probe = probeMap(entry.Probe)
+		}
+		if probe, ok := writeProbes[name]; ok {
+			row.Probe = probeMap(probe.Probe)
+			if probe.Body != "" {
+				row.Body = json.RawMessage(probe.Body)
+			}
 		}
 		probes[index] = row
 	}

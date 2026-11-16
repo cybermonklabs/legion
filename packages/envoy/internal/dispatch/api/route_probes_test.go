@@ -27,12 +27,16 @@ func TestRouteProbesNameEveryRowAndFillEveryGETWildcard(t *testing.T) {
 		if probe.Method != route.Method || probe.Pattern != route.Pattern {
 			t.Fatalf("RouteProbes row %d is %s %s, the table's %s", index, probe.Method, probe.Pattern, name)
 		}
-		if route.Method != http.MethodGet {
+		_, written := writeProbes[name]
+		if route.Method != http.MethodGet && !written {
 			continue
 		}
 		if probe.Probe == nil {
-			t.Errorf("%s: no Probe, though readClasses classes every GET row", name)
+			t.Errorf("%s: no Probe, though readClasses classes every GET row and writeProbes names this one", name)
 			continue
+		}
+		if written && string(probe.Body) != writeProbes[name].Body {
+			t.Errorf("%s: the body is %s, writeProbes's %s", name, probe.Body, writeProbes[name].Body)
 		}
 		var want []string
 		for _, match := range wildcard.FindAllStringSubmatch(route.Pattern, -1) {

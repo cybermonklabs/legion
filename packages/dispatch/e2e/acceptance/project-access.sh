@@ -129,9 +129,9 @@ go -C "$root/packages/envoy" build -o "$work/bin/" ./cmd/dispatch ./internal/tes
   fail "this checkout's ./cmd/dispatch or its NATS did not build"
 pass
 
-# The kinds of object a Probe fills a wildcard with (read_classes.go's probeObjects), each with
-# the id that does not exist that fills it on the missing side. PRIV's own object of each kind is
-# priv_object's.
+# The kinds of object a Probe fills a wildcard with (read_classes.go's probeObjects, and
+# write_probes.go's for the kinds only a write's path names), each with the id that does not exist
+# that fills it on the missing side. PRIV's own object of each kind is priv_object's.
 declare -A missing=(
   [project]=ZZNONE
   [issue]=ZZNONE-1
@@ -150,13 +150,20 @@ declare -A missing=(
   [going-run]=00000000-0000-4000-8000-000000000006
   [repository-owner]=acme
   [repository-name]=no-such-repo
+  [result]=00000000-0000-4000-8000-000000000007
+  [thread]=00000000-0000-4000-8000-000000000008
+  [attempt]=1
+  [email]=nobody@example.com
+  [group]=no-such-group
+  [agent-token]=00000000-0000-4000-8000-000000000009
 )
-# The kinds no project owns: a row that names one reads the same object for every caller, so it
-# has no object of PRIV to hide, and the walk names it rather than compares it.
-readonly projectless_kinds=" priority delivery-run live-pause "
+# The kinds no project owns: a row that names one reads or writes the same object for every
+# caller, so it has no object of PRIV to hide, and the walk names it rather than compares it.
+readonly projectless_kinds=" priority delivery-run live-pause session-group credential-request credential-grant machine-login signin "
 # The kinds of no-project node a Probe names (spec v34, Design: "A node of no project"): both
-# servers hold the same ones, and the walk fills them alike on both sides.
-readonly no_project_kinds=" session person "
+# servers hold the same ones, and the walk fills them alike on both sides. A personal token is a
+# row of its person's, which both servers hold under one label; only its list can name PRIV.
+readonly no_project_kinds=" session person agent-token "
 
 # priv_object KIND PATTERN prints PRIV's object of KIND in main's seed for a row of PATTERN, or
 # nothing when the seed holds none. A document is PRIV-1's spec, whose blocks the seed knows; a
@@ -177,7 +184,11 @@ priv_object() {
     block) recalled main "PRIV block 1" ;;
     ask) recalled main "PRIV ask" ;;
     comment) recalled main "PRIV comment" ;;
-    message) recalled main "PRIV message" ;;
+    message | thread) recalled main "PRIV message" ;;
+    attempt) printf 1 ;;
+    email) printf '%s' "$bob" ;;
+    # The label resolve fills on each server with that server's own token.
+    agent-token) printf '{carol-priv-token id}' ;;
     handoff-phase) printf plan ;;
     session) printf ses-priv-session ;;
     person) printf '%s' "$bob" ;;
@@ -369,14 +380,21 @@ compare_missing() {
   same_answers "$caller $method $template" hidden missing
 }
 
-# compare_twin CALLER PATH: as CALLER, main and the twin answer GET PATH the same.
+# compare_twin CALLER PATH [METHOD BODY]: as CALLER, main and the twin answer PATH the same, each
+# with its own ids filled in for the {LABEL}s PATH names. A write (METHOD other than GET) writes a
+# row of its own on each server, whose new id and time no seed names, so of a write the two
+# statuses alone are held alike.
 compare_twin() {
-  local server
+  local caller=$1 path=$2 method=${3:-GET} body=${4:-} server
   for server in main twin; do
-    send "$server" "$1" GET "$(resolve "$server" "$2")"
+    send "$server" "$caller" "$method" "$(resolve "$server" "$path")" "$body"
     keep_answer "$server" "$server"
   done
-  same_answers "$1 GET $2 (beside the twin)" main twin
+  if [ "$method" != GET ]; then
+    : >"$work/answers/main.body"
+    : >"$work/answers/twin.body"
+  fi
+  same_answers "$caller $method $path (beside the twin)" main twin
 }
 
 begin confined
@@ -481,12 +499,14 @@ walk_rows() {
         unrun "$method $pattern: the seed holds no ${kind:-object} of PRIV for {$wildcard}"
         break
       fi
-      hidden=${hidden//"{$wildcard}"/$(jq -rn --arg v "$object" '$v|@uri')}
-      # A no-project node fills both sides alike: it is no object PRIV wrote.
+      # A no-project node fills both sides alike: it is no object PRIV wrote. It goes into the
+      # path as it is, so a {LABEL} it names is filled with each server's own id (compare_twin).
       if [[ "$no_project_kinds" == *" $kind "* ]]; then
-        none=${none//"{$wildcard}"/$(jq -rn --arg v "$object" '$v|@uri')}
+        hidden=${hidden//"{$wildcard}"/$object}
+        none=${none//"{$wildcard}"/$object}
         continue
       fi
+      hidden=${hidden//"{$wildcard}"/$(jq -rn --arg v "$object" '$v|@uri')}
       none=${none//"{$wildcard}"/$(jq -rn --arg v "${missing[$kind]}" '$v|@uri')}
       # A fill that is the same on both sides is no difference to mask.
       if [ "$object" != "${missing[$kind]}" ]; then
@@ -497,8 +517,9 @@ walk_rows() {
     [ -z "$skip" ] || continue
     if [ "$hidden" = "$none" ]; then
       # Every wildcard is a no-project node: the path is the same on both servers.
-      [ "$method" = GET ] || { unrun "$method $pattern: a write that names only no-project nodes is not walked"; continue; }
-      for caller in "${unseeing_callers[@]}"; do compare_twin "$caller" "$hidden"; done
+      for caller in "${unseeing_callers[@]}"; do
+        compare_twin "$caller" "$hidden" "$method" "$(jq -c '.body // empty' <<<"$entry")"
+      done
       lists=$((lists + 1))
       continue
     fi
