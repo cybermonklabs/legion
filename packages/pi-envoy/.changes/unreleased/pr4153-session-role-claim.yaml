@@ -7,7 +7,10 @@ body: |-
   this session the role's holder, so a role that an evicted pod's session still holds comes back
   to the live session at its next registration. The claim writes its transcript record once; a
   later claim the newest record already names writes none. A move the model makes with
-  `envoy_role_set` is a record of its own, which no pass undoes. Without the variable nothing
+  `envoy_role_set` is a record of its own, which no pass undoes. The extension takes the variable
+  out of its process's environment when it loads, and every extension instance of the process
+  reads the value it took, so a command the session's shell runs does not inherit it: an `omp`
+  an agent starts inside the pod claims none of the pod's roles. Without the variable nothing
   changes.
 time: 2026-11-16T04:10:58Z
 custom:

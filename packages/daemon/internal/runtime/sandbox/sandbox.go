@@ -346,7 +346,8 @@ func configureProber(opts Options) (*Runtime, error) {
 			return refuse("agent secrets: the exchange audience is the enrollment's own, %q; the cluster projects one volume per audience", a.Audience)
 		}
 	}
-	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore); err != nil {
+	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore,
+		opts.AgentSecrets != nil && opts.AgentSecrets.ExchangeAudience != ""); err != nil {
 		return refuse("%v", err)
 	}
 	for _, name := range opts.ProvidersSecrets {

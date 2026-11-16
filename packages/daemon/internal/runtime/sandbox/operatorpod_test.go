@@ -216,7 +216,7 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 			want: `runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to "ftp://dispatch.example.org", which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := CheckPod(tc.pod, tc.keys, testOptions().Tools, []string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}, []string{"NATS_NKEY_SEED"}, postgresStore)
+			err := CheckPod(tc.pod, tc.keys, testOptions().Tools, []string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}, []string{"NATS_NKEY_SEED"}, postgresStore, false)
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("CheckPod = %v, want no refusal", err)
@@ -243,7 +243,7 @@ func TestCheckPodHoldsDispatchPublicURLToTheAgentsRule(t *testing.T) {
 	}
 	check := func(value string) error {
 		return CheckPod(Pod{Env: map[string]string{"DISPATCH_PUBLIC_URL": value}}, nil, testOptions().Tools,
-			[]string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}, []string{"NATS_NKEY_SEED"}, postgresStore)
+			[]string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}, []string{"NATS_NKEY_SEED"}, postgresStore, false)
 	}
 	for _, value := range fixture.Valid {
 		if err := check(value); err != nil {

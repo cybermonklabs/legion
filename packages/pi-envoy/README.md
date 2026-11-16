@@ -78,7 +78,11 @@ evicted pod's session the registry still lists as live for some minutes, so the 
 to the live session at its next registration. The claim writes its transcript record once: a
 later claim the newest record already names writes none. A move the model makes with
 `envoy_role_set` is a record of its own, which no pass undoes. Without the variable no pass
-claims a role the session's records do not name.
+claims a role the session's records do not name. The extension takes the variable out of its
+process's environment when it loads, and every extension instance of the process reads the value
+it took, so a command the session's shell runs does not inherit it: an `omp` an agent starts
+inside the pod claims none of the pod's roles. A `Bun.spawn` that names no `env` still passes it
+on, since it hands a child the environment the process started with.
 
 `envoy_list()` shows the union of the local subscriptions and the listener's persisted interest
 registry. Each reported interest identifies whether it is `live`, `registry`, or `both`, so

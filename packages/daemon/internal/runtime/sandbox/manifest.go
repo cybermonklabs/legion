@@ -105,11 +105,13 @@ const podUser = 1000
 
 // runtimeOwned are the main container's variables the runtime sets itself, the whole of each
 // value: with the composed names (composed), whose value the operator begins and the runtime
-// finishes, it is exactly what the container is told by the runtime
+// finishes, and, where the deployment names an exchange audience, the exchange identity's two
+// (exchangeOwned), it is exactly what the container is told by the runtime
 // (TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime). The shared validator refuses a
-// name of either set in a spec's Env and as a secret's pointer (runtimeOwnedOrComposed), and
-// CheckPod refuses a runtime-owned one in the operator's pod — a composed one is the operator's
-// to set, since composing is what the runtime does with it. The image probe's
+// name of any of them in a spec's Env and as a secret's pointer (Runtime.specOwned), and CheckPod
+// refuses a runtime-owned one, or an exchange one where the deployment names the audience, in the
+// operator's pod — a composed one is the operator's to set, since composing is what the runtime
+// does with it. The image probe's
 // container sets none of its own. The two CLAUDE_* names and claudelaunch.SessionVariable are told
 // a Claude role alone, as the controller's Slack channels are the controller's, and owned in every
 // pod: an operator that could place a Claude Code worker's configuration directory, let the clock
@@ -128,7 +130,6 @@ var runtimeOwned = func() map[string]bool {
 		"TMPDIR": true, "GOCACHE": true, "GOMODCACHE": true, "BUN_INSTALL_CACHE_DIR": true,
 		"POD_UID": true, bootTokenKey + "_FILE": true, dispatchTokenKey + "_FILE": true,
 		"AGENT_SECRETS_URL": true, "AGENT_SECRETS_KEY_DIR": true, slackChannelsVariable: true,
-		machineIdentityVariable: true, machineTokenFileVariable: true,
 		"UV_PYTHON_INSTALL_DIR": true, "UV_CACHE_DIR": true, "UV_LINK_MODE": true,
 		"CLAUDE_CONFIG_DIR": true, "CLAUDE_CODE_DISABLE_CRON": true,
 		claudelaunch.SessionVariable: true, ompsessions.StorageVariable: true, ompsessions.DSNFileVariable: true,
@@ -155,14 +156,41 @@ var runtimeOwned = func() map[string]bool {
 // is a change of its own.
 var composed = map[string]bool{runtime.SpendAttributesVariable: true}
 
-// runtimeOwnedOrComposed is every variable a launch spec may not set: the runtime's own and the
-// composed ones together, since the shared refusal reads one set (runtime.ValidateSpawnSpec).
-// Neither set changes after init, so the union is built once here rather than per launch.
+// runtimeOwnedOrComposed is every variable a launch spec may not set where the deployment names no
+// exchange audience (Runtime.specOwned): the runtime's own and the composed ones together, since
+// the shared refusal reads one set (runtime.ValidateSpawnSpec). Neither set changes after init, so
+// the union is built once here rather than per launch.
 var runtimeOwnedOrComposed = func() map[string]bool {
 	names := maps.Clone(runtimeOwned)
 	maps.Copy(names, composed)
 	return names
 }()
+
+// exchangeOwned are the exchange identity's two variables, which the runtime sets itself only
+// where the deployment names an exchange audience (runtime.kubernetes.agent_secrets.exchange_audience,
+// launch.trades). A deployment that names none tells no role either, so each stays the operator's
+// pod env's and a launch spec's to set, as it was before the key existed: they are no part of
+// runtimeOwned, and the reservations that take them (Runtime.specOwned, CheckPod) read whether the
+// deployment names the audience.
+var exchangeOwned = map[string]bool{machineIdentityVariable: true, machineTokenFileVariable: true}
+
+// runtimeOwnedComposedOrExchange is every variable a launch spec may not set where the deployment
+// names an exchange audience: runtimeOwnedOrComposed and exchangeOwned together, built once.
+var runtimeOwnedComposedOrExchange = func() map[string]bool {
+	names := maps.Clone(runtimeOwnedOrComposed)
+	maps.Copy(names, exchangeOwned)
+	return names
+}()
+
+// specOwned is every variable a launch spec may not set under r (runtime.ValidateSpawnSpec): the
+// runtime's own and the composed ones, and the exchange identity's two where the deployment names
+// an exchange audience (exchangeOwned).
+func (r *Runtime) specOwned() map[string]bool {
+	if r.agentSecrets != nil && r.agentSecrets.ExchangeAudience != "" {
+		return runtimeOwnedComposedOrExchange
+	}
+	return runtimeOwnedOrComposed
+}
 
 // slackChannelsVariable is the project's slack_channels as the runtime tells the controller it
 // launches (Options.ControllerSlackChannels): comma-joined, set even when empty, so no other value
@@ -174,7 +202,8 @@ const slackChannelsVariable = "LEGION_SLACK_CHANNELS"
 // (packages/broker-client/src/environment.ts's IDENTITY_VAR and MACHINE_TOKEN_FILE_VAR, and
 // packages/envoy/internal/brokerclient's IdentityVar and MachineTokenFileVar), and
 // kubernetesIdentity the value naming a projected Kubernetes ServiceAccount token. A role is told
-// them where its pod trades (launch.trades).
+// them where its pod trades (launch.trades), and they are Legion's only where the deployment names
+// an exchange audience (exchangeOwned).
 const (
 	machineIdentityVariable  = "AGENT_SECRETS_MACHINE_IDENTITY"
 	machineTokenFileVariable = "AGENT_SECRETS_MACHINE_TOKEN_FILE"
@@ -221,15 +250,21 @@ const sessionProxyAccountFlag = "--session-impersonate-service-account"
 // legionVolumeNames are the volumes Legion puts in a pod, an issue pod's, the controller's or the
 // probe's, whose names the operator's volumes may not take: the shared ones, the role homes, the
 // test database's, the skills clone's and its fetch's TMPDIR, and each launcher role's private
-// ones. The agent-secrets volumes, the exchange identity's among them, are reserved
+// ones. The agent-secrets volumes are reserved
 // whether or not this deployment enrolls, the test database's whether or not it sets
 // `runtime.kubernetes.test_postgres`, and the skills volumes whether or not it names a
-// `runtime.kubernetes.skills_repository`: an operator's pod may never claim them. Every launcher
+// `runtime.kubernetes.skills_repository`: an operator's pod may never claim them. The exchange
+// identity's (agentSecretsExchangeVolume) is Legion's only where exchange says the deployment names
+// an exchange audience: one that names none keeps that name the operator's, as it was before the
+// key existed. Every launcher
 // role, the controller's included, has a key volume when the pod enrolls and a gh volume always.
-func legionVolumeNames() []string {
+func legionVolumeNames(exchange bool) []string {
 	names := []string{
-		issueVolume, provisionVolume, tempVolume, configVolume, providersVolume, agentSecretsTokenVolume, agentSecretsExchangeVolume, roleHomesVolume, roleProbeVolume, testPGVolume,
+		issueVolume, provisionVolume, tempVolume, configVolume, providersVolume, agentSecretsTokenVolume, roleHomesVolume, roleProbeVolume, testPGVolume,
 		skillsVolume, skillsTempVolume,
+	}
+	if exchange {
+		names = append(names, agentSecretsExchangeVolume)
 	}
 	for _, role := range launcherRoles {
 		names = append(names, roleVolume("launcher", role), roleVolume("private", role), roleVolume(stateVolume, role), roleVolume(ghVolume, role),
@@ -241,9 +276,10 @@ func legionVolumeNames() []string {
 
 // legionMountPaths are where Legion mounts a volume in the containers the operator's mounts join,
 // the launcher container of either pod and the image probe's, or where a role's namespace binds
-// one: an operator's mount may be neither at, under, nor above one. AgentSecretsKeyDir,
-// AgentSecretsTokenDir and AgentSecretsExchangeDir are reserved whether or not this deployment
-// enrolls or names an exchange audience, GHConfigDir whether or
+// one: an operator's mount may be neither at, under, nor above one. AgentSecretsKeyDir and
+// AgentSecretsTokenDir are reserved whether or not this deployment enrolls, AgentSecretsExchangeDir
+// only where exchange says it names an exchange audience (one that names none keeps the path the
+// operator's, as it was before the key existed), GHConfigDir whether or
 // not the pod is an issue's, SkillsDir whether or not the deployment names a skills repository —
 // an operator's mount there would overlay the read-only clone a role installs from with storage
 // the operator writes — FeedDir, which TreeRoot already covers, is named for the read-only
@@ -252,10 +288,13 @@ func legionVolumeNames() []string {
 // pod's roles container mounts what belongs under the home (homeMountsView), which each role's
 // namespace covers too once it has bound each back, and RoleProbeDir is the image probe's volume
 // for its role-namespace check.
-func legionMountPaths() []string {
+func legionMountPaths(exchange bool) []string {
 	paths := []string{
 		TreeRoot, FeedDir, LauncherDir, LauncherPrivateDir, StateDir, xdgConfigHome, ProvidersDir,
-		AgentSecretsKeyDir, AgentSecretsTokenDir, AgentSecretsExchangeDir, GHConfigDir, RolesDir, HomeMountsDir, RoleProbeDir, SkillsDir,
+		AgentSecretsKeyDir, AgentSecretsTokenDir, GHConfigDir, RolesDir, HomeMountsDir, RoleProbeDir, SkillsDir,
+	}
+	if exchange {
+		paths = append(paths, AgentSecretsExchangeDir)
 	}
 	slices.Sort(paths)
 	return paths
@@ -535,8 +574,9 @@ func (l launch) runsClaude() bool { return runtime.Of(l.spec.Backend) == runtime
 
 // prepare checks spec and resolves everything a launch needs from it, reading the prompt files on
 // the daemon's disk, so a launch that cannot be honoured is refused before any API call: the
-// shared refusal, over every name a spec may not set — the runtime's own and the composed ones
-// (runtime.ValidateSpawnSpec, runtimeOwnedOrComposed) — then the sandbox's own. A secret named
+// shared refusal, over every name a spec may not set — the runtime's own, the composed ones and,
+// where the deployment names an exchange audience, the exchange identity's (runtime.ValidateSpawnSpec,
+// Runtime.specOwned) — then the sandbox's own. A secret named
 // for the provisioning token is refused, the one key the runtime writes whose pointer the worker
 // container is never told (the boot token's and the Dispatch bearer's pointers are runtime-owned,
 // so the shared refusal already covers them). prepare decides the pod's kind from the claim's role
@@ -546,7 +586,7 @@ func (l launch) runsClaude() bool { return runtime.Of(l.spec.Backend) == runtime
 // gives the pod must name that kind back (podKindOf), so a launch and the Sandbox it leaves cannot
 // disagree on the pod's roles.
 func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
-	if err := runtime.ValidateSpawnSpec(spec, runtimeOwnedOrComposed); err != nil {
+	if err := runtime.ValidateSpawnSpec(spec, r.specOwned()); err != nil {
 		return launch{}, err
 	}
 	refuse := func(format string, args ...any) error {

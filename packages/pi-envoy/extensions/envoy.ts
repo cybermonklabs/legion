@@ -317,6 +317,36 @@ export function resetNatsConnectForTests(): void {
   delete natsConnectStore[NATS_CONNECT];
 }
 
+/**
+ * The Envoy role a session pod's launch named for its session (`ENVOY_SESSION_ROLE`, which
+ * agent-infra's sessions workload sets), moved out of the environment into a process-wide slot
+ * when this module loads. Every extension instance of the process reads it from the slot, an
+ * instance a later load of this entry makes included (a `task` subagent's, or each top-level
+ * session of an ACP host), and no process this one starts from the live environment inherits it:
+ * Oh My Pi's shell builds a command's environment from `Bun.env` (`procmgr`), so an `omp` an agent
+ * runs inside the pod claims none of the pod's roles. A value set again before a later load
+ * replaces the one held. Only a `Bun.spawn` that names no `env` still passes the variable on, since
+ * it passes the environment the process started with, which no write here reaches.
+ */
+const SESSION_ROLE = Symbol.for("legion.pi-envoy.session-role");
+
+interface GlobalSessionRole {
+  [key: symbol]: string | undefined;
+}
+
+const sessionRoleStore = globalThis as unknown as GlobalSessionRole;
+
+if (process.env.ENVOY_SESSION_ROLE !== undefined) {
+  sessionRoleStore[SESSION_ROLE] = process.env.ENVOY_SESSION_ROLE.trim() || undefined;
+  delete process.env.ENVOY_SESSION_ROLE;
+}
+
+// The slot outlives every instance of this entry in the process, so a suite clears it between
+// rows, as it clears the NATS stand-in above. Production callers never call this.
+export function resetSessionRoleForTests(): void {
+  delete sessionRoleStore[SESSION_ROLE];
+}
+
 const NATS_RETRY_INTERVAL_MS = 15_000;
 /** How long a delivery waits for the pictures it embeds before it goes out as text alone. */
 const DELIVERY_PICTURES_TIMEOUT_MS = 20_000;
@@ -2914,11 +2944,11 @@ export default function envoyExtension(pi: PiApi): void {
         : `the session moved from ${from} to ${hostSessionID()} while its claim of role ${role} ran; nothing was claimed`
     );
 
-  // The Envoy role a session pod's launch named for its session (`ENVOY_SESSION_ROLE`, which
-  // agent-infra's sessions workload sets): the session claims it itself, under its own
+  // The Envoy role a session pod's launch named for its session, as the module's load took it
+  // out of the environment (`SESSION_ROLE`): the session claims it itself, under its own
   // credential, which the listener holds to this very session, at every pass that registers it
-  // (`settleRole`). Read when the instance is created, as the other knobs are.
-  const sessionRole = process.env.ENVOY_SESSION_ROLE?.trim() || undefined;
+  // (`settleRole`). Read when the instance is created.
+  const sessionRole = sessionRoleStore[SESSION_ROLE];
 
   // The registration and role state the two serial queues write, the queues themselves, each
   // task's deadline and this extension instance's client instance id, all private to
