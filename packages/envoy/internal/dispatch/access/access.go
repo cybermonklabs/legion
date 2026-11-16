@@ -201,6 +201,9 @@ func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, e
 		broker = actor.Credential.Session != ""
 	}
 	viewer := model.Viewer{Person: login, Listed: len(listed) > 0}
+	if viewer.Listed {
+		viewer.Lists = listed
+	}
 	if actor.Kind == "session" {
 		viewer.Session = actor.ID
 	}

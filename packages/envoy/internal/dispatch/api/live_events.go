@@ -560,17 +560,19 @@ func (s *server) resumeAfterOverflow(ctx context.Context, caller model.Actor, af
 // eventSubscriptionCheck is eventCursorCheck for an events subscription whose relay subscription
 // began at cursor, and in the same statement how many events a resume from since stands behind
 // it: the rows of (since, cursor] in the gap of reader's page (eventGapSQL), counted up to
-// maxLiveReplay+1, which is all the bound needs (replayThrough), and whether an access change
-// stands among them (accessChanged). behind is -1 when there is nothing to count: no since, or a
-// since above the cursor, which resolveEventReplay answers without a replay read. One statement,
-// so a resume waits for the shared pool once before its replay read rather than twice: on a
-// restart every page resumes at once, behind every request queued for a connection.
+// maxLiveReplay+1, which is all the bound needs (replayThrough), and whether an access change that
+// moved what reader sees stands among them (accessChanged, sightMovedSQL). behind is -1 when there
+// is nothing to count: no since, or a since above the cursor, which resolveEventReplay answers
+// without a replay read. One statement, so a resume waits for the shared pool once before its
+// replay read rather than twice: on a restart every page resumes at once, behind every request
+// queued for a connection.
 func eventSubscriptionCheck(ctx context.Context, q queryer, reader model.Actor, cursor int64, since *int64) (maxID int64, cursorAt *time.Time, behind int, accessChanged bool, err error) {
 	if err := q.QueryRow(ctx, `
 		select coalesce((select max(id) from events), 0), (select created_at from events where id = $1),
 			case when $2::bigint is null or $2::bigint > $1 then -1 else count(*)::int end,
-			coalesce(bool_or(missed.type in ('`+projectAccessChangedEvent+`', '`+accessGroupChangedEvent+`')), false)
-		from (select e.type from events e where e.id > $2::bigint and e.id <= $1 and `+eventGapSQL("e", "$4")+` order by e.id limit $3) as missed
+			coalesce(bool_or(missed.moved), false)
+		from (select `+sightMovedSQL("e", "$4")+` as moved from events e
+			where e.id > $2::bigint and e.id <= $1 and `+eventGapSQL("e", "$4")+` order by e.id limit $3) as missed
 	`, cursor, since, maxLiveReplay+1, refs.VisibilityArg(reader)).Scan(&maxID, &cursorAt, &behind, &accessChanged); err != nil {
 		return 0, nil, 0, false, err
 	}
@@ -578,27 +580,64 @@ func eventSubscriptionCheck(ctx context.Context, q queryer, reader model.Actor, 
 }
 
 // eventGapSQL passes the events row eventAlias names when it belongs to the gap of a resume read
-// for the viewer bound at viewerParam: an event that changes what that viewer's page holds. That is
-// an event the viewer may read (eventReadableSQL), which a complete replay sends, and a change of a
-// project's access that took the project from the viewer, which the viewer no longer reads once it
-// is made (accessChanged):
+// for the viewer bound at viewerParam: an event that viewer may read (eventReadableSQL), which a
+// complete replay sends, and a change of a project's access that took the project from the viewer
+// (lostSightSQL), which the viewer no longer reads once it is made. Every other event is one the
+// page never held and would not be sent, so it is no gap: a resume across a project the caller
+// never saw is complete.
+func eventGapSQL(eventAlias, viewerParam string) string {
+	return `(` + eventReadableSQL(eventAlias, viewerParam) + ` or ` + lostSightSQL(eventAlias, viewerParam) + `)`
+}
+
+// sightMovedSQL is whether the event eventAlias names, one of the gap's (eventGapSQL), moved what
+// the viewer bound at viewerParam sees, so the page owes the refresh replay_complete false asks for:
+// a change of a project's access that took the project from the viewer (lostSightSQL) or gave it
+// the project (gainedSightSQL), and a change of a group the viewer may read, whose payload names no
+// member and so may have moved anyone's. Every other access change in the gap is one the viewer
+// reads and that moved nothing it sees: another person added to a list it is on, its project turned
+// private while it stays on the list, a project's Slack channels.
+func sightMovedSQL(eventAlias, viewerParam string) string {
+	e := eventAlias
+	return `(` + e + `.type = '` + accessGroupChangedEvent + `' or ` + lostSightSQL(e, viewerParam) + ` or ` + gainedSightSQL(e, viewerParam) + `)`
+}
+
+// lostSightSQL is whether the event eventAlias names is a change of the access of a project the
+// viewer bound at viewerParam does not see now, that took the project from it:
 //
 //   - the removal of the viewer's own person from the project's list;
 //   - an owner change that took the project from the viewer's person (its principal, SetOwner);
-//   - the project turned private, to an open viewer: one that read it while it was public, as
-//     every open viewer reads a public project, and now does not.
-//
-// Each is asked only of a project the viewer does not see now. Every other event is one the page
-// never held and would not be sent, so it is no gap: a resume across a project the caller never
-// saw is complete.
-func eventGapSQL(eventAlias, viewerParam string) string {
+//   - the project turned private, to a viewer that read it while it was public: an open viewer,
+//     which reads every public project, and a credential whose own list names it (Viewer.Lists).
+func lostSightSQL(eventAlias, viewerParam string) string {
 	e := eventAlias
-	return `(` + eventReadableSQL(e, viewerParam) + `
-		or (` + e + `.type = '` + projectAccessChangedEvent + `' and not ` + access.ProjectClause(e+`.project_key`, viewerParam) + ` and (
-			(` + e + `.payload->>'change' in ('` + model.AccessPersonRemoved + `', '` + model.AccessOwnerChanged + `')
-				and ` + e + `.payload->>'principal' = ` + viewerParam + `::jsonb->>'person')
-			or (` + e + `.payload->>'change' = '` + model.AccessVisibilityChanged + `' and ` + e + `.payload->>'visibility' = '` + model.ProjectPrivate + `'
-				and ` + access.OpenClause(viewerParam) + `))))`
+	return `(` + e + `.type = '` + projectAccessChangedEvent + `' and not ` + access.ProjectClause(e+`.project_key`, viewerParam) + ` and (
+		(` + e + `.payload->>'change' in ('` + model.AccessPersonRemoved + `', '` + model.AccessOwnerChanged + `')
+			and ` + e + `.payload->>'principal' = ` + viewerParam + `::jsonb->>'person')
+		or (` + e + `.payload->>'change' = '` + model.AccessVisibilityChanged + `' and ` + e + `.payload->>'visibility' = '` + model.ProjectPrivate + `'
+			and (` + access.OpenClause(viewerParam) + ` or ` + listsProjectSQL(e+`.project_key`, viewerParam) + `))))`
+}
+
+// gainedSightSQL is whether the event eventAlias names is a change of the access of a project the
+// viewer bound at viewerParam sees now, that may have given the viewer the project: its own person
+// added to the project's list, or made its owner; a group added to the list that holds the viewer's
+// person; or the project turned public, to a viewer that reads every public project it may (an
+// open viewer, or a credential whose list names it).
+func gainedSightSQL(eventAlias, viewerParam string) string {
+	e, person := eventAlias, viewerParam+`::jsonb->>'person'`
+	return `(` + e + `.type = '` + projectAccessChangedEvent + `' and ` + access.ProjectClause(e+`.project_key`, viewerParam) + ` and (
+		(` + e + `.payload->>'change' = '` + model.AccessPersonAdded + `' and ` + e + `.payload->>'principal' = ` + person + `)
+		or (` + e + `.payload->>'change' = '` + model.AccessOwnerChanged + `' and ` + e + `.payload->>'owner' = ` + person + `)
+		or (` + e + `.payload->>'change' = '` + model.AccessGroupAdded + `' and exists (
+			select 1 from access_group_members gained where gained.group_name = ` + e + `.payload->>'principal' and gained.person = ` + person + `
+			offset 0))
+		or (` + e + `.payload->>'change' = '` + model.AccessVisibilityChanged + `' and ` + e + `.payload->>'visibility' = '` + model.ProjectPublic + `'
+			and (` + access.OpenClause(viewerParam) + ` or ` + listsProjectSQL(e+`.project_key`, viewerParam) + `))))`
+}
+
+// listsProjectSQL is whether the credential of the viewer bound at viewerParam lists the project
+// projectExpr names (Viewer.Lists); false for a credential that lists none.
+func listsProjectSQL(projectExpr, viewerParam string) string {
+	return `coalesce((` + viewerParam + `::jsonb->'lists') ? (` + projectExpr + `), false)`
 }
 
 // endEventsAfterFailure ends a subscription whose read failed, with an ended frame (behind), so its

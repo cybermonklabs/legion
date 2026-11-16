@@ -49,10 +49,10 @@ func TestTheVisibilityArgumentCarriesTheViewer(t *testing.T) {
 		{
 			name: "a personal token that lists a project",
 			reader: model.Actor{Kind: "session", Owner: &carol, Viewer: &model.Viewer{
-				Person: carol, Listed: true, Sees: []string{"PRIV"}, AnyPrivate: true,
+				Person: carol, Listed: true, Sees: []string{"PRIV"}, AnyPrivate: true, Lists: []string{"PRIV"},
 			}},
 			want: `{"author":{"kind":"session","id":"","owner":"carol@example.com","service":null},"person":"carol@example.com",` +
-				`"sees":["PRIV"],"open":false,"all":false,"private":true}`,
+				`"sees":["PRIV"],"open":false,"all":false,"private":true,"lists":["PRIV"]}`,
 		},
 		{
 			name: "a session of an open viewer that sees nothing yet",

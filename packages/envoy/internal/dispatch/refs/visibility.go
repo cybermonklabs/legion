@@ -194,7 +194,8 @@ func VisibilityKinds() []string {
 // VisibilityArg is the one argument every rendered predicate binds, as jsonb: the acting
 // credential as graphstore's one author rule compares it (`author`), and what the reader's viewer
 // sees, in the shape the access package's clauses read ("person", "session", "open", "all",
-// "sees", "private"). A read binds it once and names its placeholder in each predicate it renders.
+// "sees", "private", and "lists", the credential's own list, absent when it lists none). A read
+// binds it once and names its placeholder in each predicate it renders.
 //
 // A reader with no viewer is the closed viewer: it sees no project and no party, is not open, and
 // reads as though some project were private, so a read that reached the store without the
@@ -207,6 +208,7 @@ func VisibilityArg(who model.Actor) any {
 		if viewer.Sees != nil {
 			argument.Sees = viewer.Sees
 		}
+		argument.Lists = viewer.Lists
 	}
 	encoded, err := json.Marshal(argument)
 	if err != nil {
@@ -219,7 +221,8 @@ func VisibilityArg(who model.Actor) any {
 
 // visibilityArgument is VisibilityArg's jsonb. person and session are absent for a viewer that
 // names none, so a clause's `->>'person'` reads null, which equals nothing, rather than the empty
-// name.
+// name; lists is absent for a credential that lists none, so every such viewer binds the bytes it
+// bound before the member existed.
 type visibilityArgument struct {
 	Author  json.RawMessage `json:"author"`
 	Person  string          `json:"person,omitempty"`
@@ -228,6 +231,7 @@ type visibilityArgument struct {
 	Open    bool            `json:"open"`
 	All     bool            `json:"all"`
 	Private bool            `json:"private"`
+	Lists   []string        `json:"lists,omitempty"`
 }
 
 // VisibleKind is the predicate of one node kind: the SQL that is true of a node of that kind

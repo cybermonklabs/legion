@@ -149,7 +149,9 @@ const (
 // project it sees, sorted. Open is a viewer that is neither restricted nor holds a list of
 // projects: it reads every row that belongs to no project, as every caller did before projects
 // could be private. All is ServerViewer alone. AnyPrivate is whether the deployment holds a
-// private project at all.
+// private project at all. Lists is the credential's own list of projects (Credential.Projects),
+// nil when it lists none: which projects it would see were its person to see them, which tells a
+// read whether the credential read a project before a change took it away (api: eventGapSQL).
 type Viewer struct {
 	Person, Session    string
 	Restricted, Listed bool
@@ -157,6 +159,7 @@ type Viewer struct {
 	All                bool
 	Sees               []string
 	AnyPrivate         bool
+	Lists              []string
 }
 
 // ServerViewer is the server's own read of content that belongs to one owner, which each of its

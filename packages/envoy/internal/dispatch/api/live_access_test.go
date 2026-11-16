@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	gws "github.com/gorilla/websocket"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // liveURLOf serves handler behind a real listener until the test ends and answers its GET /ws/live
@@ -289,4 +291,40 @@ func TestAResumeAcrossAnOwnerChangeOwesARefreshToThePreviousOwner(t *testing.T) 
 	url := liveURLOf(t, seed.handler)
 	requireResumeComplete(t, seed, url, callerCarol, since, false, "she owned PRIV, reads it no more, and her page holds PRIV's rows")
 	requireResumeComplete(t, seed, url, callerAlice, since, true, "she never read PRIV")
+}
+
+// TestAResumeAcrossAProjectTurnedPrivateOwesARefreshToATokenThatListedIt: PRIV is public, then
+// turns private. alice's token lists PRIV, and read it while it was public, alice being a full
+// member; once PRIV is private no list of it names alice, so the token reads it no more and its
+// resume across the change is not complete, though it may not read the change itself. carol's token
+// lists PRIV too, and PRIV's list names carol, so the token reads PRIV before the change and after:
+// it reads the change, which moved nothing it sees, and its resume is complete.
+func TestAResumeAcrossAProjectTurnedPrivateOwesARefreshToATokenThatListedIt(t *testing.T) {
+	seed := seedPrivateProject(t)
+	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
+	since := eventHead(t, seed.database)
+	seed.makePrivate(t, seedPrivate)
+	url := liveURLOf(t, seed.handler)
+	requireResumeComplete(t, seed, url, callerAlicePrivToken, since, false, "it listed PRIV and read it while PRIV was public, and reads it no more")
+	requireResumeComplete(t, seed, url, callerCarolPrivToken, since, true, "it read PRIV before the change and after it")
+}
+
+// TestAResumeAcrossAnAccessChangeOwesARefreshOnlyToWhomItMoved: carol adds dave to PRIV's list.
+// dave now reads PRIV, which his page lacks, so his resume across the addition is not complete;
+// carol, and her token that lists PRIV, read the addition and read PRIV before it and after it, so
+// their resumes are complete: an access change is a gap only for a caller whose projects it moved.
+func TestAResumeAcrossAnAccessChangeOwesARefreshOnlyToWhomItMoved(t *testing.T) {
+	const dave = "dave@example.com"
+	seed := seedPrivateProject(t)
+	seedPeople(t, seed.database, dave)
+	since := eventHead(t, seed.database)
+	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/people/"+dave, nil, http.StatusOK)
+	url := liveURLOf(t, seed.handler)
+	client := dialLive(t, url, asUser(dave))
+	if got := subscribeEventsStart(t, client, "feed", &since); got.ReplayComplete {
+		t.Errorf("dave's resume from %d across his addition to PRIV says its replay is complete, so his page lacks PRIV: %+v", since, got)
+	}
+	for _, caller := range []privateCaller{callerCarol, callerCarolPrivToken} {
+		requireResumeComplete(t, seed, url, caller, since, true, "dave's addition moved nothing it sees")
+	}
 }
