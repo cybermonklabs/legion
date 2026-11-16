@@ -5,6 +5,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +16,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/sjawhar/envoy/brokeraddr"
 )
 
 // TestSelfPrintsNoPartOfTheBrokerURLCredential: `agent-secrets self` on a machine that proves an
@@ -77,7 +82,7 @@ func TestTheCLIsBrokerClientFollowsNoRedirect(t *testing.T) {
 			}))
 			defer broker.Close()
 
-			c := newClient(broker.URL)
+			c := newClient(brokeraddr.New(broker.URL))
 			_, _, _ = c.doStatus(context.Background(), http.MethodGet, broker.URL+"/v1/enrollments/self", nil, map[string]string{"Proof": "the-session-proof"})
 			if got := targetCalls.Load(); got != 0 {
 				t.Errorf("the redirect's target received %d requests, want none", got)
@@ -87,4 +92,80 @@ func TestTheCLIsBrokerClientFollowsNoRedirect(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestABrokerRefusalPrintsNoCredentialItsWordsRepeat: the broker, or whoever answers at its
+// address, refuses a call in its error envelope with words and an answer id that repeat the
+// credential the configured address carries. Beside that address the refusal keeps its status
+// and its code, and no line on stderr and no text of the error holds any part of the credential.
+// Beside a clean address the broker's words and answer id are what a person acts on, and print
+// whole. Either way the client still reads the words it tells refusals apart by.
+func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
+	const answerID = "demopass9z-not-a-secret"
+	var asked atomic.Int64
+	var words string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/requests/req-1" {
+			asked.Add(1)
+		}
+		body, _ := json.Marshal(map[string]string{"code": "REQUEST_INVALID", "error": words, "answer_id": answerID})
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(answerIDHeader, answerID)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	credentialed := strings.Replace(srv.URL, "://", "://demouser7q:demopass9z-not-a-secret@", 1)
+	words = "the request object names " + credentialed + ", which is not this broker"
+	// status is `agent-secrets status req-1` against address: its stderr, and the refusal its
+	// client reads.
+	status := func(t *testing.T, address string) (string, *apiError) {
+		t.Helper()
+		t.Setenv("AGENT_SECRETS_URL", address)
+		t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
+		t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
+		before := asked.Load()
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"status", "req-1"}, &stdout, &stderr); code != 1 {
+			t.Fatalf("status against a broker that refuses it exited %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
+		}
+		if asked.Load() == before {
+			t.Fatalf("status never reached the broker\nstderr: %s", stderr.String())
+		}
+		_, err := newClient(brokeraddr.New(address)).do(context.Background(), http.MethodGet, address+"/v1/requests/req-1", nil, nil)
+		var refusal *apiError
+		if !errors.As(err, &refusal) {
+			t.Fatalf("the refusal read as %v, want an *apiError", err)
+		}
+		if refusal.Status != http.StatusForbidden || refusal.Code != "REQUEST_INVALID" {
+			t.Errorf("the refusal is %d %s, want the status and the code the broker answered, 403 REQUEST_INVALID", refusal.Status, refusal.Code)
+		}
+		if !refusal.says("which is not this broker") {
+			t.Errorf("the refusal does not read the broker's words it is told apart by")
+		}
+		return stderr.String(), refusal
+	}
+
+	t.Run("an address carrying a credential", func(t *testing.T) {
+		stderr, refusal := status(t, credentialed)
+		printed := stderr + "\n" + refusal.Error() + "\n" + fmt.Sprintf("%+v %#v", refusal, *refusal)
+		for _, marker := range []string{"demouser7q", "demopass9z-not-a-secret"} {
+			if strings.Contains(printed, marker) {
+				t.Errorf("the refusal holds %q:\n%s", marker, printed)
+			}
+		}
+		if !strings.Contains(stderr, "REQUEST_INVALID") {
+			t.Errorf("stderr does not name the broker's code:\n%s", stderr)
+		}
+	})
+
+	t.Run("a clean address", func(t *testing.T) {
+		stderr, refusal := status(t, srv.URL)
+		if refusal.Message != words || refusal.AnswerID != answerID {
+			t.Errorf("the refusal is %+v, want the broker's words %q and answer id %q whole", refusal, words, answerID)
+		}
+		if !strings.Contains(stderr, words+" (REQUEST_INVALID) (answer "+answerID+")") {
+			t.Errorf("stderr does not carry the broker's words, code and answer id:\n%s", stderr)
+		}
+	})
 }

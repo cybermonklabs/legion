@@ -30,10 +30,9 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
-	"github.com/sjawhar/envoy/internal/brokerclient"
-	"github.com/sjawhar/envoy/internal/redact"
 )
 
 type secretForm struct {
@@ -120,20 +119,20 @@ func cmdSecret(args []string, stdout, stderr io.Writer) int {
 // gated while the exec form and the machine and pod paths (the other newClient callers) keep
 // today's behaviour, and a form's -h, which never opens a session, is unaffected. The secret forms
 // trust the broker's settings to steer a write, so a plain-http broker a network attacker can answer
-// is refused before the first call; an unparseable URL is left to the client, which names it.
-func requireSecretBrokerURL(raw string) error {
-	base := brokerclient.WithoutTrailingSlashes(raw)
-	if base == "" {
+// is refused before the first call; an unparseable URL is left to the client, which names it. It
+// reads the address (Raw) only to parse its scheme and host, and names it as the Address prints.
+func requireSecretBrokerURL(base brokeraddr.Address) error {
+	if base.Empty() {
 		return nil
 	}
-	u, err := url.Parse(base)
+	u, err := url.Parse(base.Raw())
 	if err != nil {
 		return nil
 	}
 	if u.Scheme == "https" || (u.Scheme == "http" && isLoopbackHost(u.Hostname())) {
 		return nil
 	}
-	return usageErr{fmt.Errorf("AGENT_SECRETS_URL %q must be https, or http only when the broker's host is loopback (127.0.0.1, [::1] or localhost): the secret forms trust the broker's settings, so a plain-http broker on the network is refused", redact.URL(base))}
+	return usageErr{fmt.Errorf("AGENT_SECRETS_URL %q must be https, or http only when the broker's host is loopback (127.0.0.1, [::1] or localhost): the secret forms trust the broker's settings, so a plain-http broker on the network is refused", base)}
 }
 
 // isLoopbackHost reports whether host is "localhost" (any case) or a loopback IP literal
@@ -528,7 +527,7 @@ func secretFailIn(stderr io.Writer, form string, s *secretSession, err error) in
 // decides what it may do.
 func openSession(ctx context.Context, profile string) (*secretSession, error) {
 	base := brokerBaseURL()
-	if base == "" {
+	if base.Empty() {
 		return nil, usageErr{fmt.Errorf("%s is required: it names the secrets broker whose store these forms read and write", brokerURLVar)}
 	}
 	if err := requireSecretBrokerURL(base); err != nil {

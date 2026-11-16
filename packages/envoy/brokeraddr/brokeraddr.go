@@ -4,8 +4,8 @@
 // prints both wherever a log field, an error or a line on stderr names the broker. An Address
 // prints only what internal/redact's URL prints - the address as written when it is provably a
 // plain http(s) URL, and redact.NotPrinted otherwise - under every fmt verb, as a slog value, and
-// as a field of a struct fmt prints. Its value is read through Raw, which only the building of a
-// request to the broker may call.
+// as a field of a struct fmt prints. Its value is read through Raw, to build a request to the
+// broker and, without printing it, by the few checks Raw names.
 //
 // It is a package of its own, outside internal/, because packages/daemon's `legion controller
 // start` holds the address too, and Go's internal-package rule refuses that module every package
@@ -40,11 +40,17 @@ func New(raw string) Address {
 	return Address{&raw}
 }
 
-// Raw is the address as configured, credential included, for building a request to the broker and
-// the proof and OAuth endpoints such a request names. Every caller keeps what it answers out of
-// every output - a log field, an error's text, a line on stderr - since printing it is the leak
-// this type exists to prevent: a message names the address through the Address itself, a request
-// URL built from it through Call, and that request's error through Error or Cause.
+// Raw is the address as configured, credential included. It builds a request to the broker: its
+// URL, the URL its proof signs, the audience of a request object it carries, and the OAuth
+// endpoints. Four callers read it for anything else, and none of them prints it: the helper's
+// check that a URL it is asked to sign is one of its operator routes (internal/broker/helper's
+// operatorRoute), agent-secrets-helper's check that an address is set (its serve), the token
+// client's trim of the address it is given (brokerclient.New), and agent-secrets' check that the
+// secret forms' broker is https or loopback (requireSecretBrokerURL). Every caller keeps what it
+// answers out of every output - a log field, an error's text, a line on stderr - since printing
+// it is the leak this type exists to prevent: a message names the address through the Address
+// itself, a request URL built from it through Call, and that request's error through Error or
+// Cause.
 func (a Address) Raw() string {
 	if a.raw == nil {
 		return ""
@@ -78,3 +84,7 @@ func (a Address) Call(callURL string) string { return redact.Call(a.Raw(), callU
 // Error is redact.Error with the address as the base: err, from a request built from Raw, as a
 // message may print it.
 func (a Address) Error(err error) error { return redact.Error(err, a.Raw()) }
+
+// Cause is redact.Cause with the address as the base: Error without net/http's *url.Error wrapper,
+// for a message that names the call itself.
+func (a Address) Cause(err error) error { return redact.Cause(err, a.Raw()) }

@@ -515,11 +515,7 @@ EOF
 # never filled cannot read as a place the value is absent from. The two cases differ only in
 # what the value is, which is this function's one argument.
 #
-# Two coverage counts the first draft of this judge carried are gone, because neither could ever
-# fail: the readable regions (the scan adds a region's bytes only after counting the region, so
-# bytes above zero already means a region), and the number of files under the working directory
-# (the case itself writes command.sh, cli.err and scan.json there, and env.txt above zero says
-# it again). Both are still printed as evidence.
+# The region count and the file count are printed, not judged: each is above zero whenever the bytes are.
 k1_judge_places() { # <what the value is>
 	judge "$([ "$K1_SCANNED_BYTES" -gt 0 ] && [ "$K1_RECORD_BYTES" -gt 0 ] && [ "$K1_ANSWER_BYTES" -gt 0 ] && [ "$K1_ENVIRON_BYTES" -gt 0 ] && [ "$K1_ENV_FILE_BYTES" -gt 0 ] && [ "$K1_MEM" = 0 ] && [ "$K1_ENVIRON" = 0 ] && [ "$K1_ANSWER_HITS" = 0 ] && [ "$K1_RECORD_HITS" = 0 ] && [ -z "$K1_FILES" ] && echo 0 || echo 1)" \
 		"$1 is in none of the five places, each of which held something to find it in" \

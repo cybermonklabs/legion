@@ -59,8 +59,8 @@ const (
 	codeTokenRequest = "TOKEN_REQUEST_INVALID"
 	// exchangeToken: a token request whose client_assertion is not this grant's placeholder.
 	codeTokenAssertion = "TOKEN_ASSERTION_REFUSED"
-	// exchangeToken: a token request made as another application, or in another tenant, than the
-	// name's own document names (azureBound).
+	// exchangeToken: a token request to a host that is not the token authority's, or made as
+	// another application or in another tenant than the name's own document names (azureBound).
 	codeTokenApplication = "TOKEN_APPLICATION_REFUSED"
 	// exchangeToken: an exchange the token endpoint did not answer, or answered with nothing the
 	// proxy can hand on.

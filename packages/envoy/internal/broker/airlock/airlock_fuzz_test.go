@@ -398,7 +398,8 @@ func TestModelAgreesOnHostShapes(t *testing.T) {
 	}
 	hosts := []string{
 		"slack.com", "*.googleapis.com", "API.GitHub.com", "a-b.example.com", "localhost",
-		"93.184.216.34", "https://slack.com", "*", "slack.com/", "slack.com:443",
+		"1e100.net", "*.0.example.com", "xn--p1ai", "93.184.216.34", "*.216.34", "*.34", "8080",
+		"https://slack.com", "*", "slack.com/", "slack.com:443",
 		".slack.com", "slack..com", "slack.com.", "*.", "", "-slack.com", "slack-.com",
 		"slack_com", "*.*.com", "sl\u212aack.com",
 	}
@@ -424,8 +425,8 @@ func TestModelAgreesOnHostShapes(t *testing.T) {
 				gj, _ := json.Marshal(got)
 				t.Fatalf("Go and the Lean model disagree on host %q\nlean: %s\ngo:   %s", host, wj, gj)
 			}
-			if want.Valid != HostShapeOK(host) {
-				t.Errorf("the model calls the file valid=%v for host %q, and HostShapeOK says %v", want.Valid, host, HostShapeOK(host))
+			if want.Valid != hostShapeOK(host) {
+				t.Errorf("the model calls the file valid=%v for host %q, and hostShapeOK says %v", want.Valid, host, hostShapeOK(host))
 			}
 		})
 	}

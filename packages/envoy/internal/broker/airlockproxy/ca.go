@@ -146,9 +146,10 @@ func (a *Authority) leaf(host string) (*tls.Certificate, error) {
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
-	// The host as the certificate's one name: its one DNS name, or its one IP address for a rule
-	// that binds an address rather than a name, since a verifier reads an address out of the IP
-	// SAN and never out of the DNS SAN.
+	// The host as the certificate's one name: its one DNS name, or its one IP address for a host
+	// that is an address, since a verifier reads an address out of the IP SAN and never out of the
+	// DNS SAN. A valid rules file binds no address (airlock's hostShapeOK), so a bound host takes
+	// the DNS branch.
 	if ip := net.ParseIP(host); ip != nil {
 		template.IPAddresses = []net.IP{ip}
 	} else {

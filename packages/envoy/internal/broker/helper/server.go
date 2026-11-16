@@ -1417,13 +1417,15 @@ func (s *Server) confirmInherited(ctx context.Context, sess *Session, pass ident
 // a skewed clock's PROOF_INVALID above all, which a corrected clock mends — says nothing about
 // the row, and reading one as the end of an enrollment costs a session every pending request
 // and grant that enrollment carries. renewLoop and confirmInherited draw the line in the same
-// place, so a renewal and a confirmation cannot disagree about what ended an enrollment.
+// place, so a renewal and a confirmation cannot disagree about what ended an enrollment. The
+// fallback reads the broker's words as do found them (BrokerError.saysNotLive), so it holds
+// beside an address whose refusals do not carry the words.
 func enrollmentNotLive(err error) (string, bool) {
 	var be *BrokerError
 	if !errors.As(err, &be) {
 		return "", false
 	}
-	if be.Code == "ENROLLMENT_NOT_LIVE" || (be.Code == "PROOF_INVALID" && strings.Contains(be.Message, "not live")) {
+	if be.Code == "ENROLLMENT_NOT_LIVE" || (be.Code == "PROOF_INVALID" && be.saysNotLive) {
 		return be.Code, true
 	}
 	return be.Code, false

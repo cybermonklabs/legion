@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 )
@@ -83,10 +84,10 @@ func keyDir() string {
 
 // brokerBaseURL is the broker's address as brokerURLVar gives it, without the slashes it ends in
 // (brokerclient.WithoutTrailingSlashes, the rule both halves of this client read an address by),
-// and empty when the variable is unset or holds nothing but slashes: the one place every form
-// reads it.
-func brokerBaseURL() string {
-	return brokerclient.WithoutTrailingSlashes(os.Getenv(brokerURLVar))
+// and the empty Address when the variable is unset or holds nothing but slashes: the one place
+// every form reads it, and as a brokeraddr.Address, so no form holds it as a string it could print.
+func brokerBaseURL() brokeraddr.Address {
+	return brokeraddr.New(brokerclient.WithoutTrailingSlashes(os.Getenv(brokerURLVar)))
 }
 
 // helperSocket is AGENT_SECRETS_HELPER_SOCK, else the helper's default socket; named reports

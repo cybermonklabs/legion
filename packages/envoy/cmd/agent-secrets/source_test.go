@@ -27,6 +27,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -55,7 +56,7 @@ func TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe(t *testing.T) {
 			"the broker AGENT_SECRETS_URL names (vault)", "vault"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			src := brokerSource(row.base).withSettings(row.settings)
+			src := brokerSource(brokeraddr.New(row.base)).withSettings(row.settings)
 			if got := src.String(); got != row.source {
 				t.Fatalf("source %q, want %q", got, row.source)
 			}
@@ -74,7 +75,7 @@ func TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe(t *testing.T) {
 // what tells this CLI's answer from another secrets CLI's for the same name; the secret forms say
 // which broker by host in place of a store rather than guessing one.
 func TestASourceWithNoSettingsNamesTheBrokerItself(t *testing.T) {
-	src := brokerSource("https://secrets.internal.example")
+	src := brokerSource(brokeraddr.New("https://secrets.internal.example"))
 	if got := src.String(); got != "the broker AGENT_SECRETS_URL names" {
 		t.Fatalf("source = %q, want the broker AGENT_SECRETS_URL names alone", got)
 	}
@@ -83,7 +84,7 @@ func TestASourceWithNoSettingsNamesTheBrokerItself(t *testing.T) {
 	}
 	// A value that is no plain http(s) URL is not printed: the allow-list proves nothing about
 	// what it holds.
-	if got := brokerSource("not a url").brokerAt(); !strings.Contains(got, redact.NotPrinted) || strings.Contains(got, "not a url") {
+	if got := brokerSource(brokeraddr.New("not a url")).brokerAt(); !strings.Contains(got, redact.NotPrinted) || strings.Contains(got, "not a url") {
 		t.Fatalf("broker = %q, want %q", got, redact.NotPrinted)
 	}
 }
@@ -545,7 +546,7 @@ func TestAnAnswerFromABrokerWithNoSettingsRouteStillNamesTheBroker(t *testing.T)
 	counters.hideSettings()
 	keyDir := newKeyDir(t)
 
-	host := brokerSource(broker.URL).String()
+	host := brokerSource(brokeraddr.New(broker.URL)).String()
 	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil, "self")
 	if exit != 0 || !strings.Contains(stdout, "source: "+host+"\n") {
 		t.Fatalf("self against a broker with no settings route: exit %d, stdout %q, stderr %q; want a source line naming %s alone", exit, stdout, stderr, host)
@@ -588,7 +589,7 @@ func TestABrokerThatCannotBeReachedSaysSo(t *testing.T) {
 			if exit == 0 || strings.Contains(stdout, "the-child-ran") {
 				t.Fatalf("exit = %d, stdout %q; want a refusal and no command run", exit, stdout)
 			}
-			for _, want := range []string{row.what, brokerHost(row.base), brokerURLVar, row.base, "/v1/"} {
+			for _, want := range []string{row.what, brokerHost(brokeraddr.New(row.base)), brokerURLVar, row.base, "/v1/"} {
 				if !strings.Contains(stderr, want) {
 					t.Fatalf("stderr = %q; want it to name %q", stderr, want)
 				}
@@ -632,7 +633,7 @@ func TestEveryUnreachableFailureIsClassified(t *testing.T) {
 		{"an error none of these covers", errors.New("something unforeseen"), "the request to the broker at secrets.internal.example failed", "answered"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			err := unreachable(base, http.MethodGet, base+"/v1/enrollments/self", &url.Error{Op: "Get", URL: base, Err: row.err})
+			err := unreachable(brokeraddr.New(base), http.MethodGet, base+"/v1/enrollments/self", &url.Error{Op: "Get", URL: base, Err: row.err})
 			var unreached *unreachableError
 			if !errors.As(err, &unreached) {
 				t.Fatalf("unreachable(%v) = %v, want an unreachableError", row.err, err)

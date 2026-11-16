@@ -2,37 +2,55 @@
 //
 // The bound on the azure kind's exchange: the federated token is the broker pod's own, and
 // Entra takes it as the assertion of every application whose federated credential trusts the
-// broker, so the proxy exchanges it only as the application, and only in the tenant, the
-// grant's own secret document names. Every row counts what reached the stand-in token endpoint,
-// because a refusal that still made the exchange would be no bound at all.
+// broker, so the proxy exchanges it only at the token authority, only as the application and
+// only in the tenant the grant's own secret document names, in a form of its own. Every row
+// counts what reached the stand-in token endpoint, because a refusal that still made the
+// exchange would be no bound at all.
 package airlockproxy
 
 import (
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
 // The application, the tenant and the scope a row names that the document does not: another
 // application federated with the broker's identity, the tenant it lives in, and another resource
-// the document's own application asks a token for.
+// the document's own application asks a token for. azureAuthorityHost is a token authority that
+// is not the rig's bound host: a row that names it makes that bound host the entry's second
+// one, the service an access token is spent at, where no exchange may be made.
 const (
 	azureOtherClientID = "99999999-8888-7777-6666-000000000000"
 	azureOtherTenantID = "another-tenant-id"
 	azureOtherScope    = "https://graph.example.com/.default"
+	azureResource      = "https://management.example.com/"
+	azureAuthorityHost = "login.example.net"
 )
 
+// azureRulesBindingAnAuthority is the azure entry bound to two hosts: azureAuthorityHost, the
+// token authority, and the rig's bound host beside it.
+func azureRulesBindingAnAuthority() airlock.Rules {
+	rules := azureRules()
+	rules.Secrets[0].Hosts = []string{azureAuthorityHost, boundHost}
+	return rules
+}
+
 // boundRefusal fails t unless answer is a 403 whose words name the entry and field and carry
-// neither the real federated token, nor the document's value of that field, nor sent, the one
-// the request carried instead, and unless the one refusal record the proxy wrote for the call
-// carries code and gives the same reason. The ids are no secrets, but a refusal is written to
-// the command and to the broker's log, and neither is a place an id - or whatever a command put
-// in that field - is to be copied to. A failure names what leaked and never prints it, and
-// prints words only when they carry none of the three.
+// neither the real federated token, nor stored, the value the bound holds that field to (the
+// document's id, or the authority's host), nor sent, the one the request carried instead, and
+// unless the one refusal record the proxy wrote for the call carries code and gives the same
+// reason. Neither ids nor hosts are secrets, but a refusal is written to the command and to the
+// broker's log, and neither is a place an id - or whatever a command put in that field - is to
+// be copied to. A failure names what leaked and never prints it, and prints words only when they
+// carry none of the three.
 func boundRefusal(t *testing.T, r *rig, answer *http.Response, body, code, field, stored, sent string) {
 	t.Helper()
 	// refuse writes its record before the answer, so a row that has its answer reads it at once.
@@ -47,7 +65,7 @@ func boundRefusal(t *testing.T, r *rig, answer *http.Response, body, code, field
 	}
 	never := []struct{ what, value string }{
 		{"the real federated token", azureRealFederated},
-		{"the document's " + field, stored},
+		{"the bound's " + field, stored},
 		{"the request's " + field, sent},
 	}
 	for _, place := range []struct{ what, words string }{{"the answer", body}, {"the logged reason", reason}} {
@@ -83,21 +101,45 @@ func noExchange(t *testing.T, r *rig, stand *airlocktest.MicrosoftStand) {
 	}
 }
 
-// TestAzureExchangeIsBoundToItsDocument: a command's token request is exchanged when its
-// client_id and the tenant of the endpoint it posts to are the document's, whatever scope it
-// asks for, since one application asks for tokens of several resources. One that names another
-// application, or posts to another tenant's endpoint, is refused before the broker puts its
-// federated token in the form, and nothing reaches the endpoint.
+// sentForm fails t unless sent, the form the token endpoint was sent, is want field for field
+// with the real federated token as its assertion, and holds no field want does not. A failure
+// names the fields and prints no assertion.
+func sentForm(t *testing.T, sent, want url.Values) {
+	t.Helper()
+	wanted := append(slices.Collect(maps.Keys(want)), "client_assertion")
+	slices.Sort(wanted)
+	if got := slices.Sorted(maps.Keys(sent)); !slices.Equal(got, wanted) {
+		t.Errorf("the endpoint was sent the fields %v; want exactly %v", got, wanted)
+	}
+	if !slices.Equal(sent["client_assertion"], []string{azureRealFederated}) {
+		t.Errorf("the endpoint was not sent the real federated token, and it alone, as the assertion")
+	}
+	for field, values := range want {
+		if !slices.Equal(sent[field], values) {
+			t.Errorf("the endpoint was sent %s = %q; want %q", field, sent[field], values)
+		}
+	}
+}
+
+// TestAzureExchangeIsBoundToItsDocument: a command's token request is exchanged when it is
+// posted to the token authority and its client_id and the tenant of the endpoint it posts to are
+// the document's, whatever scope it asks for, since one application asks for tokens of several
+// resources. One that names another application, posts to another tenant's endpoint, or posts
+// to another host the entry binds, is refused before the broker puts its federated token in the
+// form, and nothing reaches the endpoint.
 func TestAzureExchangeIsBoundToItsDocument(t *testing.T) {
 	for _, row := range []struct {
 		name string
 		path string
+		// authority is the token authority the proxy is given, "" for the bound host the
+		// request goes to; a row that names another binds both (azureRulesBindingAnAuthority).
+		authority string
 		// form writes the row's own fields over tokenForm's.
 		form func(url.Values)
 		// scope is the scope the exchange the endpoint is sent carries, for a row that is
 		// exchanged; field is the field a refused row's refusal names, and stored and sent
-		// the document's value of it and the request's, which that refusal must carry neither
-		// of.
+		// the value the bound holds it to and the request's, which that refusal must carry
+		// neither of.
 		scope, field, stored, sent string
 	}{
 		{
@@ -148,9 +190,21 @@ func TestAzureExchangeIsBoundToItsDocument(t *testing.T) {
 			path:  "/" + azureTenantID + "-and-more/oauth2/v2.0/token",
 			field: "tenant", stored: azureTenantID,
 		},
+		{
+			// Every id is the document's and the host is one the entry binds, and the exchange
+			// would still hand that host the federated token: it is not the token authority.
+			name:      "another host the entry binds",
+			path:      azureTokenPath,
+			authority: azureAuthorityHost,
+			field:     "host", stored: azureAuthorityHost, sent: boundHost,
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			r, stand := newAzureRig(t, Options{})
+			o := Options{}
+			if row.authority != "" {
+				o = Options{AzureAuthority: row.authority, Rules: azureRulesBindingAnAuthority()}
+			}
+			r, stand := newAzureRig(t, o)
 			form := tokenForm(azureFederatedPlaceholder)
 			if row.form != nil {
 				row.form(form)
@@ -190,21 +244,120 @@ func TestAzureExchangeIsBoundToItsDocument(t *testing.T) {
 	}
 }
 
+// TestAnExchangeSendsTheEndpointAFormOfItsOwn: the form the token endpoint is sent is the
+// exchange's own - the federated flow's two constants, the document's client_id, the command's
+// scope (and its resource at the v1 endpoint, which reads one in place of a scope) and the real
+// federated token - and nothing else the command wrote reaches it: not a second client_id in
+// another case, which the bound does not read and an endpoint that reads keys without regard to
+// case might, not a field the proxy does not know, and not constants of the command's own.
+func TestAnExchangeSendsTheEndpointAFormOfItsOwn(t *testing.T) {
+	flow := func(fields ...string) url.Values {
+		want := url.Values{
+			"grant_type":            {"client_credentials"},
+			"client_id":             {azureClientID},
+			"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
+		}
+		for i := 0; i+1 < len(fields); i += 2 {
+			want.Set(fields[i], fields[i+1])
+		}
+		return want
+	}
+	for _, row := range []struct {
+		name string
+		path string
+		// form writes the row's own fields over tokenForm's.
+		form func(url.Values)
+		// want is every field the endpoint must be sent but the assertion, which is the real
+		// federated token on every row.
+		want url.Values
+	}{
+		{
+			name: "a second client_id in another case and a field the exchange does not know",
+			path: azureTokenPath,
+			form: func(f url.Values) {
+				f.Set("CLIENT_ID", azureOtherClientID)
+				f.Set("foo", "bar")
+			},
+			want: flow("scope", azureScope),
+		},
+		{
+			name: "the flow's two constants written as the command's own",
+			path: azureTokenPath,
+			form: func(f url.Values) {
+				f.Set("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+				f.Set("client_assertion_type", "urn:the-command:assertion")
+			},
+			want: flow("scope", azureScope),
+		},
+		{
+			// The v2.0 endpoint reads a scope and no resource.
+			name: "a resource at the v2.0 endpoint",
+			path: azureTokenPath,
+			form: func(f url.Values) { f.Set("resource", azureResource) },
+			want: flow("scope", azureScope),
+		},
+		{
+			name: "a resource at the v1 endpoint, beside a field the exchange does not know",
+			path: "/" + azureTenantID + "/oauth2/token",
+			form: func(f url.Values) {
+				f.Del("scope")
+				f.Set("resource", azureResource)
+				f.Set("foo", "bar")
+			},
+			want: flow("resource", azureResource),
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r, stand := newAzureRig(t, Options{})
+			form := tokenForm(azureFederatedPlaceholder)
+			row.form(form)
+			answer, body := tokenRequestAt(t, r, r.client(azureFederatedPlaceholder), row.path, form)
+			if answer.StatusCode != http.StatusOK {
+				t.Fatalf("the exchange answered %d %q; want 200", answer.StatusCode, body)
+			}
+			exchanges := stand.Exchanges()
+			if len(exchanges) != 1 {
+				t.Fatalf("the endpoint was sent %d exchanges; want one", len(exchanges))
+			}
+			sentForm(t, exchanges[0], row.want)
+		})
+	}
+}
+
 // TestAnAccessSlotOfAnotherApplicationOrTenantIsNotExchanged: a pod that holds no token of an
-// access slot exchanges for itself from what the slot carries, so the slot is held to the
-// document as the command's own request is. A slot is a row of the broker's own, which only an
-// exchange the bound let through writes - but a row written before the bound existed lives as
-// long as its grant, and is refused all the same, with nothing reaching the endpoint or the
-// service.
+// access slot exchanges for itself from what the slot carries, so the slot is held to the token
+// authority and the document as the command's own request is. A slot is a row of the broker's
+// own, which only an exchange the bound let through writes - but a row written before the bound
+// existed lives as long as its grant, and is refused all the same, with nothing reaching the
+// endpoint or the service. A slot of the v1 endpoint carries the resource that endpoint reads,
+// and the pod's own exchange asks for it.
 func TestAnAccessSlotOfAnotherApplicationOrTenantIsNotExchanged(t *testing.T) {
 	for _, row := range []struct {
-		name                string
-		exchange            azureExchange
+		name     string
+		exchange azureExchange
+		// authority is the token authority the proxy is given, "" for the rig's bound host; a
+		// row that names another binds both (azureRulesBindingAnAuthority).
+		authority           string
 		field, stored, sent string
+		// want is every field the pod's own exchange must send but the assertion, for a row
+		// that is exchanged.
+		want url.Values
 	}{
 		{
 			name:     "the document's own application and tenant",
 			exchange: azureExchange{Endpoint: "https://" + boundHost + azureTokenPath, Scope: azureScope, ClientID: azureClientID},
+			want: url.Values{
+				"grant_type": {"client_credentials"}, "client_id": {azureClientID}, "scope": {azureScope},
+				"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
+			},
+		},
+		{
+			name:     "the document's own application and tenant at the v1 endpoint",
+			exchange: azureExchange{Endpoint: "https://" + boundHost + "/" + azureTenantID + "/oauth2/token", Resource: azureResource, ClientID: azureClientID},
+			want: url.Values{
+				"grant_type": {"client_credentials"}, "client_id": {azureClientID}, "resource": {azureResource},
+				"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
+			},
 		},
 		{
 			name:     "another application",
@@ -216,9 +369,19 @@ func TestAnAccessSlotOfAnotherApplicationOrTenantIsNotExchanged(t *testing.T) {
 			exchange: azureExchange{Endpoint: "https://" + boundHost + "/" + azureOtherTenantID + "/oauth2/v2.0/token", Scope: azureScope, ClientID: azureClientID},
 			field:    "tenant", stored: azureTenantID, sent: azureOtherTenantID,
 		},
+		{
+			name:      "another host the entry binds",
+			exchange:  azureExchange{Endpoint: "https://" + boundHost + azureTokenPath, Scope: azureScope, ClientID: azureClientID},
+			authority: azureAuthorityHost,
+			field:     "host", stored: azureAuthorityHost, sent: boundHost,
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			r, stand := newAzureRig(t, Options{})
+			o := Options{}
+			if row.authority != "" {
+				o = Options{AzureAuthority: row.authority, Rules: azureRulesBindingAnAuthority()}
+			}
+			r, stand := newAzureRig(t, o)
 			access := requests.PlaceholderPrefix + "slotAccessSlotAccessSlotAccess01"
 			r.grants.connections[azureFederatedPlaceholder].Names[azureName].Slots[azureAccessSlot(row.exchange)] = access
 			answer, body := r.get(r.client(azureFederatedPlaceholder), "https://"+boundHost+"/v1/subscriptions", "Authorization", "Bearer "+access)
@@ -239,9 +402,7 @@ func TestAnAccessSlotOfAnotherApplicationOrTenantIsNotExchanged(t *testing.T) {
 			if len(exchanges) != 1 {
 				t.Fatalf("the endpoint was sent %d exchanges; want one", len(exchanges))
 			}
-			if got := exchanges[0].Get("client_id"); got != azureClientID {
-				t.Errorf("the pod exchanged as %q; want the document's application %q", got, azureClientID)
-			}
+			sentForm(t, exchanges[0], row.want)
 		})
 	}
 }
@@ -250,30 +411,36 @@ func TestAnAccessSlotOfAnotherApplicationOrTenantIsNotExchanged(t *testing.T) {
 // through the proxy reaches it with. A dot segment the decision refuses first in a command's own
 // request, but a slot's endpoint never passes the decision; a document that names no tenant or
 // no application the release refuses to split, and the bound holds an exchange to no empty id
-// all the same.
+// all the same; and a host is the authority's only when it is that host exactly, with no port.
 func TestAzureBoundReadsTheWholePathAndTheDocumentsOwnIDs(t *testing.T) {
-	app := requests.AzureApplication{TenantID: azureTenantID, ClientID: azureClientID}
+	app := secrets.AzureLoginValue{TenantID: azureTenantID, ClientID: azureClientID}
 	one := []string{azureClientID}
 	for _, row := range []struct {
 		name      string
-		app       requests.AzureApplication
+		authority string
+		app       secrets.AzureLoginValue
+		host      string
 		clientIDs []string
 		path      string
 		// field is the field the refusal names, "" for an exchange the bound lets through.
 		field string
 	}{
-		{"the v2.0 endpoint of the document's tenant", app, one, azureTokenPath, ""},
-		{"the v1 endpoint of the document's tenant", app, one, "/" + azureTenantID + "/oauth2/token", ""},
-		{"another tenant behind the document's own and a dot segment", app, one, "/" + azureTenantID + "/../" + azureOtherTenantID + "/oauth2/v2.0/token", "tenant"},
-		{"a segment before the document's tenant", app, one, "/" + azureOtherTenantID + "/" + azureTenantID + "/oauth2/v2.0/token", "tenant"},
-		{"the document's tenant in another case", app, one, "/" + strings.ToUpper(azureTenantID) + "/oauth2/v2.0/token", "tenant"},
-		{"another endpoint of the document's tenant", app, one, "/" + azureTenantID + "/oauth2/v2.0/devicecode", "tenant"},
-		{"no client_id", app, nil, azureTokenPath, "client_id"},
-		{"a document that names no application", requests.AzureApplication{TenantID: azureTenantID}, []string{""}, azureTokenPath, "client_id"},
-		{"a document that names no tenant", requests.AzureApplication{ClientID: azureClientID}, one, "//oauth2/v2.0/token", "tenant"},
+		{"the v2.0 endpoint of the document's tenant", boundHost, app, boundHost, one, azureTokenPath, ""},
+		{"the v1 endpoint of the document's tenant", boundHost, app, boundHost, one, "/" + azureTenantID + "/oauth2/token", ""},
+		{"another tenant behind the document's own and a dot segment", boundHost, app, boundHost, one, "/" + azureTenantID + "/../" + azureOtherTenantID + "/oauth2/v2.0/token", "tenant"},
+		{"a segment before the document's tenant", boundHost, app, boundHost, one, "/" + azureOtherTenantID + "/" + azureTenantID + "/oauth2/v2.0/token", "tenant"},
+		{"the document's tenant in another case", boundHost, app, boundHost, one, "/" + strings.ToUpper(azureTenantID) + "/oauth2/v2.0/token", "tenant"},
+		{"another endpoint of the document's tenant", boundHost, app, boundHost, one, "/" + azureTenantID + "/oauth2/v2.0/devicecode", "tenant"},
+		{"no client_id", boundHost, app, boundHost, nil, azureTokenPath, "client_id"},
+		{"a document that names no application", boundHost, secrets.AzureLoginValue{TenantID: azureTenantID}, boundHost, []string{""}, azureTokenPath, "client_id"},
+		{"a document that names no tenant", boundHost, secrets.AzureLoginValue{ClientID: azureClientID}, boundHost, one, "//oauth2/v2.0/token", "tenant"},
+		{"another host", azureAuthorityHost, app, boundHost, one, azureTokenPath, "host"},
+		{"the authority's host on another port", boundHost, app, boundHost + ":8443", one, azureTokenPath, "host"},
+		{"a host that ends with the authority's", boundHost, app, "login." + boundHost, one, azureTokenPath, "host"},
+		{"no authority at all", "", app, "", one, azureTokenPath, "host"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			err := azureBound(azureName, row.app, row.clientIDs, row.path)
+			err := azureBound(azureName, row.authority, row.app, row.host, row.clientIDs, row.path)
 			if row.field == "" {
 				if err != nil {
 					t.Fatalf("azureBound = %v; want the exchange let through", err)
@@ -284,8 +451,9 @@ func TestAzureBoundReadsTheWholePathAndTheDocumentsOwnIDs(t *testing.T) {
 				t.Fatalf("azureBound let the exchange through; want a refusal naming %s", row.field)
 			}
 			if words := err.Error(); !strings.Contains(words, azureName) || !strings.Contains(words, row.field) ||
-				strings.Contains(words, azureTenantID) || strings.Contains(words, azureClientID) || strings.Contains(words, azureOtherTenantID) {
-				t.Errorf("azureBound = %q; want the entry and the field named and no id of the document's or the request's", words)
+				strings.Contains(words, azureTenantID) || strings.Contains(words, azureClientID) || strings.Contains(words, azureOtherTenantID) ||
+				strings.Contains(words, boundHost) || strings.Contains(words, azureAuthorityHost) {
+				t.Errorf("azureBound = %q; want the entry and the field named and no id or host of the document's, the authority's or the request's", words)
 			}
 		})
 	}

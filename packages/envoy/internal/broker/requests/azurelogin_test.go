@@ -129,7 +129,7 @@ func TestAnAzureLoginSplitCarriesTheApplicationAndTenantItsDocumentNames(t *test
 	if err != nil {
 		t.Fatalf("airlockSplitOf: %v", err)
 	}
-	if want := (AzureApplication{TenantID: "the-tenant", ClientID: "the-application"}); split.azure != want {
+	if want := (secrets.AzureLoginValue{TenantID: "the-tenant", ClientID: "the-application"}); split.azure != want {
 		t.Fatalf("the split carries %+v; want the document's %+v", split.azure, want)
 	}
 	if !maps.Equal(split.values, map[string]string{SlotAzureFederated: token}) {
@@ -158,7 +158,7 @@ func TestAnAzureLoginSplitCarriesTheApplicationAndTenantItsDocumentNames(t *test
 		{"a stored AWS key pair", airlock.KindAWS, "", `{"access_key_id":"AKIAEXAMPLE","secret_access_key":"not-a-secret"}`},
 	} {
 		split, err := airlockSplitOf(other.entryKind, other.kind, other.value)
-		if err != nil || split.azure != (AzureApplication{}) {
+		if err != nil || split.azure != (secrets.AzureLoginValue{}) {
 			t.Errorf("%s split as %+v, %v; want no application or tenant", other.name, split.azure, err)
 		}
 	}

@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
 // ErrAirlockNoNames is AirlockConnection's refusal of a placeholder whose grant is live and holds
@@ -243,7 +244,7 @@ type airlockSplit struct {
 	// kind (azureLoginSplit). The proxy answers it beside values, as AirlockSecret.Azure, and
 	// the session's release reads nothing of it: the session's document carries both ids as
 	// they were minted.
-	azure AzureApplication
+	azure secrets.AzureLoginValue
 }
 
 // slots are the name's slots, sorted, so they are in one order whatever the map iteration gave,
@@ -587,27 +588,16 @@ type AirlockSecret struct {
 	Slots   map[string]string // slot -> the real value that slot's placeholder stands for
 	Expires time.Time         // zero for a stored value, which no clock ends
 	Kind    string
-	Azure   AzureApplication // zero for every kind but azure-login
-}
-
-// AzureApplication is the tenant and the application an azure-login name's own document names
-// (secrets.AzureLogin writes both beside the federated token). The proxy refuses every exchange
-// of that name's federated token made as another application or in another tenant, because the
-// token is the broker pod's own: Entra takes it as the assertion of every application whose
-// federated credential trusts the broker, so the grant of one name would otherwise buy a token
-// of any of them.
-//
-// The two travel as fields of their own rather than as slots or as the document whole. Not
-// slots, because a slot is a value a placeholder stands for: the release would mint
-// placeholders for them and put those in the session's document, where az needs the ids
-// themselves. Not the document, because the proxy would then hold every field a minter ever
-// writes there; these are the two it bounds an exchange by, named, read in the one walk that
-// takes the federated token out (azureLoginSplit). Neither is a secret - the session is handed
-// both in the clear - so holding them widens nothing the proxy knows of the secret beyond what
-// the bound needs.
-type AzureApplication struct {
-	TenantID string
-	ClientID string
+	// Azure is the tenant and the application an azure-login name's own document names, which
+	// the proxy holds every exchange of its federated token to, and zero for every other kind.
+	// The two travel as fields of their own rather than as slots or as the document whole. Not
+	// slots, because a slot is a value a placeholder stands for: the release would mint
+	// placeholders for them and put those in the session's document, where az needs the ids
+	// themselves. Not the document, because the proxy would then hold every field a minter ever
+	// writes there; these are the two it bounds an exchange by, read in the one walk that takes
+	// the federated token out (azureLoginSplit). Neither is a secret: the session is handed both
+	// in the clear.
+	Azure secrets.AzureLoginValue
 }
 
 // AirlockValues runs the full release checks of Values - the record chain, the policy

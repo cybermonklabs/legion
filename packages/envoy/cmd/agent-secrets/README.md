@@ -29,7 +29,10 @@ output of `agent-secrets`,
 `agent-secrets-helper` or `agent-secrets-devrelay` prints a credential the broker's URL carries:
 the URL prints only when it is provably a plain http(s) URL (no user info, query, fragment,
 escape or control byte), and as `(not printed: the value carries a credential or is not a plain
-http(s) URL)` otherwise. People and launchers use its other forms to log a machine in
+http(s) URL)` otherwise. Beside a URL that does not print, a refusal the broker answers keeps its
+status and its code and prints neither its words nor its answer id, which whoever answers at that
+URL could fill with the credential it carries. People and launchers use its other forms to log a
+machine in
 (`agent-secrets machine
 login`), register an agent session (`agent-secrets register --exec -- <agent>`), and inspect a
 session's grants (`agent-secrets self`). People and agents manage the agent secrets themselves with

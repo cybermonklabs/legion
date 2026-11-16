@@ -38,13 +38,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
-	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
 type client struct {
-	baseURL string
+	baseURL brokeraddr.Address
 	http    *http.Client
 }
 
@@ -80,9 +80,13 @@ const enrollmentEndedCode = "ENROLLMENT_NOT_LIVE"
 // Redirects are refused (redirects.Refused): every call this client makes carries a Proof header
 // of this session's own (doProof), and a 3xx answered for the broker - by the broker, or by
 // anyone who can answer for it - must not hand that proof to a host the deployment never named.
-func newClient(baseURL string) *client {
+func newClient(baseURL brokeraddr.Address) *client {
 	return &client{baseURL: baseURL, http: redirects.Refused(&http.Client{Timeout: leasetime.RenewClientTimeout})}
 }
+
+// route is path's URL at the broker, built from the address as configured (Raw) to be sent and
+// signed, never printed: a message names it through c.baseURL.Call.
+func (c *client) route(path string) string { return c.baseURL.Raw() + path }
 
 // apiError is the broker's {"code":...,"error":...,"answer_id":...} error envelope, plus the HTTP
 // status it came with. AnswerID is the id the broker's own record of the answer names: the body's
@@ -90,12 +94,26 @@ func newClient(baseURL string) *client {
 // a refusal whose body is not the envelope (the broker's 404 for a path it does not serve) still
 // names it. A broker from before the id sends neither, and neither does an answer net/http writes
 // before any of the broker's code runs, such as its 400 for a malformed request, 431 and 417.
+//
+// Message and AnswerID are the broker's words as a message may print them. Beside an address
+// that is not clean (brokeraddr.Address.Clean), the broker, or anyone who answers at that address,
+// can repeat the credential the address carries back in any text it answers, so doStatus keeps
+// the status and the code, puts wordsNotPrinted in Message and leaves AnswerID empty, as the token
+// client prints such an answer (internal/brokerclient). said is the broker's error text as it
+// came, whatever the address: the refusals this client tells apart by their words read it
+// (enrollmentEnded, callRefused), and nothing prints it. It is a *string, as brokeraddr.Address's
+// address is, so fmt prints the pointer, never the text, where it prints this struct field by
+// field (%#v).
 type apiError struct {
 	Status   int
 	Code     string
 	Message  string
 	AnswerID string
+	said     *string
 }
+
+// wordsNotPrinted is an apiError's Message where the broker's address is not clean.
+const wordsNotPrinted = "(not printed: the broker's address carries a credential)"
 
 // Error is the broker's message and code, and the answer id to quote when it named one. A body
 // that was not the envelope is the message as it came, a line ending and all (the mux's
@@ -115,13 +133,19 @@ func (e *apiError) Error() string {
 	return text
 }
 
+// says reports whether the broker's error text holds phrase. A refusal this client made itself
+// (a redirect) holds no broker text, and says nothing.
+func (e *apiError) says(phrase string) bool {
+	return e.said != nil && strings.Contains(*e.said, phrase)
+}
+
 // enrollmentEnded reports whether this refusal is the broker's answer to a proof naming an
 // enrollment it no longer holds: the lease lapsed, or it was revoked. Only the renew route
 // answers ENROLLMENT_NOT_LIVE; every other session route says PROOF_INVALID with "not live" in
 // its message, which no recoverable proof failure (iat skew, key, URL) says.
 func (e *apiError) enrollmentEnded() bool {
 	return e.Code == enrollmentEndedCode ||
-		(e.Code == terminalRenewal.LegacyCode && strings.Contains(e.Message, terminalRenewal.LegacyMessage))
+		(e.Code == terminalRenewal.LegacyCode && e.says(terminalRenewal.LegacyMessage))
 }
 
 // Permanent reports whether this refusal is one of terminalRenewal's: a code it lists, or the
@@ -142,16 +166,17 @@ type unreachableError struct {
 	// none of those names.
 	what string
 	// base is the broker's address as AGENT_SECRETS_URL gave it, method and url the call tried;
-	// Error prints base through redact.URL and url through redact.Call, so a credential the
+	// Error prints base as the Address prints and url through base.Call, so a credential the
 	// variable carries never prints, while an id the call path-escaped still does.
-	base, method, url string
-	// cause is the transport's own error through redact.Cause: without net/http's *url.Error
+	base        brokeraddr.Address
+	method, url string
+	// cause is the transport's own error through base.Cause: without net/http's *url.Error
 	// wrapper, which repeats the URL, or its class alone where its text may not print.
 	cause error
 }
 
 func (e *unreachableError) Error() string {
-	return fmt.Sprintf("%s: %s %s (%s names %s): %v", e.what, e.method, redact.Call(e.base, e.url), brokerURLVar, redact.URL(e.base), e.cause)
+	return fmt.Sprintf("%s: %s %s (%s names %s): %v", e.what, e.method, e.base.Call(e.url), brokerURLVar, e.base, e.cause)
 }
 
 func (e *unreachableError) Unwrap() error { return e.cause }
@@ -163,8 +188,8 @@ func (e *unreachableError) Unwrap() error { return e.cause }
 // error, EOF, or a reset once the connection existed - is "answered but the exchange failed",
 // which TLS or a proxy fixes. An error that fits none says no more than that the request failed,
 // rather than name a layer it cannot prove.
-func unreachable(base, method, callURL string, err error) error {
-	cause := redact.Cause(err, base)
+func unreachable(base brokeraddr.Address, method, callURL string, err error) error {
+	cause := base.Cause(err)
 	host := brokerHost(base)
 	failed := func(what string) error { return &unreachableError{what, base, method, callURL, cause} }
 	var dns *net.DNSError
@@ -262,12 +287,12 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 	}
 	req, err := http.NewRequestWithContext(ctx, method, url, reader)
 	if err != nil {
-		// With a base redact.URL prints, the part that did not parse is the path this client
-		// built, so the error says so (through redact.Error, which prints it as net/url wrote it
+		// With a base that prints as written, the part that did not parse is the path this
+		// client built, so the error says so (through Error, which prints it as net/url wrote it
 		// only where that is clean). With any other base, the parser's own text could quote a bad
 		// escape in a password, so the message says only that the address is not valid.
-		if redact.Clean(c.baseURL) {
-			return 0, nil, fmt.Errorf("the request could not be built: %w", redact.Error(err, c.baseURL))
+		if c.baseURL.Clean() {
+			return 0, nil, fmt.Errorf("the request could not be built: %w", c.baseURL.Error(err))
 		}
 		return 0, nil, &unreachableError{"the broker's address is not a valid URL", c.baseURL, method, named, errNothingSent}
 	}
@@ -284,7 +309,7 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, nil, &cutOffError{method + " " + redact.Call(c.baseURL, named), redact.Error(err, c.baseURL)}
+		return 0, nil, &cutOffError{method + " " + c.baseURL.Call(named), c.baseURL.Error(err)}
 	}
 	if resp.StatusCode/100 == 3 {
 		// A redirect this client refuses to follow (redirects.Refused), handed back as the
@@ -307,7 +332,13 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 		if envelope.AnswerID == "" {
 			envelope.AnswerID = resp.Header.Get(answerIDHeader)
 		}
-		return resp.StatusCode, nil, &apiError{Status: resp.StatusCode, Code: envelope.Code, Message: envelope.Error, AnswerID: envelope.AnswerID}
+		refusal := &apiError{Status: resp.StatusCode, Code: envelope.Code, Message: envelope.Error, AnswerID: envelope.AnswerID, said: &envelope.Error}
+		// Beside an address that carries a credential, whoever answers can repeat it in any
+		// text of its answer: the status and the code print, its words and answer id do not.
+		if !c.baseURL.Clean() {
+			refusal.Message, refusal.AnswerID = wordsNotPrinted, ""
+		}
+		return resp.StatusCode, nil, refusal
 	}
 	return resp.StatusCode, data, nil
 }
@@ -379,9 +410,9 @@ func (c *client) doProofStatus(ctx context.Context, signer proofSigner, method, 
 // the enrollment the broker no longer holds (terminalRenewal, exit 76) rather than quietly
 // register another.
 func (c *client) proofCall(ctx context.Context, signer proofSigner, method, path string, body []byte) (int, []byte, error) {
-	url := c.baseURL + path
+	url := c.route(path)
 	signedPath, _, _ := strings.Cut(path, "?")
-	token, err := signer.Sign(method, c.baseURL+signedPath)
+	token, err := signer.Sign(method, c.route(signedPath))
 	if err != nil {
 		return 0, nil, fmt.Errorf("sign proof: %w", err)
 	}
@@ -675,7 +706,7 @@ func (c *client) release(ctx context.Context, signer Signer, grantID string, nar
 func callRefused(err error) bool {
 	var refusal *apiError
 	return errors.As(err, &refusal) && refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_NARROWING" &&
-		(strings.Contains(refusal.Message, `unknown field "command"`) || strings.Contains(refusal.Message, `unknown field "reason"`))
+		(refusal.says(`unknown field "command"`) || refusal.says(`unknown field "reason"`))
 }
 
 func (c *client) RevokeGrant(ctx context.Context, signer Signer, grantID string) error {
@@ -761,7 +792,7 @@ type Settings struct {
 }
 
 func (c *client) Settings(ctx context.Context) (Settings, error) {
-	raw, err := c.do(ctx, http.MethodGet, c.baseURL+"/v1/settings", nil, nil)
+	raw, err := c.do(ctx, http.MethodGet, c.route("/v1/settings"), nil, nil)
 	if err != nil {
 		return Settings{}, err
 	}
@@ -786,7 +817,7 @@ type Reread struct {
 // wrote it does, so the write is served (or gone) at once instead of at its next reload. name is a
 // validated agent secret name, so it needs no escaping in the path.
 func (c *client) RereadSecret(ctx context.Context, name string) (Reread, error) {
-	raw, err := c.do(ctx, http.MethodPost, c.baseURL+"/v1/secrets/"+name+"/reread", nil, nil)
+	raw, err := c.do(ctx, http.MethodPost, c.route("/v1/secrets/"+name+"/reread"), nil, nil)
 	if err != nil {
 		return Reread{}, err
 	}

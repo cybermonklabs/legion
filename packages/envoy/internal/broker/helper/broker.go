@@ -245,6 +245,10 @@ type BrokerError struct {
 	Status  int
 	Code    string
 	Message string
+	// saysNotLive is the broker's own words saying "not live", an older broker's word for an
+	// ended enrollment under PROOF_INVALID (enrollmentNotLive). do reads it from those words, so
+	// it holds where Message is empty because do withheld them.
+	saysNotLive bool
 }
 
 // Error names only the fields it has: the status always, then the code where there is one, then
@@ -1595,8 +1599,14 @@ func (b *Broker) revokeUnder(ctx context.Context, authority *brokerclient.Author
 }
 
 // do sends req and decodes the broker's answer. A failed exchange - the request, or the read of
-// its answer - goes through the address's Error (brokeraddr.Address.Error), so no message or log
-// line the helper makes from it carries a credential AGENT_SECRETS_URL holds.
+// its answer - goes through the address's Error (brokeraddr.Address.Error). A refusal is a
+// BrokerError with the answer's status and code, which the helper acts on, and with the broker's
+// own words (the answer's error) only beside an address that prints as written
+// (brokeraddr.Address.Clean): beside one that carries a credential, the broker, or whoever answers
+// for that address, can repeat the credential back in its words, so they are withheld here, as
+// oauthBrokerError and brokerclient's token exchange withhold theirs. Beside such an address, the
+// only text of the broker's own that a message or log line made from do's error can carry is the
+// answer's code.
 func (b *Broker) do(req *http.Request, ok []int, out any) error {
 	resp, err := b.httpClient().Do(req)
 	if err != nil {
@@ -1613,7 +1623,11 @@ func (b *Broker) do(req *http.Request, ok []int, out any) error {
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(data, &e)
-		return &BrokerError{Status: resp.StatusCode, Code: e.Code, Message: e.Error}
+		be := &BrokerError{Status: resp.StatusCode, Code: e.Code, saysNotLive: strings.Contains(e.Error, "not live")}
+		if b.URL.Clean() {
+			be.Message = e.Error
+		}
+		return be
 	}
 	if out != nil && len(data) > 0 {
 		return json.Unmarshal(data, out)

@@ -614,7 +614,7 @@ func registerMachineSession(ctx context.Context, dir string, key *ecdsa.PrivateK
 		return "", fmt.Errorf("this machine proves no identity of its own, so no session can be registered for it: set %s", brokerclient.IdentityVar)
 	}
 	base := brokerBaseURL()
-	if base == "" {
+	if base.Empty() {
 		return "", fmt.Errorf("%s names the identity this machine proves, so %s must name the secrets broker it proves it to", brokerclient.IdentityVar, brokerURLVar)
 	}
 	thumbprint, err := proof.Thumbprint(&key.PublicKey)
@@ -622,7 +622,7 @@ func registerMachineSession(ctx context.Context, dir string, key *ecdsa.PrivateK
 		return "", err
 	}
 	client, err := brokerclient.New(brokerclient.Config{
-		BrokerURL: brokeraddr.New(base), Key: key, Subject: identity,
+		BrokerURL: base, Key: key, Subject: identity,
 		Session: brokerclient.TradeSession(os.Getenv, ""), HTTP: brokerclient.HTTPClient(),
 	})
 	if err != nil {
@@ -712,14 +712,14 @@ func signInSigner() (*fileSigner, error) {
 // sessionContext resolves the broker URL and this process's Signer every session-authenticated
 // subcommand (renew, request, status, cancel, revoke, self, and the exec form) needs, plus the
 // enrollment id buildSigner read from file mode (empty in helper mode).
-func sessionContext() (base, enrollmentID string, signer Signer, err error) {
+func sessionContext() (base brokeraddr.Address, enrollmentID string, signer Signer, err error) {
 	base = brokerBaseURL()
-	if base == "" {
-		return "", "", nil, fmt.Errorf("%s is required: it names the secrets broker this command reads every secret from, and this command reads no local secrets file", brokerURLVar)
+	if base.Empty() {
+		return brokeraddr.Address{}, "", nil, fmt.Errorf("%s is required: it names the secrets broker this command reads every secret from, and this command reads no local secrets file", brokerURLVar)
 	}
 	enrollmentID, signer, err = buildSigner()
 	if err != nil {
-		return "", "", nil, err
+		return brokeraddr.Address{}, "", nil, err
 	}
 	return base, enrollmentID, signer, nil
 }

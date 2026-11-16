@@ -271,8 +271,8 @@ func TestRawEmptyAndClean(t *testing.T) {
 
 // TestARequestsURLAndErrorPrintAsTheRedactorPrintsThem: Call, Error and Cause are redact's own
 // with the address as the base. On a credentialed address the request URL prints as
-// redact.NotPrinted and each error as its class, with no marker, still unwrapping to the failure;
-// on a clean one each is as written.
+// redact.NotPrinted, the error as its operation, that URL and its class, and the cause as its
+// class, with no marker, each still unwrapping to the failure; on a clean one each is as written.
 func TestARequestsURLAndErrorPrintAsTheRedactorPrintsThem(t *testing.T) {
 	const credentialedBase = "http://demouser7q:demopass9z-not-a-secret@127.0.0.1:42203"
 	const cleanBase = "https://broker.example.com"
@@ -294,6 +294,7 @@ func TestARequestsURLAndErrorPrintAsTheRedactorPrintsThem(t *testing.T) {
 			err        error
 		}{
 			{"Error", tc.error, a.Error(failure)},
+			{"Cause", tc.cause, a.Cause(failure)},
 		} {
 			if got := printed.err.Error(); got != printed.want || leaked(got) != "" {
 				t.Errorf("New(%q).%s of a refused call prints %q, want %q", tc.base, printed.name, got, printed.want)
@@ -302,7 +303,7 @@ func TestARequestsURLAndErrorPrintAsTheRedactorPrintsThem(t *testing.T) {
 				t.Errorf("New(%q).%s of a refused call no longer unwraps to it: %v", tc.base, printed.name, printed.err)
 			}
 		}
-		if a.Error(nil) != nil {
+		if a.Error(nil) != nil || a.Cause(nil) != nil {
 			t.Errorf("New(%q) makes an error of no error", tc.base)
 		}
 	}

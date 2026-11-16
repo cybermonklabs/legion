@@ -380,7 +380,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 		wantKind string
 		// wantAzure is the application and tenant the proxy holds an azure-login's every
 		// exchange to, and none for every other kind.
-		wantAzure AzureApplication
+		wantAzure secrets.AzureLoginValue
 	}{
 		{
 			name:   "a stored secret",
@@ -412,7 +412,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 			approve:   true,
 			want:      map[string]string{SlotAzureFederated: "real-federated-token"},
 			wantKind:  policy.KindAzureLogin,
-			wantAzure: AzureApplication{TenantID: "tenant", ClientID: "client"},
+			wantAzure: secrets.AzureLoginValue{TenantID: "tenant", ClientID: "client"},
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {

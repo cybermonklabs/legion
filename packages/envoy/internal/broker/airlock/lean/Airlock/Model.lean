@@ -254,14 +254,20 @@ def splitDots : List Char → List (List Char)
     | [] => [[c]]
     | l :: ls => (c :: l) :: ls
 
-/-- A host `hostBound` can ever match: a name it can hold exactly, or `"*."` and a suffix
-it can look up. A host written with a scheme, a path, a port, or `"*"` without the `"*."`
-that `hostBound` looks up, matches no request ever and binds the secret nowhere. The
-characters are read as a list, as `hostBound` reads them, so the two cannot drift. -/
+/-- A host the airlock can bind a request to: a host name `hostBound` holds exactly, or
+`"*."` and one, a suffix it looks up. Every label passes `labelOK`, and the last is not all
+digits. A host written with a scheme, a path, a port, or `"*"` without the `"*."` that
+`hostBound` looks up, matches no request ever and binds the secret nowhere. An IPv4 address
+matches the CONNECT host of a request to it, but `check` refuses every such request
+`"sni mismatch"`, because a TLS client names no address in its SNI (RFC 6066 section 3). A
+host name is told from a dotted-decimal address by its last label, which in a host name is
+never all digits (RFC 1123 section 2.1), and that is the test here. The characters are read
+as a list, as `hostBound` reads them, so the two cannot drift. -/
 def hostShapeOK (h : String) : Bool :=
   let cs := h.toList
   let name := if cs.take 2 == ['*', '.'] then cs.drop 2 else cs
-  !name.isEmpty && (splitDots name).all labelOK
+  let labels := splitDots name
+  !name.isEmpty && labels.all labelOK && !(labels.getLast?.getD []).all Char.isDigit
 
 /-- Rules-file validation. This is the same answer as Go's `Validate` returning `nil`:
 the names are distinct, **every** entry binds at least one host (not only a judged one),

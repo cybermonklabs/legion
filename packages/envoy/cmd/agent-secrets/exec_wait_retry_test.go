@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -218,7 +219,7 @@ func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
 // without it, is polled again; every other refusal, and a call never sent, is not.
 func TestOnlyAFailureARetryCanCureIsRetried(t *testing.T) {
 	const base = "http://broker.example"
-	reset := unreachable(base, http.MethodGet, base+"/v1/requests/"+flakyRequestID, &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)})
+	reset := unreachable(brokeraddr.New(base), http.MethodGet, base+"/v1/requests/"+flakyRequestID, &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)})
 	for _, row := range []struct {
 		err  error
 		want bool
@@ -230,7 +231,7 @@ func TestOnlyAFailureARetryCanCureIsRetried(t *testing.T) {
 		// The helper's socket failing under a machine session's proof is the local signer's
 		// failure, not a poll that did not reach the broker: it ends the wait, as before.
 		{fmt.Errorf("sign proof: %w", &net.OpError{Op: "read", Net: "unix", Err: os.NewSyscallError("read", syscall.ECONNRESET)}), false},
-		{&unreachableError{"the broker's address is not a valid URL", base, http.MethodGet, base, errNothingSent}, false},
+		{&unreachableError{"the broker's address is not a valid URL", brokeraddr.New(base), http.MethodGet, base, errNothingSent}, false},
 		{&apiError{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED", Message: "slow down"}, true},
 		{&apiError{Status: http.StatusBadGateway, Message: "<html>502 Bad Gateway</html>"}, true},
 		{&apiError{Status: http.StatusServiceUnavailable, Code: "SHUTTING_DOWN", Message: "shutting down"}, true},

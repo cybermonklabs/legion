@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
 // The azure-login secret behind the airlock: the federated token the broker holds, the
@@ -56,10 +57,16 @@ func azureRules() airlock.Rules {
 // answers an exchange that carries the real federated token and records each form it was sent.
 // It answers token requests alone, so the same service plays the API these rows then call with
 // the access token: that is the shape of the design, since the proxy reads one of them and
-// streams the other.
+// streams the other. The bound host is the token authority, unless the row names another, and
+// the rules are azureRules unless the row writes its own.
 func newAzureRig(t *testing.T, o Options) (*rig, *airlocktest.MicrosoftStand) {
 	t.Helper()
-	o.Rules = azureRules()
+	if o.Rules.Secrets == nil {
+		o.Rules = azureRules()
+	}
+	if o.AzureAuthority == "" {
+		o.AzureAuthority = boundHost
+	}
 	r := newRig(t, o)
 	r.grants.connections[azureFederatedPlaceholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
@@ -74,7 +81,7 @@ func newAzureRig(t *testing.T, o Options) (*rig, *airlocktest.MicrosoftStand) {
 		azureName: {
 			Kind:  "azure-login",
 			Slots: map[string]string{requests.SlotAzureFederated: azureRealFederated},
-			Azure: requests.AzureApplication{TenantID: azureTenantID, ClientID: azureClientID},
+			Azure: secrets.AzureLoginValue{TenantID: azureTenantID, ClientID: azureClientID},
 		},
 	})
 	// One token for every exchange, as a real endpoint answers one identity's calls: a row
@@ -231,14 +238,15 @@ func TestASecondPodExchangesTheSlotForItself(t *testing.T) {
 func secondPod(t *testing.T, r *rig) string {
 	t.Helper()
 	second := New(Options{
-		Rules:         azureRules(),
-		Grants:        r.grants,
-		CA:            r.authority,
-		Log:           slog.New(r.logs),
-		Dial:          r.dial,
-		Now:           r.proxy.now,
-		Resolve:       r.resolve,
-		UpstreamRoots: r.service.Authority().Pool(),
+		Rules:          azureRules(),
+		Grants:         r.grants,
+		CA:             r.authority,
+		Log:            slog.New(r.logs),
+		Dial:           r.dial,
+		Now:            r.proxy.now,
+		Resolve:        r.resolve,
+		UpstreamRoots:  r.service.Authority().Pool(),
+		AzureAuthority: r.proxy.azureAuthority,
 	})
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

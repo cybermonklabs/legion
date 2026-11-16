@@ -186,11 +186,11 @@ func callClean(base, callURL string) bool {
 // from. It is err itself, so every message reads as before, only when printable passes it: raw is
 // clean, and err's text holds nothing from a URL it may not print but for the error code and
 // error_description of an OAuth answer with an error code and no error_uri, which print whole as
-// the broker wrote them (transport). Otherwise no text of err is printed: the error's text names
-// only the class of the failure (a URL that did not parse, failed name resolution, a refused
-// connection, a timeout, a TLS failure, an HTTP status, or a request that failed otherwise),
-// found on err itself, and the *url.Error's operation with its URL through Call. It unwraps to
-// err, so errors.Is and errors.As still classify the failure.
+// the broker wrote them (trustedAnswer). Otherwise no text of err is printed: the error's text
+// names only the class of the failure (a URL that did not parse, failed name resolution, a refused
+// connection, a timeout, a TLS failure, an HTTP status, or a request that failed otherwise), found
+// on err itself, and the *url.Error's operation with its URL through Call. It unwraps to err, so
+// errors.Is and errors.As still classify the failure.
 func Error(err error, raw string) error {
 	if err == nil {
 		return nil
@@ -230,11 +230,11 @@ func Cause(err error, raw string) error {
 //   - the URL the *url.Error names is raw followed by a plain path (callClean): net/http names a
 //     redirect's target there, which can sit on another host or path and carry a query;
 //   - the error the *url.Error wraps (err itself, with none) is one whose text names no URL, or
-//     none but in the words the broker is trusted with: a transport failure class names (a dial
-//     or other net.OpError, name resolution, a refused connection, a timeout, TLS), an OAuth
-//     error answer with an error code and no error_uri, whose code and description print whole
-//     (transport), or text the allow-list passes. A malformed Location header, say, puts the
-//     whole target in its error's text.
+//     none but in the words the broker is trusted with: a transport failure class names
+//     (transport: a dial or other net.OpError, name resolution, a refused connection, a timeout,
+//     TLS), an OAuth error answer with an error code and no error_uri, whose code and description
+//     print whole (trustedAnswer), or text the allow-list passes. A malformed Location header,
+//     say, puts the whole target in its error's text.
 func printable(err error, raw string) (*url.Error, bool) {
 	var ue *url.Error
 	if !errors.As(err, &ue) {
@@ -255,30 +255,33 @@ func printable(err error, raw string) (*url.Error, bool) {
 	}
 	// A second *url.Error inside names a URL of its own, unchecked.
 	var nested *url.Error
-	return ue, !errors.As(inner, &nested) && (transport(inner) || clean(inner.Error()))
+	return ue, !errors.As(inner, &nested) && (transport(inner) || trustedAnswer(inner) || clean(inner.Error()))
 }
 
-// transport reports whether err is a failure class names from the transport, a peer that broke
+// transport reports whether err is a failure class names from the transport, or a peer that broke
 // the exchange (net/http's fixed ErrSchemeMismatch for an http answer to https, EOF, a reset, a
-// broken pipe: the set the client's peerAnswered reads), or an OAuth error answer whose text is
-// the broker's error code and error_description alone: an *oauth2.RetrieveError with a nonempty
-// ErrorCode and an empty ErrorURI. printable asks only beside a clean base and a request URL Call
-// prints, and there those two fields print whole, trusted rather than checked, since they are the
-// broker's reason for a refusal and the only part a person can act on. Any other OAuth answer is
-// not one, so it prints as its class alone ("the broker answered HTTP <n>"): an error_uri is a URL
-// by RFC 6749, which may carry a credential or point anywhere, and for an answer with no error
-// code x/oauth2's text is the response body it kept, up to 1 MiB with its line breaks, which can
-// forge a log line.
+// broken pipe: the set the client's peerAnswered reads).
 func transport(err error) bool {
 	var op *net.OpError
 	var dns *net.DNSError
 	var timeout interface{ Timeout() bool }
-	var re *oauth2.RetrieveError
 	return errors.As(err, &op) || errors.As(err, &dns) || errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout() ||
-		tlsFailure(err) || errors.As(err, &re) && re.ErrorCode != "" && re.ErrorURI == "" ||
-		errors.Is(err, http.ErrSchemeMismatch) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
+		tlsFailure(err) || errors.Is(err, http.ErrSchemeMismatch) || errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
+}
+
+// trustedAnswer reports whether err is an OAuth error answer whose text is the broker's error code
+// and error_description alone: an *oauth2.RetrieveError with a nonempty ErrorCode and an empty
+// ErrorURI. printable asks only beside a clean base and a request URL Call prints, and there those
+// two fields print whole, trusted rather than checked, since they are the broker's reason for a
+// refusal and the only part a person can act on. Any other OAuth answer is not one, so it prints
+// as its class alone ("the broker answered HTTP <n>"): an error_uri is a URL by RFC 6749, which
+// may carry a credential or point anywhere, and for an answer with no error code x/oauth2's text
+// is the response body it kept, up to 1 MiB with its line breaks, which can forge a log line.
+func trustedAnswer(err error) bool {
+	var re *oauth2.RetrieveError
+	return errors.As(err, &re) && re.ErrorCode != "" && re.ErrorURI == ""
 }
 
 // classified is an error whose text is its class alone.

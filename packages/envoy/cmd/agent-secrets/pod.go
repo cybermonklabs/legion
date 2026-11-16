@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 )
@@ -152,13 +153,16 @@ func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, ru
 func cmdEnrollPod(service, tokenFile, out string, stdout, stderr io.Writer) int {
 	const prefix = "agent-secrets enroll"
 	base := brokerBaseURL()
-	for _, missing := range []struct{ value, say string }{
-		{service, "--service is required: it names the broker-side service this pod's ServiceAccount is bound to"},
-		{tokenFile, "--pod-token-file is required: it names the pod's projected service-account token file"},
-		{out, "--out (or AGENT_SECRETS_KEY_DIR) is required"},
-		{base, brokerURLVar + " is required: it names the secrets broker this pod enrolls at"},
+	for _, missing := range []struct {
+		absent bool
+		say    string
+	}{
+		{service == "", "--service is required: it names the broker-side service this pod's ServiceAccount is bound to"},
+		{tokenFile == "", "--pod-token-file is required: it names the pod's projected service-account token file"},
+		{out == "", "--out (or AGENT_SECRETS_KEY_DIR) is required"},
+		{base.Empty(), brokerURLVar + " is required: it names the secrets broker this pod enrolls at"},
 	} {
-		if missing.value == "" {
+		if missing.absent {
 			fmt.Fprintf(stderr, "%s --pod: %s\n", prefix, missing.say)
 			return exitUsageError
 		}
@@ -190,7 +194,7 @@ func cmdEnrollPod(service, tokenFile, out string, stdout, stderr io.Writer) int 
 // key is kept on purpose (a new key while the old enrollment is live is refused
 // ALREADY_ENROLLED), so the marker is what makes keeping it safe. A box's launcher writes the
 // same file for the same reason.
-func enrolPod(service, tokenFile, out, base, prefix string, stdout, stderr io.Writer) int {
+func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	// refuse prints line and, where this directory holds a key, records line beside it. A run
 	// that has not reached enrollSessionKey yet leaves no key of its own, but an earlier run's
@@ -222,7 +226,7 @@ func enrolPod(service, tokenFile, out, base, prefix string, stdout, stderr io.Wr
 	}
 	// The identifier names this pod in the signed request object; the broker names the credential
 	// it issues from the token's own subject, never from this.
-	request, err := record.Sign(launcherKey, base, []record.AuthorizationDetail{
+	request, err := record.Sign(launcherKey, base.Raw(), []record.AuthorizationDetail{
 		{Type: "launcher_credential", Identifier: identity.PodUID, Service: service},
 	}, "", "", nil, time.Now())
 	if err != nil {
@@ -284,7 +288,7 @@ func enrolPod(service, tokenFile, out, base, prefix string, stdout, stderr io.Wr
 // podRefusal is the one stderr line a refused login or enrolment prints: what was refused, which
 // pod the token names, the HTTP status, the broker's code and message, and the broker it asked.
 // It never prints the token.
-func podRefusal(prefix, what string, identity podIdentity, base string, err error) string {
+func podRefusal(prefix, what string, identity podIdentity, base brokeraddr.Address, err error) string {
 	var refused *apiError
 	if errors.As(err, &refused) {
 		code := refused.Code
@@ -304,7 +308,7 @@ func (c *client) TokenLogin(ctx context.Context, token, request string) (string,
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.do(ctx, http.MethodPost, c.baseURL+"/v1/launcher-credentials/token", body, nil)
+	raw, err := c.do(ctx, http.MethodPost, c.route("/v1/launcher-credentials/token"), body, nil)
 	if err != nil {
 		return "", err
 	}

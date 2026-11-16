@@ -24,8 +24,8 @@ func TestBrokerBaseURLDropsEverySlashItEndsIn(t *testing.T) {
 		want + "///",
 	} {
 		t.Setenv(brokerURLVar, given)
-		if got := brokerBaseURL(); got != want {
-			t.Errorf("brokerBaseURL() with %s=%q = %q, want %q", brokerURLVar, given, got, want)
+		if got := brokerBaseURL().Raw(); got != want {
+			t.Errorf("brokerBaseURL().Raw() with %s=%q = %q, want %q", brokerURLVar, given, got, want)
 		}
 	}
 }
