@@ -48,9 +48,10 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// callerStillResolves answers whether the caller a connection was admitted as still resolves,
-// which is what whileCallerResolves asks on every heartbeat. For every credential but one that
-// is the request's own resolution, unchanged.
+// callerStillResolves answers whether the caller a live socket was admitted as still resolves,
+// which is what whileCallerResolves asks on that socket's every heartbeat. For every credential
+// but one that is the request's own resolution, unchanged. The document socket asks something
+// narrower, the sign-in cookie alone, which is all it is admitted by (signInStillResolves).
 //
 // The exception is a broker-issued token. The heartbeat's copy of the request still carries the
 // proof that opened the connection, and that proof is spent: checking it again would be the

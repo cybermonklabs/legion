@@ -746,8 +746,11 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
 	}); ok {
+		// The document service admits a socket by its sign-in cookie alone, so its heartbeat
+		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
 		const pattern = "/ws/doc/{room}"
-		mux.Handle("GET "+pattern, accesslog.Handler(pattern, s.whileCallerResolves(trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP)))))
+		mux.Handle("GET "+pattern, accesslog.Handler(pattern, s.whileCallerResolves(s.signInStillResolves,
+			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP)))))
 	}
 	mux.Handle("GET "+liveSocketPattern, s.liveSocketHandler(s.serveLiveSocket))
 	return s
@@ -846,9 +849,12 @@ const liveSocketPattern = "/ws/live"
 //
 // The read-only gate sits just inside decideBrokerToken, whose decision it reads, and ahead of
 // the upgrade: no read list names the socket, since a socket delivers whatever its views carry,
-// so a read-only token is answered 403 READ_ONLY_TOKEN before a socket is ever opened for it.
+// so a read-only token is answered 403 READ_ONLY_TOKEN before a socket is ever opened for it. The
+// socket is admitted by whichever credential optionalActor resolves - a bearer, a broker-issued
+// token or a sign-in cookie - so its heartbeat resolves that same credential again
+// (callerStillResolves).
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
-	return accesslog.Handler(liveSocketPattern, s.whileCallerResolves(s.decideBrokerToken(
+	return accesslog.Handler(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
 		s.refuseReadOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))))
 }
 
@@ -858,15 +864,20 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// whileCallerResolves serves a connection that outlives its request, a websocket, only while its
-// caller resolves: on every StreamHeartbeat it resolves the caller again, and once the caller no
-// longer resolves (a logout, a membership the sign-in issuer no longer confirms, a revoked token)
-// it cancels the connection's context, on which the document server and the live socket close the
-// socket. The check runs beside the handler, which holds pooled connections of its own while it
+// whileCallerResolves serves a connection that outlives its request, a websocket, only while the
+// credential it was admitted with resolves: on every StreamHeartbeat it asks stillResolves of the
+// request again, and once that refuses (a logout, a membership the sign-in issuer no longer
+// confirms, a revoked token) it cancels the connection's context, on which the document server and
+// the live socket close the socket. stillResolves is the mount's own admission asked again, never
+// a wider one: the live socket's is callerStillResolves, which resolves whichever credential
+// admitted it, and the document socket's is signInStillResolves, the sign-in cookie alone, since
+// that is all the document service admits it by. A check that resolved anything the request
+// carries would let a credential that admitted nothing keep the socket open once the one that did
+// had ended. The check runs beside the handler, which holds pooled connections of its own while it
 // admits the socket, so it marks a context of its own for the pool (store.ErrNestedAcquire), and
 // it resolves on a context detached from the access-log line, which names the caller the socket
 // was admitted as (accesslog.Detached).
-func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc {
+func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, closeConnection := context.WithCancel(r.Context())
 		defer closeConnection()
@@ -879,12 +890,11 @@ func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc 
 				case <-ctx.Done():
 					return
 				case <-heartbeat.C:
-					// The check resolves the credential the request was admitted with, from a
-					// detached copy of that request, which for a broker-issued token asks the
+					// The check resolves the admission's credential from a detached copy of
+					// the request, which for a broker-issued token on the live socket asks the
 					// broker's answer alone rather than the proof the upgrade already spent
-					// (callerStillResolves). Every other credential is resolved exactly as it
-					// is on a request.
-					if err := s.callerStillResolves(check); err != nil {
+					// (callerStillResolves).
+					if err := stillResolves(check); err != nil {
 						closeConnection()
 						return
 					}
@@ -893,6 +903,23 @@ func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc 
 		}()
 		handler(w, r.WithContext(ctx))
 	}
+}
+
+// signInStillResolves answers whether the sign-in cookie a document socket was admitted with
+// still resolves, which is what whileCallerResolves asks on that socket's every heartbeat. The
+// document service admits a socket by that cookie and nothing else (docs.Service.requestActor,
+// Identity.Login), and this asks the API's Identity the same question; cmd/dispatch hands the API
+// and the document service one Identity, so the two read one cookie the same way. It reads no
+// Authorization header. A bearer or a broker-issued token sent beside the cookie admitted nothing,
+// so it keeps nothing open either: resolved here, it would hold the socket open for the token's
+// whole life after the cookie ended, a read-only token's included, which the read list lets read
+// no document at all (readScopeRoutes).
+func (s *server) signInStillResolves(r *http.Request) error {
+	if s.deps.Identity == nil {
+		return errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
+	}
+	_, err := s.deps.Identity.Login(r)
+	return err
 }
 
 type apiError struct {

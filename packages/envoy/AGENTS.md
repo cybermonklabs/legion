@@ -3752,7 +3752,7 @@ Dispatch's verifier accepts it because `brokerTokenVerifier` sets `brokertoken.O
 `brokerTokenActor` carries that mark as `model.Credential.ReadOnly` with no OAuth scope, and the read-only gate below reads only that mark.
 A verifier built without the switch answers that token `brokertoken.ErrNotASession`, as a build before the switch does.
 `GET /api/v1/whoami` answers `session` and `project` beside `owner` and `service`, so a caller can see which session Dispatch records its writes as.
-A proof is single use by its `jti` and `htu` (`store.DPoPProofs`, migration `0150`, swept by the maintenance pass), so each request is decided exactly once (`api.decideBrokerToken`) and a websocket's heartbeat re-resolution asks only whether the token is still live (`brokertoken.Verifier.Live`) rather than presenting the upgrade's proof again.
+A proof is single use by its `jti` and `htu` (`store.DPoPProofs`, migration `0150`, swept by the maintenance pass), so each request is decided exactly once (`api.decideBrokerToken`) and the live socket's heartbeat re-resolution asks only whether the token is still live (`brokertoken.Verifier.Live`) rather than presenting the upgrade's proof again.
 The verifier is built from settings Dispatch already has and takes none of its own (`cmd/dispatch`'s `brokerTokenVerifier`:
 `DISPATCH_AGENT_SECRETS_URL`, `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` and `DISPATCH_SERVER_URL`, the origin a proof's `htu` is checked against).
 A deployment with no broker configured has no such kind at all, and a `DPoP` presentation there is the `401 UNAUTHORIZED` `invalid bearer token` that any non-bearer `Authorization` header has always been.
@@ -3790,6 +3790,7 @@ The gate reads the decision `decideBrokerToken` carried and resolves nothing of 
 For such a caller, a listed route writes nothing but the row of its spent DPoP proof and caches Dispatch rebuilds from what it holds (`TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches`).
 The mounts outside the table read no broker token: `/ws/doc/{room}` answers that token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
 `/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries that token as they answer any other caller, and none of the five makes a write for it.
+The document socket's heartbeat re-checks the sign-in cookie it was admitted with and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 
 An act an agent makes for its person is recorded with the person as the actor and `model.ActorAct` beside it (`Actor.Act`), which names the agent:
 the session a broker token proved, else the session the caller named (`?session=`, or a body `actor` on a route whose handler already declares one, `actSessionFromBody`), else the personal token's id and name, and the scopes that credential held.

@@ -195,7 +195,7 @@ it names no session, it names neither a person nor a service, it was issued to a
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
 nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
-A websocket re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
+The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
 
@@ -207,6 +207,7 @@ Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TO
 That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing.
 The mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
 `/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries such a token as they answer any other caller, and none of the five makes a write for it.
+The document socket's heartbeat re-checks the sign-in cookie it was admitted with and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`.
 
 A credential that names one project may write that project and nothing else.
