@@ -564,7 +564,8 @@ func TestDomainSignInAdmitsAVerifiedAccountOfTheDomain(t *testing.T) {
 
 // An account outside the domain, one whose email Google has not verified, and one with no email
 // each reach Dispatch's refusal page with their reason; none gets a session or a recorded sign-in,
-// and each refusal is logged with the email and hd.
+// and each refusal is logged with the email and hd. The page is laid out at the device's width, so
+// a phone shows it at a size its reader can read rather than as a desktop page scaled down.
 func TestDomainSignInRefusesWithItsReasonOnThePageAndInTheLog(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -592,6 +593,9 @@ func TestDomainSignInRefusesWithItsReasonOnThePageAndInTheLog(t *testing.T) {
 			}
 			if body := response.Body.String(); !strings.Contains(body, tc.page) || !strings.Contains(body, `href="/auth/start"`) {
 				t.Errorf("refusal page does not say %q and offer another sign-in: %s", tc.page, body)
+			}
+			if body := response.Body.String(); !strings.Contains(body, `<meta name="viewport" content="width=device-width, initial-scale=1">`) {
+				t.Errorf("refusal page names no viewport, so a phone lays it out 980 pixels wide and scales it down: %s", body)
 			}
 			if sessionCookie(response) != nil {
 				t.Error("a refused sign-in received a session cookie")
