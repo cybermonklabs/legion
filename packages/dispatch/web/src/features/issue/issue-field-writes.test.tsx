@@ -1940,6 +1940,95 @@ test("a pick refused after a read older than the cached issue answered puts back
   }
 });
 
+// R3 on an Inbox row: Dispatch answers the person an ask nobody handed on waits on as its issue's
+// assignee, else its project's default. CORE-1 is unassigned and its ask waits on dave, CORE's
+// default; the Inbox is read, then the issue's detail, and the client holds no read of the
+// defaults. carol is picked and refused: until the re-read answers, the row shows CORE-1
+// unassigned and waiting on dave, as Dispatch's newest Inbox answer named him - never on carol,
+// though the newest answer of the assignee is the detail's.
+test("a refused assignee pick puts back the person an Inbox row waited on in Dispatch's newest Inbox answer, though the issue's detail was read after it", async () => {
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementationOnce(() => save.promise);
+  const client = signedInHolding();
+  let gate: Promise<void> | undefined;
+  const read =
+    <T,>(answer: T) =>
+    async (): Promise<T> => {
+      await gate;
+      return answer;
+    };
+  const unassigned: InboxRow = {
+    ...inboxRow,
+    issue: { assignee: null, key: issue.key, title: issue.title },
+    waiting_on_person: "dave",
+  };
+  const inboxRead = read([unassigned]);
+  const detailRead = read<IssueDetails>({ ...details, assignee: null });
+  const forever = { staleTime: Number.POSITIVE_INFINITY };
+  function Inbox(): ReactNode {
+    useQuery({ ...forever, queryFn: inboxRead, queryKey: inboxKey });
+    return null;
+  }
+  function Detail(): ReactNode {
+    useQuery({ ...issueQuery(issue.key), ...forever, queryFn: detailRead });
+    return null;
+  }
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  // The page's write store is made before any read, as the app's shell makes it.
+  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee"), { wrapper });
+  const inbox = renderIn(client, <Inbox />);
+  let detail: RenderResult | undefined;
+  const seen: string[] = [];
+  const see = (step: string) => {
+    const [row] = client.getQueryData<InboxRow[]>(inboxKey) ?? [];
+    seen.push(`${step}: assignee ${row?.issue?.assignee} waiting on ${row?.waiting_on_person}`);
+  };
+  try {
+    await waitFor(() => expect(client.getQueryData<InboxRow[]>(inboxKey)).toEqual([unassigned]));
+    detail = renderIn(client, <Detail />);
+    await waitFor(() => expect(client.getQueryData(detailKey)).toMatchObject({ assignee: null }));
+    see("the Inbox read, then the issue");
+    await act(async () => {
+      assignee.result.current.submit("carol");
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toEqual([{ assignee: "carol" }]));
+    see("carol picked");
+    // The reads the refusal starts are held until what it put back is checked.
+    const held = Promise.withResolvers<void>();
+    gate = held.promise;
+
+    await act(async () => {
+      save.reject(
+        new ApiError(400, {
+          code: "ASSIGNEE_NOT_ALLOWED",
+          error: '"carol" has not signed in to Dispatch',
+        })
+      );
+      await save.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    see("carol refused, before the re-read answers");
+    await act(async () => held.resolve());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    see("the re-read answers");
+
+    expect(seen).toEqual([
+      "the Inbox read, then the issue: assignee null waiting on dave",
+      "carol picked: assignee carol waiting on carol",
+      "carol refused, before the re-read answers: assignee null waiting on dave",
+      "the re-read answers: assignee null waiting on dave",
+    ]);
+  } finally {
+    detail?.unmount();
+    inbox.unmount();
+    assignee.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
 const mappings: RepoProject[] = ["acme/widgets", "acme/gadgets"].map((repo) => ({
   created_at: "2026-10-01T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
@@ -2806,6 +2895,67 @@ test("a refused pick puts back the priority of the newest read across the caches
       "P0 picked: detail P0 board P0",
       "P0 refused, before the re-read answers: detail P1 board P1",
       "the re-read answers: detail P1 board P1",
+    ]);
+  } finally {
+    board.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// R3 for a drag that lands while no pick is live: Dispatch's answer to it is its newest for the
+// card's priority until the board's read after it answers. The issue and the board are read at
+// P3; the card is dragged to the P1 lane and the drag is saved, and the board's read again is
+// held. P0 is then picked and refused: until the reads answer, the issue and the board show P1,
+// the drag's lane - never the P3 from before the drag.
+test("a drag saved while no pick is live is the priority a later refused pick puts back, before the board's read after the drag answers", async () => {
+  const drag = Promise.withResolvers<Issue>();
+  const pick = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => drag.promise)
+    .mockImplementationOnce(() => pick.promise);
+  const client = signedInHolding();
+  let stored: IssuePriority | null = 3;
+  const board = renderBoard(client, () => stored, { unread: true });
+  const user = userEvent.setup();
+  const seen: string[] = [];
+  const see = (step: string) =>
+    seen.push(`${step}: detail P${cachedPriorities(client).detail} board ${board.shown()}`);
+  try {
+    await waitFor(() => expect(board.shown()).toBe("P3"));
+    await waitFor(() => expect(prioritySelects()).toHaveLength(1));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    // Every read from now on - the board's after the drag, those the refusal starts - waits.
+    const answerReads = board.hold();
+    act(() => {
+      void board.moves().moveCardToLane(issue.key, "todo", 1, 0);
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
+    stored = 1;
+    await act(async () => {
+      drag.resolve({ ...issue, priority: 1 });
+      await drag.promise;
+    });
+    await waitFor(() => expect(api.listIssues).toHaveBeenCalledTimes(2));
+    see("the issue and the board read at P3, the card dragged to P1 and saved");
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
+    see("P0 picked");
+
+    await act(async () => {
+      pick.reject(closed());
+      await pick.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    see("P0 refused, before any read answers");
+    await act(async () => answerReads());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    see("the reads answer");
+
+    expect(seen).toEqual([
+      "the issue and the board read at P3, the card dragged to P1 and saved: detail P3 board P1",
+      "P0 picked: detail P0 board P0",
+      "P0 refused, before any read answers: detail P1 board P1",
+      "the reads answer: detail P1 board P1",
     ]);
   } finally {
     board.unmount();

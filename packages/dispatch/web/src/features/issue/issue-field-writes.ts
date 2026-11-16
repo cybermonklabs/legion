@@ -134,8 +134,9 @@ function pickLook(pick: IssueFieldPick): Look {
   }
 }
 
-/** How `field` shows as `issue` - Dispatch's answer, or a cache's copy of it - carries it. */
-function issueLook(field: IssueField, issue: IssueFields): Look {
+/** How `field` shows as `issue` - Dispatch's answer, a cache's copy of it, or what an answer kept
+ *  carries of it (`pickedFields`) - carries it. */
+function issueLook(field: IssueField, issue: Partial<IssueFields>): Look {
   switch (field) {
     case "assignee":
       return { fields: { assignee: issue.assignee } };
@@ -153,22 +154,48 @@ function inboxRows(client: QueryClient): InboxRow[] {
     .flatMap(([, rows]) => (Array.isArray(rows) ? rows : []));
 }
 
+/** The fields of `issue` a pick changes, copied apart from the rest of it, which a kept answer
+ *  then does not hold. */
+function pickedFields({ assignee, priority, repo, resolved_repo }: IssueFields): IssueFields {
+  return { assignee, priority, repo, resolved_repo };
+}
+
+/** How `rows`, the Inbox rows of one issue, show the fields of the issue a pick changes: as the
+ *  first of them carries them - its priority, and its issue's assignee where it names its issue -
+ *  with the person each of them waits on. Undefined where there is no row. */
+function inboxLook(rows: readonly InboxRow[]): Look | undefined {
+  const [row] = rows;
+  if (row === undefined) return undefined;
+  const { issue, priority } = row;
+  return {
+    fields: issue === undefined ? { priority } : { assignee: issue.assignee, priority },
+    waiting: new Map(rows.map((each) => [each.id, each.waiting_on_person])),
+  };
+}
+
+/** `look`, of each field of an issue a pick changes that it carries, cut to `field`; for the
+ *  assignee, with the person each Inbox row waits on where `look` names them. Undefined where
+ *  `look` does not carry the field. */
+function fieldLook(look: Look, field: IssueField): Look | undefined {
+  if (!Object.hasOwn(look.fields, field)) return undefined;
+  const cut = issueLook(field, look.fields);
+  return field === "assignee" ? { ...cut, waiting: look.waiting } : cut;
+}
+
 /** How `field` shows as `issue` - an issue's detail or its row of a list of issues - carries it,
- *  else as the first of `rows`, the issue's Inbox rows, does; for the assignee, with the person
- *  each of those rows waits on. Undefined where neither carries the field. */
+ *  else as the first of `rows`, the issue's Inbox rows, does (`inboxLook`); for the assignee,
+ *  with the person each of those rows waits on. Undefined where neither carries the field. */
 function lookOf(
   field: IssueField,
   issue: IssueFields | undefined,
   rows: readonly InboxRow[]
 ): Look | undefined {
-  const [row] = rows;
-  let look: Look | undefined;
-  if (issue !== undefined) look = issueLook(field, issue);
-  else if (field === "priority" && row !== undefined) look = { fields: { priority: row.priority } };
-  else if (field === "assignee" && row?.issue !== undefined) {
-    look = { fields: { assignee: row.issue.assignee } };
+  if (issue === undefined) {
+    const look = inboxLook(rows);
+    return look === undefined ? undefined : fieldLook(look, field);
   }
-  if (field !== "assignee" || look === undefined) return look;
+  const look = issueLook(field, issue);
+  if (field !== "assignee") return look;
   return { ...look, waiting: new Map(rows.map((each) => [each.id, each.waiting_on_person])) };
 }
 
@@ -194,28 +221,41 @@ function cachedLook(client: QueryClient, { field, issueKey }: IssueFieldPick): L
   );
 }
 
-/** How `field` of `issueKey` shows in `data`, which the query under `queryKey` holds - an
- *  issue's detail, a list of issues or the Inbox - or undefined where it does not hold the
- *  issue. */
-function lookIn(
-  queryKey: QueryKey,
-  data: unknown,
-  { field, issueKey }: Pick<IssueFieldPick, "field" | "issueKey">
-): Look | undefined {
+/** How each issue `data` holds shows the fields a pick changes, by issue key, where `data` is
+ *  what the query under `queryKey` holds: an issue's detail; a list of issues, each issue as its
+ *  first row there carries them; or the Inbox, each issue as its rows carry them (`inboxLook`).
+ *  All a put-back takes from Dispatch's answer of that read (`confirmedOf`), kept apart from the
+ *  rest of it. */
+function answeredLooks(queryKey: QueryKey, data: unknown): Map<string, Look> {
+  const looks = new Map<string, Look>();
   const cache = cacheOf(queryKey);
+  const [, detailOf] = queryKey;
   if (cache === "detail") {
-    return queryKey[1] === issueKey && data !== undefined
-      ? lookOf(field, data as IssueDetails, [])
-      : undefined;
+    if (typeof detailOf === "string" && typeof data === "object" && data !== null) {
+      looks.set(detailOf, { fields: pickedFields(data as IssueDetails) });
+    }
+    return looks;
   }
-  if (!Array.isArray(data)) return undefined;
+  if (!Array.isArray(data)) return looks;
   if (cache === "list") {
-    const row = (data as IssueSummary[]).find((each) => each.key === issueKey);
-    return row === undefined ? undefined : lookOf(field, row, []);
+    for (const row of data as IssueSummary[]) {
+      if (!looks.has(row.key)) looks.set(row.key, { fields: pickedFields(row) });
+    }
+    return looks;
   }
-  if (cache !== "inbox") return undefined;
-  const rows = (data as InboxRow[]).filter((row) => row.issue_key === issueKey);
-  return lookOf(field, undefined, rows);
+  if (cache !== "inbox") return looks;
+  const rows = new Map<string, InboxRow[]>();
+  for (const row of data as InboxRow[]) {
+    if (row.issue_key === null) continue;
+    const ofIssue = rows.get(row.issue_key);
+    if (ofIssue === undefined) rows.set(row.issue_key, [row]);
+    else ofIssue.push(row);
+  }
+  for (const [issueKey, ofIssue] of rows) {
+    const look = inboxLook(ofIssue);
+    if (look !== undefined) looks.set(issueKey, look);
+  }
+  return looks;
 }
 
 /** `issue` with `fields` over it: `issue` itself where it carries them all already. */
@@ -549,12 +589,12 @@ function newestPicks(client: QueryClient, watch: Watch, issueKey?: string): Show
 let clock = 0;
 const sentAt = new WeakMap<Query, number>();
 
-/** A read of an issue's detail, a list of issues or the Inbox as Dispatch answered it, with the
- *  moment its request went out (`sentAt`). */
+/** A read of an issue's detail, a list of issues or the Inbox as Dispatch answered it, cut to how
+ *  each issue it holds shows the fields a pick changes (`answeredLooks`), with the moment its
+ *  request went out (`sentAt`). */
 interface Read {
   readonly at: number;
-  readonly data: unknown;
-  readonly queryKey: QueryKey;
+  readonly looks: ReadonlyMap<string, Look>;
 }
 
 /** How a field of an issue shows as Dispatch last confirmed it, with the moment of the answer it
@@ -564,12 +604,14 @@ interface Confirmed {
   readonly look: Look;
 }
 
-/** What Dispatch answered a client, kept apart from the picks shown over it: the last answer of
- *  each read of an issue's detail, a list of issues or the Inbox, by the hash of its query, in
- *  the order they answered, for as long as the client holds that query (`keepAnswer`); the
- *  answer of the last write of each field that landed, by field (`confirmLanding`); and how each
- *  field showed in the caches at the first pick of a run of picks of it (`started`), which
- *  stands in for an answer only where the client keeps none (`confirmedOf`). */
+/** What Dispatch answered a client, kept apart from the picks shown over it: what a put-back
+ *  takes from the last answer of each read of an issue's detail, a list of issues or the Inbox -
+ *  of each issue it holds, the fields a pick changes, and of the Inbox, the person each row waits
+ *  on (`answeredLooks`) - by the hash of its query, in the order they answered, for as long as the
+ *  client holds that query (`keepAnswer`); the answer of the last write of each field that
+ *  landed, by field (`confirmLanding`); and how each field showed in the caches at the first pick
+ *  of a run of picks of it (`started`), which stands in for an answer only where the client keeps
+ *  none (`confirmedOf`). */
 interface Answers {
   readonly landings: Map<string, Confirmed>;
   readonly reads: Map<string, Read>;
@@ -587,13 +629,14 @@ function answersOf(client: QueryClient): Answers {
   return kept;
 }
 
-/** Keeps the answer of the read of `query` that just landed, on a cache a pick shows on, with
- *  the moment its request went out. The answer is the one the read returned (`query.promise`,
- *  which the fetch settles before it puts the answer in the cache), not the query's data, which
- *  keeps it apart from the picks shown over it: the issue's query keeps the issue it holds, picks
- *  and all, over an answer older than that issue (`issueQuery`). That promise hands the answer on
- *  a moment later, so the moment and the record it goes in are taken now: an answer given before
- *  whoever is signed in changed is not kept for the person after (`reset`). */
+/** Keeps what a put-back takes from the answer of the read of `query` that just landed, on a
+ *  cache a pick shows on (`answeredLooks`), with the moment its request went out. The answer is
+ *  the one the read returned (`query.promise`, which the fetch settles before it puts the answer
+ *  in the cache), not the query's data, which keeps it apart from the picks shown over it: the
+ *  issue's query keeps the issue it holds, picks and all, over an answer older than that issue
+ *  (`issueQuery`). That promise hands the answer on a moment later, so the moment and the record
+ *  it goes in are taken now: an answer given before whoever is signed in changed is not kept for
+ *  the person after (`reset`). */
 function keepAnswer(client: QueryClient, query: Query): void {
   const at = sentAt.get(query) ?? 0;
   const { reads } = answersOf(client);
@@ -602,16 +645,20 @@ function keepAnswer(client: QueryClient, query: Query): void {
     if (client.getQueryCache().get(queryHash) !== query) return;
     // Last in the order the reads answered: of two with no stamp, the later is the newer.
     reads.delete(queryHash);
-    reads.set(queryHash, { at, data, queryKey });
+    reads.set(queryHash, { at, looks: answeredLooks(queryKey, data) });
   });
 }
 
 /** How `of`'s field shows as Dispatch last confirmed it: the field in the newest answer Dispatch
  *  gave the client for the issue - the answer of the last write of the field that landed, or of
  *  a read that holds the issue, a read being as new as its request, so one sent before a write of
- *  the field landed is older than that write's answer, whenever it arrived. Where the client
- *  keeps neither - its caches were written by hand - what they showed at the first pick of the
- *  run; undefined where not even that is known. */
+ *  the field landed is older than that write's answer, whenever it arrived. An assignee comes
+ *  with the person each Inbox row of the issue waits on as the newest Inbox answer for the issue
+ *  names them, whichever answer the assignee comes from, where that Inbox answer holds the same
+ *  assignee: Dispatch's answer for a row nobody handed on, which waits on the project's default
+ *  while the issue has no assignee. Where the client keeps neither - its caches were written by
+ *  hand - what they showed at the first pick of the run; undefined where not even that is
+ *  known. */
 function confirmedOf(
   client: QueryClient,
   of: Pick<IssueFieldPick, "field" | "issueKey">
@@ -620,14 +667,29 @@ function confirmedOf(
   if (kept === undefined) return undefined;
   const name = fieldName(of);
   let newest = kept.landings.get(name);
-  for (const read of kept.reads.values()) {
-    if (newest !== undefined && read.at < newest.at) continue;
-    const look = lookIn(read.queryKey, read.data, of);
-    if (look !== undefined) newest = { at: read.at, look };
+  // Of the answers that hold the issue, only the Inbox's name who its rows wait on (`waiting`).
+  let inbox: Confirmed | undefined;
+  for (const { at, looks } of kept.reads.values()) {
+    const answered = looks.get(of.issueKey);
+    if (answered === undefined) continue;
+    const waits = of.field === "assignee" && answered.waiting !== undefined;
+    if (waits && (inbox === undefined || at >= inbox.at)) inbox = { at, look: answered };
+    if (newest !== undefined && at < newest.at) continue;
+    const look = fieldLook(answered, of.field);
+    if (look !== undefined) newest = { at, look };
   }
-  if (newest !== undefined) return newest;
-  const shown = kept.shown.get(name);
-  return shown === undefined ? undefined : { at: 0, look: shown };
+  if (newest === undefined) {
+    const shown = kept.shown.get(name);
+    return shown === undefined ? undefined : { at: 0, look: shown };
+  }
+  if (
+    inbox === undefined ||
+    newest.look.waiting !== undefined ||
+    inbox.look.fields.assignee !== newest.look.fields.assignee
+  ) {
+    return newest;
+  }
+  return { ...newest, look: { ...newest.look, waiting: inbox.look.waiting } };
 }
 
 /** Keeps `answer`, Dispatch's answer to a write of `pick`'s field that landed, as the answer of
@@ -799,14 +861,29 @@ function ended(client: QueryClient, watch: Watch, outcome: WriteOutcome): void {
   }
 }
 
+/** What the landing of `move`, a board move, leaves: Dispatch's answer to it is the answer of the
+ *  last write that landed of each field the move set, whether a pick of the field was live or
+ *  not - but for a field the watch followed it for, whose landing the end of its write in the
+ *  store left first (`ended`). */
+function landedMove(client: QueryClient, watch: Watch, move: BoardMove): void {
+  const followed = watch.moves.get(move) ?? [];
+  for (const pick of movePicks(move)) {
+    if (!followed.some((each) => sameField(each, pick))) {
+      confirmLanding(client, pick, move.state.data);
+    }
+  }
+}
+
 /** Begins the watch of `client`, whose store `writes` is, where it has none, for as long as the
  *  client lives: of its cache - each read's request and answer, and what each answer does to the
  *  picks shown (`answered`); of its store, since a write of another kind that sets a field a pick
  *  shows can join the issue's line after the surface that made it has written its own cache, and
  *  of what becomes of each write it follows (`ended`); and of its board moves, each change of
- *  which shows the newest write of each field again. Its listeners hear every change of the app,
- *  so while the watch shows no field and holds no read each one returns at once - but for the
- *  cache's, which still stamps a read sent and keeps an answer given. */
+ *  which shows the newest write of each field again, and each landing of which is Dispatch's
+ *  answer to a write of each field it set (`landedMove`). Its listeners hear every change of the
+ *  app, so while the watch shows no field and holds no read each one returns at once - but for
+ *  the cache's, which still stamps a read sent and keeps an answer given, and the board moves',
+ *  which still keeps a move's landing. */
 function begin(client: QueryClient, writes: Writes): Watch {
   const begun = watches.get(client);
   if (begun !== undefined) return begun;
@@ -837,9 +914,12 @@ function begin(client: QueryClient, writes: Writes): Watch {
     // An observer's change of options names no mutation while the observer has made none,
     // whatever the event's type says.
     const move: BoardMove | undefined = event.mutation;
-    if (!watching(watch) || move === undefined) return;
-    if (event.type !== "updated" && event.type !== "removed") return;
+    if (move === undefined || (event.type !== "updated" && event.type !== "removed")) return;
+    const landed = event.type === "updated" && event.action.type === "success";
+    if (!landed && !watching(watch)) return;
     if (!matchMutation({ mutationKey: boardMoves }, move)) return;
+    if (landed) landedMove(client, watch, move);
+    if (!watching(watch)) return;
     // Answered, its end was its write's, which the store told first (`ended`).
     if (event.type === "removed" || move.state.status !== "pending") watch.moves.delete(move);
     else follow(client, watch);
@@ -898,12 +978,15 @@ const KIND = "issue-field";
  *
  * The value Dispatch last confirmed is the field in the newest answer Dispatch gave the client
  * for the issue, kept apart from the pick shown over it (`confirmedOf`): the answer of the last
- * write of the field that landed (`confirmLanding`), or of a read of the issue's detail, a list
- * of issues or the Inbox that holds the issue, each kept as the read returned it, before the
- * issue's query keeps an older one out or a pick is shown over it, from the moment the client's
- * store is made (`opened`, `keepAnswer`) - a read being as new as its request, whether a pick was
- * live when it was sent or not, so one sent before a landing is older than it whenever it
- * arrives. Only where the client keeps no such answer - its caches were written by hand - it is
+ * write of the field that landed (`confirmLanding`) - a board move's among them, whether a pick
+ * was live as it landed or not (`landedMove`) - or of a read of the issue's detail, a list of
+ * issues or the Inbox that holds the issue, of which the fields a pick changes are kept as the
+ * read returned them, before the issue's query keeps an older one out or a pick is shown over
+ * it, from the moment the client's store is made (`opened`, `keepAnswer`) - a read being as new
+ * as its request, whether a pick was live when it was sent or not, so one sent before a landing
+ * is older than it whenever it arrives. An assignee put back comes with the person each Inbox row
+ * of the issue waits on as the newest Inbox answer named them, where that answer holds the same
+ * assignee. Only where the client keeps no such answer - its caches were written by hand - it is
  * what the caches showed at the first pick of a run, unless a live write of the field of another
  * kind put it there. After a reload the client holds no answer yet, and whoever is signed in
  * changing lets go of every answer kept (`reset`) - once the picks that change drops have each
