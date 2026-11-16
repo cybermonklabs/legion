@@ -278,8 +278,9 @@ func TestTokenModeRefusesAMalformedReleaseWithoutQuotingIt(t *testing.T) {
 }
 
 // No token reaches a log or an error: a token on the command's stderr is redacted in both, a
-// release keyed by something other than a GitHub login is refused without naming the key, and
-// output past releaseLimit ends the command rather than filling memory.
+// release keyed by something other than a GitHub login is refused without naming the key (here a
+// token form tokenPattern names, short enough to pass a login's 39 characters), and output past
+// releaseLimit ends the command rather than filling memory.
 func TestTokenModeKeepsTokensOutOfLogsAndErrors(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	var stderr bytes.Buffer
@@ -293,8 +294,8 @@ func TestTokenModeKeepsTokensOutOfLogsAndErrors(t *testing.T) {
 		t.Fatalf("daemon stderr = %q, want the line with its token redacted", stderr.String())
 	}
 
-	_, err = parseRelease([]byte(`{"installations":{"ghs_secret_value":{"installation_id":1,"token":"x","expires_at":"2026-11-03T13:00:00Z"}}}`), "f", now)
-	if err == nil || strings.Contains(err.Error(), "ghs_secret_value") {
+	_, err = parseRelease([]byte(`{"installations":{"ghs_secretvalue0123456789":{"installation_id":1,"token":"x","expires_at":"2026-11-03T13:00:00Z"}}}`), "f", now)
+	if err == nil || strings.Contains(err.Error(), "ghs_secretvalue0123456789") {
 		t.Fatalf("parseRelease of a token-shaped key = %v, want a refusal that does not name it", err)
 	}
 
@@ -304,6 +305,44 @@ func TestTokenModeKeepsTokensOutOfLogsAndErrors(t *testing.T) {
 	_, err = huge.runTokenCommand(ctx, huge.apps.Implement, mintRequest{role: Implement, owner: "acme"})
 	if err == nil || !strings.Contains(err.Error(), "printed more than") || ctx.Err() != nil {
 		t.Fatalf("a command printing without end = %v (ctx %v), want the over-limit refusal before the deadline", err, ctx.Err())
+	}
+}
+
+// A release is keyed by GitHub account logins as ghrepo reads an owner: a managed user's, which
+// ends in `_<shortcode>`, is read like any other, up to GitHub's 39 characters, under its
+// lowercased login, and so is one that merely opens like a token (`ghs_acme`) while holding no
+// token form. What no login can be is refused without being named: a dot, a slash, a leading
+// hyphen or underscore, 40 characters, the empty key, and a token form tokenPattern names that is
+// shorter than a real token, which the underscore a login now holds would otherwise let through.
+func TestTokenModeReleaseKeysAreGitHubLogins(t *testing.T) {
+	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	release := func(owner string) []byte {
+		return []byte(fmt.Sprintf(`{"installations":{%q:{"installation_id":7,"token":"ghs_x","expires_at":"2026-11-16T13:00:00Z"}}}`, owner))
+	}
+	for _, owner := range []string{"mona-cat_octo", "Mona-Cat_Octo", "ghs_acme", strings.Repeat("a", 39)} {
+		got, err := parseRelease(release(owner), "github_apps.implement.token_command", now)
+		if entry := got[strings.ToLower(owner)]; err != nil || entry.owner != owner || entry.token != "ghs_x" {
+			t.Errorf("parseRelease of %s's installation = %+v, %v; want it read under its lowercased login", owner, got, err)
+		}
+	}
+	for _, tc := range []struct{ name, owner string }{
+		{"a dot", "a.b"},
+		{"a slash", "a/b"},
+		{"a leading hyphen", "-acme"},
+		{"a leading underscore", "_acme"},
+		{"40 characters, past GitHub's 39", strings.Repeat("a", 40)},
+		{"the empty key", ""},
+		{"a fine-grained token's form, shorter than a real one", "github_pat_0123456789abcdef"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseRelease(release(tc.owner), "github_apps.implement.token_command", now)
+			if err == nil || !strings.Contains(err.Error(), "released an installation whose account is not a GitHub login") {
+				t.Fatalf("parseRelease of an installation keyed %q = %v, want the refusal of a key that is no login", tc.owner, err)
+			}
+			if tc.owner != "" && strings.Contains(err.Error(), tc.owner) {
+				t.Fatalf("parseRelease's refusal %q quotes the key %q", err, tc.owner)
+			}
+		})
 	}
 }
 

@@ -377,17 +377,22 @@ func sourcePathRepo(r *http.Request) (owner, name string, err error) {
 	return parseSourceRepo(r.PathValue("owner") + "/" + r.PathValue("repo"))
 }
 
-// parseSourceRepo validates and canonicalizes an owner/name repository input
-// the same way repository mappings are stored (lowercase, .git trimmed). The
-// segments are restricted to GitHub's own charset so a stored repo can never
-// smuggle path segments into an outbound API URL (".." would traverse).
-var sourceRepoOwnerPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$`)
 var sourceRepoNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
+// parseSourceRepo validates and canonicalizes an owner/name repository input
+// the same way repository mappings are stored (lowercase, .git trimmed). The
+// owner is read by the grammar an issue's own repository is (repoOwnerPattern,
+// the daemon's ghrepo ownerName): a login as GitHub serves it, which is wider
+// than GitHub's sign-up charset, since a managed user's login ends in
+// `_<shortcode>` (`mona-cat_octo`) and a source in such an account is one a
+// project can hold. The name is held to letters, digits, `.`, `-` and `_`, and
+// `.` and `..` are refused, so a stored repo can never smuggle path segments
+// into an outbound API URL (".." would traverse); an underscore traverses
+// nothing, in either segment.
 func parseSourceRepo(raw string) (owner, name string, err error) {
 	trimmed := strings.TrimSpace(raw)
 	parts := strings.Split(trimmed, "/")
-	if len(parts) != 2 || !sourceRepoOwnerPattern.MatchString(parts[0]) ||
+	if len(parts) != 2 || !repoOwnerPattern.MatchString(parts[0]) ||
 		!sourceRepoNamePattern.MatchString(parts[1]) || parts[1] == "." || parts[1] == ".." {
 		return "", "", errorf(http.StatusBadRequest, "SOURCE_INPUT", "repository must be owner/name, got %q", raw)
 	}

@@ -146,8 +146,11 @@ const drainLimitMs = 5000;
 /** The GitHub token forms, which a command's stderr may carry and no log or error may. */
 const tokenPattern = /(gh[opsur]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})/g;
 /** A GitHub account login: what a release may name an installation by (internal/appauth,
- * loginPattern). */
-const loginPattern = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
+ * loginPattern, which is ghrepo's ownerName). A letter or digit and then up to 38 letters,
+ * digits, hyphens and underscores: an underscore is admitted because a managed user's login ends
+ * in `_<shortcode>` (`mona-cat_octo`), and the broker releases such an account's installation
+ * like any other, which a narrower rule refused along with the whole release. */
+const loginPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$/;
 /** How `agent-secrets` refuses a name this deployment's broker holds no secret under: the code
  * and the text of that one refusal. It is the one token-command failure whose fix is an input of
  * the run rather than anything on GitHub, so it is told apart from the rest; nothing here asks
@@ -377,7 +380,12 @@ export function firstInstallationToken(output: string, field: string, now: Date)
   );
   if (owners.length === 0) throw new Error(`${field} released no installation`);
   for (const owner of owners) {
-    if (!loginPattern.test(owner)) {
+    // Every refusal after this one quotes the key, so a key holding a token form is refused here,
+    // unquoted, as the daemon refuses it: a real token's 40 characters fail loginPattern already,
+    // and this closes the shorter text the underscore a login holds would let through. search,
+    // not test: tokenPattern is global, and test would carry its lastIndex from one call to the
+    // next.
+    if (!loginPattern.test(owner) || owner.search(tokenPattern) !== -1) {
       throw new Error(`${field} released an installation whose account is not a GitHub login`);
     }
     const entry = member(installations, owner);

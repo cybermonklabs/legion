@@ -322,9 +322,14 @@ func (r *redactingLines) flush() {
 	r.pending = nil
 }
 
-// loginPattern is a GitHub account login: what a release may name an installation by, and the only
-// owner text a refusal of a release quotes.
-var loginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
+// loginPattern is a GitHub account login, ghrepo's ownerName: what a release may name an
+// installation by, and the only owner text a refusal of a release quotes. It is a letter or digit
+// and then up to 38 letters, digits, hyphens and underscores. An underscore is admitted because a
+// managed user's login ends in `_<shortcode>` (`mona-cat_octo`), and the broker releases such an
+// account's installation like any other: a rule here narrower than ghrepo's refused the whole
+// release, so no owner of it was minted for. The 39 characters are GitHub's own bound, which no
+// login exceeds.
+var loginPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$`)
 
 // parseRelease reads a token_command's stdout as the broker's release. Every refusal names the
 // field and the account and never quotes the output, which holds tokens.
@@ -343,7 +348,13 @@ func parseRelease(output []byte, field string, now time.Time) (map[string]releas
 	}
 	installations := make(map[string]releasedInstallation, len(release.Installations))
 	for owner, entry := range release.Installations {
-		if !loginPattern.MatchString(owner) {
+		// Every refusal after this one quotes the key, and a token's text is what no error may
+		// carry, so a key holding a token form tokenPattern names is refused here, unquoted. A
+		// real token is 40 characters or more and already fails loginPattern's 39; this closes
+		// the shorter text spelled as one, which the underscore a login holds would otherwise let
+		// through. A login that merely opens like a token (`ghs_acme`) holds no token form and is
+		// read.
+		if !loginPattern.MatchString(owner) || tokenPattern.MatchString(owner) {
 			return nil, fmt.Errorf("%s released an installation whose account is not a GitHub login", field)
 		}
 		if _, err := installationID(entry.InstallationID); err != nil {

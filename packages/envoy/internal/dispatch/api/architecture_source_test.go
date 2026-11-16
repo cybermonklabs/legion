@@ -644,20 +644,29 @@ func TestArchitectureSourceWithoutAppKeyAnswers409(t *testing.T) {
 }
 
 func TestArchitectureSourceInputValidation(t *testing.T) {
-	fake := &fakeGitHubApp{installations: map[string]string{"legion/arch": "read"}}
+	fake := &fakeGitHubApp{
+		installations: map[string]string{"legion/arch": "read", "mona-cat_octo/arch": "read"},
+		repos:         map[string]*fakeArchitectureRepo{"mona-cat_octo/arch": {commit: shaArch, files: archFiles()}},
+	}
 	handler, _ := newArchitectureSourceServer(t, fake)
 	createTestProject(t, handler, "CORE")
 
-	// The repository is the path's {owner}/{repo}, each segment percent-decoded.
+	// The repository is the path's {owner}/{repo}, each segment percent-decoded. The owner is a
+	// login as GitHub serves them, so what no login can be is refused: a dot, a slash, an opening
+	// hyphen or underscore, and more than GitHub's 39 characters.
 	for name, input := range map[string]struct{ repo, branch string }{
-		"extra segment":           {"legion/arch%2Fdeep", "main"},
-		"whitespace":              {"legion/ar%20ch", "main"},
-		"missing branch":          {"legion/arch", "  "},
-		"owner charset":           {"leg!on/arch", "main"},
-		"owner edge dash":         {"-legion/arch", "main"},
-		"dot-dot after .git trim": {"legion/...git", "main"},
-		"dot after .git trim":     {"legion/..git", "main"},
-		"empty after .git trim":   {"legion/.git", "main"},
+		"extra segment":            {"legion/arch%2Fdeep", "main"},
+		"whitespace":               {"legion/ar%20ch", "main"},
+		"missing branch":           {"legion/arch", "  "},
+		"owner charset":            {"leg!on/arch", "main"},
+		"owner dot":                {"le.gion/arch", "main"},
+		"owner slash":              {"leg%2Fion/arch", "main"},
+		"owner edge dash":          {"-legion/arch", "main"},
+		"owner edge underscore":    {"_legion/arch", "main"},
+		"owner past 39 characters": {strings.Repeat("a", 40) + "/arch", "main"},
+		"dot-dot after .git trim":  {"legion/...git", "main"},
+		"dot after .git trim":      {"legion/..git", "main"},
+		"empty after .git trim":    {"legion/.git", "main"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := dispatchRequest(t, handler, http.MethodPut, sourcePath("CORE", input.repo), map[string]string{"branch": input.branch}, "alice")
@@ -677,6 +686,17 @@ func TestArchitectureSourceInputValidation(t *testing.T) {
 	}
 	if fake.tokenMints != 0 {
 		t.Fatalf("invalid input reached GitHub: %d mints", fake.tokenMints)
+	}
+	// An empty owner never reaches the handler as one: net/http's ServeMux redirects a path that
+	// holds `//` to its cleaned form first. So the parse is asked directly.
+	if owner, name, err := parseSourceRepo("/arch"); err == nil {
+		t.Fatalf("parseSourceRepo(/arch) = %q, %q; want an empty owner refused", owner, name)
+	}
+
+	// A managed user's login ends in `_<shortcode>`, and a source in such an account is saved
+	// under its lowercased owner like any other.
+	if saved := putSource(t, handler, "CORE", "Mona-Cat_Octo/arch", "main"); saved.Repo != "mona-cat_octo/arch" {
+		t.Fatalf("saved a managed user's source as %q, want mona-cat_octo/arch", saved.Repo)
 	}
 
 	missingProject := dispatchRequest(t, handler, http.MethodPut, sourcePath("NOPE", "legion/arch"), map[string]string{"branch": "main"}, "alice")
