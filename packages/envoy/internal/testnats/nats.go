@@ -5,10 +5,11 @@
 // (github.com/nats-io/nats-server/v2), not a container: a test that needed a container runtime
 // could not run where Envoy's agents do, which have none. Each server listens on a loopback port
 // of its own choosing and is reached through a relay this process owns. The relay's port is the
-// one the test's URL names and it holds that port for the test's life, which buys three things: a
+// one the test's URL names and it holds that port for the test's life, which buys four things: a
 // URL that survives a stop and a start (Server.Stop, Server.Start), a way to stop the bytes
-// moving in either direction without dropping a connection (Server.Freeze), and a port no other
-// test binary can take while the test runs.
+// moving in either direction without dropping a connection (Server.Freeze), a reload with no
+// client message in flight (Server.Reload), and a port no other test binary can take while the
+// test runs.
 //
 // A package's tests share one server rather than start one each, and each test gets it as the user
 // of a JetStream account no earlier test used (URL), so no test ever deletes and recreates a
@@ -20,10 +21,12 @@
 package testnats
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"math/rand/v2"
 	"net"
 	"os"
@@ -362,6 +365,19 @@ func (s *Server) Freeze(t testing.TB) func() {
 // returns the server's own refusal when the server would not take the configuration, and nil when
 // it did. A refused configuration never becomes the server's: the file a restart reads keeps the
 // configuration the server is serving.
+//
+// The server reloads with no client message in flight. nats-server (2.15.1 and 2.15.3) writes each
+// service import's account on every authorization reload (configureAccounts, server.go:1398) under
+// the importing account's lock, and a client's request through a service import - every JetStream
+// API request - reads that field without the lock as the server sets up the response
+// (setupResponseServiceImport and addRespServiceImport, client.go:4643 and accounts.go:2671 in
+// 2.15.1): a reload while a client's request is being processed is a data race in nats-server,
+// which the race detector reports in this process. Holding the clients' bytes is not enough on its
+// own, since a request the server has already read can still be mid-way through: so the relay
+// holds what the clients send (relay.hold), the server finishes every message it was passed
+// (awaitProcessed), the server reloads, and the relay lets the clients' bytes through. Each client
+// keeps its connection and sees its messages delayed by the reload; what the server sends reaches
+// the clients throughout.
 func (s *Server) Reload(t testing.TB, config string) error {
 	t.Helper()
 	s.mu.Lock()
@@ -386,11 +402,17 @@ func (s *Server) Reload(t testing.TB, config string) error {
 	// server's as well: a reload can neither move the one nor turn the other on or off.
 	opts.ConfigFile = s.configPath
 	opts.JetStream = jetStream
+	release := s.relay.hold()
+	if err := s.awaitProcessed(srv); err != nil {
+		release()
+		t.Fatalf("hold the NATS server's clients still for its reload: %v", err)
+	}
 	// ConfigureOptions and ReloadOptions meet over natsserver.FlagSnapshot, a package-level
 	// variable of nats-server; serverOptions clears it under the same lock this takes.
 	flagsMu.Lock()
 	err = srv.ReloadOptions(opts)
 	flagsMu.Unlock()
+	release()
 	if err != nil {
 		return err
 	}
@@ -398,6 +420,53 @@ func (s *Server) Reload(t testing.TB, config string) error {
 		t.Fatalf("keep the configuration the server took: %v", err)
 	}
 	return nil
+}
+
+// processedPoll is how often awaitProcessed reads the server's counts while it waits for them.
+const processedPoll = time.Millisecond
+
+// awaitProcessed waits, within connectTimeout, for srv to have processed every message its clients
+// sent through the relay, which a hold keeps from sending more: for each connection, the server's
+// count of the messages it took in (/connz in_msgs) equals the relay's count of the messages it
+// wrote (relay.sent), or the server has closed the connection. The server adds a read's messages to
+// that count once it has processed all of them, and adds them atomically, so the read of the count
+// here is ordered after everything the server did with those messages, and so is the reload that
+// follows. A server that counts more messages than the relay wrote fails rather than pass: the
+// relay's count is wrong, and nothing then says the server has finished.
+func (s *Server) awaitProcessed(srv *natsserver.Server) error {
+	deadline := time.Now().Add(connectTimeout)
+	for {
+		sent, err := s.relay.sent()
+		if err != nil {
+			return err
+		}
+		if len(sent) == 0 {
+			return nil
+		}
+		connz, err := srv.Connz(&natsserver.ConnzOptions{Limit: math.MaxInt})
+		if err != nil {
+			return fmt.Errorf("read the server's connections: %w", err)
+		}
+		for _, conn := range connz.Conns {
+			want, ok := sent[conn.Port]
+			if !ok {
+				continue
+			}
+			if conn.InMsgs > want {
+				return fmt.Errorf("the server took in %d messages from the client on port %d, and the relay wrote it %d", conn.InMsgs, conn.Port, want)
+			}
+			if conn.InMsgs == want {
+				delete(sent, conn.Port)
+			}
+		}
+		if len(sent) == 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the server had not processed every message its clients sent within %s; messages the relay wrote, by client port: %v", connectTimeout, sent)
+		}
+		time.Sleep(processedPoll)
+	}
 }
 
 // Restart stops the server, makes config its whole configuration and starts it again on the same
@@ -527,7 +596,7 @@ func start(t testing.TB, config string, serverArgs []string) *Server {
 		log:        &logCapture{},
 		url:        "nats://" + listener.Addr().String(),
 	}
-	server.relay = newRelay(listener, server.address)
+	server.relay = newRelay(listener, server.address, true)
 	t.Cleanup(func() {
 		server.stop()
 		server.relay.Close()
@@ -649,9 +718,15 @@ func (c *logCapture) String() string {
 // port is one it picks at each start, which a restart therefore changes and the relay hides; a
 // connection made while the server is down is closed at once, as a refused dial would be, and one
 // the server drops is dropped on the client's side too.
+//
+// The relay of a server's client port is counted (newRelay): it counts the messages each client
+// sends the server, and a hold stops its writes to the server while the server finishes what it
+// has, which is how Server.Reload keeps a reload clear of client traffic. A gate's relay and a
+// cluster's route relays are not counted.
 type relay struct {
 	listener net.Listener
 	target   func() (string, error)
+	counted  bool
 	done     chan struct{}
 	closing  sync.Once
 
@@ -659,10 +734,34 @@ type relay struct {
 	// gate is nil while the relay moves bytes, and open while it is frozen: every copy waits for
 	// it to close, which thawing does.
 	gate chan struct{}
+	// holds is how many holds are in force, writing how many writes to the server are under way,
+	// and closed whether the relay has closed; moved is signalled whenever one of them changes.
+	holds   int
+	writing int
+	closed  bool
+	moved   *sync.Cond
+	// joins are the connections a counted relay joins to the server that the server has not yet
+	// closed.
+	joins map[*joined]struct{}
 }
 
-func newRelay(listener net.Listener, target func() (string, error)) *relay {
-	r := &relay{listener: listener, target: target, done: make(chan struct{})}
+// joined is one connection a counted relay joins to the server. port is the local port of the
+// relay's own connection to the server, which is the port the server reports the client by;
+// messages is how many whole messages the relay has written to the server on it, and broken why
+// the relay could no longer count them, if it could not (messageCounter). Both are guarded by the
+// relay's mu; counter is the client-to-server copy's own.
+type joined struct {
+	port     int
+	messages int64
+	broken   error
+	counter  messageCounter
+}
+
+// newRelay starts a relay that serves listener and dials target for each connection it accepts;
+// counted says it is the relay of a server's client port.
+func newRelay(listener net.Listener, target func() (string, error), counted bool) *relay {
+	r := &relay{listener: listener, target: target, counted: counted, done: make(chan struct{}), joins: map[*joined]struct{}{}}
+	r.moved = sync.NewCond(&r.mu)
 	go r.serve()
 	return r
 }
@@ -680,7 +779,8 @@ func (r *relay) serve() {
 
 // join copies client and the server's connection into each other until either side ends, then
 // closes both. One direction runs on this goroutine and the other on one of its own, and whichever
-// ends first closes both connections, which ends the other.
+// ends first closes both connections, which ends the other. A counted relay ends a connection as
+// joinCounted says instead.
 func (r *relay) join(client net.Conn) {
 	address, err := r.target()
 	if err != nil {
@@ -690,6 +790,10 @@ func (r *relay) join(client net.Conn) {
 	upstream, err := net.DialTimeout("tcp", address, dialTimeout)
 	if err != nil {
 		_ = client.Close()
+		return
+	}
+	if r.counted {
+		r.joinCounted(client, upstream)
 		return
 	}
 	ended := sync.OnceFunc(func() {
@@ -702,6 +806,70 @@ func (r *relay) join(client net.Conn) {
 	}()
 	defer ended()
 	r.stream(client, upstream)
+}
+
+// joinCounted is join on a counted relay. The connection is the relay's until the server closes
+// it: a client that ends its side has the server read the end of the stream after everything the
+// client sent, as a client connected to the server itself does, and the server's replies are read
+// and dropped until the server closes, so the server ends the connection from its own read and
+// the hold that waits for the server to finish what this client sent waits for that read
+// (Server.awaitProcessed).
+func (r *relay) joinCounted(client, upstream net.Conn) {
+	j := &joined{port: upstream.LocalAddr().(*net.TCPAddr).Port}
+	r.mu.Lock()
+	r.joins[j] = struct{}{}
+	r.mu.Unlock()
+	defer func() {
+		_ = upstream.Close()
+		_ = client.Close()
+		r.mu.Lock()
+		delete(r.joins, j)
+		r.mu.Unlock()
+	}()
+	go r.streamCounted(j, upstream, client)
+	buffer := make([]byte, 32*1024)
+	delivering := true
+	for {
+		r.pass()
+		read, err := upstream.Read(buffer)
+		if read > 0 && delivering {
+			r.pass()
+			if _, err := client.Write(buffer[:read]); err != nil {
+				delivering = false
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// streamCounted copies what the client sends into the server's connection, as stream does, under
+// the relay's holds (enter), counting the whole messages each write carries into j. Once the client
+// ends its side, the server's connection is closed for writing, which the server reads as the end
+// of the client's stream.
+func (r *relay) streamCounted(j *joined, upstream, client net.Conn) {
+	buffer := make([]byte, 32*1024)
+	for {
+		r.pass()
+		read, err := client.Read(buffer)
+		if read > 0 {
+			r.pass()
+			r.enter()
+			written, werr := upstream.Write(buffer[:read])
+			messages, broken := j.counter.count(buffer[:written])
+			r.leave(j, messages, broken)
+			if werr != nil {
+				return
+			}
+		}
+		if err != nil {
+			if half, ok := upstream.(interface{ CloseWrite() error }); ok {
+				_ = half.CloseWrite()
+			}
+			return
+		}
+	}
 }
 
 // stream copies src into dst, a frozen relay moving nothing: the read and the write each wait for
@@ -762,13 +930,160 @@ func (r *relay) freeze() func() {
 	})
 }
 
-// Close frees the port the relay held and releases every copy a freeze holds, which then runs on
-// as an unfrozen copy does: a copy keeps running until one of its endpoints ends.
+// hold stops a counted relay writing to the server and returns once no write to it is under way,
+// with the func that lets the writes through again, which runs once however often it is called.
+// Holds nest: the relay writes again once every hold has been released. Bytes a client sends
+// meanwhile wait in the relay, as a freeze keeps them, while the server's own bytes keep reaching
+// the client.
+func (r *relay) hold() func() {
+	r.mu.Lock()
+	r.holds++
+	for r.writing > 0 && !r.closed {
+		r.moved.Wait()
+	}
+	r.mu.Unlock()
+	return sync.OnceFunc(func() {
+		r.mu.Lock()
+		r.holds--
+		r.moved.Broadcast()
+		r.mu.Unlock()
+	})
+}
+
+// enter waits while a hold is in force, unless the relay has closed, and then counts a write to
+// the server as under way until leave.
+func (r *relay) enter() {
+	r.mu.Lock()
+	for r.holds > 0 && !r.closed {
+		r.moved.Wait()
+	}
+	r.writing++
+	r.mu.Unlock()
+}
+
+// leave ends the write to the server that enter began, adding the whole messages it carried to
+// j's count, or why the relay could no longer count them.
+func (r *relay) leave(j *joined, messages int, broken error) {
+	r.mu.Lock()
+	r.writing--
+	j.messages += int64(messages)
+	if j.broken == nil {
+		j.broken = broken
+	}
+	r.moved.Broadcast()
+	r.mu.Unlock()
+}
+
+// sent is how many whole messages a counted relay has written to the server on each connection
+// the server has not yet closed, keyed by the port the server reports the connection by, leaving
+// out the connections that have written none. It fails on a connection whose messages the relay
+// could not count.
+func (r *relay) sent() (map[int]int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	sent := map[int]int64{}
+	for j := range r.joins {
+		if j.broken != nil {
+			return nil, fmt.Errorf("the relay cannot count the messages of the client on port %d: %w", j.port, j.broken)
+		}
+		if j.messages > 0 {
+			sent[j.port] = j.messages
+		}
+	}
+	return sent, nil
+}
+
+// Close frees the port the relay held and releases every copy a freeze or a hold holds, which then
+// runs on as a free copy does: a copy keeps running until one of its endpoints ends.
 func (r *relay) Close() {
 	r.closing.Do(func() {
 		close(r.done)
 		_ = r.listener.Close()
+		r.mu.Lock()
+		r.closed = true
+		r.moved.Broadcast()
+		r.mu.Unlock()
 	})
+}
+
+// maxControlLine bounds the control line messageCounter keeps while it waits for the line's end. A
+// client's message line past nats-server's max_control_line (4,096 bytes unless a configuration
+// raises it) closes the client, so a line past a mebibyte is a stream that is not NATS protocol.
+const maxControlLine = 1 << 20
+
+// messageCounter counts the whole messages in a client's stream to a NATS server, reading it as
+// the server's parser does: a control line ends at its LF, and a PUB or an HPUB line is followed by
+// as many bytes as its last field says and a CRLF, whose LF is where the server takes the message.
+// It is shown the stream in order, in pieces split anywhere.
+type messageCounter struct {
+	// line is the control line read so far, and payload how many bytes of the current message,
+	// its CRLF among them, are still to come: 0 while a control line is being read.
+	line    []byte
+	payload int
+	// broken is why the stream stopped reading as NATS client protocol; nothing is counted after
+	// it.
+	broken error
+}
+
+// count reads the next piece of the stream and returns how many messages it completed, or why the
+// stream cannot be counted.
+func (m *messageCounter) count(piece []byte) (int, error) {
+	whole := 0
+	for len(piece) > 0 && m.broken == nil {
+		if m.payload > 0 {
+			taken := min(m.payload, len(piece))
+			m.payload -= taken
+			piece = piece[taken:]
+			if m.payload == 0 {
+				whole++
+			}
+			continue
+		}
+		end := bytes.IndexByte(piece, '\n')
+		if end < 0 {
+			m.line = append(m.line, piece...)
+			if len(m.line) > maxControlLine {
+				m.broken = fmt.Errorf("a control line runs past %d bytes", maxControlLine)
+			}
+			break
+		}
+		m.line = append(m.line, piece[:end+1]...)
+		piece = piece[end+1:]
+		m.payload, m.broken = payloadAfter(string(m.line))
+		m.line = m.line[:0]
+	}
+	return whole, m.broken
+}
+
+// payloadAfter is how many bytes follow the control line line before the next one: a PUB's or an
+// HPUB's payload and its CRLF, and none after any other operation.
+func payloadAfter(line string) (int, error) {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return 0, nil
+	}
+	var arguments int
+	switch {
+	case strings.EqualFold(fields[0], "PUB"):
+		// PUB <subject> [reply-to] <#bytes>
+		arguments = len(fields) - 1
+		if arguments != 2 && arguments != 3 {
+			return 0, fmt.Errorf("a PUB line has %d arguments: %q", arguments, line)
+		}
+	case strings.EqualFold(fields[0], "HPUB"):
+		// HPUB <subject> [reply-to] <#header bytes> <#total bytes>
+		arguments = len(fields) - 1
+		if arguments != 3 && arguments != 4 {
+			return 0, fmt.Errorf("an HPUB line has %d arguments: %q", arguments, line)
+		}
+	default:
+		return 0, nil
+	}
+	size, err := strconv.Atoi(fields[len(fields)-1])
+	if err != nil || size < 0 {
+		return 0, fmt.Errorf("a message line's size is not a count of bytes: %q", line)
+	}
+	return size + len("\r\n"), nil
 }
 
 // Start runs a NATS server with JetStream, shut down when the test ends (even when its start
@@ -884,7 +1199,7 @@ func StartGate(t testing.TB, srv *Server) *Gate {
 			continue
 		}
 		g.address = address
-		g.relay = newRelay(listener, g.target)
+		g.relay = newRelay(listener, g.target, false)
 		t.Cleanup(g.Close)
 		return g
 	}
@@ -927,7 +1242,7 @@ func (g *Gate) Open() {
 		g.t.Fatalf("open the gate at %s: %v", g.address, err)
 		return
 	}
-	g.relay = newRelay(listener, g.target)
+	g.relay = newRelay(listener, g.target, false)
 }
 
 // NkeyGrant is a NATS test server, started by StartNkeyGranted, whose one nkey user may publish
