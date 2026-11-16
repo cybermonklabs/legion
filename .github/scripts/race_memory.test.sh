@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests for `race_memory.py`: a command's status passes through, a peak over the limit fails the
-# step and names the tests that were running, a run within the limit ends with the peak, and a
-# `go test -json` stream's output reaches the log.
+# step and names the tests that were running, a run within the limit ends with the peak, a
+# `go test -json` stream's output reaches the log, and neither a process's name nor a byte of
+# the command's stdout that is not UTF-8 stops a run before it gives its result.
 #
 # Each case runs the real script around a stand-in command — a shell or a Python program that
 # prints a -json stream and grows — so no Go, no race binary and no database are needed. The two
@@ -9,7 +10,10 @@
 # `decision_line` written from what they return, are called on their own over fixture
 # `/proc/<pid>/status` texts written here, because one of the rule's two branches cannot be
 # reached on a kernel that reports no `VmHWM` (gVisor) and the other cannot be reached on one
-# that does.
+# that does. The two name cases start a process beside the command's tree, through the real
+# /proc, because the sampler reads every process on the machine, and each first checks that the
+# kernel shows the name's bytes as they were written: a kernel that escaped them would leave the
+# case nothing to test, and it fails rather than passes.
 #
 # Run from anywhere: .github/scripts/race_memory.test.sh
 # CI runs it in ci.yaml's test job.
@@ -48,17 +52,55 @@ check "exits 3" "$(is "$status" 3)"
 check "names the default limit" "$(contains "$out" 'the limit is 8388608 kB (the default')"
 
 echo "case: a peak over the limit fails the run and names the test that was running"
-# Prints a -json stream naming a test as running, then grows past a 1 kB limit and lives long
-# enough for the sampler to take a second sample at 5 s, by when the stream has been read.
+# The grower prints a -json event naming a test as running, then waits on its stdin, which is
+# this case's. It grows past a 1 kB limit once a sample has named that test, so the stream has
+# been read by then, and it ends once a later sample has seen it grown: a VmRSS above the 64 MiB
+# it allocates. So the highest sample is one taken with the test known, and there are two
+# samples at least, on a machine of any speed. A grower that slept 6 s instead was gone before
+# the second walk reached it where one walk of /proc takes about a second: 18 runs of 18 took one
+# sample among 26,800 processes at a load average of 320 to 380 (dispatch://INFRA-3904).
 grower='
-import json, sys, time
+import json, sys
 sys.stdout.write(json.dumps({"Action": "run", "Test": "TestTheSamplerNamesMe"}) + "\n")
 sys.stdout.flush()
+sys.stdin.readline()
 block = b"x" * (64 * 1024 * 1024)
-time.sleep(6)
+sys.stdin.read()
 sys.stdout.write(str(len(block)) + "\n")
 '
-run_sampler 1 python3 -c "$grower"
+coproc GROWER { exec env RACE_MEM_LIMIT_KB=1 "$sampler" python3 -c "$grower" 2>&1; }
+run_pid=$GROWER_PID
+to_grower=${GROWER[1]}
+# A copy of the read end, because bash closes its own when it reaps the sampler, which can be
+# before the sampler's last lines are read.
+exec {from_run}<&"${GROWER[0]}"
+out=""
+stage=unnamed
+while :; do
+  read_status=0
+  # The sampler writes a line every 5 s, so 60 s without one is a sampler that stopped, and the
+  # case fails then rather than at the job's own timeout.
+  IFS= read -r -t 60 line <&"$from_run" || read_status=$?
+  [ "$read_status" -eq 0 ] || break
+  out+=$line$'\n'
+  if [ "$stage" = unnamed ] && [[ $line == *'tests running: TestTheSamplerNamesMe'* ]]; then
+    echo grow >&"$to_grower"
+    stage=growing
+  elif [ "$stage" = growing ] && [[ $line =~ \ s,\ VmRSS\ ([0-9]+)\ kB ]] &&
+    [ "${BASH_REMATCH[1]}" -gt 65536 ]; then
+    exec {to_grower}>&-
+    stage=grown
+  fi
+done
+check "a sample named the test, and a later one saw it grown" "$(is "$stage" grown)"
+check "the sampler wrote until it ended" "$(is "$read_status" 1)"
+# Short of that, the grower is let go here instead, which ends it whatever it was waiting for.
+if [ "$stage" != grown ]; then
+  exec {to_grower}>&-
+fi
+exec {from_run}<&-
+status=0
+wait "$run_pid" || status=$?
 check "exits 1" "$(is "$status" 1)"
 check "names the limit it was given" "$(contains "$out" 'the limit is 1 kB (RACE_MEM_LIMIT_KB)')"
 check "its decision line names the tests at the highest sample" \
@@ -132,5 +174,68 @@ check "exits 0" "$(is "$status" 0)"
 check "the --- FAIL line shows" "$(contains "$out" '^--- FAIL: TestA (0.00s)$')"
 check "the package's own line shows" "$(contains "$out" '^FAIL.*legion/internal/dispatch/docs')"
 check "the -json envelope does not" "$(is "$(contains "$out" '"Action"')" false)"
+
+# hold_named <name in hex>: starts a process beside the sampler's tree, not in it, that writes
+# the name to its own /proc/self/comm and lives until free_named closes its stdin. It returns once
+# the name is set, with the kernel's own Name line of that process, in hex, in $named, so the
+# sampler's first walk is sure to read that line.
+hold_named() {
+  coproc NAMED {
+    python3 -c '
+import sys
+with open("/proc/self/comm", "wb") as comm:
+    comm.write(bytes.fromhex(sys.argv[1]))
+with open("/proc/self/status", "rb") as status:
+    print(status.readline().rstrip(b"\n").hex(), flush=True)
+sys.stdin.read()
+' "$1"
+  }
+  holder_pid=$NAMED_PID
+  to_holder=${NAMED[1]}
+  named=""
+  read -r named <&"${NAMED[0]}" || true
+}
+
+# free_named: ends the process hold_named started, and checks that it ended as it should.
+free_named() {
+  local held=0
+  exec {to_holder}>&-
+  wait "$holder_pid" || held=$?
+  check "the named process ends when its stdin closes" "$(is "$held" 0)"
+}
+
+echo "case: a process on the machine whose name is not UTF-8 leaves the run its result"
+# b"\xffnot-utf-8": a strict decode of its status raised UnicodeDecodeError at the name's 0xff.
+hold_named ff6e6f742d7574662d38
+check "the kernel shows the name's bytes as written" \
+  "$(is "$named" 4e616d653a09ff6e6f742d7574662d38)"
+run_sampler '' sh -c 'echo the command spoke'
+free_named
+check "exits 0" "$(is "$status" 0)"
+check "passes the command's own output through" "$(contains "$out" '^the command spoke$')"
+check "its last line gives the peak and the limit" \
+  "$(contains "${out##*$'\n'}" '^race memory: the peak was [0-9][0-9]* kB (Vm.*), the limit 8388608 kB$')"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: a process whose name holds a line break other than a newline passes for no field"
+# b"a\x1ePPid:\tz": str.splitlines() broke the Name line at \x1e, and int("z") raised for the
+# PPid it seemed to give.
+hold_named 611e505069643a097a
+check "the kernel shows the name's bytes as written" \
+  "$(is "$named" 4e616d653a09611e505069643a097a)"
+run_sampler '' sh -c 'echo the command spoke'
+free_named
+check "exits 0" "$(is "$status" 0)"
+check "its last line gives the peak and the limit" \
+  "$(contains "${out##*$'\n'}" '^race memory: the peak was [0-9][0-9]* kB (Vm.*), the limit 8388608 kB$')"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: a byte of the command's stdout that is not UTF-8 is read as U+FFFD"
+run_sampler '' printf 'before\n\377\nafter\n'
+check "exits 0" "$(is "$status" 0)"
+check "the line before it shows" "$(contains "$out" '^before$')"
+check "the byte shows as U+FFFD" "$(contains "$out" $'^\xef\xbf\xbd$')"
+check "the line after it shows" "$(contains "$out" '^after$')"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
 summary "race_memory.py"
