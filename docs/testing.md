@@ -437,12 +437,14 @@ A fixed 10 s clock on it failed `TestSetAskBlockTextRefusalOfEveryBrokenBodyLead
 At the timeout all 8 connections were in use, with 1449 s of acquire waiting in total, and the same wait issued again returned at once.
 
 `awaitRoomAppends` therefore waits on the room's idle signal and sets no span of its own, so the bound is a signal rather than a clock.
-It fails when the appends have stopped: no append lands anywhere in the service, and the room's own counts do not change, for `appendStall`, which is `ShutdownDrainBudget`, the time Shutdown gives the rooms' appends to land.
+It fails when the appends have stopped: no append lands anywhere in the service, and the room's own counts do not change, for `appendStall`.
+That bound is 16 s, three times the longest such stall measured: with it lifted to 10 min, the package as CI runs it (`GODEBUG=checkfinalizers=1 go test -v -count=1`, 288 CPUs, load 230 when it began, 2026-11-16) had 927 of these waits go more than 1 s with no append landing and the room's counts unchanged, 231 more than 3 s and 22 for 5 s or more, and the longest went 5.363 s.
+The 9 s of `ShutdownDrainBudget` it was before, the time Shutdown gives the rooms' appends to land, was 1.7 times that stall.
 It also fails 30 s before the run's own deadline, so that the failure names the wait.
 Two scratch tests checked it, each with the 10 s clock and with this wait:
 
-- 24 rooms whose appends were each held 4 s on their connection settled in about 12 s. The clock failed 8 of the rooms in each of 2 runs, and this wait passed 3 of 3.
-- An append that another transaction's hold on the document's lock kept from landing failed both: the clock at 10 s, and this wait at 9.1 s, naming the stall and the room's counts.
+- 24 rooms whose appends were each held 4 s on their connection settled in about 12 s. The clock failed 8 of the rooms in each of 2 runs, and this wait passed 3 of 3 with the 9 s bound and 1 of 1 with the 16 s one.
+- An append that another transaction's hold on the document's lock kept from landing failed both: the clock at 10 s, and this wait at 9.1 s with the 9 s bound and at 16.0 and 16.2 s with the 16 s one, naming the stall and the room's counts.
 
 ## A writer a test holds
 

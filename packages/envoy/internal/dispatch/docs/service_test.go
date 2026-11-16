@@ -4934,9 +4934,12 @@ func settleCurrentGeneration(t *testing.T, service *Service, artifactID string) 
 }
 
 // appendStall is how long awaitRoomAppends lets the service land no append at all, while the room
-// it waits for still counts one, before it fails: ShutdownDrainBudget, what Shutdown itself gives
-// the rooms' appends to land.
-const appendStall = ShutdownDrainBudget
+// it waits for still counts one, before it fails: three times the longest such stall measured, as
+// docs/testing.md asks of a bound. With this bound lifted to 10 min, the package as CI runs it, on
+// a 288-CPU machine at a load of 230 when it began (2026-11-16), had 927 of these waits go more
+// than 1 s with no append landing and the room's counts unchanged, 231 more than 3 s and 22 5 s
+// or more; the longest went 5.363 s.
+const appendStall = 16 * time.Second
 
 // awaitRoomAppends waits until room's live updates have reached its persistence or landed, by
 // wait - the service's waitForPendingUpdates or waitForDurableAppends, which the room's idle

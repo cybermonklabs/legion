@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // Room queries (room_query.go) are how one process asks every other one about a document room: a
@@ -43,13 +44,12 @@ func newQueryProcesses(t *testing.T) processPair {
 	return pair
 }
 
-// captureWarnings sends every log line at WARN and above to the returned log until the test ends.
+// captureWarnings sends every log line at WARN and above to the returned log until the test ends,
+// and gives the log package its output back then (logtest.SetDefault).
 func captureWarnings(t *testing.T) *storetest.LockedLog {
 	t.Helper()
 	logs := &storetest.LockedLog{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	return logs
 }
 
@@ -104,11 +104,8 @@ func TestAFlushWaitsForTheOtherProcessesHeldAppend(t *testing.T) {
 	if waited < held-20*time.Millisecond {
 		t.Fatalf("task A's flush returned after %v, before task B's held append was let go at %v: it did not wait for the append", waited, held)
 	}
-	if waited >= roomQueryWait {
-		t.Fatalf("task A's flush took %v, the whole wait: task B's answer never came", waited)
-	}
 	if len(answers) != 1 || answers[0].process != pair.taskB.ProcessID() || !answers[0].holds {
-		t.Fatalf("task A's flush answers = %+v, want task B's one, holding the room", answers)
+		t.Fatalf("task A's flush answers = %+v after %v, want task B's one, holding the room", answers, waited)
 	}
 	if len(answers[0].actors) != 0 {
 		t.Fatalf("task B's flush answer names actors %+v, which no asker of a flush reads", answers[0].actors)
@@ -133,11 +130,8 @@ func TestAShareReturnsTheOtherProcessesInFlightAppend(t *testing.T) {
 	if err != nil || !asked {
 		t.Fatalf("task A's share = asked %t, %v; want task B asked", asked, err)
 	}
-	if waited >= roomQueryWait {
-		t.Fatalf("task A's share took %v, the whole wait: task B's answer never came whole", waited)
-	}
 	if len(answers) != 1 || !answers[0].holds || answers[0].tooLarge {
-		t.Fatalf("task A's share answers = %+v, want task B's one, holding the room", answers)
+		t.Fatalf("task A's share answers = %+v after %v, want task B's one, holding the room", answers, waited)
 	}
 	if len(answers[0].updates) <= roomSyncPayloadLimit {
 		t.Fatalf("task B shared %d bytes, which fit one notification; the test wants an answer in parts", len(answers[0].updates))
@@ -222,12 +216,13 @@ func TestAShareHoldsEveryQueuedUpdateOfAPendingBatch(t *testing.T) {
 	pair.heldEditOnB(t, 1, bob, appendBlocks(t, "Bob's first paragraph.\n"))
 	editAsPeer(t, pair.taskB, pair.artifactID, appendBlocks(t, "Bob's second paragraph.\n"))
 
+	started := time.Now()
 	answers, asked, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, roomQueryShare)
 	if err != nil || !asked {
 		t.Fatalf("task A's share = asked %t, %v; want task B asked", asked, err)
 	}
 	if len(answers) != 1 || !answers[0].holds || answers[0].tooLarge {
-		t.Fatalf("task A's share answers = %+v, want task B's one, holding the room", answers)
+		t.Fatalf("task A's share answers = %+v after %v, want task B's one, holding the room", answers, time.Since(started))
 	}
 	shared := storedDocumentWith(t, pair.database, pair.artifactID, answers[0].updates)
 	for _, paragraph := range []string{"Bob's first paragraph.", "Bob's second paragraph."} {
@@ -277,6 +272,8 @@ func TestAShareTooLargeForOneQueryAnswersTooLarge(t *testing.T) {
 // connection's name, which is all membership reads, and listens to nothing.
 func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 	pair := newQueryProcesses(t)
+	// Production's wait, which this test holds: the pair's own is roomWait (newSeededProcessPair).
+	pair.taskA.roomQueries.wait = roomQueryWait
 	silent := uuid.NewString()
 	conn, err := pair.database.Pool.Dedicated(context.Background(), ListenerApplicationPrefix+silent)
 	if err != nil {
