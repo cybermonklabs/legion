@@ -174,10 +174,9 @@ type EnumeratedValue struct {
 // the field is optional, so a body carrying a ninth value is refused whole by a reader of the
 // eight — the same refusal an added key gets from a reader before dispatch://INFRA-1048. So
 // both halves of this change read the table: the serving-down takes from a caller's body every
-// value whose arrival is above that caller's contract (shaping.go's
-// withoutUnadmittedWaitAnswer), and the records carry the value domain of each field beside its
-// key paths, so a value added with no serving-down fails the gate as an added key does
-// (contract_shapes_test.go).
+// value whose arrival is above that caller's contract (shaping.go's valueStrips), and the
+// records carry the value domain of each field beside its key paths, so a value added with no
+// serving-down fails the gate as an added key does (contract_shapes_test.go).
 //
 // A field no row declares is a field the records carry no domain for and the gate holds to
 // nothing, so a strictly parsed field belongs here the day it arrives. What counts as one: a
@@ -194,11 +193,11 @@ type EnumeratedValue struct {
 // field itself arrived at, since a field that arrives at 55 can carry no value older than 55.
 // The first reading is measured rather than guessed: `legion-api.ts` and `legion-roles.ts` were
 // read at the commit that declared each contract of SupportedContracts, and the members of
-// every `z.enum` diffed. Exactly three of the lists below ever grew — `answeredBy` gained
-// `declined` at 68, `strandedClaims[].state` gained `retired` at 56, and `waitingLine.kind`
-// gained `waiting_on_issue` at 132 — so every other list is recorded whole at its own field's
-// arrival. (`suspendedBy` gained `released` at 48 and is no row here: the operator claim answers
-// carry it and no plugin parses them.)
+// every `z.enum` diffed. The lists below that ever grew are `answeredBy`, which gained
+// `declined` at 68, `strandedClaims[].state`, which gained `retired` at 56, and
+// `waitingLine.kind`, which gained `waiting_on_issue` at 132, so every other list is recorded
+// whole at its own field's arrival. (`suspendedBy` gained `released` at 48 and is no row here:
+// the operator claim answers carry it and no plugin parses them.)
 var EnumeratedFields = enumeratedFields()
 
 // enumeratedFields is every row the table holds: the state's own, the record's taken from them,
@@ -264,19 +263,19 @@ var stateEnumeratedFields = []EnumeratedField{
 	{Answer: AnswerState, KeyPath: "issues.*.gatedSteps.*.step", Values: designSteps},
 	{Answer: AnswerState, KeyPath: "issues.*.gatedSteps.*.status", Values: gatedStepStatuses},
 	// `answeredBy` of an `awaiting_person` root's wait, how the wait was answered
-	// (api.WaitingOnView.AnsweredBy, record.Answer). The one row of the table with a value
-	// younger than its own field, and the one a serving-down of a value is written for
-	// (shaping.go's withoutUnadmittedWaitAnswer).
+	// (api.WaitingOnView.AnsweredBy, record.Answer). Its list grew: `declined` arrived at 68,
+	// after the field, and a wait answered by it is served without its answered pair below that
+	// contract (shaping.go's withoutUnadmittedWaitAnswer).
 	{Answer: AnswerState, KeyPath: "issues.*.waitingOn.answeredBy", Values: waitAnswers},
 	// `memoryGroup` and `memoryDrawMode` of the issue's tree, the group drawn and the mode it
 	// was drawn under (api.Issue). Both arrived with the memory draw, which is served down
 	// below that contract whole (shaping.go's withoutMemory).
 	{Answer: AnswerState, KeyPath: "issues.*.memoryGroup", Values: memoryGroups},
 	{Answer: AnswerState, KeyPath: "issues.*.memoryDrawMode", Values: memoryDrawModes},
-	// `role` and `state` of one claim nothing will wake (api.StrandedClaim). The state is the
-	// second row of the table whose list grew: `retired` arrived at 56, and an entry carrying
-	// it is dropped whole below that contract (shaping.go's withoutRetiredStranded), so no
-	// body below 56 carries the value and the gate passes without a serving-down of its own.
+	// `role` and `state` of one claim nothing will wake (api.StrandedClaim). The state's list
+	// grew: `retired` arrived at 56, and an entry carrying it is dropped whole below that
+	// contract (shaping.go's withoutUnadmittedStrandedStates), so no body below 56 carries the
+	// value and the gate passes without a serving-down of its own.
 	{Answer: AnswerState, KeyPath: "strandedClaims.*.role", Values: claimRoles},
 	{Answer: AnswerState, KeyPath: "strandedClaims.*.state", Values: strandedStates},
 	// `role` of one wake the pacing holds (api.WakeWaiting.Role). It arrived with
@@ -320,9 +319,9 @@ var stateEnumeratedFields = []EnumeratedField{
 	// why it waits there (api.WaitingLineView, record.LinePart and record.LineKind). Both
 	// arrived with the line's own fields and are served down below that contract, where the
 	// member is rebuilt with its `place` and its `length` alone (shaping.go's
-	// withoutWhyAndLineFields). `kind` is the third row whose list grew: `waiting_on_issue`
-	// arrived at 132, and a member of that kind is served without its `kind` below that
-	// contract (shaping.go's withoutWaitingOnIssue).
+	// withoutWhyAndLineFields). `kind`'s list grew: `waiting_on_issue` arrived at 132, and a
+	// member of that kind is served without its `kind` below that contract (shaping.go's
+	// withoutUnadmittedLineKind).
 	{Answer: AnswerState, KeyPath: "issues.*.waitingLine.part", Values: lineParts},
 	{Answer: AnswerState, KeyPath: "issues.*.waitingLine.kind", Values: lineKinds},
 	// `state` of the one rendered answer an issue that is not working now carries, which of the
@@ -370,7 +369,7 @@ var waitAnswers = []EnumeratedValue{
 // strandedStates is every state a claim nothing will wake can be in. `suspended` and `failed`
 // are older than the floor; `retired` arrived at retiredStrandedContract, and an entry carrying
 // it is left out of a body below that contract rather than rewritten, since nothing of such an
-// entry is true once its state is gone (shaping.go's withoutRetiredStranded).
+// entry is true once its state is gone (shaping.go's withoutUnadmittedStrandedStates).
 var strandedStates = []EnumeratedValue{
 	{Value: string(supervise.StateFailed), Since: ServingFloor},
 	{Value: string(supervise.StateRetired), Since: retiredStrandedContract},

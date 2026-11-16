@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -265,75 +266,182 @@ func TestAPodWhoseNewestBuildStatesItsOwnContractIsServedTheOldests(t *testing.T
 
 // A value follows the pod's lowest contract where a key follows its highest, because no reader
 // requires a value and a reader whose enumeration does not name one refuses the whole body for
-// it. A pod recording 64 and 85 is served the wait of every root a person declined without its
-// answered pair: `declined` arrived at version.go's 68, and the pod's 64 process parses
-// `answeredBy` with an enumeration of the eight values before it. The `waitingOn` block itself
-// stays, with the kind and the moment every contract reads.
-func TestAMixedPodIsServedNoWaitAnswerItsOldestProcessRefuses(t *testing.T) {
-	const declined, oldest = "declined", 64
-	logs := &bytes.Buffer{}
-	handler := shapedServer(t, stateCarryingTheRestOfTheShape(t), mixedPodClaims(oldest, whyAndLineFieldsContract), logs, true)
-	answered := ""
-	for key, wait := range waitsServed(t, stateStating(t, handler, "192.0.2.1:41000", DaemonAPIVersion)) {
-		if wait.AnsweredBy == declined {
-			answered = key
+// it (shapeState). Every row of valueStrips is read here on a mixed pod, a caller that states no
+// contract in a pod whose claims record low and high at once, low below the arrival of a value
+// the row takes and high at or above it. The body served at this daemon's own contract carries
+// the value, which is what makes the fixture prove anything; a pod whose claims record high
+// alone is served it; and the mixed pod is not, since its low process refuses the whole body for
+// it. A strip keyed to the pod's highest contract serves the mixed pod the value and fails here.
+// The pod's third claim records no contract and moves neither half, and every contract of each
+// pod is one this daemon describes, so neither edge line is written.
+//
+// A case is looked up by its row's `dropped`, and a row with no case fails, so a strip is added
+// to the table with the mixed pod it is read on.
+func TestEveryValueStripFollowsThePodsLowestContract(t *testing.T) {
+	declined := string(record.AnsweredByDecline)
+	waitingOnIssue := strconv.Quote(waitingOnIssueKind)
+	cases := map[string]struct {
+		// state carries a value the row takes; low is below that value's arrival, and high at or
+		// above it.
+		state     func(t *testing.T) State
+		low, high int
+		// carries is whether a served body carries the value.
+		carries func(t *testing.T, body []byte) bool
+		// stays holds the mixed pod's body to what the strip leaves of it, read beside the body
+		// served at this daemon's own contract.
+		stays func(t *testing.T, whole, mixed []byte)
+	}{
+		// A pod recording 51 and 59 is served the report of claims nothing will wake without its
+		// retired entries, since the pod's 51 process parses `strandedClaims[].state` with an
+		// enum of `suspended` and `failed` and refuses the whole body for the `retired` of
+		// version.go's 56. Every entry whose state that process knows stays, in the order the
+		// report named it.
+		droppedStrandedState: {
+			state: populatedState, low: treeContract, high: fixAttemptsContract,
+			carries: func(t *testing.T, body []byte) bool {
+				stranded, _ := strandedServed(t, body)
+				return slices.ContainsFunc(stranded, func(entry map[string]string) bool {
+					return entry["state"] == string(supervise.StateRetired)
+				})
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				every, _ := strandedServed(t, whole)
+				var kept []map[string]string
+				for _, entry := range every {
+					if entry["state"] != string(supervise.StateRetired) {
+						kept = append(kept, entry)
+					}
+				}
+				if len(kept) == 0 {
+					t.Fatalf("the fixture's state names %v, want a retired claim nothing will wake beside claims in other states; this proves nothing", every)
+				}
+				stranded, carried := strandedServed(t, mixed)
+				if !carried {
+					t.Fatalf("the {%d, %d} pod is served no strandedClaims: the key is never absent and never null; %s",
+						treeContract, fixAttemptsContract, mixed)
+				}
+				if !reflect.DeepEqual(stranded, kept) {
+					t.Errorf("the {%d, %d} pod is served the claims nothing will wake %v, want %v: the pod's %d process refuses the whole body for a retired entry",
+						treeContract, fixAttemptsContract, stranded, kept, treeContract)
+				}
+			},
+		},
+		// A pod recording 64 and 85 is served the wait of every root a person declined without
+		// its answered pair: `declined` arrived at version.go's 68, and the pod's 64 process
+		// parses `answeredBy` with an enumeration of the eight values before it. The `waitingOn`
+		// block itself stays, with the kind and the moment every contract reads.
+		droppedWaitAnswer: {
+			state: stateCarryingTheRestOfTheShape, low: 64, high: whyAndLineFieldsContract,
+			carries: func(t *testing.T, body []byte) bool {
+				for _, wait := range waitsServed(t, body) {
+					if wait.AnsweredBy == declined {
+						return true
+					}
+				}
+				return false
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				served := waitsServed(t, mixed)
+				for key, wait := range waitsServed(t, whole) {
+					if wait.AnsweredBy != declined {
+						continue
+					}
+					got, carried := served[key]
+					if !carried {
+						t.Fatalf("the {64, %d} pod is served %s with no wait at all: %s", whyAndLineFieldsContract, key, mixed)
+					}
+					if got.AnsweredBy != "" || got.AnsweredAt != "" {
+						t.Errorf("the {64, %d} pod is served %s answered %q at %q, want neither key: the value arrived at 68 and the pod's 64 process refuses the whole body for it",
+							whyAndLineFieldsContract, key, got.AnsweredBy, got.AnsweredAt)
+					}
+					if got.Kind == "" || got.Since == "" {
+						t.Errorf("the {64, %d} pod is served %s's wait as %+v, want the kind and the moment it began: both are true at every contract",
+							whyAndLineFieldsContract, key, got)
+					}
+				}
+			},
+		},
+		// A pod recording 111 and 133 reads `kind` through its 111 process too, which parses it
+		// with a `z.enum` of the four words before 132 and refuses the whole body for
+		// `waiting_on_issue`, so a member of that kind is served without its `kind`. The band of
+		// mergeWaitContract follows the pod's highest contract and serves the same body
+		// `mergeWait`, which is what tells a strip keyed to the lowest from one keyed to the
+		// highest on one body. Every other field of the member stays, each a field of
+		// whyAndLineFieldsContract, and so does every member of another kind.
+		droppedLineKind: {
+			state: narrowingState, low: quietTimeContract, high: mergeWaitContract,
+			carries: func(t *testing.T, body []byte) bool {
+				for _, member := range waitingLineFieldsServed(t, body) {
+					if member["kind"] == waitingOnIssue {
+						return true
+					}
+				}
+				return false
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				waits := mergeWaitsServed(t, whole)
+				if len(waits) == 0 {
+					t.Fatalf("no issue of the fixture's state carries a %s; this proves nothing: %s", MergeWaitField, whole)
+				}
+				if served := mergeWaitsServed(t, mixed); !reflect.DeepEqual(served, waits) {
+					t.Errorf("the {%d, %d} pod is served the merge waits %+v, want %+v: the band follows the pod's highest contract, which reads them",
+						quietTimeContract, mergeWaitContract, served, waits)
+				}
+				served := waitingLineFieldsServed(t, mixed)
+				for key, member := range waitingLineFieldsServed(t, whole) {
+					want := member
+					if member["kind"] == waitingOnIssue {
+						want = maps.Clone(member)
+						delete(want, "kind")
+					}
+					if !reflect.DeepEqual(served[key], want) {
+						t.Errorf("the {%d, %d} pod is served %s's %s as %v, want %v: the strip takes the word the pod's %d process refuses and nothing else",
+							quietTimeContract, mergeWaitContract, key, WaitingLineField, served[key], want, quietTimeContract)
+					}
+				}
+			},
+		},
+	}
+
+	read := map[string]bool{}
+	for _, row := range valueStrips {
+		tc, cased := cases[row.dropped]
+		if !cased {
+			t.Errorf("the value strip that drops %q has no case here: a strip is added with the mixed pod it is read on", row.dropped)
+			continue
 		}
-	}
-	if answered == "" {
-		t.Fatalf("no issue of the fixture's state carries a wait answered %q; this proves nothing", declined)
-	}
+		read[row.dropped] = true
+		t.Run(row.dropped, func(t *testing.T) {
+			logs := &bytes.Buffer{}
+			state := tc.state(t)
+			handler := shapedServer(t, state, mixedPodClaims(tc.low, tc.high), logs, true)
+			whole := stateStating(t, handler, "192.0.2.1:41000", DaemonAPIVersion)
+			if !tc.carries(t, whole) {
+				t.Fatalf("the body served at %d carries no value this strip takes; this proves nothing: %s", DaemonAPIVersion, whole)
+			}
 
-	mixed := stateStating(t, handler, statePodAddr+":41000", 0)
+			alone := stateStating(t, shapedServer(t, state, podClaims(tc.high), logs, true), statePodAddr+":41000", 0)
+			if !tc.carries(t, alone) {
+				t.Errorf("a pod at %d is served no value this strip takes, want it: the value arrived at or below %d; %s",
+					tc.high, tc.high, alone)
+			}
 
-	served, carried := waitsServed(t, mixed)[answered]
-	if !carried {
-		t.Fatalf("the {%d, %d} pod is served %s with no wait at all: %s", oldest, whyAndLineFieldsContract, answered, mixed)
-	}
-	if served.AnsweredBy != "" || served.AnsweredAt != "" {
-		t.Errorf("the {%d, %d} pod is served %s answered %q at %q, want neither key: the value arrived at 68 and the pod's %d process refuses the whole body for it",
-			oldest, whyAndLineFieldsContract, answered, served.AnsweredBy, served.AnsweredAt, oldest)
-	}
-	if served.Kind == "" || served.Since == "" {
-		t.Errorf("the {%d, %d} pod is served %s's wait as %+v, want the kind and the moment it began: both are true at every contract",
-			oldest, whyAndLineFieldsContract, answered, served)
-	}
-	if logs.Len() != 0 {
-		t.Errorf("the mixed pod logged %s, want no line: both of its contracts are ones this daemon describes", logs)
-	}
-}
+			mixed := stateStating(t, handler, statePodAddr+":41000", 0)
 
-// The other value strip follows the pod's lowest contract for the same reason: a pod recording
-// 51 and 59 is served the report of claims nothing will wake without its retired entries, since
-// the pod's 51 process parses `strandedClaims[].state` with an enum of `suspended` and `failed`
-// and refuses the whole body for the `retired` of version.go's 56. Every entry whose state that
-// process knows stays, in the order the report named it.
-func TestAMixedPodIsServedNoStrandedStateItsOldestProcessRefuses(t *testing.T) {
-	logs := &bytes.Buffer{}
-	handler := shapedServer(t, populatedState(t), mixedPodClaims(treeContract, fixAttemptsContract), logs, true)
-	every, carried := strandedServed(t, stateStating(t, handler, "192.0.2.1:41000", DaemonAPIVersion))
-	var kept []map[string]string
-	for _, entry := range every {
-		if entry["state"] != string(supervise.StateRetired) {
-			kept = append(kept, entry)
+			if tc.carries(t, mixed) {
+				t.Errorf("the {%d, %d} pod is served a value this strip takes, want none: the value arrived above %d and the pod's %d process refuses the whole body for it; %s",
+					tc.low, tc.high, tc.low, tc.low, mixed)
+			}
+			tc.stays(t, whole, mixed)
+			if logs.Len() != 0 {
+				t.Errorf("the pods logged %s, want no line: every contract they record is one this daemon describes", logs)
+			}
+		})
+	}
+	for dropped := range cases {
+		if !read[dropped] {
+			t.Errorf("the case for %q reads no row of valueStrips: the row it was written for is gone or drops something else", dropped)
 		}
-	}
-	if !carried || len(kept) == len(every) || len(kept) == 0 {
-		t.Fatalf("the fixture's state names %v, want a retired claim nothing will wake beside claims in other states; this proves nothing", every)
-	}
-
-	mixed := stateStating(t, handler, statePodAddr+":41000", 0)
-
-	stranded, carriedMixed := strandedServed(t, mixed)
-	if !carriedMixed {
-		t.Fatalf("the {%d, %d} pod is served no strandedClaims: the key is never absent and never null; %s",
-			treeContract, fixAttemptsContract, mixed)
-	}
-	if !reflect.DeepEqual(stranded, kept) {
-		t.Errorf("the {%d, %d} pod is served the claims nothing will wake %v, want %v: the pod's %d process refuses the whole body for a retired entry",
-			treeContract, fixAttemptsContract, stranded, kept, treeContract)
-	}
-	if logs.Len() != 0 {
-		t.Errorf("the mixed pod logged %s, want no line: both of its contracts are ones this daemon describes", logs)
 	}
 }
 

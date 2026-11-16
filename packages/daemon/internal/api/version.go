@@ -706,7 +706,7 @@ package api
 // before 56 parses `strandedClaims[].state` with a strict enum of two values and refuses the whole
 // state body for a third, and every worker's `read_record` goes through that parse. The route
 // authenticates nobody, so a caller from a pod whose claims record a contract below 56 is served
-// the report without its retired entries (api's shapeState, withoutRetiredStranded), as a caller
+// the report without its retired entries (api's shapeState, withoutUnadmittedStrandedStates), as a caller
 // below 49 is served it without the memory group. Dropping those entries, rather than serving
 // them, is the only choice that keeps such a pod able to read the state at all: the value is the
 // claim's own state and there is no older value to put in its place, and one retired entry refuses
@@ -1631,13 +1631,13 @@ package api
 // with a `z.enum` of the
 // four words before it, which refuses a word it does not name and with it the whole state body,
 // so a caller from a pod whose claims record a contract below 132 is served every member of that
-// kind without its `kind` (shaping.go's shapeIssue, withoutWaitingOnIssue), which that schema takes as
+// kind without its `kind` (shaping.go's shapeIssue, withoutUnadmittedLineKind), which that schema takes as
 // optional; every other field of the member is 85's, `leakCheckCause` on the claim views is 87's
 // and narrowed as 87 says, the issues' `phaseEntry` and `givenEntry` are 94's and narrowed as 94
 // says, `admission.held` is 98's and narrowed as 98 says, the issues' `treeMovedAt` and
 // `quietHours` are 111's and narrowed as 111 says, and a caller below 85 has lost `kind` with the
 // rest of them already (withoutWhyAndLineFields). On this branch 132 is served down by a value
-// strip in shapeIssue, withoutWaitingOnIssue, beside the wait strip, withoutUnadmittedWaitAnswer,
+// strip in shapeIssue, withoutUnadmittedLineKind, beside the wait strip, withoutUnadmittedWaitAnswer,
 // and by no row of stateNarrowings. The change carries one store migration beside it,
 // `20261111214351`, which adds the column `ReleasedForWaitAt` is read from; a migration moves the
 // daemon's own record and is no part of this number. Nothing else of this change is on the wire.

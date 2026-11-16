@@ -34,11 +34,11 @@ var planDrawnAt = time.Date(2026, 9, 21, 18, 42, 11, 0, time.UTC)
 // phase names a phase worker role carries the entry that role stands on and the entry it was given,
 // each reviewing root of it carries what its round waits on from GitHub, every issue of a live tree
 // carries that tree's quiet time, and the issues of its drawn tree carry the experiment answers they
-// hold, so one state proves every downgrade of stateNarrowings but waitingOnIssueContract's, and
-// that they compose; it stands no member of the line of the kind that contract added, whose
-// downgrade waiting_on_issue_test.go proves. What the quiet-time band is measured on in finer grain
-// — both halves on each member of one tree, and neither on an issue whose tree has left the
-// workflow — is quiet_time_test.go's state of its own.
+// hold, so one state proves every band of stateNarrowings and that they compose; it stands no
+// member of the line of the kind 132 added, whose value strip waiting_on_issue_test.go proves.
+// What the quiet-time band is measured on in finer grain — both halves on each member of one
+// tree, and neither on an issue whose tree has left the workflow — is quiet_time_test.go's state
+// of its own.
 
 // issueViews is every issue of a state body, decoded as the plugin's reader sees it, by key.
 func issueViews(t *testing.T, body []byte) map[string]map[string]any {
@@ -393,7 +393,8 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			delete(want, "contract")
 			// A pod below retiredStrandedContract is served the report of claims nothing will
 			// wake without its retired entries, the state contract 56 added (api's
-			// withoutRetiredStranded), which is every pod of every band below this contract.
+			// withoutUnadmittedStrandedStates), which is every pod of every band below this
+			// contract.
 			if !tc.retired {
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])
 			}

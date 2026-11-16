@@ -710,8 +710,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 }
 
 // strandedWithoutRetired is the `strandedClaims` of a baseline body with its retired entries gone,
-// the report a pod below retiredStrandedContract is served (api's withoutRetiredStranded). The key
-// is never null, so a body every entry of which is retired keeps it as an empty array.
+// the report a pod below retiredStrandedContract is served (api's
+// withoutUnadmittedStrandedStates). The key is never null, so a body every entry of which is
+// retired keeps it as an empty array.
 func strandedWithoutRetired(t *testing.T, stranded any) []any {
 	t.Helper()
 	rows, ok := stranded.([]any)

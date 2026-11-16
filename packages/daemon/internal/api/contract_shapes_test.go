@@ -39,10 +39,11 @@ import (
 //
 // A record holds keys and the domains of the fields that table declares, so a serving-down that
 // moves neither is outside what it can see. The one serving-down that moves no key is
-// withoutRetiredStranded, which drops the entries of `strandedClaims` whose `state` is a word
-// contract 56 added; the table does declare that field, so a record below 56 admits two values
-// where this daemon's own admits three, and a body carrying the third below 56 is red here.
-// state_caller_test.go holds the dropping itself, entry by entry.
+// withoutUnadmittedStrandedStates, which drops the entries of `strandedClaims` whose `state`
+// arrived above the caller's contract, today the word contract 56 added; the table does declare
+// that field, so a record below 56 admits two values where this daemon's own admits three, and a
+// body carrying the third below 56 is red here. state_caller_test.go holds the dropping itself,
+// entry by entry.
 //
 // A key under a block the plugin parses loosely is recorded like any other, `settings.hooks.*`
 // and its three keys among them, and that is right: loose is not blind. A loose block passes a
@@ -1467,8 +1468,8 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 		const field = "strandedClaims.*.state"
 		const added = "parked"
 		// The second field whose values a serving-down moves, and the one that carries no
-		// serving-down of its own: withoutRetiredStranded drops the whole entry of a retired
-		// claim below 56, which is why the three states this daemon writes pass the gate
+		// serving-down of its own: withoutUnadmittedStrandedStates drops the whole entry of a
+		// retired claim below 56, which is why the three states this daemon writes pass the gate
 		// today. A fourth state served to every caller with nothing dropping its entry is
 		// caught at every contract below this daemon's own, as a tenth `answeredBy` is.
 		widened := withDeclaredValue(t, EnumeratedFields, AnswerState, field, added, DaemonAPIVersion)
