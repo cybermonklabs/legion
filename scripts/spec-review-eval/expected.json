@@ -165,6 +165,7 @@
       "id": "13-markup-heading",
       "root": "locker",
       "spec": "13-markup-heading.md",
+      "form": [{ "kind": "heading", "node": "\"## **Terms**\"" }],
       "planted": [
         { "kind": "undefined-noun", "node": "door-alarm-start", "subject": "door alarm" }
       ],

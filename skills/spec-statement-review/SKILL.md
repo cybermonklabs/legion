@@ -25,7 +25,8 @@ You judge what no program decides, and nothing else, so that one rule never gets
    Its node is its id.
    A check is a `:::check{#<id> …}` block: its text is the claim, `run` is the procedure, and `serves` names its statements.
    The terms of the request are the lines under its heading `Terms`, at any level, that start with `-`, `*` or `+`, then `**<term>**: <definition>`.
-   A heading with other text, such as `**Terms**`, `Terms:` or `terms`, is not that heading, so its lines define nothing.
+   Such a line in a statement or a check adds no term.
+   A heading with other text, such as `**Terms**`, `Terms:` or `terms`, is a finding of the form check, and it opens no terms.
    Nothing in a code fence or in a quote, a line that starts with `>`, is a statement, a check, a term or a heading.
    Then run `dispatch read --issue <KEY>`, which lists the documents of the issue.
    When they include `verification.md`, run `dispatch spec-form` and `dispatch doc-read` with `--artifact verification.md` too.

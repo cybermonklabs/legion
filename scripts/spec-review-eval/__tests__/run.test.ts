@@ -386,6 +386,33 @@ describe("blockIds", () => {
   });
 });
 
+// The form check reads a term of the request only on a term line under a heading Terms, outside
+// a code fence and outside a requirement or a check block: a line in that form inside such a
+// block is a second definition at most, and adds no term. A line inside another typed block, such
+// as an ask, is read as any other line.
+describe("termNames", () => {
+  test("reads no term line inside a requirement or a check block, nor in a code fence", () => {
+    const markdown = [
+      "## Terms",
+      "",
+      "- **chime**: A short sound that the kiosk makes for each key.",
+      ":::requirement{#kiosk-chime}",
+      "- **beep**: A sound of the kiosk.",
+      ":::",
+      '::::check{#v-chime serves="dispatch://ACME-1/spec#b-kiosk-chime"}',
+      "- **tone**: A sound of the kiosk.",
+      "::::",
+      "```text",
+      "- **buzz**: A sound of the kiosk.",
+      "```",
+      ':::ask{#ask-1 state="open"}',
+      "- **ring**: A sound of the kiosk.",
+      ":::",
+    ].join("\n");
+    expect(termNames(markdown)).toEqual(["chime", "ring"]);
+  });
+});
+
 describe("specFormCalled", () => {
   const event = (toolName: string, args: Record<string, unknown>): string =>
     JSON.stringify({ type: "tool_execution_start", toolName, args });
@@ -551,14 +578,16 @@ describe("the fixtures", () => {
   });
 
   // The form check takes a heading for the heading Terms only when its text is Terms alone, and it
-  // reads no line of a quote. Fixture 13 defines its noun only under `## **Terms**`, so to the
-  // program the noun has no definition; fixture 14 quotes a principle as a requirement block and
-  // as an entry line, so to the program neither is a statement.
-  test("fixture 13 defines its noun only under a heading **Terms**, which opens no terms", () => {
+  // reads no line of a quote. Fixture 13 defines its noun only under `## **Terms**`, a heading that
+  // reads as Terms in another form: the form check finds it (terms-heading), and it opens no
+  // terms, so to the program the noun has no definition. Fixture 14 quotes a principle as a
+  // requirement block and as an entry line, so to the program neither is a statement.
+  test("fixture 13 defines its noun only under a heading **Terms**, which the form check finds and which opens no terms", () => {
     const thirteen = fixture("13-markup-heading");
     expect(thirteen.specText).toMatch(/^## \*\*Terms\*\*$/m);
     expect(thirteen.specText).toContain("- **door alarm**: ");
     expect(termNames(thirteen.specText)).toEqual([]);
+    expect(thirteen.form).toEqual([{ kind: "heading", node: '"## **Terms**"' }]);
     expect(thirteen.planted).toEqual([
       { kind: "undefined-noun", node: "door-alarm-start", subject: "door alarm" },
     ]);
@@ -615,14 +644,15 @@ describe("the fixtures", () => {
     expect(eight.planted).toEqual([]);
   });
 
-  test("fixture 9 declares the two findings of the form check, and no other fixture declares one", () => {
+  test("fixtures 9 and 13 declare the findings of the form check, and no other fixture declares one", () => {
     expect(fixture("9-decided-findings").form).toEqual([
       { kind: "statement", node: "night-quiet" },
       { kind: "definition", node: "parcel" },
     ]);
-    for (const one of plan.fixtures.filter((other) => other.id !== "9-decided-findings")) {
-      expect(one.form, one.id).toEqual([]);
-    }
+    const declaring = ["9-decided-findings", "13-markup-heading"];
+    expect(plan.fixtures.filter((one) => one.form.length > 0).map((one) => one.id)).toEqual(
+      declaring
+    );
   });
 
   // The tester's scenario 7: a clean request, then an agent's edit that breaks the form and
@@ -666,6 +696,10 @@ describe("the fixtures", () => {
       for (const finding of one.form) {
         if (finding.kind === "definition") {
           expect(edited.join("\n"), `${one.id}: definition`).toContain(`**${finding.node}**: `);
+        } else if (finding.kind === "heading") {
+          // The form check names a heading by its line in quotes.
+          const line = JSON.parse(finding.node) as string;
+          expect(one.specText.split("\n"), `${one.id}: heading`).toContain(line);
         } else {
           expect(ids, `${one.id}: ${finding.kind} ${finding.node}`).toContain(finding.node);
         }
