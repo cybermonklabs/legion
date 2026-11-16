@@ -552,6 +552,13 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   the request that found the confirmation lapsed is refused `503 SIGNIN_UNAVAILABLE`, the sessions and the refresh token are kept, and the first request after the issuer answers again refreshes and is served.
   Logout ends Dispatch's session only, not the issuer's.
 
+- A person from outside the domain whom the hourly confirmation signs out (above) is told why: the request that ran it and every one after it, from any browser still holding the session, is `401 NO_IDENTITY` with `reason` and `login`, the address (`identity.SignedOut`), and the dashboard's sign-in page says it in words.
+  `reason` is `NOT_LISTED` once no list names the account, or `OUTSIDE_SIGNIN_OFF` for a restricted member once `DISPATCH_SIGNIN_OUTSIDE` is off.
+  It is read from the address's row and the lists at each request (`SignInRule.SignedOutReason`), not kept from the request that ended the sign-in, so it reaches the person whichever of their requests ran the confirmation, a live socket's heartbeat included, and whichever server process answers the next one, and it needs no column of its own.
+  A sign-out, an expired cookie, a person a list still names, an address another account or another sign-in holds now and a full member are told none;
+  a deployment that never set `DISPATCH_SIGNIN_OUTSIDE` holds no restricted member, so it answers as it always has.
+  A person who signed out and whom no list has named since is told `NOT_LISTED` too, at another browser still holding the session the sign-out ended.
+
 - A person is their email, so an address passed from one account to another is one person.
   In domain mode `people.sub` records the Google account (`sub`, never reused) that last signed in to the address:
   a sign-in under another `sub` ends every session of the address in the transaction that records the new one (a failed revoke records nothing, so the retry revokes again), logged `msg="dispatch: a sign-in under another Google account ended every session of the address"` at WARN with the email, and the hourly confirmation ends them when the refreshed token's `sub` is not the recorded one.
@@ -3795,6 +3802,7 @@ Each item below names a path with its method and identity, then its purpose.
   `member_kind: "restricted"` only for a restricted member, and `origins`, the canonical origin then `DISPATCH_OUTSIDE_ORIGIN`, only where that is set, so a full member's answer from a server at one origin carries those three keys alone.
   The page starts its events subscription from that id.
   The sign-in check comes first: a caller who is not signed in is `401 NO_IDENTITY` and the head is never read.
+  That 401 is `{"code":"NO_IDENTITY","error":"unauthorized"}`, except for a person from outside the domain whose sign-in the hourly confirmation ended, whose 401 here and on every route adds `reason` (`NOT_LISTED` or `OUTSIDE_SIGNIN_OFF`) and `login`, their address, and says why in `error` (Identity, above).
   A signed-in caller is `503 EVENT_HEAD_UNAVAILABLE` while no event id is proven final yet, which ends on its own and which the page asks again for, and `503 EVENT_HEAD_READ_FAILED` when the head cannot be read, which the page retries twice and then shows as an error.
 
 - `/auth/_dev/signin` (GET; none; `DISPATCH_DEV_SIGNIN=1` only; loopback peer, no forwarding header)

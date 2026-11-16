@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -162,6 +163,56 @@ func whoamiWith(handler http.Handler, response *http.Response) (int, string) {
 	return recorder.Code, recorder.Body.String()
 }
 
+// requestWith answers method path from handler carrying the session cookie response set, as the
+// dashboard's own script sends it, from the server's origin; a cookie the response deleted is not
+// sent, as a browser sends none.
+func requestWith(handler http.Handler, method, path string, response *http.Response) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, "http://dispatch.test"+path, nil)
+	if method != http.MethodGet {
+		request.Header.Set("Origin", "http://dispatch.test")
+	}
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == "dsession" && cookie.Value != "" && cookie.MaxAge >= 0 {
+			request.AddCookie(cookie)
+		}
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+// signedOutAnswer is what a 401 says of a sign-in it found ended: its code, and the reason and the
+// login it gives the person, each empty where it gives none.
+type signedOutAnswer struct {
+	Code   string `json:"code"`
+	Reason string `json:"reason"`
+	Login  string `json:"login"`
+}
+
+// signedOutOf reads recorder as a JSON 401.
+func signedOutOf(t *testing.T, what string, recorder *httptest.ResponseRecorder) signedOutAnswer {
+	t.Helper()
+	var answer signedOutAnswer
+	if recorder.Code != http.StatusUnauthorized || json.Unmarshal(recorder.Body.Bytes(), &answer) != nil {
+		t.Fatalf("%s answered %d %s, want a JSON 401", what, recorder.Code, recorder.Body.String())
+	}
+	return answer
+}
+
+// plainNoIdentity is the 401 Dispatch answered every request that proves no person before it told
+// anyone why they were signed out (identity.WriteError), byte for byte.
+const plainNoIdentity = `{"code":"NO_IDENTITY","error":"unauthorized"}` + "\n"
+
+// requirePlainNoIdentity requires recorder to be that 401: its status, its body byte for byte, its
+// JSON content type, and no cookie set.
+func requirePlainNoIdentity(t *testing.T, what string, recorder *httptest.ResponseRecorder) {
+	t.Helper()
+	if recorder.Code != http.StatusUnauthorized || recorder.Body.String() != plainNoIdentity ||
+		recorder.Header().Get("Content-Type") != "application/json" || len(recorder.Header().Values("Set-Cookie")) != 0 {
+		t.Fatalf("%s answered %d %v %q, want the 401 %q with no cookie", what, recorder.Code, recorder.Header(), recorder.Body.String(), plainNoIdentity)
+	}
+}
+
 // A verified Google account outside the domain that PRIV's list names signs in, and is recorded and
 // answered as a restricted member.
 func TestOutsideSignInAdmitsAListedAccountAsARestrictedMember(t *testing.T) {
@@ -194,7 +245,8 @@ func TestOutsideSignInRefusesAnUnlistedAccountWithThePage(t *testing.T) {
 }
 
 // Once no list names the account, the hourly confirmation ends its sign-in: the next request past
-// the hour is 401 and the stored refresh token is gone.
+// the hour is 401 NO_IDENTITY saying why (NOT_LISTED, naming the account), every request after it
+// says the same, and the stored refresh token is gone.
 func TestOutsideSignInEndsAtTheNextHourlyCheckOnceNoListNamesIt(t *testing.T) {
 	s := newOutsideSignIn(t, nil)
 	response := s.signInAs(t, s.handler, outsiderEmail)
@@ -203,12 +255,71 @@ func TestOutsideSignInEndsAtTheNextHourlyCheckOnceNoListNamesIt(t *testing.T) {
 	}
 	s.unlist(t, "PRIV", outsiderEmail)
 	ageConfirmation(t, s.people, outsiderEmail)
-	if code, body := whoamiWith(s.handler, response); code != http.StatusUnauthorized || !strings.Contains(body, "NO_IDENTITY") {
-		t.Fatalf("whoami past the hour after the delisting answered %d %s, want 401 NO_IDENTITY", code, body)
+	want := signedOutAnswer{Code: "NO_IDENTITY", Reason: "NOT_LISTED", Login: outsiderEmail}
+	for _, read := range []string{"the whoami that ran the hourly check", "the whoami after it"} {
+		if got := signedOutOf(t, read, requestWith(s.handler, http.MethodGet, "/auth/whoami", response)); got != want {
+			t.Fatalf("%s, past the hour after the delisting: %+v, want %+v", read, got, want)
+		}
 	}
 	membership, _, err := s.people.Membership(context.Background(), outsiderEmail)
 	if err != nil || membership.RefreshToken != "" {
 		t.Fatalf("the delisted account's membership %+v (%v), want its refresh token gone", membership, err)
+	}
+}
+
+// The dashboard asks several things at once, and whichever of them finds the hour lapsed runs the
+// check: an API read that ends the sign-in says why, and the whoami after it, which finds a session
+// another request ended, says the same.
+func TestOutsideSignInSaysWhyWhicheverRequestEndedIt(t *testing.T) {
+	s := newOutsideSignIn(t, nil)
+	response := s.signInAs(t, s.handler, outsiderEmail)
+	if !signedInResponse(response) {
+		t.Fatalf("the callback answered %d, want a signed-in redirect", response.StatusCode)
+	}
+	s.unlist(t, "PRIV", outsiderEmail)
+	ageConfirmation(t, s.people, outsiderEmail)
+	want := signedOutAnswer{Code: "NO_IDENTITY", Reason: "NOT_LISTED", Login: outsiderEmail}
+	if got := signedOutOf(t, "GET /api/v1/projects", requestWith(s.handler, http.MethodGet, "/api/v1/projects", response)); got != want {
+		t.Fatalf("the API read that ran the hourly check: %+v, want %+v", got, want)
+	}
+	if got := signedOutOf(t, "whoami", requestWith(s.handler, http.MethodGet, "/auth/whoami", response)); got != want {
+		t.Fatalf("the whoami after it: %+v, want %+v", got, want)
+	}
+}
+
+// A person who signs out is told no reason: whoami from the browser that signed out, which holds
+// no cookie, and from another browser of theirs, whose session the sign-out ended, is the 401
+// Dispatch has always answered.
+func TestOutsideSignInSignOutIsAPlainNoIdentity(t *testing.T) {
+	s := newOutsideSignIn(t, nil)
+	response := s.signInAs(t, s.handler, outsiderEmail)
+	if !signedInResponse(response) {
+		t.Fatalf("the callback answered %d, want a signed-in redirect", response.StatusCode)
+	}
+	logout := requestWith(s.handler, http.MethodPost, "/auth/logout", response)
+	if logout.Code != http.StatusOK {
+		t.Fatalf("POST /auth/logout answered %d %s, want 200", logout.Code, logout.Body.String())
+	}
+	requirePlainNoIdentity(t, "whoami from the browser that signed out", requestWith(s.handler, http.MethodGet, "/auth/whoami", logout.Result()))
+	requirePlainNoIdentity(t, "whoami from another browser holding the ended session", requestWith(s.handler, http.MethodGet, "/auth/whoami", response))
+}
+
+// With DISPATCH_SIGNIN_OUTSIDE never set, a domain member whose sign-in the hourly check ends gets
+// the 401 Dispatch answered before outside sign-in existed, byte for byte, at the request that ran
+// the check and at every request after it, an API read included.
+func TestOutsideSignInNeverSetAnswersAnEndedDomainMemberAsBefore(t *testing.T) {
+	s := newOutsideSignIn(t, map[string]string{"DISPATCH_SIGNIN_OUTSIDE": ""})
+	signedIn := googleSignIn(t, s.handler, s.pool, "example.com")
+	if signedIn.Code != http.StatusFound || !sessionCookieSet(signedIn) {
+		t.Fatalf("an account of example.com: the callback answered %d %s, want a signed-in redirect", signedIn.Code, signedIn.Body.String())
+	}
+	s.pool.FailToken(http.StatusBadRequest, "invalid_grant")
+	ageConfirmation(t, s.people, privOwner)
+	requirePlainNoIdentity(t, "the whoami that ran the hourly check", requestWith(s.handler, http.MethodGet, "/auth/whoami", signedIn.Result()))
+	requirePlainNoIdentity(t, "the whoami after it", requestWith(s.handler, http.MethodGet, "/auth/whoami", signedIn.Result()))
+	requirePlainNoIdentity(t, "GET /api/v1/projects after it", requestWith(s.handler, http.MethodGet, "/api/v1/projects", signedIn.Result()))
+	if membership, _, err := s.people.Membership(context.Background(), privOwner); err != nil || membership.RefreshToken != "" {
+		t.Fatalf("%s's membership %+v (%v), want the refresh token the check ended gone", privOwner, membership, err)
 	}
 }
 
@@ -221,7 +332,8 @@ func TestOutsideSignInIsRefusedWithTheSettingOff(t *testing.T) {
 	}
 }
 
-// Turning outside sign-in off ends a restricted member's sign-in at its next hourly confirmation.
+// Turning outside sign-in off ends a restricted member's sign-in at its next hourly confirmation,
+// and the 401 says why (OUTSIDE_SIGNIN_OFF, naming the account) there and at every request after.
 func TestOutsideSignInTurnedOffEndsARestrictedSessionAtTheHourlyCheck(t *testing.T) {
 	s := newOutsideSignIn(t, nil)
 	response := s.signInAs(t, s.handler, outsiderEmail)
@@ -232,8 +344,11 @@ func TestOutsideSignInTurnedOffEndsARestrictedSessionAtTheHourlyCheck(t *testing
 	off.SignInOutside = false
 	turnedOff := s.router(t, off)
 	ageConfirmation(t, s.people, outsiderEmail)
-	if code, body := whoamiWith(turnedOff, response); code != http.StatusUnauthorized {
-		t.Fatalf("whoami past the hour on a server with outside sign-in off answered %d %s, want 401", code, body)
+	want := signedOutAnswer{Code: "NO_IDENTITY", Reason: "OUTSIDE_SIGNIN_OFF", Login: outsiderEmail}
+	for _, read := range []string{"the whoami that ran the hourly check", "the whoami after it"} {
+		if got := signedOutOf(t, read, requestWith(turnedOff, http.MethodGet, "/auth/whoami", response)); got != want {
+			t.Fatalf("%s, on a server with outside sign-in off: %+v, want %+v", read, got, want)
+		}
 	}
 }
 

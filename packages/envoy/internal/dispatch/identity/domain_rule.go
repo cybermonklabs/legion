@@ -111,6 +111,31 @@ func endSubject(ctx context.Context, people auth.PeopleStore, email, subject, re
 	return ErrNoIdentity
 }
 
+// SignedOutReason is SignedOutOutsideOff for a restricted member whose sign-in no longer stands
+// (endedRestricted): DomainRule admits nobody from outside the domain, so only a deployment that
+// once signed people from outside in (OutsideRule) holds such a row, and its next hourly
+// confirmation under this rule ends it. Everyone else is told no reason, so a deployment that
+// never set DISPATCH_SIGNIN_OUTSIDE answers as it always has.
+func (r DomainRule) SignedOutReason(ctx context.Context, people auth.PeopleStore, email string) (string, error) {
+	ended, err := endedRestricted(ctx, people, email)
+	if err != nil || !ended {
+		return "", err
+	}
+	return SignedOutOutsideOff, nil
+}
+
+// endedRestricted reads email's row (auth.PeopleStore.Membership) and reports whether it is a
+// restricted member's whose sign-in no longer stands: the row holds no refresh token, which the
+// hourly confirmation's end and a sign-out both forget, and a sign-in by anyone since would have
+// written again.
+func endedRestricted(ctx context.Context, people auth.PeopleStore, email string) (bool, error) {
+	membership, found, err := people.Membership(ctx, email)
+	if err != nil {
+		return false, err
+	}
+	return found && membership.RefreshToken == "" && membership.Kind == model.MemberRestricted, nil
+}
+
 // ConfirmCookie reads the address's row (auth.PeopleStore.Membership) and refuses with
 // ErrSignInSuperseded when it no longer names subject: a sign-in by another Google account
 // committed in between and has already taken the address.

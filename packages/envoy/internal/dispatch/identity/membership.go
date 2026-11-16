@@ -129,6 +129,22 @@ func (m *Membership) end(ctx context.Context, email, subject, reason string) err
 	return m.Rule.End(ctx, m.People, m.Sessions, email, subject, reason)
 }
 
+// signedOut is ErrNoIdentity for email, whose session has ended, told as SignedOut when Rule names
+// the reason (SignInRule.SignedOutReason). A reason Rule cannot read (the database or the access
+// lists not answering) is no reason: the request is refused either way, so it is ErrNoIdentity
+// alone, logged.
+func (m *Membership) signedOut(ctx context.Context, email string) error {
+	reason, err := m.Rule.SignedOutReason(ctx, m.People, email)
+	if err != nil {
+		slog.Warn("dispatch: could not read why a person's session ended; the request is refused without a reason", "email", email, "error", err)
+		return ErrNoIdentity
+	}
+	if reason == "" {
+		return ErrNoIdentity
+	}
+	return &SignedOut{Email: email, Reason: reason}
+}
+
 // fresh reports whether membership's confirmation stands: it exists and the store measures it
 // younger than MembershipMaxAge.
 func (m *Membership) fresh(membership auth.PersonMembership) bool {

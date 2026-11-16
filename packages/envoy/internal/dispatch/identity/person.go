@@ -75,6 +75,13 @@ type SignInRule interface {
 	ConfirmSubject(claims oidc.Claims, stored string) (string, error)
 	// End ends email's sign-in under this rule, returning ErrNoIdentity once it no longer stands.
 	End(ctx context.Context, people auth.PeopleStore, sessions auth.SessionStore, email, subject, reason string) error
+	// SignedOutReason is the reason a 401 tells the person whose session for email has ended
+	// (SignedOut.Reason), read from people and whatever else the rule reads, or "" for none. A
+	// rule tells one only while no sign-in of the address stands (endedRestricted: its refresh
+	// token is gone) and only for a person it no longer admits, so a full member, and a person
+	// whose sign-in another account took or who signed in again, is told none; GroupRule tells
+	// none at all.
+	SignedOutReason(ctx context.Context, people auth.PeopleStore, email string) (string, error)
 	// WriteSignIn records person's sign-in under this rule (auth.PeopleStore.SignIn or
 	// .SignInSubject), with the member kind Person named, given the subject this rule's own
 	// Subject method already resolved; the store dates it by the database's clock.

@@ -156,18 +156,20 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 // text) is no refresh token: the read answers none, so the person signs in again, and logs that
 // without the value. The read writes nothing: the next boot retires a token stored in plain text
 // (RetirePlainRefreshTokens), and the person's next sign-in replaces whatever the row holds. The
-// subject is read whatever the refresh token holds.
+// subject and the member kind are read whatever the refresh token holds.
 func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.PersonMembership, bool, error) {
 	var sealed *string
 	var age *time.Duration
+	var kind string
 	membership := auth.PersonMembership{}
-	err := s.pool.QueryRow(ctx, `select refresh_token, now() - confirmed_at, coalesce(sub, '') from people where email = $1`, email).Scan(&sealed, &age, &membership.Subject)
+	err := s.pool.QueryRow(ctx, `select refresh_token, now() - confirmed_at, coalesce(sub, ''), member_kind from people where email = $1`, email).Scan(&sealed, &age, &membership.Subject, &kind)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return auth.PersonMembership{}, false, nil
 	}
 	if err != nil {
 		return auth.PersonMembership{}, false, fmt.Errorf("read membership of %q: %w", email, err)
 	}
+	membership.Kind = model.MemberKind(kind)
 	// people's check pairs the two: a row holds both or neither.
 	if sealed == nil {
 		return membership, true, nil
