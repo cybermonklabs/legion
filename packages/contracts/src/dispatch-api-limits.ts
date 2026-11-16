@@ -202,8 +202,9 @@ export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
  * only the OAuth scope `read`, to a route the read list does not name. Such a token names a
  * service and a session, no person and no project, and Dispatch serves it on the routes its read
  * list (`readScopeRoutes`) names and refuses it on every other one, before the route's handler
- * runs and before its idempotency key is read, so nothing it was refused on wrote anything. No
- * sign-in and no other scope makes the request possible for that token.
+ * runs and before its idempotency key is read, so the refused request claims no key and writes
+ * nothing but the row that records its DPoP proof as spent. No sign-in and no other scope makes
+ * the request possible for that token.
  */
 export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
 
