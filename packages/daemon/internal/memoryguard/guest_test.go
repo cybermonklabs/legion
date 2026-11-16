@@ -677,6 +677,42 @@ func TestGuestNamesNoneOfMoreProcessesShowingTheKillThanKillsPending(t *testing.
 	}
 }
 
+// Processes a pass set aside because more showed the kill than kills were pending go on counting
+// while they are in /proc: the tester's cc1 and ld both show SIGKILL at a rise of one, and the pass
+// names neither. Later in the same wait another sender's SIGKILL reaches the tester's sleep, which
+// the watch holds. sleep is then one candidate beside two counted processes against one kill: the
+// pass reads the counter again, finds no rise, and names none, and the kill has its unnamed line.
+func TestGuestCountsWhatAPassSetAsideAgainstAnotherSendersSIGKILLInTheWait(t *testing.T) {
+	const cc1, ld, sleep = 817, 819, 820
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(command(cc1, 8170, "cc1", 1300, 300*mib), command(ld, 8190, "ld", 1200, 900*mib),
+		command(sleep, 8200, "sleep", 1000, 4*mib))
+	classes[cc1], classes[ld], classes[sleep] = Class{Role: "tester"}, Class{Role: "tester"}, Class{Role: "tester"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	reaped(pod, cc1, 8170, "cc1")
+	reaped(pod, ld, 8190, "ld")
+	cgroup.setKills(1)
+	h.tick()
+	// Another sender's SIGKILL reaches sleep in the same wait.
+	showKill(pod, sleep, "sleep", false)
+	h.tick()
+	if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+		t.Fatalf("the watch wrote %q and reported %+v, want neither: sleep (%d) showed another sender's SIGKILL beside two set-aside processes; the log:\n%s",
+			ended, kills, sleep, h.logged())
+	}
+	h.tickAfter(guestKillWait)
+	if got, want := h.lines("killed unnamed"), unnamedLine(1, 1, 700*mib, gib, 16*mib); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the unnamed lines are %q, want %q alone; the log:\n%s", got, want, h.logged())
+	}
+	if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+		t.Fatalf("the watch wrote %q and reported %+v after the wait, want neither; the log:\n%s", ended, kills, h.logged())
+	}
+}
+
 // A process named for a kill is evidence for no later one: the tester's python3 shows the kernel's
 // kill and is named for the first rise, and is still in /proc, SIGKILL pending, when the counter
 // rises again. No other process shows a kill, so the second rise names no process, python3 is not
@@ -940,37 +976,122 @@ func TestGuestNamesNoProcessFirstReadAfterItsKill(t *testing.T) {
 	}
 }
 
-// A process that a scan first reads with SIGKILL already pending is evidence for no later kill,
-// whether or not a kill is pending then: that SIGKILL came before the watch knew the process. The
-// first rise kills a process no scan read, and its wait ends with its unnamed line. The tester's
-// cc1, still freeing its memory with SIGKILL pending, is then first read by a scan. The second rise
-// kills the tester's python3, which shows the kill: python3 alone is named, and cc1 never.
-func TestGuestNamesNoProcessFirstReadWithSIGKILLPendingForALaterKill(t *testing.T) {
-	const cc1, python = 951, 952
+// A process that a scan first reads after the kernel killed it counts against the kill pending
+// while it is in /proc, so a SIGKILL another sender sends in the same wait is named for no kill.
+// The tester's cc1 starts after a scan, and before the next scan the kernel kills it: the counter
+// reads one, and cc1 shows SIGKILL pending. That scan's pass has no candidate, since the watch does
+// not know cc1 yet, and its snapshot first reads cc1 with SIGKILL pending. During the wait the
+// role's own kill -9 reaches the tester's sleep, which the watch held before the rise. The pass at
+// the next scan counts two processes against one kill, reads the counter again, finds no rise, and
+// names neither; the tester is told nothing, and the kill has its unnamed line once the wait ends.
+func TestGuestCountsAProcessFirstReadAfterItsKillAgainstAnotherSendersSIGKILLInTheWait(t *testing.T) {
+	const cc1, sleep = 953, 954
 	pod := newFakePod(t)
 	pod.setSelfScore(0)
 	classes := guestTree(pod, 0)
-	pod.addGuest(command(python, 9520, "python3", 1300, 900*mib))
-	classes[cc1], classes[python] = Class{Role: "tester"}, Class{Role: "tester"}
+	pod.addGuest(command(sleep, 9540, "sleep", 1001, mib))
+	classes[cc1], classes[sleep] = Class{Role: "tester"}, Class{Role: "tester"}
 	cgroup := newFakeCgroup(t, cgroupV2)
 	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
 
+	// cc1 starts after that scan, and the kernel kills it before the next one.
+	pod.addGuest(command(cc1, 9530, "cc1", 0, 300*mib))
+	showKill(pod, cc1, "cc1", false)
 	cgroup.setKills(1)
 	h.tick()
-	h.tickAfter(guestKillWait)
-	if got := h.lines("killed unnamed"); len(got) != 1 {
-		t.Fatalf("the unnamed lines after the first wait are %q, want one; the log:\n%s", got, h.logged())
+	// The role's own kill -9 reaches sleep during the wait.
+	showKill(pod, sleep, "sleep", false)
+	h.tick()
+	if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+		t.Fatalf("the watch wrote %q and reported %+v, want neither: cc1 (%d), first read with SIGKILL pending, and sleep (%d) show one kill; the log:\n%s",
+			ended, kills, cc1, sleep, h.logged())
 	}
-	pod.addGuest(command(cc1, 9510, "cc1", 0, 300*mib))
+	h.tickAfter(guestKillWait)
+	if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+		t.Fatalf("the watch wrote %q and reported %+v after the wait, want neither; the log:\n%s", ended, kills, h.logged())
+	}
+	if got, want := h.lines("killed unnamed"), unnamedLine(1, 1, 700*mib, gib, 16*mib); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the unnamed lines are %q, want %q alone; the log:\n%s", got, want, h.logged())
+	}
+}
+
+// A process that a scan first reads with SIGKILL already pending while no kill is pending is never
+// named either, and counts against the kills pending at each later rise while it is in /proc, a
+// zombie too: its SIGKILL can be the kernel's, for a rise that comes after that scan's read of the
+// counter, or another sender's. The tester's cc1 starts after a scan, and the next scan first reads
+// it with SIGKILL pending, the counter not risen yet. The counter then rises with no other process
+// showing the kill: cc1 is named for none, and the kill has its unnamed line once the wait ends.
+// cc1 exits, a zombie its parent has not reaped, and in a later wait the kernel kills the tester's
+// python3, which shows the kill: the pass counts two processes against one kill, reads the counter
+// again, finds no rise, and names neither, and that kill has its unnamed line too. cc1's and
+// python3's parents then reap them, the next scan lets them go, and at the third rise the
+// tester's node, which shows the kill, is named, alone.
+func TestGuestCountsAProcessFirstReadWithSIGKILLPendingAtEachLaterRiseUntilItLeaves(t *testing.T) {
+	const cc1, python, node = 951, 952, 957
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(command(python, 9520, "python3", 1300, 900*mib), command(node, 9570, "node", 1200, 700*mib))
+	classes[cc1], classes[python], classes[node] = Class{Role: "tester"}, Class{Role: "tester"}, Class{Role: "tester"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+	nothingNamed := func(when string) {
+		t.Helper()
+		if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+			t.Fatalf("the watch wrote %q and reported %+v %s, want neither: cc1 (%d) was first read with SIGKILL pending and is still in /proc; the log:\n%s",
+				ended, kills, when, cc1, h.logged())
+		}
+	}
+	first, second := unnamedLine(1, 1, 700*mib, gib, 16*mib), unnamedLine(1, 2, 700*mib, gib, 16*mib)
+
+	// cc1 starts after that scan, and the next scan first reads it with SIGKILL pending.
+	cc1Process := command(cc1, 9510, "cc1", 0, 300*mib)
+	pod.addGuest(cc1Process)
 	showKill(pod, cc1, "cc1", false)
 	h.tick()
+	// The counter rises, and no other process shows the kill.
+	cgroup.setKills(1)
+	h.tick()
+	nothingNamed("at the first rise")
+	h.tickAfter(guestKillWait)
+	nothingNamed("after the first wait")
+	if got := h.lines("killed unnamed"); !slices.Equal(got, []string{first}) {
+		t.Fatalf("the unnamed lines after the first wait are %q, want %q alone; the log:\n%s", got, first, h.logged())
+	}
+
+	// cc1 exits, a zombie its parent has not reaped, which the scan leaves out.
+	cc1Process.zombie, cc1Process.resident = true, 0
+	pod.add(cc1Process.fakeProcess)
+	showKill(pod, cc1, "cc1", true)
+	h.tick()
+	// The kernel kills python3, which shows the kill.
 	reaped(pod, python, 9520, "python3")
 	cgroup.setKills(2)
 	h.tick()
+	nothingNamed("at the second rise")
+	h.tickAfter(guestKillWait)
+	nothingNamed("after the second wait")
+	if got := h.lines("killed unnamed"); !slices.Equal(got, []string{first, second}) {
+		t.Fatalf("the unnamed lines after the second wait are %q, want %q; the log:\n%s", got, []string{first, second}, h.logged())
+	}
+
+	// cc1's and python3's parents reap them, and the next scan lets both go: python3, which the
+	// second pass set aside, counted as well while it was in /proc. The kernel kills node, which
+	// shows the kill.
+	pod.remove(cc1)
+	pod.remove(python)
+	h.tick()
+	reaped(pod, node, 9570, "node")
+	cgroup.setKills(3)
+	h.tick()
 	kills := h.reported()
-	if len(kills) != 1 || kills[0].PID != python || kills[0].SizeBytes != 900*mib {
-		t.Fatalf("the sink took %+v, want python3 (%d) alone at %d bytes; cc1 (%d) was first read with SIGKILL pending; the log:\n%s",
-			kills, python, 900*mib, cc1, h.logged())
+	if len(kills) != 1 || kills[0].PID != node || kills[0].Role != "tester" || kills[0].SizeBytes != 700*mib || kills[0].Sequence != 1 {
+		t.Fatalf("the sink took %+v, want node (%d) alone, the tester's, at %d bytes: cc1 (%d) has left /proc; the log:\n%s",
+			kills, node, 700*mib, cc1, h.logged())
+	}
+	h.tickAfter(guestKillWait)
+	if got := h.lines("killed unnamed"); !slices.Equal(got, []string{first, second}) {
+		t.Fatalf("the unnamed lines after the third wait are %q, want %q: node was named for the third kill; the log:\n%s", got, []string{first, second}, h.logged())
 	}
 }
 
@@ -1449,16 +1570,16 @@ func TestGuestNamesARolesZombieAgentAndTakesTheZombieForNoDepartureUntilItsShimR
 	}
 }
 
-// A pass that sees a session process leave /proc only after its status reads cannot order that
-// departure against a SIGKILL those reads saw: on the stop path role-init sends kill(-1) as soon as
-// it has reaped the shim, and the shim's finish ends the renewer through exec's Cancel once it has
-// reaped the agent, each just after a departure. So such a pass records the departure, which ends
-// the role's session at that same pass, and sets aside each process of the role that shows the
-// kill. The kernel kills the tester's python3, whose parent reaps it at once. While the pass at the
-// next scan waits on the status of the tester's rg, the tester's agent and shim leave /proc, and
-// then rg's status shows SIGKILL pending. rg is named at no pass, the tester is told nothing, and
-// the kill has its unnamed line once the wait ends. The same departures before that scan name
-// nothing either.
+// A pass that sees a session process leave /proc, at its read of the session processes after its
+// status reads, cannot order that departure against a SIGKILL those reads saw: on the stop path
+// role-init sends kill(-1) as soon as it has reaped the shim, and the shim's finish ends the
+// renewer through exec's Cancel once it has reaped the agent, each just after a departure. So the
+// pass records the departure, which ends the role's session at that same pass, and sets aside
+// each process of the role that shows the kill. The kernel kills the tester's python3, whose
+// parent reaps it at once. While the pass at the next scan waits on the status of the tester's
+// rg, the tester's agent and shim leave /proc, and then rg's status shows SIGKILL pending. rg is
+// named at no pass, the tester is told nothing, and the kill has its unnamed line once the wait
+// ends. The same departures before that scan name nothing either.
 func TestGuestNamesNoProcessOfARoleWhoseSessionLeavesWhileThePassReadsStatuses(t *testing.T) {
 	const python, rg = 936, 937
 	for _, tc := range []struct {
@@ -1508,7 +1629,7 @@ func TestGuestNamesNoProcessOfARoleWhoseSessionLeavesWhileThePassReadsStatuses(t
 	}
 }
 
-// A departure that a pass sees only after its status reads ends its own role's session alone:
+// A departure that a pass sees after its status reads ends its own role's session alone:
 // role-init's kill(-1), the renewer's Cancel and the warm-up's WaitDelay, which it can come just
 // before, each reach the processes of that role and no other. The kernel kills the tester's agent,
 // which shows the kill while its memory is freed. While the pass at the next scan waits on the

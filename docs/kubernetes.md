@@ -3468,11 +3468,13 @@ It then reads that process's start time again, so that a pid back with another s
 A process that shows SIGKILL pending is not read again, and each pass weighs it until one names it or sets it aside; after that it is never weighed for a later kill while the watch holds it, so a process the kernel stopped is named once.
 Every pass follows one rule: it names a process only on the sign that process shows, so a delay can leave a kill unnamed but never names a wrong process.
 Of the processes that a pass weighs, it first sets aside those of a role whose session has ended (below).
-Where the rest are no more than the kills left to name, each is named for one kill, with the role and the size that the last scan whose snapshot came before that pass read of it.
+The pass counts the rest with each process that a scan first read with SIGKILL already pending (`size`, below), which no pass names.
+Where they are no more than the kills left to name, each of the rest is named for one kill, with the role and the size that the last scan whose snapshot came before that pass read of it.
 Where they are more, the watch reads the counter again.
 Where the counter rose, the kernel has stopped another process since the last read: the pass names none of the rest and sets none of them aside, and it leaves them, with what the watch read of them, to the next pass, which weighs them against the larger count.
 That is the one case where a pass leaves a process to the next, and it comes after the pass has set aside the processes of a role whose session ended, which the next pass would set aside too: a role's session that has ended stays ended for the rest of the wait.
-Where the counter did not rise, the sign does not say which one the kernel stopped, and the watch sets them all aside and names none of them.
+Where the counter did not rise, the sign does not say which one the kernel stopped, and the watch sets the rest all aside and names none of them.
+Those processes go on counting, as a process first read with SIGKILL pending does, until they leave `/proc`, so a process that another sender SIGKILLs later in the wait meets the same count rather than a name.
 
 A role's session ends with a SIGKILL of its own `role-init`'s.
 Once the role's shim has exited, `role-init` sends SIGTERM to every process of the role's namespace, waits up to 2 s (`roleNamespaceDrain`) for them to go, and then sends SIGKILL to each one left (`kill(-1)`, `runRoleShim` in `packages/daemon/internal/launcher/roleinit_linux.go`), which shows in `ShdPnd` as the kernel's does.
@@ -3547,7 +3549,10 @@ The guest watch fills it from what it read:
 - `size` is the process's resident size at the last scan whose snapshot came before the pass, at a scan or at a wake, that saw SIGKILL pending in it, so its size before the kernel freed its memory.
   The kernel raises the counter before it sends SIGKILL and frees the memory only after it, and a scan reads the processes before the counter and their `status` after both, so a process that the watch already held and that a scan read while its memory was freed shows SIGKILL pending at that same scan.
   A pass reads only the processes that the watch already holds, so a process that started after one scan and that the kernel stopped before the next is first read by that next scan, while its memory is freed.
-  So the watch reads the `status` of each process that a scan reads for the first time, and a process that already shows SIGKILL pending is set aside: it is never named at that size, nor for a later kill, since that SIGKILL came before the watch knew the process, and its own kill ends on the `killed unnamed` line.
+  So the watch reads the `status` of each process that a scan reads for the first time, at every scan, whether or not kills are pending, and a process that already shows SIGKILL pending is never named, at that size or for any kill.
+  That SIGKILL is the sign of a kill that the counter counted already, of one whose rise comes after that scan read the counter, since the kernel can raise the counter and send SIGKILL between the two reads, or of none, another sender's.
+  Until that process leaves `/proc`, and a zombie has not left, every pass counts it with the processes that it weighs against the kills left to name, in that wait and in any later one.
+  So where one kill is left to name and another process shows SIGKILL pending beside it, the pass reads the counter again, and where the counter did not rise, it names neither, and the kill ends on the `killed unnamed` line.
 
 - `reading` is the cgroup's anonymous memory, `anon` in `memory.stat` (`total_rss` on v1).
 
