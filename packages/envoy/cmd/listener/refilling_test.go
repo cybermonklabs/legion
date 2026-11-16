@@ -506,7 +506,7 @@ func TestTheListsMakeNoNATSReadWhileNATSStalls(t *testing.T) {
 	for _, row := range rows {
 		topics[row.SessionID] = row.Topics
 	}
-	want := map[string][]string{"ses_stall_joined": {contracts.AgentSubject("ses_stall_joined")}, "ses_stall_unsubscribed": nil}
+	want := map[string][]string{"ses_stall_joined": {contracts.AgentSubject("ses_stall_joined")}, "ses_stall_unsubscribed": []string{}}
 	if !reflect.DeepEqual(topics, want) {
 		t.Fatalf("GET /v1/sessions while NATS stalls listed topics %v, want %v", topics, want)
 	}
