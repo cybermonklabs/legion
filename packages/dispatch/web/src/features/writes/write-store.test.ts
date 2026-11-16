@@ -1339,6 +1339,28 @@ test("409 KEY_COMMITTED is a landing: null, nothing kept, and every read refresh
   });
 });
 
+// A landing is told before the store reads anything again: a listener that orders what Dispatch
+// answered by when each read went out (`issue-field-writes.ts`) counts every read the landing
+// starts as sent after it.
+test("a landing with no answer tells its outcome before it reads every query again", async () => {
+  await onFakeClock(async () => {
+    const { tab } = storeOf();
+    const client = signedIn();
+    const order: string[] = [];
+    spyOn(client, "invalidateQueries").mockImplementation(async () => {
+      order.push("read again");
+    });
+    const writes = new Writes(client, tab.page(), memoryFiles());
+    writes.onOutcome(({ kind }) => order.push(kind));
+    const landed = statusWrite(writes, () =>
+      Promise.reject(new ApiError(409, { code: "KEY_COMMITTED", error: "made" }))
+    );
+    await settle();
+    expect(await landed).toBeNull();
+    expect(order).toEqual(["landed", "read again"]);
+  });
+});
+
 // The reader was stopping a write when the page reloaded, so its last attempt went with the page.
 // The reload asks once more under its key and makes no attempt after that one.
 test("a write the reader was stopping resumes with exactly one attempt", async () => {

@@ -1053,7 +1053,10 @@ export class Writes {
   }
 
   /** The write `entry` landed with `answer` (`null` for a landing with none): it leaves, or stays
-   *  made for its kind to show, and its kind refreshes what it wrote. */
+   *  made for its kind to show, and its kind refreshes what it wrote. The landing is told before
+   *  the store reads anything again for it, so every read it starts was sent after it: a listener
+   *  that orders Dispatch's answers by when each read went out (`issue-field-writes.ts`) counts
+   *  those reads as newer than the landing. */
   #landed(entry: Entry, answer: unknown): void {
     const kind = kinds.get(entry.write.kind);
     const awaited = entry.press !== undefined;
@@ -1067,8 +1070,10 @@ export class Writes {
       this.#remove(entry);
     }
     if (kind?.landed !== undefined) kind.landed(this.#client, entry.write, answer, awaited);
-    else if (!awaited || answer === null) void this.#client.invalidateQueries();
     this.#emit({ answer, kind: "landed", write: entry.write });
+    if (kind?.landed === undefined && (!awaited || answer === null)) {
+      void this.#client.invalidateQueries();
+    }
     this.#advance(entry.write.target);
   }
 

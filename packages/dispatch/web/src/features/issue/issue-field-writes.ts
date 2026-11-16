@@ -9,9 +9,8 @@ import {
 
 import { issuePatchRequest, type WriteRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { boardMoveMutationKey, inboxQuery, projectDefaultAssigneesQuery } from "../../api/queries";
-import type { InboxRow, Issue, IssueDetails, IssuePriority, IssueSummary } from "../../api/types";
-import { issueProject } from "../../lib/issue-key";
+import { boardMoveMutationKey } from "../../api/queries";
+import type { Issue, IssuePriority } from "../../api/types";
 import type { BoardMoveVariables } from "../project/board-moves";
 import { type Shape, shape } from "../writes/write-storage";
 import {
@@ -22,6 +21,20 @@ import {
   type Writes,
   writesOf,
 } from "../writes/write-store";
+import {
+  answeredLooks,
+  cachedLook,
+  cacheOf,
+  everyField,
+  fieldLook,
+  inboxKey,
+  issueAnswer,
+  issueLook,
+  type Look,
+  pickLook,
+  type Showing,
+  shownOn,
+} from "./issue-field-looks";
 
 /** The value each picked field of an issue takes: a priority, an assignee's login, a repository
  *  (owner/name); `null` unsets it. */
@@ -32,9 +45,6 @@ export interface IssueFieldValues {
 }
 
 export type IssueField = keyof IssueFieldValues;
-
-/** Every field of an issue a pick changes. */
-const everyField: readonly IssueField[] = ["assignee", "priority", "repo"];
 
 /** One pick as the write store holds it and a reload restores it: the issue, the field, and the
  *  value picked. */
@@ -96,297 +106,6 @@ export function sameField(
   return a.field === b.field && a.issueKey === b.issueKey;
 }
 
-/** The lists of issues a pick shows on beside the issue's detail: each project's
- *  (`["issues", "project", …]`, its board and its table) and each of the Priorities view
- *  (`["issues", "advances", …]`, `/priorities` and `/priorities/<id>`). */
-const issueLists: readonly unknown[] = ["project", "advances"];
-const inboxKey = inboxQuery().queryKey;
-
-/** The fields of an issue a pick changes, as its detail and its row of each list of issues carry
- *  them. */
-type IssueFields = Pick<Issue, "assignee" | "priority" | "repo" | "resolved_repo">;
-
-/** How one field of an issue shows wherever the issue is drawn: the issue's own fields, and, for
- *  the assignee, the person each of its Inbox rows waits on as Dispatch last answered it, by ask
- *  id (`waiting`); without it, that person follows the rule `showOnInboxRow` keeps. */
-interface Look {
-  readonly fields: Partial<IssueFields>;
-  readonly waiting?: ReadonlyMap<string, string | undefined>;
-}
-
-/** A look of one field of one issue to put on every cache that draws it. */
-interface Showing {
-  readonly field: IssueField;
-  readonly issueKey: string;
-  readonly look: Look;
-}
-
-/** How `pick` shows. An own repository is also the one the issue resolves to; an inherited one
- *  is left to Dispatch's answer. */
-function pickLook(pick: IssueFieldPick): Look {
-  switch (pick.field) {
-    case "assignee":
-      return { fields: { assignee: pick.value } };
-    case "priority":
-      return { fields: { priority: pick.value } };
-    case "repo":
-      return {
-        fields:
-          pick.value === null ? { repo: null } : { repo: pick.value, resolved_repo: pick.value },
-      };
-  }
-}
-
-/** How `field` shows as `issue` - Dispatch's answer, a cache's copy of it, or what an answer kept
- *  carries of it (`pickedFields`) - carries it. */
-function issueLook(field: IssueField, issue: Partial<IssueFields>): Look {
-  switch (field) {
-    case "assignee":
-      return { fields: { assignee: issue.assignee } };
-    case "priority":
-      return { fields: { priority: issue.priority } };
-    case "repo":
-      return { fields: { repo: issue.repo, resolved_repo: issue.resolved_repo } };
-  }
-}
-
-/** Every Inbox row the client holds. */
-function inboxRows(client: QueryClient): InboxRow[] {
-  return client
-    .getQueriesData<InboxRow[]>({ queryKey: inboxKey })
-    .flatMap(([, rows]) => (Array.isArray(rows) ? rows : []));
-}
-
-/** The fields of `issue` a pick changes, copied apart from the rest of it, which a kept answer
- *  then does not hold. */
-function pickedFields({ assignee, priority, repo, resolved_repo }: IssueFields): IssueFields {
-  return { assignee, priority, repo, resolved_repo };
-}
-
-/** What an answer that is an issue carries as its own: its key, each field of it a pick changes,
- *  and the repository it resolves to. */
-const answerNames: readonly string[] = ["key", ...everyField, "resolved_repo"];
-
-/** `answer`, Dispatch's answer to a write, as an issue: an object whose `key` names the issue and
- *  that carries each field of it a pick changes as its own. Undefined for any other answer - for
- *  `null`, a landing Dispatch kept no answer for, among them. */
-function issueAnswer(answer: unknown): (IssueFields & Pick<Issue, "key">) | undefined {
-  if (typeof answer !== "object" || answer === null) return undefined;
-  const carried = answerNames.every((name) => Object.hasOwn(answer, name));
-  if (!carried || typeof Reflect.get(answer, "key") !== "string") return undefined;
-  return answer as IssueFields & Pick<Issue, "key">;
-}
-
-/** The person each of `rows`, the Inbox rows of one issue, waits on, by the row's id. */
-function waitingOf(rows: readonly InboxRow[]): ReadonlyMap<string, string | undefined> {
-  return new Map(rows.map((each) => [each.id, each.waiting_on_person]));
-}
-
-/** How `rows`, the Inbox rows of one issue, show the fields of the issue a pick changes: as the
- *  first of them carries them - its priority, and its issue's assignee where it names its issue -
- *  with the person each of them waits on. Undefined where there is no row. */
-function inboxLook(rows: readonly InboxRow[]): Look | undefined {
-  const [row] = rows;
-  if (row === undefined) return undefined;
-  const { issue, priority } = row;
-  return {
-    fields: issue === undefined ? { priority } : { assignee: issue.assignee, priority },
-    waiting: waitingOf(rows),
-  };
-}
-
-/** `look`, of each field of an issue a pick changes that it carries, cut to `field`; for the
- *  assignee, with the person each Inbox row waits on where `look` names them. Undefined where
- *  `look` does not carry the field. */
-function fieldLook(look: Look, field: IssueField): Look | undefined {
-  if (!Object.hasOwn(look.fields, field)) return undefined;
-  const cut = issueLook(field, look.fields);
-  return field === "assignee" ? { ...cut, waiting: look.waiting } : cut;
-}
-
-/** How `field` shows as `issue` - an issue's detail or its row of a list of issues - carries it,
- *  else as the first of `rows`, the issue's Inbox rows, does (`inboxLook`); for the assignee,
- *  with the person each of those rows waits on. Undefined where neither carries the field. */
-function lookOf(
-  field: IssueField,
-  issue: IssueFields | undefined,
-  rows: readonly InboxRow[]
-): Look | undefined {
-  if (issue === undefined) {
-    const look = inboxLook(rows);
-    return look === undefined ? undefined : fieldLook(look, field);
-  }
-  const look = issueLook(field, issue);
-  if (field !== "assignee") return look;
-  return { ...look, waiting: waitingOf(rows) };
-}
-
-/** The row of `issueKey` in the first list of issues the client holds that has one. */
-function listedIssue(client: QueryClient, issueKey: string): IssueSummary | undefined {
-  for (const query of client.getQueryCache().getAll()) {
-    if (cacheOf(query.queryKey) !== "list" || !Array.isArray(query.state.data)) continue;
-    const row = (query.state.data as IssueSummary[]).find((each) => each.key === issueKey);
-    if (row !== undefined) return row;
-  }
-  return undefined;
-}
-
-/** How `field` of `issueKey` shows in the client's caches now - its detail, else its row of a
- *  list of issues, else an Inbox row of it - or undefined where none holds the issue. */
-function cachedLook(client: QueryClient, { field, issueKey }: IssueFieldPick): Look | undefined {
-  const issue =
-    client.getQueryData<IssueDetails>(["issue", issueKey]) ?? listedIssue(client, issueKey);
-  return lookOf(
-    field,
-    issue,
-    inboxRows(client).filter((row) => row.issue_key === issueKey)
-  );
-}
-
-/** How each issue `data` holds shows the fields a pick changes, by issue key, where `data` is
- *  what the query under `queryKey` holds: an issue's detail; a list of issues, each issue as its
- *  first row there carries them; or the Inbox, each issue as its rows carry them (`inboxLook`).
- *  All a put-back takes from Dispatch's answer of that read (`confirmedOf`), kept apart from the
- *  rest of it. */
-function answeredLooks(queryKey: QueryKey, data: unknown): Map<string, Look> {
-  const looks = new Map<string, Look>();
-  const cache = cacheOf(queryKey);
-  const [, detailOf] = queryKey;
-  if (cache === "detail") {
-    if (typeof detailOf === "string" && typeof data === "object" && data !== null) {
-      looks.set(detailOf, { fields: pickedFields(data as IssueDetails) });
-    }
-    return looks;
-  }
-  if (!Array.isArray(data)) return looks;
-  if (cache === "list") {
-    for (const row of data as IssueSummary[]) {
-      if (!looks.has(row.key)) looks.set(row.key, { fields: pickedFields(row) });
-    }
-    return looks;
-  }
-  if (cache !== "inbox") return looks;
-  const rows = new Map<string, InboxRow[]>();
-  for (const row of data as InboxRow[]) {
-    if (row.issue_key === null) continue;
-    const ofIssue = rows.get(row.issue_key);
-    if (ofIssue === undefined) rows.set(row.issue_key, [row]);
-    else ofIssue.push(row);
-  }
-  for (const [issueKey, ofIssue] of rows) {
-    const look = inboxLook(ofIssue);
-    if (look !== undefined) looks.set(issueKey, look);
-  }
-  return looks;
-}
-
-/** `issue` with `fields` over it: `issue` itself where it carries them all already. */
-function withFields<T extends IssueFields>(issue: T, fields: Partial<IssueFields>): T {
-  const names = Object.keys(fields) as (keyof IssueFields)[];
-  return names.every((name) => issue[name] === fields[name]) ? issue : { ...issue, ...fields };
-}
-
-/** `row` with `showing` over it, where the row is of its issue: `row` itself where it shows it
- *  already. A row is judged by the person it waits on, which Dispatch answers as
- *  `coalesce(a.asked_of, i.assignee, p.default_assignee)`: so a row whose ask nobody has handed on
- *  follows the assignee here, and one somebody handed to a person keeps that person whoever holds
- *  its issue. An unassign moves a row nobody handed on to its project's default assignee, taken
- *  from the defaults read the Settings page holds (`projectDefaultAssigneesQuery`, `fallback`)
- *  where the client has it; where it does not, the row keeps the person it waited on until the
- *  read again names the default. It never names nobody: every project names a default, so no row
- *  Dispatch answers does, and one written so would read as an ask no person waits on. A look that
- *  names the person a row waited on as Dispatch last answered it (`Look.waiting`) puts that person
- *  back. The Inbox draws no repository. */
-function showOnInboxRow(row: InboxRow, showing: Showing, fallback: string | undefined): InboxRow {
-  if (row.issue_key !== showing.issueKey) return row;
-  const { fields, waiting } = showing.look;
-  if (showing.field === "priority") {
-    const { priority } = fields;
-    return priority === undefined || row.priority === priority ? row : { ...row, priority };
-  }
-  const { assignee } = fields;
-  if (showing.field !== "assignee" || assignee === undefined || row.issue === undefined) return row;
-  const moved =
-    row.issue.assignee === assignee ? row : { ...row, issue: { ...row.issue, assignee } };
-  if (row.asked_of !== null && row.asked_of !== undefined) return moved;
-  const answered = waiting?.has(row.id) === true;
-  const person = answered ? waiting?.get(row.id) : (assignee ?? fallback);
-  if (!answered && person === undefined) return moved;
-  return moved.waiting_on_person === person ? moved : { ...moved, waiting_on_person: person };
-}
-
-/** `rows` with each changed by `change`: `rows` itself where none changes, copied from the first
- *  that does. */
-function mapRows<R>(rows: readonly R[], change: (row: R) => R): readonly R[] {
-  let next: R[] | undefined;
-  for (const [index, row] of rows.entries()) {
-    const after = change(row);
-    if (next === undefined && after !== row) next = rows.slice(0, index);
-    next?.push(after);
-  }
-  return next ?? rows;
-}
-
-/** The default assignee of `issueKey`'s project where the client holds the defaults read. */
-function defaultAssignee(client: QueryClient, issueKey: string): string | undefined {
-  const project = issueProject(issueKey);
-  return client
-    .getQueryData(projectDefaultAssigneesQuery().queryKey)
-    ?.find((entry) => entry.project === project)?.assignee;
-}
-
-/** Which of the caches a pick shows on the query under `queryKey` is: an issue's detail, a list
- *  of issues (`issueLists`), or the Inbox; undefined for any other. */
-function cacheOf(queryKey: QueryKey): "detail" | "inbox" | "list" | undefined {
-  const [head, second] = queryKey;
-  if (head === "issue" && queryKey.length === 2) return "detail";
-  if (head === "issues" && issueLists.includes(second)) return "list";
-  return head === inboxKey[0] ? "inbox" : undefined;
-}
-
-/** `data`, which the query under `queryKey` holds, with every one of `showings` over it: the
- *  same value where it shows them all already, or where the query is none of the three a pick
- *  shows on. */
-function shownOn(
-  client: QueryClient,
-  queryKey: QueryKey,
-  data: unknown,
-  showings: readonly Showing[]
-): unknown {
-  if (data === undefined || showings.length === 0) return data;
-  const cache = cacheOf(queryKey);
-  if (cache === "detail") {
-    return showings.reduce(
-      (issue, showing) =>
-        showing.issueKey === queryKey[1] ? withFields(issue, showing.look.fields) : issue,
-      data as IssueDetails
-    );
-  }
-  if (!Array.isArray(data)) return data;
-  if (cache === "list") {
-    return mapRows(data as IssueSummary[], (row) =>
-      showings.reduce(
-        (issue, showing) =>
-          showing.issueKey === issue.key ? withFields(issue, showing.look.fields) : issue,
-        row
-      )
-    );
-  }
-  if (cache === "inbox") {
-    // Looked up once for each assignee shown on this cache, not once a row.
-    const fallbacks = showings.map((showing) =>
-      showing.field === "assignee" ? defaultAssignee(client, showing.issueKey) : undefined
-    );
-    return mapRows(data as InboxRow[], (row) =>
-      showings.reduce(
-        (shown, showing, index) => showOnInboxRow(shown, showing, fallbacks[index]),
-        row
-      )
-    );
-  }
-  return data;
-}
-
 /** Whether this module is writing a cache itself, which its own watch is not to answer: what it
  *  writes is a pick shown, not an answer of Dispatch's. */
 let writing = false;
@@ -423,12 +142,18 @@ function showEverywhere(client: QueryClient, showings: readonly Showing[]): void
  *  board move not yet answered that sets one, each with what it sets; each query whose read out
  *  is older than the value Dispatch last confirmed for a field shown on it, as a landing of a
  *  write of the field or a put back left it (`holdReads`), by hash, with what to put back over
- *  the answer of that read; and the store whose writes these are. */
+ *  the answer of that read; the moment of the last landing with no answer on each issue's line
+ *  (`ended`), which a board move that landed so takes as its own (`landedMove`); each read of a
+ *  project's list sent while a board move of the project was unanswered, which waits for the
+ *  project's moves before its request goes out (`projectIssuesQuery`), with that project
+ *  (`sendWaiting`); and the store whose writes these are. */
 interface Watch {
   readonly followed: Map<number, readonly IssueFieldPick[]>;
   readonly held: Map<string, Map<string, Showing>>;
   readonly live: Map<number, Write<IssueFieldPick>>;
   readonly moves: Map<BoardMove, readonly IssueFieldPick[]>;
+  readonly unanswered: Map<string, number>;
+  readonly waiting: Map<Query, string>;
   readonly writes: Writes;
 }
 
@@ -507,6 +232,20 @@ function movePicks(move: BoardMove): IssueFieldPick[] {
  *  turn in its board's scope - its write not yet in the store (`state.isPaused`) - or out. */
 function pendingMoves(client: QueryClient): BoardMove[] {
   return client.getMutationCache().findAll({ mutationKey: boardMoves, status: "pending" });
+}
+
+/** The project of the query under `queryKey` where it is one of a project's lists
+ *  (`["issues", "project", <project>, …]`); undefined for any other query. */
+function listedProject(queryKey: QueryKey): string | undefined {
+  const [head, list, project] = queryKey;
+  if (head !== "issues" || list !== "project") return undefined;
+  return typeof project === "string" ? project : undefined;
+}
+
+/** Whether a board move on `project` is unanswered: a read of the project's lists sent now waits
+ *  for every such move before its request goes out (`boardMovesSettled` in `projectIssuesQuery`). */
+function moving(client: QueryClient, project: string): boolean {
+  return client.isMutating({ mutationKey: boardMoveMutationKey(project) }) > 0;
 }
 
 /** The place in the person's order of a board move still waiting its turn on its board: after
@@ -605,9 +344,11 @@ function newestPicks(client: QueryClient, watch: Watch, issueKey?: string): Show
 }
 
 /** The moments of the client's answers, in one order: each read's request, stamped as it is sent
- *  (`sentAt`) for as long as the client's watch lives, whether a pick is live then or not, and
- *  each landing of a write (`confirmLanding`). A read sent before the watch began has no stamp:
- *  it counts as sent before every landing, as it was. */
+ *  (`sentAt`) for as long as the client's watch lives, whether a pick is live then or not - a read
+ *  of a project's list that waits for the project's board moves stamped again as its request goes
+ *  out once they are answered (`sendWaiting`) - and each landing of a write, as its answer arrives,
+ *  before anything the landing starts is sent (`confirmLanding`). A read sent before the watch
+ *  began has no stamp: it counts as sent before every landing, as it was. */
 let clock = 0;
 const sentAt = new WeakMap<Query, number>();
 
@@ -715,17 +456,18 @@ function confirmedOf(
 }
 
 /** Keeps what the landing of a write - of any kind, whatever field of an issue it set - told the
- *  client, as the answer of the last write that landed carrying each field it tells, newer than
- *  every read sent before now; and answers what that landing confirmed of each of `sets`, fields
- *  the write set, in their order. `answer`, where it is an issue (`issueAnswer`), tells each field
- *  of it a pick changes; a landing that tells nothing of a field of `sets` - one Dispatch kept no
- *  answer for, `null` - stored the value set all the same. */
+ *  client, as the answer of the last write that landed carrying each field it tells, at `at`, the
+ *  moment its answer arrived: newer than every read sent before it, older than every read the
+ *  landing starts; and answers what that landing confirmed of each of `sets`, fields the write
+ *  set, in their order. `answer`, where it is an issue (`issueAnswer`), tells each field of it a
+ *  pick changes; a landing that tells nothing of a field of `sets` - one Dispatch kept no answer
+ *  for, `null` - stored the value set all the same. */
 function confirmLanding(
   client: QueryClient,
   answer: unknown,
-  sets: readonly IssueFieldPick[]
+  sets: readonly IssueFieldPick[],
+  at: number
 ): Confirmed[] {
-  const at = ++clock;
   const { landings } = answersOf(client);
   const issue = issueAnswer(answer);
   if (issue !== undefined) {
@@ -812,26 +554,33 @@ function putBack(
   readAgain(client, of.issueKey);
 }
 
-/** What one change of the client's cache does. Each read is stamped as it is sent (`sentAt`),
- *  and the answer of each read of a cache a pick shows on is kept as Dispatch gave it
- *  (`keepAnswer`), whether a pick is live or not; a query the client lets go of takes its answer
- *  and its hold with it. While the watch shows a field or holds a read: an answer of a read, or a
- *  merge of another write's answer, on such a cache has each field a pick of which is live shown
- *  again over it as the newest live write of that field; an answer of a read older than the
- *  value a landing or a put back left for a field shown on it (`holdReads`) has that value shown
- *  again over it, and ends its hold, as a new read of that query, its failure or its cancelling
- *  does. */
+/** What one change of the client's cache does. Each read is stamped as it is sent (`sentAt`) - a
+ *  read of a project's list sent while a board move of the project is unanswered is noted as one
+ *  that waits (`waiting`) - and the answer of each read of a cache a pick shows on is kept as
+ *  Dispatch gave it (`keepAnswer`), whether a pick is live or not; a query the client lets go of
+ *  takes its answer and its hold with it. While the watch shows a field or holds a read: an answer
+ *  of a read, or a merge of another write's answer, on such a cache has each field a pick of
+ *  which is live shown again over it as the newest live write of that field; an answer of a read
+ *  older than the value a landing or a put back left for a field shown on it (`holdReads`) has
+ *  that value shown again over it, and ends its hold, as a new read of that query, its failure or
+ *  its cancelling does. */
 function answered(client: QueryClient, watch: Watch, event: QueryCacheNotifyEvent): void {
   if (writing) return;
   const { query } = event;
   if (event.type === "removed") {
     watch.held.delete(query.queryHash);
+    watch.waiting.delete(query);
     answers.get(client)?.reads.delete(query.queryHash);
     return;
   }
   if (event.type !== "updated") return;
   const { action } = event;
-  if (action.type === "fetch") sentAt.set(query, ++clock);
+  if (action.type === "fetch") {
+    sentAt.set(query, ++clock);
+    const project = listedProject(query.queryKey);
+    if (project !== undefined && moving(client, project)) watch.waiting.set(query, project);
+    else watch.waiting.delete(query);
+  }
   const fetched = action.type === "success" && action.manual !== true;
   const drawn = action.type === "success" && cacheOf(query.queryKey) !== undefined;
   if (fetched && drawn) keepAnswer(client, query);
@@ -881,14 +630,16 @@ function follow(client: QueryClient, watch: Watch): void {
 }
 
 /** What the end of a write does, the store having let it go. Landed, what its landing told the
- *  client is kept, whatever field of an issue it set (`confirmLanding`) - a pick's was kept as it
- *  landed (`landed`), before the store told its end - but for an answer of a write off the line
- *  of the issue it names (`issue:<KEY>`), and each field the watch followed it for is what
- *  Dispatch last confirmed for the field, which shows unless a newer live write of it does, and
- *  where none does, over the answer of each read out then as well (`holdReads`); refused,
- *  discarded or stopped, each such field shows as its newest live write, or else as Dispatch last
- *  confirmed it, over each older read out then as well, and the issue is read again
- *  (`putBack`). */
+ *  client is kept, at the moment of its answer's arrival, which the store tells before it reads
+ *  anything again for the landing, whatever field of an issue it set (`confirmLanding`) - a
+ *  pick's was kept as it landed (`landed`), before the store told its end - but for an answer of a
+ *  write off the line of the issue it names (`issue:<KEY>`), and each field the watch followed it
+ *  for is what Dispatch last confirmed for the field, which shows unless a newer live write of it
+ *  does, and where none does, over the answer of each read out then as well (`holdReads`); the
+ *  moment of a landing with no answer on an issue's line is noted for a board move's mutation,
+ *  which settles a moment later (`landedMove`). Refused, discarded or stopped, each such field
+ *  shows as its newest live write, or else as Dispatch last confirmed it, over each older read out
+ *  then as well, and the issue is read again (`putBack`). */
 function ended(client: QueryClient, watch: Watch, outcome: WriteOutcome): void {
   const followed = watch.followed.get(outcome.write.id) ?? [];
   watch.followed.delete(outcome.write.id);
@@ -897,12 +648,17 @@ function ended(client: QueryClient, watch: Watch, outcome: WriteOutcome): void {
     return;
   }
   if (outcome.write.kind === KIND) return;
+  const at = ++clock;
+  const { target } = outcome.write;
+  if (outcome.answer === null && target?.startsWith("issue:") === true) {
+    watch.unanswered.set(target, at);
+  }
   // A landing is as new as its answer's arrival, which is the order Dispatch stored the writes
   // in only on the issue's line, which sends one at a time: the answer of a write off it - a
   // claim released - can arrive after a later landing's though Dispatch stored it first.
   const issue = issueAnswer(outcome.answer);
-  const onItsLine = issue !== undefined && outcome.write.target === `issue:${issue.key}`;
-  const landings = confirmLanding(client, onItsLine ? outcome.answer : null, followed);
+  const onItsLine = issue !== undefined && target === `issue:${issue.key}`;
+  const landings = confirmLanding(client, onItsLine ? outcome.answer : null, followed, at);
   for (const [index, pick] of followed.entries()) {
     const landing = landings[index];
     if (showNewestOr(client, watch, pick, landing.look)) holdReads(client, watch, pick, landing);
@@ -913,12 +669,34 @@ function ended(client: QueryClient, watch: Watch, outcome: WriteOutcome): void {
  *  for, whose end in the store tells nothing of what it set, the store having let go of its
  *  request: each field the move set is stored all the same, as the last write of it that landed
  *  (`confirmLanding`) - but for a field the watch followed it for, whose landing the end of its
- *  write in the store left first (`ended`). A landing with Dispatch's answer was kept as the end
- *  of the move's write (`ended`). */
+ *  write in the store left first (`ended`). Its moment is that end's, the last landing with no
+ *  answer on its issue's line (`unanswered`): the move's mutation settles a moment after its write
+ *  lands, within the same task, and every read the landing started went out in between. A
+ *  landing with Dispatch's answer was kept as the end of the move's write (`ended`). */
 function landedMove(client: QueryClient, watch: Watch, move: BoardMove): void {
+  const change = moveChange(move);
+  if (change === undefined) return;
+  const line = `issue:${change.issueKey}`;
+  const at = watch.unanswered.get(line) ?? ++clock;
+  watch.unanswered.delete(line);
   const followed = watch.moves.get(move) ?? [];
   const sets = movePicks(move).filter((pick) => !followed.some((each) => sameField(each, pick)));
-  confirmLanding(client, null, sets);
+  confirmLanding(client, null, sets, at);
+}
+
+/** Stamps again, as sent now, each read of a project's list that waited for the project's board
+ *  moves (`waiting`) once none of them is left unanswered: its request goes out now
+ *  (`boardMovesSettled` in `projectIssuesQuery`), after each move's landing or refusal was kept
+ *  (`ended`, `landedMove`), so it is newer than all of them, and no hold of an older value is
+ *  left on it (`holdReads`). */
+function sendWaiting(client: QueryClient, watch: Watch): void {
+  for (const [query, project] of watch.waiting) {
+    if (moving(client, project)) continue;
+    watch.waiting.delete(query);
+    if (query.state.fetchStatus === "idle") continue;
+    sentAt.set(query, ++clock);
+    watch.held.delete(query.queryHash);
+  }
 }
 
 /** Begins the watch of `client`, whose store `writes` is, where it has none, for as long as the
@@ -927,11 +705,13 @@ function landedMove(client: QueryClient, watch: Watch, move: BoardMove): void {
  *  shows can join the issue's line after the surface that made it has written its own cache, and
  *  of what becomes of each write - what its landing told, and each field it was followed for
  *  (`ended`); and of its board moves, each change of which shows the newest write of each field
- *  again, and each landing with no answer of which stored each field it set (`landedMove`). Its
- *  listeners hear every change of the app, so while the watch shows no field and holds no read
- *  each one returns at once - but for the cache's, which still stamps a read sent and keeps an
- *  answer given, the store's outcomes, which still keep what a landing told, and the board
- *  moves', which still keep a move's landing with no answer. */
+ *  again, each landing with no answer of which stored each field it set (`landedMove`), and the
+ *  last of a project's answered sends each read of its lists that waited for them
+ *  (`sendWaiting`). Its listeners hear every change of the app, so while the watch shows no field
+ *  and holds no read each one returns at once - but for the cache's, which still stamps a read
+ *  sent and keeps an answer given, the store's outcomes, which still keep what a landing told,
+ *  and the board moves', which still keep a move's landing with no answer and stamp a waiting
+ *  read as it goes out. */
 function begin(client: QueryClient, writes: Writes): Watch {
   const begun = watches.get(client);
   if (begun !== undefined) return begun;
@@ -940,6 +720,8 @@ function begin(client: QueryClient, writes: Writes): Watch {
     held: new Map(),
     live: new Map(),
     moves: new Map(),
+    unanswered: new Map(),
+    waiting: new Map(),
     writes,
   };
   watches.set(client, watch);
@@ -965,9 +747,10 @@ function begin(client: QueryClient, writes: Writes): Watch {
     if (move === undefined || (event.type !== "updated" && event.type !== "removed")) return;
     const unanswered =
       event.type === "updated" && event.action.type === "success" && event.action.data === null;
-    if (!unanswered && !watching(watch)) return;
+    if (!unanswered && !watching(watch) && watch.waiting.size === 0) return;
     if (!matchMutation({ mutationKey: boardMoves }, move)) return;
     if (unanswered) landedMove(client, watch, move);
+    if (watch.waiting.size > 0) sendWaiting(client, watch);
     if (!watching(watch)) return;
     // Answered, its end was its write's, which the store told first (`ended`).
     if (event.type === "removed" || move.state.status !== "pending") watch.moves.delete(move);
@@ -1052,7 +835,7 @@ export const issueFieldWrite = defineWriteKind<IssueFieldPick>({
     const watch = watchOf(client);
     watch.live.delete(write.id);
     const { detail } = write;
-    const [landing] = confirmLanding(client, answer, [detail]);
+    const [landing] = confirmLanding(client, answer, [detail], ++clock);
     if (answer !== null) asOwnWrite(() => mergeIssue(client, answer as Issue));
     if (showNewestOr(client, watch, detail, landing.look)) {
       holdReads(client, watch, detail, landing);
