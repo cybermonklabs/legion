@@ -60,6 +60,17 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 		return exitUsageError
 	}
 
+	// --exec looks its command up before it asks the helper anything, so a command that is not on
+	// PATH makes no enrolment for a session that never starts.
+	var path string
+	if *doExec {
+		var err error
+		if path, err = exec.LookPath(command[0]); err != nil {
+			fmt.Fprintf(stderr, "agent-secrets register: %v\n", err)
+			return exitNotFound
+		}
+	}
+
 	// The helper's socket as every other helper-mode form finds it (identity.go): the variable when
 	// set, else the default socket when it is there. An agent box has neither: its key dir sits
 	// where the default socket's directory would be, and no helper listens in it.
@@ -100,11 +111,6 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "agent-secrets register: this machine is not logged in to the secrets broker; launching anyway, and until it is (run: agent-secrets machine login) this session's agent-secrets calls fail")
 	case *wait > 0 && resp.State != "enrolled":
 		fmt.Fprintf(stderr, "agent-secrets register: not enrolled yet (%s); launching anyway, and this session's secrets calls fail until the helper enrolls it\n", resp.Error)
-	}
-	path, err := exec.LookPath(command[0])
-	if err != nil {
-		fmt.Fprintf(stderr, "agent-secrets register: %v\n", err)
-		return exitNotFound
 	}
 	if err := syscall.Exec(path, command, os.Environ()); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets register: exec: %v\n", err)
