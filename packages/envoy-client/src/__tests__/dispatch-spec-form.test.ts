@@ -374,6 +374,10 @@ const REFUSAL = {
   findings_total: 1,
 };
 
+/** The last line of an answer about a document that an approval request is judged on. */
+const REVIEWER_LINE =
+  "Before you request approval, have a fresh reviewer read it with skill://spec-statement-review.";
+
 describe("dispatch spec-form", () => {
   test("a covered document with no finding prints what Dispatch read and that no text breaks the form", async () => {
     forms["ACME-2-spec"] = formRead("ACME-2-spec", "spec.md", 3, "covered", { statement: 1 });
@@ -383,7 +387,8 @@ describe("dispatch spec-form", () => {
     expect(stderr).toBe("");
     expect(code).toBe(0);
     expect(stdout).toBe(
-      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions against 0 terms: no text breaks it.\n"
+      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions against 0 terms: no text breaks it.\n" +
+        `${REVIEWER_LINE}\n`
     );
     expect(formReads()).toEqual(["/api/v1/artifacts/ACME-2-spec/spec-form"]);
   });
@@ -395,7 +400,8 @@ describe("dispatch spec-form", () => {
 
     expect(code).toBe(0);
     expect(stdout).toBe(
-      "Dispatch found no text of The Spec in spec.md version 2, so it decided nothing about its form.\n"
+      "Dispatch found no text of The Spec in spec.md version 2, so it decided nothing about its form.\n" +
+        `${REVIEWER_LINE}\n`
     );
   });
 
@@ -412,6 +418,7 @@ describe("dispatch spec-form", () => {
       "Dispatch refuses an approval request of spec.md version 2, because 2 texts break the form of The Spec.",
       `- statement ship-at-head: ${THREE_SENTENCES}.`,
       `- statement one-write: ${LONG_SENTENCE}.`,
+      REVIEWER_LINE,
       "",
     ]);
   });
@@ -495,6 +502,7 @@ describe("dispatch spec-form", () => {
       "verification.md version 1:",
       "Dispatch refuses an approval request of verification.md version 1, because 1 text breaks the form of The Spec.",
       `- claim v-one: ${LONG_SENTENCE}.`,
+      REVIEWER_LINE,
       "",
     ]);
     expect(formReads()).toEqual([
@@ -519,6 +527,7 @@ describe("dispatch spec-form", () => {
       "spec.md has no version yet, so Dispatch read no text in it.",
       "verification.md version 1:",
       "Dispatch read the form of 0 statements, 1 claim, 0 purposes and 0 definitions against 0 terms: no text breaks it.",
+      REVIEWER_LINE,
       "",
     ]);
   });
