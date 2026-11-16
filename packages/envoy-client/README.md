@@ -909,7 +909,8 @@ With no `--artifact`, it reads the spec and the Verification document of the iss
 It ends with the count of issues and documents it read.
 
 `dispatch spec-form --issue <KEY> [--artifact <document>] --terms` prints the list of terms of the document's root in place of the findings.
-Each term has one line, `<term>: <definition> (<document> version <N> of <KEY>)`, which names the approved document that defines it, in the order of the terms.
+Each term has one line, `<term>: <definition> (<document> version <N> of <KEY>)`, which names the approved document that defines it.
+The lines keep the server's order, sorted by term.
 With no `--artifact`, it reads the list from the spec of the issue, or from its Verification document while the spec has no version.
 A document that no root holds has no list, and `--terms` goes with no `--root`.
 
