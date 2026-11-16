@@ -487,11 +487,29 @@ export function servedAsAsked(asked: string, served: string): boolean {
 }
 
 /**
+ * Why a verdict is not the asked model's, or null where it is: the answer names no served model,
+ * or, where `exactId` holds, it names another id than the asked one (`servedAsAsked`). This is
+ * the one rule every writer and reader of a verdict applies: `askClaude` with `exactId`, and a
+ * round's rows by endpoint (`servedModelFaultOf`), where a Jev arm asks for an alias and so is
+ * held to naming its served model, not to the asked id.
+ */
+export function servedModelFault(
+  asked: string,
+  served: string | null,
+  exactId: boolean
+): string | null {
+  if (served === null || served === "") return `asked ${asked}, and the answer names no model`;
+  if (!exactId || servedAsAsked(asked, served)) return null;
+  return `asked ${asked}, and the answer came from ${served}`;
+}
+
+/**
  * One judgement put to a Claude model through the gateway. The answer is one of the labels the
  * prompt offered, on a line of its own or at the head of one, and anything else is the
  * `unreadable` fault carrying what came back, bounded at `DETAIL_CHARS`. An answer whose body
- * names no served model, or another one than the asked model (`servedAsAsked`), is the `model`
- * fault, whatever its text says, so a fallback to another model never reads as the asked one.
+ * names no served model, or another one than the asked model (`servedModelFault`), is the
+ * `model` fault with no label read, whatever its text says, so a fallback to another model never
+ * reads as the asked one.
  */
 export async function askClaude(ask: ClaudeAsk): Promise<ModelAnswer> {
   const endpoint = await claudeEndpoint();
@@ -535,22 +553,22 @@ export async function askClaude(ask: ClaudeAsk): Promise<ModelAnswer> {
   } catch {
     return unreadable(sent.body, latencyMs, sent.attempts);
   }
-  const served = stringOf(recordOf(parsed)?.model) ?? "";
+  const servedFields = servedOf(parsed);
+  const served = servedFields.servedModel ?? "";
   const usage = usageOf(parsed);
-  if (!servedAsAsked(ask.model, served)) {
-    const said = served === "" ? "names no model" : `came from ${served}`;
-    const detail = scrubSecrets(`asked ${ask.model}, and the answer ${said}`);
+  const wrongModel = servedModelFault(ask.model, served, true);
+  if (wrongModel !== null) {
     return {
       chosen: [],
       probabilities: null,
       confidence: null,
-      ...servedOf(parsed),
+      ...servedFields,
       ...usage,
       latencyMs,
       attempts: sent.attempts,
       stateCut: false,
       fault: "model",
-      faultDetail: detail.slice(0, DETAIL_CHARS),
+      faultDetail: scrubSecrets(wrongModel).slice(0, DETAIL_CHARS),
     };
   }
   const text = claudeText(parsed);

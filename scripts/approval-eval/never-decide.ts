@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CaseRow } from "./build-corpus";
 import { artifactsOf } from "./corpus-io";
-import { askClaude, type ClaudeAsk, type ModelAnswer, servedAsAsked } from "./models";
+import {
+  askClaude,
+  type ClaudeAsk,
+  type ModelAnswer,
+  servedAsAsked,
+  servedModelFault,
+} from "./models";
 
 /**
  * What the agent never decides, whatever its confidence.
@@ -421,7 +427,14 @@ export async function neverDecide(
     prompt: { system: `${definition}\n\n${ANSWER_SHAPE}\n`, user: userOf(input), labels: LABELS },
     bounds: BOUNDS,
   });
-  const read = readNeverDecideAnswer(answer);
+  // An answer another model gave, or one naming none, is a fault and never a decide, so it is
+  // neither returned as the rule's answer nor kept, whatever asking function gave it.
+  const wrongModel =
+    answer.fault === null ? servedModelFault(model, answer.servedModel ?? null, true) : null;
+  const read =
+    wrongModel === null
+      ? readNeverDecideAnswer(answer)
+      : faulted(`model: ${wrongModel}`, answer.text ?? "");
   if (read.fault === null && directory !== null) {
     await writeCache(directory, key, {
       model,

@@ -22,7 +22,7 @@ import {
   verdictOf,
   whole,
 } from "./corpus-io";
-import { labelsOf, scrubSecrets, servedAsAsked } from "./models";
+import { labelsOf, scrubSecrets, servedModelFault } from "./models";
 import { renderPrompt } from "./recipes";
 import { renderChecked } from "./render";
 import type { ReplayedDocument } from "./replay";
@@ -31,6 +31,7 @@ import {
   CACHE_VERSION,
   cachePath,
   type JudgementRow,
+  modelFaultsOf,
   readEvidenceCache,
   readRows,
   rowsPath,
@@ -251,7 +252,7 @@ export interface AnswerRow {
   agreed: boolean;
   /**
    * Why no verdict was read: the agent gave nothing, it ran on another model than `MODEL`
-   * (`servedAsAsked`), so its verdict is not the measured bundle's, or what it gave was no label.
+   * (`servedModelFault`), so its verdict is not the measured bundle's, or what it gave was no label.
    */
   fault: "agent" | "model" | "unreadable" | null;
   faultDetail: string | null;
@@ -622,14 +623,12 @@ export function verdictLineOf(paired: PairedComparison): { passes: boolean; line
 
 /**
  * Why a verdict the agent gave on `model` is not the measured one, or null where `model` is
- * `MODEL` (`servedAsAsked`): a run on another model, a fallback the agent took included, or one
- * that reported none.
+ * `MODEL`, by the one rule (`servedModelFault`): a run on another model, a fallback the agent
+ * took included, or one that reported none.
  */
 function modelFaultOf(model: string | null): string | null {
-  if (servedAsAsked(MODEL, model ?? "")) return null;
-  return oneLine(
-    `asked ${MODEL}, and the agent ${model === null ? "reported no model" : `ran on ${model}`}`
-  );
+  const fault = servedModelFault(MODEL, model, true);
+  return fault === null ? null : oneLine(fault);
 }
 
 /**
@@ -986,35 +985,60 @@ function agreementOver(
   return { agreed: cases.filter((one) => one.agreed).length, cases: cases.length };
 }
 
+/** What the round `--round` names measured over these same cases, or why it is not read. */
+export interface RoundRead {
+  /** The pair's numbers, and null where the round holds no pair to read or a fault stops it. */
+  numbers: RoundNumbers | null;
+  /**
+   * How many of the pair's rows over these cases carry the `model` fault (`modelFaultsOf`): a
+   * verdict no record ties to the arm's model, as every row of a round written before rows
+   * recorded their served model is. Any such row stops the numbers, since a share over it would
+   * print a measured zero, and the command says how many there are.
+   */
+  modelFaults: number;
+}
+
 /**
  * What the round `--round` names measured over these same cases: its many-shot arm on this
- * model against its bare arm, read from that round's own rows. Null where the round holds no
- * such pair of arms over these cases, in which case nothing is printed: numbers written into
- * this file would be one round's and would be printed as every later round's own.
+ * model against its bare arm, read from that round's own rows. No numbers where the round holds
+ * no such pair of arms over these cases, in which case nothing is printed: numbers written into
+ * this file would be one round's and would be printed as every later round's own. No numbers
+ * either where a row of that pair over these cases carries the `model` fault.
  */
 export function roundNumbersOf(
   arms: readonly RoundArm[],
+  rows: readonly Pick<JudgementRow, "arm" | "caseId" | "fault">[],
   caseIds: readonly string[]
-): RoundNumbers | null {
+): RoundRead {
   // The round names its models with the provider in front, and the agent reports the bare name.
   const onModel = arms.filter(
     (arm) => arm.endpoint === "claude" && (arm.model === MODEL || arm.model.endsWith(`/${MODEL}`))
   );
   const skill = onModel.find((arm) => arm.recipe === ROUND_SKILL_RECIPE);
   const control = onModel.find((arm) => arm.recipe === ROUND_CONTROL_RECIPE);
-  if (skill === undefined || control === undefined) return null;
+  if (skill === undefined || control === undefined) return { numbers: null, modelFaults: 0 };
   const wanted = new Set(caseIds);
+  const pair = new Set([skill.name, control.name]);
+  const modelFaults = modelFaultsOf(
+    rows.filter((row) => pair.has(row.arm) && wanted.has(row.caseId))
+  );
+  if (modelFaults > 0) return { numbers: null, modelFaults };
   const skillRead = agreementOver(skill, wanted);
   const controlRead = agreementOver(control, wanted);
   // A pair read over different cases is no gain over these cases, so it is not printed as one.
-  if (skillRead.cases === 0 || skillRead.cases !== controlRead.cases) return null;
+  if (skillRead.cases === 0 || skillRead.cases !== controlRead.cases) {
+    return { numbers: null, modelFaults: 0 };
+  }
   return {
-    skillArm: skill.name,
-    skillAgreement: skillRead.agreed / skillRead.cases,
-    controlArm: control.name,
-    controlAgreement: controlRead.agreed / controlRead.cases,
-    gain: (skillRead.agreed - controlRead.agreed) / skillRead.cases,
-    cases: skillRead.cases,
+    numbers: {
+      skillArm: skill.name,
+      skillAgreement: skillRead.agreed / skillRead.cases,
+      controlArm: control.name,
+      controlAgreement: controlRead.agreed / controlRead.cases,
+      gain: (skillRead.agreed - controlRead.agreed) / skillRead.cases,
+      cases: skillRead.cases,
+    },
+    modelFaults: 0,
   };
 }
 
@@ -1314,10 +1338,20 @@ async function fresh(flags: Flags): Promise<number> {
   );
   const { rows } = await readRows(flags.round);
   const cases = await casesOf(flags, out, corpus, reportCaseIds(rows, flags.round));
-  const round = roundNumbersOf(
+  const roundRead = roundNumbersOf(
     readRound(rows, corpus.byCaseId).arms,
+    rows,
     cases.map((one) => one.row.caseId)
   );
+  if (roundRead.modelFaults > 0) {
+    log(
+      `round: ${counted(roundRead.modelFaults, "row")} of ${flags.round}'s many-shot and bare ` +
+        "arms over these cases carry the model fault, so no verdict there is tied to the arm's " +
+        "model and the round's numbers are not printed; run run-round.ts on that round again " +
+        "to ask them again"
+    );
+  }
+  const round = roundRead.numbers;
   const homes = await profilesOf(out, flags.omp);
   const report = await runFresh(
     {

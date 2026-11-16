@@ -659,6 +659,32 @@ describe("a run read back off a disk", () => {
     expect(readRun(directory, "without")).rejects.toThrow("answers one arm and not the other");
   });
 
+  test("a run holding rows of the model fault is refused, naming the count and the resume", async () => {
+    const directory = await scratch();
+    // Two rows as they were written before rows recorded the agent's own model, and one row of
+    // another model: none is the measured model's verdict, so pooling them would print zeros.
+    const { modelChecked: _, ...old } = JSON.parse(row("with-skill", "case-a", true));
+    const fallback = {
+      ...JSON.parse(row("with-skill", "case-b", true)),
+      model: "claude-fable-5-2",
+    };
+    const { modelChecked: __, ...oldControl } = JSON.parse(row("no-skill", "case-a", true));
+    await writeFile(
+      join(directory, "answers-without.jsonl"),
+      `${[
+        JSON.stringify(oldControl),
+        JSON.stringify(old),
+        row("no-skill", "case-b", true),
+        JSON.stringify(fallback),
+      ].join("\n")}\n`,
+      "utf8"
+    );
+    const refused = readRun(directory, "without");
+    await expect(refused).rejects.toThrow(PoolError);
+    await expect(refused).rejects.toThrow("holds 3 answers of the model fault, on 2 cases");
+    await expect(refused).rejects.toThrow("--answers resume");
+  });
+
   test("a directory holding no answers of that shape is refused, naming the file", async () => {
     const directory = await scratch();
     expect(readRun(directory, "without")).rejects.toThrow("answers-without.jsonl");

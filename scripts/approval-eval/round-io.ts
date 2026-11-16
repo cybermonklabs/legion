@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { CaseKind } from "./build-corpus";
 import { numberOf, pool, recordOf, stringOf } from "./corpus-io";
 import type { SliceName } from "./draw-io";
-import { type FaultKind, servedAsAsked } from "./models";
+import { type FaultKind, servedModelFault } from "./models";
 import type { RecipeName } from "./recipes";
 import type { ReplayedDocument } from "./replay";
 import type { RetrievalRoute } from "./retrieval";
@@ -24,8 +24,8 @@ import type { RetrievalRoute } from "./retrieval";
  * and one reads it: `run-round.ts` and, of the commands here, `analyze.ts` alone.
  *
  * The types the row and the cache are built from come from the modules that make those values,
- * and every one of those imports is type-only but `servedAsAsked`, a pure function of two
- * strings: importing this module runs no model call, no Dispatch read and no command.
+ * and every one of those imports is type-only but `servedModelFault`, a pure function of its
+ * arguments: importing this module runs no model call, no Dispatch read and no command.
  */
 
 /** Which endpoint an arm's model is called on. */
@@ -108,19 +108,25 @@ export function rowOf(line: string): JudgementRow | null {
 
 /**
  * Why a judgement's verdict is not its arm's model's, or null where it is: the row records no
- * served model, its answer named none, or it is a gateway row whose served model is not its
- * arm's (`servedAsAsked`). A Jev row must name the model that served it, as System One's answer
- * does, but is not held to the asked id, since its arm asks for an alias.
+ * served model, or `servedModelFault` refuses what it records. A gateway row is held to the
+ * asked id; a Jev row must name the model that served it, as System One's answer does, but is
+ * not held to the asked id, since its arm asks for an alias.
  */
 export function servedModelFaultOf(
   row: Pick<JudgementRow, "endpoint" | "model" | "servedModel">
 ): string | null {
   if (row.servedModel === undefined) return "the row records no served model";
-  if (row.servedModel === null || row.servedModel === "") {
-    return `asked ${row.model}, and the answer names no model`;
-  }
-  if (row.endpoint !== "claude" || servedAsAsked(row.model, row.servedModel)) return null;
-  return `asked ${row.model}, and the answer came from ${row.servedModel}`;
+  return servedModelFault(row.model, row.servedModel, row.endpoint === "claude");
+}
+
+/**
+ * How many of these rows carry the `model` fault: a verdict no record ties to its arm's model,
+ * on a row written before rows recorded one or one another model answered. A reader that turns
+ * rows into a figure counts them, since such a row is no agreement and no disagreement of its
+ * arm's model, and a figure taken over it reads as a measured one.
+ */
+export function modelFaultsOf(rows: readonly Pick<JudgementRow, "fault">[]): number {
+  return rows.filter((row) => row.fault === "model").length;
 }
 
 /** What one reading of `rows.jsonl` found: the rows, and how much of the file they were. */

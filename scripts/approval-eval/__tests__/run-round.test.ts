@@ -14,6 +14,7 @@ import {
   assertSameCases,
   type CaseEvidence,
   inSeedOrder,
+  ProbeError,
   promptOf,
   type RoundDeps,
   type RoundPlan,
@@ -616,5 +617,62 @@ describe("the rows file", () => {
       store.answered(`bare-opus\u0000case-${at}\u00000`)
     );
     expect(answered).toEqual([false, false, false, true, true, false]);
+  });
+});
+
+describe("an answer the round cannot tie to its arm's model", () => {
+  // A gateway arm whose answers come from another model, a Jev arm whose answers name none, and
+  // a gateway arm answered as asked, which is the one arm whose verdicts count.
+  const arms: Arm[] = [
+    ...ARMS_UNDER_TEST,
+    {
+      name: "bare-three",
+      recipe: "bare",
+      model: "fake-claude-ok",
+      endpoint: "claude",
+      slices: ["fit"],
+    },
+  ];
+  const servedBy = (ask: { model: string }): ModelAnswer => ({
+    ...answer(["Approve"]),
+    servedModel:
+      ask.model === "fake-claude"
+        ? "claude-fable-5-2"
+        : ask.model === "fake-jev"
+          ? undefined
+          : ask.model,
+  });
+
+  test("is written as the model fault, and the round counts it as not answered", async () => {
+    const out = await scratch();
+    const result = await runRound(planOf(out, { arms }), fake(servedBy));
+    const rows = await rowsOf(out);
+    const byArm = (name: string) => rows.filter((row) => row.arm === name);
+    expect(byArm("bare-one").map((row) => row.fault)).toEqual(Array(15).fill("model"));
+    expect(byArm("bare-one")[0]?.faultDetail).toBe(
+      "asked fake-claude, and the answer came from claude-fable-5-2"
+    );
+    expect(byArm("many-shot-two")[0]).toMatchObject({
+      fault: "model",
+      faultDetail: "asked fake-jev, and the answer names no model",
+      servedModel: null,
+      verdict: ["Approve"],
+    });
+    expect(byArm("bare-three").every((row) => row.fault === null)).toBe(true);
+    const summary = await summaryOf(out);
+    expect(summary.judgements).toMatchObject({ planned: 45, answered: 15, left: 30 });
+    expect(summary.faults.byKind.model?.count).toBe(30);
+    expect(result.exitCode).not.toBe(0);
+  });
+
+  test("stops the round at its probe, naming the model fault", async () => {
+    for (const arm of ARMS_UNDER_TEST) {
+      const out = await scratch();
+      const probed = runRound(planOf(out, { arms: [arm], probeOnly: true }), fake(servedBy));
+      await expect(probed).rejects.toThrow(ProbeError);
+      await expect(probed).rejects.toThrow(
+        `the ${arm.endpoint} probe on ${arm.name} failed with the model fault`
+      );
+    }
   });
 });

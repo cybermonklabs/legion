@@ -16,7 +16,7 @@ import {
 } from "./corpus-io";
 import type { SliceName } from "./draw-io";
 import { RECIPES, type RecipeName } from "./recipes";
-import { type JudgementRow, readRows, rowsPath } from "./round-io";
+import { type JudgementRow, modelFaultsOf, readRows, rowsPath } from "./round-io";
 import {
   alwaysApproveBaseline,
   clopperPearsonUpper,
@@ -149,6 +149,12 @@ export interface ConsensusRecord {
   answer: string;
   rowsRead: number;
   rowsUnreadable: number;
+  /**
+   * The rows read that carry the `model` fault (`modelFaultsOf`): verdicts no record ties to
+   * their arm's model, which every case reading here takes as undecided, as every row of a round
+   * written before rows recorded their served model is.
+   */
+  rowsModelFault: number;
   ranAt: string;
 }
 
@@ -414,7 +420,11 @@ export function renderConsensus(record: ConsensusRecord): string[] {
     `slice             ${record.slice.name}, ${record.slice.kind} cases: ` +
       `${count(record.slice.cases)}, which every coverage below is a share of`,
     `arms              ${record.arms.length}: ${record.arms.map((arm) => arm.name).join(", ")}`,
-    `rows              ${count(record.rowsRead)} read, ${count(record.rowsUnreadable)} unreadable`,
+    `rows              ${count(record.rowsRead)} read, ${count(record.rowsUnreadable)} ` +
+      `unreadable, ${count(record.rowsModelFault)} of the model fault` +
+      (record.rowsModelFault === 0
+        ? ""
+        : ", each read as undecided: resume the round with run-round.ts to ask them again"),
     `bound             one-sided Clopper-Pearson at ${num(100 * DEFAULT_CONFIDENCE, 0)} percent`,
     `read at           ${record.ranAt}`,
     "",
@@ -520,6 +530,7 @@ async function consensus(flags: Flags): Promise<number> {
     answer: answerOf(lines),
     rowsRead: read,
     rowsUnreadable: unreadable,
+    rowsModelFault: modelFaultsOf(rows),
     ranAt: new Date().toISOString(),
   };
   for (const line of renderConsensus(record)) console.log(line);

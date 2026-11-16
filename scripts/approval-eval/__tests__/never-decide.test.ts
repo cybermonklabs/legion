@@ -277,6 +277,47 @@ describe("neverDecide", () => {
     expect(asked.asks).toHaveLength(2);
   });
 
+  test("answers a fault and keeps nothing where another model gave the answer", async () => {
+    const directory = await scratch();
+    const text = "credential\nThe change list asks for a deploy token to be minted.";
+    const asks: ClaudeAsk[] = [];
+    const fallback: AskModel = (ask) => {
+      asks.push(ask);
+      return Promise.resolve({
+        ...modelAnswer(text, ask.prompt.labels),
+        servedModel: "anthropic/claude-fable-5-2",
+      });
+    };
+    const input = { text: DOCUMENT, documentId: "artifact-1", documentVersion: 3 };
+    const options = { ask: fallback, definition: DEFINITION, cacheDirectory: directory };
+    const first = await neverDecide(input, options);
+    expect(first).toMatchObject({ held: false, kind: null, source: "model" });
+    expect(first.fault).toStartWith("model: asked ");
+    expect(first.fault).toEndWith("and the answer came from anthropic/claude-fable-5-2");
+    expect(await readdir(directory)).toHaveLength(0);
+    await neverDecide(input, options);
+    expect(asks).toHaveLength(2);
+  });
+
+  test("asks again where a kept answer says another model gave it", async () => {
+    const directory = await scratch();
+    const asked = fake("credential\nThe change list asks for a deploy token to be minted.");
+    const input = { text: DOCUMENT, documentId: "artifact-1", documentVersion: 3 };
+    const options = { ask: asked.ask, definition: DEFINITION, cacheDirectory: directory };
+    await neverDecide(input, options);
+    const [file] = await readdir(directory);
+    const path = join(directory, file ?? "");
+    const kept = JSON.parse(await readFile(path, "utf8"));
+    await writeFile(
+      path,
+      JSON.stringify({ ...kept, servedModel: "anthropic/claude-fable-5-2" }),
+      "utf8"
+    );
+    const again = await neverDecide(input, options);
+    expect(again.source).toBe("model");
+    expect(asked.asks).toHaveLength(2);
+  });
+
   test("asks again when the prose changes, and again when the document's version does", async () => {
     const directory = await scratch();
     const asked = fake("credential\nThe change list asks for a deploy token to be minted.");

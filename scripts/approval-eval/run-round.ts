@@ -624,7 +624,9 @@ async function askArm(
 
 /**
  * One judgement's row, with its served model read (`servedFieldsOf`) and its fault detail
- * scrubbed before it is written. The verdict is kept whatever the fault.
+ * scrubbed before it is written. The row keeps the labels the answer chose, whatever the fault:
+ * a Jev answer that named no model keeps its choice beside the `model` fault, while `askClaude`
+ * reads no label from an answer another model gave, so such a gateway row holds none.
  */
 function rowOfAnswer(
   arm: Arm,

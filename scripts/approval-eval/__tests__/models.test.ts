@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { labelsOf, noTextDetail, servedAsAsked } from "../models";
+import { labelsOf, noTextDetail, servedAsAsked, servedModelFault } from "../models";
 
 /**
  * The reading of an answer, over hand-written bodies: nothing here calls an endpoint or reads a
@@ -140,5 +140,34 @@ describe("servedAsAsked", () => {
   test("refuses an answer that names no model, and an ask that names none", () => {
     expect(servedAsAsked(ASKED, "")).toBe(false);
     expect(servedAsAsked("", "")).toBe(false);
+  });
+});
+
+describe("servedModelFault", () => {
+  const ASKED = "anthropic/claude-opus-5-5";
+
+  test("holds a gateway answer to the asked id, naming the model that answered instead", () => {
+    expect(servedModelFault(ASKED, ASKED, true)).toBeNull();
+    expect(servedModelFault(ASKED, "anthropic/claude-fable-5-2", true)).toBe(
+      `asked ${ASKED}, and the answer came from anthropic/claude-fable-5-2`
+    );
+  });
+
+  test("holds a Jev answer, asked by an alias, to naming a model and not to the alias", () => {
+    expect(servedModelFault("jev-latest", "jev-2026-11", false)).toBeNull();
+    expect(servedModelFault("jev-latest", null, false)).toBe(
+      "asked jev-latest, and the answer names no model"
+    );
+  });
+
+  test("refuses an answer that names no model on every endpoint, an empty name included", () => {
+    for (const exactId of [true, false]) {
+      expect(servedModelFault(ASKED, null, exactId)).toBe(
+        `asked ${ASKED}, and the answer names no model`
+      );
+      expect(servedModelFault(ASKED, "", exactId)).toBe(
+        `asked ${ASKED}, and the answer names no model`
+      );
+    }
   });
 });

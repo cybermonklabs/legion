@@ -7,18 +7,20 @@ import {
   answerOf,
   baselineOf,
   type ConsensusGroup,
+  type ConsensusRecord,
   consensusLine,
   consensusLines,
   groupsOf,
   QUESTION,
   RATE,
   readingsOf,
+  renderConsensus,
   shortModel,
   sliceCaseIds,
 } from "../consensus";
 import type { SliceName } from "../draw-io";
 import type { RecipeName } from "../recipes";
-import type { Endpoint, JudgementRow } from "../round-io";
+import { type Endpoint, type JudgementRow, modelFaultsOf, rowOf } from "../round-io";
 import { MINIMUM_DECIDED } from "../stats";
 
 /**
@@ -472,6 +474,38 @@ describe("the question", () => {
         "bound, and at what coverage?"
     );
     expect(RATE).toBe(0.05);
+  });
+});
+
+describe("the rows line", () => {
+  test("counts the rows of the model fault an old round holds, beside read and unreadable", () => {
+    // A round's rows as they were written before rows recorded their served model, read back
+    // the way the command reads them: each is the model fault, so each case reads undecided.
+    const old = armRows("bare-opus-5-5", "one", same([APPROVE]))
+      .map((row) => rowOf(JSON.stringify(row)))
+      .filter((row): row is JudgementRow => row !== null);
+    expect(old.map((row) => row.fault)).toEqual(Array(JUDGEMENTS).fill("model"));
+    const record: ConsensusRecord = {
+      corpus: "/corpus",
+      round: "/round",
+      person: "person@example.com",
+      slice: { name: "report", kind: "approval", cases: 1 },
+      arms: [],
+      baseline: { approvals: 1, disagreements: 0, rate: 0, bound: null },
+      lines: [],
+      answer: "No.",
+      rowsRead: old.length,
+      rowsUnreadable: 0,
+      rowsModelFault: modelFaultsOf(old),
+      ranAt: "2026-11-16T12:00:00.000Z",
+    };
+    expect(renderConsensus(record)).toContain(
+      `rows              ${JUDGEMENTS} read, 0 unreadable, ${JUDGEMENTS} of the model fault, ` +
+        "each read as undecided: resume the round with run-round.ts to ask them again"
+    );
+    expect(renderConsensus({ ...record, rowsModelFault: 0 })).toContain(
+      `rows              ${JUDGEMENTS} read, 0 unreadable, 0 of the model fault`
+    );
   });
 });
 

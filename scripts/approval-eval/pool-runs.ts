@@ -447,7 +447,10 @@ function outcomesOf(rows: readonly AnswerRow[]): Map<string, Partial<Record<ArmN
 /**
  * One run read back: one outcome per case and arm, the last row of each winning, as the run's
  * own resume reads them. A case only one arm answered is refused rather than dropped: a run
- * missing half a pair is a run whose difference is read over cases it never paired.
+ * missing half a pair is a run whose difference is read over cases it never paired. A run whose
+ * held rows carry the `model` fault is refused too: such a row is a verdict no record ties to
+ * the measured model, as every row written before rows recorded the agent's own model is, and
+ * pooling it as a non-agreement would print a measured zero for a run that measured nothing.
  */
 export async function readRun(directory: string, shape: Shape): Promise<RunOutcomes> {
   const path = answersPath(directory, shape);
@@ -456,6 +459,16 @@ export async function readRun(directory: string, shape: Shape): Promise<RunOutco
     throw new PoolError(
       `${path} could not be read: --run takes a directory fresh-agent.ts wrote with ` +
         `--neighbours ${shape}`
+    );
+  }
+  const unmodelled = [...heldAnswers(rows).values()].filter((row) => row.fault === "model");
+  if (unmodelled.length > 0) {
+    const caseIds = [...new Set(unmodelled.map((row) => row.caseId))].sort();
+    throw new PoolError(
+      `${path} holds ${counted(unmodelled.length, "answer")} of the model fault, on ` +
+        `${counted(caseIds.length, "case")} (${named(caseIds)}): no record ties those verdicts ` +
+        "to the measured model, so the run is not pooled; run fresh-agent.ts on it again with " +
+        "--answers resume to ask them again"
     );
   }
   const held = outcomesOf(rows);

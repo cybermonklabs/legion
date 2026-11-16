@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ArmReading } from "../analyze";
 import type { CaseRow, CaseVerdict } from "../build-corpus";
 import {
   type AgentAnswer,
@@ -18,11 +19,13 @@ import {
   promptOf,
   readingOf,
   reportLines,
+  roundNumbersOf,
   runFresh,
   verdictLineOf,
 } from "../fresh-agent";
 import { LeakError } from "../render";
 import type { ReplayedDocument } from "../replay";
+import { type JudgementRow, rowOf } from "../round-io";
 import { mcnemarExact } from "../stats";
 
 /**
@@ -424,12 +427,12 @@ describe("an answer from another model than the one asked", () => {
       fault: "model",
       agreed: false,
       chosen: [APPROVE],
-      faultDetail: `asked ${ASKED}, and the agent ran on claude-fable-5-2`,
+      faultDetail: `asked ${ASKED}, and the answer came from claude-fable-5-2`,
     });
     expect(byCase.get("case-2")?.fault).toBe("model");
     expect(byCase.get("case-3")).toMatchObject({
       fault: "model",
-      faultDetail: `asked ${ASKED}, and the agent reported no model`,
+      faultDetail: `asked ${ASKED}, and the answer names no model`,
     });
   });
 
@@ -731,5 +734,66 @@ describe("a run's record says how much of it this run measured", () => {
     const text = await readFile(join(out, "fresh-agent.json"), "utf8");
     const saved = JSON.parse(text) as Record<string, Record<string, unknown>>;
     expect(saved.without?.asked).toBe(0);
+  });
+});
+
+describe("the round's own numbers", () => {
+  // The round's many-shot and bare arms on the measured model, each over the same two cases.
+  const arms = [
+    { name: "many", recipe: "many-shot", agreed: [true, true] },
+    { name: "bare", recipe: "bare", agreed: [true, false] },
+  ].map(
+    ({ name, recipe, agreed }) =>
+      ({
+        name,
+        recipe,
+        model: "anthropic/claude-opus-5-5",
+        endpoint: "claude",
+        cases: agreed.map((one, at) => ({
+          caseId: `case-${at}`,
+          slice: "report",
+          kind: "approval",
+          agreed: one,
+        })),
+      }) as unknown as ArmReading
+  );
+  const caseIds = ["case-0", "case-1"];
+  // The pair's rows as a round writes them, read back by the one reader of rows.jsonl: written
+  // before rows recorded their served model where `served` is undefined.
+  const rowsOf = (served: string | undefined, arm = "") =>
+    ["many", "bare"].flatMap((name) =>
+      caseIds.map(
+        (caseId) =>
+          rowOf(
+            JSON.stringify({
+              arm: arm || name,
+              caseId,
+              judgement: 0,
+              verdict: ["Approve"],
+              endpoint: "claude",
+              model: "anthropic/claude-opus-5-5",
+              servedModel: served,
+              fault: null,
+            })
+          ) as JudgementRow
+      )
+    );
+
+  test("are read from the pair's rows where each names the arm's model", () => {
+    const read = roundNumbersOf(arms, rowsOf("anthropic/claude-opus-5-5"), caseIds);
+    expect(read.modelFaults).toBe(0);
+    expect(read.numbers).toMatchObject({ skillAgreement: 1, controlAgreement: 0.5, gain: 0.5 });
+  });
+
+  test("are not read over a round written before rows recorded their served model", () => {
+    const read = roundNumbersOf(arms, rowsOf(undefined), caseIds);
+    expect(read).toEqual({ numbers: null, modelFaults: 4 });
+  });
+
+  test("count only the pair's own rows of the model fault", () => {
+    const rows = [...rowsOf("anthropic/claude-opus-5-5"), ...rowsOf(undefined, "other")];
+    const read = roundNumbersOf(arms, rows, caseIds);
+    expect(read.modelFaults).toBe(0);
+    expect(read.numbers?.gain).toBe(0.5);
   });
 });
