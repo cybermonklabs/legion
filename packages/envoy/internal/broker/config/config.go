@@ -151,12 +151,12 @@ type Config struct {
 	// since Google puts the client's id in an ID token's aud. Its issuer is
 	// BROKER_GOOGLE_OIDC_ISSUER, Google's own unless a dev stack says otherwise, and the person
 	// it names is held to BROKER_SIGNIN_DOMAIN through the hd claim, exactly as a person
-	// signing in to the broker's own approval page is. Needs BROKER_GOOGLE_OIDC_AUDIENCE, whose
-	// machines are the boxes a person may sign in on. Unset, the broker accepts no person's
-	// sign-in and registers neither token type, so a caller presenting either is refused by
-	// name. It is not one of the four SignInSettings, which are required together: those are
-	// what a person approves a secret request through and no broker serves without them, where
-	// this one is optional, as the whole Google exchange is.
+	// signing in to the broker's own approval page is. Needs BROKER_GOOGLE_OIDC_AUDIENCE and
+	// BROKER_VM_SERVICES: the listed machines are the boxes a person may sign in on. Unset, the
+	// broker accepts no person's sign-in and registers neither token type, so a caller presenting
+	// either is refused by name. It is not one of the four SignInSettings, which are required
+	// together: those are what a person approves a secret request through and no broker serves
+	// without them, where this one is optional, as the whole Google exchange is.
 	SignInDeviceAudience string
 	// BROKER_SECRETS_STORE: which secret store the agent secrets live in: aws-secrets-manager (the
 	// default when unset, AWS Secrets Manager with the agent-secrets key in AWS KMS) or
@@ -307,6 +307,19 @@ type Config struct {
 	// control of the check the judge belongs to. For the broker's local stack alone: a
 	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	JudgeTestSkipChecks bool
+	// BROKER_PROJECT_ACCESS_URL: the base URL of the Dispatch the broker asks whether a project
+	// is private, whether a person may see it, and what kind of member a person is
+	// (internal/broker/projectaccess), an absolute http(s) URL, read without the slashes it ends
+	// in. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks
+	// Dispatch nothing. A token that names no project, and an operator entry's token, whose
+	// project that operator's own setting chose, are minted as before; a person's trade that
+	// names a project is refused, since nothing could say that person may see it.
+	ProjectAccessURL string
+	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
+	// ServiceAccount token for that Dispatch, minted for Dispatch's audience. Read when the broker
+	// asks and not at boot, through brokertoken.AccountToken, which reads the file again once what
+	// it last read is 30 seconds old. Set with BROKER_PROJECT_ACCESS_URL or not at all.
+	ProjectAccessTokenFile string
 	// BROKER_AZURE_TOKEN_FILE: the path of the broker pod's projected ServiceAccount token for
 	// azure-login releases, default /var/run/secrets/azure/tokens/azure-identity-token. Read only
 	// on release, not at boot, and read anew each time so the rotated token is used. The token's
@@ -401,12 +414,15 @@ type Config struct {
 	// turns Google identity tokens on at all.
 	GoogleOIDCIssuer string
 	// BROKER_GOOGLE_OIDC_AUDIENCE: the audience a machine's Google identity token must carry,
-	// at the RFC 8693 token exchange, where such a token is a
-	// subject token (urn:envoy:params:oauth:token-type:google-identity). Its issuer is
-	// BROKER_GOOGLE_OIDC_ISSUER, Google's own unless a dev stack says otherwise. Needs
-	// BROKER_VM_SERVICES, since an audience no VM service is listed for could accept no token.
-	// Unset, the broker accepts no Google identity token, and BROKER_VM_SERVICES,
-	// BROKER_VM_PROJECTS, BROKER_VM_INSTANCES and BROKER_VM_EXCHANGE_ACCOUNTS are refused.
+	// both for a caller listed in BROKER_API_ACCOUNTS and at the RFC 8693 token exchange, where
+	// it is a subject token (urn:envoy:params:oauth:token-type:google-identity). Its issuer is
+	// BROKER_GOOGLE_OIDC_ISSUER, Google's own unless a dev stack says otherwise. Needs a Google
+	// caller, a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES, since
+	// with neither no token for it could ever be accepted; API callers need no VM service. The
+	// exchange accepts only accounts listed in BROKER_VM_SERVICES, and
+	// BROKER_SIGNIN_DEVICE_AUDIENCE needs a VM service for its machine actor token. Unset, the
+	// broker accepts no Google identity token, and BROKER_VM_SERVICES, BROKER_VM_PROJECTS,
+	// BROKER_VM_INSTANCES, BROKER_VM_EXCHANGE_ACCOUNTS and BROKER_SIGNIN_DEVICE_AUDIENCE are refused.
 	GoogleOIDCAudience string
 	// BROKER_VM_SERVICES: the VM services, whitespace-separated name=<service account email>
 	// entries, such as example-service=example-fleet@example-project.iam.gserviceaccount.com. A name
@@ -460,9 +476,12 @@ type Config struct {
 	// projected token, whitespace-separated
 	// <service account>=<project>=<person>[=<session>] entries, such as
 	// system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com. The token minted
-	// for a pod of the account may write that one project, acts for that person, and writes under
+	// for a pod of the account may write that one project, a project key that exchange.NewSet
+	// refuses the start over when it is not one, acts for that person, and writes under
 	// the session the entry fixes; an entry that fixes none requires the pod to name its own
-	// session. The session is everything after the third "=", so it alone may carry one. A
+	// session. An entry may name no project (<service account>==<person>): the shared
+	// public-session account's, whose tokens act for that person and name no project. The
+	// session is everything after the third "=", so it alone may carry one. A
 	// namespace's default account is refused, as is an account listed twice. Needs
 	// BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present.
 	// Unset, no account exchanges.
@@ -619,11 +638,12 @@ var judgeModelProtocols = []string{"anthropic-messages", "openai-responses", "op
 const noUIToken = "the broker's approval routes take the calling service's own Kubernetes ServiceAccount token, verified against BROKER_K8S_OIDC_ISSUER, so list that account in BROKER_API_ACCOUNTS instead of sharing a bearer with Dispatch's server"
 
 // noDispatchCredential is why the broker's five Dispatch variables are gone: they named a
-// Dispatch the broker asked and issued in, which it still does not do. The one thing it reads
-// there now, whether an issue is open, is the model judge's read under its own settings, so a
-// deployment that still sets one of the five is configured for a Dispatch the broker never
-// writes to and a credential it never holds.
-const noDispatchCredential = "the broker opens no Dispatch ask and issues nothing in Dispatch; its model judge reads one thing there, whether an issue is open, at BROKER_JUDGE_DISPATCH_URL and with the broker's own projected ServiceAccount token (BROKER_JUDGE_DISPATCH_TOKEN_FILE), and writes nothing"
+// Dispatch the broker asked and issued in, which it still does not do. What it reads there now is
+// two things, each under settings of its own: the model judge's read of whether an issue is open,
+// and the token exchange's read of whether a person may see a project. So a deployment that still
+// sets one of the five is configured for a Dispatch the broker never writes to and a credential it
+// never holds.
+const noDispatchCredential = "the broker opens no Dispatch ask and issues nothing in Dispatch; it reads two things there, each with its own projected ServiceAccount token, and writes nothing: its model judge, whether an issue is open, at BROKER_JUDGE_DISPATCH_URL (BROKER_JUDGE_DISPATCH_TOKEN_FILE), and its token exchange, whether a person may see a project, at BROKER_PROJECT_ACCESS_URL (BROKER_PROJECT_ACCESS_TOKEN_FILE)"
 
 // noDatabasePassword is why BROKER_DATABASE_PASSWORD and its placeholder are gone: BROKER_DATABASE_URL
 // alone says how the broker signs in.
@@ -1010,8 +1030,10 @@ func podAccountRefusal(setting, text, account string) error {
 
 // parseExchangeAccounts reads setting's whitespace-separated
 // <service account>=<project>=<person>[=<session>] entries, the identities BROKER_EXCHANGE_ACCOUNTS
-// lists, in order. It refuses, naming the entry: one not of that form or with a blank field; an
-// account that is not system:serviceaccount:<namespace>:<name>, or a namespace's default account
+// lists, in order. The project may be empty (<service account>==<person>), which is the shared
+// public-session account's entry: its named tokens act for the person and name no project. It
+// refuses, naming the entry: one not of that form or with a blank account or person; an account
+// that is not system:serviceaccount:<namespace>:<name>, or a namespace's default account
 // (podAccountRefusal); and an account listed twice, since one account writes as one identity.
 // exchange.NewSet is the second gate, and the session name's own form is its to refuse.
 func parseExchangeAccounts(setting, value string) ([]exchange.AccountEntry, error) {
@@ -1019,8 +1041,8 @@ func parseExchangeAccounts(setting, value string) ([]exchange.AccountEntry, erro
 	seen := map[string]bool{}
 	for _, text := range strings.Fields(value) {
 		fields, ok := exchangeFields(text, 4)
-		if !ok || fields[0] == "" || fields[1] == "" || fields[2] == "" {
-			return nil, fmt.Errorf("%s must be <service account>=<project>=<person>[=<session>] entries, the session everything after the third =, got %q", setting, text)
+		if !ok || fields[0] == "" || fields[2] == "" {
+			return nil, fmt.Errorf("%s must be <service account>=<project>=<person>[=<session>] entries, the project empty for an entry naming none and the session everything after the third =, got %q", setting, text)
 		}
 		if err := podAccountRefusal(setting, text, fields[0]); err != nil {
 			return nil, err
@@ -1327,6 +1349,8 @@ func Load(getenv func(string) string) (Config, error) {
 		JudgeModelAudience:        strings.TrimSpace(getenv("BROKER_JUDGE_MODEL_AUDIENCE")),
 		JudgeDispatchURL:          strings.TrimSpace(getenv("BROKER_JUDGE_DISPATCH_URL")),
 		JudgeDispatchTokenFile:    strings.TrimSpace(getenv("BROKER_JUDGE_DISPATCH_TOKEN_FILE")),
+		ProjectAccessURL:          strings.TrimRight(strings.TrimSpace(getenv("BROKER_PROJECT_ACCESS_URL")), "/"),
+		ProjectAccessTokenFile:    strings.TrimSpace(getenv("BROKER_PROJECT_ACCESS_TOKEN_FILE")),
 		AzureTokenFile:            orDefault(getenv("BROKER_AZURE_TOKEN_FILE"), secrets.DefaultAzureTokenFile),
 		AzureLoginSecret:          getenv("BROKER_AZURE_LOGIN_SECRET"),
 		K8sOIDCIssuer:             getenv("BROKER_K8S_OIDC_ISSUER"),
@@ -1469,6 +1493,21 @@ func Load(getenv func(string) string) (Config, error) {
 				judgeModelProtocolSetting, strings.Join(judgeModelProtocols, ", "), cfg.JudgeModelProtocol)
 		}
 	}
+	// The project-access settings are both or neither, as the judge's are: a URL with no token to
+	// present would be refused at every call, and a token with nowhere to present it asks nothing,
+	// so either alone is a deployment that meant to turn the check on and did not.
+	switch {
+	case cfg.ProjectAccessURL == "" && cfg.ProjectAccessTokenFile == "":
+		// No project-access check, which is every deployment with no private project.
+	case cfg.ProjectAccessTokenFile == "":
+		return Config{}, errors.New("BROKER_PROJECT_ACCESS_URL is set and BROKER_PROJECT_ACCESS_TOKEN_FILE is not: the broker presents its own projected ServiceAccount token from that file on every call to Dispatch, so set both or neither")
+	case cfg.ProjectAccessURL == "":
+		return Config{}, errors.New("BROKER_PROJECT_ACCESS_TOKEN_FILE is set and BROKER_PROJECT_ACCESS_URL is not: that URL names the Dispatch the broker asks about projects, so set both or neither")
+	default:
+		if err := httpURLSetting("BROKER_PROJECT_ACCESS_URL", cfg.ProjectAccessURL); err != nil {
+			return Config{}, err
+		}
+	}
 	switch cfg.SecretsStore {
 	case secrets.StoreAWS:
 		if !strings.HasSuffix(cfg.SecretsPrefix, "/") || strings.HasPrefix(cfg.SecretsPrefix, "/") || strings.ContainsFunc(cfg.SecretsPrefix, unicode.IsSpace) {
@@ -1515,8 +1554,8 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if cfg.GoogleOIDCAudience != "" && len(vmServices) == 0 {
-		return Config{}, fmt.Errorf("BROKER_GOOGLE_OIDC_AUDIENCE needs BROKER_VM_SERVICES: with no VM service listed, no VM identity token for that audience could ever be accepted")
+	if cfg.SignInDeviceAudience != "" && len(vmServices) == 0 {
+		return Config{}, fmt.Errorf("BROKER_SIGNIN_DEVICE_AUDIENCE needs BROKER_VM_SERVICES: a person's device sign-in requires a listed machine's Google identity token as its actor")
 	}
 	for _, entry := range vmServices {
 		if cfg.VMServicesByAccount == nil {
@@ -1619,6 +1658,11 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if len(cfg.GoogleAPIAccounts) > 0 && cfg.GoogleOIDCAudience == "" {
 		return Config{}, fmt.Errorf("BROKER_API_ACCOUNTS names a Google service account, which needs BROKER_GOOGLE_OIDC_AUDIENCE, the audience its caller's Google identity token must carry")
+	}
+	// The audience is for a Google caller of either kind, and needs one: with neither, the broker
+	// would read Google's keys at boot and then accept no Google identity token at all.
+	if cfg.GoogleOIDCAudience != "" && len(cfg.GoogleAPIAccounts) == 0 && len(cfg.VMServicesByAccount) == 0 {
+		return Config{}, fmt.Errorf("BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES; with neither, no Google identity token for that audience could ever be accepted")
 	}
 	githubIssuer, githubAudience, err := oidc.ConfigFromEnv(getenv, "BROKER_EXCHANGE_GITHUB_ISSUER", "BROKER_EXCHANGE_GITHUB_AUDIENCE")
 	if err != nil {

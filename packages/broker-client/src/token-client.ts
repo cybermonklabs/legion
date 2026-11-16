@@ -40,6 +40,7 @@ import {
   EXCHANGE_CLIENT_ID,
   FORM_LAUNCHER_CREDENTIAL,
   FORM_LAUNCHER_CREDENTIAL_DECLINED,
+  FORM_PROJECTS,
   FORM_SESSION,
   GRANT_TYPE_TOKEN_EXCHANGE,
   SUBJECT_TOKEN_TYPE_GOOGLE,
@@ -184,6 +185,14 @@ export interface BrokerTokenClientOptions {
    *  told and an entry that fixes none requires. */
   readonly session?: string | undefined;
   /**
+   * The projects the minted token names ({@link FORM_PROJECTS}), sorted and each once, as
+   * `tradeProjects` reads them from `AGENT_SECRETS_PROJECTS` (./environment.ts). Only a trade
+   * that acts as its person passes them — a person's sign-in — and the broker names only projects
+   * that person may see. A machine trading for itself passes none: its entry decides its project,
+   * and the broker refuses one it is told. Empty or absent sends no parameter at all.
+   */
+  readonly projects?: readonly string[] | undefined;
+  /**
    * Whether this trade wants the launcher credential its identity holds minted or moved onto
    * the key it proved ({@link FORM_LAUNCHER_CREDENTIAL}); true by default, as an absent
    * parameter is on the wire.
@@ -257,6 +266,7 @@ export class BrokerTokenClient {
   readonly #subject: TokenSource;
   readonly #actor: TokenSource | undefined;
   readonly #session: string;
+  readonly #projects: readonly string[];
   readonly #launcherCredential: boolean;
   readonly #renewBeforeMs: number;
   readonly #now: () => number;
@@ -275,6 +285,7 @@ export class BrokerTokenClient {
     this.#subject = options.subject;
     this.#actor = options.actor;
     this.#session = options.session ?? "";
+    this.#projects = [...(options.projects ?? [])];
     this.#launcherCredential = options.launcherCredential ?? true;
     this.#renewBeforeMs = options.renewBeforeMs ?? DEFAULT_RENEW_BEFORE_MS;
     this.#now = options.now ?? Date.now;
@@ -358,6 +369,9 @@ export class BrokerTokenClient {
       subject_token_type: subject.tokenType,
     };
     if (this.#session !== "") form[FORM_SESSION] = this.#session;
+    // Sent only when there is a list: a trade naming none reads exactly as one written before the
+    // parameter existed.
+    if (this.#projects.length > 0) form[FORM_PROJECTS] = this.#projects.join(" ");
     if (!this.#launcherCredential) {
       // Sent only to decline: an absent parameter asks, so a broker that has never heard of this
       // parameter answers a client that does ask exactly as it always has.

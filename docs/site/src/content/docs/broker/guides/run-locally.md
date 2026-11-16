@@ -24,57 +24,59 @@ With Docker the command is the script alone; this run used a Postgres server of 
 
 ```console
 $ DEV_BROKER_POSTGRES_URL='postgres://<user>@<host>:<port>/<database>' bash packages/envoy/scripts/dev-broker.sh
-dev-broker: workdir /tmp/agent-secrets-dev.l0U7xZ
-dev-broker: created isolated database dev_broker_l0u7xz
+dev-broker: workdir /legion/scratch/tmp/agent-secrets-dev.70a6Eu
+dev-broker: created isolated database dev_broker_70a6eu
 dev-broker: building broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper and agent-secrets-devrelay...
+dev-broker: built all six into /legion/scratch/tmp/agent-secrets-dev.70a6Eu/bin
 dev-broker: starting dev-airlock-stands (its GitHub stand mints the github-app secrets)...
-dev-airlock-stands: stands listening records=http://127.0.0.1:29184
+dev-airlock-stands: stands listening records=http://127.0.0.1:57249
 dev-broker: starting dev-oidc-issuer...
-dev-oidc-issuer: /tmp/agent-secrets-dev.l0U7xZ/account-token holds system:serviceaccount:example-ns:example-dispatch's token for audience legion-broker-pod (pod dc38c663-5541-4ec8-8481-eaf1bc34a864)
-dev-oidc-issuer: /tmp/agent-secrets-dev.l0U7xZ/listener-token holds system:serviceaccount:example-ns:example-listener's token for audience legion-broker-pod (pod 21c7893f-91c1-4b67-8eed-fad373559344)
-dev-oidc-issuer: /tmp/agent-secrets-dev.l0U7xZ/exchange-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-exchange (pod 02226e28-83ed-4f29-b193-53f84a30cce6)
-dev-oidc-issuer: /tmp/agent-secrets-dev.l0U7xZ/read-token holds system:serviceaccount:example-ns:example-reader's token for audience legion-broker-exchange (pod fefb9c67-ff0e-429e-86c7-05625193ca8b)
-dev-oidc-issuer: /tmp/agent-secrets-dev.l0U7xZ/pod-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-pod (pod 02226e28-83ed-4f29-b193-53f84a30cce6)
-dev-oidc-issuer: /tmp/agent-secrets-dev.l0U7xZ/registrar-token holds system:serviceaccount:example-ns:example-daemon's token for audience legion-broker-pod (pod aa3b1e31-e874-4524-8a6f-9c5aa5a25b7f)
+dev-oidc-issuer: /legion/scratch/tmp/agent-secrets-dev.70a6Eu/account-token holds system:serviceaccount:example-ns:example-dispatch's token for audience legion-broker-pod (pod b7fdd2f3-e4ae-4ab5-9539-739df70be470)
+dev-oidc-issuer: /legion/scratch/tmp/agent-secrets-dev.70a6Eu/listener-token holds system:serviceaccount:example-ns:example-listener's token for audience legion-broker-pod (pod d29d7435-7cb4-4efa-a9e9-9c172a4c4b08)
+dev-oidc-issuer: /legion/scratch/tmp/agent-secrets-dev.70a6Eu/exchange-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-exchange (pod 82b2b4e8-09bf-4ab5-b9ff-4ae8f3c57cb0)
+dev-oidc-issuer: /legion/scratch/tmp/agent-secrets-dev.70a6Eu/read-token holds system:serviceaccount:example-ns:example-reader's token for audience legion-broker-exchange (pod 4efe0005-1da7-4c4b-b055-cecf6f87ac9d)
+dev-oidc-issuer: /legion/scratch/tmp/agent-secrets-dev.70a6Eu/pod-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-pod (pod 82b2b4e8-09bf-4ab5-b9ff-4ae8f3c57cb0)
+dev-oidc-issuer: /legion/scratch/tmp/agent-secrets-dev.70a6Eu/registrar-token holds system:serviceaccount:example-ns:example-daemon's token for audience legion-broker-pod (pod 5a8afd1c-1cc8-4260-bc4b-42487058c662)
 dev-oidc-issuer: code flow serves client dev-broker; an authorization with none queued at /_dev/sign-in-as signs in ada@example.com
-dev-oidc-issuer: issuer listening url=http://127.0.0.1:35472
+dev-oidc-issuer: issuer listening url=http://127.0.0.1:31247
 dev-broker: starting broker...
-{"time":"2026-11-16T00:01:19.525791096Z","severity":"INFO","message":"broker stop budget","drain":"0s","shutdown":"60s","total":"60s"}
-{"time":"2026-11-16T00:01:19.525947473Z","severity":"INFO","message":"database sign-in","method":"password"}
-{"time":"2026-11-16T00:01:19.52596899Z","severity":"INFO","message":"approval sign-in on","issuer":"http://127.0.0.1:35472","client_id":"dev-broker","domain":"example.com"}
-{"time":"2026-11-16T00:01:19.981173794Z","severity":"INFO","message":"secret store","store":"aws-secrets-manager","credentials":"fake secrets file"}
-{"time":"2026-11-16T00:01:20.030443518Z","severity":"INFO","message":"broker: listening for the other pods' secret rereads","channel":"broker_secret_reread"}
-{"time":"2026-11-16T00:01:20.031608681Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:59313"}
-{"time":"2026-11-16T00:01:20.031644405Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:42840"}
-{"time":"2026-11-16T00:01:20.0316823Z","severity":"INFO","message":"model judge","state":"off","detail":"none of BROKER_JUDGE_MODEL_URL, BROKER_JUDGE_MODEL, BROKER_JUDGE_MODEL_AUDIENCE, BROKER_JUDGE_DISPATCH_URL, BROKER_JUDGE_DISPATCH_TOKEN_FILE is set, so every human-tier request waits for the person who decides it today"}
-{"time":"2026-11-16T00:01:20.035880013Z","severity":"INFO","message":"token exchange","state":"on","kubernetes":true,"github":false,"accounts":1,"read_accounts":1,"workflows":0,"machines":0}
-{"time":"2026-11-16T00:01:20.036229221Z","severity":"INFO","message":"machine login device grant","state":"on","verification_uri":"http://127.0.0.1/credentials/machine"}
-{"time":"2026-11-16T00:01:20.131620706Z","severity":"INFO","message":"broker reread rate","replicas":2,"every":"1s","burst":10}
-{"time":"2026-11-16T00:01:20.767336872Z","severity":"INFO","message":"broker: registered a pod to write under a session name","service":"legion-daemon","account":"system:serviceaccount:example-ns:example-worker","pod":"02226e28-83ed-4f29-b193-53f84a30cce6","session":"example-worker-session"}
+{"time":"2026-11-16T17:14:38.440535554Z","severity":"INFO","message":"broker stop budget","drain":"0s","shutdown":"60s","total":"60s"}
+{"time":"2026-11-16T17:14:38.44068581Z","severity":"INFO","message":"database sign-in","method":"password"}
+{"time":"2026-11-16T17:14:38.440703001Z","severity":"INFO","message":"approval sign-in on","issuer":"http://127.0.0.1:31247","client_id":"dev-broker","domain":"example.com"}
+{"time":"2026-11-16T17:14:38.724608823Z","severity":"INFO","message":"secret store","store":"aws-secrets-manager","credentials":"fake secrets file"}
+{"time":"2026-11-16T17:14:38.749006352Z","severity":"INFO","message":"broker: listening for the other pods' secret rereads","channel":"broker_secret_reread"}
+{"time":"2026-11-16T17:14:38.749954832Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:32605"}
+{"time":"2026-11-16T17:14:38.750031637Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:34409"}
+{"time":"2026-11-16T17:14:38.750108035Z","severity":"INFO","message":"model judge","state":"off","detail":"none of BROKER_JUDGE_MODEL_URL, BROKER_JUDGE_MODEL, BROKER_JUDGE_MODEL_AUDIENCE, BROKER_JUDGE_DISPATCH_URL, BROKER_JUDGE_DISPATCH_TOKEN_FILE is set, so every human-tier request waits for the person who decides it today"}
+{"time":"2026-11-16T17:14:38.753592857Z","severity":"INFO","message":"project access check","state":"off","detail":"BROKER_PROJECT_ACCESS_URL is unset, so a token naming no project is minted as before and a person's trade naming one is refused"}
+{"time":"2026-11-16T17:14:38.753658826Z","severity":"INFO","message":"token exchange","state":"on","kubernetes":true,"github":false,"accounts":1,"read_accounts":1,"workflows":0,"machines":0}
+{"time":"2026-11-16T17:14:38.753890376Z","severity":"INFO","message":"machine login device grant","state":"on","verification_uri":"http://127.0.0.1/credentials/machine"}
+{"time":"2026-11-16T17:14:38.786731457Z","severity":"INFO","message":"broker reread rate","replicas":2,"every":"1s","burst":10}
+{"time":"2026-11-16T17:14:39.40407662Z","severity":"INFO","message":"broker: registered a pod to write under a session name","service":"legion-daemon","account":"system:serviceaccount:example-ns:example-worker","pod":"82b2b4e8-09bf-4ab5-b9ff-4ae8f3c57cb0","session":"example-worker-session"}
 dev-broker: registered the exchange pod to write under example-worker-session
 
 dev-broker: ready.
 
-  export AGENT_SECRETS_URL=http://127.0.0.1:59313
-  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/tmp/agent-secrets-dev.l0U7xZ/account-token
+  export AGENT_SECRETS_URL=http://127.0.0.1:32605
+  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/legion/scratch/tmp/agent-secrets-dev.70a6Eu/account-token
   export AGENT_SECRETS_APPROVER=ada@example.com
-  export AGENT_SECRETS_HELPER_SOCK=/tmp/agent-secrets-dev.l0U7xZ/helper.sock
-  export AGENT_SECRETS_OPERATOR_FILE=/tmp/agent-secrets-dev.l0U7xZ/operator
-  export AGENT_SECRETS_MACHINE_FILE=/tmp/agent-secrets-dev.l0U7xZ/machine.json
-  export AGENT_SECRETS_STATE_FILE=/tmp/agent-secrets-dev.l0U7xZ/sessions.json
-  export DEV_BROKER_DIR=/tmp/agent-secrets-dev.l0U7xZ
-  export DEV_BROKER_METRICS_URL=http://127.0.0.1:42840/metrics
-  export DEV_BROKER_POD_UID=02226e28-83ed-4f29-b193-53f84a30cce6
+  export AGENT_SECRETS_HELPER_SOCK=/legion/scratch/tmp/agent-secrets-dev.70a6Eu/helper.sock
+  export AGENT_SECRETS_OPERATOR_FILE=/legion/scratch/tmp/agent-secrets-dev.70a6Eu/operator
+  export AGENT_SECRETS_MACHINE_FILE=/legion/scratch/tmp/agent-secrets-dev.70a6Eu/machine.json
+  export AGENT_SECRETS_STATE_FILE=/legion/scratch/tmp/agent-secrets-dev.70a6Eu/sessions.json
+  export DEV_BROKER_DIR=/legion/scratch/tmp/agent-secrets-dev.70a6Eu
+  export DEV_BROKER_METRICS_URL=http://127.0.0.1:34409/metrics
+  export DEV_BROKER_POD_UID=82b2b4e8-09bf-4ab5-b9ff-4ae8f3c57cb0
   export DEV_BROKER_SERVICE=legion-daemon
-  export DEV_BROKER_GITHUB_URL=http://127.0.0.1:53608
-  export DEV_BROKER_GITHUB_RECORDS_URL=http://127.0.0.1:29184/records/github
-  export DEV_BROKER_GITHUB_ANSWER_URL=http://127.0.0.1:29184/answers/github
+  export DEV_BROKER_GITHUB_URL=http://127.0.0.1:18701
+  export DEV_BROKER_GITHUB_RECORDS_URL=http://127.0.0.1:57249/records/github
+  export DEV_BROKER_GITHUB_ANSWER_URL=http://127.0.0.1:57249/answers/github
   export DEV_BROKER_GITHUB_SECRET=DEMO_GITHUB_APP
   export DEV_BROKER_GITHUB_OWNER=acme-org
   export DEV_BROKER_GITHUB_CASE_SECRET=DEMO_GITHUB_APP_CASE_PAIR
   export DEV_BROKER_GITHUB_CASE_OWNER=ada
   export DEV_BROKER_GITHUB_HUMAN_SECRET=DEMO_GITHUB_APP_HUMAN
-  export PATH=/tmp/agent-secrets-dev.l0U7xZ/bin:$PATH
+  export PATH=/legion/scratch/tmp/agent-secrets-dev.70a6Eu/bin:$PATH
 ...
 ```
 
@@ -367,7 +369,7 @@ form). Here the `listener` token, which may do that and nothing else:
 
 ```console
 $ curl -s -H "Authorization: Bearer $(cat "$DEV_BROKER_DIR/listener-token")" -d "token=<access token>" "$AGENT_SECRETS_URL/v1/oauth/introspect"
-{"active":true,"session":"example-worker-session","person":"ada@example.com","project_scope":"named","project":"EXAMPLE","exp":1793320811,"client_id":"dispatch-token-exchange","jkt":"oufCNV-MCX2NLGXXB5yj7Pdnwumhbp1dGcxoxpSTyWk"}
+{"active":true,"session":"example-worker-session","person":"ada@example.com","project_scope":"named","projects":["EXAMPLE"],"exp":1793320811,"client_id":"dispatch-token-exchange","jkt":"oufCNV-MCX2NLGXXB5yj7Pdnwumhbp1dGcxoxpSTyWk"}
 ```
 
 `POST /v1/oauth/revoke` (RFC 7009) ends one before its expiry, and is the only thing that can: an
@@ -403,7 +405,7 @@ session `example-reader-session`. `$DEV_BROKER_DIR/read-token` holds that accoun
 the exchange's audience. The token request above, with that token as `subject_token` and either
 `session=example-reader-session` or no `session`, mints a token that holds the OAuth scope `read`
 alone. Its introspection answer carries `"service":"example-reader"`, `"project_scope":"none"` and
-`"scope":"read"`, and no `person` and no `project`. A request that names another session is
+`"scope":"read"`, and no `person` and no `projects`. A request that names another session is
 refused, and one that names `scope=read` is refused `invalid_scope`: the entry decides the scope,
 and the request never does. The entry fixes its session, so the script registers no pod for it,
 and the registration route refuses one with `409 SESSION_FIXED`.

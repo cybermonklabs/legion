@@ -1067,12 +1067,14 @@ func (s gcpKindStore) valueReads() int {
 func (s gcpKindStore) readPermissions() []string { return []string{"secretmanager.versions.access"} }
 
 // TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses: on both stores, for each of
-// the four kinds, create, set and retag refuse each value that kind's minter refuses before
-// anything is written: create writes no secret, set no version, retag no tag, and the broker is
-// asked to reread nothing. Each exits 2 naming what is wrong in the minter's own words, read back
-// from the minter driven with the same value, so the one decoder decides both, names the kind
-// after the article it takes ("an azure-login secret's"), and none prints the value. Set checks
-// the value under the kind tag the secret holds, since it names none.
+// the four kinds, create, set and retag refuse each value that kind's minter refuses, and leave
+// the store as they found it: create holds no secret, set no new version, retag no new tag. Each
+// exits 2 naming what is wrong in the minter's own words, read back from the minter driven with
+// the same value, so the one decoder decides both, names the kind after the article it takes ("an
+// azure-login secret's"), and none prints the value. Set checks the value under the kind tag the
+// secret holds, since it names none. The broker is asked to reread nothing, but for a create on
+// Secret Manager: that makes the secret before it reads the value and deletes it on the refusal,
+// then asks the broker to reread the name once, which the broker answers absent.
 func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store kindStore, broker *secretBroker) {
 		for _, row := range refusedKindValues(t) {
@@ -1087,16 +1089,22 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing
 				if row.kind == policy.KindAzureLogin {
 					named = "the broker refuses this value as an " + row.kind + " secret's"
 				}
+				_, madeFirst := store.(gcpKindStore)
 				for _, form := range []struct {
 					args []string
-					// wrote reports whether the form wrote anything: create a secret, set a
-					// version, retag a tag.
+					// wrote reports whether the form left anything written: a secret created, a
+					// version set, a tag retagged.
 					wrote func() bool
+					// rereads is the names the form asks the broker to reread.
+					rereads []string
 				}{
-					{append([]string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--kind", row.kind}, kindArgs(row.kind)...), func() bool { return store.has(t, "NEW_KEY") }},
-					{[]string{"set", "HELD_KEY"}, func() bool { return store.value(t, "HELD_KEY") != policytest.KindValue(row.kind) }},
-					{append([]string{"retag", "PLAIN_KEY", "--kind", row.kind}, kindArgs(row.kind)...), func() bool { return !maps.Equal(store.tags(t, "PLAIN_KEY"), plain) }},
+					{append([]string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--kind", row.kind}, kindArgs(row.kind)...), func() bool { return store.has(t, "NEW_KEY") }, nil},
+					{[]string{"set", "HELD_KEY"}, func() bool { return store.value(t, "HELD_KEY") != policytest.KindValue(row.kind) }, nil},
+					{append([]string{"retag", "PLAIN_KEY", "--kind", row.kind}, kindArgs(row.kind)...), func() bool { return !maps.Equal(store.tags(t, "PLAIN_KEY"), plain) }, nil},
 				} {
+					if madeFirst && form.args[0] == "create" {
+						form.rereads = []string{"NEW_KEY"}
+					}
 					asked, _ := broker.recorded()
 					useStdin(t, row.value)
 					stdout, stderr, code := runSecret(form.args...)
@@ -1112,8 +1120,9 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing
 					if form.wrote() {
 						t.Errorf("a refused %s of a %s value with %s wrote it", form.args[0], row.kind, row.name)
 					}
-					if rereads, _ := broker.recorded(); len(rereads) != len(asked) {
-						t.Errorf("a refused %s of a %s value with %s asked the broker to reread %v", form.args[0], row.kind, row.name, rereads[len(asked):])
+					rereads, answers := broker.recorded()
+					if got := rereads[len(asked):]; !slices.Equal(got, form.rereads) || slices.ContainsFunc(answers[len(asked):], func(r Reread) bool { return r.Served || r.Reason != policy.ReasonAbsent }) {
+						t.Errorf("a refused %s of a %s value with %s asked the broker to reread %v, answered %v; want %v, answered absent", form.args[0], row.kind, row.name, got, answers[len(asked):], form.rereads)
 					}
 				}
 			})

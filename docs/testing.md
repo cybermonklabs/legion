@@ -285,7 +285,8 @@ A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package comes 
 ## A database a Go test creates
 
 A Go test that creates a Postgres database writes `create database … strategy file_copy`, as
-`packages/envoy/internal/dispatch/store/storetest` and both modules' `internal/testpg` do. Without
+`packages/envoy/internal/dispatch/store/storetest`, the daemon's `internal/testpg` and Envoy's
+`internal/testpg/testdb` do. Without
 it, PostgreSQL 15 and later copy the source database through the write-ahead log, every page of it:
 4.4 MB of log for an empty database made from `template1`, and 6.4 MB for a clone of Dispatch's
 migrated template, which made one run of the `api` and `docs` packages write 16 GiB of log. A file
@@ -293,6 +294,14 @@ copy writes a few hundred bytes. `storetest`'s own test fails when a clone write
 hundredth of its template's size, and each module's `internal/textcheck` test
 `TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a
 database's creation in a string without `strategy file_copy` on the same line.
+
+In Envoy, a test that already holds a server's URL makes its database with
+`internal/testpg/testdb`'s `DatabaseOn`, never `internal/testpg`'s: `testpg` links
+testcontainers, whose package init walks every process on the machine before any test runs, and
+on a box running some 26,000 processes that cost a test binary about 9.8 seconds of start
+(`GODEBUG=inittrace=1`). `testpg.URL`, which may start a container, keeps that cost for the tests
+that need it. The broker's `storetest` holds itself to it: `TestStoretestLinksNoContainerRuntime`
+fails when its dependencies reach testcontainers.
 
 A test that needs the schema takes a clone of a template its package migrated once, rather than
 running the migrations itself: `packages/daemon/internal/testpg`'s `Clone` answers the clone's

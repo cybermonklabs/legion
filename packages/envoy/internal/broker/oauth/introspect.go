@@ -58,9 +58,51 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 	answer.Service, _ = session.Extra[ClaimService].(string)
 	answer.Machine, _ = session.Extra[ClaimMachine].(string)
 	answer.ProjectScope, _ = session.Extra[ClaimProjectScope].(string)
-	answer.Project, _ = session.Extra[ClaimProject].(string)
+	stored, present := session.Extra[ClaimProjects]
+	if !present {
+		if answer.ProjectScope == oauthwire.ProjectScopeNamed {
+			// A named token an exchange decided before the list stored its one project under
+			// another claim and none under this one. Read as no projects, it would pass as a named
+			// token naming none, the public-session account's shape, which holds it to no project;
+			// it is answered not live instead, so its holder trades again for a token of this
+			// release. A person token of that release stored no project claim at all, which meant
+			// then what an empty list means now, so it reads as naming none; a machine login's own
+			// token, which no exchange decided, carries neither claim.
+			return oauthwire.Introspection{}, nil
+		}
+		return answer, nil
+	}
+	// The stored claim is the list's space-joined spelling (ClaimProjects), which the store
+	// hands back as the string it wrote; one that is not a string or does not parse is a row this
+	// broker did not write: ErrStoredClaimMalformed, naming the row (malformedClaimOwner) so an
+	// operator reads which row to look at rather than an outage, and never a token naming no
+	// project.
+	text, ok := stored.(string)
+	if !ok {
+		return oauthwire.Introspection{}, fmt.Errorf("%w: %s stores its projects as a %T, not their string", ErrStoredClaimMalformed, malformedClaimOwner(session, answer.Session), stored)
+	}
+	projects, err := oauthwire.ParseProjects(text)
+	if err != nil {
+		return oauthwire.Introspection{}, fmt.Errorf("%w: %s stores projects that do not parse: %w", ErrStoredClaimMalformed, malformedClaimOwner(session, answer.Session), err)
+	}
+	answer.Projects = projects
 	return answer, nil
 }
+
+// malformedClaimOwner names the row of a malformed stored claim: the token's session and the
+// launcher credential it follows, if any.
+func malformedClaimOwner(session *oauthstore.ExchangeSession, name string) string {
+	owner := fmt.Sprintf("the token of the session %q", name)
+	if credential, _ := session.Extra[oauthwire.ExtraCredentialID].(string); credential != "" {
+		owner += fmt.Sprintf(" under the launcher credential %s", credential)
+	}
+	return owner
+}
+
+// ErrStoredClaimMalformed is a token row whose stored project claim this broker could not have
+// written: not its string, or a string that is no list. It is no outage, so the introspection route
+// answers it as what it is rather than as a database it could not reach.
+var ErrStoredClaimMalformed = errors.New("oauth: the token's stored project claim is malformed")
 
 // notLiveCauses are the library's own sentinels for a token it found wanting: a string with no
 // signature to look up (oauth2.ErrNotFound, which the library wraps itself), a row the store

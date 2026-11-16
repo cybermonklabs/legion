@@ -37,12 +37,12 @@ import (
 // is collected by calling decide for each kind of subject token — a pod's, whose entry gives the
 // named project scope, a pod's of a read entry, whose project scope is none, a machine access
 // token's, whose scope is the person's, and a machine's Google identity token, whose entry names a
-// service — and taking the union, since `project` is written under one scope and deleted under the
-// others. So a claim a new scope or a new decision adds is a claim this fails until the list names
-// it. The OAuth scope a decision grants is a claim too, though decide grants it on the request
-// rather than writing it into the extras: `scope`, which an introspection answers from the granted
-// scopes and a read entry's token alone carries (writeProjectScope), joins the union when any
-// decision granted one. The one claim no decision writes, the launcher credential a machine's
+// service — and taking the union, since `machine` is written for one kind of trade and deleted for
+// the others. So a claim a new scope or a new decision adds is a claim this fails until the list
+// names it. The OAuth scope a decision grants is a claim too, though decide grants it on the
+// request rather than writing it into the extras: `scope`, which an introspection answers from the
+// granted scopes and a read entry's token alone carries (writeProjectScope), joins the union when
+// any decision granted one. The one claim no decision writes, the launcher credential a machine's
 // exchange mints (machineCredential, which runs after decide because the credential does not
 // exist until the request's key is bound), is added to that union by name; what proves it is
 // written is the live exchange in cmd/broker.
