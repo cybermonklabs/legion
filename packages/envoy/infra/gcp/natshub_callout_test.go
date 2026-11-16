@@ -149,16 +149,11 @@ func TestAHubRefusesACalloutCoreRefuses(t *testing.T) {
 	}
 }
 
-// nats-server v2.15.1 refuses a reload that changes its authorization callout ("config reload not
-// supported for AuthCallout", which clusteredhub_callout_live_test.go measures). It does reload
-// ping_interval and ping_max (server/reload.go:1751-1754), and each connection takes the new
-// interval at its timer's next re-arm (server/reload.go:670-672; server/client.go:6037-6050),
-// within one interval of the old value. So the clustered hub's pods carry the SHA-256 of the
-// callout's lines and the ping lines in the annotation envoy-infra.sjawhar.dev/auth-callout: a
-// change of either, an added user's key in auth_users among them, changes the pod template and
-// rolls the pods one at a time, and every server applies it at one known moment, its pod's
-// restart. A change of a user's grant alone leaves those lines and the annotation as they were,
-// so the reloader applies it.
+// The clustered hub's pods carry the SHA-256 of the callout's lines, the auth_callout block and the
+// ping lines, in the annotation envoy-infra.sjawhar.dev/auth-callout: a change of either, an added
+// user's key in auth_users among them, changes the pod template and rolls the pods one at a time,
+// and a change of a user's grant alone leaves those lines and the annotation as they were, so the
+// reloader applies it. core.Authorization.CalloutLines says why a change rolls rather than reloads.
 //
 // Control: hash the auth_callout block alone (core.Authorization.CalloutLines without the ping
 // lines); the first two rows fail.
@@ -192,14 +187,9 @@ func TestClusteredNatsHubRollsThePodsForACalloutChange(t *testing.T) {
 	require.Equal(t, before, annotation(t, args), "a grant change alone leaves the callout's lines, and the pods, as they were")
 }
 
-// Beside a callout, auth.conf's top-level ping_interval of 20 s would also govern the routes
-// between the hub's servers, which read cluster.ping_interval first and fall back to it
-// (server/client.go:5957-5964): a route is pinged on every tick, traffic or not (:5968-5970), so a
-// route whose queue takes longer than 2 to 3 intervals to drain is closed as stale. So the chart's
-// cluster block keeps the routes' own ping at today's effective values, 30 s and 2: the 2-minute
-// default capped at routeMaxPingInterval (server/route.go:144, :152; client.go:6005-6010) and the
-// default ping_max (server/const.go:123; client.go:5983-5986). Without a callout the cluster block
-// is as it was (R9).
+// Beside a callout, the chart's cluster block pins the routes' own ping at today's effective
+// values, ping_interval "30s" and ping_max 2, and without a callout the cluster block is as it was
+// (R9). clusteredHubCluster says why the routes need the pin.
 //
 // Control: drop the merge from the cluster block; the first row fails.
 func TestClusteredNatsHubPinsTheRoutesPingBesideACallout(t *testing.T) {

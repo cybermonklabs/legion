@@ -55,39 +55,20 @@ const (
 	staleConnection = "Stale Connection"
 )
 
-// startHubOn runs the hub's image with rig's authorization rendered without its callout, then
-// restarts it on config, as an operator applies a changed configuration, with its monitoring port
-// open. It returns the client URL and the monitoring endpoint.
+// monitorHTTP reads the server's monitoring: a /connz that hangs fails its row in 2 s, naming it,
+// where http.Get would block the row until the package's -timeout.
+var monitorHTTP = &http.Client{Timeout: 2 * time.Second}
+
+// startHubOn runs the hub's image with rig's authorization rendered without its callout, with its
+// monitoring port open, then reconfigures it on config (calloutRig.reconfigure). It returns the
+// client URL and the monitoring endpoint.
 func startHubOn(t *testing.T, rig *calloutRig, config string) (uri, monitor string) {
 	t.Helper()
-	ctx := context.Background()
 	ctr, _ := testnats.StartImageConfig(t, testnats.HubImage, rig.render(t, false), []string{"-js", "-m", "8222"}, false)
-	stop := 10 * time.Second
-	require.NoError(t, ctr.Stop(ctx, &stop))
-	require.NoError(t, ctr.CopyToContainer(ctx, []byte(config), "/etc/nats/nats-server.conf", 0o644))
-	require.NoError(t, ctr.Start(ctx))
-	uri, err := ctr.ConnectionString(ctx)
-	require.NoError(t, err)
-	monitor, err = ctr.PortEndpoint(ctx, "8222/tcp", "http")
+	uri = rig.reconfigure(t, ctr, config)
+	monitor, err := ctr.PortEndpoint(context.Background(), "8222/tcp", "http")
 	require.NoError(t, err)
 	return uri, monitor
-}
-
-// connectSeedWhenUp connects to server as the nkey user whose seed is seed, named name, retrying for
-// 30 s while a restarted server comes up. testnats.ConnectSeed sets NoReconnect, so a connection
-// the server closes stays closed.
-func connectSeedWhenUp(t *testing.T, server, seed, name string) *natsgo.Conn {
-	t.Helper()
-	var conn *natsgo.Conn
-	var err error
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(100 * time.Millisecond) {
-		if conn, err = testnats.ConnectSeed(t, server, seed, natsgo.Name(name)); err == nil {
-			break
-		}
-		require.True(t, time.Now().Before(deadline), "%s could not connect to %s: %v", name, server, err)
-	}
-	t.Cleanup(conn.Close)
-	return conn
 }
 
 // hangOutcome is what a hung replica left: whether the server still listed A when the test stopped
@@ -105,7 +86,7 @@ func hangAReplica(t *testing.T, rig *calloutRig, config string) hangOutcome {
 	t.Helper()
 	uri, monitor := startHubOn(t, rig, config)
 	replica := func(server, name string) {
-		conn := connectSeedWhenUp(t, server, rig.serviceSeed, name)
+		conn := connectWhenUp(t, server, rig.serviceSeed, natsgo.Name(name))
 		_, err := conn.QueueSubscribe("$SYS.REQ.USER.AUTH", calloutQueue, func(m *natsgo.Msg) { rig.answer(t, m) })
 		require.NoError(t, err)
 		require.NoError(t, conn.Flush())
@@ -155,7 +136,7 @@ type stallOutcome struct {
 func stallAClient(t *testing.T, rig *calloutRig, config string) stallOutcome {
 	t.Helper()
 	uri, monitor := startHubOn(t, rig, config)
-	connectSeedWhenUp(t, uri, rig.staticSeed, "example-wait-for-the-server").Close()
+	connectWhenUp(t, uri, rig.staticSeed).Close()
 	proxy := testnats.StartProxy(t, uri)
 	conn, err := testnats.ConnectSeed(t, proxy.URL(), rig.staticSeed, natsgo.Name(stalledClient))
 	require.NoError(t, err)
@@ -180,7 +161,7 @@ func stallAClient(t *testing.T, rig *calloutRig, config string) stallOutcome {
 // the reason the server gives for it ("" for an open one) and whether it lists it.
 func connection(t *testing.T, monitor, state, name string) (reason string, listed bool) {
 	t.Helper()
-	response, err := http.Get(monitor + "/connz?limit=1024&state=" + state)
+	response, err := monitorHTTP.Get(monitor + "/connz?limit=1024&state=" + state)
 	require.NoError(t, err)
 	defer response.Body.Close()
 	body, err := io.ReadAll(response.Body)

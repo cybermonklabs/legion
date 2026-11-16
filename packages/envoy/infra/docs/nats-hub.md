@@ -1022,8 +1022,8 @@ without a callout: the 2-minute default capped at `routeMaxPingInterval`, 30 s
 connections get the 20 s ping. Without a callout the cluster block is as it was. `gcp:NatsHub` and
 the AWS service run one server each, with no routes. `gcp/clusteredhub_ping_live_test.go` runs two
 servers on the rendered configuration, the route through a proxy limited to 0.4 MB/s: with the pin,
-a 40 MB burst does not close the route as stale within 60 s, and without it the top-level 20 s ping
-does.
+a 40 MB burst does not close the route as stale within 60 s of the burst's start, and without it
+the top-level 20 s ping does, within 60.5 s of the moment the sending server has queued the burst.
 
 The session listener's `/v1` on 9020 is the second port a policy guards. That listener carries
 `ENVOY_API_ALLOW_UNAUTHENTICATED=1` and no `ENVOY_API_TOKEN`, and the component takes no token

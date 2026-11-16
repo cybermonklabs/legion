@@ -441,12 +441,15 @@ client reconnect; and every server's reload refuses a session-user change
 `TestClusteredNatsHubRoutesKeepTheirPingBesideACallout` (`gcp/clusteredhub_ping_live_test.go`)
 renders the hub with a callout through helm and checks that `nats.conf`'s cluster block holds
 `ping_interval` "30s" and `ping_max` 2. It runs two servers on the rendered configuration, with the
-route through a proxy limited to 0.4 MB/s, and publishes 40 MB on A to a subscriber on B, which
-takes about 100 s to drain. The route is not closed as stale within 60 s of the burst, because
-routes keep their 30 s ping. Its control, the same `nats.conf` without the pin, has the route
-closed as stale within 60 s, by the top-level 20 s ping. Installing
-the tools takes minutes on a cold module cache, which is why CI runs the `natslive` packages with
-`-timeout 30m`. To run them alone, from `packages/envoy/infra`:
+route through a `testnats.Proxy` started with `testnats.ProxyRate` at 400,000 B/s, and publishes
+40 MB on A to a subscriber on B, which takes about 100 s to drain. Each bound has its own clock.
+The pinned row counts from the burst's start: the route is not closed as stale within 60 s of it,
+because routes keep their 30 s ping, and at least 12 MB of the burst has crossed the route by
+then, so the row fails when the route closed early for another reason or the burst never crossed
+it. Its control, the same `nats.conf` without the pin, counts from the moment A has queued all of
+the burst: the route is closed as stale within 60.5 s of that moment, by the top-level 20 s ping.
+Installing the tools takes minutes on a cold module cache, which is why CI runs the `natslive`
+packages with `-timeout 30m`. To run them alone, from `packages/envoy/infra`:
 
 ```sh
 go test -count=1 -tags natslive -run 'TestClusteredNatsHub(Chart|Cluster)' -v -timeout 20m ./gcp/

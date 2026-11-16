@@ -48,15 +48,9 @@ const (
 	// callout lines, the auth_callout block and the ping lines (core.Authorization.CalloutLines),
 	// and is absent without authCallout. A change of either, a user added to or removed from
 	// auth_users among them, rolls the pods as a session-user change does; a change of a grant
-	// alone leaves the lines as they were. nats-server v2.15.1 refuses a whole reload that changes
-	// the callout ("config reload not supported for AuthCallout", which
-	// clusteredhub_callout_live_test.go measures), so a callout change takes effect only on a
-	// restart. The ping lines come and go only with the auth_callout block, so the one reload of
-	// them the server would take is an edit of their value, which each connection applies at its
-	// timer's next re-arm (server/client.go:6037-6050), within one interval of 20 s. They are in the
-	// digest so that every server applies such an edit at one known moment, its pod's restart, with
-	// every connection's timer started fresh. The routes' ping pin (clusteredHubCluster) appears
-	// and goes with the callout, so it always arrives with a roll.
+	// alone leaves the lines as they were. CalloutLines' doc comment says why a change rolls the
+	// pods rather than reloads, and why the routes' ping pin (clusteredHubCluster) arrives with that
+	// roll; clusteredhub_callout_live_test.go measures the refused reload.
 	clusteredHubAuthCalloutAnnotation = "envoy-infra.sjawhar.dev/auth-callout"
 	// clusteredHubAuthConf is the file of the chart's ConfigMap holding the users' authorization,
 	// which nats.conf includes and the reloader watches.

@@ -56,14 +56,15 @@ type AuthCallout struct {
 //
 // A client whose event loop blocks, or whose link stalls, is kept for any stall shorter than 40 s,
 // where 3 s would close it after 6 to 12 s; envoy-client's own 10 s Bun.spawnSync block is
-// survived. The Legion daemon, Dispatch's server and the session listener's stream connection ping
-// the server every 1 s (bus.WithSilentCutDetection), and the TS plugins every 10 s, so the server
-// does not ping those connections while they are up. The listener's role-lane and session-consumer
-// connections, and other Go clients, keep nats.go's 2-minute ping, so the server pings each of them
-// when it is idle for a whole interval: every 20 s instead of every 2 minutes. Apart from that, the
-// server pings every client once an hour to measure its round trip (:5966, const.go:224). The first
-// PING to a new client stays at 2 s (client.go:7128-7142), so the callout's 1.5 s answer budget is
-// unchanged.
+// survived. The Legion daemon (its own natsauth.detectSilentCuts, on every connection its Connect
+// opens), and Dispatch's server and the session listener's stream connection (envoy's
+// bus.WithSilentCutDetection), ping the server every 1 s, and the TS plugins every 10 s, so the
+// server does not ping those connections while they are up. The listener's role-lane and
+// session-consumer connections, and other Go clients, keep nats.go's 2-minute ping, so the server
+// pings each of them when it is idle for a whole interval: every 20 s instead of every 2 minutes.
+// Apart from that, the server pings every client once an hour to measure its round trip (:5966,
+// const.go:224). The first PING to a new client stays at 2 s (client.go:7128-7142), so the
+// callout's 1.5 s answer budget is unchanged.
 //
 // It does not catch a replica whose request handler deadlocks while its process runs: nats.go
 // answers a PING from its read loop (nats.go v1.53.1 processPing, called at parser.go:324), not
@@ -190,11 +191,13 @@ func serviceGrantRefusal(u User) (field, entry string, wide bool) {
 // refuses a whole reload that changes its callout ("config reload not supported for AuthCallout":
 // server/reload.go diffOptions has no case for it), so a server takes a changed block only when it
 // restarts. The ping lines come and go only with that block, so the one reload of them the server
-// would take is an edit of calloutPingLines itself, which each connection applies when its timer
-// next re-arms, within one interval of 20 s (reload.go:670-672 only logs; client.go:6037-6050). A
-// component that reloads its servers rolls them when this text changes, so every server takes a
-// change at one known moment, its restart, with each connection's timer started fresh. auth_users
-// is in it, so a keyed user added or removed changes it.
+// would take is an edit of calloutPingLines itself (reload.go:1751-1754), which each connection
+// applies when its timer next re-arms, within one interval of 20 s (reload.go:670-672 only logs;
+// client.go:6037-6050). A component that reloads its servers rolls them when this text changes,
+// so every server takes a change at one known moment, its restart, with each connection's timer
+// started fresh; the clustered hub's pin of its routes' ping (gcp clusteredHubCluster) appears and
+// goes with the callout, so it always arrives with such a roll. auth_users is in it, so a keyed user
+// added or removed changes it.
 func (a Authorization) CalloutLines() string {
 	block, tail := a.calloutParts()
 	return block + tail
