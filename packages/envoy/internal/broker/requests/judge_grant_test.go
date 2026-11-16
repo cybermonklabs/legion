@@ -202,13 +202,13 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 	t.Run("the next request ends it rather than handing it back", func(t *testing.T) {
 		m, session, key := newJudgeFixture(t)
 		judged := judgedGrant(t, m, session, key, 600, "DEEL_API_KEY")
-		reused, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it again", 600, "DEEL_API_KEY"), "")
+		reused, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it again", 600, "DEEL_API_KEY"), "", nil)
 		if err != nil || reused.GrantID == nil || *reused.GrantID != judged {
 			t.Fatalf("a request for the same name and lifetime while the secret is an ordinary one = %+v, %v; want the judged grant %s handed back", reused, err, judged)
 		}
 
 		retag(t, m, deelAsAdmin())
-		again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it once more", 600, "DEEL_API_KEY"), "")
+		again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it once more", 600, "DEEL_API_KEY"), "", nil)
 		if err != nil || again.GrantID != nil || again.State != "pending" {
 			t.Fatalf("Create once the secret is an administrator's = %+v, %v; want no grant handed back and a card its person answers", again, err)
 		}

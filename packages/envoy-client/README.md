@@ -602,8 +602,9 @@ A non-2xx answer is thrown as `DispatchServiceError`. Dispatch's own refusal, JS
 `error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with
 `fromDispatch` true. Any other body — a gateway's HTML page, an empty body, JSON of another shape —
 did not come from Dispatch, so it is a `DispatchGatewayError` (`fromDispatch` false) whose message
-names the method, the URL with its query (never the bearer, which is a header), the status and
-reason phrase, a one-line plain-text excerpt of the body, and what asking again can do. The excerpt
+names the method, the URL with its query and without the user and password it may carry (never
+the bearer, which is a header), the status and reason phrase, a one-line plain-text excerpt of the
+body, and what asking again can do. The excerpt
 drops scripts, styles and tags, reads at most the body's first 64 KiB in linear time, and, like the
 reason phrase, has the value after `Authorization:` or `Bearer` redacted, and every run of 8 or more
 of the client's bearer's characters (a shorter bearer only whole), so a copy cut short, split by

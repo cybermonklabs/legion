@@ -1,0 +1,14 @@
+kind: Fixed
+custom:
+  Issue: pr4120
+body: |-
+  No error, notice or printed link names the user and password a configured Dispatch URL may
+  carry (`https://user:password@host/`); the requests still go to the URL as configured. Before,
+  `DispatchClient`'s errors named the request with them, and the `dispatch` command printed page
+  links with them when `DISPATCH_PUBLIC_URL` was not set. Now the gateway error, the refusals of
+  `listIssuePage` and `listAllIssues`, `DispatchWriteLandedError`, `DispatchWriteUnsettledError`,
+  the missing-review-route refusal, the unreachable-server and missing-answers-route errors of the
+  `dispatch` command, the missing-answers-route notice, every printed link and
+  `formatOpenAsksSummary` name the URL without them (`withoutUserinfo` in `errors.ts`). The Envoy
+  listener client's errors and `EnvoyApiError.details.url` leave out a listener URL's user and
+  password the same way.

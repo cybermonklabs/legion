@@ -42,7 +42,7 @@ func TestAnApprovalStopsWhenItsSecretChangesHands(t *testing.T) {
 			m, _, _, _ := newFixture(t)
 			ctx := context.Background()
 			enr, key := newEnrollment(t, m.Store, "session", "box-mallory-"+t.Name(), new(mallory), nil)
-			req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", c.secret), "")
+			req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", c.secret), "", nil)
 			if err != nil || req.RecordID == nil {
 				t.Fatalf("Create = %+v, %v, want pending", req, err)
 			}
@@ -58,7 +58,7 @@ func TestAnApprovalStopsWhenItsSecretChangesHands(t *testing.T) {
 			if release, err := m.Values(ctx, dec.GrantID, enr, nil); !errors.Is(err, ErrGrantNotLive) {
 				t.Fatalf("Values after %s became %s's = %v, %v; want ErrGrantNotLive", c.secret, c.handedOver.Tags[policy.TagOwner], release.Values, err)
 			}
-			again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", c.secret), "")
+			again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", c.secret), "", nil)
 			if err != nil || again.ID == req.ID || again.State != "pending" {
 				t.Fatalf("Create(again) = %+v, %v; want a new pending request, not the grant handed back", again, err)
 			}
@@ -85,7 +85,7 @@ func TestAPendingRequestIsApprovedByWhomTheTagsNameNow(t *testing.T) {
 	otherEnr, otherKey := newEnrollment(t, m.Store, "session", "box-mallory-other-"+t.Name(), new(mallory), nil)
 	pending := func(enrollment string, key *ecdsa.PrivateKey, name string) Request {
 		t.Helper()
-		req, err := m.Create(ctx, enrollment, signRequest(t, m, key, "need "+name, name), "")
+		req, err := m.Create(ctx, enrollment, signRequest(t, m, key, "need "+name, name), "", nil)
 		if err != nil || req.RecordID == nil {
 			t.Fatalf("Create(%s) = %+v, %v, want pending", name, req, err)
 		}
@@ -152,7 +152,7 @@ func TestADenialAfterAnOwnerChangeReleasesNothingAndClosesTheRecord(t *testing.T
 	enr, key := newEnrollment(t, m.Store, "session", "box-mallory-"+t.Name(), new(mallory), nil)
 	pending := func(name string) Request {
 		t.Helper()
-		req, err := m.Create(ctx, enr, signRequest(t, m, key, "need "+name, name), "")
+		req, err := m.Create(ctx, enr, signRequest(t, m, key, "need "+name, name), "", nil)
 		if err != nil || req.RecordID == nil {
 			t.Fatalf("Create(%s) = %+v, %v, want pending", name, req, err)
 		}
@@ -208,7 +208,7 @@ func TestADenialAfterAnOwnerChangeReleasesNothingAndClosesTheRecord(t *testing.T
 		}
 	}
 	for name, owner := range map[string]string{"ALICE_KEY": bob, "SHARED_KEY": otherPerson} {
-		again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", name), "")
+		again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", name), "", nil)
 		if err != nil || again.State != "pending" || again.RecordID == nil || again.Coalesced || again.GrantID != nil ||
 			*again.RecordID == *alices.RecordID || *again.RecordID == *shared.RecordID {
 			t.Fatalf("Create(%s) after the denial = %+v, %v; want a new pending request", name, again, err)
@@ -229,7 +229,7 @@ func TestADenialAfterAnOwnerChangeReleasesNothingAndClosesTheRecord(t *testing.T
 func TestAnOwnersApprovalSurvivesLooseningToShared(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need alice's", "ALICE_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need alice's", "ALICE_KEY"), "", nil)
 	if err != nil || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v, want pending", req, err)
 	}
@@ -238,7 +238,7 @@ func TestAnOwnersApprovalSurvivesLooseningToShared(t *testing.T) {
 		t.Fatalf("ApplyDecision(alice) = %+v, %v, want granted", dec, err)
 	}
 	otherEnr, otherKey := newEnrollment(t, m.Store, "session", "box-mallory-"+t.Name(), new(mallory), nil)
-	waiting, err := m.Create(ctx, otherEnr, signRequest(t, m, otherKey, "need alice's too", "ALICE_KEY"), "")
+	waiting, err := m.Create(ctx, otherEnr, signRequest(t, m, otherKey, "need alice's too", "ALICE_KEY"), "", nil)
 	if err != nil || waiting.RecordID == nil {
 		t.Fatalf("Create(mallory) = %+v, %v, want pending", waiting, err)
 	}
@@ -248,10 +248,10 @@ func TestAnOwnersApprovalSurvivesLooseningToShared(t *testing.T) {
 		t.Fatalf("Values once shared = %v, %v; want ALICE_KEY still released", release.Values, err)
 	}
 	granted := int(DefaultGrantLifetime.Seconds())
-	if again, err := m.Create(ctx, enr, signRequestFor(t, m, key, granted, "ALICE_KEY"), ""); err != nil || again.ID != req.ID {
+	if again, err := m.Create(ctx, enr, signRequestFor(t, m, key, granted, "ALICE_KEY"), "", nil); err != nil || again.ID != req.ID {
 		t.Fatalf("Create(again, the grant's own lifetime) once shared = %+v, %v; want the live grant reused", again, err)
 	}
-	if again, err := m.Create(ctx, enr, signRequest(t, m, key, "again", "ALICE_KEY"), ""); !errors.Is(err, ErrRequestPending) && (err != nil || again.ID == req.ID) {
+	if again, err := m.Create(ctx, enr, signRequest(t, m, key, "again", "ALICE_KEY"), "", nil); !errors.Is(err, ErrRequestPending) && (err != nil || again.ID == req.ID) {
 		t.Fatalf("Create(again, no TTL) once human tier = %+v, %v; want a new request for the human default, not the 12-hour grant", again, err)
 	}
 	if dec, err := m.ApplyDecision(ctx, *waiting.RecordID, true, otherPerson); err != nil || dec.GrantID == "" {
@@ -268,7 +268,7 @@ func TestAnApprovalGivenWhileItsSecretWasRefusedReleasesNothing(t *testing.T) {
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	enr, key := newEnrollment(t, m.Store, "session", "box-mallory-"+t.Name(), new(mallory), nil)
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need the shared one", "SHARED_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need the shared one", "SHARED_KEY"), "", nil)
 	if err != nil || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v, want pending", req, err)
 	}
@@ -289,7 +289,7 @@ func TestAnApprovalGivenWhileItsSecretWasRefusedReleasesNothing(t *testing.T) {
 	if release, err := m.Values(ctx, dec.GrantID, enr, nil); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values once SHARED_KEY is alice's = %v, %v; want ErrGrantNotLive", release.Values, err)
 	}
-	again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", "SHARED_KEY"), "")
+	again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", "SHARED_KEY"), "", nil)
 	if err != nil || again.State != "pending" || again.GrantID != nil {
 		t.Fatalf("Create(again) once SHARED_KEY is alice's = %+v, %v; want a new pending request, not the grant handed back", again, err)
 	}
@@ -303,7 +303,7 @@ func TestAnApprovalOfASecretNoLongerServedIsLeftToItsApprover(t *testing.T) {
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	enr, key := newEnrollment(t, m.Store, "session", "box-mallory-"+t.Name(), new(mallory), nil)
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need alice's", "ALICE_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need alice's", "ALICE_KEY"), "", nil)
 	if err != nil || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v, want pending", req, err)
 	}
@@ -327,7 +327,7 @@ func TestAnOwnersApprovalSurvivesHerRaisingTheTier(t *testing.T) {
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	enr, key := newEnrollment(t, m.Store, "session", "box-bob-"+t.Name(), new(bob), nil)
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need alice's", "ALICE_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need alice's", "ALICE_KEY"), "", nil)
 	if err != nil || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v, want pending", req, err)
 	}
@@ -360,7 +360,7 @@ func TestRequestsNeedingTwoApproversAreRefused(t *testing.T) {
 		{"the owner's session", ownerEnr, ownerKey, []string{"DEEL_API_KEY", "SHARED_KEY"}},
 		{"another person's session", otherEnr, otherKey, []string{"AUTO_TOKEN", "SHARED_KEY"}},
 	} {
-		if req, err := m.Create(ctx, c.enrollment, signRequest(t, m, c.key, "both", c.names...), ""); !errors.Is(err, ErrMixedApprovers) {
+		if req, err := m.Create(ctx, c.enrollment, signRequest(t, m, c.key, "both", c.names...), "", nil); !errors.Is(err, ErrMixedApprovers) {
 			t.Errorf("%s asking for %v = %+v, %v; want ErrMixedApprovers", c.who, c.names, req, err)
 		}
 	}
@@ -378,11 +378,11 @@ func TestReuseComparesWholeNames(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	retag(t, m, policytest.Secret("SHARED_TOKEN", policy.OwnerShared, policy.TierAgent, "shared-token-v1"))
 	ctx := context.Background()
-	pair, err := m.Create(ctx, enr, signRequest(t, m, key, "both", "AUTO_TOKEN", "SHARED_TOKEN"), "")
+	pair, err := m.Create(ctx, enr, signRequest(t, m, key, "both", "AUTO_TOKEN", "SHARED_TOKEN"), "", nil)
 	if err != nil || pair.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN, SHARED_TOKEN) = %+v, %v; want granted", pair, err)
 	}
-	if joined, err := m.Create(ctx, enr, signRequest(t, m, key, "joined", "AUTO_TOKEN,SHARED_TOKEN"), ""); !errors.Is(err, policy.ErrUnknownSecret) {
+	if joined, err := m.Create(ctx, enr, signRequest(t, m, key, "joined", "AUTO_TOKEN,SHARED_TOKEN"), "", nil); !errors.Is(err, policy.ErrUnknownSecret) {
 		t.Fatalf("Create(%q) = %+v, %v; want policy.ErrUnknownSecret, not the pair's grant", "AUTO_TOKEN,SHARED_TOKEN", joined, err)
 	}
 }
