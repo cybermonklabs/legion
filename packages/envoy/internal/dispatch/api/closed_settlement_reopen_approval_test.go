@@ -394,8 +394,11 @@ func TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson(t *testing.T
 				if text == "" {
 					t.Fatal("the spec's latest version reads no text to upload again")
 				}
+				// The upload replaces the spec the issue already holds, so it names the token of the
+				// version it replaces, as every replacement of this server must.
 				if uploaded := sessionRequest(t, c.handler, http.MethodPost, "/api/v1/issues/"+c.issue+"/artifacts", map[string]any{
 					"actor": sessionActor(), "name": "spec.md", "content": text,
+					"precondition": uploadBase(t, c.handler, c.spec),
 				}); uploaded.Code != http.StatusCreated {
 					t.Fatalf("upload the spec's text again: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 				}
