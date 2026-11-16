@@ -119,13 +119,14 @@ const (
 
 // WakeTask is the one task a woken role is given, the sentence its first turn reads before
 // anything else: what stopped its session, which wake brought it back and what that wake was
-// about. R6 asks for exactly one such task or message per wake, and the outbox row that carries
-// it is written in the wake's own transaction, so a wake that commits has its task and one that
-// does not has neither.
+// about. A message Envoy kept for the role can reach the woken session as a card before this task
+// does, so the role message sentence says so. R6 asks for exactly one such task or message per
+// wake, and the outbox row that carries it is written in the wake's own transaction, so a wake
+// that commits has its task and one that does not has neither.
 //
 // The first sentences name what stopped the session: an idle release, which took the pod, or a
-// project's pause, which kept it (stop, decision 16 of dispatch://INFRA-3759). A message the
-// session missed is named either way, because Envoy kept none of it.
+// project's pause, which kept it (stop, decision 16 of dispatch://INFRA-3759). A message sent to
+// the session is named either way, because Envoy kept none of it.
 func WakeTask(kind, detail string, stop WakeStop) string {
 	preamble := "Your issue's pod had been released while it was idle, and this wake brought it back. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. "
@@ -141,7 +142,10 @@ func WakeTask(kind, detail string, stop WakeStop) string {
 			". Read the checks before you decide anything."
 	case pods.WakeRoleMessage:
 		return preamble + "The wake is a message somebody published to your role topic (" + detail +
-			") " + away + ", which nothing kept: the sender's next attempt reaches you now."
+			") " + away + ". Envoy keeps a role message for one hour: a message kept for your role " +
+			"reaches this session as an Envoy card that shows kept_at, possibly before this task, unless its " +
+			"hour ended before you came back, and Envoy tells its sender when it drops one. " +
+			"A message sent with keep: false is not kept, and its sender sends it again."
 	case pods.WakeAgentMessage:
 		return preamble + "The wake is a message somebody sent to your session (" + detail +
 			") " + away + ", which nothing kept: the sender's next attempt reaches you now."

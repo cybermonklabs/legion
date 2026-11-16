@@ -591,14 +591,14 @@ func TestWakeTaskNamesItsWake(t *testing.T) {
 
 // Decision 16 of dispatch://INFRA-3759: a wake of a session a project's pause stopped says so.
 // The project was paused, its pause stopped the session, and the pod, the workspace and the
-// unpushed work are as the session left them; the pod was never released. The lines about a
-// message Envoy did not keep stay.
+// unpushed work are as the session left them; the pod was never released. The lines about the
+// message that woke it stay.
 func TestTheWakeTaskOfASessionAPauseStoppedSaysThePauseStoppedIt(t *testing.T) {
 	for _, tc := range []struct {
 		kind, detail, want string
 	}{
 		{kind: pods.WakeChecks, detail: "head1 failed build", want: "head1 failed build"},
-		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer", want: "role topic (legion-LEGION-208-implementer) while your session was stopped, which nothing kept"},
+		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer", want: "role topic (legion-LEGION-208-implementer) while your session was stopped. Envoy keeps a role message for one hour"},
 		{kind: pods.WakeAgentMessage, detail: "session-1", want: "sent to your session (session-1) while your session was stopped, which nothing kept"},
 		{kind: pods.WakeBackstop, detail: "the backstop came due", want: "your backstop running out"},
 	} {
@@ -721,6 +721,36 @@ func TestAWakeOfARoleThePauseStoppedLastIsToldThePauseStoppedIt(t *testing.T) {
 				t.Fatalf("the wake's task = %q, want %q (not %q)", starts[0].Task, want, other)
 			}
 		})
+	}
+}
+
+// A role message wake tells the woken role what Envoy kept for it (dispatch://INFRA-2846/spec
+// R7): a message kept for the role reaches the woken session as an Envoy card that shows kept_at,
+// possibly before the wake's task, unless its hour ended first; Envoy keeps a role message for one
+// hour and tells its sender when it drops one; and a message sent with keep: false is not kept, so
+// its sender sends it again. Each clause is matched on its own, so a sentence that drops one fails
+// and names it. The task says the same whether an idle release or a project's pause stopped the
+// session.
+func TestTheRoleMessageWakeTaskSaysWhatWasKept(t *testing.T) {
+	for _, stop := range []WakeStop{StoppedByRelease, StoppedByPause} {
+		task := WakeTask(pods.WakeRoleMessage, "legion-LEGION-208-implementer", stop)
+		for _, clause := range []struct{ rule, want string }{
+			{rule: "a message kept for the role reaches the woken session as a card", want: "a message kept for your role reaches this session as an Envoy card"},
+			{rule: "the card shows kept_at", want: "shows kept_at"},
+			{rule: "the card can arrive before the task", want: "possibly before this task"},
+			{rule: "a copy whose hour ended before the role came back does not reach it", want: "unless its hour ended before you came back"},
+			{rule: "Envoy keeps a role message for one hour", want: "Envoy keeps a role message for one hour"},
+			{rule: "Envoy tells the sender when it drops one", want: "Envoy tells its sender when it drops one"},
+			{rule: "a message sent with keep: false is not kept", want: "A message sent with keep: false is not kept"},
+			{rule: "the sender of such a message sends it again", want: "its sender sends it again"},
+		} {
+			if !strings.Contains(task, clause.want) {
+				t.Errorf("WakeTask(%s, stop %d) = %q, want it to say %s (%q)", pods.WakeRoleMessage, stop, task, clause.rule, clause.want)
+			}
+		}
+		if strings.Contains(task, "which nothing kept") {
+			t.Errorf("WakeTask(%s, stop %d) = %q, want no %q: Envoy keeps a role message for the role's next holder", pods.WakeRoleMessage, stop, task, "which nothing kept")
+		}
 	}
 }
 

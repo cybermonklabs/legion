@@ -5135,7 +5135,11 @@ The wakes are these:
 - a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own read of a pull request runs as the workflow runtime starts and once an agent's handoff has been recorded, on no timer).
   One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once;
 
-- a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon, one sent with `keep: false` included: that message is not kept, and it still wakes the role, so the sender's next try reaches a session that is running;
+- a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon.
+  Envoy keeps it for one hour, until the `kept_until` its publish answers with, and it reaches the woken role if the role is back inside that hour.
+  If it is not, Envoy drops it, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
+  While it has at least 20 minutes of its hour left and no live session holds the role, the listener's sweep reports it again every five minutes.
+  One sent with `keep: false` is not kept, and it still wakes the role, so the sender's next try reaches a session that is running;
 
 - a message sent to the agent subject of a released session: an Envoy direct message, or a person's answer, comment or message that a Dispatch claim routes to that session;
 
@@ -5404,10 +5408,11 @@ One role holds at most one open wake, so many messages to one session make one l
 The woken role's task says that the project was paused, and that its pod, its workspace and its unpushed work are as the session left them (`WakeTask`, `internal/workflow/wake.go`).
 The pause keeps no message itself.
 Dispatch keeps a person's answer, and the outbox keeps the daemon's tasks and notices.
-Envoy keeps a message sent to the role topic of a role no session holds for one hour, unless its sender asked Envoy to keep nothing (`roleKeepWindow`, `packages/envoy/cmd/listener/role_keep.go`).
-It keeps no message for a role whose holder has stopped answering and whose claim it has not freed yet.
+Envoy keeps a message sent to a role topic for one hour when no live session holds the role, unless its sender asked Envoy to keep nothing (`roleKeepWindow` and `keepForNextHolder`, `packages/envoy/cmd/listener/role_keep.go`).
+A role that a pause stopped is such a role: its claim stays, and its holder does not answer, so Envoy keeps the message for that holder.
+The kept message reaches the role's session when that session runs again inside the hour, and Envoy tells the sender's session when it drops one, where the publish named that session.
 So a role-topic message that is more than an hour old when its role comes back is gone.
-Its wake is not: the role still launches at the resume, its task names the role that the message was sent to, and the sender's next try reaches a session that runs.
+Its wake is not: the role still launches at the resume, and its task names the role topic that the message was sent to and says what Envoy keeps.
 
 **The resume.**
 A resume is one transaction and then the daemon's own steps (`store.Resume`, and `projectPause.Resumed` in `internal/daemon/pause.go`).
