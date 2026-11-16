@@ -1454,8 +1454,8 @@ test("a claim carries the leak check's cause beside its failure", () => {
 // all, since a key added to a narrowed body is exactly what the narrowing exists to prevent. The
 // daemon writes that narrowing to its own log instead (`api.recordShaping`). From contract 145 on,
 // a reader served the body whole, the operator's `legion state --json` among them, is told the
-// daemon's own number as the caller's too, which is the golden's mark. A daemon from 75 to 132
-// served that reader the daemon's number alone, and the schema reads that mark as well.
+// daemon's own number as the caller's too, which is the golden's mark. Before contract 145 a daemon
+// from 75 on served that reader the daemon's number alone, and the schema reads that mark as well.
 test("the state says which contract it was built at", () => {
   const { daemonApiVersion } = fixture("version.json") as { daemonApiVersion: number };
   const golden = fixture("state.json") as { contract?: Record<string, unknown> };
@@ -2158,9 +2158,9 @@ test("a reader at the previous contract parses the state body this daemon serves
   // A retired entry is the one this reader cannot take: its state enum names two values, so the
   // entry — and with it the whole state body, since `strandedClaims` is an array this reader
   // parses whole — is refused over the third. That is why the state route serves a pod below
-  // contract 56 the report without its retired entries (`api`'s `withoutRetiredStranded`, pinned
-  // on the Go side) rather than the body it would refuse: what such a pod is served is the list
-  // above, which parses.
+  // contract 56 the report without its retired entries (`api`'s `withoutUnadmittedStrandedStates`,
+  // pinned on the Go side) rather than the body it would refuse: what such a pod is served is the
+  // list above, which parses.
   const retired = state.strandedClaims.filter((stranded) => stranded.state === "retired");
   expect(retired.length).toBeGreaterThan(0);
   for (const stranded of retired) {

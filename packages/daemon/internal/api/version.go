@@ -706,26 +706,26 @@ package api
 // before 56 parses `strandedClaims[].state` with a strict enum of two values and refuses the whole
 // state body for a third, and every worker's `read_record` goes through that parse. The route
 // authenticates nobody, so a caller from a pod whose claims record a contract below 56 is served
-// the report without its retired entries (api's shapeState, withoutUnadmittedStrandedStates), as a caller
-// below 49 is served it without the memory group. Dropping those entries, rather than serving
-// them, is the only choice that keeps such a pod able to read the state at all: the value is the
-// claim's own state and there is no older value to put in its place, and one retired entry refuses
-// the whole body, which takes every role's `read_record` in that pod with it. Such a pod is served
-// a report missing its retired entries until the pod is replaced, and that window is the one the
-// plugin pair already bounds: the boot gate and `legion probe-image` refuse a daemon and a plugin
-// that declare different contracts, so the only reader below 56 is a pod of the contract before
-// this one still being replaced. The same change adds three fields to the operator claim view's
-// pending delivery (api.DeliveryView): `sendFailures`, `lastSendFailureAt` and `lastSendError`,
-// how many sends of the task failed, when the last one failed and the error it failed with. They
-// need no gate, because no plugin calls the operator routes. This change adds one store migration,
-// for those three columns, named for the UTC moment it was written, since the numbered series is
-// closed. (This branch has been renumbered three times, which is what a hand-allocated serial
-// costs: 51, then 53 when main reached 52, then 55 when main reached 54, and 56 now that main
-// carries 55 — INFRA-1272's gated steps, merged as #2848 while this branch stood approved at
-// its own 55. So it takes the number above every number main declares, as the collision note
-// says, and that number was read from main at this merge rather than assumed. Two other open
-// branches declare 55 as well: whichever merges after another takes the next free number, and
-// the number is read again at every forward merge, as
+// the report without its retired entries (api's shapeState, withoutUnadmittedStrandedStates), as a
+// caller below 49 is served it without the memory group. Dropping those entries, rather than
+// serving them, is the only choice that keeps such a pod able to read the state at all: the value
+// is the claim's own state and there is no older value to put in its place, and one retired entry
+// refuses the whole body, which takes every role's `read_record` in that pod with it. Such a pod is
+// served a report missing its retired entries until the pod is replaced, and that window is the one
+// the plugin pair already bounds: the boot gate and `legion probe-image` refuse a daemon and a
+// plugin that declare different contracts, so the only reader below 56 is a pod of the contract
+// before this one still being replaced. The same change adds three fields to the operator claim
+// view's pending delivery (api.DeliveryView): `sendFailures`, `lastSendFailureAt` and
+// `lastSendError`, how many sends of the task failed, when the last one failed and the error it
+// failed with. They need no gate, because no plugin calls the operator routes. This change adds one
+// store migration, for those three columns, named for the UTC moment it was written, since the
+// numbered series is closed. (This branch has been renumbered three times, which is what a
+// hand-allocated serial costs: 51, then 53 when main reached 52, then 55 when main reached 54, and
+// 56 now that main carries 55 — INFRA-1272's gated steps, merged as #2848 while this branch stood
+// approved at its own 55. So it takes the number above every number main declares, as the collision
+// note says, and that number was read from main at this merge rather than assumed. Two other open
+// branches declare 55 as well: whichever merges after another takes the next free number, and the
+// number is read again at every forward merge, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
@@ -1631,16 +1631,16 @@ package api
 // with a `z.enum` of the
 // four words before it, which refuses a word it does not name and with it the whole state body,
 // so a caller from a pod whose claims record a contract below 132 is served every member of that
-// kind without its `kind` (shaping.go's shapeIssue, withoutUnadmittedLineKind), which that schema takes as
-// optional; every other field of the member is 85's, `leakCheckCause` on the claim views is 87's
-// and narrowed as 87 says, the issues' `phaseEntry` and `givenEntry` are 94's and narrowed as 94
-// says, `admission.held` is 98's and narrowed as 98 says, the issues' `treeMovedAt` and
+// kind without its `kind` (shaping.go's shapeIssue, withoutUnadmittedLineKind), which that schema
+// takes as optional; every other field of the member is 85's, `leakCheckCause` on the claim views
+// is 87's and narrowed as 87 says, the issues' `phaseEntry` and `givenEntry` are 94's and narrowed
+// as 94 says, `admission.held` is 98's and narrowed as 98 says, the issues' `treeMovedAt` and
 // `quietHours` are 111's and narrowed as 111 says, and a caller below 85 has lost `kind` with the
-// rest of them already (withoutWhyAndLineFields). On this branch 132 is served down by a value
-// strip in shapeIssue, withoutUnadmittedLineKind, beside the wait strip, withoutUnadmittedWaitAnswer,
-// and by no row of stateNarrowings. The change carries one store migration beside it,
-// `20261111214351`, which adds the column `ReleasedForWaitAt` is read from; a migration moves the
-// daemon's own record and is no part of this number. Nothing else of this change is on the wire.
+// rest of them already (withoutWhyAndLineFields). This daemon serves 132 down by a value strip in
+// shapeIssue, withoutUnadmittedLineKind, beside the wait strip, withoutUnadmittedWaitAnswer, and by
+// no row of stateNarrowings. The change carries one store migration beside it, `20261111214351`,
+// which adds the column `ReleasedForWaitAt` is read from; a migration moves the daemon's own record
+// and is no part of this number. Nothing else of this change is on the wire.
 // (This branch took 86 at the forward merge of 2026-11-12 that brought main in at fbe970ee,
 // which declared 85. main has since landed INFRA-714's 86 at a4c0ff99, so this branch moved off
 // it at the forward merge that brought that commit in. A reading of
@@ -1982,6 +1982,9 @@ package api
 // caller below 98 is served the admission block without `admission.held` (`withoutHeld`).
 // Contract 111 is one of them as well: a caller below 111 is served every issue without
 // `treeMovedAt` and `quietHours` (`withoutQuietTime`, the band of `quietTimeContract`).
+// Contract 132 is one of them as well, served down by value: a caller from a pod whose lowest
+// contract is below 132 is served every waiting line member of the kind `waiting_on_issue` without
+// its `kind` (`withoutUnadmittedLineKind`), and no key moves.
 // Contract 133 is one of them too: a caller below 133 is served every issue without
 // `mergeWait` (`withoutMergeWait`, the band of `mergeWaitContract`).
 // Contract 141 is one of them as well: a caller below 141 is served every issue without
@@ -1997,7 +2000,7 @@ package api
 // `settings.runtime.kubernetes.memory_guard`, is read loosely and recorded at every contract, on
 // the same measurement made at 141's commit (7ed02373) and 144's (adebbf6d): `legionSettings` is
 // still that `z.looseObject`, nothing types `projects` or `runtime` under it, and no plugin source
-// names `memory_guard`. Its records are 141's with that key's seven paths.
+// names `memory_guard`. Its records are 141's under its own number.
 // Contract 137 is served with no code of its own here: it moved no key path, no value and no
 // request field, and changed no answer's status or meaning (its flag is on the launcher's command
 // line, which the image probe holds, entry 137 above), so a caller at 137 is served what a caller
@@ -2047,13 +2050,24 @@ package api
 // contract and gets the 200. The worker image ships `legion` too, and run from a pod below 104
 // it gets the failure, which `TestAFreshSessionAnswersAPodBelow104ByItsLowestContract` holds.
 // From such a pod the failure that 104 replaced is the conservative answer.
-// A value is served down as a key is: an issue's
-// `waitingOn.answeredBy` carries a value only to a caller whose own contract admits it, and the
-// records under `packages/contracts/fixtures/daemon-api/contract-shapes.json` hold what this
-// daemon serves every contract it supports, key path by key path and value domain by value
-// domain, so a later shape change that carries no serving-down is red before it ships. A value
-// a contract removes needs no serving-down of its own, which is why 86's dropped
-// `awaiting_merge` has none (answers.go's `phases`).
+// A value is served down as well as a key. At this contract the rows of shaping.go's valueStrips
+// serve these fields' values down: `strandedClaims[].state` (`withoutUnadmittedStrandedStates`), an
+// issue's `waitingOn.answeredBy` (`withoutUnadmittedWaitAnswer`) and an issue's `waitingLine.kind`
+// (`withoutUnadmittedLineKind`). Each strip reads the arrival of the value it finds from the
+// declared table (answers.go's `EnumeratedFields`). Where that arrival is above the lowest contract
+// the caller's pod records, or above the contract a caller states in its header, the strip serves
+// the body without the value: the stranded entry goes, the wait's answered pair goes, and the
+// member's `kind` goes. A strip follows the lowest contract because no reader requires a value and
+// the oldest process of the pod must admit every value it is served (shaping.go's shapeState). A
+// field's values arrive with the field or after it, so a pod whose lowest contract is below a
+// field's own arrival, and whose highest is at or above it, is served that field without any value:
+// a pod recording a contract below 85 beside one at or above it is served every waiting line member
+// without its `kind`. The records under
+// `packages/contracts/fixtures/daemon-api/contract-shapes.json` hold what this daemon serves every
+// contract it supports, key path by key path and value domain by value domain, so a later shape
+// change that carries no serving-down is red before it ships. A value a contract removes needs no
+// serving-down of its own, which is why 86's dropped `awaiting_merge` has none (answers.go's
+// `phases`).
 //
 // On the request side, `readBody` still refuses a member a request type does not name, and every
 // plugin from 46 to 85 sends `ready` on every `handoff_complete`, which 86 took out of

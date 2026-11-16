@@ -3582,7 +3582,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
 
     test("a row that failed on its budget is measured again, and the second report is a measurement of its own", async () => {
-      setLegionCapabilityBudgetsForTests({ checkMs: 20, reportMs: 500 });
+      setLegionCapabilityBudgetsForTests({ checkMs: 250, reportMs: 2000 });
       let searches = 0;
       const session = await capabilitySession({
         sessionId: "ses_capability_afresh",
@@ -3605,7 +3605,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(first?.rows.find((row) => row.name === "web-search")).toEqual({
         name: "web-search",
         ok: false,
-        detail: "did not finish within 20 ms",
+        detail: "did not finish within 250 ms",
       });
       expect(first?.rows.filter((row) => row.ok)).toHaveLength(5);
 

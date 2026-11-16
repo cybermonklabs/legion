@@ -111,15 +111,16 @@ var (
 // The route authenticates nobody, so it knows a plugin by the pod the request came from: a pod
 // whose claims record a contract below memoryContract is served issues with only the keys the last
 // strict reader before it knows, and the rest of the body as it is. The downgrades this case walks
-// compose, band by band, as the rows of the table below say, the value strip of 132 finding
-// nothing to take here since the fixture stands no member of the line of its kind
-// (waiting_on_issue_test.go reads it): a pod below 46 is served none of the keys a row of
-// stateNarrowings strips, a pod in a band is served the keys of every row at or below that band's
-// contract and none of a later row's, and a pod at this daemon's declared contract
-// (DaemonAPIVersion), a pod whose claims record no contract and a caller in no pod — the operator's
-// `legion state`, whose memory line reads the draws, whose experiment lines read the assignments,
-// whose queue line reads the wakes, whose tool-call line reads the step records and whose
-// merge-wait line reads the waits — are served all of them.
+// compose, band by band, as the rows of the table below say, the line-kind value strip
+// (withoutUnadmittedLineKind) finding nothing to take here: each pod of this case records one
+// contract, so a word of 85 is admitted or has left with its band, and the fixture stands no
+// member of the kind 132 added (waiting_on_issue_test.go reads that word). A pod below 46 is served
+// none of the keys a row of stateNarrowings strips, a pod in a band is served the keys of every row
+// at or below that band's contract and none of a later row's, and a pod at this daemon's declared
+// contract (DaemonAPIVersion), a pod whose claims record no contract and a caller in no pod — the
+// operator's `legion state`, whose memory line reads the draws, whose experiment lines read the
+// assignments, whose queue line reads the wakes, whose tool-call line reads the step records and
+// whose merge-wait line reads the waits — are served all of them.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)

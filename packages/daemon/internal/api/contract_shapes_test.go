@@ -139,6 +139,23 @@ func (f answerFixture) shape(t *testing.T) declaredShape {
 	return shape
 }
 
+// marshalled is the fixture's bodies as the bytes json.Marshal writes for them, unshaped. The two
+// tests that ask what the fixtures carry read these through collectedShape
+// (TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture and
+// TestEveryDeclaredValueAndKeyPathIsCarriedByAFixtureBody). id names the answer in the failure.
+func (f answerFixture) marshalled(t *testing.T, id AnswerID) [][]byte {
+	t.Helper()
+	encoded := make([][]byte, 0, len(f.bodies))
+	for _, body := range f.bodies {
+		encodedBody, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal a body of the %s answer: %v", id, err)
+		}
+		encoded = append(encoded, encodedBody)
+	}
+	return encoded
+}
+
 // declaredShape is every key path a Go type declares, each with the json field that declares it;
 // the paths of the nodes that are Go maps, whose keys a key path writes as `*`; and the paths of
 // the nodes that carry a document of another owner's, which a key path does not read into.
@@ -692,6 +709,29 @@ func keyPathsOfBody(t *testing.T, body []byte, shape declaredShape, enumerated [
 	return paths, values
 }
 
+// collectedShape is every key path the bodies carry between them, read with shape
+// (keyPathsOfBody), and the values they carry at each key path of enumerated. servedShapes reads
+// the served bodies through it, and the two tests that ask what the fixtures carry read the
+// fixtures' own bodies through it (answerFixture.marshalled), so each of them reads a body as the
+// gate does.
+func collectedShape(t *testing.T, bodies [][]byte, shape declaredShape, enumerated []string,
+) (map[string]bool, map[string]map[string]bool) {
+	t.Helper()
+	paths := map[string]bool{}
+	values := map[string]map[string]bool{}
+	for _, body := range bodies {
+		bodyPaths, bodyValues := keyPathsOfBody(t, body, shape, enumerated)
+		maps.Copy(paths, bodyPaths)
+		for path, carried := range bodyValues {
+			if values[path] == nil {
+				values[path] = map[string]bool{}
+			}
+			maps.Copy(values[path], carried)
+		}
+	}
+	return paths, values
+}
+
 // collectKeyPaths adds the key path of every key below path to into, and the value of every
 // string leaf whose own path values holds a set for. A node whose own type carries a document of
 // another owner's is read no further: `pendingStatusWrites.*.payload` is one key path, and the
@@ -921,19 +961,9 @@ func servedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 				served[key] = answerShape{noBody: true}
 				continue
 			}
-			paths := map[string]bool{}
-			carried := map[string]map[string]bool{}
-			enumerated := enumeratedPathsOf(EnumeratedFields, answer.ID)
-			for _, body := range servedBodies(t, caller, handlers, states, answer.ID, fixture, contract, restore, strip) {
-				bodyPaths, bodyValues := keyPathsOfBody(t, body, shapes[answer.ID], enumerated)
-				maps.Copy(paths, bodyPaths)
-				for path, values := range bodyValues {
-					if carried[path] == nil {
-						carried[path] = map[string]bool{}
-					}
-					maps.Copy(carried[path], values)
-				}
-			}
+			paths, carried := collectedShape(t,
+				servedBodies(t, caller, handlers, states, answer.ID, fixture, contract, restore, strip),
+				shapes[answer.ID], enumeratedPathsOf(EnumeratedFields, answer.ID))
 			values := make(map[string][]string, len(carried))
 			for path, carriedHere := range carried {
 				values[path] = slices.Sorted(maps.Keys(carriedHere))
@@ -1679,16 +1709,10 @@ func TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture(t *testing.T) {
 				paths[key] = path
 			}
 		}
-		for _, body := range fixture.bodies {
-			encoded, err := json.Marshal(body)
-			if err != nil {
-				t.Fatalf("marshal a body of the %s answer: %v", answer.ID, err)
-			}
-			bodyPaths, _ := keyPathsOfBody(t, encoded, shape, nil)
-			for path := range bodyPaths {
-				if field, isDeclared := shape.paths[path]; isDeclared {
-					realised[answerField{answer: answer.ID, field: field}] = true
-				}
+		bodyPaths, _ := collectedShape(t, fixture.marshalled(t, answer.ID), shape, nil)
+		for path := range bodyPaths {
+			if field, isDeclared := shape.paths[path]; isDeclared {
+				realised[answerField{answer: answer.ID, field: field}] = true
 			}
 		}
 	}
@@ -1740,24 +1764,8 @@ func TestEveryDeclaredValueAndKeyPathIsCarriedByAFixtureBody(t *testing.T) {
 			// The 204 answers write no body, so no field of theirs is enumerated.
 			continue
 		}
-		shape := fixture.shape(t)
-		enumerated := enumeratedPathsOf(EnumeratedFields, answer.ID)
-		carriedPaths[answer.ID] = map[string]bool{}
-		carriedValues[answer.ID] = map[string]map[string]bool{}
-		for _, body := range fixture.bodies {
-			encoded, err := json.Marshal(body)
-			if err != nil {
-				t.Fatalf("marshal a body of the %s answer: %v", answer.ID, err)
-			}
-			bodyPaths, bodyValues := keyPathsOfBody(t, encoded, shape, enumerated)
-			maps.Copy(carriedPaths[answer.ID], bodyPaths)
-			for path, values := range bodyValues {
-				if carriedValues[answer.ID][path] == nil {
-					carriedValues[answer.ID][path] = map[string]bool{}
-				}
-				maps.Copy(carriedValues[answer.ID][path], values)
-			}
-		}
+		carriedPaths[answer.ID], carriedValues[answer.ID] = collectedShape(t, fixture.marshalled(t, answer.ID),
+			fixture.shape(t), enumeratedPathsOf(EnumeratedFields, answer.ID))
 	}
 
 	asked := 0

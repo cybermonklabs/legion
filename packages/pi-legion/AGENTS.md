@@ -134,9 +134,9 @@ served every issue without `mergeWait`, `shaping.go`'s `shapeIssue`, `withoutMer
 contract 132's `waiting_on_issue` (dispatch://INFRA-3036: the waiting line's `kind` gains
 `waiting_on_issue`, a started issue that gave its admission slot back to wait on another issue, and
 a caller from a pod whose lowest recorded contract is under 132 is served such a member without its
-`kind`, `shaping.go`'s `shapeIssue`, `withoutWaitingOnIssue`), after contract 123's phase completion
-head (dispatch://INFRA-3146: a phase completion names the head its evidence is about, which
-`handoff_complete` reads from the handoff record's `head` for the planner, the tester and the
+`kind`, `shaping.go`'s `shapeIssue`, `withoutUnadmittedLineKind`), after contract 123's phase
+completion head (dispatch://INFRA-3146: a phase completion names the head its evidence is about,
+which `handoff_complete` reads from the handoff record's `head` for the planner, the tester and the
 reviewer as well as the implementer, and no shape the plugin parses moves), after contract 111's
 tree quiet time (dispatch://INFRA-2560: every issue of a live tree carries `treeMovedAt`, when that
 tree last moved, and `quietHours`, how long it has been still, which a caller below 111 is served

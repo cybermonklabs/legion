@@ -650,8 +650,8 @@ const legionPendingStatusWrite = z.object({
  * retired while its tree runs: only a start of the phase it owns relaunches it, and no rule the
  * daemon runs queues that start, so nothing will wake it either. That state arrived with contract
  * 56, and a pod whose claims record a contract below it is served this report without its retired
- * entries (`api`'s `shapeState`, `withoutRetiredStranded`) rather than being made to refuse the
- * whole state over a third value its enum does not name.
+ * entries (`api`'s `shapeState`, `withoutUnadmittedStrandedStates`) rather than being made to
+ * refuse the whole state over a third value its enum does not name.
  *
  * Who suspended a suspended one is not here and must never be added: a session parses this body
  * with the schema of the contract its plugin was built at, and a Kubernetes deployment relaunches
@@ -860,8 +860,8 @@ const daemonInfo = z.object({
  * contract the daemon shaped this body to (contract 75). From contract 145 on the daemon writes
  * `caller` for every reader. A reader served the body whole — the operator's
  * `legion state --json`, a tmux pane, a pod whose claims record no contract, a reader at the
- * daemon's own contract — is told the daemon's own number. A daemon from 75 to 132 left `caller`
- * off for such a reader, which is why the key stays optional.
+ * daemon's own contract — is told the daemon's own number. Before contract 145 a daemon from 75 on
+ * left `caller` off for such a reader, which is why the key stays optional.
  *
  * The daemon serves a caller below 75 the state with this key gone, as it strips the nine fields
  * of the decided record (`api.withoutRecordFields`): a key added to a narrowed body is exactly
