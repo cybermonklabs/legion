@@ -65,8 +65,8 @@ func (e *extraction) add(node string, kind Kind, body string) {
 // form, not a term. A heading that reads as Terms in another form (readsAsTerms) is a text of Kind
 // heading, named by its line in quotes, and no Terms part: the heading Terms has one form too. A
 // line in the form of a term line anywhere else, under another heading, under none or in a typed
-// block, is a text of Kind term_line (termLineElsewhere): it adds no term, and it is still a
-// definition (R50). Each text's Where is "<document> version <n>".
+// block, is a text of Kind term_line (termLineElsewhere): it is no definition and adds no term, and
+// Check refuses it when it names a defined term (R50). Each text's Where is "<document> version <n>".
 func ExtractDocument(document string, version int, markdown string) (Extracted, error) {
 	if !utf8.ValidString(markdown) {
 		return Extracted{}, fmt.Errorf("%s version %d is not valid UTF-8", document, version)
@@ -170,8 +170,9 @@ func ExtractDocument(document string, version int, markdown string) (Extracted, 
 }
 
 // termLineElsewhere keeps a line in the form of a term line outside a Terms part, of its termLine
-// match, as a text of Kind term_line named by its term, with its definition as its body. It adds
-// no term; Check judges it as a second definition. Two such lines of one name are two texts.
+// match, as a text of Kind term_line named by its term, with its definition as its body. It is no
+// definition and adds no term. Check refuses it when it names a defined term, since a reader would
+// take it for a second definition. Two such lines of one name are two texts.
 func (e *extraction) termLineElsewhere(match []string) {
 	e.out.Texts = append(e.out.Texts, Text{Node: strings.TrimSpace(match[1]), Kind: KindTermLine, Body: strings.TrimSpace(match[2]), Where: e.where})
 }

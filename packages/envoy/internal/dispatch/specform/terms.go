@@ -13,7 +13,8 @@ import (
 // The rules of R50, by the ids of the refusal, beside term-line (rules.go), the rule of a line
 // under a heading Terms that is no term line: terms-heading is the rule of a heading that reads as
 // Terms in another form, a text of Kind heading, and term-name the rule of a name of a term that
-// holds a character other than the letters a to z, the digits, a space and a hyphen.
+// holds a character other than the letters a to z, the digits, a space and a hyphen, or that holds
+// no letter and no digit.
 const (
 	ruleDefinitionSentences  Rule = "definition-sentences"
 	ruleTermSecondDefinition Rule = "term-second-definition"
@@ -25,9 +26,14 @@ const (
 // one form of the heading Terms.
 const termsHeadingDetail = `it is no Terms heading, and a Terms heading has the form "## Terms" at any level`
 
-// anyHeading is what the detail of a second definition outside Terms says first: the form of the
-// line makes it a definition, so a writer of a list item that is no definition knows to change it.
-const anyHeading = `A line of the form "- **<term>**: <definition>" is a definition under each heading.`
+// lineDetail is the detail of a line in the form of a term line outside Terms that names a
+// defined term, after the place of that definition: the line is no definition, but a reader
+// would take it for a second one, so the writer changes its form or moves it under Terms.
+const lineDetail = "%s defines this term. This line has the form of a definition, but it is not under a heading Terms. " +
+	"If it is no definition, change its form. If it is a definition, move it under Terms"
+
+// emptyNameDetail is the detail of the rule term-name for a name that holds no letter and no digit.
+const emptyNameDetail = "the name holds no letter from a to z and no digit. A term name holds at least one letter or digit"
 
 // termNameDetail is the detail of the rule term-name: the characters of the name outside the
 // alphabet of a term, each as the writer typed it and with its code point.
@@ -97,16 +103,18 @@ func defaultIgnorable(r rune) bool {
 }
 
 // termIndex is what the rules of R50 compare a definition with: the first term of each name that
-// the list holds, the index of each proposed definition of each name, and the index among the
-// texts of each line of each name in the form of a term line outside Terms (Kind term_line).
+// the list holds, the index of each proposed definition of each name, and the definition of each
+// name that a line in the form of a term line outside Terms is judged against (lineBreaks).
 type termIndex struct {
 	listed   map[string]Term
 	proposed map[string][]int
-	lines    map[string][]int
+	// defined is the definition of each name under Terms: the list's first, else the first of
+	// this document, else the first of another document of the request (Input.Defined).
+	defined map[string]Term
 }
 
 func indexTerms(in Input) termIndex {
-	index := termIndex{listed: map[string]Term{}, proposed: map[string][]int{}, lines: map[string][]int{}}
+	index := termIndex{listed: map[string]Term{}, proposed: map[string][]int{}, defined: map[string]Term{}}
 	for _, term := range in.List {
 		key := TermKey(term.Name)
 		if _, ok := index.listed[key]; !ok {
@@ -117,66 +125,59 @@ func indexTerms(in Input) termIndex {
 		key := TermKey(term.Name)
 		index.proposed[key] = append(index.proposed[key], at)
 	}
-	for at, text := range in.Texts {
-		if text.Kind == KindTermLine {
-			key := TermKey(text.Node)
-			index.lines[key] = append(index.lines[key], at)
+	for _, terms := range [][]Term{in.List, in.Proposed, in.Defined} {
+		for _, term := range terms {
+			key := TermKey(term.Name)
+			if _, ok := index.defined[key]; !ok {
+				index.defined[key] = term
+			}
 		}
 	}
 	return index
 }
 
-// definitions is how many definitions of the term of key the document holds: its term lines
-// under Terms, then its lines of that form elsewhere. The second of them in that order is the one
-// whose finding counts them.
-func (index termIndex) definitions(key string) int {
-	return len(index.proposed[key]) + len(index.lines[key])
+// holdsLetterOrDigit reports whether key, a TermKey, holds a letter from a to z or a digit.
+func holdsLetterOrDigit(key string) bool {
+	return strings.ContainsFunc(key, func(r rune) bool { return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') })
 }
 
 // breaks is each rule of R50 that the proposed definition at of term breaks: a name with a
-// character outside the alphabet of a term (outsideAlphabet); a definition of other than one
-// sentence, counted as the rules of R49 count one (sentencesOf), so a definition with no word that
-// has a letter has no sentence; a second definition of a term the list holds, which names where
-// the list defines it; and the second definition of a term the document defines more than once,
-// which counts the definitions.
+// character outside the alphabet of a term (outsideAlphabet), or with no letter and no digit; a
+// definition of other than one sentence, counted as the rules of R49 count one (sentencesOf), so a
+// definition with no word that has a letter has no sentence; a second definition of a term the
+// list holds, which names where the list defines it; and the second definition of a term the
+// document defines more than once under Terms, which counts its definitions.
 func (index termIndex) breaks(at int, term Term) []broken {
 	var found []broken
+	key := TermKey(term.Name)
 	if held := outsideAlphabet(term.Name); len(held) > 0 {
 		found = append(found, broken{ruleTermName, termNameDetail(held)})
+	} else if !holdsLetterOrDigit(key) {
+		found = append(found, broken{ruleTermName, emptyNameDetail})
 	}
 	if sentences := len(sentencesOf(oneLine(term.Definition))); sentences != 1 {
 		found = append(found, broken{ruleDefinitionSentences, fmt.Sprintf("the definition has %d sentences, and a definition has one", sentences)})
 	}
-	key := TermKey(term.Name)
 	if listed, ok := index.listed[key]; ok {
 		found = append(found, broken{ruleTermSecondDefinition, fmt.Sprintf(
 			"%s already defines this term. Use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first",
 			listed.Where)})
 	}
 	if same := index.proposed[key]; len(same) > 1 && same[1] == at {
-		found = append(found, broken{ruleTermSecondDefinition, fmt.Sprintf("this document defines this term %d times. Keep one definition", index.definitions(key))})
+		found = append(found, broken{ruleTermSecondDefinition, fmt.Sprintf("this document defines this term %d times. Keep one definition", len(same))})
 	}
 	return found
 }
 
-// lineBreaks is each rule of R50 that the text at, a line in the form of a term line outside
-// Terms, breaks: it defines a term that the list holds, or it is the second definition of a term
-// that the document defines more than once. It adds no term, so no other rule judges it. Its
-// detail says that the form of the line makes it a definition under each heading.
-func (index termIndex) lineBreaks(at int, line Text) []broken {
-	var found []broken
-	key := TermKey(line.Node)
-	if listed, ok := index.listed[key]; ok {
-		found = append(found, broken{ruleTermSecondDefinition, fmt.Sprintf(
-			"%s already defines this term. %s If this line is no definition, change its form. If it is a definition, use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first",
-			listed.Where, anyHeading)})
+// lineBreaks is the rule of R50 that line, a line in the form of a term line outside Terms,
+// breaks. Such a line is no definition and adds no term. It breaks the rule of a second
+// definition when it names a term that a definition defines (defined): a reader would take it for
+// a second definition. A line whose name no definition defines breaks no rule, also when another
+// such line names it: two such lines are prose.
+func (index termIndex) lineBreaks(line Text) []broken {
+	definition, ok := index.defined[TermKey(line.Node)]
+	if !ok {
+		return nil
 	}
-	// The second definition in the order of definitions: the first line of this form when one
-	// term line under Terms comes before it, the second when none does, and none when two do.
-	if second, lines := 1-len(index.proposed[key]), index.lines[key]; second >= 0 && second < len(lines) && lines[second] == at {
-		found = append(found, broken{ruleTermSecondDefinition, fmt.Sprintf(
-			"this document defines this term %d times. %s Keep one definition, and change the form of each line that is no definition",
-			index.definitions(key), anyHeading)})
-	}
-	return found
+	return []broken{{ruleTermSecondDefinition, fmt.Sprintf(lineDetail, definition.Where)}}
 }

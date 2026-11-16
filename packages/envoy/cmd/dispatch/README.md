@@ -4700,34 +4700,50 @@ A link to a record of Dispatch, and the name of an incident, a pull request or a
 A definition of a term has one sentence, and a term has one definition.
 An abbreviation with a stop before a space, such as `vs.`, `approx.` or `etc.`, ends a sentence.
 So a definition that holds one has two sentences and breaks the form: write the word out, such as `against` for `vs.`.
-A term line is `- **<term>**: <definition>` under a heading `Terms`, at any level.
+A definition is a term line: `- **<term>**: <definition>` under a heading `Terms`, at any level.
+The list of terms holds these definitions, and no approval adds a second definition of a listed term.
 Each other line under that heading breaks the form (rule `term-line`), unless it is blank or a heading.
 Its finding names the line.
 A heading that reads as `Terms` in another form breaks the form too (rule `terms-heading`), and its lines are no part of the terms.
 Such a heading has the text `terms` in another case, with emphasis marks or with a last colon, such as `## TERMS`, `## **Terms**` or `## Terms:`.
-A line of the term-line form is a definition under each heading, under no heading and in a typed block, outside a code fence.
-Only a line under `Terms` adds a term to the list.
-Such a line in another place breaks the form (rule `term-second-definition`, kind `term_line`) when it names a term of the list.
-It also breaks the form when another line of that form in the document names the same term.
-So Dispatch also refuses a list item in prose that has the form of a term line and names a term of the list.
-Its finding tells the writer to change the form of the line when the line is no definition.
-A line of that form inside a decision block is a definition too, so an answer that writes one writes a definition.
+A line of the term-line form in another place is no definition, and it adds no term to the list.
+That is a line under another heading, under no heading or in a typed block, outside a code fence.
+A reader takes such a line for a second definition when it names a defined term.
+So it breaks the form (rule `term-second-definition`, kind `term_line`) when a definition defines its name.
+That definition is a term of the list, or a term line under `Terms` of any document of the request, its own document included.
+The order of the documents in a request changes no answer.
+Its finding names the definition.
+It tells the writer to change the form of the line, or to move the line under `Terms` if it is a definition.
+Two such lines of one name that no definition defines are prose, and they break nothing.
+This refusal helps an honest writer, and it has a limit.
+Dispatch refuses no such line while no definition defines its name, and it cannot see a later request.
+So a later definition of that name under `Terms` is approved, and the document with the line is refused at its next request.
+No program refuses a definition in prose, so the reviewer reads each statement for a term that it uses with another meaning.
+A decision block under `Terms` holds term lines too, so an answer that writes one there writes a definition.
 After NFKC_Casefold, the name of a term holds only the letters a to z, the digits 0 to 9, spaces and hyphens.
-A name with another character breaks the form (rule `term-name`), and the finding names each such character with its code point.
-So Dispatch refuses `İnbox`, a name with a Cyrillic `а`, `<statement>` and `limit's wait`, and a full-width letter or a ligature folds to its plain letters.
+It holds at least one letter or digit.
+A name with another character, or with no letter and no digit, breaks the form (rule `term-name`).
+The finding names each such character with its code point.
+So Dispatch refuses `İnbox`, a name with a Cyrillic `а`, `<statement>`, `limit's wait` and an empty name.
+A full-width letter or a ligature folds to its plain letters.
 
 The list of terms of a root holds the term lines of each covered document under it, the root's `terms.md` among them.
 Dispatch reads the latest version of each that a person approved, and leaves out the documents that it judges.
 Dispatch compares the names of terms in the caseless form that Unicode defines for identifiers (NFKC_Casefold), with each run of spaces as one space.
 That form removes the characters that show nothing, such as a zero-width space or a soft hyphen.
 The list holds one definition of each term.
-The root's `terms.md` comes first, then each other document in the order in which it joined the list.
-A document joins the list at the later of its first approval and the move that last brought its issue under the root.
+The root's `terms.md` comes first.
+Of the definitions of one term in other documents, the list holds the one that joined it first, and each definition has its own time.
+A definition joins the list at the later of two events.
+The first is the move that last brought its issue under the root.
+The second is the first approval of the earliest approved version of its document from which each later approved version holds the term.
+So a term that a later version adds joins at the approval of that version.
+A definition that a later version changes keeps its time.
 Dispatch reads that move from the events of the issues, which each release of Dispatch writes for each move.
 So the release that made a move changes no order, and a rollback to an earlier release changes none.
 The setting decides which issues are roots at each move, also at a move from before the setting named that root.
 Dispatch orders these by its events.
-Two documents that joined at one move come in the order of their first approvals.
+Two definitions that joined at one move come in the order of their approvals.
 So a move into the root or inside it changes no definition that the list holds.
 An approval from before the setting named the root changes none either.
 The read of the other document names the definition that the list holds as a finding.
@@ -4742,6 +4758,7 @@ A move into the root takes that lock before it writes its event.
 So two approvals under one root take turns, and the second one that defines a term of the first gets `409 SPEC_FORM`.
 While an earlier release serves beside this one, its move takes no lock.
 So its move and an approval at one time can join the list in either order.
+An earlier release also judges no approval, so an approval that it takes during a roll can put a second definition under the root.
 
 A request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written: `{code, error, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
 `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.

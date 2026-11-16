@@ -1247,27 +1247,29 @@ func TestARequestOfTwoDocumentsRefusesASecondDefinition(t *testing.T) {
 }
 
 // termLineFinding is the finding of a line in the form of a term line outside Terms, in the
-// document name whose id is artifactID, that defines term again as definition with detail.
-func termLineFinding(name, artifactID string, version int, term, definition, detail string) specFormFinding {
+// document name whose id is artifactID, that names term, which where defines, with definition as
+// its own text.
+func termLineFinding(name, artifactID string, version int, term, definition, where string) specFormFinding {
 	return specFormFinding{Document: name, ArtifactID: artifactID, Version: version, Finding: specform.Finding{
 		Node: term, Kind: "term_line", Where: fmt.Sprintf("%s version %d", name, version),
-		Rule: "term-second-definition", Detail: detail, Excerpt: definition,
+		Rule: "term-second-definition", Excerpt: definition,
+		Detail: where + " defines this term. This line has the form of a definition, but it is not under a heading Terms. " +
+			"If it is no definition, change its form. If it is a definition, move it under Terms",
 	}}
 }
 
-// A line in the form of a term line under another heading is a definition (R50): with lease in
-// the list, a request whose spec defines lease again under "## Glossary" is refused, and the
-// finding says that the form of the line makes it a definition. A document that a person approved
-// with such a line adds no term to the list. The control: the same line with a name that nothing
-// defines opens the request.
+// A definition is a term line under Terms (R50). A line in that form under another heading is no
+// definition, but a reader would take it for a second one when it names a defined term: with lease
+// in the list, a request whose spec names lease under "## Glossary" is refused, and the finding
+// tells the writer to change the form of the line or to move it under Terms. A document that a
+// person approved with such a line adds no term to the list. The control: the same line with a
+// name that nothing defines opens the request.
 func TestARequestRefusesATermLineUnderAnotherHeadingThatNamesAListedTerm(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	listed := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
 	approveFormDocument(t, tree.handler, listed.PrimaryArtifactID)
-	glossary := createFormIssue(t, tree.handler, tree.root, "Defines lease again under Glossary", "# Spec\n\n## Glossary\n\n- "+termLine("lease", otherLease)+"\n")
-	finding := termLineFinding("spec.md", glossary.PrimaryArtifactID, 1, "lease", otherLease, "spec.md version 1 of "+listed.Key+
-		` already defines this term. A line of the form "- **<term>**: <definition>" is a definition under each heading. If this line is no definition, change its form. `+
-		"If it is a definition, use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first")
+	glossary := createFormIssue(t, tree.handler, tree.root, "Names lease under Glossary", "# Spec\n\n## Glossary\n\n- "+termLine("lease", otherLease)+"\n")
+	finding := termLineFinding("spec.md", glossary.PrimaryArtifactID, 1, "lease", otherLease, "spec.md version 1 of "+listed.Key)
 	requireFormRefusal(t, "request of a spec with lease under Glossary", requestFormApproval(t, tree.handler, glossary.PrimaryArtifactID, nil),
 		specform.ActRequest, []string{findingLine(finding)}, finding)
 	plain := createFormIssue(t, tree.handler, tree.root, "Names valve under Glossary", "# Spec\n\n## Glossary\n\n- "+termLine("valve", "A part of a pump that opens and closes.")+"\n")
@@ -1278,20 +1280,77 @@ func TestARequestRefusesATermLineUnderAnotherHeadingThatNamesAListedTerm(t *test
 	}
 }
 
-// Two lines of one name in the form of a term line in the documents of one request are two
-// definitions, wherever each stands: a spec and its Verification document, requested together,
-// that each name lease under another heading are refused at the second. The control: the spec
+// A line in the form of a term line outside Terms is refused when another document of the same
+// request defines its name under Terms, whichever of the two documents comes first: the spec and
+// its Verification document, requested together. Two such lines of one name outside Terms, with
+// no definition of it, are prose and refuse nothing. The control: the document with the line
 // alone is opened.
-func TestARequestOfTwoDocumentsRefusesTwoTermLinesOfOneName(t *testing.T) {
+func TestARequestRefusesALineOutsideTermsThatItsOtherDocumentDefines(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
-	issue := createFormIssue(t, tree.handler, tree.root, "Names lease in two documents", "# Spec\n\n## Glossary\n\n- "+termLine("lease", leaseDefinition)+"\n")
-	verification := uploadFormDocument(t, tree.handler, issue.Key, "verification.md", "# Verification\n\n## Notes\n\n- "+termLine("lease", otherLease)+"\n")
-	finding := termLineFinding("verification.md", verification.ID, 1, "lease", otherLease, "spec.md version 1 of "+issue.Key+
-		` already defines this term. A line of the form "- **<term>**: <definition>" is a definition under each heading. If this line is no definition, change its form. `+
-		"If it is a definition, use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first")
-	requireFormRefusal(t, "request of both", requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, map[string]any{"include_verification": true}),
+	leaseUnder := func(heading, definition string) string {
+		return "## " + heading + "\n\n- " + termLine("lease", definition) + "\n"
+	}
+	for _, c := range []struct {
+		name               string
+		spec, verification string // the heading of the line of lease in each document
+		refused            string // the document whose line is refused, "" for none
+		definition, keeper string // the text of the refused line, and the document that defines lease
+	}{
+		{"the spec defines lease, and the Verification document names it under Notes", "Terms", "Notes", "verification.md", otherLease, "spec.md"},
+		{"the spec names lease under Notes, and the Verification document defines it", "Notes", "Terms", "spec.md", leaseDefinition, "verification.md"},
+		{"both name lease under another heading", "Glossary", "Notes", "", "", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			issue := createFormIssue(t, tree.handler, tree.root, "Names lease in two documents: "+c.name, "# Spec\n\n"+leaseUnder(c.spec, leaseDefinition))
+			verification := uploadFormDocument(t, tree.handler, issue.Key, "verification.md", "# Verification\n\n"+leaseUnder(c.verification, otherLease))
+			both := requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, map[string]any{"include_verification": true})
+			if c.refused == "" {
+				requireFormRequestOpened(t, both)
+				return
+			}
+			ids := map[string]string{"spec.md": issue.PrimaryArtifactID, "verification.md": verification.ID}
+			finding := termLineFinding(c.refused, ids[c.refused], 1, "lease", c.definition, c.keeper+" version 1 of "+issue.Key)
+			requireFormRefusal(t, "request of both", both, specform.ActRequest, []string{findingLine(finding)}, finding)
+			requireFormRequestOpened(t, requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil))
+		})
+	}
+}
+
+// The stated limit of a line outside Terms (the red team's order case). A definition is a term line
+// under Terms, and a line in that form elsewhere is no definition. Dispatch refuses such a line
+// only when it names a defined term, and across two requests it cannot see the later one. So A,
+// whose spec names gale under "## Glossary" while no document defines gale, is approved, and it
+// adds no term. B, which defines gale under Terms, is approved after it. Then the read of A names
+// B's definition, and A's next approval request is refused. A change of this order is a decision.
+func TestALineOutsideTermsOfANameThatNothingDefinesIsApprovedAndRefusedAtItsNextRequest(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	const (
+		cold = "A cold wind."
+		warm = "A warm wind."
+	)
+	a := createFormIssue(t, tree.handler, tree.root, "Names gale under Glossary",
+		"# Spec\n\n:::requirement{#store-comment}\nDispatch stores each comment.\n:::\n\n## Glossary\n\n- "+termLine("gale", cold)+"\n")
+	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, a.PrimaryArtifactID, nil))
+	approveFormDocument(t, tree.handler, a.PrimaryArtifactID)
+	if count := countTerm(t, tree.handler, a.PrimaryArtifactID, "gale"); count != 0 {
+		t.Fatalf("the list holds gale %d times after the approval of A, want 0: a line outside Terms adds no term", count)
+	}
+	b := createFormIssue(t, tree.handler, tree.root, "Defines gale", specWithTerms(termLine("gale", warm)))
+	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, b.PrimaryArtifactID, nil))
+	approveFormDocument(t, tree.handler, b.PrimaryArtifactID)
+	want := specFormTerm{Term: "gale", Definition: warm, Document: "spec.md", Version: 1, Issue: b.Key}
+	if got, count := listedOf(t, tree.handler, a.PrimaryArtifactID, "gale"); count != 1 || got != want {
+		t.Fatalf("the list holds gale %d times, as %#v; want once, as %#v", count, got, want)
+	}
+	where := "spec.md version 1 of " + b.Key
+	if read := specFormReadOf(t, tree.handler, a.PrimaryArtifactID); !reflect.DeepEqual(read.Findings, []specFormFinding{termLineFinding("spec.md", a.PrimaryArtifactID, 1, "gale", cold, where)}) {
+		t.Fatalf("the read of A = findings %#v, want the line of gale, which %s defines", read.Findings, where)
+	}
+	reviseDocument(t, tree.handler, a.PrimaryArtifactID, "Dispatch stores each comment.", "Dispatch keeps each comment.", 2)
+	awaitSettled(t, tree.database, a.PrimaryArtifactID)
+	finding := termLineFinding("spec.md", a.PrimaryArtifactID, 2, "gale", cold, where)
+	requireFormRefusal(t, "the next request of A", requestFormApproval(t, tree.handler, a.PrimaryArtifactID, nil),
 		specform.ActRequest, []string{findingLine(finding)}, finding)
-	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil))
 }
 
 // countTerm is how many times the list of the read of artifactID holds term.
@@ -1464,10 +1523,87 @@ func TestTheListHoldsTheDefinitionThatJoinedFirst(t *testing.T) {
 	requireTerms(t, tree.handler, first.PrimaryArtifactID, specFormTerm{Term: "lease", Definition: changedLease, Document: "spec.md", Version: 2, Issue: first.Key})
 }
 
+// approveRevisionThrough replaces find with with in the document of issue, which makes its
+// version number, and approves that version through handler.
+func approveRevisionThrough(t *testing.T, tree specFormTree, handler http.Handler, issue formIssue, find, with string, number int) {
+	t.Helper()
+	reviseDocument(t, tree.handler, issue.PrimaryArtifactID, find, with, number)
+	awaitSettled(t, tree.database, issue.PrimaryArtifactID)
+	approveFormDocument(t, handler, issue.PrimaryArtifactID)
+}
+
+// R50: "Where approved documents still hold several definitions of one term, the root issue's own
+// document of terms governs, else the definition that joined first." Each definition joins at its
+// own date: the first approval of the earliest approved version of its document from which each
+// later approved version holds the term, or the move that brought its issue under the root, when
+// that came later. So a term that a later version added joins at the approval of that version, not
+// at the first approval of its document. The approvals go through a server that names no root
+// (olderBuild), as the approvals before the setting named the root did, since the gate lets no
+// second definition through. The control: of two documents whose first versions both define the
+// term, the one approved first keeps it, also when it changes its definition later.
+func TestEachDefinitionJoinsTheListAtItsOwnApproval(t *testing.T) {
+	const (
+		sirocco    = "The wind of one desert."
+		thirdLease = "The hold that one session keeps on one work unit."
+	)
+	type outcome struct {
+		keeper  formIssue
+		want    specFormTerm
+		other   formIssue
+		version int // the version of other that its read judges
+	}
+	for _, c := range []struct {
+		name string
+		run  func(t *testing.T, tree specFormTree, older http.Handler) outcome
+	}{
+		{"A adds lease in its second version, after B defined it", func(t *testing.T, tree specFormTree, older http.Handler) outcome {
+			a := createFormIssue(t, tree.handler, tree.root, "A, approved first with no lease", specWithTerms(termLine("sirocco", sirocco)))
+			approveFormDocument(t, older, a.PrimaryArtifactID)
+			b := createFormIssue(t, tree.handler, tree.root, "B, approved second with lease", specWithTerms(termLine("lease", leaseDefinition)))
+			approveFormDocument(t, older, b.PrimaryArtifactID)
+			approveRevisionThrough(t, tree, older, a, termLine("sirocco", sirocco), termLine("lease", otherLease), 2)
+			return outcome{b, specFormTerm{Term: "lease", Definition: leaseDefinition, Document: "spec.md", Version: 1, Issue: b.Key}, a, 2}
+		}},
+		{"A removes lease in its second version and adds it again in its third, after B defined it", func(t *testing.T, tree specFormTree, older http.Handler) outcome {
+			a := createFormIssue(t, tree.handler, tree.root, "A, approved first with lease", specWithTerms(termLine("lease", otherLease)))
+			approveFormDocument(t, older, a.PrimaryArtifactID)
+			approveRevisionThrough(t, tree, older, a, termLine("lease", otherLease), termLine("sirocco", sirocco), 2)
+			b := createFormIssue(t, tree.handler, tree.root, "B, approved with lease while A holds none", specWithTerms(termLine("lease", leaseDefinition)))
+			approveFormDocument(t, older, b.PrimaryArtifactID)
+			approveRevisionThrough(t, tree, older, a, termLine("sirocco", sirocco), termLine("lease", otherLease), 3)
+			return outcome{b, specFormTerm{Term: "lease", Definition: leaseDefinition, Document: "spec.md", Version: 1, Issue: b.Key}, a, 3}
+		}},
+		{"control: A and B define lease in their first versions, and A changes its definition", func(t *testing.T, tree specFormTree, older http.Handler) outcome {
+			a := createFormIssue(t, tree.handler, tree.root, "A, approved first with lease", specWithTerms(termLine("lease", leaseDefinition)))
+			approveFormDocument(t, older, a.PrimaryArtifactID)
+			b := createFormIssue(t, tree.handler, tree.root, "B, approved second with lease", specWithTerms(termLine("lease", otherLease)))
+			approveFormDocument(t, older, b.PrimaryArtifactID)
+			approveRevisionThrough(t, tree, older, a, termLine("lease", leaseDefinition), termLine("lease", thirdLease), 2)
+			return outcome{a, specFormTerm{Term: "lease", Definition: thirdLease, Document: "spec.md", Version: 2, Issue: a.Key}, b, 1}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+			got := c.run(t, tree, olderBuild(t, tree))
+			if listed, count := listedOf(t, tree.handler, got.other.PrimaryArtifactID, "lease"); count != 1 || listed != got.want {
+				t.Fatalf("the list holds lease %d times, as %#v; want once, as %#v (the definition that joined first)", count, listed, got.want)
+			}
+			if read := specFormReadOf(t, tree.handler, got.keeper.PrimaryArtifactID); len(read.Findings) != 0 {
+				t.Errorf("the read of %s, which the list keeps lease from = findings %#v, want none", got.keeper.Key, read.Findings)
+			}
+			want := []specFormFinding{definitionFinding("spec.md", got.other.PrimaryArtifactID, got.version, "lease", otherLease, "term-second-definition",
+				alreadyDefines(listedWhere(got.want.Document, got.want.Version, got.keeper.Key)))}
+			if read := specFormReadOf(t, tree.handler, got.other.PrimaryArtifactID); !reflect.DeepEqual(read.Findings, want) {
+				t.Errorf("the read of %s = findings %#v, want %#v", got.other.Key, read.Findings, want)
+			}
+		})
+	}
+}
+
 // A spec and its Verification document that a person approved in one answer, outside the root,
 // each define lease. The move under the root brings both in at one event, and the list holds the
-// definition of the document whose first approval came first, the spec, which the answer names
-// first; the read of the Verification document names it.
+// definition that the person approved first, the spec's, which the answer names first; the read
+// of the Verification document names it.
 func TestTwoDocumentsThatJoinAtOneMoveKeepTheOrderOfTheirApprovals(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	issue := createFormIssue(t, tree.handler, tree.outside, "Defines lease twice", specWithTerms(termLine("lease", leaseDefinition)))
@@ -1741,7 +1877,7 @@ func TestAMoveByABuildThatNamesNoRootChangesNoDefinitionOfTheList(t *testing.T) 
 // list whether the server that names the root made the moves or a server that names none
 // (olderBuild), as the release before this one and a rollback to it do. Each case also names the
 // document that the list keeps its term from, by the order the decision gives: a definition joins
-// the list at the later of its first approval and the move that brought it under the root.
+// the list at the later of its approval and the move that brought it under the root.
 func TestTheListIsTheSameWhicheverBuildMadeTheMoves(t *testing.T) {
 	type moves func(tree specFormTree, move func(issue, parent string)) (keeper string, read string)
 	cases := []struct {

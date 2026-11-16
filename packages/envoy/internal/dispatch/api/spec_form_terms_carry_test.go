@@ -7,11 +7,12 @@ import (
 
 // The carry of an approval writes an approval in the person's name, so the form gate that it asks
 // (carryBreaksForm) judges the terms of the version too (R50): a version that defines a term of
-// the list again, or that defines one term twice, takes no carried approval. A line in the form of
-// a term line is a definition anywhere outside a code fence, an option of a decision block among
-// them. Under Terms, the question of a decision block is a line that is no term line (rule
-// term-line), so the gate refuses such a version whatever its options say. Under another heading,
-// only the terms rule can refuse it, which is what the rows under "## Wind" show.
+// the list again, or that defines one term twice, takes no carried approval. A definition is a
+// term line under Terms, an option of a decision block under Terms among them. Under Terms, the
+// question of a decision block is a line that is no term line (rule term-line), so the gate
+// refuses such a version whatever its options say. Under another heading, an option in the form
+// of a term line is no definition, and only the terms rule refuses it, when it names a defined
+// term, which is what the rows under "## Wind" show.
 
 // carriedTermsBlock is a decision block whose options are the lines options.
 func carriedTermsBlock(question string, options ...string) string {
@@ -104,21 +105,23 @@ func TestTheAnswerCarryLetsNoSecondDefinitionOfAListedTermThrough(t *testing.T) 
 // The tester's TestTheCarryOfAnApprovalLetsNoDocumentDefineATermTwiceFresh: a decision block
 // whose two options are two definitions of one new term. The version that the answer writes
 // defines the term two times, so it takes no carried approval: under Terms, as the tester wrote
-// it, and under "## Wind". The control: under "## Wind", two options of two names carry the
-// approval as before.
+// it. Under "## Wind", an option that names a term that the spec defines under Terms carries no
+// approval either. The controls: under "## Wind", two options of one name that nothing defines
+// are prose, and two options of two names, carry the approval as before.
 func TestTheAnswerCarryApprovesNoVersionThatDefinesATermTwice(t *testing.T) {
 	cold := termLine("bora", "The cold wind that falls from one mountain.")
 	for _, c := range []struct {
-		why           string
+		why, term     string
 		second        string
 		wind, carries bool
 	}{
-		{"bora twice under Terms", termLine("bora", "The dry wind of one winter coast."), false, false},
-		{"bora twice under Wind", termLine("bora", "The dry wind of one winter coast."), true, false},
-		{"control, bora and foehn under Wind", termLine("foehn", "The dry wind of one winter coast."), true, true},
+		{"bora twice under Terms", "levanter", termLine("bora", "The dry wind of one winter coast."), false, false},
+		{"bora under Terms of the spec, and bora as an option under Wind", "bora", termLine("foehn", "The dry wind of one winter coast."), true, false},
+		{"control, bora twice under Wind, which nothing defines", "levanter", termLine("bora", "The dry wind of one winter coast."), true, true},
+		{"control, bora and foehn under Wind", "levanter", termLine("foehn", "The dry wind of one winter coast."), true, true},
 	} {
 		tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1", settle: 20 * time.Millisecond})
-		x := createFormIssue(t, tree.handler, tree.root, "Approved first", carriedSpec("levanter", "The east wind of one sea.", c.wind))
+		x := createFormIssue(t, tree.handler, tree.root, "Approved first", carriedSpec(c.term, "The east wind of one sea.", c.wind))
 		approveFormDocument(t, tree.handler, x.PrimaryArtifactID)
 		answerAtTheEnd(t, tree, x, "bora", cold, c.second)
 		if c.carries {

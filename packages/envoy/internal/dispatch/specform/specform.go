@@ -1,12 +1,13 @@
 // Package specform decides the form of the texts of The Spec (R49): the sentences and words of
 // each statement, check, component purpose and definition of a term, the hard findings of the
 // ASD-STE100 program, and the links, incidents, pull requests and people that no text may name.
-// It also decides the rules of the terms (R50): a line under a heading Terms is a term line, a
-// term name holds only the letters a to z, the digits, spaces and hyphens, a definition has one
-// sentence, and a term has one definition, by its name in one Unicode form (TermKey), wherever a
-// line in the form of a term line stands. It works on plain texts and reads no store:
-// ExtractDocument reads the texts of one document's markdown, Check judges them, and Message and
-// ChangesReason write the refusal.
+// It also decides the rules of the terms (R50): a definition is a term line under a heading
+// Terms, a term name holds only the letters a to z, the digits, spaces and hyphens, a definition
+// has one sentence, and a term has one definition, by its name in one Unicode form (TermKey). A
+// line in the form of a term line elsewhere is no definition, and it is refused when it names a
+// defined term, since a reader would take it for a second definition. It works on plain texts and
+// reads no store: ExtractDocument reads the texts of one document's markdown, Check judges them,
+// and Message and ChangesReason write the refusal.
 package specform
 
 import "strings"
@@ -57,11 +58,14 @@ type Context struct {
 	ServerURL    string
 }
 
-// Input is the texts to judge, the definitions a request proposes, and the approved list.
+// Input is the texts to judge, the definitions a request proposes in the document, the approved
+// list, and the definitions under Terms of the other documents of the request (Defined), which
+// only a line in the form of a term line outside Terms is judged against.
 type Input struct {
 	Texts    []Text
 	Proposed []Term
 	List     []Term
+	Defined  []Term
 }
 
 // Finding is one break of the form: the text, by its node, kind and place, the rule it breaks,
@@ -82,8 +86,9 @@ const excerptRunes = 160
 // named by its term, by the rules of R49, in the order of the texts. A proposed definition first
 // takes the rules of R50: its name holds only the letters a to z, the digits, spaces and hyphens,
 // it has one sentence, and it is the one definition of its term, in the list and in the proposal.
-// A text of Kind term_line, a line in the form of a term line outside Terms, takes only the rule
-// of a second definition: it adds no term, but it defines its term again.
+// A text of Kind term_line, a line in the form of a term line outside Terms, is no definition and
+// takes only the rule of a second definition: it is refused when it names a term that the list,
+// the document's own terms or the request's other documents (Defined) define.
 func Check(c Context, in Input) []Finding {
 	texts := make([]Text, 0, len(in.Texts)+len(in.Proposed))
 	texts = append(texts, in.Texts...)
@@ -99,7 +104,7 @@ func Check(c Context, in Input) []Finding {
 		case proposed >= 0:
 			found = append(terms.breaks(proposed, in.Proposed[proposed]), breaks(c, people, text)...)
 		case text.Kind == KindTermLine:
-			found = terms.lineBreaks(at, text)
+			found = terms.lineBreaks(text)
 		default:
 			found = breaks(c, people, text)
 		}

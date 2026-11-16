@@ -1,7 +1,6 @@
 package specform
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -330,12 +329,40 @@ func TestATermNameHoldsOnlyTheLettersAToZDigitsSpacesAndHyphens(t *testing.T) {
 	}
 }
 
-// A covered document that defines a listed term again, in the one term-line form, under a
-// heading that is not Terms, holds a second definition of that term (the tester's
-// TestASecondDefinitionUnderAnotherHeadingIsRefusedAccept3, as the tester wrote it). R50: "Dispatch
-// refuses an approval request … that holds a second definition of a term, and it names the term".
-// The controls: under "## Terms" the line is refused once, and under "## Glossary" a line that
-// names no listed term gives no finding.
+// A term name holds at least one letter from a to z or one digit: a term line under Terms whose
+// name is empty, only a character that shows nothing, or only spaces and hyphens breaks the rule
+// term-name. The controls: a name of one letter, of a letter and a digit, and with a hyphen.
+func TestATermNameWithNoLetterAndNoDigitIsRefused(t *testing.T) {
+	const detail = "the name holds no letter from a to z and no digit. A term name holds at least one letter or digit"
+	check := func(name string) (Extracted, []Finding) {
+		extracted, err := ExtractDocument("spec.md", 1, "# Spec\n\n## Terms\n\n- **"+name+"**: One thing of the system.\n")
+		if err != nil {
+			t.Fatalf("ExtractDocument of the name %+q: %v", name, err)
+		}
+		return extracted, Check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms})
+	}
+	for _, name := range []string{" ", "\u200b", "-", " - ", "\u00ad"} {
+		extracted, got := check(name)
+		if len(extracted.Terms) != 1 {
+			t.Fatalf("the name %+q: Terms = %#v, want one term", name, extracted.Terms)
+		}
+		if want := []Finding{finding(definition(extracted.Terms[0]), "term-name", detail)}; !sameFindings(got, want) {
+			t.Errorf("the name %+q: Check = %#v, want %#v", name, got, want)
+		}
+	}
+	for _, name := range []string{"x", "r2", "x-ray"} {
+		if _, got := check(name); len(got) != 0 {
+			t.Errorf("control, the name %+q: Check = %#v, want no finding", name, got)
+		}
+	}
+}
+
+// A covered document that names a listed term again, in the one term-line form, under a heading
+// that is not Terms, is refused (the tester's TestASecondDefinitionUnderAnotherHeadingIsRefusedAccept3,
+// as the tester wrote it): such a line is no definition, but a reader would take it for a second
+// definition of that term. R50: "Dispatch refuses an approval request … that holds a second
+// definition of a term, and it names the term". The controls: under "## Terms" the line is refused
+// once, and under "## Glossary" a line that names no listed term gives no finding.
 func TestASecondDefinitionUnderAnotherHeadingIsRefused(t *testing.T) {
 	list := []Term{{Name: "heartbeat", Definition: "The signal that a session sends to Dispatch at a fixed interval.", Where: "terms.md version 1 of ACME-1"}}
 	findingsUnder := func(heading, line string) []Finding {
@@ -360,29 +387,22 @@ func TestASecondDefinitionUnderAnotherHeadingIsRefused(t *testing.T) {
 }
 
 // termLineElsewhere is the detail of a line in the form of a term line outside a heading Terms
-// that names a term of the list.
-func termLineElsewhere(listedWhere string) string {
-	return listedWhere + ` already defines this term. A line of the form "- **<term>**: <definition>" is a definition under each heading. ` +
-		"If this line is no definition, change its form. If it is a definition, use that definition, or change it there and request approval of that document. " +
-		"When that issue has the status done, reopen it first"
+// that names a term that where defines.
+func termLineElsewhere(where string) string {
+	return where + " defines this term. This line has the form of a definition, but it is not under a heading Terms. " +
+		"If it is no definition, change its form. If it is a definition, move it under Terms"
 }
 
-// termLinesElsewhere is the detail of the second of count lines of one name in the form of a term
-// line in one document, when that line stands outside a heading Terms.
-func termLinesElsewhere(count int) string {
-	return fmt.Sprintf(`this document defines this term %d times. A line of the form "- **<term>**: <definition>" is a definition under each heading. `+
-		"Keep one definition, and change the form of each line that is no definition", count)
-}
-
-// A line in the form of a term line is a definition wherever it stands in a covered document,
-// outside a code fence: under each heading, under no heading, and in the body of a requirement.
-// Only a line under a heading Terms adds a term; another such line adds nothing, and it is a
-// finding only when it names a term of the list, or a name that another such line of the
-// document names. Its finding is of Kind term_line and says that the form makes the line a
-// definition, so that a writer of a list item in prose knows to change the form. The controls:
-// the same line in a code fence, and a line of a name that nothing else names, give no finding
+// A definition is a term line under a heading Terms (R50). A line in that form in another place
+// of a covered document, outside a code fence, is no definition and adds no term: under each
+// heading, under no heading, and in the body of a requirement. A reader would take it for a
+// second definition when it names a defined term, so it is a finding then: a term of the list, or
+// a term that the document itself defines under Terms. Its finding is of Kind term_line, names
+// where the term is defined, and tells the writer to change the form of the line or to move it
+// under Terms. The controls: the same line in a code fence, a line of a name that nothing
+// defines, and two such lines of one name that nothing defines, which are prose, give no finding
 // and add no term.
-func TestATermLineOutsideTermsIsADefinitionAndAddsNoTerm(t *testing.T) {
+func TestATermLineOutsideTermsIsNoDefinitionAndAddsNoTerm(t *testing.T) {
 	list := []Term{{Name: "heartbeat", Definition: "The signal that a session sends.", Where: "terms.md version 1 of ACME-1"}}
 	check := func(markdown string) (Extracted, []Finding) {
 		extracted, err := ExtractDocument("spec.md", 1, markdown)
@@ -419,26 +439,55 @@ func TestATermLineOutsideTermsIsADefinitionAndAddsNoTerm(t *testing.T) {
 		"# Spec\n\n```\n- **heartbeat**: A pulse of a pump.\n```\n",
 		"# Spec\n\n:::requirement{#r1}\nThe pump sends a pulse.\n~~~\n- **heartbeat**: A pulse of a pump.\n~~~\n:::\n",
 		"# Spec\n\n## Glossary\n\n- **valve**: A part that opens and closes.\n",
+		"# Spec\n\n## Glossary\n\n- **valve**: A part that opens.\n- **Valve**: A part that closes.\n",
+		"# Spec\n\n## Steps\n\n- **Note**: Read the plan.\n\n## Checks\n\n- **Note**: Run each check.\n",
 	} {
 		extracted, got := check(markdown)
 		if len(got) != 0 || len(extracted.Terms) != 0 {
 			t.Errorf("control %q: Terms %#v and Check = %#v, want neither", markdown, extracted.Terms, got)
 		}
 	}
-	_, got := check("# Spec\n\n## Glossary\n\n- **valve**: A part that opens.\n- **Valve**: A part that closes.\n")
-	if want := []Finding{finding(line("Valve", "A part that closes."), "term-second-definition", termLinesElsewhere(2))}; !sameFindings(got, want) {
-		t.Errorf("two term lines of one name under Glossary: Check = %#v, want %#v", got, want)
-	}
 	extracted, got := check("# Spec\n\n## Terms\n\n- **valve**: A part that opens.\n\n## Glossary\n\n- **valve**: A part that closes.\n")
-	if want := []Finding{finding(line("valve", "A part that closes."), "term-second-definition", termLinesElsewhere(2))}; !sameFindings(got, want) {
+	if want := []Finding{finding(line("valve", "A part that closes."), "term-second-definition", termLineElsewhere("spec.md version 1"))}; !sameFindings(got, want) {
 		t.Errorf("a term under Terms and again under Glossary: Check = %#v, want %#v", got, want)
 	}
 	if len(extracted.Terms) != 1 || extracted.Terms[0].Definition != "A part that opens." {
 		t.Errorf("a term under Terms and again under Glossary: Terms = %#v, want the one under Terms", extracted.Terms)
 	}
-	_, got = check("# Spec\n\n## Terms\n\n- **valve**: A part that opens.\n- **valve**: A part that shuts.\n\n## Glossary\n\n- **valve**: A part that closes.\n")
-	if want := []Finding{finding(definition(Term{Name: "valve", Definition: "A part that shuts.", Where: "spec.md version 1"}), "term-second-definition",
-		"this document defines this term 3 times. Keep one definition")}; !sameFindings(got, want) {
-		t.Errorf("two terms under Terms and one line under Glossary: Check = %#v, want %#v", got, want)
+	_, got = check("# Spec\n\n## Glossary\n\n- **valve**: A part that closes.\n\n## Terms\n\n- **valve**: A part that opens.\n- **valve**: A part that shuts.\n")
+	if want := []Finding{
+		finding(line("valve", "A part that closes."), "term-second-definition", termLineElsewhere("spec.md version 1")),
+		finding(definition(Term{Name: "valve", Definition: "A part that shuts.", Where: "spec.md version 1"}), "term-second-definition",
+			"this document defines this term 2 times. Keep one definition"),
+	}; !sameFindings(got, want) {
+		t.Errorf("one line under Glossary and two terms under Terms: Check = %#v, want %#v", got, want)
+	}
+}
+
+// A line in the form of a term line outside Terms that names a term that another document of the
+// request defines under Terms (Input.Defined) is a finding that names that document, whichever
+// document of the request comes first. Defined judges no term line under Terms: one request holds
+// one definition of a term by the list that the earlier documents add to. The controls: the line
+// with no Defined, and a term line under Terms of a name that Defined holds, give no finding.
+func TestATermLineOutsideTermsThatAnotherDocumentOfTheRequestDefinesIsRefused(t *testing.T) {
+	defined := []Term{{Name: "valve", Definition: "A part that opens.", Where: "verification.md version 2 of ACME-3"}}
+	check := func(markdown string, defined []Term) []Finding {
+		extracted, err := ExtractDocument("spec.md", 1, markdown)
+		if err != nil {
+			t.Fatalf("ExtractDocument(%q): %v", markdown, err)
+		}
+		return Check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms, Defined: defined})
+	}
+	const glossary = "# Spec\n\n## Glossary\n\n- **Valve**: A part that closes.\n"
+	want := []Finding{finding(Text{Node: "Valve", Kind: "term_line", Body: "A part that closes.", Where: "spec.md version 1"}, "term-second-definition",
+		termLineElsewhere("verification.md version 2 of ACME-3"))}
+	if got := check(glossary, defined); !sameFindings(got, want) {
+		t.Errorf("a line under Glossary that another document of the request defines: Check = %#v, want %#v", got, want)
+	}
+	if got := check(glossary, nil); len(got) != 0 {
+		t.Errorf("control, no Defined: Check = %#v, want no finding", got)
+	}
+	if got := check("# Spec\n\n## Terms\n\n- **valve**: A part that closes.\n", defined); len(got) != 0 {
+		t.Errorf("control, a term line under Terms: Check = %#v, want no finding", got)
 	}
 }
