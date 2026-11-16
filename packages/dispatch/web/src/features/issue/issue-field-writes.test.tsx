@@ -1938,6 +1938,178 @@ test("a pick refused after a read older than the cached issue answered puts back
   }
 });
 
+/** Has the page's store save CORE-1's title, as the issue page's header does (`updateIssue` in
+ *  `IssueHeader`): on the issue's line, its answer merged into the issue, and the lists read
+ *  again. */
+function saveTitle(client: DispatchQueryClient, title: string): void {
+  act(() => {
+    void writesOf(client)
+      .run({
+        detail: null,
+        inline: true,
+        kind: plainWrite,
+        label: `CORE-1 renamed to ${title}`,
+        presentation: "indicator",
+        request: issuePatchRequest(issue.key, { title }),
+        target: `issue:${issue.key}`,
+      })
+      .then((next) => {
+        if (next === null) void client.invalidateQueries({ queryKey: detailKey });
+        else mergeIssue(client, next);
+        void client.invalidateQueries({ queryKey: ["issues"] });
+      })
+      .catch(() => undefined);
+  });
+}
+
+// R3: the value Dispatch last confirmed is the field in Dispatch's newest answer for the issue,
+// whatever write of it gave that answer. The issue, the project's list and the Inbox are read at
+// P1; another person sets P2, and the reader saves the issue's title from its header, whose answer
+// carries P2 and is merged into the issue. P0 is picked and refused before any read sent after
+// the title save answers: until the reads answer, every surface shows P2, the title save's answer
+// - never the P1 of the reads before it.
+test("a refused pick puts back the priority a save of the issue's title answered, not the older reads' one", async () => {
+  const title = Promise.withResolvers<Issue>();
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => title.promise)
+    .mockImplementationOnce(() => save.promise);
+  const client = signedInHolding();
+  // The page's store is made with the app, before any read goes out, so each read is kept.
+  writesOf(client);
+  const reads = dispatchReads();
+  const view = renderIn(
+    client,
+    <>
+      <Surfaces reads={reads} />
+      <CachedPriority reads={reads} />
+    </>
+  );
+  const user = userEvent.setup();
+  const seen: string[] = [];
+  const see = (step: string) => {
+    const { detail, inbox, list } = shownPriorities();
+    seen.push(`${step}: detail ${detail} list ${list} inbox ${inbox}`);
+  };
+  try {
+    await waitFor(() =>
+      expect(shownPriorities()).toEqual({ detail: "P1", inbox: "P1", list: "P1" })
+    );
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    see("the issue, the list and the Inbox read at P1");
+    // Another person sets P2. Every read sent from now on - the lists' after the title save,
+    // those the refusal starts - waits.
+    reads.store(2);
+    const answerReads = reads.hold();
+    saveTitle(client, "Review the spec again");
+    await waitFor(() => expect(bodies(patchIssue)).toEqual([{ title: "Review the spec again" }]));
+    await act(async () => {
+      title.resolve({ ...issue, priority: 2, title: "Review the spec again" });
+      await title.promise;
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    see("the title saved, its answer at P2 merged into the issue");
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
+    see("P0 picked");
+
+    await act(async () => {
+      save.reject(closed());
+      await save.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    see("P0 refused, before any read sent after the title save answers");
+    await act(async () => answerReads());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    see("the reads answer");
+
+    expect(seen).toEqual([
+      "the issue, the list and the Inbox read at P1: detail P1 list P1 inbox P1",
+      "the title saved, its answer at P2 merged into the issue: detail P2 list P1 inbox P1",
+      "P0 picked: detail P0 list P0 inbox P0",
+      "P0 refused, before any read sent after the title save answers: detail P2 list P2 inbox P2",
+      "the reads answer: detail P2 list P2 inbox P2",
+    ]);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// R3 inside the kind: a pick's answer is the whole issue, so an assignee pick's answer carries its
+// priority too. The issue, the project's list and the Inbox are read at P1; bob is picked, and P0
+// waits behind him. Another person sets P2, and the assignee save lands with it; P0 then goes out
+// and is refused before any read sent after that landing answers: until the reads answer, every
+// surface shows P2, the assignee save's answer - never the P1 of the reads before it.
+test("a refused priority pick puts back the priority an assignee pick that landed before it answered, not the older reads' one", async () => {
+  const assign = Promise.withResolvers<Issue>();
+  const refusal = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => assign.promise)
+    .mockImplementationOnce(() => refusal.promise);
+  const client = signedInHolding();
+  const reads = dispatchReads();
+  const surfaces = renderIn(client, <Surfaces reads={reads} />);
+  const picker = renderIn(client, <CachedPriority reads={reads} />);
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee"), { wrapper });
+  const user = userEvent.setup();
+  const seen: string[] = [];
+  const see = (step: string) => {
+    const { detail, inbox, list } = shownPriorities();
+    seen.push(`${step}: detail ${detail} list ${list} inbox ${inbox}`);
+  };
+  try {
+    await waitFor(() =>
+      expect(shownPriorities()).toEqual({ detail: "P1", inbox: "P1", list: "P1" })
+    );
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    see("the issue, the list and the Inbox read at P1");
+    await act(async () => {
+      assignee.result.current.submit("bob");
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toEqual([{ assignee: "bob" }]));
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    see("P0 picked behind the assignee save");
+    // Another person sets P2 before the assignee save reaches Dispatch. Every read sent from now
+    // on - those the landing and the refusal start - waits.
+    reads.store(2, { assignee: "bob" });
+    const answerReads = reads.hold();
+    await act(async () => {
+      assign.resolve({ ...issue, assignee: "bob", priority: 2 });
+      await assign.promise;
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toEqual([{ assignee: "bob" }, { priority: 0 }]));
+    see("the assignee save lands at P2, and P0 goes out");
+
+    await act(async () => {
+      refusal.reject(closed());
+      await refusal.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    see("P0 refused, before any read sent after the landing answers");
+    await act(async () => answerReads());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    see("the reads answer");
+
+    expect(seen).toEqual([
+      "the issue, the list and the Inbox read at P1: detail P1 list P1 inbox P1",
+      "P0 picked behind the assignee save: detail P0 list P0 inbox P0",
+      "the assignee save lands at P2, and P0 goes out: detail P0 list P0 inbox P0",
+      "P0 refused, before any read sent after the landing answers: detail P2 list P2 inbox P2",
+      "the reads answer: detail P2 list P2 inbox P2",
+    ]);
+  } finally {
+    assignee.unmount();
+    surfaces.unmount();
+    picker.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
 // R3 on an Inbox row: Dispatch answers the person an ask nobody handed on waits on as its issue's
 // assignee, else its project's default. CORE-1 is unassigned and its ask waits on dave, CORE's
 // default; the Inbox is read, then the issue's detail, and the client holds no read of the
@@ -2951,6 +3123,63 @@ test("a drag saved while no pick is live is the priority a later refused pick pu
 
     expect(seen).toEqual([
       "the issue and the board read at P3, the card dragged to P1 and saved: detail P3 board P1",
+      "P0 picked: detail P0 board P0",
+      "P0 refused, before any read answers: detail P1 board P1",
+      "the reads answer: detail P1 board P1",
+    ]);
+  } finally {
+    board.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// R3 for a drag that lands with no answer while no pick is live: Dispatch had stored it and kept
+// no answer for it (`409 KEY_COMMITTED`), so the store's end of its write tells nothing of what it
+// set, and the drag's lane is what Dispatch stored. The issue and the board are read at P3; the
+// card is dragged to the P1 lane, and the reads its landing starts are held. P0 is then picked and
+// refused: until the reads answer, the issue and the board show P1, the drag's lane - never the
+// P3 from before the drag.
+test("a drag that landed with no answer while no pick is live is the priority a later refused pick puts back, before the reads after it answer", async () => {
+  const pick = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockRejectedValueOnce(new ApiError(409, { code: "KEY_COMMITTED", error: "already made" }))
+    .mockImplementationOnce(() => pick.promise);
+  const client = signedInHolding();
+  let stored: IssuePriority | null = 3;
+  const board = renderBoard(client, () => stored, { unread: true });
+  const user = userEvent.setup();
+  const seen: string[] = [];
+  const see = (step: string) =>
+    seen.push(`${step}: detail P${cachedPriorities(client).detail} board ${board.shown()}`);
+  try {
+    await waitFor(() => expect(board.shown()).toBe("P3"));
+    await waitFor(() => expect(prioritySelects()).toHaveLength(1));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    // Every read from now on - those the drag's landing starts, those the refusal starts - waits.
+    const answerReads = board.hold();
+    stored = 1;
+    act(() => {
+      void board.moves().moveCardToLane(issue.key, "todo", 1, 0);
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    see("the issue and the board read at P3, the card dragged to P1 and stored with no answer");
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
+    see("P0 picked");
+
+    await act(async () => {
+      pick.reject(closed());
+      await pick.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    see("P0 refused, before any read answers");
+    await act(async () => answerReads());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    see("the reads answer");
+
+    expect(seen).toEqual([
+      "the issue and the board read at P3, the card dragged to P1 and stored with no answer: detail P3 board P1",
       "P0 picked: detail P0 board P0",
       "P0 refused, before any read answers: detail P1 board P1",
       "the reads answer: detail P1 board P1",
