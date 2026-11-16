@@ -3773,6 +3773,33 @@ func TestTheAnchorStaysAtTheFirstReportedSweepsStartWhereverLaterSweepsStart(t *
 	assertOneRise(t, f, "the volume is 95.0%", "above the 90.0%")
 }
 
+// The line that raises a rise names the gap the trimmer read, not the five points that make a
+// rise: a person reading the pod's log reads from it how far the volume climbed past the start
+// it is measured from. The volume reads 86% through the first sweep and its pause, then 95%,
+// nine points above the 86% that sweep started from. The negative control is the line as it was
+// at b844518c, which printed the rule's five points as the gap ("5 points above the 86.0%"), and
+// the line that printed the gap as the constant again: both the slow-fill and the anchor cases
+// rise at exactly five points, where the two figures agree, so neither could tell them apart.
+func TestTheRiseLineNamesTheGapTheTrimmerRead(t *testing.T) {
+	f := newTrimFixture(t, 0)
+	f.useVolume(func(interval int) volumeUsage {
+		if interval <= 1+volumeQuietIntervals {
+			return usageAt(86)
+		}
+		return usageAt(95)
+	})
+	f.setSettings(trimSettings())
+	f.start(f.trimmer())
+
+	sweepsAndPauses(f, 2)
+
+	assertReportEpisodes(t, f, []reportEpisode{
+		{1, shimwire.VolumeEpisodeFirst}, // the sweep from 86%, which anchors the episode
+		{2, shimwire.VolumeEpisodeRise},  // the sweep from 95%
+	})
+	assertOneRise(t, f, "the volume is 95.0%, 9.0 points above the 86.0%", "where 5 points raise a new episode")
+}
+
 // A volume that sits still above the high mark keeps one episode: a reading that does not move
 // is no rise, so every sweep of it reports under the first episode, and the daemon tells the
 // architect of three of those reports and no more (internal/workflow's
