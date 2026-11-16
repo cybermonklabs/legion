@@ -1,4 +1,12 @@
-package testnats
+// Package testnkeys makes the nkey seeds and seed files the daemon's tests hand the code under
+// test. It is a package of its own, apart from internal/testnats, because testnats links
+// testcontainers-go, whose package init walks every process on the machine: ten seconds and a
+// gigabyte of allocation on a box running 25,000 of them. A test binary that starts itself again
+// as a command (cmd/legion's TestMain starts it as `legion`) pays every package init linked into
+// it at each start, so it takes its keys from here and links no testcontainers
+// (cmd/legion's TestThisTestBinaryLinksNoTestcontainers). Nothing added here may import a package
+// that reaches testcontainers-go.
+package testnkeys
 
 import (
 	"os"
@@ -8,8 +16,8 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
-// User is a fresh nkey user's seed and public key, the public key being what StartNkeyAuthorized
-// takes.
+// User is a fresh nkey user's seed and public key, the public key being what
+// testnats.StartNkeyAuthorized takes.
 func User(t testing.TB) (seed, public string) {
 	t.Helper()
 	user, err := nkeys.CreateUser()
