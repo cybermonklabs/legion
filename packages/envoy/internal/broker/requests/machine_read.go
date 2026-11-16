@@ -1134,13 +1134,27 @@ func (m *Machine) requestedIdentifiers(canonical string, createdAt time.Time) ([
 	return identifiers, nil
 }
 
+// leftOutRetention is how long past the last list that left a record out, and past the record's
+// own expiry, leaveOut remembers that it logged it. The list reads a pending record until the
+// sweeper ends it, which is after its expires_at, by up to BROKER_SWEEP_SECONDS (at most 60 s)
+// on a working sweeper, and the lists come every 15 s from each open Dispatch tab
+// (pendingForApproverQuery's doc comment). Ten minutes is far above both, so a record still being
+// listed is warned about once; a record listed again after ten quiet minutes is warned about once
+// more, which is news rather than noise.
+const leftOutRetention = 10 * time.Minute
+
 // leaveOut logs PendingLeftOutMessage for the record id the first time a list leaves it out, and
-// remembers it until expires, when the record stops being pending and no list reads it again.
-// The approval page polls every 15 s in every open tab, so a line per list would bury the one
-// thing it says. Each call first forgets the records already expired, which bounds what is kept
-// by the records left out within one pending window.
+// remembers it until the later of its expiry and leftOutRetention after this list, so a record
+// past its expiry that the sweeper has not ended yet is not warned about on every list. The
+// approval page polls every 15 s in every open tab, so a line per list would bury the one thing
+// it says. Each call first forgets the records past that time, which bounds what is kept by the
+// records left out within one pending window and the retention after it.
 func (m *Machine) leaveOut(id, kind string, expires time.Time, reason error) {
 	now := time.Now()
+	keep := now.Add(leftOutRetention)
+	if expires.After(keep) {
+		keep = expires
+	}
 	m.leftOutMu.Lock()
 	for logged, until := range m.leftOut {
 		if now.After(until) {
@@ -1148,12 +1162,10 @@ func (m *Machine) leaveOut(id, kind string, expires time.Time, reason error) {
 		}
 	}
 	_, logged := m.leftOut[id]
-	if !logged {
-		if m.leftOut == nil {
-			m.leftOut = map[string]time.Time{}
-		}
-		m.leftOut[id] = expires
+	if m.leftOut == nil {
+		m.leftOut = map[string]time.Time{}
 	}
+	m.leftOut[id] = keep
 	m.leftOutMu.Unlock()
 	if !logged {
 		slog.Warn(PendingLeftOutMessage, "record_id", id, "kind", kind, "reason", reason)

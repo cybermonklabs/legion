@@ -62,7 +62,9 @@ itself and logs `drain ended by itself`. A running helper from a release before 
 sessions and prints `not restarted: the running agent-secrets-helper predates drain, …`. Re-run
 with `--restart-with-sessions` at a quiet moment. If the restart fails, takes more than 30
 seconds, or leaves the unit's main process the same, `install` lets the helper take sessions again
-and exits with an error that says which.
+and exits with an error that says which; while systemd still holds a job for the unit, as after a
+restart that took too long, it leaves the helper draining until that restart lands or the minute
+passes, and says so.
 
 A helper that answers on the socket but that the unit does not run (one started by hand) makes
 `install` stop before it writes anything, even when the unit file already matches: it lists that helper's sessions and exits 2 with `an

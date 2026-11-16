@@ -135,9 +135,10 @@ Your transcript keeps everything a command prints.
   are inside it. Check a JSON value's shape by its key paths and the length of each leaf, and
   never by printing a leaf. A probe that masks one key prints every other key's value, the
   nested ones too, so print no value at all, masked or not. These print the key paths, then each
-  leaf's path with its length; a value that is not JSON prints the one line `the value is not
-  JSON`, because `try … catch` keeps jq's own parse error, which quotes the text, out of the
-  output:
+  leaf's path with its length. For a value that is not JSON, jq exits 5 and writes
+  `jq: error (at <unknown>): the value is not JSON` to stderr (jaq writes
+  `Error: "the value is not JSON"`), and nothing of the value: `try … catch` keeps jq's own parse
+  error out, which quotes the text (`… (while parsing '<the value>')`):
 
   ```sh
   agent-secrets NAME --reason 'check the shape of this credential' -- \

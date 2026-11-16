@@ -21,12 +21,15 @@ import (
 
 // installRig is a temp XDG config dir, a fake systemctl on PATH that appends its argv to a log
 // (all but is-active, which prints the unit's state: "active" unless a test writes another to
-// the active file, and show, which prints the unit's main process from the pid file; neither
-// logs anything), and the helper socket path install checks for a running helper. Its restart
-// gives the unit a new main process, unless the calls log's .same-process marker exists; with
-// .fail-restart it exits 1 and with .slow-restart it sleeps 20 s, and neither changes the
-// process. Its environment names a socket and a runtime directory of its own, and runAs refuses
-// to run install against any socket outside the rig's directory (foreignSocket).
+// the active file, and show, which prints the unit's main process from the pid file, or with
+// --property=Job the unit's queued job from the calls log's .job file and nothing without one;
+// neither logs anything), and the helper socket path install checks for a running helper. Its
+// restart gives the unit a new main process, unless the calls log's .same-process marker exists;
+// with .fail-restart it exits 1, and with .slow-restart it sleeps 20 s, changing no process and
+// leaving job 7 queued for the unit, as systemd keeps the job of a client killed while it waits,
+// unless .no-queued-job exists. Its environment names a socket and a runtime directory of its
+// own, and runAs refuses to run install against any socket outside the rig's directory
+// (foreignSocket).
 type installRig struct {
 	t      testing.TB
 	dir    string
@@ -61,10 +64,11 @@ func newInstallRig(t *testing.T) *installRig {
 		t.Fatal(err)
 	}
 	script := "#!/bin/sh\nif [ \"$2\" = is-active ]; then read -r state < " + r.active + "; echo \"$state\"; exit 0; fi\n" +
+		"if [ \"$2\" = show ] && [ \"$3\" = --property=Job ]; then if [ -e " + r.calls + ".job ]; then read -r job < " + r.calls + ".job; echo \"$job\"; fi; exit 0; fi\n" +
 		"if [ \"$2\" = show ]; then read -r pid < " + r.pid + "; echo \"$pid\"; exit 0; fi\n" +
 		"echo \"$*\" >> " + r.calls + "\n" +
 		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".fail-restart ]; then exit 1; fi\n" +
-		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".slow-restart ]; then exec /bin/sleep 20; fi\n" +
+		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".slow-restart ]; then [ -e " + r.calls + ".no-queued-job ] || echo 7 > " + r.calls + ".job; exec /bin/sleep 20; fi\n" +
 		"if [ \"$2\" = restart ] && [ ! -e " + r.calls + ".same-process ]; then read -r pid < " + r.pid + "; echo $((pid + 1)) > " + r.pid + "; fi\n"
 	if err := os.WriteFile(filepath.Join(bin, "systemctl"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -655,16 +659,16 @@ func TestInstallUndrainsWhenTheRestartLeavesTheSameMainProcess(t *testing.T) {
 }
 
 // TestInstallUndrainsWhenTheRestartOutlivesItsTimeout: a restart still running at its timeout
-// (helper.InstallRestartTimeout) is one install stops waiting for; the unit's main process is
-// unchanged, so install sends undrain and returns an error naming the timeout, well before the
-// restart would have returned.
+// (helper.InstallRestartTimeout) is one install stops waiting for; with no job left queued for
+// the unit and its main process unchanged, install sends undrain and returns an error naming the
+// timeout, well before the restart would have returned.
 func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
 	r := newInstallRig(t)
-	previous := restartTimeout
-	restartTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { restartTimeout = previous })
-	if err := os.WriteFile(r.calls+".slow-restart", nil, 0o644); err != nil {
-		t.Fatal(err)
+	shortenRestartTimeout(t)
+	for _, marker := range []string{".slow-restart", ".no-queued-job"} {
+		if err := os.WriteFile(r.calls+marker, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	ops := r.fakeHelper(t, nil)
 	started := time.Now()
@@ -678,6 +682,35 @@ func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
 	if strings.Join(*ops, ",") != "sessions,drain,undrain" {
 		t.Fatalf("ops asked: %q; want the running check, drain, then undrain", *ops)
 	}
+}
+
+// TestInstallLeavesTheDrainWhileItsTimedOutRestartIsQueued: killing systemctl at the timeout
+// leaves systemd's restart job queued for the unit. An undrain then would let a session register
+// on the helper that job is about to stop, and lose its grants when it does, which is what the
+// drain is for; so install sends no undrain while a job for the unit is queued, says so, and
+// leaves the drain to end with the restart or at the helper's own bound.
+func TestInstallLeavesTheDrainWhileItsTimedOutRestartIsQueued(t *testing.T) {
+	r := newInstallRig(t)
+	shortenRestartTimeout(t)
+	if err := os.WriteFile(r.calls+".slow-restart", nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ops := r.fakeHelper(t, nil)
+	err := r.run("--url", "https://secrets.example")
+	if strings.Join(*ops, ",") != "sessions,drain" {
+		t.Fatalf("ops asked: %q; want the running check and drain, and no undrain while job 7 is queued", *ops)
+	}
+	if err == nil || !strings.Contains(err.Error(), "did not finish within 200ms") || !strings.Contains(err.Error(), "job 7") {
+		t.Fatalf("install whose timed-out restart is still queued: %v; want an error naming the timeout and the queued job 7", err)
+	}
+}
+
+// shortenRestartTimeout sets install's restart timeout to 200 ms for the test.
+func shortenRestartTimeout(t *testing.T) {
+	t.Helper()
+	previous := restartTimeout
+	restartTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { restartTimeout = previous })
 }
 
 // TestInstallNeverRestartsWhenASessionArrivesBeforeTheDrain: the running check finds no sessions,

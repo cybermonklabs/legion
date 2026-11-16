@@ -264,6 +264,63 @@ func TestPendingForApproverLeavesOutARecordThatDoesNotVerify(t *testing.T) {
 	}
 }
 
+// TestPendingForApproverWarnsOnceAboutALeftOutRecordPastItsExpiry: the list reads a pending
+// record past its expires_at until the sweeper ends it, so a left-out record in that state must
+// still be warned about once, not on every poll of every open tab. Before, leaveOut dropped its
+// entry at expires_at and logged it again on each list.
+func TestPendingForApproverWarnsOnceAboutALeftOutRecordPastItsExpiry(t *testing.T) {
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	m, enr, key, approver := newFixture(t)
+	ctx := context.Background()
+
+	current := m.Audience
+	m.Audience = "https://the-old-public-url.example"
+	request := signRequest(t, m, key, "login", "example-host")
+	m.Audience = current
+	// A machine login, which is pending while it carries no terminal event, so no sweep has to
+	// be held off for it to stay listed past its expiry.
+	body := record.Body{
+		Approver:        approver,
+		Enrollment:      record.Enrollment{Kind: "-", RuntimeID: "-"},
+		ExpiresAt:       time.Now().Add(-time.Hour).UTC().Truncate(time.Second),
+		LifetimeSeconds: new(3600),
+		Request:         request,
+		RulesVersion:    "rules-v1",
+	}
+	stale := body.ID()
+	if _, err := m.Store.Pool.Exec(ctx, `insert into credential_requests (id, body, kind, approver, expires_at) values ($1,$2,'launcher_credential',$3,$4)`,
+		stale, body.Canonical(), body.Approver, body.ExpiresAt); err != nil {
+		t.Fatalf("insert the expired machine login record: %v", err)
+	}
+	valid, err := m.Create(ctx, enr, signRequest(t, m, key, "asked after the move", "DEEL_API_KEY"), "", nil)
+	if err != nil || valid.RecordID == nil {
+		t.Fatalf("Create = %+v, %v", valid, err)
+	}
+
+	for range 2 {
+		rows, err := m.PendingForApprover(ctx, approver)
+		if err != nil || len(rows) != 1 || rows[0].RecordID != *valid.RecordID {
+			t.Fatalf("PendingForApprover = %+v, %v; want only %s, never the stale record %s", rows, err, *valid.RecordID, stale)
+		}
+	}
+	warned := 0
+	for _, r := range capture.Records() {
+		if r.Message != PendingLeftOutMessage {
+			continue
+		}
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "record_id" && a.Value.String() == stale {
+				warned++
+			}
+			return true
+		})
+	}
+	if warned != 1 {
+		t.Fatalf("%d %q lines for the expired record %s after two lists; want exactly one", warned, PendingLeftOutMessage, stale)
+	}
+}
+
 // TestReadRecordKeepsTheEnrollmentSessionIDAfterRevocation pins that an id outlives its
 // enrollment's revocation: enrollments.session_id is never cleared when revoked_at is set, so a
 // decided record's own read still names the session that enrolled.

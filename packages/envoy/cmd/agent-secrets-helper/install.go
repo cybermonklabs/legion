@@ -214,7 +214,11 @@ WantedBy=default.target
 	// The unit's main process before and after the restart says whether the restart replaced the
 	// helper install drained. When it did not, or install cannot tell, install undoes the drain:
 	// the helper would otherwise refuse every registration until its drain bound passes, and an
-	// undrain that reaches a new helper changes nothing.
+	// undrain that reaches a new helper changes nothing. It does not while a job for the unit is
+	// still queued, as after a restart that outlived restartTimeout, whose job systemd keeps when
+	// its client is killed: a session that registered after an undrain would lose its grants when
+	// that job stops the helper, which is what the drain is for. The drain then ends with that
+	// restart, or at the helper's own bound (helper.DefaultDrainBound).
 	before, beforeErr := mainPID()
 	restartErr := restartHelper()
 	after, afterErr := mainPID()
@@ -230,6 +234,20 @@ WantedBy=default.target
 		notReplaced = fmt.Sprintf("the unit's main process is still %d", after)
 	default:
 		return restartErr
+	}
+	var queued string
+	switch job, err := queuedJob(); {
+	case err != nil:
+		queued = "whether a job for the unit is still queued could not be read: " + err.Error()
+	case job != "":
+		queued = "job " + job + " for the unit is still queued"
+	}
+	if queued != "" {
+		fmt.Fprintf(stdout, "the helper is left draining (refusing new sessions): %s, and an undrain now would let a session register on the helper that job may stop; the drain ends with the restart, or by itself within %s of the drain\n", queued, helper.DefaultDrainBound)
+		if restartErr != nil {
+			return fmt.Errorf("%w; %s, so install did not undrain the helper", restartErr, queued)
+		}
+		return fmt.Errorf("systemctl --user restart %s answered success, but %s and %s, so install did not undrain the helper", helper.UnitName, notReplaced, queued)
 	}
 	if resp, uerr := helper.Call(cfg.Socket, helper.Request{Op: "undrain"}, 2*time.Second); uerr != nil || !resp.OK {
 		fmt.Fprintf(stdout, "the helper may still be draining (refusing new sessions): undrain failed: %v %s; it ends the drain itself within %s of the drain\n", uerr, resp.Error, helper.DefaultDrainBound)
@@ -256,25 +274,50 @@ func restartHelper() error {
 	return err
 }
 
-// mainPIDTimeout bounds each read of the unit's main process, one D-Bus property read that
-// answers at once from a working user manager. Two of them and the 2 s undrain fit, with
-// InstallRestartTimeout, inside helper.DefaultDrainBound.
-const mainPIDTimeout = 5 * time.Second
+// systemctlReadTimeout bounds each read of the unit's state, one D-Bus property read that answers
+// at once from a working user manager. Three of them (the main process before and after the
+// restart, and its queued job) and the 2 s undrain fit, with InstallRestartTimeout, inside
+// helper.DefaultDrainBound.
+const systemctlReadTimeout = 5 * time.Second
+
+// unitProperty is the helper unit's property as `systemctl --user show --value` prints it,
+// trimmed.
+func unitProperty(property string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), systemctlReadTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "systemctl", "--user", "show", "--property="+property, "--value", helper.UnitName).Output()
+	if err != nil {
+		return "", fmt.Errorf("systemctl --user show --property=%s %s: %w", property, helper.UnitName, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
 
 // mainPID is the helper unit's main process as `systemctl --user show` names it, 0 while the
 // unit runs none.
 func mainPID() (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), mainPIDTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "systemctl", "--user", "show", "--property=MainPID", "--value", helper.UnitName).Output()
+	value, err := unitProperty("MainPID")
 	if err != nil {
-		return 0, fmt.Errorf("systemctl --user show --property=MainPID %s: %w", helper.UnitName, err)
+		return 0, err
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	pid, err := strconv.Atoi(value)
 	if err != nil {
-		return 0, fmt.Errorf("systemctl --user show --property=MainPID %s answered %q, which is no process id", helper.UnitName, strings.TrimSpace(string(out)))
+		return 0, fmt.Errorf("systemctl --user show --property=MainPID %s answered %q, which is no process id", helper.UnitName, value)
 	}
 	return pid, nil
+}
+
+// queuedJob is the id of the job systemd holds for the helper unit, a restart or any other, and
+// "" while it holds none: `systemctl --user show --property=Job --value` prints the job's id, or
+// nothing when there is no job.
+func queuedJob() (string, error) {
+	value, err := unitProperty("Job")
+	if err != nil {
+		return "", err
+	}
+	if _, err := strconv.ParseUint(value, 10, 32); value != "" && err != nil {
+		return "", fmt.Errorf("systemctl --user show --property=Job %s answered %q, which is no job id", helper.UnitName, value)
+	}
+	return value, nil
 }
 
 // unitActive reports whether `systemctl --user is-active` names the helper's unit active.

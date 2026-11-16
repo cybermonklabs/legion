@@ -329,9 +329,10 @@ const DefaultBrokerCallBound = BrokerCallWait - 10*time.Second
 // DefaultBrokerCallBound plus 1 s, or a connection still being read reaches its 5 s read deadline
 // (Server.Serve): 21 s at the most. The start is done once systemd has forked the helper, since
 // the unit runs it in the foreground. 30 s is that stop with 9 s for systemd to queue and fork on
-// a loaded machine. A restart still running at the bound is one install stops waiting for: it
-// reads the unit's main process and sends undrain when the helper it drained is still that
-// process.
+// a loaded machine. A restart still running at the bound is one install stops waiting for, and
+// systemd keeps its job: install reads the unit's main process, and sends undrain when the helper
+// it drained is still that process and no job for the unit is queued. While one is, the drain
+// ends with that restart or at DefaultDrainBound.
 const InstallRestartTimeout = DefaultBrokerCallBound + 10*time.Second
 
 // DefaultDrainBound is how long a drain holds before the helper ends it by itself
