@@ -259,6 +259,52 @@ func TestCreateIssueDuplicateCreatesATitleThatNamesAnotherIssue(t *testing.T) {
 	}
 }
 
+func TestCreateIssueDuplicateRefusesACopyWhoseTitleNamesTheCandidate(t *testing.T) {
+	handler := newTestHandler(t)
+	createDuplicateTestProject(t, handler, "TEST")
+
+	// The candidate's title cites another issue, and the copy's title names the candidate itself,
+	// as a copy whose title ends "(carries ACME-28)" names ACME-28 when ACME-28's own title cites
+	// ACME-23. The two titles share no key, but the copy is about the candidate, so it is refused.
+	original := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Astrolabe calibration drifts after a reseat under TEST-40",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	body := requireDuplicateRefusal(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Astrolabe calibration drifts after a reseat (carries " + original.Key + ")",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	if len(body.Candidates) != 1 || body.Candidates[0].Key != original.Key {
+		t.Fatalf("candidates = %#v, want only %s", body.Candidates, original.Key)
+	}
+}
+
+func TestCreateIssueDuplicateKeepsACopyThatTemplateIssuesWouldCrowdOut(t *testing.T) {
+	handler := newTestHandler(t)
+	createDuplicateTestProject(t, handler, "TEST")
+
+	// More issues from one template than the gate answers, each newer than the one the copy
+	// copies and each scoring as high against it: a rule applied after the statement's limit
+	// would read only the newer five, leave them all out, and let the copy through.
+	original := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Review TEST-12 against its verification.md",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	for reviewed := 13; reviewed < 13+duplicateCandidateLimit; reviewed++ {
+		requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+			"project": "TEST", "title": fmt.Sprintf("Review TEST-%d against its verification.md", reviewed),
+			"spec": duplicateSpecAstrolabe,
+		}))
+	}
+	body := requireDuplicateRefusal(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Review TEST-12 against its verification.md",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	if len(body.Candidates) != 1 || body.Candidates[0].Key != original.Key {
+		t.Fatalf("candidates = %#v, want only %s", body.Candidates, original.Key)
+	}
+}
+
 func TestCreateIssueDuplicateScopesTheGateToTheProjectAndSkipsExternal(t *testing.T) {
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")

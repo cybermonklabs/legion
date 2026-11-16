@@ -68,36 +68,41 @@ const (
 // vector holds it.
 var duplicateIssueKeyLexeme = regexp.MustCompile(`^[a-z][a-z0-9_]*-[0-9]+$`)
 
-// duplicateTitleKeyPattern is an issue key as a title writes it, `INFRA-431`, in Postgres's
-// regular expression syntax.
-const duplicateTitleKeyPattern = `\m[A-Z][A-Z0-9_]*-[0-9]+\M`
+// duplicateTitleKeyPattern is an issue key as a title writes it, `ACME-431`, in Postgres's
+// regular expression syntax: the server's issue key shape (issueKeyShape) between word bounds.
+const duplicateTitleKeyPattern = `\m` + issueKeyShape + `\M`
 
 // duplicateNamesAnotherIssue is the condition, on a candidate issue `i`, that the new title
-// (the statement's parameter newTitle) and the candidate's title each name an issue key and
-// share none: two titles that name different issues are about different issues, whatever else
-// they share, so the candidate is no near copy of the new issue.
+// (the statement's parameter newTitle) names other issues than the candidate is about: both
+// titles name an issue key, and no key the new title names is the candidate's own key or a key
+// the candidate's title names. Two titles that name different issues are about different
+// issues, whatever else they share, so the candidate is no near copy of the new issue. A new
+// title that names the candidate itself is about the candidate, whatever other issue the
+// candidate's title cites: a title that ends "(carries ACME-28)" is a copy of ACME-28.
 //
 // The gate drops every issue-key lexeme from the terms it scores (duplicateKeyLexemes says why),
 // so titles filed from one template, one for each issue they concern, score as copies of each
-// other: "Review AENGENVS-15 against its verification.md" scored 1.0 against "Review AENGENVS-12
-// against its verification.md". From the near-copy refusal's merge on 2026-11-07 to 2026-11-15
-// 17:09Z, 30 of the 219 forced creates went past only issues whose titles name other issues
-// than theirs, 27 of them such reviews in AENGENVS (each create's `issue.created` event,
-// `forced.past`). It is a condition of the statement, not a filter on its answer, because the
-// statement answers at most duplicateCandidateLimit candidates: a project with more open issues
-// from one template than that would otherwise crowd a real copy out of the answer.
+// other: "Review ACME-15 against its verification.md" scored 1.0 against "Review ACME-12 against
+// its verification.md". It is a condition of the statement, not a filter on its answer,
+// because the statement answers at most duplicateCandidateLimit candidates: a project with more
+// open issues from one template than that would otherwise crowd a real copy out of the answer.
 //
 // Keys are read from both titles by the same pattern in the same statement, so the two sides
-// cannot disagree on what a key is. A key in a spec is left alone: a spec cites the nearest
-// issue it ruled out, which says nothing about what the new issue is.
+// cannot disagree on what a key is. The pattern also reads a word that only has the shape of a
+// key, `UTF-8` or `SHA-256`, so a copy that changes only such a word is left out. A key in a
+// spec is left alone: a spec cites the nearest issue it ruled out, which says nothing about what
+// the new issue is.
 func duplicateNamesAnotherIssue(newTitle string) string {
 	return `exists (select 1 from regexp_matches(` + newTitle + `, '` + duplicateTitleKeyPattern + `', 'g'))
      and exists (select 1 from regexp_matches(i.title, '` + duplicateTitleKeyPattern + `', 'g'))
      and not exists (
        select 1
-         from regexp_matches(i.title, '` + duplicateTitleKeyPattern + `', 'g') candidate(key)
-         join regexp_matches(` + newTitle + `, '` + duplicateTitleKeyPattern + `', 'g') named(key)
-           on named.key = candidate.key)`
+         from regexp_matches(` + newTitle + `, '` + duplicateTitleKeyPattern + `', 'g') named(key)
+        where named.key[1] = i.key
+           or exists (
+                select 1
+                  from regexp_matches(i.title, '` + duplicateTitleKeyPattern + `', 'g') candidate(key)
+                 where candidate.key = named.key))`
 }
 
 // duplicateGateRollback bounds the gate's own rollback, which runs after the read whatever
@@ -159,7 +164,7 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 // A candidate's headline marks the words of its title the new text shares: its query is the
 // shared lexemes, as the title rule it replaces built it.
 //
-// A candidate whose title names other issues than the new title names is left out
+// A candidate is left out when the new title names other issues than the candidate is about
 // (duplicateNamesAnotherIssue).
 //
 // Parameters: $1 project, $2 the picked lexemes, $3 their idf, $4 the new issue's ancestors,
@@ -226,8 +231,9 @@ select s.key, i.title, i.status, s.shared, s.score,
 //
 // A title that yields no lexemes at all, every word of it a stopword, matches nothing: there is
 // no text to be a copy of. Without that guard it would name every other such issue in the
-// project. A candidate whose title names other issues than the new title names is left out, as
-// duplicateScoreQuery leaves it out (duplicateNamesAnotherIssue).
+// project. It needs no title-key rule of duplicateScoreQuery's kind (duplicateNamesAnotherIssue):
+// a title's lexemes hold each key it names as a compound lexeme (`infra-431`), so two titles that
+// name different keys hold the same lexemes only when each also writes the other's key.
 //
 // Parameters: $1 project, $2 the new title, $3 the new spec as it would be stored, $4 the new
 // issue's ancestors, $5 the headline options.
@@ -248,7 +254,6 @@ select i.key, i.title, i.status, cardinality(n.title_lex)::int as shared, 1::flo
   left join document_search d on d.artifact_id = a.id
  where cardinality(n.title_lex) > 0
    and coalesce(tsvector_to_array(d.search), '{}') = n.spec_lex
-   and not (` + duplicateNamesAnotherIssue("$2") + `)
  order by i.updated_at desc
  limit ` + strconv.Itoa(duplicateCandidateLimit) + `
 `
