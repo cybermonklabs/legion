@@ -126,6 +126,42 @@ var serverReads = map[string]string{
 		"writer's own viewer here in place of this read",
 }
 
+// TestAServerWithNoStoreResolvesTheClosedViewer: a server built with no store - a router test's,
+// or a deployment whose database is not yet configured - resolves a reader for a person at the
+// browser and for the shared bearer without a panic, and each reader holds the closed viewer: a
+// viewer that sees no project and no party, is neither open nor all, and reads as though a project
+// were private. So every read that binds it answers nothing, and no write reaches an object its
+// caller may not see, while the caller itself is still the one its credential names.
+func TestAServerWithNoStoreResolvesTheClosedViewer(t *testing.T) {
+	served := directServer(Deps{Identity: &endableIdentity{}, AgentTokens: sharedAgentTokens(t, "agent-token")})
+	cookie := httptest.NewRequest(http.MethodGet, "/api/v1/issues", nil)
+	bearer := httptest.NewRequest(http.MethodGet, "/api/v1/issues", nil)
+	bearer.Header.Set("Authorization", "Bearer agent-token")
+	for _, test := range []struct {
+		name    string
+		request *http.Request
+		id      string
+	}{
+		{"a person at the browser", cookie, "alice@d.example"},
+		{"the shared bearer", bearer, ""},
+	} {
+		recorder := httptest.NewRecorder()
+		reader, ok := served.readerOf(recorder, test.request)
+		if !ok {
+			t.Fatalf("%s: readerOf refused: %d %s", test.name, recorder.Code, recorder.Body.String())
+		}
+		if reader.ID != test.id || reader.Credential != nil {
+			t.Errorf("%s: readerOf answered %+v, want the caller %q with no credential", test.name, reader, test.id)
+		}
+		if reader.Viewer == nil {
+			t.Fatalf("%s: readerOf answered no viewer, which a read binds as the closed viewer only by accident", test.name)
+		}
+		if want := (model.Viewer{Sees: []string{}, AnyPrivate: true}); !reflect.DeepEqual(*reader.Viewer, want) {
+			t.Errorf("%s: readerOf answered the viewer %+v, want the closed viewer %+v", test.name, *reader.Viewer, want)
+		}
+	}
+}
+
 // TestEveryServerReadIsNamed holds every use of everyReader to serverReads. everyReader is the
 // server's own read, ServerViewer, which sees every project and every party and proves no author,
 // so each read it makes must say why no single caller is its reader. The uses are read out of the

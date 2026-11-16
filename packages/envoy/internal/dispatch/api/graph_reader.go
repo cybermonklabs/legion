@@ -33,6 +33,10 @@ func readerFromContext(ctx context.Context) (model.Actor, bool) {
 // A reader already in r's context is answered as it is. Otherwise the caller is resolved
 // (optionalActor) and access.Resolve runs once. A credential that does not resolve answers its own
 // error, the one every gate on this server answers; a failed Resolve answers the read's error.
+//
+// A server with no store - a router's test server, or one whose database is not configured -
+// answers the caller with the closed viewer (closedViewer): it never reads, and fails closed, so a
+// read that binds it answers nothing and no write reaches an object its caller may not see.
 func (s *server) resolveReader(r *http.Request) (model.Actor, error) {
 	if reader, ok := readerFromContext(r.Context()); ok {
 		return reader, nil
@@ -41,13 +45,25 @@ func (s *server) resolveReader(r *http.Request) (model.Actor, error) {
 	if err != nil {
 		return model.Actor{}, err
 	}
+	reader := actor.Reader()
+	if s.deps.Store == nil || s.deps.Store.Pool == nil {
+		reader.Viewer = closedViewer()
+		return reader, nil
+	}
 	viewer, err := access.Resolve(r.Context(), s.deps.Store.Pool, actor)
 	if err != nil {
 		return model.Actor{}, err
 	}
-	reader := actor.Reader()
 	reader.Viewer = &viewer
 	return reader, nil
+}
+
+// closedViewer is a viewer that sees no project and no party, is neither open nor all, and reads
+// as though some project were private: the one refs.VisibilityArg binds for a reader with no
+// viewer, made a value so a reader that holds it says so. Each call answers its own, so no reader
+// can change another's.
+func closedViewer() *model.Viewer {
+	return &model.Viewer{Sees: []string{}, AnyPrivate: true}
 }
 
 // readerOf is resolveReader for a handler: a caller whose credential does not resolve is refused
