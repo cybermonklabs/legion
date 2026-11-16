@@ -811,7 +811,11 @@ func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHo
 // its record carries — `held` for a held issue — the role whose turn that issue's standing is
 // (workflow.RoleFor over record.StandsAt, which is the phase a held issue was held from) or
 // that the phase has no role, and the state of its pull request. It ends by telling the
-// controller to read the tree and decide.
+// controller to read the tree and decide. An issue standing at admitted is told as a phase no
+// role works, as it was before workflow.RoleFor named the architect there: that answer is for
+// the readers that start, resume or report the architect, and this notice keeps the words it
+// had (dispatch://INFRA-2614 R2). Accepting was the architect's before as well, so an issue
+// standing there names the architect, as it did.
 //
 // The membership is the measure's own and is read from the one predicate, so the notice names
 // exactly the issues whose stillness was measured: a root, whatever its own status says, and
@@ -831,7 +835,10 @@ func stalledTreeReason(root string, measure record.TreeQuiet, members []record.I
 		root, measure.Quiet.Hours())
 	for _, member := range members {
 		fmt.Fprintf(&reason, "\n%s is in %s. ", member.Key, member.Phase)
-		if role := workflow.RoleFor(record.StandsAt(member)); role != "" {
+		// The architect works admitted (workflow.RoleFor), and this notice says what it said
+		// before that: no role works an issue standing there (dispatch://INFRA-2614 R2).
+		standsAt := record.StandsAt(member)
+		if role := workflow.RoleFor(standsAt); role != "" && standsAt != phase.Admitted {
 			fmt.Fprintf(&reason, "The %s has the turn. ", role)
 		} else {
 			reason.WriteString("No role works this phase. ")

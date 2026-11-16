@@ -153,13 +153,13 @@ func (g *Guard) waitFits(ctx context.Context, limited *rateLimitError) (time.Dur
 
 // readWithoutREST reads slug's visibility after GitHub refused the REST read for limited, where
 // the guard did not wait or was refused again after its wait. A core limit is read from GitHub's
-// GraphQL API (Guard.graphQLVisibility) with the repository's own token, whose budget is separate
-// from the core one, and its public, private or internal is taken as gh's is. A secondary limit is
-// not, because GraphQL requests count against the same secondary limit. For a secondary limit, and
-// where GraphQL refuses the read for a rate limit of its own, the visibility is read with git's
-// ls-remote and no credential (Guard.lsRemote), which answers public and nothing else. Every other
-// failure, an unauthenticated refusal of ls-remote included, refuses the call, naming the spent
-// limit and what the read said.
+// GraphQL API (Guard.graphQLVisibility) with the REST read's token, whose GraphQL budget is
+// separate from the core one, and its public, private or internal is taken as gh's is. A
+// secondary limit is not, because GraphQL requests count against the same secondary limit. For a
+// secondary limit, and where GraphQL refuses the read for a rate limit of its own, the visibility
+// is read with git's ls-remote and no credential (Guard.lsRemote), which answers public and
+// nothing else. Every other failure, an unauthenticated refusal of ls-remote included, refuses
+// the call, naming the spent limit and what the read said.
 func (g *Guard) readWithoutREST(ctx context.Context, slug string, limited *rateLimitError) (Visibility, VisibilitySource, error) {
 	also := ""
 	if !limited.secondary {
@@ -370,11 +370,12 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 // graphQLVisibility reads slug's visibility from GitHub's GraphQL API through gh, as the same
 // installation as the REST read and with the same variables (ghReadEnv), under the caller's
 // bound, and answers what graphQLAnswer reads of it. `legion gh` runs it with the token of the
-// repository VisibilityReadVar names, as it runs the REST read (its ghVisibilityRead). GraphQL's
-// budget is separate from the core REST one: at 2026-11-15T09:34:29Z `gh api rate_limit` showed
-// installation 171972716 with 12,221 of its 12,500 GraphQL points left, and GraphQL reads have
-// answered while core reads were refused. A gh that the caller's bound stops refuses the call:
-// no bound is left for another read.
+// repository VisibilityReadVar names, or with the caller's GH_TOKEN or GITHUB_TOKEN where one is
+// set, as it runs the REST read (its ghVisibilityRead). GraphQL's budget is separate from the
+// core REST one: at 2026-11-15T09:34:29Z `gh api rate_limit` showed installation 171972716 with
+// 12,221 of its 12,500 GraphQL points left, and GraphQL reads have answered while core reads were
+// refused. A gh that the caller's bound stops refuses the call: no bound is left for another
+// read.
 func (g *Guard) graphQLVisibility(ctx context.Context, slug string) (Visibility, error) {
 	var stderr bytes.Buffer
 	status, printed, err := g.run(ctx, child{

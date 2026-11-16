@@ -138,28 +138,11 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // queuedRowCovers is whether a row the outbox already holds for this role covers its phase: a
 // start of the phase that will still act, which carries the phase's task itself, or a stop that
 // will still act, which is about to end the claim this ready came from. Both are StartFor's rule
-// about queued rows, read without its question about the claim's own liveness: this claim is
-// live, which is precisely why it is being given its task.
+// about queued rows (actingStop, queuedStartActs), read without its question about the claim's own
+// liveness: this claim is live, which is precisely why it is being given its task.
 func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase) bool {
-	var lastStart int64
-	if run.Claim != nil {
-		lastStart = run.Claim.LastStartRow
-	}
-	var stop int64
-	for _, queued := range run.Queued {
-		if StopActs(queued.ID, queued.Request, lastStart, &root) {
-			stop = max(stop, queued.ID)
-		}
-	}
-	if stop != 0 {
-		return true
-	}
-	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" && queued.Request.Phase == current {
-			return true
-		}
-	}
-	return false
+	stop := actingStop(run, root)
+	return stop != 0 || queuedStartActs(run, stop, current)
 }
 
 // readyWorkerTask gives a phase worker whose claim has just become ready its phase's task again,
@@ -280,11 +263,11 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // says what is the architect's own to do.
 func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (record.CatchUp, []string, error) {
 	catchUp := record.CatchUp{Generation: root.Generation}
-	handed, err := store.HandedOverRoot(ctx, tx, root.Key)
+	handed, err := ArchitectCarried(ctx, tx, store, root)
 	if err != nil {
 		return record.CatchUp{}, nil, err
 	}
-	if handed != nil && handed.Generation == root.Generation {
+	if handed != nil {
 		catchUp.HandedOver, catchUp.Carried = true, handed.GateCarried
 	}
 	gates, err := store.GatesOf(ctx, tx, root.Key)
