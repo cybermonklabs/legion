@@ -992,7 +992,7 @@ func (s *server) blockReferences(ctx context.Context, artifactID string) (map[st
 }
 
 // artifactVersionText is the body the document arm of GET …/artifacts/…/versions/{number}
-// answers, on all three artifact patterns.
+// answers without `download=true`, on all three artifact patterns.
 type artifactVersionText struct {
 	Markdown string `json:"markdown"`
 	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
@@ -1001,6 +1001,9 @@ type artifactVersionText struct {
 	model.Version
 }
 
+// getArtifactVersion answers one version of an artifact on all four version routes: a document's
+// text as artifactVersionText, or as its Markdown under its file name at the download address,
+// and a file's or an image's bytes (serveFileVersion).
 func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -1010,16 +1013,38 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_VERSION", http.StatusBadRequest, "version number must be positive")
 		return
 	}
+	// Exactly `true` asks for the download, as `blocks=true` asks for the blocks of the /text
+	// routes; any other value, `1` included, answers as without the parameter.
+	download := r.URL.Query().Get("download") == "true"
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	latest := 0
+	for _, version := range artifact.Versions {
+		latest = max(latest, version.Number)
+	}
+	// The file name is the artifact's name as this read finds it, so a renamed document downloads
+	// under its new name, and an older version's carries its number (versionFilename).
+	filename := versionFilename(artifact.Name, artifact.Kind, number, latest)
 	if artifact.Kind == "doc" {
 		var markdown string
 		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number, &markdown)
 		if err != nil {
 			s.writeHandlerError(w, err)
+			return
+		}
+		if download {
+			// The download is the Markdown file itself, not the JSON that wraps it: the text the
+			// JSON's `markdown` field holds, with no display tree read.
+			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("Content-Disposition", attachmentDisposition(filename))
+			w.Header().Set("Cache-Control", downloadCacheControl)
+			w.Header().Set("Content-Length", strconv.Itoa(len(markdown)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, markdown)
 			return
 		}
 		hash := sha256.Sum256([]byte(markdown))
@@ -1050,7 +1075,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.serveFileVersion(w, r, artifact.ID, number, content, contentType, sha, size)
+	s.serveFileVersion(w, r, artifact.ID, filename, number, download, content, contentType, sha, size)
 }
 
 // deref is the string a nullable column holds, or "".
