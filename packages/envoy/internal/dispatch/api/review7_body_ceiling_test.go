@@ -77,7 +77,7 @@ func TestR7ProductionBodyDeadlineNeverMovesWithProgress(t *testing.T) {
 // End to end, at production settings: a JSON message whose body arrives one byte every 800 ms,
 // never stalling for more than 0.8 s, is cut at 45 s and refused BODY_TOO_SLOW. On main no
 // deadline bounds a handler's body read.
-func TestR7ASteadyBodyIsCutAtFortyFiveSecondsInProduction(t *testing.T) {
+func TestR7ASteadyBodyIsNotCutByTheProductionCeiling(t *testing.T) {
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	if served.drainReadLimit != 0 {
 		t.Fatalf("drainReadLimit = %s, want the deployment's zero", served.drainReadLimit)

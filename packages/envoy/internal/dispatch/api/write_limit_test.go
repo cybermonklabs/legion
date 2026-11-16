@@ -101,6 +101,74 @@ func TestABodyThatArrivesSlowlyButSteadilyIsReadToItsEnd(t *testing.T) {
 	}
 }
 
+// dispatch://INFRA-179, review 7. At the bounds the deployment runs with - no drainReadLimit - a
+// body that stops arriving is cut at its idle deadline and refused BODY_STALLED, and a body that
+// keeps arriving is read to its end though it runs past the 45 s the ceiling used to stand at
+// (docs.WriteRequestBound). With the idle deadline a minute ahead under that 45 s ceiling, every
+// rearm set the ceiling's instant, so the stalled body and the steady one were both cut 45 s in
+// and refused BODY_TOO_SLOW, and BODY_STALLED was unreachable at the deployed bounds.
+//
+// Both bodies are messages over connections of their own, sent side by side so the run waits out
+// the longer alone: the stalled one sends its first four bytes and nothing more, the steady one
+// four bytes every 6 s, far inside the idle deadline, for 48 s in all.
+func TestAtTheDeployedBoundsAStalledBodyIsNamedAStallAndASteadyOneIsReadWhole(t *testing.T) {
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
+	if served.drainReadLimit != 0 {
+		t.Fatalf("drainReadLimit = %s, want the deployment's zero", served.drainReadLimit)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	issue := createArtifactIssue(t, handler)
+	target := "/api/v1/issues/" + issue.Key + "/messages"
+	header := http.Header{}
+	header.Set("Content-Type", "application/json")
+	header.Set("X-Dispatch-User", "alice")
+	const part, pause = 4, 6 * time.Second
+	body := []byte(`{"body":"` + strings.Repeat("a", 25) + `"}`) // 36 bytes: nine parts, eight pauses
+	address := server.Listener.Addr().String()
+	started := time.Now()
+	stalled := sendPartOfBody(t, address, target, header, len(body), body[:part])
+	steady := sendPartOfBody(t, address, target, header, len(body), body[:part])
+	for _, held := range []*heldBackBody{stalled, steady} {
+		// Past the 45 s the ceiling stood at, so a run under those bounds reads their refusal.
+		if err := held.connection.SetDeadline(time.Now().Add(90 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sent := make(chan error, 1)
+	go func() {
+		for at := part; at < len(body); at += part {
+			time.Sleep(pause)
+			if _, err := steady.connection.Write(body[at : at+part]); err != nil {
+				sent <- err
+				return
+			}
+		}
+		sent <- nil
+	}()
+	refused, refusal := stalled.answer()
+	stalledFor := time.Since(started)
+	answered, answer := steady.answer()
+	steadyFor := time.Since(started)
+	if err := <-sent; err != nil {
+		t.Logf("the steady body's sender stopped: %v", err)
+	}
+	t.Logf("drainTime %s: a body that stopped after %d bytes was answered %d %s after %s; a body sent %d bytes every %s was answered %d %s after %s",
+		served.drainTime(), part, refused.StatusCode, refusal, stalledFor.Round(time.Millisecond),
+		part, pause, answered.StatusCode, answer, steadyFor.Round(time.Millisecond))
+	if refused.StatusCode != http.StatusServiceUnavailable || refusalCode(refusal) != "BODY_STALLED" {
+		t.Errorf("a body that stopped arriving was answered %d %s after %s, want 503 BODY_STALLED at its idle deadline", refused.StatusCode, refusal, stalledFor)
+	} else if stalledFor < served.drainTime() {
+		t.Errorf("a body that stopped arriving was refused BODY_STALLED after %s, before its %s idle deadline", stalledFor, served.drainTime())
+	}
+	if steadyFor < docs.WriteRequestBound {
+		t.Fatalf("the steady body was answered %s in, inside the %s the ceiling stood at, so this run says nothing about a body that outlasts it", steadyFor, docs.WriteRequestBound)
+	}
+	if answered.StatusCode != http.StatusCreated {
+		t.Errorf("a body never silent past %s was answered %d %s after %s, want 201", pause, answered.StatusCode, answer, steadyFor)
+	}
+}
+
 // dispatch://INFRA-179, review 6's finding 7. A request holds a slot of the write limit while it
 // has a transaction open and at no other time, so a body still arriving holds nothing: 48
 // signed-in callers whose bodies stop after the headers - the whole of the limit - leave every
@@ -182,8 +250,10 @@ func (stoppedBody) Read([]byte) (int, error) {
 func (stoppedBody) Close() error { return nil }
 
 // A body read is bounded by two deadlines - the idle one, drainTime after the last bytes to
-// arrive, and the ceiling, docs.WriteRequestBound after the first read - and the refusal names
-// the one that ended it, so a caller is told whether to resend the body or to send it faster.
+// arrive, and the ceiling over it, bodyDrainLimit after the first read - and the refusal names the
+// one that ended it, so a caller is told whether to resend the body or to send it faster. The
+// lengths here are chosen so that each deadline is the first a read meets: an idle deadline short
+// of the ceiling, and one past it, which the ceiling stands in for.
 func TestABodyCutByADeadlineNamesWhichOfTheTwoEndedIt(t *testing.T) {
 	for _, cut := range []struct {
 		name        string
@@ -210,7 +280,7 @@ func TestABodyCutByADeadlineNamesWhichOfTheTwoEndedIt(t *testing.T) {
 }
 
 // dispatch://INFRA-179. The refusal put in place of the 400 a write's decode makes of a body a
-// deadline cut (cutBodyWriter) keeps the headers every answer of this server carries: the nosniff
+// deadline cut (drainingWriter) keeps the headers every answer of this server carries: the nosniff
 // and both Vary values. The replacement emptied the whole header before it wrote, so a caller
 // whose body stopped arriving was answered with neither the sniffing protection nor the Vary a
 // cache between it and Dispatch needs. The body is cut for real: a message whose first bytes

@@ -464,10 +464,12 @@ type server struct {
 	// leaves them, keeps those. Only a test sets them, so a handler that outlives its lease or its
 	// limit is the test's choice rather than minutes of wall clock.
 	requestKeyLease, requestKeyRenewal, requestKeyRunLimit time.Duration
-	// drainReadLimit replaces how long a drain waits for the rest of a request's body
-	// (bodyDrainLimit, a minute); zero, which every server the deployment builds leaves it, keeps
-	// that. Only a test sets it, so a body that stalls is the test's choice rather than a minute of
-	// wall clock.
+	// drainReadLimit replaces both of the server's waits on a body that has stopped arriving: how
+	// long a drain waits for the rest of a request's body (drainBound; bodyDrainLimit, a minute)
+	// and how long a handler's read waits for the body's next bytes (drainTime; bodyIdleLimit,
+	// 20 s). It leaves the ceiling on a handler's read (bodyDrainLimit) as it is. Zero, which every
+	// server the deployment builds leaves it, keeps those. Only a test sets it, so a body that
+	// stalls is the test's choice rather than seconds of wall clock.
 	drainReadLimit time.Duration
 	// repeatFoundInFlight is called when the keyed layer finds a repeat's key held by a first
 	// request still running, before it reads a byte of the repeat's body; nil, which every server

@@ -156,10 +156,40 @@ func (s *server) holdWriteLimit(handler http.HandlerFunc) http.HandlerFunc {
 			handler(w, r)
 			return
 		}
-		body := &deadlinedBody{ReadCloser: r.Body, writer: w, idle: s.drainTime(), whole: docs.WriteRequestBound}
+		body := &deadlinedBody{ReadCloser: r.Body, writer: w, idle: s.drainTime(), whole: bodyDrainLimit}
 		r.Body = body
-		handler(&cutBodyWriter{ResponseWriter: w, body: body}, r)
+		// The drain is this request's writer, and it is what answers a cut body (drainingWriter):
+		// register puts drainBeforeAnswer directly around this layer on every route that is not a
+		// GET, and the drain hands on every request with a body under its own writer. Only a
+		// register that lost the drain could hand this layer another, and the assertion refuses it
+		// loudly rather than leave a cut body to the 400 that blames the caller's input.
+		w.(*drainingWriter).deadlined = body
+		handler(w, r)
 	}
+}
+
+// bodyIdleLimit is how long a handler's read of a request's body waits for the body's next bytes
+// before it cuts the body and answers BODY_STALLED (deadlinedBody's idle deadline). Twenty seconds,
+// for three reasons:
+//
+//   - It is the silence Dispatch's own command-line client takes for a dead attempt: an attempt
+//     that goes 20 s without progress, none of its body taken by the connection and no answer
+//     begun, is cut off and asked again (envoy-client's DISPATCH_WRITE_RETRY.silenceMs). A body
+//     silent that long is not a slow link by the measure the client itself uses, and by then the
+//     command has given that attempt up.
+//   - It sits well under the ceiling over it (bodyDrainLimit, a minute), so a body that stops
+//     anywhere in its first 40 s is cut by it and named a stall (deadlinedBody).
+//   - A client that stopped sending holds its connection and its handler for 20 s after its last
+//     bytes, where under the 45 s ceiling this replaced it held them until 45 s after its first.
+const bodyIdleLimit = 20 * time.Second
+
+// drainTime is how long a handler's read of a request's body waits for the body's next bytes
+// (bodyIdleLimit; drainReadLimit in a test, which shortens the drain's own wait too, drainBound).
+func (s *server) drainTime() time.Duration {
+	if s.drainReadLimit > 0 {
+		return s.drainReadLimit
+	}
+	return bodyIdleLimit
 }
 
 // deadlinedBody is a request's body read under a deadline on the connection it arrives over (the
@@ -173,18 +203,35 @@ func (s *server) holdWriteLimit(handler http.HandlerFunc) http.HandlerFunc {
 // INVALID_JSON with net's "i/o timeout" behind it, which blames the caller's JSON for a read the
 // server itself ended (dispatch://INFRA-179, review 6's finding 6).
 //
-// Over the idle deadline stands an absolute ceiling, docs.WriteRequestBound from the first read,
-// so a trickle of three bytes a second cannot hold a connection for hours: 45 s is the whole a
-// caller's write may take, its waits and its work together, so a body still arriving then has no
-// time left to be written in. As the deployment runs the two are 45 s and a minute
-// (docs.WriteRequestBound, bodyDrainLimit), so the ceiling is the first deadline every body
-// meets and it is what cuts a stalled body too - the server never waits the idle minute out -
-// while a shorter drain bound, a test's drainReadLimit, meets the idle deadline first. That is
-// why the ceiling's refusal says only that the body had not arrived whole: which of the two
-// happened, a stall or a trickle, it cannot tell.
+// Over the idle deadline stands an absolute ceiling, bodyDrainLimit from the first read, so a
+// trickle that sends a byte just inside each idle deadline cannot hold a connection for hours. It
+// is the drain's own minute, for two reasons:
+//
+//   - A minute carries the largest body a route takes, an upload (routeBody), over a link of
+//     450 KB/s or more, as it does for the drain. Under the 45 s ceiling it replaced, the same
+//     upload needed about 600 KB/s, so the server waited longer for an upload it refused (the
+//     drain) than it read one it would take.
+//   - A body still arriving a minute after its first byte is one no `dispatch` command is waiting
+//     for: every call's deadline is 60 s (envoy-client's DISPATCH_TOOL_DEADLINE_MS).
+//
+// The ceiling was docs.WriteRequestBound, 45 s, on the ground that a body still arriving then has
+// no time left to be written in. That holds for a document write, which that bound still ends
+// from its request's start whatever its body did (docs' Service.Join), and for nothing else: a
+// message joins no document and meets no such bound, and its body, 64 bytes sent a byte every
+// 800 ms and never silent past 0.8 s, was cut at 45 s and refused BODY_TOO_SLOW
+// (dispatch://INFRA-179, review 7).
+//
+// The idle deadline is a bound only while it falls before the ceiling. Under that 45 s ceiling it
+// stood at the drain's minute, so every rearm ran past the ceiling and set the ceiling's instant,
+// the first read and 45 s: a body that stopped and a body still arriving were cut at the same
+// moment, both answered BODY_TOO_SLOW, and BODY_STALLED was unreachable at the deployed bounds
+// (review 7). At bodyIdleLimit under a minute, a body whose bytes stop arriving in its first 40 s
+// is cut 20 s after its last bytes and named a stall. Only one that stops in its last 20 s meets
+// the ceiling first, and the ceiling cannot tell that stall from a trickle, which is why its
+// refusal says only that the body had not arrived whole.
 //
 // Whichever of the two ended the read, the refusal names it and is a 503 the caller can retry
-// (cutBodyWriter), in place of the 400 a decode makes of a body it never saw.
+// (drainingWriter), in place of the 400 a decode makes of a body it never saw.
 //
 // The deadline lifts at the body's end and nowhere else, which is readFor's own rule and not a
 // choice of this type's: a read that failed, or a body that ran past its route's limit, leaves
@@ -236,7 +283,7 @@ func (b *deadlinedBody) Read(p []byte) (int, error) {
 	case errors.Is(err, os.ErrDeadlineExceeded) && b.cut == nil:
 		if b.atCeiling {
 			b.cut = errorf(http.StatusServiceUnavailable, "BODY_TOO_SLOW",
-				"the request's body had not arrived whole %s after its first byte, which is the longest a write may take; send it over a faster link, or in smaller writes, and retry", b.whole)
+				"the request's body had not arrived whole %s after its first byte, which is the longest the server reads a body for; send it over a faster link, or in smaller writes, and retry", b.whole)
 			break
 		}
 		b.cut = errorf(http.StatusServiceUnavailable, "BODY_STALLED",
@@ -262,72 +309,6 @@ func (b *deadlinedBody) cutBy() *apiError {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.cut
-}
-
-// cutBodyWriter answers a request whose body a deadline cut with the refusal naming that deadline
-// (deadlinedBody), in place of the 400 the request is otherwise answered: a decode that meets the
-// cut answers 400 INVALID_JSON and the multipart parser 400 ARTIFACT_INPUT, each blaming the
-// caller's input for bytes the server stopped reading, and neither leaving the caller anything to
-// act on. The refusal is a 503, which the caller retries, as it retries every other refusal the
-// pod makes of a write it could not take.
-//
-// A 400 is the only answer the cut makes untrue, so it is the only one replaced. Every other
-// answer was reached for a reason of its own and stands, whatever became of the body: the 401 of
-// a session that lapsed under the write, which a page reads as the cue to sign in again (the
-// drain's own replacement spares it too, drainBeforeAnswer); the 409 the keyed layer answers a
-// repeat whose first request still holds its key, which it judges whether or not the repeat's
-// body ever arrives (answerDrainedRepeat); and the 413 the drain puts in place of any answer to a
-// body past its route's limit.
-type cutBodyWriter struct {
-	http.ResponseWriter
-	body     *deadlinedBody
-	begun    bool
-	replaced bool
-}
-
-// begin answers the cut, once, before the first byte of the answer the handler is writing, whose
-// status is status.
-func (w *cutBodyWriter) begin(status int) {
-	if w.begun {
-		return
-	}
-	w.begun = true
-	cut := w.body.cutBy()
-	if cut == nil || status != http.StatusBadRequest {
-		return
-	}
-	keepOnlyEveryAnswersHeaders(w.Header())
-	writeError(w.ResponseWriter, cut.code, cut.status, cut.message)
-	w.replaced = true
-}
-
-func (w *cutBodyWriter) WriteHeader(status int) {
-	w.begin(status)
-	if !w.replaced {
-		w.ResponseWriter.WriteHeader(status)
-	}
-}
-
-// Write is the answer's body; a first Write without WriteHeader answers 200, as net/http's does.
-func (w *cutBodyWriter) Write(p []byte) (int, error) {
-	w.begin(http.StatusOK)
-	if w.replaced {
-		return len(p), nil
-	}
-	return w.ResponseWriter.Write(p)
-}
-
-// Flush flushes the answer the caller is left with, which is the cut's where the body was cut.
-func (w *cutBodyWriter) Flush() {
-	w.begin(http.StatusOK)
-	if !w.replaced {
-		_ = http.NewResponseController(w.ResponseWriter).Flush()
-	}
-}
-
-// Unwrap is the answer's own writer, for http.ResponseController.
-func (w *cutBodyWriter) Unwrap() http.ResponseWriter {
-	return w.ResponseWriter
 }
 
 // limitedTx is a transaction holding one of the API's write limit, which it gives back as it
