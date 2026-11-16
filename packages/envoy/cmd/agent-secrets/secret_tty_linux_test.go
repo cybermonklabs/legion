@@ -94,7 +94,7 @@ func typeAtPromptInWrites(t *testing.T, gap time.Duration, writes ...string) (*o
 	controller, terminal := openPTY(t)
 	answer := make(chan promptRead, 1)
 	go func() {
-		line, err := readHidden(terminal, nil, nil)
+		line, err := readHidden(terminal, time.Time{}, nil, nil)
 		answer <- promptRead{line, err}
 	}()
 	awaitEchoOff(t, terminal)
@@ -126,17 +126,15 @@ func awaitEchoOff(t *testing.T, terminal int) {
 	}
 }
 
-// TestPromptEndsAtTheValueDeadline: a prompt that reads a create's value (valueDeadline set) and
-// gets nothing gives up at the deadline, with errValueTimedOut and no line, and gives the terminal
-// back with echo on, as any other end of the prompt does.
+// TestPromptEndsAtTheValueDeadline: a prompt handed a deadline (a create's value read) that gets
+// nothing gives up at the deadline, with errValueTimedOut and no line, and gives the terminal back
+// with echo on, as any other end of the prompt does.
 func TestPromptEndsAtTheValueDeadline(t *testing.T) {
 	_, terminal := openPTY(t) // openPTY's cleanup holds the controller open for the whole test
-	restore := valueDeadline
-	valueDeadline = time.Now().Add(500 * time.Millisecond)
-	t.Cleanup(func() { valueDeadline = restore })
+	deadline := time.Now().Add(500 * time.Millisecond)
 	answer := make(chan promptRead, 1)
 	go func() {
-		line, err := readHidden(terminal, nil, nil)
+		line, err := readHidden(terminal, deadline, nil, nil)
 		answer <- promptRead{line, err}
 	}()
 	awaitEchoOff(t, terminal)
@@ -223,7 +221,7 @@ func TestPromptClearsIEXTENWhileItReads(t *testing.T) {
 	}
 	answer := make(chan promptRead, 1)
 	go func() {
-		line, err := readHidden(terminal, nil, nil)
+		line, err := readHidden(terminal, time.Time{}, nil, nil)
 		answer <- promptRead{line, err}
 	}()
 	awaitEchoOff(t, terminal)
@@ -399,7 +397,7 @@ func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
 			}
 			answer := make(chan promptRead, 1)
 			go func() {
-				line, err := readHidden(terminal, nil, nil)
+				line, err := readHidden(terminal, time.Time{}, nil, nil)
 				answer <- promptRead{line, err}
 			}()
 			awaitEchoOff(t, terminal)
@@ -433,7 +431,7 @@ func TestPromptSignalHelper(t *testing.T) {
 	if os.Getenv("AGENT_SECRETS_PROMPT_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}
-	_, err := readHidden(0, nil, nil)
+	_, err := readHidden(0, time.Time{}, nil, nil)
 	fmt.Printf("RETURNED %v\n", err)
 }
 

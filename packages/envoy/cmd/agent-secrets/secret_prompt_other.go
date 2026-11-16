@@ -2,6 +2,8 @@
 
 package main
 
-func readHiddenAtTerminal(_ int, _, _ func()) ([]byte, error) {
+import "time"
+
+func readHiddenAtTerminal(int, time.Time, func(), func()) ([]byte, error) {
 	return nil, errNoValuePrompt
 }

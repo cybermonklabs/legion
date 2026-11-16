@@ -50,12 +50,13 @@ var (
 // readHiddenAtTerminal reads one hidden line, drains refused input, and restores the
 // terminal only after joining its signal watcher. Bracketed pastes are read through
 // their closing mark; what follows the line is drained through a 200 ms quiet window,
-// and a paste that begins there through its closing mark.
+// and a paste that begins there through its closing mark. deadline, unless it is the
+// zero time, ends the read with errValueTimedOut (readHidden).
 // prompt runs once the reader holds the terminal with echo off, to show the label:
 // a prompt started in the background shows nothing until fg gives it the terminal.
 // It holds promptBusy from its start to its very end, an end by a signal included, so
 // create's own watch on the signals (watchCreateSignals) leaves a signal to the prompt.
-func readHiddenAtTerminal(fd int, prompt, onStop func()) (line []byte, err error) {
+func readHiddenAtTerminal(fd int, deadline time.Time, prompt, onStop func()) (line []byte, err error) {
 	promptBusy.Lock()
 	defer promptBusy.Unlock()
 	if err := disableCoreDumps(); err != nil {
@@ -151,15 +152,14 @@ func readHiddenAtTerminal(fd int, prompt, onStop func()) (line []byte, err error
 	for {
 		// Outside a paste the read blocks until input; an open paste bounds each read at
 		// maxPasteDrain, so it is the quiet since the last input that gives a still-arriving
-		// paste up, not the time since it began. A create's value deadline (valueDeadline) bounds
-		// every read, in a paste or not: at it the prompt gives up, through the same restore as
-		// any other end.
+		// paste up, not the time since it began. A create's value deadline bounds every read, in
+		// a paste or not: at it the prompt gives up, through the same restore as any other end.
 		tty.wait = -1
 		if r.inPaste {
 			tty.wait = int(maxPasteDrain.Milliseconds())
 		}
-		if !valueDeadline.IsZero() {
-			left := time.Until(valueDeadline)
+		if !deadline.IsZero() {
+			left := time.Until(deadline)
 			if left <= 0 {
 				return nil, errValueTimedOut
 			}
@@ -179,7 +179,7 @@ func readHiddenAtTerminal(fd int, prompt, onStop func()) (line []byte, err error
 			tty.stopped = false
 		}
 		if n == 0 {
-			if !valueDeadline.IsZero() && !time.Now().Before(valueDeadline) {
+			if !deadline.IsZero() && !time.Now().Before(deadline) {
 				return nil, errValueTimedOut
 			}
 			if r.inPaste && time.Since(began) >= maxPasteDrain {

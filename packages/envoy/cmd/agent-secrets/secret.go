@@ -204,7 +204,8 @@ var disableCoreDumps = sync.OnceValue(preventCoreDumps)
 // replace it. It calls prompt to show the label once it holds the terminal with echo
 // off, so a prompt started in the background shows nothing over the shell's own line.
 // The reader drains bracketed pastes through their end, and input following an
-// unbracketed line through a bounded quiet window.
+// unbracketed line through a bounded quiet window. deadline, when it is not the zero
+// time, is when the read gives up with errValueTimedOut; the zero time sets no bound.
 var readHidden = readHiddenAtTerminal
 
 // onSignalDeath, while set, runs once just before a hang-up, an interrupt, a quit or a termination
@@ -232,19 +233,15 @@ var errValueCutShort = errors.New("the terminal hung up before the value ended")
 var errPromptStopped = errors.New("the terminal stopped while reading the value")
 
 // errValueTimedOut is readSecretValue's answer, from either arm, when no whole value came before
-// valueDeadline.
+// its deadline.
 var errValueTimedOut = errors.New("no value came in time")
 
 // valueReadWindow is how long `secret create` reads the value of the secret it made before it
 // gives up and discards that secret: policy.PendingValueWindow, the time the broker holds such a
 // secret as waiting for its value (pending-value), so the create ends its read when the broker
-// stops waiting. Tests shorten it. valueDeadline, while a create reads, is the moment that read
-// ends, counted from before the store made the secret, so it never outlasts the broker's window;
-// the zero time, for every other form, sets no bound.
-var (
-	valueReadWindow = policy.PendingValueWindow
-	valueDeadline   time.Time
-)
+// stops waiting. The create counts it from before the store made the secret, so its read never
+// outlasts the broker's window, and hands readSecretValue the moment it ends. Tests shorten it.
+var valueReadWindow = policy.PendingValueWindow
 
 // errNoForeground is readHidden's answer when its process group is orphaned while it waits in the
 // background (the shell that started it has gone): no shell can ever hand it the terminal, so it
@@ -338,7 +335,8 @@ func pipeCommand(prefix, profile string, words ...string) string {
 }
 
 // readSecretValue reads the value of the secret name for a form, to be stored under shape, the
-// secret's shape tag (policy.TagShape), which is "" for a secret carrying none. At a terminal it
+// secret's shape tag (policy.TagShape), which is "" for a secret carrying none, giving up with
+// errValueTimedOut at deadline, or never where deadline is the zero time. At a terminal it
 // prompts on stderr, once it holds the terminal with echo off, and reads one line (readHidden),
 // as `gh secret set` does, so the value never shows on the screen; a value of more than one line
 // is refused there, naming pipeTo, the form's own command line (pipeCommand) with the value piped
@@ -353,7 +351,7 @@ func pipeCommand(prefix, profile string, words ...string) string {
 // this reader has always removed, so `echo` and a file ending in a newline give the value without
 // one. A line typed at the prompt carries no ending at all, so the terminal arm meets the
 // fallback and nothing else. An empty value is a usage error either way, in its own arm's words.
-func readSecretValue(name, pipeTo, shape string, stderr io.Writer) (string, error) {
+func readSecretValue(name, pipeTo, shape string, deadline time.Time, stderr io.Writer) (string, error) {
 	if err := disableCoreDumps(); err != nil {
 		return "", err
 	}
@@ -361,7 +359,7 @@ func readSecretValue(name, pipeTo, shape string, stderr io.Writer) (string, erro
 	var value, empty string
 	if fd, ok := stdinTerminal(secretStdin); ok {
 		prompted := false
-		line, err := readHidden(fd, func() {
+		line, err := readHidden(fd, deadline, func() {
 			prompted = true
 			fmt.Fprintf(stderr, "Value for %s: ", name)
 		}, func() {
@@ -392,7 +390,7 @@ func readSecretValue(name, pipeTo, shape string, stderr io.Writer) (string, erro
 		}
 		value, empty = string(line), "no value was entered at the prompt"
 	} else {
-		data, err := readAllBy(secretStdin, valueDeadline)
+		data, err := readAllBy(secretStdin, deadline)
 		if errors.Is(err, errValueTimedOut) {
 			return "", valueTimedOut(pipeTo)
 		}
@@ -414,7 +412,7 @@ func readSecretValue(name, pipeTo, shape string, stderr io.Writer) (string, erro
 	return stored, nil
 }
 
-// valueTimedOut is the error a create's read of its value ends with at valueDeadline: nothing was
+// valueTimedOut is the error a create's read of its value ends with at its deadline: nothing was
 // stored, how long the read lasted, and the command to run again. It is no usage error: the
 // command was right, and the person or the pipe was too slow.
 func valueTimedOut(pipeTo string) error {
@@ -1096,11 +1094,11 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	if err := pending.begin(); err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
+	var deadline time.Time
 	if pending.created.madeBeforeValue() {
-		valueDeadline = asked.Add(valueReadWindow)
-		defer func() { valueDeadline = time.Time{} }()
+		deadline = asked.Add(valueReadWindow)
 	}
-	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, command...), *shape, stderr)
+	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, command...), *shape, deadline, stderr)
 	if err == nil && policy.ValidKind(*kind) {
 		err = checkValueFor(*kind, *shape, value)
 	}
@@ -1153,7 +1151,7 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 	if kind != "" && !policy.ValidKind(kind) {
 		return secretFailIn(stderr, form, s, usageErr{fmt.Errorf("%s's kind tag %q names no kind the broker mints, and it refuses the secret as %s: retag it --kind %s or %s before setting its value", name, kind, policy.ReasonKindUnknown, strings.Join(policy.Kinds, ", "), tagNone)})
 	}
-	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, "secret", "set", name), shape, stderr)
+	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, "secret", "set", name), shape, time.Time{}, stderr)
 	if err == nil && kind != "" {
 		err = checkValueFor(kind, shape, value)
 	}

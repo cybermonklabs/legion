@@ -116,7 +116,7 @@ func TestSecretAStoppedPromptWritesNothingAndNamesTheRetry(t *testing.T) {
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		useTerminal(t)
-		readHidden = func(_ int, prompt, onStop func()) ([]byte, error) {
+		readHidden = func(_ int, _ time.Time, prompt, onStop func()) ([]byte, error) {
 			prompt()
 			onStop()
 			return nil, errPromptStopped
@@ -699,7 +699,7 @@ func useTerminal(t *testing.T, typed ...string) *[]int {
 		return terminalFD, true
 	}
 	reads := &[]int{}
-	readHidden = func(fd int, prompt, _ func()) ([]byte, error) {
+	readHidden = func(fd int, _ time.Time, prompt, _ func()) ([]byte, error) {
 		prompt()
 		*reads = append(*reads, fd)
 		if len(*reads) > len(typed) {
@@ -757,7 +757,7 @@ func TestSecretAPromptThatNeverHoldsTheTerminalShowsNoLabel(t *testing.T) {
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
 	useTerminal(t)
-	readHidden = func(int, func(), func()) ([]byte, error) { return nil, errValueCutShort }
+	readHidden = func(int, time.Time, func(), func()) ([]byte, error) { return nil, errValueCutShort }
 	_, stderr, code := runSecret("set", "HELD_KEY")
 	if code != 1 || strings.Contains(stderr, "Value for") || strings.HasPrefix(stderr, "\n") {
 		t.Fatalf("exit %d, stderr %q; want 1 with no label and no leading line ending", code, stderr)
@@ -776,7 +776,7 @@ func TestSecretAPromptThatCannotRunNamesThePipeCommand(t *testing.T) {
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		useTerminal(t)
-		readHidden = func(int, func(), func()) ([]byte, error) { return nil, refusal }
+		readHidden = func(int, time.Time, func(), func()) ([]byte, error) { return nil, refusal }
 		_, stderr, code := runSecret("set", "HELD_KEY", "--profile", "work")
 		want := refusal.Error() + "; pipe the value in: agent-secrets secret set HELD_KEY --profile work < FILE"
 		if code != exitUsageError || !strings.Contains(stderr, want) || strings.Contains(stderr, "Value for") {
@@ -823,7 +823,7 @@ func TestSecretAValueOfMoreThanOneLineAtATerminalIsRefused(t *testing.T) {
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		useTerminal(t)
-		readHidden = func(int, func(), func()) ([]byte, error) { return nil, errMoreThanOneLine }
+		readHidden = func(int, time.Time, func(), func()) ([]byte, error) { return nil, errMoreThanOneLine }
 		_, stderr, code := runSecret(tc.args...)
 		want := "a value of more than one line must be piped in: " + tc.want
 		if code != exitUsageError || !strings.Contains(stderr, want) {
@@ -847,7 +847,7 @@ func TestSecretAPasteCutShortAtATerminalWritesNothing(t *testing.T) {
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		useTerminal(t)
-		readHidden = func(int, func(), func()) ([]byte, error) { return nil, errPasteCutShort }
+		readHidden = func(int, time.Time, func(), func()) ([]byte, error) { return nil, errPasteCutShort }
 		_, stderr, code := runSecret(args...)
 		if code != 1 || !strings.Contains(stderr, errPasteCutShort.Error()) {
 			t.Fatalf("%v: exit %d, stderr %q; want 1 naming %q", args, code, stderr, errPasteCutShort)
@@ -883,7 +883,7 @@ func TestSecretAControlByteAtATerminalIsAUsageError(t *testing.T) {
 			startSecretBroker(t, servedBy(local))
 			useAWS(t, local, testAccount, adaSignIn)
 			useTerminal(t)
-			readHidden = func(int, func(), func()) ([]byte, error) { return nil, row.refused }
+			readHidden = func(int, time.Time, func(), func()) ([]byte, error) { return nil, row.refused }
 			_, stderr, code := runSecret(args...)
 			pipe := "pipe the value in: agent-secrets secret " + args[0]
 			if code != exitUsageError || !strings.Contains(stderr, row.want) || !strings.Contains(stderr, pipe) || !strings.Contains(stderr, " < FILE") || (row.not != "" && strings.Contains(stderr, row.not)) {
@@ -967,7 +967,7 @@ func TestSecretAValueCutShortAtATerminalWritesNothing(t *testing.T) {
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		useTerminal(t)
-		readHidden = func(int, func(), func()) ([]byte, error) { return nil, errValueCutShort }
+		readHidden = func(int, time.Time, func(), func()) ([]byte, error) { return nil, errValueCutShort }
 		_, stderr, code := runSecret(args...)
 		if code != 1 || !strings.Contains(stderr, errValueCutShort.Error()) {
 			t.Fatalf("%v: exit %d, stderr %q; want 1 naming %q", args, code, stderr, errValueCutShort)
