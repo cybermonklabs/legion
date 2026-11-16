@@ -61,7 +61,8 @@ const (
 	StateIdle ClaimState = "idle"
 	// StateSuspended: the process was stopped and the session kept; the claim resumes on demand.
 	StateSuspended ClaimState = "suspended"
-	// StateFailed: a budget ran out. Nothing relaunches the claim on its own.
+	// StateFailed: a budget ran out, or a launch was refused in a way no try changes (a system
+	// prompt past the start frame, promptRefused). Nothing relaunches the claim on its own.
 	StateFailed ClaimState = "failed"
 	// StateRetired: the claim is over — stopped by the operator, or ended by its agent.
 	StateRetired ClaimState = "retired"
@@ -2141,7 +2142,10 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // first, so it is the one waited out. The boot token's hash is persisted before the process
 // starts, so the shim's first hello resolves. A launch the runtime or the spec refuses is a launch
 // failure and is tried again after the backoff (backOff), waiting out the same process, until the
-// budget runs out; only a start that succeeds forgets it. A launch that fails stops the process it
+// budget runs out; only a start that succeeds forgets it. A system prompt past the start frame
+// (runtime.PromptTooLarge, promptRefused) is no launch failure: the claim fails at once, charged
+// nothing, and a start the session store could not answer is charged nothing and tried again
+// (startWaitsForStore). A launch that fails stops the process it
 // let go (stopPrevious), whichever step failed. A launch the tree lifecycle refuses (checkLaunch)
 // starts nothing and is charged nothing (relaunchRefused), and so is one whose context ended under
 // it — the daemon's stop. A runtime waits out a cluster that answers a launch's requests overloaded
@@ -2295,22 +2299,48 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, charged, exempt)
 		}
+		var tooLarge *runtime.PromptTooLarge
+		if errors.As(err, &tooLarge) {
+			return m.promptRefused(ctx, starting, err)
+		}
 		err = errors.Join(err, m.stopPrevious(starting))
 		m.claim.Budgets.LaunchFailures++
 		m.log.Warn("supervise: launch failed", "generation", m.claim.Generation, "error", err,
 			"launchFailures", m.claim.Budgets.LaunchFailures, "limit", m.deps.Limits.LaunchFailures)
 		if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
-			// The refusal is this claim's own cause only where nothing else is already being
-			// relaunched after: a claim that died and whose relaunch the runtime then refused
-			// reads died (Claim.PendingCause).
-			cause := m.claim.PendingCause
-			if cause == "" {
-				cause = CauseLaunchRefused
-			}
-			return errors.Join(err, m.fail(ctx, cause, fmt.Sprintf("launch failures ran out: %v", err)))
+			return m.failLaunch(ctx, err, fmt.Sprintf("launch failures ran out: %v", err))
 		}
 		charged = true
 	}
+}
+
+// promptRefused is a start the runtime refused because the role's composed system prompt is larger
+// than the one bound that still applies to it (runtime.PromptTooLarge): the start frame a pod's
+// launcher reads, which the sandbox runtime measures before anything starts. Nothing was
+// started, and every later try would compose the same text from the same files and be refused
+// the same way until the deployment changes them, which takes a restart of the daemon. So it is
+// charged no launch failure and not tried again: the claim fails at once, under the cause the
+// charged path at its limit would name (launchNow), with the refusal's sentence — the role, the
+// prompt's size and the limit — as its failure and as LastStartFailure, which read_state serves as
+// the claim view's `failure.detail` and `lastStartFailure`. The process the launch let go is
+// stopped first, as every refused start's is.
+func (m *Machine) promptRefused(ctx, starting context.Context, refusal error) error {
+	err := errors.Join(refusal, m.stopPrevious(starting))
+	m.log.Error("supervise: the role's system prompt is too large to launch; failing the claim, charging no launch failure",
+		"generation", m.claim.Generation, "error", err, "launchFailures", m.claim.Budgets.LaunchFailures)
+	return m.failLaunch(ctx, err, fmt.Sprintf("launch refused, charged no launch failure: %v", refusal))
+}
+
+// failLaunch fails the claim over a launch the runtime refused, with err, the refusal and what
+// stopping the process it let go answered, and detail, the claim's failure sentence. The refusal
+// is this claim's own cause only where nothing else is already being relaunched after: a claim
+// that died and whose relaunch the runtime then refused reads died (Claim.PendingCause).
+func (m *Machine) failLaunch(ctx context.Context, err error, detail string) error {
+	cause := m.claim.PendingCause
+	if cause == "" {
+		cause = CauseLaunchRefused
+	}
+	return errors.Join(err, m.fail(ctx, cause, detail))
 }
 
 // startable is the context the tries of one launch run on: the caller's, which a suspension can

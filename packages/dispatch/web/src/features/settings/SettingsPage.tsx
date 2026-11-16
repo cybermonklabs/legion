@@ -21,6 +21,7 @@ import { GrantsSection } from "../credentials/GrantsSection";
 import { credentialPendingQuery } from "../credentials/pending";
 import { SignInsSection } from "../credentials/SignInsSection";
 import { DeliverySettingsForm } from "../delivery/DeliverySettingsForm";
+import { IssuePagePreference } from "../issue-page/IssuePagePreference";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -372,6 +373,7 @@ export function SettingsPage(): ReactNode {
           </p>
           <DeliverySettingsForm />
         </section>
+        <IssuePagePreference />
       </div>
     </section>
   );

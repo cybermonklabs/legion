@@ -46,6 +46,7 @@ dev-broker: starting broker...
 {"time":"2026-11-14T02:26:30.105447105Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:46052"}
 {"time":"2026-11-14T02:26:30.105572274Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:22691"}
 {"time":"2026-11-14T02:26:30.10560447Z","severity":"INFO","message":"model judge","state":"off","detail":"none of BROKER_JUDGE_MODEL_URL, BROKER_JUDGE_MODEL, BROKER_JUDGE_MODEL_AUDIENCE, BROKER_JUDGE_DISPATCH_URL, BROKER_JUDGE_DISPATCH_TOKEN_FILE is set, so every human-tier request waits for the person who decides it today"}
+{"time":"2026-11-14T02:26:30.109201447Z","severity":"INFO","message":"project access check","state":"off","detail":"BROKER_PROJECT_ACCESS_URL is unset, so a token naming no project is minted as before and a person's trade naming one is refused"}
 {"time":"2026-11-14T02:26:30.109245773Z","severity":"INFO","message":"token exchange","state":"on","kubernetes":true,"github":false,"accounts":1,"workflows":0,"machines":0}
 {"time":"2026-11-14T02:26:30.109626677Z","severity":"INFO","message":"machine login device grant","state":"on","verification_uri":"http://127.0.0.1/credentials/machine"}
 {"time":"2026-11-14T02:26:30.153657152Z","severity":"INFO","message":"broker reread rate","replicas":2,"every":"1s","burst":10}
@@ -364,7 +365,7 @@ form). Here the `listener` token, which may do that and nothing else:
 
 ```console
 $ curl -s -H "Authorization: Bearer $(cat "$DEV_BROKER_DIR/listener-token")" -d "token=<access token>" "$AGENT_SECRETS_URL/v1/oauth/introspect"
-{"active":true,"session":"example-worker-session","person":"ada@example.com","project_scope":"named","project":"EXAMPLE","exp":1793320811,"client_id":"dispatch-token-exchange","jkt":"oufCNV-MCX2NLGXXB5yj7Pdnwumhbp1dGcxoxpSTyWk"}
+{"active":true,"session":"example-worker-session","person":"ada@example.com","project_scope":"named","projects":["EXAMPLE"],"exp":1793320811,"client_id":"dispatch-token-exchange","jkt":"oufCNV-MCX2NLGXXB5yj7Pdnwumhbp1dGcxoxpSTyWk"}
 ```
 
 `POST /v1/oauth/revoke` (RFC 7009) ends one before its expiry, and is the only thing that can: an

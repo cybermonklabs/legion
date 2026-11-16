@@ -98,7 +98,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   The controller is an interactive OMP session the operator starts on their own machine with `legion controller start` (no `--mode rpc`, no shim), unless `legion.yaml` sets `controller: daemon`, where the daemon launches it in an Agent Sandbox pod of its own, whose one container runs the controller's `legion launcher`, or under `runtime: tmux` in a pane of its own `controller` window, and supervises it like a root architect (`docs/kubernetes.md`, "The controller";
   `docs/deployment.md`, "The `runtime.tmux` block").
 
-- **Skills** — guide the architect and sequential phase workers.
+- **Skills** — guide the architect and the phase workers.
   Each phase's handoff, a versioned record on its Dispatch issue (`dispatch handoff-write`, `dispatch handoff-read`), is the recovery source of truth.
 
 ## Tech Stack
@@ -755,7 +755,7 @@ Each item below names a task and where its code is, then notes on it.
   a phase worker composes `core/<role>.md`, `mechanics/headless.md` and its role's residue, the merger the headless fragment and its residue;
   the root architect, controller and sub-architect prompts are single files;
   `roles_test.go` holds their structural rules) and its own parts (`internal/prompts/go/`), and snapshots both below its state directory before any pane or controller starts.
-  A pane's one `--append-system-prompt` value is those parts, then its addressing fragment, then the deployment's `instructions` when `legion.yaml` sets them.
+  A role's system prompt is those parts, then its addressing fragment, then the deployment's `instructions` when `legion.yaml` sets them, composed in the daemon (`runtime.ComposePrompt`) and written to a file, whose path is the agent's one `--append-system-prompt` value (`--append-system-prompt-file` for Claude Code), since Linux refuses any single argument over 131,072 bytes.
 
 - Secrets broker — `packages/envoy/cmd/broker`, `packages/envoy/internal/broker`
 
@@ -814,9 +814,10 @@ Each item below names a task and where its code is, then notes on it.
 - **The slow test suites run in the merge queue, not on a pull-request push**
   — nine jobs of `ci.yaml` (`envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess`, `dispatch-two-builds` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
   The browser suite (`dispatch-browser`, whose called workflow builds the Go commands its stacks run in a `binaries` job of its own) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
-  A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, when a person asks, or when the change touches `packages/envoy/internal/dispatch/store/migrations/**` or `packages/envoy/internal/pgmigrate/**`, where the label goes on before the approval: a migration is proven by the suites that run against a migrated database, and #2983's merge-group run 42464051293 is what a pull request without it leaves to the queue.
+  A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, to get a held-back job run at the head when a check of its issue names that job as its `ci_check`, when a person asks, or when the change touches `packages/envoy/internal/dispatch/store/migrations/**` or `packages/envoy/internal/pgmigrate/**`, where the label goes on before the approval: a migration is proven by the suites that run against a migrated database, and #2983's merge-group run 42464051293 is what a pull request without it leaves to the queue.
   The label is read from the pull request as the run's own event carries it, so it takes effect at the next push, not when it is added.
   The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the nine again, and the browser suite's full lane with them.
+  The exception is a held-back job that a check of the worker's issue names as its `ci_check`: without the label that job reads `skipped` at every later head, which leaves the check no pass, so the label stays on for as long as the issue has such a check.
 
 - **Release jobs keep credentials away from dependency code**
   — in `release.yaml`, `release-envoy-listener.yaml` and `release-envoy-infra.yaml`, a job that holds `contents: write`, `id-token: write`, `attestations: write`, `actions: write` or the deploy key runs no dependency code (no `bun`, `go`, `node`, no built binary, no `scripts/` program) and restores no cache (`cache-mode: none`);

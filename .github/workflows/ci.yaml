@@ -583,6 +583,9 @@ jobs:
               - 'packages/envoy/internal/broker/oauth/*'
               - 'packages/envoy/internal/broker/oauthstore/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
+              # The token exchange's Dispatch client (internal/broker/oauth imports it), and the
+              # account-token reader it presents with.
+              - 'packages/envoy/internal/broker/projectaccess/*'
               - 'packages/envoy/internal/broker/policy/**'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
@@ -595,6 +598,7 @@ jobs:
               # The token client whose public re-export the daemon imports, and the wire corpus
               # its own tests replay.
               - 'packages/envoy/internal/brokerclient/**'
+              - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/ctxlock/*'
@@ -607,6 +611,7 @@ jobs:
               # text's testdata too: the daemon's race-tested packages compile it, and a compiled
               # package's testdata is read by the job that compiles it.
               - 'packages/envoy/internal/dispatch/text/**'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -618,8 +623,8 @@ jobs:
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
-              # storetest's DatabaseURL makes a test's own database with internal/testpg.
-              - 'packages/envoy/internal/testpg/*'
+              # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               # The reasons the listener refuses a publish to a role no session holds, which the
@@ -696,6 +701,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/texttreefill/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -806,6 +812,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
@@ -829,6 +836,7 @@ jobs:
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dedupe/*'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/ghrename/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -1735,6 +1743,7 @@ jobs:
               - 'packages/envoy/internal/broker/oauthstore/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/broker/policy/*'
+              - 'packages/envoy/internal/broker/projectaccess/*'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
               - 'packages/envoy/internal/broker/requests/*'
@@ -1744,6 +1753,7 @@ jobs:
               - 'packages/envoy/internal/broker/store/migrations/**'
               - 'packages/envoy/internal/broker/wake/*'
               - 'packages/envoy/internal/buildversion/*'
+              - 'packages/envoy/internal/fileowner/*'
               - 'packages/envoy/internal/ratelimit/*'
               # The screenshots build packages/dispatch's web app, which aliases contracts' and the
               # proof editor's sources (web/vite.config.ts:63-81), and boot its e2e harness
@@ -1951,6 +1961,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/texttreefill/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -1981,6 +1992,7 @@ jobs:
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dedupe/*'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/ghrename/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -2029,6 +2041,7 @@ jobs:
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -2240,6 +2253,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
@@ -2538,6 +2552,7 @@ jobs:
               - 'packages/envoy/internal/broker/oauthstore/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/broker/policy/**'
+              - 'packages/envoy/internal/broker/projectaccess/*'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
               - 'packages/envoy/internal/broker/requests/*'
@@ -2548,8 +2563,8 @@ jobs:
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/ratelimit/*'
-              # storetest's DatabaseURL makes a test's own database with internal/testpg.
-              - 'packages/envoy/internal/testpg/*'
+              # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
+              - 'packages/envoy/internal/testpg/testdb/*'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!**/*_test.go'
@@ -2573,7 +2588,11 @@ jobs:
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testwait/*'
+              # gcp/dispatch.go's outsideOrigin check calls weborigin.Parse, so every build of the
+              # component compiles that package.
+              - 'packages/envoy/internal/weborigin/*'
               # The image pull before its tests, of the consts in testnats/nats.go and
               # testpg/testpg.go.
               - '.github/actions/pull-test-images/**'
@@ -3103,6 +3122,7 @@ jobs:
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # cmd/listener/api_test.go:191,436,480, which the soak's run compiles too.
@@ -3148,6 +3168,8 @@ jobs:
               - 'packages/envoy/internal/broker/oauthstore/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/broker/policy/**'
+              # The token exchange's Dispatch client and the stand-in cmd/broker's tests serve it.
+              - 'packages/envoy/internal/broker/projectaccess/**'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
               - 'packages/envoy/internal/broker/requests/*'
@@ -3164,7 +3186,12 @@ jobs:
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/ctxlock/*'
+              # oauthwire reads the project-key rule the contracts package generates, and the
+              # package's testdata is read by the job that compiles it.
+              - 'packages/envoy/internal/contracts/**'
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
+              - 'packages/envoy/internal/fileowner/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/logging/*'
@@ -3176,8 +3203,8 @@ jobs:
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/serverwait/*'
-              # storetest's DatabaseURL makes a test's own database with internal/testpg.
-              - 'packages/envoy/internal/testpg/*'
+              # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # The step takes the multiprocess tag's test list from this script at run time.
@@ -3193,7 +3220,8 @@ jobs:
             # and the axiom print read the model's own project, and the two fuzz runs compile the
             # airlock package and compare it against the model's program, so a change to either
             # side runs the job. Both sides live under internal/broker/airlock, which one glob
-            # names; the axiom check is a script of its own, which check k15 runs too; the Lean
+            # names, and the Go side also compiles internal/fold, the case fold it compares names
+            # in; the axiom check is a script of its own, which check k15 runs too; the Lean
             # toolchain comes from the elan the job's action installs, and that action reads the
             # `elan` row of the tool manifest through the fetch helper every install goes through.
             airlock_lean:
@@ -3201,6 +3229,7 @@ jobs:
               - '.github/workflows/ci-job-airlock-lean.yaml'
               - *go_workspace
               - 'packages/envoy/internal/broker/airlock/**'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/scripts/airlock-lean-axioms.sh'
               - '.github/actions/install-elan/**'
               - '.github/ci-tools.yaml'
@@ -3208,6 +3237,7 @@ jobs:
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/internal/broker/airlock/airlocktest/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
               # END generated
             # Every file packages/envoy/docker/Dockerfile builds from, so envoy-smoke runs whenever
             # the image it smokes changes, every file the held-port image built on top of it reads
@@ -3317,6 +3347,8 @@ jobs:
               - '!packages/envoy/internal/dedupe/**/*_test.go'
               - '!packages/envoy/internal/dispatch/**/*_test.go'
               - '!packages/envoy/internal/envconf/**/*_test.go'
+              - '!packages/envoy/internal/fileowner/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/ghrename/**/*_test.go'
               - '!packages/envoy/internal/googleidentity/**/*_test.go'
               - '!packages/envoy/internal/goroutinetest/**/*_test.go'
@@ -3342,6 +3374,7 @@ jobs:
               - '!packages/envoy/internal/textcheck/**/*_test.go'
               - '!packages/envoy/internal/verify/**/*_test.go'
               - '!packages/envoy/internal/webhook/**/*_test.go'
+              - '!packages/envoy/internal/weborigin/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -3870,6 +3903,8 @@ jobs:
               - '!packages/envoy/internal/dispatch/texttreefill/**/*_test.go'
               - '!packages/envoy/internal/dispatch/texttrees/**/*_test.go'
               - '!packages/envoy/internal/envconf/**/*_test.go'
+              - '!packages/envoy/internal/fileowner/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/ghrename/**/*_test.go'
               - '!packages/envoy/internal/googleidentity/**/*_test.go'
               - '!packages/envoy/internal/goroutinetest/**/*_test.go'
@@ -3893,6 +3928,7 @@ jobs:
               - '!packages/envoy/internal/textcheck/**/*_test.go'
               - '!packages/envoy/internal/verify/**/*_test.go'
               - '!packages/envoy/internal/webhook/**/*_test.go'
+              - '!packages/envoy/internal/weborigin/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/loadtest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
@@ -3932,6 +3968,7 @@ jobs:
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/broker/policy/*'
               - 'packages/envoy/internal/broker/policy/policytest/*'
+              - 'packages/envoy/internal/broker/projectaccess/*'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
               - 'packages/envoy/internal/broker/requests/*'
@@ -4010,6 +4047,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/explaintest/*'
               - 'packages/envoy/internal/fixtureenv/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/googleidentity/*'
@@ -4028,7 +4066,7 @@ jobs:
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
-              - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
@@ -4091,6 +4129,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/testlimits/**/*_test.go'
               - '!packages/envoy/internal/dispatch/text/**/*_test.go'
               - '!packages/envoy/internal/dispatch/texttrees/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/googleidentity/**/*_test.go'
               - '!packages/envoy/internal/kvwatch/**/*_test.go'
               - '!packages/envoy/internal/metrics/**/*_test.go'
@@ -4161,6 +4200,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/explaintest/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               # room_recovery_test.go reads the goroutine dump through it.
               - 'packages/envoy/internal/goroutinetest/*'
@@ -4192,6 +4232,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/testlimits/**/*_test.go'
               - '!packages/envoy/internal/dispatch/text/**/*_test.go'
               - '!packages/envoy/internal/dispatch/texttrees/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/goroutinetest/**/*_test.go'
               - '!packages/envoy/internal/oidc/**/*_test.go'
               - '!packages/envoy/internal/pglisten/**/*_test.go'
@@ -4287,6 +4328,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded

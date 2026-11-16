@@ -50,9 +50,14 @@ export const RESERVE_VARIABLE = "APPROVAL_EVAL_RESERVE";
 
 /**
  * The reserved trees, by their root's key, that a read has already spent, each with the record
- * that says so. The rule's fifth item moves each into the development data, whole. None yet.
+ * that says so. The rule's fifth item moves each into the development data, whole.
  */
-export const MOVED_TO_DEVELOPMENT: Readonly<Record<string, string>> = {};
+export const MOVED_TO_DEVELOPMENT: Readonly<Record<string, string>> = {
+  "INFRA-228":
+    "the answer to one question of this tree, printed by the next round's owner while counting " +
+    "the held cases between 2026-11-16T02:56:54Z and 02:58:13Z; the registration records it " +
+    "under version 2, item 5",
+};
 
 const TREE_CUT_TIME = Date.parse(RESERVE_TREE_CUT);
 

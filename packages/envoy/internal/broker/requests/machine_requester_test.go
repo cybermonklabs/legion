@@ -56,7 +56,7 @@ func TestAMachinesSessionIsItsFleetsAndNoPersons(t *testing.T) {
 			if err != nil || granted.State != want.state || granted.GrantID == nil {
 				t.Fatalf("Create(a machine's session, %s) = %+v, %v; want %s at once", want.secret, granted, err, want.state)
 			}
-			if release, err := m.Values(ctx, *granted.GrantID, machine, nil); err != nil || release.Values[want.secret] != want.value {
+			if release, err := m.Values(ctx, *granted.GrantID, machine, nil, ReleaseCall{}); err != nil || release.Values[want.secret] != want.value {
 				t.Fatalf("Values(%s) = %v, %v; want it released", want.secret, release.Values, err)
 			}
 		})

@@ -152,6 +152,15 @@ describe("the registered rule", () => {
     const before = caseRow("version-1-before", "INFRA-3601", "2026-11-15T01:00:00Z");
     expect(reserveOf(before)).toBe("kept");
   });
+
+  test("keeps every ask of a tree a read spent, by its root at the opening or at the build", () => {
+    // A read by mistake spent the tree under INFRA-228, a root the rule picks.
+    const spent = "INFRA-228";
+    expect(pickedRoot(spent)).toBe(true);
+    expect(reserveOf(treeCase("spent", LATER, spent))).toBe("kept");
+    expect(reserveOf(treeCase("spent-at-opening", LATER, spent, PICKED))).toBe("kept");
+    expect(reserveOf(treeCase("spent-at-build", LATER, PICKED, spent))).toBe("kept");
+  });
 });
 
 describe("readReferenceOf", () => {
