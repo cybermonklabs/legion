@@ -13,6 +13,7 @@ require (
 	github.com/googleapis/gax-go/v2 v2.26.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/nats-io/jwt/v2 v2.8.2
+	github.com/nats-io/nats-server/v2 v2.15.1
 	github.com/nats-io/nats.go v1.53.1
 	github.com/nats-io/nkeys v0.4.16
 	github.com/pulumi/pulumi-aws/sdk/v7 v7.50.0
@@ -139,7 +140,6 @@ require (
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/natefinch/atomic v1.0.1 // indirect
-	github.com/nats-io/nats-server/v2 v2.15.1 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
