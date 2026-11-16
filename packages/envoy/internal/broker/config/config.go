@@ -151,8 +151,9 @@ type Config struct {
 	// approval page (every route under /approve and /signin/ is a 404), and a request naming a
 	// secret whose answer would be a person's approval — a human-tier secret, another person's
 	// agent-tier secret, one the session's operator withheld from it — is denied at once, its
-	// detail naming this setting, rather than left pending for a person who cannot come; one a
-	// broker with sign-in on left or leaves pending is denied by the next sweep. What
+	// detail naming this setting, rather than left pending for a person who cannot come. Of the
+	// requests a broker with sign-in on left or leaves pending, the next sweep expires the
+	// overdue ones first, then denies the rest whose signed record verifies for this broker. What
 	// the policy grants at once (a person's own or a shared agent-tier secret for their sessions,
 	// a service's own secret for its pods) is granted as with sign-in on, and a machine login,
 	// which a person decides on Dispatch's page, is unchanged. off refuses to start beside any

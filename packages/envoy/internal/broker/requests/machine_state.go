@@ -988,10 +988,11 @@ const SignInOffActor = "broker:signin-off"
 // (PendingForApprover: its signed request verifies for this broker's own audience) is denied
 // here, policy.ReasonSignInOff, with its record's denied event and its request.denied audit row
 // in one statement, rather than left on the approver's list behind a page that is gone until its
-// deadline. The sweep expires overdue ones first (expirePending), so one past its deadline is
-// never denied. No time bounds the selection: while this pod runs it denies what a pod with
-// sign-in on queues too, so a roll between the two settings denies each request of its overlap
-// that no person approved first on such a pod, each one's session told why, and a session asks
+// deadline. The sweep runs expirePending first, so an overdue request is normally expired, not
+// denied; if that expiry fails, this still denies it. No time bounds the selection: while this
+// pod runs it denies what a pod with sign-in on queues too, so a roll between the two settings
+// denies each request of its overlap that such a pod, by a person or its model judge, did not
+// approve first, each one's session told why, and a session asks
 // again once the roll is done. A bound taken per process cannot do better, since a later or
 // restarted pod with sign-in off takes a later one.
 // A request signed for another BROKER_PUBLIC_URL is left alone: it belongs to another broker
