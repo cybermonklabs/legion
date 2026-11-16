@@ -47,7 +47,6 @@ function row(skip: boolean) {
   return (name: string, body: () => Promise<void>) => test.skipIf(skip)(name, body, 60_000);
 }
 
-/** A blackholed address: TEST-NET-1 is routed nowhere, so a network that drops it times out. */
 const blackhole = { host: "192.0.2.1", port: 4222 };
 
 /** The script's own probe, run once here against the blackholed address: exit 28 with the lookup
@@ -370,7 +369,6 @@ describe.concurrent("outside-path-reach.sh", () => {
     "reads the same holding target as unreachable once it is closed, and passes",
     async () => {
       const origin = fakeDispatch();
-      // On a port below the kernel's ephemeral range, so once closed no other listener takes it.
       const holding = holdingTarget(await closedPort());
       const { port } = holding;
       holding.stop(true);
@@ -1296,7 +1294,6 @@ describe.concurrent("outside-path-reach.sh", () => {
     "0::ffff:7f00:1",
     "0000:0000:0000:0000:0000:ffff:7f00:0001",
   ];
-  /** A PATH whose curl, as on a v6-only stack, connects to no IPv6 address. */
   const v6Only = () =>
     pathWithCurl(`case "$*" in *'telnet://['*) printf '0.000010 0.000000'; exit 7 ;; esac`);
 

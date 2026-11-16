@@ -82,7 +82,6 @@ unknown() {
   exit 2
 }
 
-# The checks of one field each, written with `case` alone: bash 3.2's `=~` quotes differently.
 is_count() { case $1 in '' | *[!0-9]*) return 1 ;; esac; }
 is_seconds() { case $1 in '' | *[!0-9.]* | .* | *. | *.*.*) return 1 ;; esac; }
 is_port() {
@@ -211,7 +210,7 @@ classify() {
 # that was neither; `detail` gives curl's answer in the round that decided, then every round's
 # class in order.
 judge() {
-  local round=0 each code lookup connect decided='' seen=''
+  local round=0 each code lookup connect decided='' seen='' f1 f2 f3
   class=''
   while [ "$round" -lt "$rounds" ]; do
     code=$1 lookup=$2 connect=$3
@@ -238,11 +237,8 @@ judge() {
   case $class in
     UNKNOWN*) detail="$class; probes: ${seen#, }" ;;
     *)
-      set -f
-      # shellcheck disable=SC2086 # split on purpose: the three fields of the deciding round
-      set -- $decided
-      set +f
-      detail="$class; curl exit ${1-}, time_namelookup ${2-}, time_connect ${3-}; probes: ${seen#, }"
+      fields "$decided"
+      detail="$class; curl exit $f1, time_namelookup $f2, time_connect $f3; probes: ${seen#, }"
       ;;
   esac
 }
@@ -349,9 +345,9 @@ esac
 targets=$OUTSIDE_PATH_TARGETS
 bom=$'\xef\xbb\xbf'
 # The bytes `read` does not split on that would still end a line for a reader: every control
-# character but tab (and LF, which `read` splits on), each named rather than given as a range, since
-# bash 3.2 in a UTF-8 locale orders a bracket range by collation; and the Unicode line breaks.
-control=$'[\001\002\003\004\005\006\007\010\013\014\015\016\017\020\021\022\023\024\025\026\027\030\031\032\033\034\035\036\037\177]'
+# character but tab (and LF, which `read` splits on), each named rather than given as a range, so
+# the match does not hang on how a locale orders a range; and the Unicode line breaks.
+breaks=$'[\001\002\003\004\005\006\007\010\013\014\015\016\017\020\021\022\023\024\025\026\027\030\031\032\033\034\035\036\037\177]'
 nel=$'\xc2\x85' line_sep=$'\xe2\x80\xa8' para_sep=$'\xe2\x80\xa9'
 # `read -d ''` stops at a NUL byte and succeeds only when it found one. bash 3.2 cuts a line at a
 # NUL and bash 5 drops it, so either would probe another line than the one written.
@@ -382,8 +378,8 @@ while [ -n "$rest" ]; do
   # target on this row, where an inline comment would cut it away: such a file is refused before
   # any comment is cut.
   row=${row%$'\r'}
-  # shellcheck disable=SC2254 # $control is a bracket expression on purpose, so it stays unquoted
-  case $row in *$control* | *"$nel"* | *"$line_sep"* | *"$para_sep"*)
+  # shellcheck disable=SC2254 # $breaks is a bracket expression on purpose, so it stays unquoted
+  case $row in *$breaks* | *"$nel"* | *"$line_sep"* | *"$para_sep"*)
     unknown "line $number of $targets holds a control character or a line break other than LF inside it: write one target per line, with LF or CRLF line endings"
     ;;
   esac
