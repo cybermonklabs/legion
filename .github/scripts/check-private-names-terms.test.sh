@@ -2,14 +2,16 @@
 # Tests for the fifth rule of `check-private-names.sh`, the deployment's own term list
 # (PRIVATE_NAME_TERMS), and for the masking and event handling that came with it: a planted term
 # refused in a line and in a path, in any case and by grep's own case folding, its absence passing;
-# a path, a named target and another command's message masked so the log never prints a term, a
-# traced run included; the allowed hosts of the committed rules never excusing a term; an unset
+# a path, a named target and another command's message masked so the log never prints a term or a
+# fragment of one, overlapping terms and a traced run included; several files a mask prints alike
+# counted one by one; the allowed hosts of the committed rules never excusing a term; an unset
 # list warning on a pull request's events and failing on the merge queue's, a push's and a
-# dispatched run's; and a pull request's text through check-pr-text.sh.
+# dispatched run's; and a pull request's text through check-pr-text.sh, a stranger's login never
+# printed.
 #
-# The terms are placeholders check-private-names-test-lib.sh sets, never a real term, and every
-# case is named by a neutral label, since this script's own output is the CI log; the last case
-# runs the guard over that captured log.
+# The terms are placeholders this file and check-private-names-test-lib.sh set, never a real
+# term, and every case is named by a neutral label, since this script's own output is the CI log;
+# the last case runs the guard over that captured log.
 #
 # Run from anywhere: .github/scripts/check-private-names-terms.test.sh
 # CI runs it in ci.yaml's test job.
@@ -116,6 +118,35 @@ done
 check "counts the three" "$(contains "$out" '^check-private-names: 3 finding(s)')"
 folded=$(LC_ALL=C.UTF-8 grep -i -F -e moss -e lift -e κοσμοσ <<< "$out" || true)
 check "prints no spelling grep folds to a term" "$(is "$folded" "")"
+
+echo "case: two terms that overlap across a path's parts leave no fragment of either"
+# sorrel/wicket and wicket/tamarind share their middle part. Masking the first occurrence alone
+# would leave the tail of the second in the log.
+root=$(fixture term-overlap)
+overlap_terms=$(printf '%s\n' sorrel/wicket wicket/tamarind)
+mkdir -p "$root/docs/sorrel/wicket/tamarind"
+printf 'clean text\n' > "$root/docs/sorrel/wicket/tamarind/notes.md"
+git -C "$root" add docs
+run_check_as pull_request "$overlap_terms" "$root"
+check "fails" "$(is "$status" 1)"
+check "masks every part either term touches as one <name>" \
+  "$(contains "$out" "^::error::docs/<name>/notes.md: names a term of the deployment's own list (PRIVATE_NAME_TERMS) in its path\$")"
+fragments=$(grep -i -E 'sorrel|wicket|tamarind' <<< "$out" || true)
+check "prints no part of either term" "$(is "$fragments" "")"
+
+echo "case: several files a mask prints alike count as several findings"
+root=$(fixture term-count)
+mkdir -p "$root/docs/runbooks"
+printf 'clean text\n' > "$root/docs/runbooks/$planted-one.md"
+printf 'clean text\n' > "$root/docs/runbooks/$planted-two.md"
+printf '%s\n' "$planted" > "$root/docs/runbooks/plain.md"
+git -C "$root" add docs
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts two path findings and one line finding" "$(contains "$out" '^check-private-names: 3 finding(s)')"
+check "reports each named file" \
+  "$(is "$(grep -c "^::error::docs/runbooks/<name>: names a term" <<< "$out")" 2)"
+check "prints no spelling of the term" "$(is "$(names_planted "$out")" false)"
 
 echo "case: a named target that holds a term is masked in the summary and in the missing-target error"
 root=$(fixture term-target)
@@ -243,6 +274,16 @@ run_pr_text
 check "an issue comment naming a term fails" "$(is "$status" 1)"
 check "names the comment by its id and line" "$(contains "$out" 'comment:102:1: names a term')"
 check "prints neither half of the term" "$(is "$(names_planted "$out")" false)"
+
+echo "case: a stranger whose login holds a term is skipped without the login"
+clean_pr
+items 407 "fine" > "$work/comments.1"
+by "${planted}-fan" User NONE "$work/comments.1"
+run_pr_text
+check "a stranger's clean comment passes" "$(is "$status" 0)"
+check "names the skipped comment by its author's association" \
+  "$(contains "$out" '^skipped comment:407: its author (NONE) is not trusted$')"
+check "prints no spelling of the term" "$(is "$(names_planted "$out")" false)"
 
 echo "case: a pull request's text with the list unset, on a pull request and on the merge queue"
 clean_pr

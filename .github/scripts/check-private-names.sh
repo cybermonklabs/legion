@@ -54,12 +54,14 @@
 # review comments. The first two rules and the fifth also read every file's path, directories
 # included, as git and find print it unquoted. Binary files are
 # skipped, and so are lockfiles (bun.lock, go.sum, go.work.sum), whose integrity hashes are random
-# text. Every hit is printed as its file and line, never its text. A path part that the first two
-# rules or a term match is printed as <name>, and so is a run of parts that a term spans; a path
-# that still holds a term after that is printed as <name> whole. Every other line that carries a
-# path, a named target or another command's message is masked the same way, so the log does not
-# repeat the name. The only non-zero exits are named hits (1), and a target or search that failed
-# or a term list the event requires and the job did not map (2).
+# text. Every hit is printed as its file and line, never its text, and each file and line counts
+# once, however its path prints. A path part that the first two rules match is printed as <name>,
+# and so is every part an occurrence of a term touches, overlapping occurrences included, a run of
+# such parts as one <name>; a path that still holds a term after that is printed as <name> whole.
+# Every other line that carries a path, a named target or another command's message is masked the
+# same way, so the log repeats no name and no fragment of a term. The only non-zero exits are named
+# hits (1), and a target or search that failed or a term list the event requires and the job did
+# not map (2).
 #
 # The rules below are spelled so that no line of this file is refused by them: a line a rule's raw
 # pattern matches, such as a reserved placeholder host, always clears that rule's own allow-list
@@ -174,35 +176,60 @@ names_term() {
   [ ${#terms[@]} -gt 0 ] && grep -q -F -i -f "$terms_file" <<< "$1"
 }
 
+# byte_length <text>: text's length in bytes, the unit of grep's -b offsets.
+byte_length() { (LC_ALL=C; printf '%s' "${#1}"); }
+
+# term_spans <text>: one "start end" line, in bytes, for every occurrence of a term in text, by
+# the grep the term search runs. Each search starts again one character after the start of the
+# occurrence before it, so an occurrence that overlaps another, of the same term or of another,
+# has a line of its own.
+term_spans() {
+  local text=$1 term at found start match
+  for term in "${terms[@]}"; do
+    at=0
+    while found=$(grep -a -o -b -F -i -e "$term" <<< "$(LC_ALL=C; printf '%s' "${text:at}")"); do
+      found=${found%%$'\n'*}
+      start=$((at + ${found%%:*}))
+      match=${found#*:}
+      printf '%s %s\n' "$start" "$((start + $(byte_length "$match")))"
+      at=$((start + $(byte_length "${match:0:1}")))
+    done
+  done
+}
+
 # mask <text>: text, a path or a message that holds one, with each "/"-separated part that the
-# first two rules or a term match replaced by <name>, then each shortest run of parts that a term
-# spans (an owner/repository form) replaced by one <name>. A text that names_term still finds a
-# term in after that is printed as <name> whole.
+# first two rules match replaced by <name>, and each part an occurrence of a term touches, by
+# byte offset and overlapping occurrences included, replaced too, a run of such parts by one
+# <name>; so no fragment of a term is left. A text that names_term still finds a term in after
+# that is printed as <name> whole.
 mask() {
-  local IFS=/ part masked_text i j width
-  local -a parts masked=() dropped=() kept=()
+  local IFS=/ part masked_text i offset span_start span_end
+  local -a parts masked=() starts=() ends=() touched=() kept=()
   read -r -a parts <<< "$1"
   for part in "${parts[@]}"; do
     if names "$part"; then masked+=("<name>"); else masked+=("$part"); fi
   done
   if names_term "$1"; then
-    for i in "${!masked[@]}"; do
-      if names_term "${masked[i]}"; then masked[i]="<name>"; fi
+    offset=0
+    for i in "${!parts[@]}"; do
+      starts[i]=$offset
+      ends[i]=$((offset + $(byte_length "${parts[i]}")))
+      offset=$((ends[i] + 1))
     done
-    for ((width = 2; width <= ${#masked[@]}; width++)); do
-      for ((i = 0; i + width <= ${#masked[@]}; i++)); do
-        if names_term "${masked[*]:i:width}"; then
-          masked[i]="<name>"
-          for ((j = i + 1; j < i + width; j++)); do
-            masked[j]="<name>"
-            dropped[j]=1
-          done
+    while IFS=' ' read -r span_start span_end; do
+      for i in "${!parts[@]}"; do
+        if [ "${starts[i]}" -lt "$span_end" ] && [ "$span_start" -lt "${ends[i]}" ]; then
+          touched[i]=1
         fi
       done
-    done
+    done < <(term_spans "$1")
   fi
   for i in "${!masked[@]}"; do
-    if [ -z "${dropped[i]:-}" ]; then kept+=("${masked[i]}"); fi
+    if [ -z "${touched[i]:-}" ]; then
+      kept+=("${masked[i]}")
+    elif [ "$i" -eq 0 ] || [ -z "${touched[i - 1]:-}" ]; then
+      kept+=("<name>")
+    fi
   done
   masked_text=${kept[*]}
   if names_term "$masked_text"; then masked_text="<name>"; fi
@@ -302,7 +329,7 @@ search() {
   else
     cat "$matches"
   fi | cut -d: -f1,2 | while IFS=: read -r path line; do
-    printf '%s:%s: %s\n' "$(mask "$path")" "$line" "$label"
+    printf '%s:%s: %s\n' "$path" "$line" "$label"
   done >> "$hits"
 }
 
@@ -314,7 +341,7 @@ search_paths() {
   : > "$matches"
   run grep "$@" "$paths"
   while IFS= read -r path; do
-    printf '%s:0: %s in its path\n' "$(mask "$path")" "$label"
+    printf '%s:0: %s in its path\n' "$path" "$label"
   done < "$matches" >> "$hits"
 }
 
@@ -331,16 +358,18 @@ if [ ${#terms[@]} -gt 0 ]; then
   search_paths "$term_label" -F -i -f "$terms_file"
 fi
 
+# The rows name each file by its own path, so they are made unique by file and line before any
+# path is masked: two files that print alike once masked count as two findings.
 if [ -s "$hits" ]; then
   sort -t: -k1,1 -k2,2n -u -o "$hits" "$hits"
   while IFS= read -r hit; do
-    path=${hit%%:*}
+    path=$(mask "${hit%%:*}")
     rest=${hit#*:}
     line=${rest%%:*}
     if [ "$line" = 0 ]; then
       echo "::error::$path: ${rest#*: }"
     else
-      echo "::error file=$path,line=$line::$hit"
+      echo "::error file=$path,line=$line::$path:$rest"
     fi
   done < "$hits"
   echo "check-private-names: $(wc -l < "$hits") finding(s) ($scanned). This repository is public, so:"

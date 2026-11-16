@@ -106,15 +106,16 @@ jq -r '.commits[] | .commit.message, .commit.author.name, .commit.author.email, 
 # or its author is the repository's owner, a member of its organization or a collaborator. On a
 # public repository anyone signed in can comment or review, and every run reports the required
 # check; a stranger's text skipped this way can neither fail the check nor clear one that failed.
-# Each skipped item is printed as `skipped <kind>:<id>: author <login> (<association>) is not
-# trusted`, with no text.
+# Each skipped item is printed as `skipped <kind>:<id>: its author (<association>) is not
+# trusted`, with no text and no login: a stranger chooses the login, and a login can spell a
+# private name, which nothing here would mask.
 trusted='.user.type == "Bot" or (.author_association // "" | IN("OWNER", "MEMBER", "COLLABORATOR"))'
 
 # read_list <kind> <route>: writes the body of every trusted item the list route answers to
 # $text/<kind>/<id>, reading 100 items a page until a page holds fewer. An answer that is not a
 # list, or an item whose id is not a whole number, is refused rather than scanned in part.
 read_list() {
-  local kind=$1 route=$2 page=1 id trust author body
+  local kind=$1 route=$2 page=1 id trust association body
   mkdir "$text/$kind"
   while :; do
     gh api "repos/$repository/$route?per_page=100&page=$page" > "$work/answer"
@@ -124,10 +125,10 @@ read_list() {
       exit 1
     fi
     jq -r ".[] | [(.id | tojson), ($trusted | tostring),
-        \"\(.user.login // \"<none>\") (\(.author_association // \"<none>\"))\",
+        \"\(.author_association // \"<none>\")\",
         (.body // \"\" | explode | map(select(. != 0)) | implode | @base64)] | @tsv" \
       "$work/answer" > "$work/items"
-    while IFS=$'\t' read -r id trust author body; do
+    while IFS=$'\t' read -r id trust association body; do
       if ! [[ $id =~ ^[0-9]+$ ]]; then
         echo "::error::page $page of the $route route lists a $kind whose id is not a whole" \
           "number, so it cannot be reported" >&2
@@ -136,7 +137,7 @@ read_list() {
       if [ "$trust" = true ]; then
         base64 -d <<< "$body" > "$text/$kind/$id"
       else
-        echo "skipped $kind:$id: author $author is not trusted"
+        echo "skipped $kind:$id: its author ($association) is not trusted"
       fi
     done < "$work/items"
     if [ "$(wc -l < "$work/items")" -lt 100 ]; then break; fi
