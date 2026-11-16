@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // leakCheckPin is the pin these tests give the launcher's environment, spelled as the worker
@@ -509,6 +510,43 @@ func testerRolesDir(t *testing.T) string {
 	return rolesDir
 }
 
+// relentlessReaper runs PID 1's reaper (reapOrphans) over managers and guard with a SIGCHLD always
+// waiting, so it starts a new pass as soon as it ends one, until the stop it answers. Before the
+// reaper starts it starts a child of the test process that exits at once and that the reaper must
+// take. stop ends the reaper, waits for it, and fails t unless the reaper took that child, which
+// the child's own wait says by answering ECHILD: a reaper that took nothing raced nothing. The
+// wait is the child's own rather than a probe of its pid, which another process may have taken by
+// then. The reaper takes every exited child of the test process, so a test that runs it is not
+// parallel, and runs its own commands through guard or while the reaper is stopped.
+func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop func()) {
+	t.Helper()
+	orphan := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := orphan.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	signals := make(chan os.Signal, 1)
+	var reaping sync.WaitGroup
+	reaping.Go(func() { reapOrphans(ctx, signals, managers, guard) })
+	reaping.Go(func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case signals <- syscall.SIGCHLD:
+			}
+		}
+	})
+	return func() {
+		t.Helper()
+		cancel()
+		reaping.Wait()
+		if err := orphan.Wait(); !errors.Is(err, syscall.ECHILD) {
+			t.Errorf("the orphan %d's own wait answered %v, want ECHILD: the reaper left it unreaped, so it never ran while the test's commands did", orphan.Process.Pid, err)
+		}
+	}
+}
+
 // While the install's verification runs — the served check's `--help`, a child of the launcher,
 // which is its pod's PID 1 — the guard holds its pid, so no pass of the pod's reaper can take its
 // exit before the install's own wait reads it (TestLeakCheckInstallsUnderThePodsReaperKeepTheirExitStatus
@@ -535,22 +573,20 @@ func TestTheLeakCheckInstallsVerificationIsHeldFromThePodsReaperWhileItRuns(t *t
 	go func() {
 		// The check is let go on every path, so the install the test waits on below ends.
 		defer func() { _ = os.WriteFile(release, nil, 0o600) }()
-		deadline := time.Now().Add(10 * time.Second)
-		for {
+		var pid int
+		if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
 			body, err := os.ReadFile(pidFile)
-			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(body))); err == nil && convErr == nil && pid > 0 {
-				guard.mu.Lock()
-				held := guard.pids[pid]
-				guard.mu.Unlock()
-				read <- reading{pid: pid, held: held}
-				return
-			}
-			if time.Now().After(deadline) {
-				read <- reading{err: fmt.Errorf("the served check wrote no pid to %s within 10s", pidFile)}
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
+			n, convErr := strconv.Atoi(strings.TrimSpace(string(body)))
+			pid = n
+			return err == nil && convErr == nil && pid > 0
+		}) {
+			read <- reading{err: fmt.Errorf("the served check wrote no pid to %s within 10s", pidFile)}
+			return
 		}
+		guard.mu.Lock()
+		held := guard.pids[pid]
+		guard.mu.Unlock()
+		read <- reading{pid: pid, held: held}
 	}()
 	var last shimwire.LauncherLeakCheckResult
 	for _, frame := range frames {
@@ -576,8 +612,8 @@ func TestTheLeakCheckInstallsVerificationIsHeldFromThePodsReaperWhileItRuns(t *t
 // skips (pidGuard.starter, which newManagers gives the pod's install): a run whose exit the reaper
 // took first fails its own wait with `waitid: no child processes`, and the role's start is refused
 // with `the served check could not be run`. Here the reaper starts a new pass as soon as it ends
-// one, so it meets the exit of every run, and every install must still answer Installed. The test
-// is not parallel: the reaper takes every exited child of the test process.
+// one (relentlessReaper), so it meets the exit of every run, and every install must still answer
+// Installed. The test is not parallel: the reaper takes every exited child of the test process.
 func TestLeakCheckInstallsUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
 	pinLeakCheck(t, leakCheckPin)
 	frames := servedLeakCheck(t, leakCheckPin, os.DevNull)
@@ -597,34 +633,14 @@ func TestLeakCheckInstallsUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
 		}
 		pods[index] = managers
 	}
-	// A child the reaper must take, so the test proves the reaper ran while the installs did.
-	orphan := exec.Command("/bin/sh", "-c", "exit 0")
-	if err := orphan.Start(); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	signals := make(chan os.Signal, 1)
-	var reaping sync.WaitGroup
-	reaping.Go(func() { reapOrphans(ctx, signals, pods[0], guard) })
-	// A SIGCHLD is always waiting, so the reaper never pauses between passes.
-	reaping.Go(func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case signals <- syscall.SIGCHLD:
-			}
-		}
-	})
+	stop := relentlessReaper(t, pods[0], guard)
 	last := make([]shimwire.LauncherLeakCheckResult, len(pods))
 	for index, managers := range pods {
 		for _, frame := range frames {
 			last[index] = managers[0].check.receive(context.Background(), frame, func(string, ...any) {})
 		}
 	}
-	cancel()
-	reaping.Wait()
+	stop()
 
 	for index, got := range last {
 		if !got.OK || !got.Installed {
@@ -633,8 +649,5 @@ func TestLeakCheckInstallsUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
 	}
 	if failed := reaperLog.String(); failed != "" {
 		t.Errorf("the reaper's passes failed, so they raced nothing:\n%s", failed)
-	}
-	if !errors.Is(syscall.Kill(orphan.Process.Pid, 0), syscall.ESRCH) {
-		t.Errorf("the reaper left the orphan %d unreaped, so it never ran while the installs did", orphan.Process.Pid)
 	}
 }

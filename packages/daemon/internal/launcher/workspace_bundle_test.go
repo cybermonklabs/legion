@@ -4,15 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -212,10 +209,11 @@ func TestAReleasedWorkspacesWorkIsBundledByTheShimAndRestoredByTheLauncher(t *te
 // through the guard the reaper skips (pidGuard.starter, which newManagers gives the pod's
 // restore): a command whose exit the reaper took first fails its own wait with `waitid: no child
 // processes`, at times `waitid: no such process`, and the roles start without the saved work.
-// Here the reaper starts a new pass as soon as it ends one, so it meets the exit of every command,
-// and every put-back must still answer with the whole of what was saved. The test is not
-// parallel: the reaper takes every exited child of the test process, so the test's own jj and git
-// run only while the reaper is stopped, the fixture before it starts and the reads after it stops.
+// Here the reaper starts a new pass as soon as it ends one (relentlessReaper), so it meets the exit
+// of every command, and every put-back must still answer with the whole of what was saved. The
+// test is not parallel: the reaper takes every exited child of the test process, so the test's own
+// jj and git run only while the reaper is stopped, the fixture before it starts and the reads after
+// it stops.
 func TestPutBacksUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
 	testbin.RequireJJFilters(t)
 	f := newBundleFixture(t)
@@ -228,45 +226,14 @@ func TestPutBacksUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
 	// An issue pod's managers, whose restore is the one newManagers wires to the guard. A failed
 	// pass of a namespaced manager's reaper is logged rather than thrown, and the log is read
 	// below: a reaper whose passes failed raced nothing.
-	rolesDir := shortTempDir(t)
-	tokenDir := filepath.Join(rolesDir, "tester", RoleLauncherDir)
-	if err := os.MkdirAll(tokenDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tokenDir, LauncherTokenFile), []byte("launcher-token\n"), 0o400); err != nil {
-		t.Fatal(err)
-	}
+	rolesDir := testerRolesDir(t)
 	reaperLog := &lockedBuffer{}
 	guard := &pidGuard{}
 	managers, err := newManagers(Config{RolesDir: rolesDir, Roles: []string{"tester"}, Stdout: reaperLog, Stderr: reaperLog}, guard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A child the reaper must take, so the test proves the reaper ran while the put-backs did.
-	orphan := exec.Command("/bin/sh", "-c", "exit 0")
-	if err := orphan.Start(); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	signals := make(chan os.Signal, 1)
-	var reaping sync.WaitGroup
-	reaping.Add(2)
-	go func() {
-		defer reaping.Done()
-		reapOrphans(ctx, signals, managers, guard)
-	}()
-	// A SIGCHLD is always waiting, so the reaper never pauses between passes.
-	go func() {
-		defer reaping.Done()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case signals <- syscall.SIGCHLD:
-			}
-		}
-	}()
+	stop := relentlessReaper(t, managers, guard)
 	type answer struct {
 		restored bool
 		notice   string
@@ -275,8 +242,7 @@ func TestPutBacksUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
 	for index, dir := range workspaces {
 		answers[index].restored, answers[index].notice = restoreWorkspace(context.Background(), managers[0].restore.start, dir, f.env, bundleRelease, saved)
 	}
-	cancel()
-	reaping.Wait()
+	stop()
 
 	for index, got := range answers {
 		if !got.restored || !strings.Contains(got.notice, "is restored") || strings.Contains(got.notice, "would not take") ||
@@ -287,9 +253,6 @@ func TestPutBacksUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
 	}
 	if failed := reaperLog.String(); failed != "" {
 		t.Errorf("the reaper's passes failed, so they raced nothing:\n%s", failed)
-	}
-	if !errors.Is(syscall.Kill(orphan.Process.Pid, 0), syscall.ESRCH) {
-		t.Errorf("the reaper left the orphan %d unreaped, so it never ran while the put-backs did", orphan.Process.Pid)
 	}
 	if t.Failed() {
 		t.FailNow()
