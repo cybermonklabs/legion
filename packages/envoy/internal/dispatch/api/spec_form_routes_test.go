@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/http"
@@ -153,11 +154,14 @@ func answerFormApproval(t *testing.T, handler http.Handler, ask, selected, text 
 }
 
 // formFault is one of the seven fixture texts of v-form, with a clean text of the same node that
-// an edit can break, and the rule and detail its finding names.
+// an edit can break, and the rule and detail its finding names. A fault of a definition (v-terms)
+// holds whole term lines: its clean line defines another term, or the same term in one sentence,
+// and excerpt is the definition its broken line gives, which the finding quotes.
 type formFault struct {
 	name, node    string
 	kind          specform.Kind
 	clean, broken string
+	excerpt       string
 	rule, detail  string
 }
 
@@ -193,8 +197,11 @@ var formFaults = []formFault{
 }
 
 // document is a spec that holds the fault's node with body: a requirement block for a statement,
-// a check block for a claim.
+// a check block for a claim, and the term line body under a heading Terms for a definition.
 func (f formFault) document(body string) string {
+	if f.kind == specform.KindDefinition {
+		return specWithTerms(body)
+	}
 	block := "requirement"
 	if f.kind == specform.KindClaim {
 		block = "check"
@@ -213,7 +220,7 @@ func (f formFault) finding(issue formIssue, version int) specFormFinding {
 		Document: "spec.md", ArtifactID: issue.PrimaryArtifactID, Version: version,
 		Finding: specform.Finding{
 			Node: f.node, Kind: f.kind, Where: fmt.Sprintf("spec.md version %d", version),
-			Rule: specform.Rule(f.rule), Detail: f.detail, Excerpt: f.broken,
+			Rule: specform.Rule(f.rule), Detail: f.detail, Excerpt: cmp.Or(f.excerpt, f.broken),
 		},
 	}
 }
@@ -351,86 +358,11 @@ func requireLeftResolved(t *testing.T, handler http.Handler, database *store.Sto
 }
 
 // Each of the seven fixture texts of v-form, on each of the six paths to a person's approval, is
-// refused with its node and rule, and leaves nothing written: (1) open a request; (2) hand a moved
-// request back; (3) approve from the header and (4) approve a named version, each with no request
-// open and on a request an edit moved to the broken version; (5) approve from the Inbox, on that
-// moved request and on one opened outside the root and then moved under it; and (6) reopen the
-// issue, which leaves the request resolved with the findings and opens every other ask.
+// refused with its node and rule, and leaves nothing written (requireEveryApprovalRouteRefuses).
 func TestEveryApprovalRouteRefusesABreakOfTheForm(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	for _, fault := range formFaults {
-		t.Run(fault.name, func(t *testing.T) {
-			// The broken text in the spec's first version, with no request open: paths 1, 3 and 4.
-			first := createFormIssue(t, tree.handler, tree.root, "Broken at first: "+fault.name, fault.document(fault.broken))
-			awaitSettled(t, tree.database, first.PrimaryArtifactID)
-			before := readFormState(t, tree.database, first.Key)
-			lines := []string{fault.line(1)}
-			requireFormRefusal(t, "path 1, open a request", requestFormApproval(t, tree.handler, first.PrimaryArtifactID, nil),
-				specform.ActRequest, lines, fault.finding(first, 1))
-			requireFormRefusal(t, "path 3 with no request open", reviewFormDocument(t, tree.handler, first.PrimaryArtifactID, "approved", ""),
-				specform.ActApproval, lines, fault.finding(first, 1))
-			requireFormRefusal(t, "path 4 with no request open", reviewFormVersion(t, tree.handler, first.PrimaryArtifactID, 1, "approved"),
-				specform.ActApproval, lines, fault.finding(first, 1))
-			if after := readFormState(t, tree.database, first.Key); after != before {
-				t.Fatalf("the refused writes on the first version changed %+v to %+v", before, after)
-			}
-
-			// A request on a clean first version, which an edit moves to the broken second: paths 2,
-			// 3, 4 and 5.
-			moved := createFormIssue(t, tree.handler, tree.root, "Broken by an edit: "+fault.name, fault.document(fault.clean))
-			ask := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, moved.PrimaryArtifactID, nil)).Ask.ID
-			reviseDocument(t, tree.handler, moved.PrimaryArtifactID, fault.clean, fault.broken, 2)
-			awaitSettled(t, tree.database, moved.PrimaryArtifactID)
-			before = readFormState(t, tree.database, moved.Key)
-			lines = []string{fault.line(2)}
-			requireFormRefusal(t, "path 2, hand the moved request back", requestFormApproval(t, tree.handler, moved.PrimaryArtifactID, nil),
-				specform.ActRequest, lines, fault.finding(moved, 2))
-			requireFormRefusal(t, "path 3 on the moved request", reviewFormDocument(t, tree.handler, moved.PrimaryArtifactID, "approved", ""),
-				specform.ActApproval, lines, fault.finding(moved, 2))
-			requireFormRefusal(t, "path 4 on the moved request", reviewFormVersion(t, tree.handler, moved.PrimaryArtifactID, 2, "approved"),
-				specform.ActApproval, lines, fault.finding(moved, 2))
-			requireFormRefusal(t, "path 5 on the moved request", answerFormApproval(t, tree.handler, ask, docs.ApprovalOptionApprove, ""),
-				specform.ActApproval, lines, fault.finding(moved, 2))
-			if after := readFormState(t, tree.database, moved.Key); after != before {
-				t.Fatalf("the refused writes on the moved request changed %+v to %+v", before, after)
-			}
-			if got := readBlockAsk(t, tree.handler, ask); got.State != "open" {
-				t.Fatalf("the moved request = %s, want it still open", got.State)
-			}
-
-			// A request opened while the issue stood outside the root, then moved under it: path 5.
-			reparented := createFormIssue(t, tree.handler, tree.outside, "Moved under the root: "+fault.name, fault.document(fault.broken))
-			opened := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, reparented.PrimaryArtifactID, nil))
-			if opened.SpecForm != nil {
-				t.Fatalf("a request outside the root answered spec_form %#v, want none", opened.SpecForm)
-			}
-			reparentFormIssue(t, tree.handler, reparented.Key, tree.root)
-			awaitSettled(t, tree.database, reparented.PrimaryArtifactID)
-			before = readFormState(t, tree.database, reparented.Key)
-			requireFormRefusal(t, "path 5 on a request moved under the root", answerFormApproval(t, tree.handler, opened.Ask.ID, docs.ApprovalOptionApprove, ""),
-				specform.ActApproval, []string{fault.line(1)}, fault.finding(reparented, 1))
-			if after := readFormState(t, tree.database, reparented.Key); after != before {
-				t.Fatalf("the refused answer changed %+v to %+v", before, after)
-			}
-
-			// The same on a copy that also holds a question, closed and reopened: path 6.
-			reopened := createFormIssue(t, tree.handler, tree.outside, "Reopened under the root: "+fault.name, fault.document(fault.broken))
-			request := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, reopened.PrimaryArtifactID, nil)).Ask.ID
-			question := createSessionAsk(t, tree.handler, reopened.Key, "Which region takes the first wave?")
-			reparentFormIssue(t, tree.handler, reopened.Key, tree.root)
-			seq := reopenFormIssue(t, tree, reopened.Key)
-			requireLeftResolved(t, tree.handler, tree.database, reopened.Key, seq, request, fault.line(1), model.Actor{Kind: "user", ID: "alice"})
-			requireRestoredOpen(t, tree, reopened.Key, seq, question)
-			reviews := readFormState(t, tree.database, reopened.Key).reviews
-			answered := answerFormApproval(t, tree.handler, request, docs.ApprovalOptionApprove, "")
-			if answered.Code != http.StatusConflict || strings.Contains(answered.Body.String(), "SPEC_FORM") {
-				t.Fatalf("approve the request the reopen left resolved: status=%d body=%s, want 409 for a request that is not open",
-					answered.Code, answered.Body.String())
-			}
-			if after := readFormState(t, tree.database, reopened.Key).reviews; after != reviews {
-				t.Fatalf("the refused answer wrote %d reviews", after-reviews)
-			}
-		})
+		t.Run(fault.name, func(t *testing.T) { requireEveryApprovalRouteRefuses(t, tree, fault) })
 	}
 	// The controls of path 6: a reopen opens the broken request again where the form does not
 	// cover it, so a build that left every approval request resolved fails here.
@@ -451,6 +383,87 @@ func TestEveryApprovalRouteRefusesABreakOfTheForm(t *testing.T) {
 	})
 }
 
+// requireEveryApprovalRouteRefuses fails t unless the broken text of fault, under the root of
+// tree, is refused with its node and rule on each of the six paths to a person's approval, and
+// leaves nothing written: (1) open a request; (2) hand a moved request back; (3) approve from the
+// header and (4) approve a named version, each with no request open and on a request an edit moved
+// to the broken version; (5) approve from the Inbox, on that moved request and on one opened
+// outside the root and then moved under it; and (6) reopen the issue, which leaves the request
+// resolved with the findings and opens every other ask.
+func requireEveryApprovalRouteRefuses(t *testing.T, tree specFormTree, fault formFault) {
+	t.Helper()
+	// The broken text in the spec's first version, with no request open: paths 1, 3 and 4.
+	first := createFormIssue(t, tree.handler, tree.root, "Broken at first: "+fault.name, fault.document(fault.broken))
+	awaitSettled(t, tree.database, first.PrimaryArtifactID)
+	before := readFormState(t, tree.database, first.Key)
+	lines := []string{fault.line(1)}
+	requireFormRefusal(t, "path 1, open a request", requestFormApproval(t, tree.handler, first.PrimaryArtifactID, nil),
+		specform.ActRequest, lines, fault.finding(first, 1))
+	requireFormRefusal(t, "path 3 with no request open", reviewFormDocument(t, tree.handler, first.PrimaryArtifactID, "approved", ""),
+		specform.ActApproval, lines, fault.finding(first, 1))
+	requireFormRefusal(t, "path 4 with no request open", reviewFormVersion(t, tree.handler, first.PrimaryArtifactID, 1, "approved"),
+		specform.ActApproval, lines, fault.finding(first, 1))
+	if after := readFormState(t, tree.database, first.Key); after != before {
+		t.Fatalf("the refused writes on the first version changed %+v to %+v", before, after)
+	}
+
+	// A request on a clean first version, which an edit moves to the broken second: paths 2, 3, 4
+	// and 5.
+	moved := createFormIssue(t, tree.handler, tree.root, "Broken by an edit: "+fault.name, fault.document(fault.clean))
+	ask := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, moved.PrimaryArtifactID, nil)).Ask.ID
+	reviseDocument(t, tree.handler, moved.PrimaryArtifactID, fault.clean, fault.broken, 2)
+	awaitSettled(t, tree.database, moved.PrimaryArtifactID)
+	before = readFormState(t, tree.database, moved.Key)
+	lines = []string{fault.line(2)}
+	requireFormRefusal(t, "path 2, hand the moved request back", requestFormApproval(t, tree.handler, moved.PrimaryArtifactID, nil),
+		specform.ActRequest, lines, fault.finding(moved, 2))
+	requireFormRefusal(t, "path 3 on the moved request", reviewFormDocument(t, tree.handler, moved.PrimaryArtifactID, "approved", ""),
+		specform.ActApproval, lines, fault.finding(moved, 2))
+	requireFormRefusal(t, "path 4 on the moved request", reviewFormVersion(t, tree.handler, moved.PrimaryArtifactID, 2, "approved"),
+		specform.ActApproval, lines, fault.finding(moved, 2))
+	requireFormRefusal(t, "path 5 on the moved request", answerFormApproval(t, tree.handler, ask, docs.ApprovalOptionApprove, ""),
+		specform.ActApproval, lines, fault.finding(moved, 2))
+	if after := readFormState(t, tree.database, moved.Key); after != before {
+		t.Fatalf("the refused writes on the moved request changed %+v to %+v", before, after)
+	}
+	if got := readBlockAsk(t, tree.handler, ask); got.State != "open" {
+		t.Fatalf("the moved request = %s, want it still open", got.State)
+	}
+
+	// A request opened while the issue stood outside the root, then moved under it: path 5.
+	reparented := createFormIssue(t, tree.handler, tree.outside, "Moved under the root: "+fault.name, fault.document(fault.broken))
+	opened := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, reparented.PrimaryArtifactID, nil))
+	if opened.SpecForm != nil {
+		t.Fatalf("a request outside the root answered spec_form %#v, want none", opened.SpecForm)
+	}
+	reparentFormIssue(t, tree.handler, reparented.Key, tree.root)
+	awaitSettled(t, tree.database, reparented.PrimaryArtifactID)
+	before = readFormState(t, tree.database, reparented.Key)
+	requireFormRefusal(t, "path 5 on a request moved under the root", answerFormApproval(t, tree.handler, opened.Ask.ID, docs.ApprovalOptionApprove, ""),
+		specform.ActApproval, []string{fault.line(1)}, fault.finding(reparented, 1))
+	if after := readFormState(t, tree.database, reparented.Key); after != before {
+		t.Fatalf("the refused answer changed %+v to %+v", before, after)
+	}
+
+	// The same on a copy that also holds a question, closed and reopened: path 6.
+	reopened := createFormIssue(t, tree.handler, tree.outside, "Reopened under the root: "+fault.name, fault.document(fault.broken))
+	request := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, reopened.PrimaryArtifactID, nil)).Ask.ID
+	question := createSessionAsk(t, tree.handler, reopened.Key, "Which region takes the first wave?")
+	reparentFormIssue(t, tree.handler, reopened.Key, tree.root)
+	seq := reopenFormIssue(t, tree, reopened.Key)
+	requireLeftResolved(t, tree.handler, tree.database, reopened.Key, seq, request, fault.line(1), model.Actor{Kind: "user", ID: "alice"})
+	requireRestoredOpen(t, tree, reopened.Key, seq, question)
+	reviews := readFormState(t, tree.database, reopened.Key).reviews
+	answered := answerFormApproval(t, tree.handler, request, docs.ApprovalOptionApprove, "")
+	if answered.Code != http.StatusConflict || strings.Contains(answered.Body.String(), "SPEC_FORM") {
+		t.Fatalf("approve the request the reopen left resolved: status=%d body=%s, want 409 for a request that is not open",
+			answered.Code, answered.Body.String())
+	}
+	if after := readFormState(t, tree.database, reopened.Key).reviews; after != reviews {
+		t.Fatalf("the refused answer wrote %d reviews", after-reviews)
+	}
+}
+
 // The repair pass, which restores the asks of an issue an older release reopened, leaves a broken
 // approval request resolved with the findings, as a reopen does, and a second pass finds nothing
 // left. The control: a clean request is restored open.
@@ -466,31 +479,48 @@ func TestTheRepairPassDoesNotOpenABrokenRequestAgain(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newRepairFixtureFrom(t, 20*time.Millisecond, "ACME-1")
 			tree := seedSpecFormTree(t, f.handler, f.database, f.deps)
-			issue := createFormIssue(t, f.handler, tree.outside, "Reopened by an older release", formFaults[0].document(test.body))
-			request := requireFormRequestOpened(t, requestFormApproval(t, f.handler, issue.PrimaryArtifactID, nil)).Ask.ID
-			reparentFormIssue(t, f.handler, issue.Key, tree.root)
-			closeIssue(t, f.handler, issue.Key)
-			reopener := repairActor("session-reopener")
-			reopenWithoutRestoring(t, f, issue.Key, "todo", reopener)
-			seq := lastIssueSeq(t, f.database, issue.Key)
+			withdrawn := withdrawnByAnOlderRelease(t, f, tree, formFaults[0].document(test.body))
 
 			repair := repairNow(t, f)
 			if !test.broken {
 				if repair.Restored != 1 || repair.LeftResolved != 0 {
 					t.Fatalf("repair = %+v, want 1 restored and none left resolved", repair)
 				}
-				requireRestoredOpen(t, specFormTree{handler: f.handler, database: f.database}, issue.Key, seq, request)
+				requireRestoredOpen(t, tree, withdrawn.issue, withdrawn.seq, withdrawn.request)
 				return
 			}
 			if repair.Restored != 0 || repair.LeftResolved != 1 {
 				t.Fatalf("repair = %+v, want none restored and 1 left resolved", repair)
 			}
-			requireLeftResolved(t, f.handler, f.database, issue.Key, seq, request, formFaults[0].line(1), reopener)
+			requireLeftResolved(t, f.handler, f.database, withdrawn.issue, withdrawn.seq, withdrawn.request, formFaults[0].line(1), withdrawn.reopener)
 			if again := repairNow(t, f); again != (IssueAskRepair{}) {
 				t.Fatalf("second repair = %+v, want nothing found", again)
 			}
 		})
 	}
+}
+
+// withdrawnRequest is an approval request that a close withdrew and that a reopen of an older
+// release did not restore: its issue, the ask, the sequence of the issue's newest event before
+// the repair, and the actor of the reopen.
+type withdrawnRequest struct {
+	issue, request string
+	seq            int
+	reopener       model.Actor
+}
+
+// withdrawnByAnOlderRelease opens an approval request of a new issue whose spec is document,
+// while the issue stands outside the root of tree, moves the issue under the root, closes it and
+// reopens it as an older release did, without restoring its asks.
+func withdrawnByAnOlderRelease(t *testing.T, f repairFixture, tree specFormTree, document string) withdrawnRequest {
+	t.Helper()
+	issue := createFormIssue(t, f.handler, tree.outside, "Reopened by an older release", document)
+	request := requireFormRequestOpened(t, requestFormApproval(t, f.handler, issue.PrimaryArtifactID, nil)).Ask.ID
+	reparentFormIssue(t, f.handler, issue.Key, tree.root)
+	closeIssue(t, f.handler, issue.Key)
+	reopener := repairActor("session-reopener")
+	reopenWithoutRestoring(t, f, issue.Key, "todo", reopener)
+	return withdrawnRequest{issue: issue.Key, request: request, seq: lastIssueSeq(t, f.database, issue.Key), reopener: reopener}
 }
 
 // A request for changes is never gated: the person sends the refusal's changes_reason to the
@@ -899,4 +929,278 @@ func TestLevelTwoSizedDocumentIsJudgedInUnderOneSecond(t *testing.T) {
 			t.Logf("the request of 301 statements took %s", elapsed)
 		})
 	}
+}
+
+// The list of terms of a root (R50) is the term lines of the person-approved version of the
+// root's terms.md, and of the latest approved version of each covered document under the root.
+// A covered document that defines a term of the list again is refused, and the refusal names the
+// term and the document that defines it.
+
+const (
+	sessionDefinition = "One conversation of an agent, with its id, in which the agent does its work."
+	otherSession      = "The record of one agent process in Envoy."
+	leaseDefinition   = "The right of one session to one work unit for a time."
+	otherLease        = "The time for which one session holds one work unit."
+	twoSentences      = "The registration that a session sends again. It comes every 90 seconds."
+)
+
+// termLine is the text of the term line that defines term as definition, after its list marker:
+// an edit replaces the text of a list item, not its marker.
+func termLine(term, definition string) string {
+	return "**" + term + "**: " + definition
+}
+
+// termList is lines as the items of a bullet list.
+func termList(lines []string) string {
+	return "- " + strings.Join(lines, "\n- ") + "\n"
+}
+
+// specWithTerms is a spec whose heading Terms holds lines.
+func specWithTerms(lines ...string) string {
+	return "# Spec\n\n## Terms\n\n" + termList(lines)
+}
+
+// termsMd is a terms.md that holds lines.
+func termsMd(lines ...string) string {
+	return "# Terms\n\n" + termList(lines)
+}
+
+// alreadyDefines is the detail of a second definition of a term that where defines.
+func alreadyDefines(where string) string {
+	return where + " already defines this term. Use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first"
+}
+
+// approveFormDocument is alice's approval of the document from its header, which must pass.
+func approveFormDocument(t *testing.T, handler http.Handler, artifactID string) {
+	t.Helper()
+	if response := reviewFormDocument(t, handler, artifactID, "approved", ""); response.Code != http.StatusCreated {
+		t.Fatalf("approve %s: status=%d body=%s, want 201", artifactID, response.Code, response.Body.String())
+	}
+}
+
+// approveTermsMd uploads markdown as the terms.md of issue and approves it as alice.
+func approveTermsMd(t *testing.T, tree specFormTree, issue, markdown string) model.Artifact {
+	t.Helper()
+	terms := uploadFormDocument(t, tree.handler, issue, "terms.md", markdown)
+	approveFormDocument(t, tree.handler, terms.ID)
+	return terms
+}
+
+// definitionFinding is the finding of the definition of term in version of the document name
+// whose id is artifactID, which breaks rule with detail.
+func definitionFinding(name, artifactID string, version int, term, definition, rule, detail string) specFormFinding {
+	return specFormFinding{
+		Document: name, ArtifactID: artifactID, Version: version,
+		Finding: specform.Finding{
+			Node: term, Kind: specform.KindDefinition, Where: fmt.Sprintf("%s version %d", name, version),
+			Rule: specform.Rule(rule), Detail: detail, Excerpt: definition,
+		},
+	}
+}
+
+// findingLine is the refusal's line for finding.
+func findingLine(finding specFormFinding) string {
+	return fmt.Sprintf("- %s %s in %s: %s.", finding.Kind, finding.Node, finding.Where, finding.Detail)
+}
+
+// requireTerms fails t unless the read of the document answers want as its list of terms.
+func requireTerms(t *testing.T, handler http.Handler, artifactID string, want ...specFormTerm) {
+	t.Helper()
+	if want == nil {
+		want = []specFormTerm{}
+	}
+	if got := specFormReadOf(t, handler, artifactID).Terms; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the list of terms of the read of %s = %#v, want %#v", artifactID, got, want)
+	}
+}
+
+// secondSession is a spec's definition of session, which the root's terms.md version 1 defines.
+var secondSession = formFault{
+	name: "a second definition", node: "session", kind: specform.KindDefinition,
+	clean: termLine("lease", leaseDefinition), broken: termLine("session", otherSession), excerpt: otherSession,
+	rule: "term-second-definition", detail: alreadyDefines("terms.md version 1 of ACME-1"),
+}
+
+// v-terms, control 1: with the root's terms.md approved defining session, a spec that defines
+// session again is refused on each of the six paths to a person's approval, and each finding names
+// the term and the document that defines it.
+func TestEveryApprovalRouteRefusesASecondDefinition(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition)))
+	requireEveryApprovalRouteRefuses(t, tree, secondSession)
+}
+
+// v-terms, control 3: a definition of two sentences is refused on each of the six paths.
+func TestADefinitionOfTwoSentencesIsRefusedOnEveryRoute(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	requireEveryApprovalRouteRefuses(t, tree, formFault{
+		name: "a definition of two sentences", node: "heartbeat", kind: specform.KindDefinition,
+		clean:  termLine("heartbeat", "The registration that a session sends again every 90 seconds."),
+		broken: termLine("heartbeat", twoSentences), excerpt: twoSentences,
+		rule: "definition-sentences", detail: "the definition has 2 sentences, and a definition has one",
+	})
+}
+
+// v-terms, last control: versions of terms.md that no person approved change nothing. They give
+// session a new definition and replace heartbeat with lease, and the list keeps the approved
+// definitions of heartbeat and session and has no lease, so a spec that defines lease is opened.
+func TestTheListCountsOnlyApprovedVersions(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	heartbeat := "The registration that a session sends again every 90 seconds."
+	terms := approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition), termLine("heartbeat", heartbeat)))
+	reviseDocument(t, tree.handler, terms.ID, termLine("heartbeat", heartbeat), termLine("lease", leaseDefinition), 2)
+	reviseDocument(t, tree.handler, terms.ID, termLine("session", sessionDefinition), termLine("session", otherSession), 3)
+	awaitSettled(t, tree.database, terms.ID)
+	issue := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
+	approved := []specFormTerm{
+		{Term: "heartbeat", Definition: heartbeat, Document: "terms.md", Version: 1, Issue: "ACME-1"},
+		{Term: "session", Definition: sessionDefinition, Document: "terms.md", Version: 1, Issue: "ACME-1"},
+	}
+	requireTerms(t, tree.handler, issue.PrimaryArtifactID, approved...)
+	requireTerms(t, tree.handler, terms.ID, approved...)
+	read := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil))
+	if read.SpecForm == nil || read.SpecForm.Terms != 2 {
+		t.Fatalf("spec_form = %#v, want the two terms of the list counted", read.SpecForm)
+	}
+}
+
+// The terms of an approved change request join the list with no copy: a later spec that defines
+// the same term is refused, naming that request's spec.
+func TestAChangeRequestsApprovedTermsJoinTheList(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	change := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
+	approveFormDocument(t, tree.handler, change.PrimaryArtifactID)
+	again := createFormIssue(t, tree.handler, tree.root, "Defines lease again", specWithTerms(termLine("lease", otherLease)))
+	finding := definitionFinding("spec.md", again.PrimaryArtifactID, 1, "lease", otherLease, "term-second-definition",
+		alreadyDefines("spec.md version 1 of "+change.Key))
+	requireFormRefusal(t, "request", requestFormApproval(t, tree.handler, again.PrimaryArtifactID, nil),
+		specform.ActRequest, []string{findingLine(finding)}, finding)
+}
+
+// A term that an approved change request defines is changed in that request, not in the root's
+// terms.md: a terms.md that defines it is refused, naming the request's spec, and a second version
+// of that spec with a changed definition is opened.
+func TestATermThatAChangeRequestDefinesIsChangedInThatRequest(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	change := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
+	approveFormDocument(t, tree.handler, change.PrimaryArtifactID)
+	terms := uploadFormDocument(t, tree.handler, tree.root, "terms.md",
+		termsMd(termLine("session", sessionDefinition), termLine("lease", otherLease)))
+	finding := definitionFinding("terms.md", terms.ID, 1, "lease", otherLease, "term-second-definition",
+		alreadyDefines("spec.md version 1 of "+change.Key))
+	requireFormRefusal(t, "request of terms.md", requestFormApproval(t, tree.handler, terms.ID, nil),
+		specform.ActRequest, []string{findingLine(finding)}, finding)
+	reviseDocument(t, tree.handler, change.PrimaryArtifactID, termLine("lease", leaseDefinition), termLine("lease", otherLease), 2)
+	awaitSettled(t, tree.database, change.PrimaryArtifactID)
+	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, change.PrimaryArtifactID, nil))
+}
+
+// A request names the documents whose candidate versions replace their approved ones, so a spec
+// whose second version keeps the term its first version defined is no second definition.
+func TestADocumentReplacingItsOwnApprovedTermsIsNotRefused(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	change := createFormIssue(t, tree.handler, tree.root, "Defines lease",
+		specWithTerms(termLine("lease", leaseDefinition))+"\n:::requirement{#store-comment}\nDispatch stores each comment.\n:::\n")
+	approveFormDocument(t, tree.handler, change.PrimaryArtifactID)
+	reviseDocument(t, tree.handler, change.PrimaryArtifactID, "Dispatch stores each comment.", "Dispatch keeps each comment.", 2)
+	awaitSettled(t, tree.database, change.PrimaryArtifactID)
+	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, change.PrimaryArtifactID, nil))
+}
+
+// The root's terms.md is where a term of it changes: a version that changes the definition of
+// session is opened, and once the person approves it the list holds the new definition.
+func TestTermsMdItselfMayChangeADefinition(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	terms := approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition)))
+	reviseDocument(t, tree.handler, terms.ID, termLine("session", sessionDefinition), termLine("session", otherSession), 2)
+	awaitSettled(t, tree.database, terms.ID)
+	ask := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, terms.ID, nil)).Ask.ID
+	requireTerms(t, tree.handler, terms.ID, specFormTerm{Term: "session", Definition: sessionDefinition, Document: "terms.md", Version: 1, Issue: "ACME-1"})
+	if response := answerFormApproval(t, tree.handler, ask, docs.ApprovalOptionApprove, ""); response.Code != http.StatusOK {
+		t.Fatalf("approve terms.md version 2: status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
+	requireTerms(t, tree.handler, terms.ID, specFormTerm{Term: "session", Definition: otherSession, Document: "terms.md", Version: 2, Issue: "ACME-1"})
+}
+
+// Only the root's terms.md holds the list: a level's own approved terms.md is no second list, so
+// a spec under that level that defines its term is opened, and the read of it lists only the
+// root's terms.
+func TestALevelsOwnTermsMdMakesNoSecondList(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition)))
+	level := createFormIssue(t, tree.handler, tree.root, "A level", "# Level\n\nThe level.\n")
+	approveTermsMd(t, tree, level.Key, termsMd(termLine("lease", leaseDefinition)))
+	child := createFormIssue(t, tree.handler, level.Key, "Under the level", specWithTerms(termLine("lease", otherLease)))
+	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, child.PrimaryArtifactID, nil))
+	requireTerms(t, tree.handler, child.PrimaryArtifactID,
+		specFormTerm{Term: "session", Definition: sessionDefinition, Document: "terms.md", Version: 1, Issue: "ACME-1"})
+}
+
+// Before the person approves the root's terms.md, the list is the terms of the approved covered
+// documents alone: a terms.md that waits for its approval adds nothing.
+func TestBeforeTermsMdIsApprovedTheListIsTheApprovedRequests(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	uploadFormDocument(t, tree.handler, tree.root, "terms.md", termsMd(termLine("session", sessionDefinition)))
+	change := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
+	approveFormDocument(t, tree.handler, change.PrimaryArtifactID)
+	other := createFormIssue(t, tree.handler, tree.root, "Reads the list", formFaults[0].document(formFaults[0].clean))
+	requireTerms(t, tree.handler, other.PrimaryArtifactID,
+		specFormTerm{Term: "lease", Definition: leaseDefinition, Document: "spec.md", Version: 1, Issue: change.Key})
+}
+
+// The repair pass judges a withdrawn request against the list too: a request whose spec defines a
+// term of the root's terms.md again is left resolved, with a reason that names the term and the
+// document that defines it.
+func TestTheRepairPassDoesNotOpenARequestWithASecondDefinition(t *testing.T) {
+	f := newRepairFixtureFrom(t, 20*time.Millisecond, "ACME-1")
+	tree := seedSpecFormTree(t, f.handler, f.database, f.deps)
+	approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition)))
+	withdrawn := withdrawnByAnOlderRelease(t, f, tree, secondSession.document(secondSession.broken))
+	if repair := repairNow(t, f); repair.Restored != 0 || repair.LeftResolved != 1 {
+		t.Fatalf("repair = %+v, want none restored and 1 left resolved", repair)
+	}
+	requireLeftResolved(t, f.handler, f.database, withdrawn.issue, withdrawn.seq, withdrawn.request, secondSession.line(1), withdrawn.reopener)
+}
+
+// A term that a closed issue defines is still in the list, and the refusal says to reopen that
+// issue first: a closed issue takes no approval request, which is the control that shows the step
+// is needed. Once reopened, its second version with a changed definition is opened.
+func TestASecondDefinitionInAClosedIssueSaysToReopenIt(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	change := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
+	approveFormDocument(t, tree.handler, change.PrimaryArtifactID)
+	closeIssue(t, tree.handler, change.Key)
+	again := createFormIssue(t, tree.handler, tree.root, "Defines lease again", specWithTerms(termLine("lease", otherLease)))
+	finding := definitionFinding("spec.md", again.PrimaryArtifactID, 1, "lease", otherLease, "term-second-definition",
+		alreadyDefines("spec.md version 1 of "+change.Key))
+	body := requireFormRefusal(t, "request", requestFormApproval(t, tree.handler, again.PrimaryArtifactID, nil),
+		specform.ActRequest, []string{findingLine(finding)}, finding)
+	if detail := body.Findings[0].Detail; !strings.HasSuffix(detail, "When that issue has the status done, reopen it first") {
+		t.Fatalf("detail = %q, want it to end with the step to reopen the issue", detail)
+	}
+	if refused := requestFormApproval(t, tree.handler, change.PrimaryArtifactID, nil); refused.Code != http.StatusConflict ||
+		!strings.Contains(refused.Body.String(), `"code":"ISSUE_CLOSED"`) {
+		t.Fatalf("request of the closed issue's spec: status=%d body=%s, want 409 ISSUE_CLOSED", refused.Code, refused.Body.String())
+	}
+	if response := dispatchRequest(t, tree.handler, http.MethodPatch, "/api/v1/issues/"+change.Key, map[string]string{"status": "todo"}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("reopen %s: status=%d body=%s", change.Key, response.Code, response.Body.String())
+	}
+	reviseDocument(t, tree.handler, change.PrimaryArtifactID, termLine("lease", leaseDefinition), termLine("lease", otherLease), 2)
+	awaitSettled(t, tree.database, change.PrimaryArtifactID)
+	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, change.PrimaryArtifactID, nil))
+}
+
+// One request holds one definition of a term: a spec and its Verification document, requested
+// together, that each define lease are refused at the second. The control: the spec alone is
+// opened.
+func TestARequestOfTwoDocumentsRefusesASecondDefinition(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	issue := createFormIssue(t, tree.handler, tree.root, "Defines lease twice", specWithTerms(termLine("lease", leaseDefinition)))
+	verification := uploadFormDocument(t, tree.handler, issue.Key, "verification.md",
+		"# Verification\n\n## Terms\n\n"+termList([]string{termLine("lease", otherLease)}))
+	finding := definitionFinding("verification.md", verification.ID, 1, "lease", otherLease, "term-second-definition",
+		alreadyDefines("spec.md version 1 of "+issue.Key))
+	requireFormRefusal(t, "request of both", requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, map[string]any{"include_verification": true}),
+		specform.ActRequest, []string{findingLine(finding)}, finding)
+	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil))
 }
