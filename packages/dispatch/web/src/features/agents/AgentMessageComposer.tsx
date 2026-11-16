@@ -95,8 +95,9 @@ export function AgentMessageComposer({
       (thread === undefined ||
         (held.request.replyTo !== null && thread.has(held.request.replyTo.id)))
   );
-  // The issue a held send went to - out, or refused - is the one the picker names when the row
-  // mounts again, so what the toggle says and where Retry sends stay one issue.
+  // The issue a held send is addressed to - out, or refused - is the one the picker names when
+  // the row mounts again, so what the toggle says and where Retry sends stay one issue. A pick
+  // made over a refusal carries it to the issue picked (`ownMoves` below), so that is the one.
   const [issueKey, setIssueKey] = useState(() => {
     const held = store.get(sendKey)?.request;
     return held?.replyTo === null && held.owner.kind === "issue" ? held.owner.issueKey : "";
@@ -159,7 +160,9 @@ export function AgentMessageComposer({
   };
   /** Bumped by every commit, the issue changed or not, since every commit unmounts the select the
    *  reader is in. The hand-off keys on it rather than on `issueKey`, which re-confirming the
-   *  issue already held leaves alone. */
+   *  issue already held leaves alone. The composer counts it among the reader's own moves of its
+   *  address (`ownMoves`): a pick is the reader's, so the draft goes with it, and a refusal and the
+   *  files pasted into the draft with it. */
   const [commits, setCommits] = useState(0);
   const commitIssue = (value: string) => {
     if (sendingNow()) return;
@@ -348,6 +351,7 @@ export function AgentMessageComposer({
           refocusComposer();
         }}
         owner={composerOwner}
+        ownMoves={commits}
         replyTo={replyTo?.target ?? null}
         standing={standing}
       />

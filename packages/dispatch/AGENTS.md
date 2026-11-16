@@ -99,22 +99,40 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   `features/agents/broadcast-queue.ts`, below).
   An upload carries its target as its own mutation variable, taken by the paste or drop that
   starts it, so a pick in that task moves the next message, never the file.
-  Its reference belongs to the draft it was pasted into, which the press carries as well (the
-  owner it was pasted for, as `useDraftUpload`'s `draft`, which an ask card fills with its ask).
-  A file that lands while the composer addresses another owner - an Agents row's issue pick - waits
-  until the composer is back on that owner, where its reference joins the message, and the composer
-  says so meanwhile (`landedFor` in `MentionComposer.tsx`).
-  A refused upload's Retry is offered only there too: while the composer addresses another owner the
-  refusal names where the file was pasted and has no Retry (`pastedElsewhere`), since one would
-  upload the file to the first owner and add it to a message for the second.
-  A refused send belongs to the address it was written for as well as to its send name:
-  `HeldSends.send` refuses a request whose owner, anchor, reply or edited comment is not the
-  refusal's (`sameAddress` in `features/conversation/send-request.ts`), so a composer its host has
-  moved - an Agents row's issue pick, the docked composer's Cancel reply, a newer message in an
-  Inbox agent thread - sends no Retry of that draft to the address it shows now.
-  There `MentionComposer` turns Send and Retry off, offers Discard, and says where the draft was
-  written for (`writtenElsewhere`), and back on that address its Retry goes there; while it is
+  Its reference belongs to the draft it was pasted into, which the press carries as well (as
+  `useDraftUpload`'s `draft`, which an ask card fills with its ask, and `MentionComposer` with a
+  number of its own naming the owner that draft lives at, `draftHomes`).
+  Who moved the composer's address decides where a draft goes, and what it holds with it: a
+  refused or stopped send, and the files pasted into it.
+  The reader's own controls move the draft with the address: Cancel reply (and Escape, which ends
+  a reply as it does), and a control the host draws for the composer and counts in the press that
+  makes the move (`ownMoves`, an Agents row's issue picker).
+  A refused send goes with such a move at once (`HeldSends.carry` in
+  `features/conversation/held-sends.ts`): Send and Retry go from the new address, under a key of
+  their own, so a reply refused and then cancelled is retried as a comment of its own.
+  A file that lands after such a move joins the message at once, its reference naming where the
+  file went, and a refused upload's Retry uploads to the owner the file was pasted for, since the
+  press carries it, and adds its reference to the message the composer writes now.
+  A move of the host's - another row, another thread, a Reply on a message, a newer message in an
+  Inbox agent thread - carries nothing: the text stays with the address it was written for.
+  A surface keyed by its subject gets that from its key (the Inbox's thread boxes, below); one
+  instance whose address a prop changes holds what it made there.
+  `HeldSends.send` refuses a request whose owner, anchor, reply or edited comment is not where the
+  refusal's draft lives (`sameAddress` in `features/conversation/send-request.ts`), and
+  `MentionComposer` turns Send and Retry off, offers Discard, and says where the draft was
+  written for (`writtenElsewhere`); back on that address its Retry goes there, and while it is
   elsewhere nothing typed is written into that refusal's draft, and a Reply's prefill leaves it.
+  A file that lands, or is refused, while the host has the composer elsewhere waits for the
+  composer to be back where its draft lives, and the composer says so (`landedFor`,
+  `pastedElsewhere`).
+  A send the reader stopped may have been delivered where it went, so its key is used only at that
+  address, whoever moved the composer: a host's move holds it as it holds a refusal, and the
+  reader's own move takes the draft on under a key nothing has gone out under, keeping the
+  stopped request (`stoppedSend`) for a move back, where its Retry asks again under its own key.
+  Taken away, its refusal says so in the words of every surface's stopped write
+  (`SendMovedError`: `Dispatch has not confirmed this message, sent as a reply: it may have been
+  delivered there. Sending it from here is a new message, which can be delivered a second time if
+  the first one was.`).
   A standing box (`standing`) answers what its host hands it, not a Reply the reader pressed, so
   its sentence offers Discard alone: an Inbox agent thread's box replies to the thread's newest
   message, and a message that comes after the refusal moves the box onto it.
@@ -323,9 +341,12 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   Reply until it lands.
   The Inbox's box for an agent thread names its send by that thread instead (`threadSendKey`,
   above): a reply it holds is that thread's, not this row's.
+  The picker is the reader's own move of the composer's address (`ownMoves`, above), and so is
+  Cancel reply; a Reply on a message is the row's. A refused or stopped send, and the files pasted
+  into the draft, go with a pick or a Cancel reply, and stay where they were made when a Reply
+  moves the composer.
   An upload's reference names where the file went, whatever was picked while it was out, and joins
-  the message for the address the file was pasted for: one that lands, or is refused, while the
-  row is on another waits for the row to be back there (`landedFor`, `pastedElsewhere`, above).
+  the message at once after a pick.
   The row's name is `AgentName`'s `control` variant ("How an agent is shown", below): the toggle
   button inside the heading keeps the name, and the component draws the running state before the
   heading and the live link (`↗`, `Open live conversation with <title>`) after it, both outside

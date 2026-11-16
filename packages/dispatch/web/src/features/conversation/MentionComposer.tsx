@@ -96,6 +96,8 @@ import { MODE_LABELS, plainDelivery } from "./delivery";
 import type { HeldSend } from "./held-sends";
 import { ReplyQuote } from "./ReplyQuote";
 import {
+  type Address,
+  addressWords,
   carriedIdsOf,
   DELIVERY_COMMANDS,
   type DeliveryPlan,
@@ -475,26 +477,21 @@ function refusalMessage(
     : `Couldn't send — ${apiErrorMessage(refusal, "network error")}`;
 }
 
-/** What Send says while the refusal the composer holds was written for another address than the
- *  one it shows now (`sameAddress`): where it was written for, and the ways out - back there,
- *  where Retry sends it, or Discard. A standing box answers what its host gives it and no Reply
- *  the reader presses (`standing`): an Inbox agent thread's box replies to the thread's newest
- *  message, so one that has come since the refusal moved the box, and no press brings it back. */
-function writtenElsewhere({ owner, replyTo }: SentRequest, standing: boolean): string {
-  if (replyTo !== null) {
+/** What Send says while the refusal the composer holds lives at another address than the one it
+ *  shows now, since its host moved it (`sameAddress`): where the draft was written for, and the
+ *  ways out - back there, where Retry sends it, or Discard. A standing box answers what its host
+ *  gives it and no Reply the reader presses (`standing`): an Inbox agent thread's box replies to
+ *  the thread's newest message, so one that has come since the refusal moved the box, and no
+ *  press brings it back. */
+function writtenElsewhere(held: SentRequest, standing: boolean): string {
+  if (held.replyTo !== null) {
     return standing
       ? "This message was written as a reply to an earlier message, and this box now replies " +
           "to a newer one. Discard it to write a reply here."
       : "This message was written as a reply. " +
           "Reply to that message again to send it, or discard it.";
   }
-  const where =
-    owner.kind === "issue"
-      ? `for ${owner.issueKey}`
-      : owner.kind === "session"
-        ? "as a direct message"
-        : "for another document";
-  return `This message was written ${where}. Go back to it to send it, or discard it.`;
+  return `This message was written ${addressWords(held, "for")}. Go back to it to send it, or discard it.`;
 }
 
 /** Where a file was pasted, as the composer's sentences of its upload name it: `for CORE-1`. */
@@ -506,16 +503,16 @@ function pastedWhere(owner: ArtifactOwner): string {
       : "for another document";
 }
 
-/** What a refused upload says while the composer addresses another owner than the one its file
- *  was pasted for: a Retry from here would upload it there and add its reference to a message for
+/** What a refused upload says while the composer addresses another owner than the one the draft
+ *  its file was pasted into lives at: a Retry from here would add its reference to a message for
  *  somewhere else, so the Retry waits for the composer to be back there. */
 function pastedElsewhere(owner: ArtifactOwner): string {
   return `This file was pasted ${pastedWhere(owner)}. Go back to it to try the upload again.`;
 }
 
-/** What the composer says of files that landed for another owner than the one it addresses now:
- *  their references wait for the draft they were pasted into, and join it once the composer is
- *  back there. */
+/** What the composer says of files that landed into a draft living at another owner than the one
+ *  it addresses now: their references wait for that draft, and join it once the composer is back
+ *  there. */
 function landedFor(owner: ArtifactOwner, files: number): string {
   return files === 1
     ? `The file pasted ${pastedWhere(owner)} is uploaded. ` +
@@ -571,6 +568,13 @@ interface MentionComposerProps {
   readonly onClose: () => void;
   readonly onSent: () => void;
   readonly owner: ComposerOwner;
+  /** How many times the reader has moved this composer's address with a control its host draws
+   *  for it - an Agents row's issue picker - counted by the host in the press that makes the
+   *  move. Such a move is the reader's own, as Cancel reply is, so the draft goes with it, and
+   *  its refusal and the files pasted into it with the draft. A change of `owner` or `replyTo`
+   *  that comes without a count is the host's move - another row, another thread, a Reply on a
+   *  message - and what the composer holds stays with the address it was made for. */
+  readonly ownMoves?: number;
   readonly replyTo?: ReplyTarget | null;
   readonly saveEdit?: SaveCommentEdit;
   /** The reply target is this box's own standing address rather than a Reply the reader
@@ -608,6 +612,7 @@ export function MentionComposer({
   onKindChange,
   onSent,
   owner,
+  ownMoves = 0,
   replyTo = null,
   saveEdit,
   standing = false,
@@ -834,8 +839,8 @@ export function MentionComposer({
   useEffect(() => {
     // A mount that took a draft keeps it, and while a send holds the field's draft - out, or
     // refused - so does a reply the host starts then: the field is that send's draft, and a
-    // refusal's belongs to the address it was written for (`elsewhere`), which the prefill of a
-    // new reply would write over. The prefill is for a new reply.
+    // refusal's stays at the address it lives at when the host moves the composer (`elsewhere`),
+    // which the prefill of a new reply would write over. The prefill is for a new reply.
     const tookHeldDraft = mountedHeld.current;
     mountedHeld.current = false;
     if (replyTo === null) {
@@ -892,12 +897,16 @@ export function MentionComposer({
   // Closed to this kind or finishing, with no send out and no refusal to show: nothing of this
   // composer is on screen.
   const dormant = (refusedKind || finishing) && !sending && refusal === undefined;
+  /** How many times the reader has ended the reply here (Cancel reply, or Escape): a move of the
+   *  address with the composer's own control, which the draft goes with (`ownMoves`). */
+  const [cancels, setCancels] = useState(0);
   /** Ends the reply; an inline reply's draft and refusal end with it (`onCancelReply`). */
   const cancelReply = () => {
     if (inline) {
       clearDraft();
       outgoing.discard();
     }
+    setCancels((count) => count + 1);
     onCancelReply?.();
   };
   // The Escape listener below reads it as it stands, so it is not re-bound each render for it.
@@ -907,9 +916,9 @@ export function MentionComposer({
   // out ignores), so the composer that mounts next shows it - and so a reload does: a refusal's
   // draft is the only copy of that message, and the entry it is kept in is what survives the
   // page (`write-storage.ts`). It is written as this composer unmounts, a short wait after each
-  // keystroke, and as the page goes, which no unmount follows. A refusal whose address the
-  // composer has moved off (`elsewhere`, below) keeps the draft it was written with: what is
-  // typed over it there is for that other address.
+  // keystroke, and as the page goes, which no unmount follows. A refusal the host has moved the
+  // composer off (`elsewhere`, below) keeps the draft it was written with: what is typed over it
+  // there is for that other address.
   const keepDraft = useRef(() => {});
   keepDraft.current = () => {
     if (elsewhere !== undefined) return;
@@ -1001,21 +1010,23 @@ export function MentionComposer({
     frame === undefined ? formRef : frameRef,
     !dormant && (docked || frame !== undefined)
   );
-  // A file's reference belongs to the draft it was pasted or dropped into, which is the draft for
-  // the owner the paste named, so each press carries that owner as its draft (`useDraftUpload`),
-  // as an ask card's carries its ask. A host can move the composer to another owner while a file
-  // is out - an Agents row's issue pick - and the field is then that owner's message, where a
-  // reference to a file stored elsewhere does not belong. So what lands is kept here by the owner
-  // it was pasted for, and joins the field while the composer addresses that owner: at once, or
-  // once the composer is back there, and the composer says so until then.
+  // A file's reference belongs to the draft it was pasted or dropped into, so each press carries
+  // that draft (`useDraftUpload`), as an ask card's carries its ask: a number of this composer's
+  // (`draftAt`), mapped to the owner the draft lives at. That is the owner the composer addressed
+  // at the paste, and wherever the reader then takes the composer with its own controls, since
+  // the draft goes with such a move (`ownMoves`, below). A host can move the composer to another
+  // owner too - another row, a Reply on a message - and the field is then that owner's message,
+  // where a reference to a file pasted into another draft does not belong. So what lands is kept
+  // here by the draft it was pasted into, and joins the field while the composer addresses the
+  // owner that draft lives at: at once, or once the composer is back there, and the composer says
+  // so until then.
+  const [draftHomes, setDraftHomes] = useState<ReadonlyMap<number, ArtifactOwner>>(() => new Map());
+  const nextDraft = useRef(0);
   const [uploadedFiles, setUploadedFiles] = useState<
-    readonly { readonly key: string; readonly owner: ArtifactOwner; readonly text: string }[]
+    readonly { readonly draft: number; readonly text: string }[]
   >([]);
-  const upload = useDraftUpload((text: string, pastedFor: ArtifactOwner) =>
-    setUploadedFiles((current) => [
-      ...current,
-      { key: JSON.stringify(pastedFor), owner: pastedFor, text },
-    ])
+  const upload = useDraftUpload((text: string, draft: number) =>
+    setUploadedFiles((current) => [...current, { draft, text }])
   );
   // Where a pasted or dropped file goes: the issue or the project document the draft is for, or,
   // for a direct message, the agent's conversation. An edit takes no files.
@@ -1028,32 +1039,51 @@ export function MentionComposer({
           ? { project: owner.project }
           : { session: owner.sessionId };
   const uploadKey = uploadOwner === undefined ? undefined : JSON.stringify(uploadOwner);
+  /** The draft a file pasted or dropped for `pastedFor` goes into: the one living there, or a new
+   *  one. */
+  const draftAt = (pastedFor: ArtifactOwner): number => {
+    const key = JSON.stringify(pastedFor);
+    for (const [draft, home] of draftHomes) {
+      if (JSON.stringify(home) === key) return draft;
+    }
+    const draft = nextDraft.current;
+    nextDraft.current += 1;
+    setDraftHomes((current) => new Map(current).set(draft, pastedFor));
+    return draft;
+  };
   useEffect(() => {
-    const here = uploadedFiles.filter((file) => file.key === uploadKey);
+    const here = uploadedFiles.filter(
+      (file) => JSON.stringify(draftHomes.get(file.draft)) === uploadKey
+    );
     if (here.length === 0) return;
     setUploadedFiles((current) => current.filter((file) => !here.includes(file)));
     setBody((current) => {
-      const next = here.reduce((draft, file) => appendToDraft(draft, file.text), current);
+      const next = here.reduce((text, file) => appendToDraft(text, file.text), current);
       previousBody.current = next;
       return next;
     });
-  }, [uploadedFiles, uploadKey]);
-  /** What landed for another owner than the composer addresses, one entry per owner. */
+  }, [draftHomes, uploadedFiles, uploadKey]);
+  /** What landed into a draft living at another owner than the composer addresses, by that
+   *  owner. */
   const landedElsewhere = new Map<string, { owner: ArtifactOwner; files: number }>();
   for (const file of uploadedFiles) {
-    if (file.key === uploadKey) continue;
-    const files = (landedElsewhere.get(file.key)?.files ?? 0) + 1;
-    landedElsewhere.set(file.key, { files, owner: file.owner });
+    const home = draftHomes.get(file.draft);
+    const key = JSON.stringify(home);
+    if (home === undefined || key === uploadKey) continue;
+    landedElsewhere.set(key, { files: (landedElsewhere.get(key)?.files ?? 0) + 1, owner: home });
   }
   // A file goes to the owner its paste or drop named, and a refused upload's Retry makes that
-  // press again (`DraftUpload.retry`): to that owner, and for the draft it was pasted into. A host
-  // can move the composer to another owner in between, so the owner the newest press named is
-  // kept, and while the composer addresses another the refusal offers no Retry here: it says where
-  // the file was pasted, and its Retry is back once the composer is.
-  const [uploadedFor, setUploadedFor] = useState<ArtifactOwner>();
+  // press again (`DraftUpload.retry`): to that owner, and for the draft it was pasted into, which
+  // the reader's own moves have taken along. A host can move the composer to another owner in
+  // between, so the draft the newest press went into is kept, and while the composer addresses
+  // another owner than the one that draft lives at the refusal offers no Retry here: it says
+  // where the file was pasted, and its Retry is back once the composer is.
+  const [uploadedFor, setUploadedFor] = useState<number>();
+  const refusedHome =
+    upload.isError && uploadedFor !== undefined ? draftHomes.get(uploadedFor) : undefined;
   const uploadElsewhere =
-    upload.isError && uploadedFor !== undefined && JSON.stringify(uploadedFor) !== uploadKey
-      ? uploadedFor
+    refusedHome !== undefined && JSON.stringify(refusedHome) !== uploadKey
+      ? refusedHome
       : undefined;
 
   const addMention = (option: MentionOption) => {
@@ -1272,15 +1302,57 @@ export function MentionComposer({
     heldPicked === undefined
       ? deliveryPlan(body, inheritedDelivery)
       : { body, delivery: heldPicked };
-  // A refusal belongs to the address its send was written for (`sameAddress`). A host can move
-  // the composer to another while it holds one - an Agents row's issue pick or Reply, the docked
-  // composer's Cancel reply - and from there neither Send nor Retry is that refusal's Retry: Send
-  // says where the draft was written for, and Discard drops it. The store refuses such a press
-  // too (`HeldSends.send`), whichever render made it.
+  // A refusal lives at the address its send went to, or the one the reader has carried it to
+  // since (`sameAddress`; the own moves below). A host can move the composer to another while it
+  // holds one - another row or thread, a Reply on a message - and from there neither Send nor
+  // Retry is that refusal's Retry: Send says where the draft was written for, and Discard drops
+  // it. The store refuses such a press too (`HeldSends.send`), whichever render made it.
   const elsewhere =
     refusal !== undefined && held !== undefined && !sameAddress(held, composedRequest())
       ? writtenElsewhere(held, standing)
       : undefined;
+  // The reader's own moves of the composer's address - Cancel reply, and a control its host
+  // draws for it (`ownMoves`) - take the draft with them, and what it holds: its refusal
+  // (`HeldSends.carry`) and the files pasted into it (`draftHomes`). Each is counted in the press
+  // that makes it, so a commit that shows another address with another count is the reader's
+  // move. One that shows another address with the count where it was is the host's - another
+  // row, another thread, a Reply on a message - and carries nothing: a refusal and a file stay
+  // with the address they were made for, and the composer says so (`elsewhere`, `landedFor`,
+  // `pastedElsewhere`). Only what lives where the composer was goes along, so a move away from an
+  // address the host took the composer to leaves the draft where it was written.
+  const moves = ownMoves + cancels;
+  const shown = useRef<
+    | {
+        readonly address: Address;
+        readonly moves: number;
+        readonly uploadOwner: ArtifactOwner | undefined;
+      }
+    | undefined
+  >(undefined);
+  useLayoutEffect(() => {
+    const address: Address = { anchor, edit, owner, replyTo };
+    const before = shown.current;
+    shown.current = { address, moves, uploadOwner };
+    if (before === undefined || before.moves === moves || sameAddress(before.address, address)) {
+      return;
+    }
+    const refused = outgoing.held;
+    if (refused?.status === "refused" && sameAddress(refused.request, before.address)) {
+      outgoing.carry({ owner, replyTo });
+    }
+    const left = before.uploadOwner === undefined ? undefined : JSON.stringify(before.uploadOwner);
+    const to = uploadOwner;
+    if (left === undefined || to === undefined || left === uploadKey) return;
+    setDraftHomes((current) =>
+      [...current.values()].some((home) => JSON.stringify(home) === left)
+        ? new Map(
+            [...current].map(
+              ([draft, home]) => [draft, JSON.stringify(home) === left ? to : home] as const
+            )
+          )
+        : current
+    );
+  });
   // A closed issue refuses a suggestion or an ask: the composer is only still here for a send of
   // its own that is out, or its refusal, and Send says why it cannot go.
   const submitReason = refusedKind
@@ -1492,8 +1564,10 @@ export function MentionComposer({
             uploadOwner === undefined
               ? undefined
               : (event: DragEvent<HTMLTextAreaElement>) => {
-                  if (event.dataTransfer.files.length > 0) setUploadedFor(uploadOwner);
-                  upload.drop(event, uploadOwner, uploadOwner);
+                  if (event.dataTransfer.files.length === 0) return;
+                  const draft = draftAt(uploadOwner);
+                  setUploadedFor(draft);
+                  upload.drop(event, uploadOwner, draft);
                 }
           }
           onInput={
@@ -1521,8 +1595,10 @@ export function MentionComposer({
             uploadOwner === undefined
               ? undefined
               : (event: ClipboardEvent<HTMLTextAreaElement>) => {
-                  if (event.clipboardData.files.length > 0) setUploadedFor(uploadOwner);
-                  upload.paste(event, uploadOwner, uploadOwner);
+                  if (event.clipboardData.files.length === 0) return;
+                  const draft = draftAt(uploadOwner);
+                  setUploadedFor(draft);
+                  upload.paste(event, uploadOwner, draft);
                 }
           }
           ref={bodyFieldRef}

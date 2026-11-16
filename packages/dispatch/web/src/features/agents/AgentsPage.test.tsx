@@ -11,7 +11,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
-import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
+import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -1258,10 +1258,11 @@ async function pickIssue(user: UserEvent, row: HTMLElement, issue: string): Prom
   await user.selectOptions(await within(row).findByRole("combobox", { name: "Issue" }), issue);
 }
 
-// An Agents row's composer is one box for its session, whose address the issue picker moves. A
-// message Dispatch refused belongs to the address it was written for: while the row is on another,
-// Send and Retry are refused there and say why, and back on that address the Retry goes to it.
-test("a direct message refused on an Agents row is not sent to the issue the row moves onto", async () => {
+// An Agents row's composer is one box for its session, whose address the issue picker moves. The
+// picker is the reader's own control, so a message Dispatch refused goes with the pick: the draft
+// takes the issue's mention at once, and its Retry comments on the issue, a new write under a key
+// of its own, rather than sending the direct message again.
+test("a direct message refused on an Agents row goes with the issue pick, and its Retry comments there", async () => {
   const user = userEvent.setup();
   const page = renderAgents({ issues: [coreIssue] });
   page.createAgentMessage.mockRejectedValueOnce(
@@ -1281,29 +1282,16 @@ test("a direct message refused on an Agents row is not sent to the issue the row
 
     await pickIssue(user, planner, "CORE-1");
     await waitFor(() => expect(field.value).toBe("@Planner Status please"));
-    // A submit of the form while its Send is held for another address, which user-event cannot
-    // press: the case shows that a submit sends nothing either.
-    fireEvent.submit(composer);
-    await act(settle);
-    expect(page.createComment.mock.calls.map(([issue, input]) => [issue, input.body])).toEqual([]);
-    expect(within(planner).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-    expect(
-      within(planner).getByText(
-        "This message was written as a direct message. Go back to it to send it, or discard it."
-      )
-    ).toBeTruthy();
-
-    await pickIssue(user, planner, "");
-    await waitFor(() => expect(field.value).toBe("Status please"));
+    expect(within(planner).queryByText(/This message was written/)).not.toBeInTheDocument();
     await user.click(within(planner).getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(page.createAgentMessage).toHaveBeenCalledTimes(2));
-    expect(
-      page.createAgentMessage.mock.calls.map(([session, input]) => [session, input.body])
-    ).toEqual([
-      ["planner-session", "Status please"],
-      ["planner-session", "Status please"],
+    await waitFor(() => expect(page.createComment).toHaveBeenCalledTimes(1));
+    expect(page.createComment.mock.calls.map(([issue, input]) => [issue, input.body])).toEqual([
+      ["CORE-1", "@Planner Status please"],
     ]);
-    expect(page.createComment).not.toHaveBeenCalled();
+    expect(page.createAgentMessage).toHaveBeenCalledTimes(1);
+    expect(page.createComment.mock.calls[0]?.[2].key).not.toBe(
+      page.createAgentMessage.mock.calls[0]?.[2].key
+    );
   } finally {
     page.view.unmount();
     page.restore();
@@ -1314,10 +1302,11 @@ test("a direct message refused on an Agents row is not sent to the issue the row
 const shot = new File(["bytes"], "shot.png", { type: "image/png" });
 
 // A file pasted into an Agents row is uploaded to the address the row was on, as a message is
-// sent to it. A refused upload belongs to that address: while the row is on another, it offers no
-// Retry, which would upload to the first and add the file to a message for the second; back on
-// it, the Retry uploads there and adds the file to the message written for it.
-test("an upload refused on an Agents row's issue is retried only once the row is back on that issue", async () => {
+// sent to it, and its reference belongs to the draft it was pasted into. The picker is the
+// reader's own control, so that draft goes with a pick, and so does a refused upload: its Retry
+// is offered at once, uploads to the issue the file was pasted for - the press carries it - and
+// adds the file's reference to the message the row now writes.
+test("an upload refused on an Agents row's issue goes with the pick, and its Retry joins the message there", async () => {
   const user = userEvent.setup();
   const page = renderAgents({ issues: [coreIssue] });
   const uploadArtifact = spyOn(api, "uploadArtifact")
@@ -1342,18 +1331,10 @@ test("an upload refused on an Agents row's issue is retried only once the row is
 
     await pickIssue(user, planner, "");
     await waitFor(() => expect(field.value).toBe(""));
-    expect(within(planner).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-    expect(
-      within(planner).getByText(
-        "This file was pasted for CORE-1. Go back to it to try the upload again."
-      )
-    ).toBeTruthy();
-
-    await pickIssue(user, planner, "CORE-1");
-    await waitFor(() => expect(field.value).toBe("@Planner"));
+    expect(within(planner).queryByText(/This file was pasted/)).not.toBeInTheDocument();
     await user.click(within(planner).getByRole("button", { name: "Retry" }));
     await waitFor(() =>
-      expect(field.value).toBe("@Planner ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")
+      expect(field.value).toBe("![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")
     );
     expect(uploadArtifact.mock.calls.map(([owner]) => owner)).toEqual([
       { issue: "CORE-1" },
@@ -1366,10 +1347,10 @@ test("an upload refused on an Agents row's issue is retried only once the row is
   }
 });
 
-// A file's reference belongs to the draft it was pasted into. One that lands after the row moved
-// onto another address is not added to the message written there: the row says it waits, and it
-// joins the message once the row is back on the address the file was pasted for.
-test("an upload that lands after an Agents row moves joins the message only back on its issue", async () => {
+// A file's reference belongs to the draft it was pasted into, and an issue pick is the reader's
+// own move, which that draft goes with. One that lands after the pick joins the message at once,
+// naming the issue the file went to, not the address the row writes to now.
+test("an upload that lands after an Agents row's issue pick joins the message at once, naming its issue", async () => {
   const user = userEvent.setup();
   const page = renderAgents({ issues: [coreIssue] });
   const stored = Promise.withResolvers<never>();
@@ -1394,21 +1375,8 @@ test("an upload that lands after an Agents row moves joins the message only back
         version: { number: 1 },
       } as never)
     );
-    // Settled once the composer no longer says it is uploading, on its status line or on Send.
-    // Counted, not compared as elements: the first check runs before the upload lands and fails,
-    // and a failed `toEqual` of DOM elements prints each one's whole object graph - the document
-    // and React's fibers - which filled the pod's memory in seconds and never finished.
-    await waitFor(() => expect(within(planner).queryAllByText("Uploading file…").length).toBe(0));
-    expect(field.value).toBe("");
-    expect(
-      within(planner).getByText(
-        "The file pasted for CORE-1 is uploaded. Its reference joins the message when you go back to it."
-      )
-    ).toBeTruthy();
-
-    await pickIssue(user, planner, "CORE-1");
     await waitFor(() =>
-      expect(field.value).toBe("@Planner ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")
+      expect(field.value).toBe("![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")
     );
     expect(within(planner).queryByText(/is uploaded/)).not.toBeInTheDocument();
     expect(uploadArtifact).toHaveBeenCalledTimes(1);

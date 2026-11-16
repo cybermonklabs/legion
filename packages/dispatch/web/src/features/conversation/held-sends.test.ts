@@ -781,8 +781,9 @@ function shownAs(
 }
 
 /** Refuses `sent` under a composer's name, then presses that composer's Retry twice: once while
- *  it shows `elsewhere`, another address than the one `sent` was written for, and once back on
- *  that address, with `draft` in the field both times. Answers every address a write reached. */
+ *  its host has moved it to `elsewhere`, another address than the one `sent` was written for,
+ *  with nothing carried there (`HeldSends.carry`), and once back on that address, with `draft` in
+ *  the field both times. Answers every address a write reached. */
 async function retriedFrom(
   sent: SentRequest,
   elsewhere: Partial<Omit<SentRequest, "sendKey">>,
@@ -805,9 +806,9 @@ async function retriedFrom(
   }
 }
 
-// A Retry belongs to the address its refused send was written for. From a composer that shows
-// another one now - an Agents row moved onto an issue - it is refused, and nothing goes; back on
-// that address, it goes there.
+// A Retry belongs to the address its refused send's draft lives at. From a composer its host has
+// moved to another one - another row, a Reply on a message - it is refused, and nothing goes; back
+// on that address, it goes there.
 test("a refused message to a session is retried to that session alone", async () => {
   const { away, reached } = await retriedFrom(agentSend, {
     owner: { issueKey: "CORE-1", kind: "issue" },
@@ -816,7 +817,7 @@ test("a refused message to a session is retried to that session alone", async ()
   expect(away).toBe(false);
 });
 
-// The same of a comment on an issue, from an Agents row moved back onto the session.
+// The same of a comment on an issue, from a composer its host moved onto the session.
 test("a refused comment on an issue is retried to that issue alone", async () => {
   const { away, reached } = await retriedFrom(request, {
     owner: { kind: "session", sessionId: "planner-session" },
@@ -834,11 +835,94 @@ test("a refused comment on a document is retried to that document alone", async 
   expect(away).toBe(false);
 });
 
-// An edited draft is still the one written for that address: a docked composer whose reply was
-// cancelled refuses its Retry, and back on the reply it sends the edited words there.
+// An edited draft is still the one written for that address: a press from a composer its host
+// moved off the reply is refused, and back on the reply it sends the edited words there.
 test("an edited reply refused once is retried as a reply to the same comment alone", async () => {
   const edited = { body: "Held, and then some", mentions: [], replacement: "" };
   const { away, reached } = await retriedFrom(replySend("comment-1"), { replyTo: null }, edited);
   expect(reached).toEqual(["issue CORE-1, reply to comment-1", "issue CORE-1, reply to comment-1"]);
   expect(away).toBe(false);
+});
+
+// A refusal goes with the reader's own move of its composer (`carry`): the press from where they
+// took the draft is its Retry, a new write under a key of its own, and a press from the address
+// it left - the host moving the composer back there - is refused, since the draft lives elsewhere
+// now.
+test("a refused reply the reader carries off its comment goes from where they took it", async () => {
+  const createComment = spyOn(api, "createComment")
+    .mockRejectedValueOnce(verdict)
+    .mockResolvedValue({} as never);
+  const { held } = heldOf();
+  const sent = replySend("comment-1");
+  const name: MutationKey = ["composer", sent.sendKey];
+  try {
+    held.send(name, sent);
+    await waitFor(() => expect(held.get(name)?.status).toBe("refused"));
+    held.carry(name, { owner: sent.owner, replyTo: null });
+
+    expect(pressOver(held, name, shownAs(sent))).toBe(false);
+    expect(pressOver(held, name, shownAs(sent, { replyTo: null }))).toBe(true);
+    await waitFor(() => expect(held.get(name)).toBeUndefined());
+    expect(createComment.mock.calls.map(([issue, input]) => [issue, input])).toEqual([
+      ["CORE-1", { body: "Held", reply_to: "comment-1" }],
+      ["CORE-1", { body: "Held" }],
+    ]);
+    const [first, carried] = createComment.mock.calls.map(([, , bounds]) => bounds.key);
+    expect(carried).not.toBe(first);
+  } finally {
+    createComment.mockRestore();
+  }
+});
+
+/** What a stopped direct message says once the reader has carried its draft elsewhere. */
+const STOPPED_AS_DIRECT_MESSAGE =
+  "Dispatch has not confirmed this message, sent as a direct message: it may have been delivered there. " +
+  "Sending it from here is a new message, which can be delivered a second time if the first one was.";
+
+// A send the reader stopped may have been delivered where it went, so its key is used only there.
+// Carried by the reader's own move to another address, it goes on under a key nothing has gone
+// out under, its refusal says the first may have been delivered, and a reload keeps all of it;
+// carried back, it is the stopped send again, under its own key and in its own words.
+test("a stopped send carried away goes on under a new key, and carried back is its own again", async () => {
+  const tab = keptTab();
+  await onFakeClock(async () => {
+    const createAgentMessage = spyOn(api, "createAgentMessage").mockRejectedValue(
+      new ApiError(503, { code: "UNAVAILABLE", error: "down" })
+    );
+    const { held } = heldOf(tab);
+    try {
+      held.send(agentKey, agentSend);
+      for (let left = SEND_DEADLINE_MS + 1_000; left > 0; left -= 500) {
+        jest.advanceTimersByTime(500);
+        await settle();
+      }
+      expect(held.stop(agentKey)).toBe(true);
+      await settle();
+      jest.advanceTimersByTime(60_000);
+      await settle();
+
+      held.carry(agentKey, { owner: { issueKey: "CORE-1", kind: "issue" }, replyTo: null });
+      const away = held.get(agentKey);
+      expect(away?.request.owner).toEqual({ issueKey: "CORE-1", kind: "issue" });
+      expect(away?.request.sendKey).not.toBe(agentSend.sendKey);
+      expect(away?.status === "refused" && away.refusal.message).toBe(STOPPED_AS_DIRECT_MESSAGE);
+
+      const { held: reloaded, writes } = heldOf(tab);
+      writes.resume("alice");
+      await settle();
+      const kept = reloaded.get(agentKey);
+      expect(kept?.request).toEqual(away?.request);
+      expect(kept?.status === "refused" && kept.refusal.message).toBe(STOPPED_AS_DIRECT_MESSAGE);
+
+      reloaded.carry(agentKey, { owner: agentSend.owner, replyTo: null });
+      const back = reloaded.get(agentKey);
+      expect(back?.request).toEqual(agentSend);
+      expect(back?.status === "refused" && back.refusal.message).toBe(
+        new SendStoppedError().message
+      );
+    } finally {
+      createAgentMessage.mockRestore();
+      tab.close();
+    }
+  });
 });

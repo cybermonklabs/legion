@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { jump, settle } from "../../__tests__/fake-clock";
+import { jump } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import {
   dwellOn,
@@ -1586,18 +1586,18 @@ test("another message's Reply redirects onto the one whose refusal the docked co
   }
 });
 
-// The docked composer is one box for the issue, whose reply its Reply and Cancel reply move. A
-// reply Dispatch refused belongs to the comment it answers: once Cancel reply leaves the box on a
-// comment of its own, Send and Retry are refused there - the reply never posts as a new comment -
-// and the comment's Reply puts the box back on it, where the Retry answers it.
-test("a reply the docked composer holds refused is not posted as a new comment after Cancel reply", async () => {
+// The docked composer is one box for the issue, whose reply its Reply and Cancel reply move. Cancel
+// reply is the reader's own move, so a reply Dispatch refused goes with it: the box shows the draft
+// as a new comment, with its Retry at once, and that Retry posts it as one, a new write under a
+// key of its own.
+test("a reply the docked composer holds refused is posted as a new comment after Cancel reply", async () => {
   const user = userEvent.setup();
   const stub = stubLists({
     comments: [comment("comment-a", { body: "Comment A", created_at: "2026-09-20T00:00:00Z" })],
   });
   const createComment = spyOn(api, "createComment")
     .mockRejectedValueOnce(new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" }))
-    .mockResolvedValue(comment("reply-a"));
+    .mockResolvedValue(comment("comment-b"));
   const queryClient = newQueryClient();
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
   const turn = () => {
@@ -1619,28 +1619,16 @@ test("a reply the docked composer holds refused is not posted as a new comment a
 
     await user.click(within(composer).getByRole("button", { name: "Cancel reply" }));
     expect(within(composer).queryByText(/Comment A/)).not.toBeInTheDocument();
-    // A submit of the form while its Send is held for another address, which user-event cannot
-    // press: the case shows that a submit sends nothing either.
-    fireEvent.submit(composer);
-    await act(settle);
-    expect(createComment.mock.calls.map(([, input]) => input)).toEqual([
-      { body: "Reply meant for A", reply_to: "comment-a" },
-    ]);
-    expect(within(composer).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-    expect(
-      within(composer).getByText(
-        "This message was written as a reply. Reply to that message again to send it, or discard it."
-      )
-    ).toBeTruthy();
-
-    await user.click(within(turn()).getByRole("button", { name: "Reply" }));
     expect(field.value).toBe("Reply meant for A");
+    expect(within(composer).queryByText(/This message was written/)).not.toBeInTheDocument();
     await user.click(within(composer).getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
     expect(createComment.mock.calls.map(([, input]) => input)).toEqual([
       { body: "Reply meant for A", reply_to: "comment-a" },
-      { body: "Reply meant for A", reply_to: "comment-a" },
+      { body: "Reply meant for A" },
     ]);
+    const [first, retried] = createComment.mock.calls.map(([, , bounds]) => bounds.key);
+    expect(retried).not.toBe(first);
   } finally {
     view.unmount();
     createComment.mockRestore();
