@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  The schemas of the project pause (daemon API contract 153): the controller's and the operator's
+  pause and resume requests, their answers and refusal bodies, `paused` and `lastPause` as
+  optional keys of the state, and `pause` as an optional key of a resume in the release records.

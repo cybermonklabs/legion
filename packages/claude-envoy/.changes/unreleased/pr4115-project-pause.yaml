@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  The plugin speaks daemon API contract 153, which adds the project pause. The `legion` tool's
+  description of `read_release_records` says that a wake a project pause held is counted as
+  `heldByPause` and left out of the wake-to-first-turn seconds.

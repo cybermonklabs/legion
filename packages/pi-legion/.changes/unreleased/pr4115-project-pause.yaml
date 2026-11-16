@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  The controller's `legion` tool has `pause` (with a `reason`) and `resume`, which pause and resume
+  the controller's project. `read_state`'s summary prints the pause while the project is paused and
+  the last pause, with who ended it and when, while it runs. `read_release_records` counts a wake
+  that a pause held as `heldByPause` and leaves it out of the wake-to-first-turn seconds. The
+  plugin speaks daemon API contract 153.
