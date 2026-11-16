@@ -1,0 +1,331 @@
+package daemon
+
+// design_news_holders.go is the one rule for who holds a member's news of the approved design: the
+// claim that holds its phase now (newsClaims.holderOf), how that holder is told (holderTold), and
+// whether a news-only start reaches it (newsClaimTakes). It was moved here unchanged from
+// design_news.go and design_news_send.go, so the rule reads in one file.
+
+import (
+	"context"
+	"fmt"
+	"slices"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
+)
+
+// newsHolder is the claim that holds one member's phase now, as the reconcile, the start, the send
+// and the root architect's summary all name it (newsClaims.holderOf): the claim of the role the
+// member's phase names, or, for a member in accepting, the architect that owns it. issue is the
+// issue whose role that claim holds, the member itself or the issue the owning architect's token
+// names, and role and token are the claim's.
+type newsHolder struct {
+	issue record.Issue
+	role  claim.Role
+	token claim.Token
+}
+
+// phaseHolder is the holder of member's phase where a phase worker holds it: the claim, in the
+// project whose token is project, of the role the phase names. A phase no role holds, accepting,
+// which the owning architect holds (newsClaims.holderOf), and a token that cannot be built name
+// none.
+func phaseHolder(project string, member record.Issue) (newsHolder, bool) {
+	role := phase.RoleFor(member.Phase)
+	if role == "" || role == claim.RoleArchitect {
+		return newsHolder{}, false
+	}
+	token, err := claim.NewToken(project, member.Key, role)
+	if err != nil {
+		return newsHolder{}, false
+	}
+	return newsHolder{issue: member, role: role, token: token}, true
+}
+
+// newsClaims names the holder of each member of one tree (holderOf). project is the tree's project
+// token, read from its root's record as notice routing reads it (readNoticeRoute), "" where that
+// project names none. members is the tree's issues by key, as the caller read them, or nil for
+// holderOf to read the first time an owner is asked. architects is the architect claim of each
+// member as the record holds it, and architectOf the member each token names, since a token
+// carries the issue's key lowercased (claim.NewToken): both are read the first time an owner is
+// asked, and nil until then.
+type newsClaims struct {
+	project     string
+	root        record.Issue
+	members     map[string]record.Issue
+	architects  map[claim.Token]*record.RoleClaim
+	architectOf map[claim.Token]record.Issue
+}
+
+// newNewsClaims names the holders of root's tree, whose issues are members, or nil for holderOf to
+// read them where an owner is asked.
+func newNewsClaims(root record.Issue, members []record.Issue) *newsClaims {
+	claims := &newsClaims{root: root}
+	claims.project, _ = claim.ProjectToken(root.Project)
+	claims.seedMembers(members)
+	return claims
+}
+
+// seedMembers gives c the tree's issues, members, as its caller read them, where c holds none
+// yet, so holderOf reads them no second time. A nil members seeds nothing.
+func (c *newsClaims) seedMembers(members []record.Issue) {
+	if c.members != nil || members == nil {
+		return
+	}
+	c.members = make(map[string]record.Issue, len(members))
+	for _, member := range members {
+		c.members[member.Key] = member
+	}
+}
+
+// holderOf is the one answer to which claim holds member's phase now, and whether one does: for a
+// member in accepting, the architect that owns it (owningArchitect: a running sub-architect, else
+// the tree root's, over the architect claims the record holds, recordedClaimRuns); for a member in
+// any other phase, the claim of the role that phase names (phaseHolder). The reconcile hands a
+// member's news to it (settleNews), a start carries the news of the members it holds
+// (owedToClaim), a send tells a member only while the claim it is held for is it
+// (readNewsAtSend), and the root architect's summary says how it is told (readMemberClaims).
+//
+// A member it names no holder of is held by no claim, in every one of those readers alike: a phase
+// no role holds, a token that cannot be built, and an owner owningArchitect cannot name, which it
+// cannot only where a token cannot be built either. No news-only start is queued for such a
+// member, no start attaches its news, a send drops it, and the summary says that the next start
+// of its phase tells it (workflow.NewsAtNextStart), as it says of a member whose holder has no
+// claim. The architect claims are read in the caller's transaction, once.
+func (c *newsClaims) holderOf(ctx context.Context, tx pgx.Tx, records record.Store, member record.Issue) (newsHolder, bool, error) {
+	switch {
+	case c.project == "":
+		return newsHolder{}, false, nil
+	case member.Phase != phase.Accepting:
+		holder, held := phaseHolder(c.project, member)
+		return holder, held, nil
+	}
+	if err := c.readArchitects(ctx, tx, records); err != nil {
+		return newsHolder{}, false, err
+	}
+	owner, err := owningArchitect(c.project, c.members, member, "", func(token claim.Token) bool { return recordedClaimRuns(c.architects[token]) })
+	if err != nil {
+		return newsHolder{}, false, nil
+	}
+	issue, named := c.architectOf[owner]
+	return newsHolder{issue: issue, role: claim.RoleArchitect, token: owner}, named, nil
+}
+
+// readArchitects reads, once, the tree's issues where the caller gave none and the architect claim
+// of each, which an owner is named over (holderOf).
+func (c *newsClaims) readArchitects(ctx context.Context, tx pgx.Tx, records record.Store) error {
+	if c.architects != nil {
+		return nil
+	}
+	if c.members == nil {
+		issues, err := records.TreeIssues(ctx, tx, c.root.Tree)
+		if err != nil {
+			return err
+		}
+		c.members = make(map[string]record.Issue, len(issues))
+		for _, issue := range issues {
+			c.members[issue.Key] = issue
+		}
+	}
+	tokens := make([]claim.Token, 0, len(c.members))
+	c.architectOf = make(map[claim.Token]record.Issue, len(c.members))
+	for _, member := range c.members {
+		if token, err := claim.NewToken(c.project, member.Key, claim.RoleArchitect); err == nil {
+			tokens = append(tokens, token)
+			c.architectOf[token] = member
+		}
+	}
+	held, err := records.RoleClaims(ctx, tx, tokens)
+	if err != nil {
+		return err
+	}
+	c.architects = held
+	return nil
+}
+
+// rootArchitect is the holder of the tree root's architect row: the root's architect claim, which
+// works no phase entry. A root whose project or key names no token has none.
+func (c *newsClaims) rootArchitect() (newsHolder, bool) {
+	if c.project == "" {
+		return newsHolder{}, false
+	}
+	token, err := claim.NewToken(c.project, c.root.Key, claim.RoleArchitect)
+	if err != nil {
+		return newsHolder{}, false
+	}
+	return newsHolder{issue: c.root, role: claim.RoleArchitect, token: token}, true
+}
+
+// owedHolder is the holder of one told row news owes (newsHolder), with what the record holds of
+// its claim: the entry its role's phases row names, 0 for an architect, which works no entry, and
+// its run (record.RoleRun: its queued starts and its claim).
+type owedHolder struct {
+	newsHolder
+	entry int64
+	run   record.RoleRun
+}
+
+// readOwedHolders is the one read of who is told each told row of keys, rows owed news: the holder
+// of a member's holder row (newsClaims.holderOf), and of the tree root's architect row
+// (newsClaims.rootArchitect), each with its entry and run, by told row. A row whose holder cannot
+// be named is absent. The reconcile asks it of the rows it sends news to (settleNews), and the root
+// architect's summary of the holder row of each member owed news, to say how each is told
+// (readMemberClaims). claims was built over the tree's members, as owed was read.
+func readOwedHolders(ctx context.Context, tx pgx.Tx, records record.Store, claims *newsClaims, keys []toldKey) (map[toldKey]owedHolder, error) {
+	holders := make(map[toldKey]owedHolder, len(keys))
+	for _, key := range keys {
+		if key.audience == record.AudienceArchitect {
+			if holder, held := claims.rootArchitect(); held {
+				holders[key] = owedHolder{newsHolder: holder}
+			}
+			continue
+		}
+		holder, held, err := claims.holderOf(ctx, tx, records, claims.members[key.issue])
+		if err != nil {
+			return nil, err
+		}
+		if held {
+			holders[key] = owedHolder{newsHolder: holder}
+		}
+	}
+	runKeys := make([]record.RoleRunKey, 0, len(holders))
+	for key, holder := range holders {
+		if holder.role != claim.RoleArchitect {
+			rows, err := records.Phases(ctx, tx, holder.issue.Key)
+			if err != nil {
+				return nil, err
+			}
+			holder.entry = record.PhaseRowOf(rows, holder.role).Entry
+			holders[key] = holder
+		}
+		runKeys = append(runKeys, record.RoleRunKey{Token: holder.token, Issue: holder.issue.Key, Role: holder.role, Generation: holder.issue.Generation})
+	}
+	runs, err := records.RoleRuns(ctx, tx, runKeys)
+	if err != nil {
+		return nil, err
+	}
+	for key, holder := range holders {
+		holder.run = runs[holder.token]
+		holders[key] = holder
+	}
+	return holders, nil
+}
+
+// holderTold is how the holder of a member owed news is told, from its role's claim: by a task now
+// when the reconcile queues a news-only start for the claim, which is when one reaches it
+// (recordedClaimTakesNews, the one rule the reconcile queues that start under and the start runs
+// under) and it holds no task its worker has not taken yet (holdsUntakenTask, the reconcile's other
+// guard). A claim the start reaches that holds such a task gets no start until a turn takes it, so
+// its news waits for that turn (workflow.NewsWaitsForTask). Otherwise by the next start of its
+// phase: a claim behind its phase's current entry, owed that entry's start, no claim at all, or one
+// that retired, failed, or an operator suspended, since the start that revives it carries the news.
+func holderTold(run record.RoleRun, entry int64) workflow.NewsState {
+	switch {
+	case !recordedClaimTakesNews(run.Claim, entry):
+		return workflow.NewsAtNextStart
+	case holdsUntakenTask(run.Claim):
+		return workflow.NewsWaitsForTask
+	}
+	return workflow.NewsSentNow
+}
+
+// recordedClaimRuns is claimRuns over a claim as the record holds it: it has not ended, and it is
+// not suspended, but for a released claim, which keeps its role while its pod is released
+// (holdsRole). A token the record holds no claim of runs nothing.
+func recordedClaimRuns(held *record.RoleClaim) bool {
+	if held == nil {
+		return false
+	}
+	if held.State == supervise.StateSuspended {
+		return held.SuspendedBy == supervise.SuspendedByReleased
+	}
+	return !claimEnded(held.State)
+}
+
+// newsStartQueued says whether run holds a news-only start still to run (record.SuperviseRequest.News):
+// one is all a claim needs, since each reads what it carries when it runs.
+func newsStartQueued(run record.RoleRun) bool {
+	return slices.ContainsFunc(run.Queued, func(queued record.QueuedSupervise) bool {
+		return queued.Request.Op == "start" && queued.Request.News
+	})
+}
+
+// holdsUntakenTask says whether held, a claim as the record holds it, holds a task its worker has
+// not taken yet: a pending delivery with no confirmation. A role the record holds no claim of (nil)
+// holds none. A news-only start queued behind such a task would only wait, since the claim's
+// machine takes no second task while one is pending (supervise.ErrDeliveryPending), and its start
+// would retry on its backoff until a turn takes the first. So none is queued, and the news stays
+// owed: the sweep queues the reconcile again (queueOwedDesignNews), which queues the start once
+// that task is taken, and the next start of the phase carries the news itself. The root
+// architect's summary reads the same rule over the same claim, for a phase holder (holderTold) and
+// for the sub-architect that owns a member in accepting (readMemberClaims), and says that member's
+// news waits until the task is taken (workflow.NewsWaitsForTask).
+//
+// The daemon's own delivery of a relaunch's record is no task (supervise.HoldsTask), as
+// workflow's owed reads it for the same question: it carries only the sentence of what the
+// relaunch ended, a newer task takes its place while no prompt of it waits on a result (the
+// machine's queue), and that task carries the sentence in front of its own text. So a claim that
+// holds it alone is queued its news-only start, and the summary says a task tells the member now.
+// Should the start meet a prompt of it still waiting on its result, the machine refuses the start
+// as it refuses one behind any untaken task, and the start retries on its backoff until that
+// prompt's turn has taken the delivery.
+//
+// A claim whose turn is working a task it took (a confirmed delivery) is queued its news-only
+// start, which does not take that task's place: the machine refuses a task of news alone behind
+// any task that holds work (supervise.RequestDeliver.NewsOnly), since retiring the task of a
+// running turn would lose it to that turn's provider error, which sends the task again only while
+// it is pending. The start waits on its backoff until the turn has ended, and its task is sent
+// then. The summary says a task tells such a member now, which is the task that start sends.
+func holdsUntakenTask(held *record.RoleClaim) bool {
+	return held != nil && supervise.HoldsTask(held.Pending) && held.Pending.ConfirmedAt.IsZero()
+}
+
+// newsClaimTakes is the one rule for whether a news-only start may hand its news to a claim the
+// caller holds, over what says it: it was given the entry its role's phases row names (entry, 0 for
+// an architect, which works no entry), since a claim behind that entry is owed its phase start,
+// which carries the news; it has not ended (claimEnded), since a failed or retired claim is
+// revived by its phase's own repair, whose start carries the news; and no operator holds it
+// suspended (operatorHolds). A claim an idle pod release suspended takes the news, and the start
+// that carries it wakes the claim as any start wakes one. Both readers state it through this: the
+// reconcile and the architect's summary over the claim the record holds (recordedClaimTakesNews),
+// and the start over the claim its machine holds (newsOnlyRefusal).
+func newsClaimTakes(given, entry int64, state supervise.ClaimState, operatorHolds bool) bool {
+	return given == entry && !claimEnded(state) && !operatorHolds
+}
+
+// recordedClaimTakesNews is newsClaimTakes over a claim as the record holds it (record.RoleClaim),
+// nil for a role the record holds no claim of, which takes no news.
+func recordedClaimTakesNews(held *record.RoleClaim, entry int64) bool {
+	if held == nil {
+		return false
+	}
+	operator := held.State == supervise.StateSuspended && held.SuspendedBy == supervise.SuspendedByOperator
+	return newsClaimTakes(held.GivenEntry, entry, held.State, operator)
+}
+
+// newsOnlyRefusal is why a news-only start reaches no claim, as the claim's machine holds it when
+// the start runs, and "" when it may: the guards the reconcile queued it under, read again
+// (newsClaimTakes), since the claim can have moved since. entry is the entry the role's phases row
+// names, 0 for an architect. The start's other guards are the executor's own, read before this:
+// an earlier generation, a phase the issue has left, an issue out of the workflow and a lingering
+// tree each finish it, as they finish any start.
+func newsOnlyRefusal(machine *supervise.Machine, found bool, entry int64) string {
+	if !found {
+		return "no claim holds the role"
+	}
+	held := machine.Claim()
+	if newsClaimTakes(held.GivenEntry, entry, held.State, held.RuleHolds()) {
+		return ""
+	}
+	switch {
+	case held.GivenEntry != entry:
+		return fmt.Sprintf("the claim was given entry %d and its role's phases row names %d, so its phase start carries the news", held.GivenEntry, entry)
+	case claimEnded(held.State):
+		return fmt.Sprintf("the claim is %s, and the start that revives it carries the news", held.State)
+	}
+	return "an operator suspended the claim, and the start that resumes it carries the news"
+}

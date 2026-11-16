@@ -510,37 +510,6 @@ func readMemberClaims(ctx context.Context, tx pgx.Tx, records record.Store, clai
 	return told, nil
 }
 
-// holderTold is how the holder of a member owed news is told, from its role's claim: by a task now
-// when the reconcile queues a news-only start for the claim, which is when one reaches it
-// (recordedClaimTakesNews, the one rule the reconcile queues that start under and the start runs
-// under) and it holds no task its worker has not taken yet (holdsUntakenTask, the reconcile's other
-// guard). A claim the start reaches that holds such a task gets no start until a turn takes it, so
-// its news waits for that turn (workflow.NewsWaitsForTask). Otherwise by the next start of its
-// phase: a claim behind its phase's current entry, owed that entry's start, no claim at all, or one
-// that retired, failed, or an operator suspended, since the start that revives it carries the news.
-func holderTold(run record.RoleRun, entry int64) workflow.NewsState {
-	switch {
-	case !recordedClaimTakesNews(run.Claim, entry):
-		return workflow.NewsAtNextStart
-	case holdsUntakenTask(run.Claim):
-		return workflow.NewsWaitsForTask
-	}
-	return workflow.NewsSentNow
-}
-
-// recordedClaimRuns is claimRuns over a claim as the record holds it: it has not ended, and it is
-// not suspended, but for a released claim, which keeps its role while its pod is released
-// (holdsRole). A token the record holds no claim of runs nothing.
-func recordedClaimRuns(held *record.RoleClaim) bool {
-	if held == nil {
-		return false
-	}
-	if held.State == supervise.StateSuspended {
-		return held.SuspendedBy == supervise.SuspendedByReleased
-	}
-	return !claimEnded(held.State)
-}
-
 // untoldReason is how the root architect's summary says why OwedNews owes a member nothing
 // (record.UntoldReason, decided there once; readTreeMembers). A member OwedNews holds back is one
 // whose news the standing gate holds, closed again (workflow.NewsGateClosed): a lingering tree, the
