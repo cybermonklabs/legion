@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The catalogue of operations at GET /api/v1/going/catalogue gives `dispatch_request_approval` the
+  new text of its tool: the writer of a document under The Spec runs `dispatch spec-form` and has
+  a fresh reviewer read the document with skill://spec-statement-review before the approval
+  request.
+custom:
+    Issue: pr4210
