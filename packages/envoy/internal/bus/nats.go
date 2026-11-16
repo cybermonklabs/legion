@@ -609,11 +609,12 @@ func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool)
 // version off the connection nats.go hands it, so the ensure asks the server it writes to whether
 // a stream with no consumer cap is one that server caps (ensureStreamReported), and it looks once
 // and waits for nothing: a connection that reports no version has dropped again, and a run of the
-// hooks that waited out that outage would keep the next reconnect's run behind it (rewatch). The
-// hook fails with the error instead, the run's caller starts the recovery, and the recovery runs
-// the hooks again once the connection is back (afterReconnect, recover). Every request of the
-// ensure is made under ctx, the run's context (requestsUnder), so one sent on a connection that
-// drops ends with it.
+// hooks that waited out that outage would keep the next reconnect's run behind it (rewatch). A
+// connection reports no version only when it is not CONNECTED, so the run that met it is
+// superseded (runSuperseded): it starts no recovery and leaves the hooks due, and the run the next
+// connection event brings makes the ensure again (afterReconnect, onReconnect, onClosed). Every
+// request of the ensure is made under ctx, the run's context (requestsUnder), so one sent on a
+// connection that drops ends with it.
 func (c *Client) ensureStreamOn(ctx context.Context, conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err == nil {

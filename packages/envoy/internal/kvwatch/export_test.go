@@ -13,6 +13,18 @@ func WatchOn(w *Watcher, kv bus.KeyValue) error {
 	return w.watch(context.Background(), kv, 0)
 }
 
+// WatchUnder installs a new read on kv under run, as a reconnect hook's Rewatch does once it has
+// opened its handle, so a test can end the run at a moment of its choosing through kv.
+func WatchUnder(w *Watcher, run context.Context, kv bus.KeyValue) error {
+	return w.watch(run, kv, 0)
+}
+
+// RereadUnder installs a re-read of generation on kv under run: a generation that is not current
+// makes the watch's watcher an overtaken one, which it discards.
+func RereadUnder(w *Watcher, run context.Context, kv bus.KeyValue, generation uint64) error {
+	return w.watch(run, kv, generation)
+}
+
 // Generation is the watcher's current generation: the one a re-read armed now would read again.
 func Generation(w *Watcher) uint64 {
 	w.mu.RLock()

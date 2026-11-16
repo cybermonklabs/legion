@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -196,4 +197,62 @@ func (s *subscription) stop() error {
 func (s *subscription) discard() {
 	bus.DrainWatcher(s.watcher)
 	s.cancel()
+}
+
+// abandonedDrain bounds how long retireWithin goes on reading a stopped watcher's entries after
+// its stop returns. nats.go closes a watcher's updates once its subscription has delivered what it
+// holds, which a stopped subscription does well inside this. But a watch whose run ended after the
+// server answered its consumer's create and before nats.go's WatchFiltered set the handler that
+// closes the updates (jetstream/kv.go 1356-1368) gets a watcher whose updates nothing ever closes,
+// and a read that waited for their close would park for the life of the process. That watcher was
+// never installed, so what it delivers is dropped either way: the bound only ends the read
+// (TestAnAbandonedWatchersDiscardEnds).
+const abandonedDrain = time.Second
+
+// retireWithin retires a watcher that was never installed: a watch's run ended while its create
+// was in flight, or a newer generation or stream overtook it (watch). It stops the watcher and
+// waits for that stop until it returns or run ends, whichever is first, so a watch under a live
+// run returns with its watcher stopped and one whose run ended does not wait out the stop's
+// consumer delete, a request that takes no context (the class of the previous watcher's stop,
+// watch). The rest goes on by itself (drainWithin): nothing of the watcher outlives the stop by
+// more than bound.
+func (s *subscription) retireWithin(run context.Context, bound time.Duration) {
+	stopped := make(chan struct{})
+	go s.drainWithin(bound, stopped)
+	select {
+	case <-stopped:
+	case <-run.Done():
+	}
+}
+
+// drainWithin stops the watcher (stop, which unsubscribes it, deleting its consumer, then cancels
+// its context, releasing the goroutine nats.go parks on it) and closes stopped when that returns.
+// It reads and drops the watcher's entries while the stop runs, as discard does, and after it until
+// nats.go closes them or bound passes, whichever comes first. So nothing of the watcher outlives
+// the stop by more than bound.
+func (s *subscription) drainWithin(bound time.Duration, stopped chan<- struct{}) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = s.stop()
+	}()
+	updates, waiting := s.watcher.Updates(), (<-chan struct{})(done)
+	var expired <-chan time.Time
+	for updates != nil {
+		select {
+		case _, open := <-updates:
+			if !open {
+				updates = nil
+			}
+		case <-waiting:
+			close(stopped)
+			waiting, expired = nil, time.After(bound)
+		case <-expired:
+			updates = nil
+		}
+	}
+	if waiting != nil {
+		<-done
+		close(stopped)
+	}
 }

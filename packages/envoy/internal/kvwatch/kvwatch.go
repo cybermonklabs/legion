@@ -470,8 +470,7 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 		// run ended while the create was in flight, and cancelled the watcher's context.
 		if err == nil {
 			sub := &subscription{watcher: watcher, cancel: cancel}
-			go sub.discard()
-			_ = sub.stop()
+			sub.retireWithin(run, abandonedDrain)
 		}
 		cancel()
 		return fmt.Errorf("create the %s watcher: %w", w.name, run.Err())
@@ -515,10 +514,7 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 	if older || (expect != 0 && w.generation != expect) {
 		w.mu.Unlock()
 		w.applyMu.Unlock()
-		go sub.discard()
-		// Stop reports a consumer the server has lost, or a subscription already ended, to its
-		// caller, and neither is worth a line.
-		_ = sub.stop()
+		sub.retireWithin(run, abandonedDrain)
 		return nil
 	}
 	previous := w.watcher
