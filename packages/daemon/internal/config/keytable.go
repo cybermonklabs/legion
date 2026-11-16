@@ -535,6 +535,8 @@ var nestedKeys = []memberGroup{
 			Description: "Which of the project's new units the experiment draws: `off` none, `on` every one into `on_variant`, `random` a draw among the variants by weight; the draw is made once and the unit keeps it."},
 		{Name: "unit", Default: "`tree`", RequiredBy: "no",
 			Description: "What the experiment draws one at a time: a whole `tree`, or each `issue` on its own."},
+		{Name: "roles", Default: "every issue role", RequiredBy: "no",
+			Description: "The Legion issue roles whose launches load the experiment's arms; a launch of another role runs on the deployment's own settings while its unit keeps the arm it drew, so the roles that judge the work can stay out of what the experiment changes."},
 		{Name: "on_variant", Default: "none: a block whose mode is `on` is refused without it", RequiredBy: "when `mode` is `on`: that mode gives every unit one named variant",
 			Description: "The variant `mode: on` gives every unit, which must be one this experiment lists."},
 		{Name: "variants", Default: "none: a block that lists no variant is refused", RequiredBy: "yes",

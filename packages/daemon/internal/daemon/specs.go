@@ -35,12 +35,12 @@ type specs struct {
 	instructions string
 	secrets      map[string]string
 	prompts      *prompts.Composer
-	// variants is every arm of a declared experiment the claim's unit was drawn into, in the
-	// order the project's file declares the experiments, and the daemon's own copies of the
-	// instructions those arms name (launchVariants, over the daemon's own store). Boot always
-	// sets it; it is nil only in a test whose specs literal leaves it out, and such a specs
-	// launches every role in no experiment.
-	variants func(ctx context.Context, tree, issue string) (experiment.Arms, error)
+	// variants is every arm of a declared experiment the claim's unit was drawn into and that
+	// reaches the claim's role, in the order the project's file declares the experiments, and
+	// the daemon's own copies of the instructions those arms name (launchVariants, over the
+	// daemon's own store). Boot always sets it; it is nil only in a test whose specs literal
+	// leaves it out, and such a specs launches every role in no experiment.
+	variants func(ctx context.Context, tree, issue string, role claim.Role) (experiment.Arms, error)
 	// designSteps is the design-gate steps the project gates (gates.design), in the order it
 	// gates them, which a tree's root architect is told after its addressing
 	// (DesignGateFragment); empty for a deployment that gates no step.
@@ -202,11 +202,13 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	// The arms are read from the record alone: a unit the daemon drew into an arm keeps that
 	// arm's overlays and its instructions while the project's file names them, whatever the
 	// experiment's mode is now — the mode decides which new units are drawn, and only taking the
-	// arm out of the file takes the files away. A specs with no reader (variants nil, a test's)
-	// asks nothing, so each of its launches runs in no experiment, and an arm that names no
+	// arm out of the file takes the files away. An experiment whose `roles` leaves this claim's
+	// role out gives this launch none of its arms, while the unit keeps the arm it drew
+	// (config.Experiment.Reaches). A specs with no reader (variants nil, a test's) asks
+	// nothing, so each of its launches runs in no experiment, and an arm that names no
 	// instructions file appends nothing, its roles getting the overlays alone.
 	if s.variants != nil {
-		arms, err := s.variants(ctx, c.Tree, c.Issue)
+		arms, err := s.variants(ctx, c.Tree, c.Issue, c.Role)
 		if err != nil {
 			return runtime.SpawnSpec{}, fmt.Errorf("the experiment variants of %s: %w", c.Token, err)
 		}
