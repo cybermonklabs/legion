@@ -8,6 +8,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -74,7 +75,7 @@ func TestDashboardBuildsNamesTheEntryChunksOfTheLiveProcesses(t *testing.T) {
 	b := registerProcess(t, database, "build-b", 0)
 	registerProcess(t, database, "build-a", 0)
 	registerProcess(t, database, "build-a", 1)
-	registerProcess(t, database, "build-old", store.ProcessLiveWindow.Seconds()+60)
+	registerProcess(t, database, "build-old", processes.LiveWindow.Seconds()+60)
 	registerProcess(t, database, "build-never-published", 0)
 	registerProcess(t, database, "build-no-entry", 0)
 	registerProcess(t, database, "", 0)
@@ -89,7 +90,7 @@ func TestDashboardBuildsNamesTheEntryChunksOfTheLiveProcesses(t *testing.T) {
 	// B's process stops beating: once its heartbeat is older than the live window, only A is live.
 	if _, err := database.Pool.Exec(context.Background(), `
 		update server_processes set heartbeat_at = now() - make_interval(secs => $2) where instance = $1::uuid`,
-		b, store.ProcessLiveWindow.Seconds()+1); err != nil {
+		b, processes.LiveWindow.Seconds()+1); err != nil {
 		t.Fatal(err)
 	}
 	if code, body, _ := getDashboardBuildsAs(t, handler, "cookie"); code != http.StatusOK || !slices.Equal(body.Live, []string{"/assets/index-a.js"}) {

@@ -2606,7 +2606,7 @@ jobs:
               # internal/pgmigrate/counts_in_documents_test.go read (their RULES entries in
               # .github/scripts/ci_job_reads.py), packages the unit step runs: each holds a number
               # the page states to the constant that decides it (processes.HeartbeatInterval,
-              # store.ProcessLiveWindow, pgmigrate.LockTimeout), so an edit of it alone must start
+              # processes.LiveWindow, pgmigrate.LockTimeout), so an edit of it alone must start
               # this job.
               - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
               # Fixtures its Go tests read: internal/contracts/dedupe_test.go:14, golden_test.go:72,

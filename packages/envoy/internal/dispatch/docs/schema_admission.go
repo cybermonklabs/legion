@@ -11,7 +11,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // schemaPage is the schema a page presents on its document socket: version is C, the
@@ -166,14 +165,14 @@ func (a *schemaAdmissions) revokeUnless(fleet schemaFleet) []*schemaAdmission {
 	return revoked
 }
 
-// RunSchemaAdmission checks, every live window of the registry (store.ProcessLiveWindow), each
+// RunSchemaAdmission checks, every live window of the registry (processes.LiveWindow), each
 // writable document socket this process serves against the live fleet again, and closes each one
 // the fleet no longer admits, until ctx ends (recheckSchemaAdmissions). A roll that follows the
 // manifest's rule never changes a decision, so editors do not flip; a process that creates what an
 // open page cannot represent, or that cannot read what it creates, ends that page's edits within
 // a window.
 func (s *Service) RunSchemaAdmission(ctx context.Context) {
-	ticker := time.NewTicker(store.ProcessLiveWindow)
+	ticker := time.NewTicker(processes.LiveWindow)
 	defer ticker.Stop()
 	for {
 		select {

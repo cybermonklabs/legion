@@ -912,7 +912,7 @@ func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx, wit
 			    select pid from pg_locks
 			    where locktype = 'advisory' and granted
 			      and not (objsubid = 2 and classid = $2::oid and objid = $3::oid))
-		`, ownerLockStatement, int64(store.OwnerLockGateNamespace), int64(store.OwnerLockGateKey))
+		`, store.OwnerLockStatement, int64(store.OwnerLockGateNamespace), int64(store.OwnerLockGateKey))
 		if err != nil {
 			t.Fatalf("read the sessions waiting on an owner lock: %v", err)
 		}
@@ -935,10 +935,6 @@ func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx, wit
 		time.Sleep(2 * time.Millisecond)
 	}
 }
-
-// ownerLockStatement is the statement with which a writer takes one owner's lock in its read phase
-// (store.LockOwner), as pg_stat_activity shows it.
-const ownerLockStatement = store.OwnerLockStatement
 
 // renameIssue changes the issue's title as the test's login and returns the status Dispatch
 // answered. It reports failures rather than ending the test, so a goroutine can call it.

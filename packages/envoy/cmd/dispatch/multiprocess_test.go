@@ -2727,7 +2727,7 @@ func TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables(t *testing.T
 	select {
 	case <-waiting.Exited:
 		t.Fatalf("the process refused admission %s before the row stopped it, having outlasted the %v its admission wait is given:\n%s",
-			waiting.Cmd.ProcessState, store.ProcessLiveWindow+processes.HeartbeatInterval, waiting.Output.String())
+			waiting.Cmd.ProcessState, processes.LiveWindow+processes.HeartbeatInterval, waiting.Output.String())
 	default:
 	}
 
@@ -4474,7 +4474,7 @@ func TestAProcessThatResumesBesideAPeerWhoseKeySetItDoesNotShareDoesNotServeBesi
 			_ = frozen.Cmd.Process.Signal(syscall.SIGCONT)
 		}
 	})
-	time.Sleep(store.ProcessLiveWindow + 2*time.Second)
+	time.Sleep(processes.LiveWindow + 2*time.Second)
 
 	other := startDispatchProcessWith(t, pair.databaseURL(t), dispatchOptions{NATSURL: pair.nats, SigningKey: "a-key-of-its-own"})
 	other.waitHealthy(t)
@@ -8537,7 +8537,7 @@ func TestDashboardBuildsAnswersTheBuildsTheLiveProcessesServe(t *testing.T) {
 	}
 	if _, err := pair.database.Pool.Exec(ctx, `
 		update server_processes set heartbeat_at = now() - make_interval(secs => $2) where instance = $1::uuid`,
-		instance, store.ProcessLiveWindow.Seconds()+1); err != nil {
+		instance, processes.LiveWindow.Seconds()+1); err != nil {
 		t.Fatal(err)
 	}
 	if _, live := dashboardBuildsOf(t, a); !slices.Equal(live, []string{entryA}) {

@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/docnumbers"
 )
 
@@ -34,7 +33,7 @@ func TestTheDocumentsStateTheCadencesThisPackageHolds(t *testing.T) {
 		readme = "packages/envoy/cmd/dispatch/README.md"
 	)
 	number := docnumbers.Number
-	heartbeat, live := int(HeartbeatInterval/time.Second), int(store.ProcessLiveWindow/time.Second)
+	heartbeat, live := int(HeartbeatInterval/time.Second), int(LiveWindow/time.Second)
 	docnumbers.Check(t, filepath.Join("..", "..", "..", "..", ".."), []docnumbers.Stated{
 		{File: site, Pattern: `which it renews every ` + number + ` seconds`, Number: heartbeat,
 			Says: "how often a server renews its entry in the list of running servers"},

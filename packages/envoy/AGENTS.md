@@ -1487,7 +1487,7 @@ While an earlier build is in the fleet, the owner lock takes no gate and takes e
 The row comes after the advisory lock, never before it: a writer of this build in the advisory mode holds the lock and takes the row in its write phase.
 Those row locks give the read phase a transaction id, the cost of the overlap, and `LockOwnersAndRead` sends its read again behind them, one round trip more.
 An arrival's transaction holds the gate from its grant to its commit, and a write that starts meanwhile takes the owner's rows: a first publish holds it across its assets' upload.
-A process logs each change of its mode once (`store.LastOwnerLockMode`).
+A process logs each change of its mode once (`store`'s `noteOwnerLockMode`).
 
 **One caller, one connection.**
 Nothing holding a connection of the shared pool (`store.Pool`)

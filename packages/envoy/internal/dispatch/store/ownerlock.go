@@ -62,7 +62,7 @@ const OwnerLockProtocol = 1
 // database - has its row pruned and is not in the fleet again until its next heartbeat's admit,
 // whose insert is an arrival. That is the registry's own model: every other decision over the
 // fleet (the signing keys, the embedder, the schema admission) counts a process silent past
-// ProcessLiveWindow as gone.
+// processes.LiveWindow as gone.
 //
 // OwnerLockMarkWindow covers an earlier build's boot from its dashboard publish, the arrival its
 // boot makes first, to its registration, which then keeps it in the fleet. Every step of that
@@ -76,15 +76,6 @@ var (
 	OwnerLockLegacyWindow = 10 * time.Minute
 	OwnerLockMarkWindow   = time.Hour
 )
-
-// ProcessLiveWindow is how recent a server process's heartbeat must be, by the database's now(),
-// for the process to count as live: three heartbeats (processes.HeartbeatInterval), so one slow or
-// lost update does not drop a process that still serves. It is the registry's live window
-// (processes.Live), which the CI reconcile passes, the document socket's schema admission and the
-// registry's own admission read; the owner lock's fleet read does not, and counts a row of an
-// earlier build over OwnerLockLegacyWindow instead. A variable rather than a constant only so
-// tests can shorten it, and cmd/dispatch's test hooks with it (DISPATCH_TEST_PROCESS_HEARTBEAT).
-var ProcessLiveWindow = 15 * time.Second
 
 // OwnerKind names what owns a collaboration: an issue, a document no issue owns (a project
 // document, keyed by the artifact's id), or a project.
@@ -191,50 +182,50 @@ func ownerLockArgs(keys []string) []any {
 	return []any{OwnerLockNamespace, keys, OwnerLockLegacyWindow.Seconds(), OwnerLockMarkWindow.Seconds()}
 }
 
-// OwnerLockMode is which owner lock a transaction of this process took, by its fleet read
+// ownerLockMode is which owner lock a transaction of this process took, by its fleet read
 // (public.owner_lock_fleet, the owner lock statements above).
-type OwnerLockMode int32
+type ownerLockMode int32
 
 const (
-	// OwnerLockModeUnknown is a process that has taken no owner lock yet.
-	OwnerLockModeUnknown OwnerLockMode = iota
-	// OwnerLockAdvisory is the advisory lock alone, behind the owner lock gate taken shared: no
+	// ownerLockModeUnknown is a process that has taken no owner lock yet.
+	ownerLockModeUnknown ownerLockMode = iota
+	// ownerLockAdvisory is the advisory lock alone, behind the owner lock gate taken shared: no
 	// earlier build, which serialises on the owner row, is in the fleet.
-	OwnerLockAdvisory
-	// OwnerLockAdvisoryAndRow is the advisory lock and then the owner's row, before any read the
+	ownerLockAdvisory
+	// ownerLockAdvisoryAndRow is the advisory lock and then the owner's row, before any read the
 	// lock guards, and no gate: an earlier build, which serialises on that row, is in the fleet,
 	// or its arrival holds the gate or waits for it (lockOwnerRows).
-	OwnerLockAdvisoryAndRow
+	ownerLockAdvisoryAndRow
 )
 
-func (m OwnerLockMode) String() string {
+func (m ownerLockMode) String() string {
 	switch m {
-	case OwnerLockAdvisory:
+	case ownerLockAdvisory:
 		return "advisory"
-	case OwnerLockAdvisoryAndRow:
+	case ownerLockAdvisoryAndRow:
 		return "advisory and row"
 	}
 	return "unknown"
 }
 
-// ownerLockMode is the mode the latest read-phase owner lock of this process took.
-var ownerLockMode atomic.Int32
+// latestOwnerLockMode is the mode the latest read-phase owner lock of this process took.
+var latestOwnerLockMode atomic.Int32
 
-// LastOwnerLockMode is the mode the latest read-phase owner lock this process took ran in: what
+// lastOwnerLockMode is the mode the latest read-phase owner lock this process took ran in: what
 // its fleet read answered. A test reads it after a write of its own; across concurrent writers it
 // is whichever answered last.
-func LastOwnerLockMode() OwnerLockMode { return OwnerLockMode(ownerLockMode.Load()) }
+func lastOwnerLockMode() ownerLockMode { return ownerLockMode(latestOwnerLockMode.Load()) }
 
 // noteOwnerLockMode records the mode a read-phase owner lock took, and logs once each time the
 // process's mode changes, not once per write. The common case, an unchanged mode, is one atomic
 // load.
 func noteOwnerLockMode(legacy bool) {
-	mode := OwnerLockAdvisory
+	mode := ownerLockAdvisory
 	if legacy {
-		mode = OwnerLockAdvisoryAndRow
+		mode = ownerLockAdvisoryAndRow
 	}
-	previous := OwnerLockMode(ownerLockMode.Load())
-	if previous == mode || !ownerLockMode.CompareAndSwap(int32(previous), int32(mode)) {
+	previous := ownerLockMode(latestOwnerLockMode.Load())
+	if previous == mode || !latestOwnerLockMode.CompareAndSwap(int32(previous), int32(mode)) {
 		return
 	}
 	if legacy {
@@ -531,7 +522,7 @@ func ownerRowLockStatement(kind OwnerKind, level rowLock) string {
 
 // lockOwnerRows takes the rows of owners at level (ownerRowLocks), one statement per kind, after
 // their advisory locks and before any read those locks guard: the mode a fleet with a process of
-// an earlier build in it needs (OwnerLockAdvisoryAndRow), since that build's writers serialise on
+// an earlier build in it needs (ownerLockAdvisoryAndRow), since that build's writers serialise on
 // the row and never take the advisory lock.
 func lockOwnerRows(ctx context.Context, q OwnerLocker, owners []Owner, level rowLock) error {
 	for _, lock := range ownerRowLocks(owners, level) {

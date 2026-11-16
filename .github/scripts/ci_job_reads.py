@@ -723,7 +723,7 @@ RULES = {
     f"{ENVOY}/internal/dispatch/processes/counts_in_documents_test.go": reads(
         ("docs/site/src/content/docs/dispatch/running-dispatch.md",
          "internal/dispatch/processes/counts_in_documents_test.go reads it: the cadences it "
-         "states must equal processes.HeartbeatInterval and store.ProcessLiveWindow"),
+         "states must equal processes.HeartbeatInterval and processes.LiveWindow"),
         (f"{ENVOY}/cmd/dispatch/README.md",
          "internal/dispatch/processes/counts_in_documents_test.go:37 docnumbers.Check under ../../../../..: "
          "the heartbeat and live-window seconds it states must equal the same two constants")),

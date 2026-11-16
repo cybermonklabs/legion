@@ -39,12 +39,12 @@ func setInterval(t *testing.T, interval *time.Duration, value time.Duration) {
 }
 
 // quickRegistry shortens the heartbeat to 100ms and the live window to a second for the test, so
-// Register's wait beside a refusing peer (the live window and one HeartbeatInterval) takes about a
+// Register's wait beside a refusing peer (LiveWindow and one HeartbeatInterval) takes about a
 // second, and a peer registered in the test heartbeats ten times a window.
 func quickRegistry(t *testing.T) {
 	t.Helper()
 	setInterval(t, &HeartbeatInterval, 100*time.Millisecond)
-	setInterval(t, &store.ProcessLiveWindow, time.Second)
+	setInterval(t, &LiveWindow, time.Second)
 }
 
 // register registers a process holding setting and deregisters it when the test ends, unless the
@@ -311,7 +311,7 @@ func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
 			database := storetest.Open(t)
 			peer := mustRegister(t, database, "c1", c.peer)
 			if c.stale {
-				ageHeartbeat(t, database, peer.ID, store.ProcessLiveWindow+time.Second)
+				ageHeartbeat(t, database, peer.ID, LiveWindow+time.Second)
 			}
 			registration, err := register(t, database, "c2", c.mine)
 			if !c.refused {
@@ -394,7 +394,7 @@ func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
 	}
 }
 
-// A process killed without deregistering leaves a row that counts as live until the live window after
+// A process killed without deregistering leaves a row that counts as live until LiveWindow after
 // its last heartbeat, and a newcomer whose key set it does not share - a dev sign-in server
 // restarted after a kill, whose key is minted per process - is refused beside it at first.
 // Register waits for the row to lapse instead of refusing at once, and admits the newcomer then.
@@ -414,7 +414,7 @@ func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *te
 }
 
 // Beside a peer that keeps heartbeating, Register's wait ends in the refusal: the peer's row stays
-// live past the live window and one HeartbeatInterval after the first refusal, and nothing is recorded.
+// live past LiveWindow and one HeartbeatInterval after the first refusal, and nothing is recorded.
 func TestARefusalBesideAPeerThatKeepsHeartbeatingStandsAfterTheWait(t *testing.T) {
 	quickRegistry(t)
 	database := storetest.Open(t)
@@ -426,7 +426,7 @@ func TestARefusalBesideAPeerThatKeepsHeartbeatingStandsAfterTheWait(t *testing.T
 	if !errors.Is(err, ErrKeySetMismatch) || !strings.Contains(err.Error(), peer.ID) {
 		t.Fatalf("a process beside a heartbeating peer with another key registered with %v, want ErrKeySetMismatch naming %s", err, peer.ID)
 	}
-	if bound := store.ProcessLiveWindow + HeartbeatInterval; waited < bound {
+	if bound := LiveWindow + HeartbeatInterval; waited < bound {
 		t.Errorf("refused %v after Register began, want once it waited %v for the peer to lapse", waited, bound)
 	}
 	if got := liveIDs(t, database); !slices.Equal(got, []string{peer.ID}) {
@@ -448,7 +448,7 @@ func TestRegistersWaitEndsWithItsContext(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Register beside a refusing peer, its context ended, returned %v; want the context's error", err)
 	}
-	if waited := time.Since(started); waited > store.ProcessLiveWindow/2 {
+	if waited := time.Since(started); waited > LiveWindow/2 {
 		t.Errorf("Register returned %v after it began, want soon after its context ended at 300ms", waited)
 	}
 	if got := liveIDs(t, database); !slices.Equal(got, []string{peer.ID}) {
@@ -481,7 +481,7 @@ func lapse(t *testing.T, tx pgx.Tx, id string) {
 	t.Helper()
 	tag, err := tx.Exec(context.Background(),
 		`update server_processes set heartbeat_at = now() - make_interval(secs => $2) where instance = $1`,
-		id, (store.ProcessLiveWindow + time.Second).Seconds())
+		id, (LiveWindow + time.Second).Seconds())
 	if err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("lapse process %s's heartbeat: %v (%d rows)", id, err, tag.RowsAffected())
 	}
@@ -672,6 +672,46 @@ func TestALiveRowsHeartbeatChecksNoPeer(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	requireNotLost(t, registration, "a live process beside a disagreeing peer")
+}
+
+// A process registers at this build's owner lock protocol (store.OwnerLockProtocol), which no
+// Instance carries, so neither a registration that names nothing but its build and keys nor the
+// heartbeat that writes its pruned row again is an earlier build's arrival: the row reads 1, no
+// earlier build's mark is stamped (owner_lock_legacy_mark), and the owner lock's fleet read
+// (public.owner_lock_fleet) finds no earlier build in the fleet. A row at the column's default, 0,
+// would fire owner_lock_legacy_registration and put every owner lock of the database beside an
+// earlier build for store.OwnerLockMarkWindow (migration 20261115200014).
+func TestARegistrationOfThisBuildMarksNoEarlierBuild(t *testing.T) {
+	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
+	database := storetest.Open(t)
+	registration, err := Register(context.Background(), database.Pool, Instance{Commit: "c1", SigningKeys: fingerprints(t, "K0")})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	t.Cleanup(func() { _ = registration.Deregister(context.Background()) })
+	noEarlierBuild := func(what string) {
+		t.Helper()
+		var protocol int
+		var marked, legacy bool
+		if err := database.Pool.QueryRow(context.Background(), `
+			select (select owner_lock_protocol from server_processes where instance = $1),
+				exists (select from owner_lock_legacy_mark),
+				public.owner_lock_fleet($2, $3)`,
+			registration.ID, store.OwnerLockLegacyWindow.Seconds(), store.OwnerLockMarkWindow.Seconds(),
+		).Scan(&protocol, &marked, &legacy); err != nil {
+			t.Fatalf("read %s's owner lock protocol and the owner lock's fleet: %v", what, err)
+		}
+		if protocol != store.OwnerLockProtocol || marked || legacy {
+			t.Errorf("%s: owner_lock_protocol %d, an earlier build's mark stamped %v, an earlier build in the owner lock's fleet %v; want %d, no mark and no earlier build",
+				what, protocol, marked, legacy, store.OwnerLockProtocol)
+		}
+	}
+	noEarlierBuild("the registered row")
+
+	underRegistryLock(t, database, func(tx pgx.Tx) { prunedRow(t, tx, registration.ID) })
+	waitForLive(t, database, registration.ID, "a process whose row was pruned")
+	requireNotLost(t, registration, "a process whose row was pruned")
+	noEarlierBuild("the row written again after a prune")
 }
 
 // The owner lock counts a row of an earlier build in the fleet for store.OwnerLockLegacyWindow

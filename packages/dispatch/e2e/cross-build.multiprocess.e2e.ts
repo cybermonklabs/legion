@@ -150,7 +150,7 @@ function pageNumbers(
 
 /** The numbers the live server processes register (`docs.readSchemaFleet`): the lowest V and the
  *  highest R among the rows whose heartbeat is inside the registry's 15 s live window, a copy of
- *  `store.ProcessLiveWindow` (`packages/envoy/internal/dispatch/store/ownerlock.go`), which the
+ *  `processes.LiveWindow` (`packages/envoy/internal/dispatch/processes/processes.go`), which the
  *  servers read. A row of a build before the fleet columns holds no numbers, and its zeros are
  *  what it counts as. */
 async function liveFleet(): Promise<LiveFleet> {

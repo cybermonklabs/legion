@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -203,9 +204,9 @@ func TestCIReconcilePassesShowsARunningPass(t *testing.T) {
 // its own -- this is the cireconcile rule reaching a caller through HTTP.
 func TestCIReconcilePassesShowsAKilledPassAsEndedWithoutCompleting(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
-	was := store.ProcessLiveWindow
-	store.ProcessLiveWindow = time.Second
-	t.Cleanup(func() { store.ProcessLiveWindow = was })
+	was := processes.LiveWindow
+	processes.LiveWindow = time.Second
+	t.Cleanup(func() { processes.LiveWindow = was })
 	instance := seedServerProcess(t, database, 5*time.Second)
 	killed := openCIPass(t, database, instance, time.Minute)
 	holdCIReconcileLease(t, database)
@@ -220,7 +221,7 @@ func TestCIReconcilePassesShowsAKilledPassAsEndedWithoutCompleting(t *testing.T)
 	}
 	if passes[0].State != string(cireconcile.PassStateAbandoned) {
 		t.Fatalf("the killed pass reads %q, want %q: its heartbeat is 5s old and the live window is %s",
-			passes[0].State, cireconcile.PassStateAbandoned, store.ProcessLiveWindow)
+			passes[0].State, cireconcile.PassStateAbandoned, processes.LiveWindow)
 	}
 }
 

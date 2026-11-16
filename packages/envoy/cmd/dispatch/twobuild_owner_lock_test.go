@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -443,7 +444,7 @@ func watchHeartbeat(t *testing.T, database *store.Store, instance string) (stop 
 // lock, which every heartbeat takes too, and is refused with 55P03 once registrationGateBound has
 // passed; the previous build then exits, as its main does when its registration fails. This
 // build's process does not lapse meanwhile: its row is never older than the live window
-// (store.ProcessLiveWindow), its heartbeat gaps logged. Once the write has committed with its
+// (processes.LiveWindow), its heartbeat gaps logged. Once the write has committed with its
 // label, the previous build, started again as its supervisor would, registers and serves, and the
 // label it adds is kept beside this build's. Without the bound the registration waits for the
 // write for as long as it is held, with every heartbeat of this build behind it.
@@ -542,9 +543,9 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 	if watch.err != nil {
 		t.Errorf("read this build's heartbeat: %v", watch.err)
 	}
-	if watch.gone || watch.oldest >= store.ProcessLiveWindow {
+	if watch.gone || watch.oldest >= processes.LiveWindow {
 		t.Errorf("this build's registration lapsed while the %s's registration waited: its row was %s old at its oldest (gone: %t), want under the live window %s",
-			builds.previousName(), watch.oldest.Round(time.Millisecond), watch.gone, store.ProcessLiveWindow)
+			builds.previousName(), watch.oldest.Round(time.Millisecond), watch.gone, processes.LiveWindow)
 	}
 	if refused {
 		var earlier int

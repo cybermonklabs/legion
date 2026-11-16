@@ -193,7 +193,7 @@ var fleetStates = []fleetState{
 	{name: "no process registered", seed: func(*testing.T, *Store) {}},
 	{name: "a live process of this build", seed: func(t *testing.T, s *Store) { registerFleetProcess(t, s, OwnerLockProtocol, 0) }},
 	{name: "a process of an earlier build whose heartbeat stopped within the legacy window", legacy: true, seed: func(t *testing.T, s *Store) {
-		registerFleetProcess(t, s, 0, ProcessLiveWindow+time.Minute)
+		registerFleetProcess(t, s, 0, registryLiveWindow+time.Minute)
 		ageLegacyMark(t, s, OwnerLockMarkWindow+time.Minute)
 	}},
 	{name: "a process of an earlier build whose heartbeat stopped before the legacy window", seed: func(t *testing.T, s *Store) {
@@ -262,9 +262,9 @@ func TestTheOwnerLockTakesTheOwnerRowWhileAnEarlierBuildIsInTheFleet(t *testing.
 		t.Run(state.name, func(t *testing.T) {
 			forgetLegacyMark(t, s)
 			state.seed(t, s)
-			want := OwnerLockAdvisory
+			want := ownerLockAdvisory
 			if state.legacy {
-				want = OwnerLockAdvisoryAndRow
+				want = ownerLockAdvisoryAndRow
 			}
 			for _, lock := range locks {
 				tx, err := s.Pool.Begin(ctx)
@@ -275,7 +275,7 @@ func TestTheOwnerLockTakesTheOwnerRowWhileAnEarlierBuildIsInTheFleet(t *testing.
 					_ = tx.Rollback(ctx)
 					t.Fatalf("%s: %v", lock.name, err)
 				}
-				if mode := LastOwnerLockMode(); mode != want {
+				if mode := lastOwnerLockMode(); mode != want {
 					t.Errorf("%s beside %s took the %s mode, want %s", lock.name, state.name, mode, want)
 				}
 				for _, owner := range owners.all() {
@@ -622,11 +622,14 @@ func TestTheOwnerLockModesRaceEachOtherAndTheEarlierBuildsWriter(t *testing.T) {
 // ───── an earlier build's arrival and the owner lock gate ──────────────────
 
 // registryLockKey is the registry's lock (processes.registryLock), which a registration takes
-// before it reads the live rows and writes its own, and every heartbeat takes too; and
-// dashboardAssetsLock the advisory lock every dashboard publish takes shared first
-// (dashboard.lockName). Both spelled here because this package's tests cannot import those.
+// before it reads the live rows and writes its own, and every heartbeat takes too;
+// registryLiveWindow the registry's live window (processes.LiveWindow), within which a heartbeat
+// counts its process as live; and dashboardAssetsLock the advisory lock every dashboard publish
+// takes shared first (dashboard.lockName). Each spelled here because this package's tests cannot
+// import those.
 const (
 	registryLockKey     int64 = 0x4450524F43524547
+	registryLiveWindow        = 15 * time.Second
 	dashboardAssetsLock       = "dispatch-dashboard-assets"
 )
 
@@ -657,7 +660,7 @@ var earlierBuildArrivals = []earlierBuildArrival{
 			return err
 		}
 		if _, err := tx.Exec(ctx, `select instance from server_processes where heartbeat_at > now() - make_interval(secs => $1)`,
-			ProcessLiveWindow.Seconds()); err != nil {
+			registryLiveWindow.Seconds()); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `
@@ -716,8 +719,8 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			if err := LockOwner(ctx, writer, owners.issueA); err != nil {
 				t.Fatal(err)
 			}
-			if mode := LastOwnerLockMode(); mode != OwnerLockAdvisory {
-				t.Fatalf("the writer took the %s mode with no earlier build in the fleet, want %s", mode, OwnerLockAdvisory)
+			if mode := lastOwnerLockMode(); mode != ownerLockAdvisory {
+				t.Fatalf("the writer took the %s mode with no earlier build in the fleet, want %s", mode, ownerLockAdvisory)
 			}
 			if gate, granted := gateLock(t, s, writer.Conn().PgConn().PID()); gate != "ShareLock" || !granted {
 				t.Fatalf("the writer holds the gate as %q (granted %t), want it held shared", gate, granted)
@@ -768,8 +771,8 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			if err := LockOwner(ctx, next, owners.issueA); err != nil {
 				t.Fatal(err)
 			}
-			if mode := LastOwnerLockMode(); mode != OwnerLockAdvisoryAndRow {
-				t.Errorf("the writer after %s took the %s mode, want %s", arrival.name, mode, OwnerLockAdvisoryAndRow)
+			if mode := lastOwnerLockMode(); mode != ownerLockAdvisoryAndRow {
+				t.Errorf("the writer after %s took the %s mode, want %s", arrival.name, mode, ownerLockAdvisoryAndRow)
 			}
 			if !ownerRowHeld(t, s, owners.issueA) {
 				t.Errorf("the writer after %s holds no row of %s, want it held beside the advisory lock", arrival.name, owners.issueA.LockKey())
@@ -902,8 +905,8 @@ func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *
 						_ = tx.Rollback(ctx)
 						t.FailNow()
 					}
-					if mode := LastOwnerLockMode(); mode != OwnerLockAdvisoryAndRow {
-						t.Errorf("%s while %s waited for the gate took the %s mode, want %s", writer.name, arrival.name, mode, OwnerLockAdvisoryAndRow)
+					if mode := lastOwnerLockMode(); mode != ownerLockAdvisoryAndRow {
+						t.Errorf("%s while %s waited for the gate took the %s mode, want %s", writer.name, arrival.name, mode, ownerLockAdvisoryAndRow)
 					}
 					if !ownerRowHeld(t, s, writer.owner) {
 						t.Errorf("%s while %s waited for the gate holds no row of %s, want it held beside the advisory lock", writer.name, arrival.name, writer.owner.LockKey())
@@ -1104,11 +1107,11 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 			if err := LockOwner(ctx, writer, issue); err != nil {
 				t.Fatal(err)
 			}
-			want := OwnerLockAdvisory
+			want := ownerLockAdvisory
 			if c.legacy {
-				want = OwnerLockAdvisoryAndRow
+				want = ownerLockAdvisoryAndRow
 			}
-			if mode := LastOwnerLockMode(); mode != want {
+			if mode := lastOwnerLockMode(); mode != want {
 				t.Errorf("this build's write after the migration took the %s mode, want %s", mode, want)
 			}
 			if !c.legacy {

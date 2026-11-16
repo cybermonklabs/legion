@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -457,7 +458,7 @@ func TestRowsPastTheRetentionArePrunedByThePassThatEnds(t *testing.T) {
 // A pass whose process was killed between its start and its end reads as ended without
 // completing, and no later pass repairs it: nothing knows what it had done. Here the killed
 // process's registry row is still there and still live -- a killed process stays live for up to
-// store.ProcessLiveWindow after its last heartbeat -- and another process holds the lease and is
+// processes.LiveWindow after its last heartbeat -- and another process holds the lease and is
 // running a pass of its own, so the only thing that can decide the open row is that it is no
 // longer the newest.
 func TestAKilledPassReadsAsEndedWithoutCompletingWhileAnotherProcessHoldsTheLease(t *testing.T) {
@@ -500,9 +501,9 @@ func TestAKilledPassReadsAsEndedWithoutCompletingWhileAnotherProcessHoldsTheLeas
 // `ci-reconcile` lease is held by a session of its own -- which is what a dead process whose
 // backend Postgres has not yet reaped leaves behind -- so neither of the other two rules can
 // decide this row. Only the heartbeat can: the killed process's registry row is older than
-// store.ProcessLiveWindow, so the pass is over whatever the lease says.
+// processes.LiveWindow, so the pass is over whatever the lease says.
 //
-// ProcessLiveWindow is a variable so this test can shorten it rather than wait a real window out; the
+// LiveWindow is a variable so this test can shorten it rather than wait a real window out; the
 // heartbeat is written older than the shortened window, so the test waits for nothing at all.
 //
 // The mutation this case exists to catch is "live while its row exists": read that way, the
@@ -510,9 +511,9 @@ func TestAKilledPassReadsAsEndedWithoutCompletingWhileAnotherProcessHoldsTheLeas
 // running for ever.
 func TestTheLivenessRuleEndsTheNewestPassOfAProcessThatStoppedHeartbeating(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	was := store.ProcessLiveWindow
-	store.ProcessLiveWindow = time.Second
-	t.Cleanup(func() { store.ProcessLiveWindow = was })
+	was := processes.LiveWindow
+	processes.LiveWindow = time.Second
+	t.Cleanup(func() { processes.LiveWindow = was })
 
 	killed := registerProcess(t, h.pool, 5*time.Second)
 	open := seedPass(t, h.pool, killed, time.Minute)
@@ -536,7 +537,7 @@ func TestTheLivenessRuleEndsTheNewestPassOfAProcessThatStoppedHeartbeating(t *te
 	}
 	if passes[0].State != PassStateAbandoned {
 		t.Fatalf("the killed process's newest pass reads %q, want %q: its heartbeat is %s old and the live window is %s",
-			passes[0].State, PassStateAbandoned, 5*time.Second, store.ProcessLiveWindow)
+			passes[0].State, PassStateAbandoned, 5*time.Second, processes.LiveWindow)
 	}
 }
 

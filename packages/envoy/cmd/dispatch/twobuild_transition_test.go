@@ -19,7 +19,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // fleetDepartureSlack is what the wait below allows a loaded runner on top of the registry's own
@@ -32,11 +31,11 @@ const (
 )
 
 // fleetDepartureBound is how long a stopped process's row may still count as live: a live window
-// after its last heartbeat (store.ProcessLiveWindow), which may itself have been one heartbeat
+// after its last heartbeat (processes.LiveWindow), which may itself have been one heartbeat
 // before it stopped (processes.HeartbeatInterval), and the slack above. A process that
 // deregisters leaves at once and is well inside it; one killed without deregistering spends it.
 func fleetDepartureBound() time.Duration {
-	return store.ProcessLiveWindow + processes.HeartbeatInterval + fleetDepartureSlack
+	return processes.LiveWindow + processes.HeartbeatInterval + fleetDepartureSlack
 }
 
 // readOnlyEditSettle is how long an edit sent through a read-only socket is given to appear
@@ -49,7 +48,7 @@ const readOnlyEditSettle = 4 * time.Second
 // checks its writable sockets against the fleet again and closes each one the fleet no longer
 // admits (docs.Service.RunSchemaAdmission), and the slack above.
 func admissionRecheck() time.Duration {
-	return store.ProcessLiveWindow + fleetDepartureSlack
+	return processes.LiveWindow + fleetDepartureSlack
 }
 
 // transitionSeed is the document the row seeds, one paragraph a replacement is made over
@@ -97,7 +96,7 @@ func waitForThePreviousBuildToLeaveTheFleet(t *testing.T, builds *twoBuilds) tim
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the %s still counts as live %s after it stopped: the registry still holds %d live rows, past a live window (%s), a heartbeat (%s) and %s of slack",
-				builds.previousName(), time.Since(started), fleet.live, store.ProcessLiveWindow, processes.HeartbeatInterval, fleetDepartureSlack)
+				builds.previousName(), time.Since(started), fleet.live, processes.LiveWindow, processes.HeartbeatInterval, fleetDepartureSlack)
 		}
 	}
 }

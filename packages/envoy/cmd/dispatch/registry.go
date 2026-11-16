@@ -15,7 +15,7 @@ import (
 // deregisterTimeout bounds the delete that takes this process out of the registry of live server
 // processes at shutdown. It is one delete by primary key, so five seconds is a slow round trip
 // rather than a slow statement; a deregistration that does not land leaves a row whose heartbeat
-// has stopped, which drops out of the live window (store.ProcessLiveWindow) on its own.
+// has stopped, which drops out of the live window (processes.LiveWindow) on its own.
 const deregisterTimeout = 5 * time.Second
 
 // bootProbeTimeout bounds the one probe that this process's boot makes of the database, below. It
