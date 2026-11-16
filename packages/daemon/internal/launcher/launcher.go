@@ -181,8 +181,9 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 	restore := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}, start: guard.starter()}
 	// One install of the shared public leak check per launcher process, for the pin of its own
 	// environment: the daemon pushes it to whichever role's connection it starts first, and
-	// every other role's connection finds it installed.
-	check := newCheckInstall(os.Getenv(leakguard.TagVariable), cfg.LeakCheckDir)
+	// every other role's connection finds it installed. Its verification runs the served check
+	// once, a child of this process, so it starts through the guard too, for the restore's reason.
+	check := newCheckInstall(os.Getenv(leakguard.TagVariable), cfg.LeakCheckDir, guard.starter())
 	if cfg.RolesDir == "" {
 		return []*manager{{
 			cfg: cfg, role: cfg.Role, token: cfg.Token, private: cfg.PrivateDir, launcherID: randomID(),

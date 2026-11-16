@@ -228,9 +228,10 @@ func (g *pidGuard) done(pid int) {
 	delete(g.pids, pid)
 }
 
-// starter is start and done as a workspace.Starter, for the launcher's own jj and git children
-// that run through workspace.RunCommand: the put-back of a released workspace's bundle
-// (restoreWorkspace). Its start takes the guard's lock alone, as start does.
+// starter is start and done as a workspace.Starter, for the launcher's own children that a
+// caller starts and waits on itself: the put-back's jj and git, which run through
+// workspace.RunCommand (restoreWorkspace), and the leak check install's run of the served check
+// (leakguard.ServedInstall.Start). Its start takes the guard's lock alone, as start does.
 func (g *pidGuard) starter() workspace.Starter {
 	return func(cmd *exec.Cmd) (func(), error) {
 		pid, err := g.start(cmd)

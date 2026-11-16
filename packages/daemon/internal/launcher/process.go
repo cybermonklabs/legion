@@ -74,7 +74,8 @@ func reapNamespace(skip ...int) (bool, error) {
 
 // reapOrphans is PID 1's reaper: on every SIGCHLD it reaps each exited process of the container's
 // PID namespace but the generations its managers run, whose exits their own waits read, and the
-// launcher's own children (the test database's script and the put-back's jj and git, pidGuard),
+// launcher's own children (the test database's script, the put-back's jj and git, and the leak
+// check install's one run of the served check, pidGuard),
 // whose exits their own waits read too. Every manager's lock and the guard's are held across the
 // pass, and a manager records its generation's pid under its lock as it starts it, as the guard
 // records its child's, so the reaper never waits on a process it has not seen yet. In the

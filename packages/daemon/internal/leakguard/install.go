@@ -212,6 +212,13 @@ type ServedInstall struct {
 	Body []byte
 	// Log receives the install's one line where it replaced what Dir held. Nil logs nothing.
 	Log func(format string, args ...any)
+	// Start starts the verification's one run of the check (verifyServed) and answers what to call
+	// once that run's own wait has read its exit. The pod's launcher is its container's PID 1,
+	// whose reaper reaps every exited child the launcher does not hold, and a run whose exit the
+	// reaper took first fails its wait with `waitid: no child processes`: the launcher passes its
+	// guard's starter (internal/launcher's pidGuard), which holds the run out of every pass of the
+	// reaper until that wait. Nil is cmd.Start, for a caller no reaper runs beside.
+	Start func(cmd *exec.Cmd) (done func(), err error)
 }
 
 func (in ServedInstall) logf(format string, args ...any) {
@@ -268,7 +275,7 @@ func InstallServed(ctx context.Context, in ServedInstall) error {
 	if err := os.WriteFile(filepath.Join(staging, tagFile), []byte(in.Tag+"\n"), 0o644); err != nil {
 		return fmt.Errorf("the installed tag could not be recorded: %w", err)
 	}
-	if err := verifyServed(ctx, filepath.Join(staging, checkName), parent); err != nil {
+	if err := verifyServed(ctx, filepath.Join(staging, checkName), parent, in.Start); err != nil {
 		return err
 	}
 	// 0700 is what MkdirTemp makes. The roles of a pod run as one user, so the mode decides
@@ -378,14 +385,25 @@ func writeMember(path string, content io.Reader, mode os.FileMode) error {
 // /usr/bin/python3 will not start. So an install that cannot name its own shapes is a failed
 // install, and a check that answers nothing at all is the same failure: this pod would otherwise
 // run with a PUBLIC_LEAK_CHECK that refuses every write it is asked about.
-func verifyServed(ctx context.Context, check, parent string) error {
+//
+// start starts the run (ServedInstall.Start); nil is cmd.Start.
+func verifyServed(ctx context.Context, check, parent string, start func(*exec.Cmd) (func(), error)) error {
 	cmd := exec.CommandContext(ctx, check, "--help")
 	procgroup.Configure(cmd)
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + parent, "TMPDIR=" + parent}
 	cmd.Dir = parent
 	var printed strings.Builder
 	cmd.Stdout, cmd.Stderr = &printed, &printed
-	if err := procgroup.Err(cmd.Run()); err != nil {
+	if start == nil {
+		start = func(cmd *exec.Cmd) (func(), error) { return func() {}, cmd.Start() }
+	}
+	done, err := start(cmd)
+	if err != nil {
+		return fmt.Errorf("the served check could not be run: %w", err)
+	}
+	err = cmd.Wait()
+	done()
+	if err := procgroup.Err(err); err != nil {
 		return fmt.Errorf("the served check could not be run: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
