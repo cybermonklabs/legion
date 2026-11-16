@@ -64,3 +64,37 @@ func TestWorkspaceLoginRefusesEachWayWithItsReason(t *testing.T) {
 		})
 	}
 }
+
+// VerifiedLogin applies every rule of WorkspaceLogin but the domain: it ignores hd, and refuses
+// each other way with that rule's own reason, naming the login when the email has an address's
+// shape.
+func TestVerifiedLoginRefusesEachWayWithItsReason(t *testing.T) {
+	for _, hd := range []string{"", flowDomain, "other.example"} {
+		claims := workspaceAccount()
+		claims.HostedDomain = hd
+		if login, err := VerifiedLogin(claims); err != nil || login != "a.person@example.com" {
+			t.Errorf("VerifiedLogin with hd %q = %q, %v; want a.person@example.com, whatever the hd", hd, login, err)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*Claims)
+		want   error
+		login  string
+	}{
+		{"no subject", func(c *Claims) { c.Subject = "" }, ErrNoSubject, ""},
+		{"no email", func(c *Claims) { c.Email = "" }, ErrNoEmail, ""},
+		{"an email of no address's shape", func(c *Claims) { c.Email = "not-an-address" }, ErrNoEmail, ""},
+		{"an email Google has not verified", func(c *Claims) { c.EmailVerified = false }, ErrEmailNotVerified, "a.person@example.com"},
+		{"an unverified email and no hd", func(c *Claims) { c.EmailVerified, c.HostedDomain = false, "" }, ErrEmailNotVerified, "a.person@example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claims := workspaceAccount()
+			tc.change(&claims)
+			login, err := VerifiedLogin(claims)
+			if !errors.Is(err, tc.want) || login != tc.login {
+				t.Errorf("VerifiedLogin = %q, %v; want %q, %v", login, err, tc.login, tc.want)
+			}
+		})
+	}
+}

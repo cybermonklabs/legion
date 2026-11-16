@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -24,17 +25,35 @@ var (
 	// ErrSignInSuperseded means another account's sign-in has already taken the address since
 	// this one recorded its subject, so the cookie this sign-in would issue must not be given out.
 	ErrSignInSuperseded = errors.New("another account signed in to this address meanwhile")
+	// ErrNotListed means a Google account outside the sign-in domain is named by no project's
+	// access list (OutsideRule), so it may not sign in.
+	ErrNotListed = errors.New("no Dispatch project's access list names this account")
+	// ErrMembershipUnreadable means the access lists could not be read to decide whether an
+	// account outside the domain may sign in (OutsideRule): no refusal, so a caller keeps any
+	// sign-in the account already holds and fails only the request.
+	ErrMembershipUnreadable = errors.New("the access lists could not be read")
 )
 
+// SignedIn is the person a sign-in rule admits: Email, their lowercase email, and Kind, how they
+// belong to the deployment (model.MemberFull or model.MemberRestricted). A refusal that names the
+// person returns their Email alone, Kind left model.MemberNone.
+type SignedIn struct {
+	Email string
+	Kind  model.MemberKind
+}
+
 // SignInRule is who may sign in to Dispatch and how Dispatch treats their sign-in: GroupRule for
-// the members of a Cognito sign-in pool's group, or DomainRule for the people of a Google
-// Workspace domain. cmd/dispatch's signInRule chooses one from boot's settings, once, and every
+// the members of a Cognito sign-in pool's group, DomainRule for the people of a Google Workspace
+// domain, or OutsideRule for those people and the Google accounts outside the domain that an
+// access list names. cmd/dispatch's signInRule chooses one from boot's settings, once, and every
 // other package consults the value it returns rather than branching on which settings are set.
 type SignInRule interface {
-	// Person names the person a verified ID token signs in under this rule, and checks they may
-	// use Dispatch; it reads only the claims of the rule's own issuer. The email is lowercased,
-	// and a refusal that has one returns it so the refusal can name them.
-	Person(claims oidc.Claims) (string, error)
+	// Person names the person a verified ID token signs in under this rule, with their member
+	// kind, and checks they may use Dispatch; it reads only the claims of the rule's own issuer,
+	// and ctx bounds any read the rule makes (OutsideRule's access lists). The email is
+	// lowercased, and a refusal that has one returns it so the refusal can name them. An error
+	// matching ErrMembershipUnreadable is no refusal: the rule could not decide.
+	Person(ctx context.Context, claims oidc.Claims) (SignedIn, error)
 	// RefusalLogFields names the slog fields a sign-in refusal's log line carries. Callers append
 	// "reason", err to what this returns.
 	RefusalLogFields(claims oidc.Claims) []any
@@ -52,14 +71,15 @@ type SignInRule interface {
 	ConfirmSubject(claims oidc.Claims, stored string) (string, error)
 	// End ends email's sign-in under this rule, returning ErrNoIdentity once it no longer stands.
 	End(ctx context.Context, people auth.PeopleStore, sessions auth.SessionStore, email, subject, reason string) error
-	// WriteSignIn records a sign-in under this rule (auth.PeopleStore.SignIn or .SignInSubject),
-	// given the subject this rule's own Subject method already resolved; the store dates it by
-	// the database's clock.
-	WriteSignIn(ctx context.Context, people auth.PeopleStore, email, subject, refreshToken string) error
-	// WriteConfirm records a refresh that confirmed email's membership under this rule
-	// (auth.PeopleStore.Confirm or .ConfirmSubject), given the subject this rule's own
-	// ConfirmSubject method already resolved; the store dates it by the database's clock.
-	WriteConfirm(ctx context.Context, people auth.PeopleStore, email, subject, refreshToken string) error
+	// WriteSignIn records person's sign-in under this rule (auth.PeopleStore.SignIn or
+	// .SignInSubject), with the member kind Person named, given the subject this rule's own
+	// Subject method already resolved; the store dates it by the database's clock.
+	WriteSignIn(ctx context.Context, people auth.PeopleStore, person SignedIn, subject, refreshToken string) error
+	// WriteConfirm records a refresh that confirmed person's membership under this rule
+	// (auth.PeopleStore.Confirm or .ConfirmSubject), with the member kind Person named again,
+	// given the subject this rule's own ConfirmSubject method already resolved; the store dates it
+	// by the database's clock.
+	WriteConfirm(ctx context.Context, people auth.PeopleStore, person SignedIn, subject, refreshToken string) error
 	// ConfirmCookie confirms, after a sign-in has read the session generation it will put in a
 	// cookie, that email's row still names subject as the account that just signed in
 	// (auth.PeopleStore.Membership): a sign-in by another account that committed since has

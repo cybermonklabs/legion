@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -66,11 +67,13 @@ type testPeopleStore struct {
 }
 
 // testPerson is one person's row in testPeopleStore: ConfirmedAt is the store clock's time of
-// the last confirmation, zero for none.
+// the last confirmation, zero for none, and Kind the member kind the last sign-in or confirmation
+// wrote.
 type testPerson struct {
 	RefreshToken string
 	Subject      string
 	ConfirmedAt  time.Time
+	Kind         model.MemberKind
 }
 
 func newTestPeopleStore(sessions *testSessionStore) *testPeopleStore {
@@ -97,12 +100,12 @@ func (s *testPeopleStore) SignIn(_ context.Context, email, refreshToken string) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person := s.people[email]
-	person.RefreshToken, person.ConfirmedAt = refreshToken, s.clock()
+	person.RefreshToken, person.ConfirmedAt, person.Kind = refreshToken, s.clock(), model.MemberFull
 	s.people[email] = person
 	return nil
 }
 
-func (s *testPeopleStore) SignInSubject(ctx context.Context, email, subject, refreshToken string) error {
+func (s *testPeopleStore) SignInSubject(ctx context.Context, email, subject, refreshToken string, kind model.MemberKind) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person, existed := s.people[email]
@@ -112,7 +115,7 @@ func (s *testPeopleStore) SignInSubject(ctx context.Context, email, subject, ref
 		}
 	}
 	person.Subject = subject
-	person.RefreshToken, person.ConfirmedAt = refreshToken, s.clock()
+	person.RefreshToken, person.ConfirmedAt, person.Kind = refreshToken, s.clock(), kind
 	s.people[email] = person
 	return nil
 }
@@ -132,19 +135,19 @@ func (s *testPeopleStore) Confirm(_ context.Context, email, refreshToken string)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person := s.people[email]
-	person.RefreshToken, person.ConfirmedAt = refreshToken, s.clock()
+	person.RefreshToken, person.ConfirmedAt, person.Kind = refreshToken, s.clock(), model.MemberFull
 	s.people[email] = person
 	return nil
 }
 
-func (s *testPeopleStore) ConfirmSubject(_ context.Context, email, subject, refreshToken string) error {
+func (s *testPeopleStore) ConfirmSubject(_ context.Context, email, subject, refreshToken string, kind model.MemberKind) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person := s.people[email]
 	if person.Subject != subject {
 		return nil
 	}
-	person.RefreshToken, person.ConfirmedAt = refreshToken, s.clock()
+	person.RefreshToken, person.ConfirmedAt, person.Kind = refreshToken, s.clock(), kind
 	s.people[email] = person
 	return nil
 }
@@ -153,7 +156,7 @@ func (s *testPeopleStore) End(_ context.Context, email string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if person, found := s.people[email]; found {
-		s.people[email] = testPerson{Subject: person.Subject}
+		s.people[email] = testPerson{Subject: person.Subject, Kind: person.Kind}
 	}
 	return nil
 }

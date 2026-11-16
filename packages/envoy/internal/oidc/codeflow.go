@@ -142,10 +142,12 @@ func (f *CodeFlow) Run(ctx context.Context) { f.discovery.run(ctx) }
 // AuthURL is where a browser starts the sign-in: the issuer's authorization endpoint asking for a
 // code to be sent to redirectURL with state, and an ID token carrying nonce. A domain-mode flow
 // also asks Google for offline access with consent, since Google returns a refresh token only for
-// access_type=offline and, after the first exchange, only with prompt=consent; and it names the
-// domain as hd, a hint for Google's account chooser that the callback does not rely on. It fails
-// with ErrIssuerUnavailable while the issuer is not discovered.
-func (f *CodeFlow) AuthURL(ctx context.Context, redirectURL, state, nonce string) (string, error) {
+// access_type=offline and, after the first exchange, only with prompt=consent; and, when
+// domainHint is true, it names the domain as hd, a hint for Google's account chooser that the
+// callback does not rely on. A caller that signs in accounts outside the domain too passes false,
+// so Google offers every account the browser holds. It fails with ErrIssuerUnavailable while the
+// issuer is not discovered.
+func (f *CodeFlow) AuthURL(ctx context.Context, redirectURL, state, nonce string, domainHint bool) (string, error) {
 	issuer, err := f.discovery.discover(ctx)
 	if err != nil {
 		return "", err
@@ -154,7 +156,10 @@ func (f *CodeFlow) AuthURL(ctx context.Context, redirectURL, state, nonce string
 	config.RedirectURL = redirectURL
 	options := []oauth2.AuthCodeOption{gooidc.Nonce(nonce)}
 	if f.hostedDomain != "" {
-		options = append(options, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"), oauth2.SetAuthURLParam("hd", f.hostedDomain))
+		options = append(options, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"))
+		if domainHint {
+			options = append(options, oauth2.SetAuthURLParam("hd", f.hostedDomain))
+		}
 	}
 	return config.AuthCodeURL(state, options...), nil
 }

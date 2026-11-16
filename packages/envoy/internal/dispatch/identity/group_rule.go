@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -20,16 +21,17 @@ var _ SignInRule = GroupRule{}
 
 // Person names the person by the email the username a federated provider issued carries,
 // `<provider>_<email>` for a provider the token's identities name, and never from the email
-// claim, which a person can write. A person outside the group is ErrNotMember.
-func (r GroupRule) Person(claims oidc.Claims) (string, error) {
+// claim, which a person can write. A member of the group is a full member; a person outside it is
+// ErrNotMember.
+func (r GroupRule) Person(_ context.Context, claims oidc.Claims) (SignedIn, error) {
 	email, ok := providerEmail(claims)
 	if !ok {
-		return "", fmt.Errorf("%w: username %q", ErrNoPerson, claims.Username)
+		return SignedIn{}, fmt.Errorf("%w: username %q", ErrNoPerson, claims.Username)
 	}
 	if !slices.Contains(claims.Groups, r.Group) {
-		return email, fmt.Errorf("%s: %w", email, ErrNotMember)
+		return SignedIn{Email: email}, fmt.Errorf("%s: %w", email, ErrNotMember)
 	}
-	return email, nil
+	return SignedIn{Email: email, Kind: model.MemberFull}, nil
 }
 
 // RefusalLogFields names the pool username a refusal's log line carries.
@@ -76,16 +78,16 @@ func (r GroupRule) ConfirmCookie(ctx context.Context, people auth.PeopleStore, e
 	return nil
 }
 
-// WriteSignIn records a sign-in through the Cognito sign-in pool (auth.PeopleStore.SignIn);
-// subject, always empty under a group, is unused.
-func (r GroupRule) WriteSignIn(ctx context.Context, people auth.PeopleStore, email, subject, refreshToken string) error {
-	return people.SignIn(ctx, email, refreshToken)
+// WriteSignIn records a sign-in through the Cognito sign-in pool (auth.PeopleStore.SignIn), which
+// records a full member; subject, always empty under a group, is unused.
+func (r GroupRule) WriteSignIn(ctx context.Context, people auth.PeopleStore, person SignedIn, subject, refreshToken string) error {
+	return people.SignIn(ctx, person.Email, refreshToken)
 }
 
-// WriteConfirm records a refresh that confirmed email's membership (auth.PeopleStore.Confirm);
-// subject, always empty under a group, is unused.
-func (r GroupRule) WriteConfirm(ctx context.Context, people auth.PeopleStore, email, subject, refreshToken string) error {
-	return people.Confirm(ctx, email, refreshToken)
+// WriteConfirm records a refresh that confirmed person's membership (auth.PeopleStore.Confirm),
+// which records a full member; subject, always empty under a group, is unused.
+func (r GroupRule) WriteConfirm(ctx context.Context, people auth.PeopleStore, person SignedIn, subject, refreshToken string) error {
+	return people.Confirm(ctx, person.Email, refreshToken)
 }
 
 // providerEmail is the lowercased email a federated provider's username carries, the Cognito

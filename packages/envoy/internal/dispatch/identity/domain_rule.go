@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -20,24 +21,32 @@ var _ SignInRule = DomainRule{}
 // Person names the person by the ID token's `email` claim, which Google writes, and checks the
 // account is of the domain by `hd`, the account's Workspace domain, never by the email's own
 // domain: the Workspace rule the secrets broker's sign-in applies too (oidc.WorkspaceLogin), each
-// of its refusals worded as Dispatch's own. A token with no subject is ErrNoPerson, one with no
-// email of an address's shape ErrNoEmail, one of another domain or none ErrNotInDomain, and one
-// whose email Google has not verified ErrEmailNotVerified.
-func (r DomainRule) Person(claims oidc.Claims) (string, error) {
+// of its refusals worded as Dispatch's own. The person is a full member. A token with no subject is
+// ErrNoPerson, one with no email of an address's shape ErrNoEmail, one of another domain or none
+// ErrNotInDomain, and one whose email Google has not verified ErrEmailNotVerified.
+func (r DomainRule) Person(_ context.Context, claims oidc.Claims) (SignedIn, error) {
 	email, err := oidc.WorkspaceLogin(claims, r.Domain)
+	if err == nil {
+		return SignedIn{Email: email, Kind: model.MemberFull}, nil
+	}
+	return SignedIn{Email: email}, googleRefusal(email, claims, err)
+}
+
+// googleRefusal words a refusal of oidc.WorkspaceLogin or oidc.VerifiedLogin for email as
+// Dispatch's own: ErrNoPerson, ErrNoEmail, ErrNotInDomain or ErrEmailNotVerified, naming email
+// when there is one.
+func googleRefusal(email string, claims oidc.Claims, err error) error {
 	switch {
-	case err == nil:
-		return email, nil
 	case errors.Is(err, oidc.ErrNoSubject):
-		return "", fmt.Errorf("%w: the Google ID token carries no subject", ErrNoPerson)
+		return fmt.Errorf("%w: the Google ID token carries no subject", ErrNoPerson)
 	case errors.Is(err, oidc.ErrNoEmail):
-		return "", ErrNoEmail
+		return ErrNoEmail
 	case errors.Is(err, oidc.ErrNotInDomain):
-		return email, fmt.Errorf("%s (hd %q): %w", email, claims.HostedDomain, ErrNotInDomain)
+		return fmt.Errorf("%s (hd %q): %w", email, claims.HostedDomain, ErrNotInDomain)
 	case errors.Is(err, oidc.ErrEmailNotVerified):
-		return email, fmt.Errorf("%s: %w", email, ErrEmailNotVerified)
+		return fmt.Errorf("%s: %w", email, ErrEmailNotVerified)
 	default:
-		return email, err
+		return err
 	}
 }
 
@@ -104,13 +113,14 @@ func (r DomainRule) ConfirmCookie(ctx context.Context, people auth.PeopleStore, 
 	return nil
 }
 
-// WriteSignIn records a sign-in for the Workspace domain (auth.PeopleStore.SignInSubject).
-func (r DomainRule) WriteSignIn(ctx context.Context, people auth.PeopleStore, email, subject, refreshToken string) error {
-	return people.SignInSubject(ctx, email, subject, refreshToken)
+// WriteSignIn records a Google sign-in as the member kind Person named
+// (auth.PeopleStore.SignInSubject).
+func (r DomainRule) WriteSignIn(ctx context.Context, people auth.PeopleStore, person SignedIn, subject, refreshToken string) error {
+	return people.SignInSubject(ctx, person.Email, subject, refreshToken, person.Kind)
 }
 
-// WriteConfirm records a refresh that confirmed email's domain-mode membership
-// (auth.PeopleStore.ConfirmSubject).
-func (r DomainRule) WriteConfirm(ctx context.Context, people auth.PeopleStore, email, subject, refreshToken string) error {
-	return people.ConfirmSubject(ctx, email, subject, refreshToken)
+// WriteConfirm records a refresh that confirmed a Google sign-in's membership, as the member kind
+// Person named again (auth.PeopleStore.ConfirmSubject).
+func (r DomainRule) WriteConfirm(ctx context.Context, people auth.PeopleStore, person SignedIn, subject, refreshToken string) error {
+	return people.ConfirmSubject(ctx, person.Email, subject, refreshToken, person.Kind)
 }

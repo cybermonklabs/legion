@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // RefreshTokenRevoker revokes a refresh token at the sign-in pool that issued it; *oidc.CodeFlow
@@ -67,37 +68,49 @@ func (s *PgPeopleStore) retirePlainBeforeSignIn(ctx context.Context, email strin
 }
 
 // SignIn records a sign-in through a Cognito sign-in pool, replacing any membership email held
-// before (auth.PeopleStore.SignIn), confirmed at the database's now(); the stored subject is
-// neither read nor written. A refresh token the row holds in plain text is retired first
+// before (auth.PeopleStore.SignIn), confirmed at the database's now(), as a full member; the stored
+// subject is neither read nor written. A refresh token the row holds in plain text is retired first
 // (retirePlainBeforeSignIn), so the replacement never forgets one the pool still accepts.
 func (s *PgPeopleStore) SignIn(ctx context.Context, email, refreshToken string) error {
 	if err := s.retirePlainBeforeSignIn(ctx, email); err != nil {
 		return err
 	}
 	if _, err := s.pool.Exec(ctx, `
-		insert into people (email, refresh_token, confirmed_at) values ($1, $2, now())
+		insert into people (email, refresh_token, confirmed_at, member_kind) values ($1, $2, now(), 'full')
 		on conflict (email) do update
-		set signed_in_at = now(), refresh_token = excluded.refresh_token, confirmed_at = excluded.confirmed_at
+		set signed_in_at = now(), refresh_token = excluded.refresh_token, confirmed_at = excluded.confirmed_at, member_kind = excluded.member_kind
 	`, email, s.seal.seal(email, refreshToken)); err != nil {
 		return fmt.Errorf("record sign-in of %q: %w", email, err)
 	}
 	return nil
 }
 
-// SignInSubject records a sign-in for a Workspace domain in one transaction
-// (auth.PeopleStore.SignInSubject), replacing any membership email held before and confirmed at
-// the database's now(); a refresh token the row holds in plain text is retired first
-// (retirePlainBeforeSignIn), as SignIn's. It creates email's row when there is none and then locks
-// it, so two sign-ins to one address take turns, two first sign-ins included: the second waits on
-// the first's insert, then reads the subject it committed. A row this sign-in's own insert just
-// created has no session to end, however its subject reads. For a row that already existed, when
-// its recorded subject is not subject (Google gave the address to another account, or the row
-// recorded no Google account at all: a Cognito-era, header- or dev-recorded row, which may hold a
-// cookie from before a switch to domain mode) it ends every session of email (revokeSessionsSQL)
-// before it records subject with the refresh token. A revoke that fails rolls the sign-in back,
-// leaving the old subject for the next sign-in to revoke again; one that commits is logged at WARN
-// with the address.
-func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refreshToken string) error {
+// signInMemberKind refuses a member kind a sign-in cannot record: only model.MemberFull and
+// model.MemberRestricted name a person who signed in.
+func signInMemberKind(email string, kind model.MemberKind) error {
+	if kind != model.MemberFull && kind != model.MemberRestricted {
+		return fmt.Errorf("record sign-in of %q: member kind %q is neither %q nor %q", email, kind, model.MemberFull, model.MemberRestricted)
+	}
+	return nil
+}
+
+// SignInSubject records a Google sign-in in one transaction (auth.PeopleStore.SignInSubject),
+// replacing any membership email held before and confirmed at the database's now(), as kind, the
+// member kind the sign-in rule named, refused before any write unless it is full or restricted; a
+// refresh token the row holds in plain text is retired first (retirePlainBeforeSignIn), as
+// SignIn's. It creates email's row when there is none and then locks it, so two sign-ins to one
+// address take turns, two first sign-ins included: the second waits on the first's insert, then
+// reads the subject it committed. A row this sign-in's own insert just created has no session to
+// end, however its subject reads. For a row that already existed, when its recorded subject is not
+// subject (Google gave the address to another account, or the row recorded no Google account at
+// all: a Cognito-era, header- or dev-recorded row, which may hold a cookie from before a switch to
+// domain mode) it ends every session of email (revokeSessionsSQL) before it records subject with
+// the refresh token. A revoke that fails rolls the sign-in back, leaving the old subject for the
+// next sign-in to revoke again; one that commits is logged at WARN with the address.
+func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refreshToken string, kind model.MemberKind) error {
+	if err := signInMemberKind(email, kind); err != nil {
+		return err
+	}
 	if err := s.retirePlainBeforeSignIn(ctx, email); err != nil {
 		return err
 	}
@@ -122,9 +135,9 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	}
 	if _, err := tx.Exec(ctx, `
 		update people
-		set signed_in_at = now(), refresh_token = $2, confirmed_at = now(), sub = $3
+		set signed_in_at = now(), refresh_token = $2, confirmed_at = now(), sub = $3, member_kind = $4
 		where email = $1
-	`, email, s.seal.seal(email, refreshToken), subject); err != nil {
+	`, email, s.seal.seal(email, refreshToken), subject, string(kind)); err != nil {
 		return fmt.Errorf("record sign-in of %q: %w", email, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -169,22 +182,26 @@ func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.Pers
 }
 
 // Confirm records a refresh that confirmed email's Cognito-pool membership at the database's
-// now(), with the refresh token to use next (auth.PeopleStore.Confirm).
+// now(), as a full member, with the refresh token to use next (auth.PeopleStore.Confirm).
 func (s *PgPeopleStore) Confirm(ctx context.Context, email, refreshToken string) error {
-	if _, err := s.pool.Exec(ctx, `update people set refresh_token = $2, confirmed_at = now() where email = $1`, email, s.seal.seal(email, refreshToken)); err != nil {
+	if _, err := s.pool.Exec(ctx, `update people set refresh_token = $2, confirmed_at = now(), member_kind = 'full' where email = $1`, email, s.seal.seal(email, refreshToken)); err != nil {
 		return fmt.Errorf("confirm membership of %q: %w", email, err)
 	}
 	return nil
 }
 
-// ConfirmSubject records a refresh that confirmed email's domain-mode membership at the database's
-// now() (auth.PeopleStore.ConfirmSubject). It writes only while the row still records subject, the
-// Google account the refresh read; a row another account signed in to since is left as it is, and
-// the confirmation still returns nil. That is safe: the one request whose refresh it was passed
-// its generation check before the refresh, and the other account's sign-in advanced the
-// generation, so that browser's next request fails the check.
-func (s *PgPeopleStore) ConfirmSubject(ctx context.Context, email, subject, refreshToken string) error {
-	if _, err := s.pool.Exec(ctx, `update people set refresh_token = $2, confirmed_at = now() where email = $1 and sub is not distinct from $3`, email, s.seal.seal(email, refreshToken), subject); err != nil {
+// ConfirmSubject records a refresh that confirmed email's Google membership at the database's
+// now(), as kind, refused as SignInSubject refuses it (auth.PeopleStore.ConfirmSubject). It writes
+// only while the row still records subject, the Google account the refresh read; a row another
+// account signed in to since is left as it is, its member kind included, and the confirmation
+// still returns nil. That is safe: the one request whose refresh it was passed its generation check
+// before the refresh, and the other account's sign-in advanced the generation, so that browser's
+// next request fails the check.
+func (s *PgPeopleStore) ConfirmSubject(ctx context.Context, email, subject, refreshToken string, kind model.MemberKind) error {
+	if err := signInMemberKind(email, kind); err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, `update people set refresh_token = $2, confirmed_at = now(), member_kind = $4 where email = $1 and sub is not distinct from $3`, email, s.seal.seal(email, refreshToken), subject, string(kind)); err != nil {
 		return fmt.Errorf("confirm membership of %q: %w", email, err)
 	}
 	return nil
