@@ -263,10 +263,10 @@ func isSubjectPattern(s string) bool {
 // Render returns the authorization block nats-server reads: the header lines, each as
 // "# <line>", then the block. Each keyed user is a comment naming it and one JSON object (keys
 // sorted, non-ASCII raw: nats-server's config strings take no \u escape); a pending user is not
-// rendered. With a callout, its auth_callout block follows the users inside the block
-// (AuthCallout.render); without one the text is exactly what it was before callouts existed.
-// no_auth_user is a top-level option, so it follows the block, naming the fallback user's key. The
-// text ends with one newline.
+// rendered. With a callout, its auth_callout block follows the users inside the block, and the
+// top-level ping lines end the text, both from calloutParts; without one the text is exactly what
+// it was before callouts existed. no_auth_user is a top-level option, so it follows the block,
+// naming the fallback user's key. The text ends with one newline.
 func (a Authorization) Render(header []string) (string, error) {
 	if err := a.Validate(); err != nil {
 		return "", err
@@ -311,12 +311,14 @@ func (a Authorization) render(header []string) string {
 		b.WriteString("    # " + u.Name + "\n")
 		b.WriteString("    " + PyJSON(user, PyJSONOptions{SortKeys: true}) + "\n")
 	}
-	b.WriteString("  ]\n" + a.CalloutBlock() + "}\n")
+	block, tail := a.calloutParts()
+	b.WriteString("  ]\n" + block + "}\n")
 	if a.NoAuthUser != "" {
 		fallback, _ := a.user(a.NoAuthUser) // Validate has checked it names a keyed user
 		b.WriteString("# " + a.NoAuthUser + ": a client presenting no credential becomes this user\n")
 		b.WriteString("no_auth_user: " + PyJSON(fallback.NKey, PyJSONOptions{EnsureASCII: true}) + "\n")
 	}
+	b.WriteString(tail)
 	return b.String()
 }
 

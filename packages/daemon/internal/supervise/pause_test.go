@@ -202,7 +202,7 @@ func TestAPauseHoldOverAWorkingClaimSurvivesAStartAndStopsItAtTheTurnsEnd(t *tes
 	if err := h.handle(pauseStop(h.token, 7)); !errors.Is(err, ErrSuspendHeld) {
 		t.Fatalf("the pause's stop of a claim in a turn = %v, want it held", err)
 	}
-	if err := h.m.StartedBy(h.ctx, 41); err != nil {
+	if err := h.m.StartedBy(h.ctx, 41, nil); err != nil {
 		t.Fatalf("the start row = %v", err)
 	}
 	if pause, held := h.heldPause(); !held || pause != 7 {
@@ -518,7 +518,7 @@ func TestAHoldWhosePauseEndedDoesNotStopItsClaim(t *testing.T) {
 		}
 		flag.set(0)
 
-		if err := h.m.StartedBy(h.ctx, 9); err != nil {
+		if err := h.m.StartedBy(h.ctx, 9, nil); err != nil {
 			t.Fatalf("the start row = %v", err)
 		}
 
@@ -871,7 +871,7 @@ func TestAFailedPauseStopIsWrittenAgainWithThePausesRecords(t *testing.T) {
 	t.Run("by a start row's write", func(t *testing.T) {
 		h, stops := failedStop(t)
 
-		if err := h.m.StartedBy(h.ctx, 12); err != nil {
+		if err := h.m.StartedBy(h.ctx, 12, nil); err != nil {
 			t.Fatalf("the start row = %v", err)
 		}
 

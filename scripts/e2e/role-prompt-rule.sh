@@ -10,15 +10,16 @@
 # and the planner of the same issue, which stands in planning.
 #
 # Once both panes have registered and reported ready, the driver reads each pane's own Oh My Pi
-# command line from /proc/<pid>/cmdline and takes the word after `--append-system-prompt`. The pid
-# the claim's locator carries is the `legion worker-shim`'s, which starts Oh My Pi as a child, so
-# the driver walks /proc for that shim's child whose argv[0] is LEGION_OMP_PATH and reads it. It
-# holds the phase worker's eight sentences of the pod memory rule and the root architect's six in
-# that word, and the planner's three parts of the completion-after-work rule — the `head` its
-# handoff body names, the clause that carries that head to the daemon, and the sentence that
-# records the `plan` handoff with `dispatch handoff-write` and then reports completion — in the
-# planner's, and names the role, the pid and the text for any it cannot find. That command line
-# is the only place it reads: the composer, the role prompt files below the state directory and
+# command line from /proc/<pid>/cmdline, takes the word after `--append-system-prompt`, the path
+# of the prompt file, and reads that file. The pid the claim's locator carries is the
+# `legion worker-shim`'s, which starts Oh My Pi as a child, so the driver walks /proc for that
+# shim's child whose argv[0] is LEGION_OMP_PATH and reads it. It finds the phase worker's eight
+# sentences of the pod memory rule and the root architect's six in that prompt, and the planner's
+# three parts of the completion-after-work rule — the `head` its handoff body names, the clause
+# that carries that head to the daemon, and the sentence that records the `plan` handoff with
+# `dispatch handoff-write` and then reports completion — in the planner's, and names the role,
+# the pid and the text for any it cannot find. That command line and the file it names are the
+# only places it reads: the composer, the role prompt files below the state directory and
 # the recorded launch specification all hold that text before a process took it, and the unit
 # tests already read it there (packages/daemon/internal/prompts/prompts_test.go and
 # packages/daemon/internal/prompts/roles_test.go). The driver is

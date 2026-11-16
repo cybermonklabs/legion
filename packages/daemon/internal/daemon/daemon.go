@@ -2345,6 +2345,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var await func(repo, tree, child, parent string)
 	var githubAPI string
 	var consumerLag func(context.Context) []intake.ConsumerLag
+	var architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
 	// The pause service exists only with the workflow, which run builds it with (projectPause): a
 	// daemon without one leaves pauses the nil interface, which the API reads as no pause service
 	// and answers every pause and resume PAUSE_UNAVAILABLE.
@@ -2356,6 +2357,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		githubAPI = workflow.githubAPI
 		consumerLag = workflow.consumers.Lag
 		pauses = workflow.pauses.service
+		architectStalls = workflow.admission.ArchitectStallArms
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
@@ -2390,6 +2392,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			// the state serves and the claims the pass posts are one set (refreshStalePlugins,
 			// and the NoPluginInstall option three lines below).
 			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+			architectStalls: architectStalls,
 		},
 		StateTransactions:  st,
 		ConsumerLag:        consumerLag,
@@ -2574,6 +2577,11 @@ type source struct {
 	// a source a test builds by hand reads as: serve sets this field over the daemon's own
 	// configuration, whatever the runtime.
 	noPluginInstall func(supervise.Claim) bool
+	// architectStalls is, by root key, every arm of the architect-stalled reading that holds for
+	// that root's architect (admit.Admission.ArchitectStallArms over the workflow's own admission),
+	// which State serves as each root's `architectStalls`; nil for a daemon with no workflow,
+	// which weighs no architect and serves no arm.
+	architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
 }
 
 // projectRecords scopes the shared daemon database to the daemon's configured project without
@@ -2758,6 +2766,23 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		return api.State{}, nil, err
 	}
 	state.StrandedClaims = api.StrandedClaimsOf(stranded)
+	// Which arms of the architect-stalled reading hold for each root, read in the same snapshot
+	// by the reading the admission pass wakes the controller from (admit's ArchitectStallArms),
+	// and served on each root's own view whether or not the controller was told. It is the
+	// daemon's judgement as strandedClaims is, over records internal/projection may not read, so
+	// it is put on the views here, beside that report, rather than judged a second time anywhere.
+	if s.architectStalls != nil {
+		stalls, err := s.architectStalls(ctx, tx)
+		if err != nil {
+			return api.State{}, nil, err
+		}
+		for key, arms := range stalls {
+			if view, shown := state.Issues[key]; shown {
+				view.ArchitectStalls = arms
+				state.Issues[key] = view
+			}
+		}
+	}
 	// A wake waits in one of two places, and the state names both as one list (api.WakesWaitingOf):
 	// a launch waits in its claim's machine, in memory alone, since no store holds one and a
 	// restart raises the wave again through its own paths; a paced catch-up waits on its

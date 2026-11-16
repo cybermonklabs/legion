@@ -166,7 +166,7 @@ func bootedTickWorkflow(t *testing.T, pool *store.Pool) *workflowRuntime {
 		t.Fatalf("open the store: %v", err)
 	}
 	t.Cleanup(st.Close)
-	registerTickController(t, pool)
+	registerProjectController(t, pool, "CAPTURE")
 	board := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if servedBootCall(t, w, r, "CAPTURE") {
 			return
