@@ -80,7 +80,7 @@ afterAll(async () => {
 });
 
 // start runs argv with the environment the listener needs and collects its output; afterEach
-// kills it.
+// kills it. Each runs in a session of its own, so sessionMembers can name every process it left.
 function start(name: string, argv: string[], stdin: "ignore" | "pipe" = "ignore"): Running {
   const process = Bun.spawn(argv, {
     env: {
@@ -89,6 +89,7 @@ function start(name: string, argv: string[], stdin: "ignore" | "pipe" = "ignore"
       NATS_URLS: natsUrl,
     },
     stdin,
+    detached: true,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -242,6 +243,35 @@ function listeningInode(port: number): string | undefined {
   return inodes[0];
 }
 
+// listens says whether the socket of inode is still in the LISTEN state on any port: a socket
+// whose every holder is gone is gone from /proc/net/tcp and /proc/net/tcp6 with it. It reads the
+// socket itself, not its port, since any other process on the machine may bind a port once it is
+// free.
+function listens(inode: string): boolean {
+  return ["/proc/net/tcp", "/proc/net/tcp6"].some((table) =>
+    readFileSync(table, "utf8")
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/))
+      .some((fields) => fields.length > 9 && fields[3] === "0A" && fields[9] === inode)
+  );
+}
+
+// sessionMembers returns the pids of the processes in session sid (the sixth field of
+// /proc/<pid>/stat, after the command's closing parenthesis).
+function sessionMembers(sid: number): number[] {
+  return readdirSync("/proc")
+    .filter((entry) => /^[0-9]+$/.test(entry))
+    .filter((entry) => {
+      try {
+        const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+        return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[3] === String(sid);
+      } catch {
+        return false;
+      }
+    })
+    .map(Number);
+}
+
 // descriptorsOf returns the descriptors of process pid that link to target.
 function descriptorsOf(pid: number, target: string): number[] {
   const dir = `/proc/${pid}/fd`;
@@ -328,16 +358,18 @@ describe.skipIf(skip)("held-port.py exec", () => {
     expect(closeOnExec(pid, holders[0] as number)).toBe(true);
   }, 60_000);
 
-  test("a command that cannot run exits non-zero, and its port binds again", async () => {
+  test("a command that cannot run exits non-zero, and leaves nothing holding its port", async () => {
     const portFile = join(work, "missing.port");
     const missing = join(work, "no-such-command");
     const running = exec("exec of a missing command", portFile, [missing]);
     const code = await running.process.exited;
     expect(code, describeRun(running)).toBe(127);
     expect(running.output()).toContain(`held-port: execute ${missing}`);
-    const port = await readPort(portFile, running);
-    expect(listeningInode(port)).toBeUndefined();
-    expect(await bindOutcome(port)).toBe("bound");
+    expect(await readPort(portFile, running)).toBeGreaterThan(0);
+    // The socket closes with the last process holding it, and every process the helper could have
+    // handed it to is in the helper's session: none of them is left. A bind of the port would not
+    // say so, since any other process on the machine may bind a port the helper freed.
+    expect(sessionMembers(running.process.pid)).toEqual([]);
   }, 60_000);
 });
 
@@ -359,6 +391,8 @@ describe.skipIf(skip)("held-port.py keep", () => {
     const first = exec("the first listener", join(work, "first.port"), [listener], socket);
     expect(await readPort(join(work, "first.port"), first)).toBe(port);
     await requireAnswers(port, first);
+    const kept = listeningInode(port);
+    if (!kept) throw new Error(`nothing listens on 127.0.0.1:${port}`);
     first.process.kill("SIGKILL");
     await first.process.exited;
 
@@ -375,6 +409,7 @@ describe.skipIf(skip)("held-port.py keep", () => {
     keeper.process.kill("SIGTERM");
     expect(await keeper.process.exited, describeRun(keeper)).toBe(0);
     expect(existsSync(socket)).toBe(false);
-    expect(await bindOutcome(port)).toBe("bound");
+    // The kept socket is gone with the keeper, and its port with it.
+    expect(listens(kept)).toBe(false);
   }, 120_000);
 });

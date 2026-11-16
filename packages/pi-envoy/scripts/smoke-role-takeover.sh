@@ -182,9 +182,7 @@ readonly drivers="${script_dir}/role-takeover"
 readonly channel_server="${repo_root}/packages/claude-envoy/bin/envoy-channel.ts"
 
 # The loopback stack this smoke shares with smoke-registration-stall.sh (--local-stack): the
-# ports, the two builds, what each service is run as and when it is up. `pick_port` reports an
-# exhausted range the way everything else here refuses.
-local_stack_fail=refuse
+# ports each service reports, the two builds, what each service is run as and when it is up.
 # shellcheck source=packages/pi-envoy/scripts/local-stack.sh
 source "${script_dir}/local-stack.sh"
 
@@ -247,8 +245,6 @@ done
   refuse "the Claude Code channel server (${channel_server}) is not readable"
 [[ -f "${repo_root}/node_modules/nats/package.json" ]] ||
   refuse "${repo_root}/node_modules has no nats package: run bun install in the checkout"
-
-port_range
 
 # ---- scratch, processes and teardown ----------------------------------------------------------
 work="$(mktemp -d "${TMPDIR:-/tmp}/smoke-role-takeover.XXXXXX")"
@@ -407,24 +403,26 @@ readonly listener_exe listener_under_test
 ((drop_role_from_copy == 0)) ||
   note "SMOKE_DROP_ROLE_FROM_COPY=1: the live restart row drops its role from the listener's copy of the role claims"
 
-pick_port nats_port
-pick_port monitor_port
-pick_port listener_port
-readonly nats_port monitor_port listener_port
-readonly envoy_url="http://127.0.0.1:${listener_port}"
-readonly nats_url="nats://127.0.0.1:${nats_port}"
-
-set_natsd_argv "${work}/bin/natsd" "$nats_port" "$monitor_port" "${work}/nats-store"
+# Each binds a port the kernel chooses and logs it (local-stack.sh's reported_port), so no other
+# process can take a port between its choice and the service's bind.
+set_natsd_argv "${work}/bin/natsd" monitor "${work}/nats-store"
 (exec env -i PATH="$PATH" HOME="${work}/nats-home" "${natsd_argv[@]}") \
   >"${work}/logs/natsd.log" 2>&1 &
 service_pids+=($!)
 wait_for 60 natsd_serving "${work}/logs/natsd.log" ||
   refuse "natsd did not start: $(tail -n 5 "${work}/logs/natsd.log")"
+nats_port="" monitor_port=""
+if ! reported_port "${work}/logs/natsd.log" "$natsd_client_line" nats_port ||
+  ! reported_port "${work}/logs/natsd.log" "$natsd_monitor_line" monitor_port; then
+  refuse "natsd logged no client or monitoring port: $(tail -n 5 "${work}/logs/natsd.log")"
+fi
+readonly nats_port monitor_port
+readonly nats_url="nats://127.0.0.1:${nats_port}"
 note "natsd serves ${nats_url} (monitoring 127.0.0.1:${monitor_port})"
 
 # The two windows this run's listener carries are appended to the assignments local-stack.sh
 # hands out, so the two smokes that share that file are run exactly as they were.
-set_listener_env "$listener_port" "$nats_url" "smoke-role-takeover-$$"
+set_listener_env "$nats_url" "smoke-role-takeover-$$"
 listener_env+=(
   ENVOY_SESSION_LIVE_WINDOW="$session_live_window"
   ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_claim_reap_interval"
@@ -432,6 +430,14 @@ listener_env+=(
 (exec env -i PATH="$PATH" HOME="${work}/listener-home" "${listener_env[@]}" \
   "$listener_exe") >"${work}/logs/listener.log" 2>&1 &
 service_pids+=($!)
+listener_port=""
+wait_for 90 reported_port "${work}/logs/listener.log" "$listener_line" listener_port ||
+  refuse "the listener logged no address it listens on: $(tail -n 5 "${work}/logs/listener.log")"
+# A listener built before it logged the address it bound logs the one it was given, port 0.
+[[ "$listener_port" != 0 ]] ||
+  refuse "${listener_under_test} logged port 0, the PORT it was given, rather than the port it bound: it is older than the listener this smoke can start"
+readonly listener_port
+readonly envoy_url="http://127.0.0.1:${listener_port}"
 wait_for 90 listener_healthy "$envoy_url" ||
   refuse "the listener did not become healthy: $(tail -n 5 "${work}/logs/listener.log")"
 note "the listener is healthy at ${envoy_url}"
