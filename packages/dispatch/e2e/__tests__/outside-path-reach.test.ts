@@ -16,9 +16,9 @@
  *  curl gives only on a broken network), it puts a `curl` of its own first on PATH that answers
  *  for the hosts it names and hands every other call to the host's curl.
  *
- *  The script probes in three rounds 6 s apart, and a probe that connects to a holding listener
+ *  The script probes in five rounds 6 s apart, and a probe that connects to a holding listener
  *  ends only at curl's `--max-time` of five seconds, so every row that reaches the probes takes
- *  about 17 seconds; the rows run concurrently.
+ *  about 29 seconds; the rows run concurrently.
  *
  *  The blackholed rows need a network that drops a packet to 192.0.2.1 (TEST-NET-1, RFC 5737)
  *  rather than rejecting it: the module asks once, with the script's own probe, and where the
@@ -41,10 +41,10 @@ const bash = hostTool("bash") ?? "bash";
 const curl = hostTool("curl") ?? "curl";
 
 /** One row of this file: `test.skipIf(skip)` with a timeout of the row's own. A run that reaches
- *  the probes takes about 17 s (three rounds 6 s apart, the last up to curl's 5 s), past bun's
- *  default of 5 s, so every row carries 45 s whatever timeout the runner sets. */
+ *  the probes takes about 29 s (five rounds 6 s apart, the last up to curl's 5 s), past bun's
+ *  default of 5 s, so every row carries 60 s whatever timeout the runner sets. */
 function row(skip: boolean) {
-  return (name: string, body: () => Promise<void>) => test.skipIf(skip)(name, body, 45_000);
+  return (name: string, body: () => Promise<void>) => test.skipIf(skip)(name, body, 60_000);
 }
 
 /** A blackholed address: TEST-NET-1 is routed nowhere, so a network that drops it times out. */
@@ -338,7 +338,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   );
 
   // Two holding targets beside the holding origin: probed one after another in each round they
-  // would take 27 s or more, so a run under 25 shows each round probes them at once.
+  // would take 39 s or more, so a run under 36 shows each round probes them at once.
   row(withoutTools)(
     "reads targets that accept and hold the connection as reached, each round probing them at once",
     async () => {
@@ -357,7 +357,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(lineFor(run, "nats-b")).toContain(" REACHED; curl exit 28,");
         expect(verdict(run)).toBe("FAIL: reached nats-a nats-b");
         expect(run.code).toBe(1);
-        expect(run.seconds).toBeLessThan(25);
+        expect(run.seconds).toBeLessThan(36);
       } finally {
         origin.stop(true);
         first.stop(true);
@@ -389,7 +389,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   );
 
   row(withoutTools || blackholeSkip !== null)(
-    "reads a blackholed address as unreachable and passes within 25 seconds",
+    "reads a blackholed address as unreachable and passes within 36 seconds",
     async () => {
       const origin = fakeDispatch();
       try {
@@ -400,7 +400,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(lineFor(run, "blackhole")).toContain(" unreachable; curl exit 28,");
         expect(verdict(run)).toStartWith("PASS");
         expect(run.code).toBe(0);
-        expect(run.seconds).toBeLessThan(25);
+        expect(run.seconds).toBeLessThan(36);
       } finally {
         origin.stop(true);
       }
@@ -553,16 +553,16 @@ describe.concurrent("outside-path-reach.sh", () => {
           { path: pathWithCurl(odd) }
         );
         expect(lineFor(run, "odd")).toBe(
-          "target odd exit35.invalid:4222 UNKNOWN (curl exit 35, time_namelookup 0.000010, time_connect 0.000000); probes: UNKNOWN, UNKNOWN, UNKNOWN"
+          "target odd exit35.invalid:4222 UNKNOWN (curl exit 35, time_namelookup 0.000010, time_connect 0.000000); probes: UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN"
         );
         expect(lineFor(run, "blank")).toBe(
-          "target blank blank.invalid:4222 UNKNOWN (curl exit 28, time_namelookup , time_connect ); probes: UNKNOWN, UNKNOWN, UNKNOWN"
+          "target blank blank.invalid:4222 UNKNOWN (curl exit 28, time_namelookup , time_connect ); probes: UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN"
         );
         expect(lineFor(run, "slowdns")).toBe(
-          "target slowdns slowdns.invalid:4222 unresolved (lookup timed out); curl exit 28, time_namelookup 0.000000, time_connect 0.000000; probes: unresolved, unresolved, unresolved"
+          "target slowdns slowdns.invalid:4222 unresolved (lookup timed out); curl exit 28, time_namelookup 0.000000, time_connect 0.000000; probes: unresolved, unresolved, unresolved, unresolved, unresolved"
         );
         expect(lineFor(run, "slow")).toBe(
-          "target slow slow.invalid:4222 UNKNOWN (the lookup took 2.966833 s of the 3 s to connect, too long to read a timed-out connect as unreachable; curl exit 28, time_connect 0.000000); probes: UNKNOWN, UNKNOWN, UNKNOWN"
+          "target slow slow.invalid:4222 UNKNOWN (the lookup took 2.966833 s of the 3 s to connect, too long to read a timed-out connect as unreachable; curl exit 28, time_connect 0.000000); probes: UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN"
         );
         expect(verdict(run)).toBe("UNKNOWN: odd blank slowdns slow unresolved or unknown");
         expect(run.code).toBe(2);
@@ -595,12 +595,12 @@ describe.concurrent("outside-path-reach.sh", () => {
   }
 
   row(withoutTools)(
-    "probes each target in three rounds and reads it reached when one round of the three connects",
+    "probes each target in five rounds and reads it reached when one round of the five connects",
     async () => {
       const origin = fakeDispatch();
       const holding = holdingTarget();
       try {
-        // Two of the three probes are lost on the way, as on a network dropping packets.
+        // The first two of the five rounds are lost on the way, as on a network dropping packets.
         const run = await drive(
           {
             OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
@@ -609,7 +609,13 @@ describe.concurrent("outside-path-reach.sh", () => {
           { path: pathDropping(holding.port, 2, "printf '0.000020 0.000000'; exit 28") }
         );
         expect(lineFor(run, "lossy")).toContain(" REACHED; curl exit 28, ");
-        expect(probesOf(lineFor(run, "lossy"))).toEqual(["unreachable", "unreachable", "REACHED"]);
+        expect(probesOf(lineFor(run, "lossy"))).toEqual([
+          "unreachable",
+          "unreachable",
+          "REACHED",
+          "REACHED",
+          "REACHED",
+        ]);
         expect(verdict(run)).toBe("FAIL: reached lossy");
         expect(run.code).toBe(1);
       } finally {
@@ -620,7 +626,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   );
 
   row(withoutTools)(
-    "reads a target unreachable only when all three rounds are, and unknown when one of them is",
+    "reads a target unreachable only when all five rounds are, and unknown when one of them is",
     async () => {
       const origin = fakeDispatch();
       const port = await closedPort();
@@ -635,12 +641,14 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(lineFor(run, "flaky")).toStartWith(
           `target flaky 127.0.0.1:${port} UNKNOWN (curl exit 35, `
         );
-        expect(probesOf(lineFor(run, "flaky"))).toEqual(["UNKNOWN", "unreachable", "unreachable"]);
-        expect(probesOf(lineFor(run, "closed-a"))).toEqual([
+        expect(probesOf(lineFor(run, "flaky"))).toEqual([
+          "UNKNOWN",
+          "unreachable",
           "unreachable",
           "unreachable",
           "unreachable",
         ]);
+        expect(probesOf(lineFor(run, "closed-a"))).toEqual(Array(5).fill("unreachable"));
         expect(verdict(run)).toBe("UNKNOWN: flaky unresolved or unknown");
         expect(run.code).toBe(2);
       } finally {
@@ -656,9 +664,9 @@ describe.concurrent("outside-path-reach.sh", () => {
     console.warn("Skipped the spread-rounds row: this host's bash has no EPOCHREALTIME.");
 
   // A tunnel that lost its first handshake packet stays down until WireGuard sends it again, after
-  // its RekeyTimeout of 5 s plus up to 334 ms; three probes at once would all fall inside that.
+  // its RekeyTimeout of 5 s plus up to 334 ms; probes started together would all fall inside that.
   row(withoutTools || !realtime)(
-    "starts its three rounds 6 s apart, so a path down for the first 3.5 s cannot hide a target",
+    "starts its five rounds 6 s apart, so a path down for the first 3.5 s cannot hide a target",
     async () => {
       const origin = fakeDispatch();
       const holding = holdingTarget();
@@ -685,13 +693,19 @@ describe.concurrent("outside-path-reach.sh", () => {
             ),
           }
         );
-        expect(probesOf(lineFor(run, "hub"))).toEqual(["unreachable", "REACHED", "REACHED"]);
+        expect(probesOf(lineFor(run, "hub"))).toEqual([
+          "unreachable",
+          "REACHED",
+          "REACHED",
+          "REACHED",
+          "REACHED",
+        ]);
         expect(verdict(run)).toBe("FAIL: reached hub");
         expect(run.code).toBe(1);
         const starts = readFileSync(join(stamps, "starts"), "utf8").trim().split("\n").map(Number);
-        expect(starts.length).toBe(3);
+        expect(starts.length).toBe(5);
         const gaps = starts.slice(1).map((start, at) => (start - (starts[at] ?? 0)) / 1e6);
-        expect(gaps.map((gap) => gap >= 5.8)).toEqual([true, true]);
+        expect(gaps.map((gap) => gap >= 5.8)).toEqual([true, true, true, true]);
       } finally {
         origin.stop(true);
         holding.stop(true);
@@ -720,7 +734,7 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   );
 
-  // Three recorded probes judged in order, through the script's classify hook, so the odd answer
+  // Five recorded probes judged in order, through the script's classify hook, so the odd answer
   // stands at a position each row fixes rather than one a race picks.
   const reached = "28 0.000027 0.000113";
   const refused = "7 0.000010 0.000000";
@@ -729,23 +743,38 @@ describe.concurrent("outside-path-reach.sh", () => {
   const odd35Line = "UNKNOWN (curl exit 35, time_namelookup 0.000010, time_connect 0.000000)";
 
   row(withoutTools)(
-    "judges a target's three rounds in order: one connect is reached, one odd answer is unknown, wherever it stands",
+    "judges a target's five rounds in order: one connect is reached, one odd answer is unknown, wherever it stands",
     async () => {
       const path = pathOf("bash");
-      for (const [rounds, want] of [
+      const allRefused = Array(5).fill(refused) as string[];
+      const cases: [string[], string][] = [
         [
-          [refused, refused, refused],
-          `unreachable; curl exit 7, time_namelookup 0.000010, time_connect 0.000000; probes: unreachable, unreachable, unreachable`,
+          allRefused,
+          `unreachable; curl exit 7, time_namelookup 0.000010, time_connect 0.000000; probes: ${Array(5).fill("unreachable").join(", ")}`,
         ],
-        [[reached, refused, refused], `${reachedLine}; probes: REACHED, unreachable, unreachable`],
-        [[refused, reached, refused], `${reachedLine}; probes: unreachable, REACHED, unreachable`],
-        [[refused, refused, reached], `${reachedLine}; probes: unreachable, unreachable, REACHED`],
-        [[odd35, refused, refused], `${odd35Line}; probes: UNKNOWN, unreachable, unreachable`],
-        [[refused, odd35, refused], `${odd35Line}; probes: unreachable, UNKNOWN, unreachable`],
-        [[refused, refused, odd35], `${odd35Line}; probes: unreachable, unreachable, UNKNOWN`],
-        [[odd35, reached, refused], `${reachedLine}; probes: UNKNOWN, REACHED, unreachable`],
-        [[refused, odd35, reached], `${reachedLine}; probes: unreachable, UNKNOWN, REACHED`],
-      ] as const) {
+        [
+          [odd35, reached, refused, refused, refused],
+          `${reachedLine}; probes: UNKNOWN, REACHED, unreachable, unreachable, unreachable`,
+        ],
+        [
+          [refused, refused, refused, odd35, reached],
+          `${reachedLine}; probes: unreachable, unreachable, unreachable, UNKNOWN, REACHED`,
+        ],
+      ];
+      // The one odd answer at each position in turn, the other rounds refused.
+      for (let position = 0; position < 5; position++) {
+        for (const [answer, line, name] of [
+          [reached, reachedLine, "REACHED"],
+          [odd35, odd35Line, "UNKNOWN"],
+        ] as const) {
+          const classes = allRefused.map((_, round) => (round === position ? name : "unreachable"));
+          cases.push([
+            allRefused.map((each, round) => (round === position ? answer : each)),
+            `${line}; probes: ${classes.join(", ")}`,
+          ]);
+        }
+      }
+      for (const [rounds, want] of cases) {
         const recorded = rounds.join("; ");
         const run = await drive({ OUTSIDE_PATH_CLASSIFY: recorded }, { path });
         expect({ recorded, judged: run.stdout.trimEnd(), code: run.code }).toEqual({
@@ -1200,7 +1229,8 @@ describe.concurrent("outside-path-reach.sh", () => {
         ["   ", "UNKNOWN: OUTSIDE_PATH_CLASSIFY is set but empty"],
         ["28 0.1 0.0 7", "UNKNOWN: OUTSIDE_PATH_CLASSIFY is neither"],
         ["7 0.1 0.0; 7 0.1 0.0", "UNKNOWN: OUTSIDE_PATH_CLASSIFY is neither"],
-        ["7 0.1 0.0; 7 0.1 0.0; 7 0.1 0.0; 7 0.1 0.0", "UNKNOWN: OUTSIDE_PATH_CLASSIFY is neither"],
+        ["7 0.1 0.0; 7 0.1 0.0; 7 0.1 0.0", "UNKNOWN: OUTSIDE_PATH_CLASSIFY is neither"],
+        [Array(6).fill("7 0.1 0.0").join("; "), "UNKNOWN: OUTSIDE_PATH_CLASSIFY is neither"],
       ] as const) {
         const run = await drive({ OUTSIDE_PATH_CLASSIFY: recorded }, { path });
         expect({ recorded, refused: run.stdout.startsWith(want), code: run.code }).toEqual({

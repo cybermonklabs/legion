@@ -13,7 +13,7 @@
 # /dev/null), the device's curl configuration (`-q` ignores ~/.curlrc, whose `header`, `proxy`,
 # `resolve` or `connect-to` lines could send a credential or aim a probe elsewhere) or a proxy
 # (`--noproxy '*'`, since a proxy's connect is not the device's): it measures what this device
-# itself reaches. A run takes about 17 seconds.
+# itself reaches. A run takes about 29 seconds.
 #
 # Inputs, each refused by name when missing:
 #   OUTSIDE_ORIGIN        the chosen path's origin, https://<host>[:<port>], the host a name, an
@@ -30,8 +30,8 @@
 #                         of the address behind it. A list of names alone draws a warning.
 # OUTSIDE_PATH_ALLOW_HTTP=1 lets an http origin through, and only http://127.0.0.1, for this
 # script's own tests. OUTSIDE_PATH_CLASSIFY="<exit> <namelookup> <connect>" runs the classifier
-# alone on one recorded probe and prints its class; three of them separated by `;` are judged as
-# one target's three rounds, in order, and the target's class is printed. Either way it exits 4,
+# alone on one recorded probe and prints its class; five of them separated by `;` are judged as
+# one target's five rounds, in order, and the target's class is printed. Either way it exits 4,
 # never PASS's 0, and refuses an empty value with exit 2.
 #
 # It prints the origin, this device's name and the UTC time, a line for the origin's positive
@@ -45,17 +45,18 @@
 #            unable to connect to the origin itself, a target that did not resolve or that no rule
 #            classifies, an empty target list, or rounds that sleep could not spread apart.
 #
-# Every host and port is probed in three rounds, started 0, 6 and 12 s into the probing, all hosts
-# of a round at once, by one command, and each probe is judged by whether TCP connected, not by
-# curl's exit code alone: every target this check exists for (NATS, an HTTP listener, a TLS port)
-# accepts and then holds the connection waiting for the client, so a reached target ends at
+# Every host and port is probed in five rounds, started 0, 6, 12, 18 and 24 s into the probing, all
+# hosts of a round at once, by one command, and each probe is judged by whether TCP connected, not
+# by curl's exit code alone: every target this check exists for (NATS, an HTTP listener, a TLS
+# port) accepts and then holds the connection waiting for the client, so a reached target ends at
 # --max-time with exit 28, the same exit a blackholed address gives. A target is REACHED when any
-# of its rounds connected, unreachable only when all three were, and otherwise takes the class of
-# its first round that was neither. Three rounds, so a network that loses packets does not hide a
+# of its rounds connected, unreachable only when all five were, and otherwise takes the class of
+# its first round that was neither. Five rounds, so a network that loses packets does not hide a
 # target; 6 s apart, so neither does a tunnel whose first handshake packet was lost: WireGuard
 # sends it again only after its RekeyTimeout of 5 s plus up to 334 ms, and probes started at once
-# would all fall inside that. Heavy loss can still miss all three: with 70% of the packets to a
-# reachable target dropped at random, about one run in 25 printed PASS; with 50%, none of 240.
+# would all fall inside that. Heavy loss can still miss all five, though none of our runs did: with
+# 70% of the packets to a reachable target dropped at random, 240 runs (bash 3.2 and 5.2) printed no
+# PASS, about a third of the rounds missing, where three rounds printed PASS in 8 of 240.
 # See `classify` for the classes and `judge` for a target's rounds.
 #
 # Usage: OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
@@ -67,6 +68,9 @@ if [ -z "${BASH_VERSION:-}" ]; then
   exit 2
 fi
 set -u
+
+# rounds: how many rounds of probes each host gets, started 6 s apart (see the header).
+rounds=5
 
 # unknown MESSAGE: the verdict for anything that proved nothing.
 unknown() {
@@ -191,19 +195,19 @@ classify() {
   printf 'UNKNOWN (curl exit %s, time_namelookup %s, time_connect %s)\n' "$code" "$lookup" "$connect"
 }
 
-# judge EXIT NAMELOOKUP CONNECT (three times, one target's rounds in order): sets `class` to the
-# target's class and `detail` to what its line says after the address. REACHED when any round
-# connected, unreachable only when all three were, and otherwise the class of the first round
+# judge EXIT NAMELOOKUP CONNECT (once per round, one target's rounds in order): sets `class` to
+# the target's class and `detail` to what its line says after the address. REACHED when any round
+# connected, unreachable only when all of them were, and otherwise the class of the first round
 # that was neither; `detail` gives curl's answer in the round that decided, then every round's
 # class in order.
 judge() {
-  local round=0 each code lookup connect decided='' rounds=''
+  local round=0 each code lookup connect decided='' seen=''
   class=''
-  while [ "$round" -lt 3 ]; do
+  while [ "$round" -lt "$rounds" ]; do
     code=$1 lookup=$2 connect=$3
     shift 3
     each=$(classify "$code" "$lookup" "$connect")
-    rounds="$rounds, ${each%% *}"
+    seen="$seen, ${each%% *}"
     if [ "$each" = REACHED ]; then
       [ "$class" = REACHED ] || {
         class=REACHED
@@ -222,13 +226,13 @@ judge() {
     round=$((round + 1))
   done
   case $class in
-    UNKNOWN*) detail="$class; probes: ${rounds#, }" ;;
+    UNKNOWN*) detail="$class; probes: ${seen#, }" ;;
     *)
       set -f
       # shellcheck disable=SC2086 # split on purpose: the three fields of the deciding round
       set -- $decided
       set +f
-      detail="$class; curl exit ${1-}, time_namelookup ${2-}, time_connect ${3-}; probes: ${rounds#, }"
+      detail="$class; curl exit ${1-}, time_namelookup ${2-}, time_connect ${3-}; probes: ${seen#, }"
       ;;
   esac
 }
@@ -246,31 +250,30 @@ fields() {
 if [ -n "${OUTSIDE_PATH_CLASSIFY+set}" ]; then
   recorded=$OUTSIDE_PATH_CLASSIFY
   case $recorded in *[![:space:]]*) ;; *)
-    unknown "OUTSIDE_PATH_CLASSIFY is set but empty: give it '<exit> <namelookup> <connect>', or three of them separated by ';'"
+    unknown "OUTSIDE_PATH_CLASSIFY is set but empty: give it '<exit> <namelookup> <connect>', or $rounds of them separated by ';'"
     ;;
   esac
-  malformed="OUTSIDE_PATH_CLASSIFY is neither '<exit> <namelookup> <connect>' nor three of them separated by ';': $recorded"
-  case $recorded in
-    *';'*';'*';'*) unknown "$malformed" ;;
-    *';'*';'*)
-      first=${recorded%%;*}
-      rest=${recorded#*;}
-      second=${rest%%;*}
-      third=${rest#*;}
-      fields "$first" || unknown "$malformed"
-      set -- "$f1" "$f2" "$f3"
-      fields "$second" || unknown "$malformed"
-      set -- "$@" "$f1" "$f2" "$f3"
-      fields "$third" || unknown "$malformed"
-      judge "$@" "$f1" "$f2" "$f3"
-      printf '%s\n' "$detail"
-      ;;
-    *';'*) unknown "$malformed" ;;
-    *)
-      fields "$recorded" || unknown "$malformed"
-      classify "$f1" "$f2" "$f3"
-      ;;
-  esac
+  malformed="OUTSIDE_PATH_CLASSIFY is neither '<exit> <namelookup> <connect>' nor $rounds of them separated by ';': $recorded"
+  rest=$recorded
+  parts=0
+  set --
+  while :; do
+    fields "${rest%%;*}" || unknown "$malformed"
+    set -- "$@" "$f1" "$f2" "$f3"
+    parts=$((parts + 1))
+    case $rest in
+      *';'*) rest=${rest#*;} ;;
+      *) break ;;
+    esac
+  done
+  if [ "$parts" -eq 1 ]; then
+    classify "$1" "$2" "$3"
+  elif [ "$parts" -eq "$rounds" ]; then
+    judge "$@"
+    printf '%s\n' "$detail"
+  else
+    unknown "$malformed"
+  fi
   exit 4
 fi
 
@@ -460,13 +463,13 @@ probe() {
   printf '%s %s %s %s\n' "$1" "$2" "$code" "$times"
 }
 
-# Three rounds, 6 s apart, every row probed at once within a round: a probe that reaches a holding
+# Five rounds, 6 s apart, every row probed at once within a round: a probe that reaches a holding
 # listener takes its whole --max-time, and one after another would take that per probe. Each job
 # prints its one short line in one write, so the lines do not mix, and a probe whose line never
 # came reads UNKNOWN. A sleep that fails would start the next round early, so it says so.
 results=$(
   round=0
-  while [ "$round" -lt 3 ]; do
+  while [ "$round" -lt "$rounds" ]; do
     if [ "$round" -gt 0 ]; then
       sleep 6 || echo 'rounds not spread'
     fi
@@ -488,20 +491,24 @@ while [ -n "$rest" ]; do
   # shellcheck disable=SC2086 # split on purpose: `INDEX ATTEMPT EXIT NAMELOOKUP CONNECT`
   set -- $line
   set +f
-  is_count "${1-}" && is_count "${2-}" && [ "$2" -lt 3 ] || continue
-  key=$(($1 * 3 + $2))
+  is_count "${1-}" && is_count "${2-}" && [ "$2" -lt "$rounds" ] || continue
+  key=$(($1 * rounds + $2))
   codes[key]=${3-}
   lookups[key]=${4-}
   connects[key]=${5-}
 done
 
-# report LABEL INDEX: judges row INDEX from its three rounds, prints its line and sets `class`.
+# report LABEL INDEX: judges row INDEX from its rounds, prints its line and sets `class`.
 report() {
-  local key=$(($2 * 3))
-  judge "${codes[key]-}" "${lookups[key]-}" "${connects[key]-}" \
-    "${codes[key + 1]-}" "${lookups[key + 1]-}" "${connects[key + 1]-}" \
-    "${codes[key + 2]-}" "${lookups[key + 2]-}" "${connects[key + 2]-}"
-  printf '%s %s %s\n' "$1" "$(address "${hosts[$2]}" "${ports[$2]}")" "$detail"
+  local label=$1 row=$2 round=0 key
+  shift 2
+  while [ "$round" -lt "$rounds" ]; do
+    key=$((row * rounds + round))
+    set -- "$@" "${codes[key]-}" "${lookups[key]-}" "${connects[key]-}"
+    round=$((round + 1))
+  done
+  judge "$@"
+  printf '%s %s %s\n' "$label" "$(address "${hosts[$row]}" "${ports[$row]}")" "$detail"
 }
 
 report 'control origin' 0
