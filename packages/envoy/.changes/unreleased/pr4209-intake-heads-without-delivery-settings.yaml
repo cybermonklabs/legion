@@ -27,6 +27,13 @@ body: |-
     GitHub replaces such a row that is newer than its own answer, a second trigger owes the pull
     request a read, so the next pass writes GitHub's current answer. `delivery.AttributionRuleVersion`
     is 3, so the reconcile reads every stored merged row from GitHub once more.
+
+    Every hand-back of an envelope to NATS has a limit, so no envelope holds one of the intake's
+    four in-flight slots for ever. An envelope that names no pull request a row can hold (a number
+    outside 1 to 2147483647, a repository name that is not `owner/name`), and one whose write
+    Postgres refuses for its values, are acknowledged at their first delivery with one log line.
+    At the cap of 30 deliveries, an envelope whose owed read cannot be recorded either is
+    acknowledged with one ERROR line naming the repository and the number.
 time: 2026-11-16T13:50:24.000000000Z
 custom:
     Issue: pr4209

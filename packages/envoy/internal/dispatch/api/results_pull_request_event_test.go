@@ -39,6 +39,28 @@ const headAfterEventBound = 5 * time.Second
 // reads that pull request from GitHub, so GitHub's single pull request read answers #7 as GitHub
 // holds it.
 func TestAPullRequestEventGivesTheResultsReadItsHeadWithNoDeliverySettings(t *testing.T) {
+	requireTheEventsHeadWithinTheBound(t, 0)
+}
+
+// The same within the same 5 seconds, with four envelopes no row can hold published just before
+// GitHub's event: numbers 3000000000 and up, which do not fit the integer columns. The intake
+// takes at most four envelopes at a time, so before cybermonklabs/legion#4209's round 3 these four
+// were handed back for ever and held every slot, and GitHub's event behind them never reached the
+// route (acceptance round 3, defect 5: 420 s and no head). Each is now final at its first
+// delivery, so the event behind them is taken at once.
+func TestAPullRequestEventBehindFourEnvelopesNoRowCanHoldGivesTheResultsReadItsHead(t *testing.T) {
+	requireTheEventsHeadWithinTheBound(t, intakeSlots)
+}
+
+// intakeSlots is how many envelopes the delivery intake holds at a time
+// (delivery.intakeMaxAckPending).
+const intakeSlots = 4
+
+// requireTheEventsHeadWithinTheBound publishes poisonBefore envelopes no row can hold, then
+// GitHub's own event of example/tools#7, and fails unless the results route compares check k1
+// with #7's head within headAfterEventBound of that event's publish.
+func requireTheEventsHeadWithinTheBound(t *testing.T, poisonBefore int) {
+	t.Helper()
 	handler, database, served, fake := readThroughGitHub(t, "example/tools")
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects",
 		map[string]string{"key": "ACME", "name": "Acme"}, "alice"); response.Code != http.StatusCreated {
@@ -114,6 +136,23 @@ func TestAPullRequestEventGivesTheResultsReadItsHeadWithNoDeliverySettings(t *te
 	})
 	if err != nil {
 		t.Fatalf("encode the pull request's payload: %v", err)
+	}
+	for i := range poisonBefore {
+		number := fmt.Sprint(3_000_000_000 + i)
+		poison, err := json.Marshal(map[string]string{
+			"kind": "pr", "action": "opened", "repo": "example/tools", "number": number,
+			"head_sha": headCommit, "head_ref": "feature/x", "base_ref": "main", "merged": "false", "updated_at": updated,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := publisher.Publish(contracts.Envelope{
+			EventID: "example-tools-pr-" + number, Source: "github", SourceEventID: "example-tools-pr-" + number,
+			TraceID: "example-tools-pr-" + number, Topic: contracts.GithubResourceSubject("example", "tools", "pr", number),
+			Payload: string(poison), IssuedAt: time.Now().Unix(),
+		}); err != nil {
+			t.Fatalf("publish the envelope of #%s: %v", number, err)
+		}
 	}
 	// The bound is v-head-no-settings' own: the results route compares a check with the head of
 	// an open pull request within 5 seconds of GitHub's event, measured from the publish.

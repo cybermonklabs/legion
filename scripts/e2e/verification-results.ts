@@ -857,7 +857,13 @@ A result stands while its commit is the pull request's head.
     run: "bash scripts/e2e/verification-results.sh",
     surface: "cli",
   });
-  const atFirstHead = await awaitCommitStands(a4Issue, "a4", commits.headOne, "at_basis", afterEvent(opened));
+  const atFirstHead = await awaitCommitStands(
+    a4Issue,
+    "a4",
+    commits.headOne,
+    "at_basis",
+    afterEvent(opened)
+  );
   note(`the commit of the result at ${commits.headOne.slice(0, 12)} stands ${atFirstHead}`);
   if (atFirstHead !== "at_basis") {
     return `the commit of the result at the first head stands ${atFirstHead}`;
@@ -882,7 +888,13 @@ A result stands while its commit is the pull request's head.
     url: `https://github.com/${repo}/pull/7`,
   });
   note(`published the synchronize envelope on ${pushed.subject}`);
-  const moved = await awaitCommitStands(a4Issue, "a4", commits.headOne, "other_commit", afterEvent(pushed));
+  const moved = await awaitCommitStands(
+    a4Issue,
+    "a4",
+    commits.headOne,
+    "other_commit",
+    afterEvent(pushed)
+  );
   note(`after the push the same result stands ${moved}, with no write of Dispatch's`);
   if (moved !== "other_commit") {
     return `the commit of the result at the first head stands ${moved} after the push`;
@@ -898,7 +910,13 @@ A result stands while its commit is the pull request's head.
     run: "bash scripts/e2e/verification-results.sh",
     surface: "cli",
   });
-  const atNewHead = await awaitCommitStands(a4Issue, "a4", commits.headTwo, "at_basis", afterEvent(pushed));
+  const atNewHead = await awaitCommitStands(
+    a4Issue,
+    "a4",
+    commits.headTwo,
+    "at_basis",
+    afterEvent(pushed)
+  );
   note(`the result at the new head ${commits.headTwo.slice(0, 12)} stands ${atNewHead}`);
   if (atNewHead !== "at_basis") return `the result at the new head stands ${atNewHead}`;
   const passAtNewHead = await passStandsOf(a4Issue, "a4");
@@ -944,7 +962,13 @@ A result stands while its commit is the head of a pull request of this repositor
     run: "bash scripts/e2e/verification-results.sh",
     surface: "cli",
   });
-  const atFork = await awaitCommitStands(forkIssue, "fork", commits.fork, "at_basis", afterEvent(forked));
+  const atFork = await awaitCommitStands(
+    forkIssue,
+    "fork",
+    commits.fork,
+    "at_basis",
+    afterEvent(forked)
+  );
   note(`the commit of the result at the fork's head ${commits.fork.slice(0, 12)} stands ${atFork}`);
   if (atFork === "at_basis") return "a fork's pull request was taken for a basis";
   const compared = await checkOf(forkIssue, "fork");
@@ -973,7 +997,13 @@ A result stands while its commit is the head of a pull request of this repositor
     url: `https://github.com/${repo}/pull/9`,
   });
   note(`published the same pull request with its head in ${repo} on ${owned.subject}`);
-  const atOwnHead = await awaitCommitStands(forkIssue, "fork", commits.fork, "at_basis", afterEvent(owned));
+  const atOwnHead = await awaitCommitStands(
+    forkIssue,
+    "fork",
+    commits.fork,
+    "at_basis",
+    afterEvent(owned)
+  );
   note(`the same result now stands ${atOwnHead}`);
   return atOwnHead === "at_basis"
     ? undefined

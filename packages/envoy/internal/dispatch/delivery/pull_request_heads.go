@@ -108,7 +108,9 @@ func PullRequestHeadState(state string, merged bool) string {
 // it, since both of the statements behind the write are `on conflict … do update` and a
 // redelivery writes the same pair. The reconcile's passes read the rows that exist, so past that
 // bound the envelope's pull request is owed a read the reconcile makes instead
-// (owePullRequestRead): a row no write ever made is offered to nothing else.
+// (owePullRequestRead): a row no write ever made is offered to nothing else. A failure Postgres
+// gives for the values themselves (valuesRefused) is marked as well, and deliver acknowledges it
+// at once instead, since no redelivery hands Postgres other values.
 //
 // It marks every failure on the way to that write that a later attempt may get past, because
 // they all end the same way: a read of Postgres (the repository's canonical name, the stored row
@@ -1142,9 +1144,10 @@ func ReadThroughCommitPulls(
 // answers for it or still refuses past owedReadRefusalFinalAfter. A record that could not be
 // written is marked ErrHeadNotStored, so the envelope stays the record and is handed back. Every
 // other failure is marked ErrHeadNotStored (markHeadNotStored), so the envelope is handed back;
-// a rate limit is handed back after the limit's own wait (Intake.deliver). A name that is not
-// `owner/repo` is malformed in the envelope itself and is returned bare, since the same envelope
-// delivered again fails on it again.
+// a rate limit is handed back after the limit's own wait, and a failure Postgres gives for the
+// values themselves is acknowledged at once (Intake.deliver, valuesRefused). The name and the
+// number were checked before this runs (pullRequestNamed); a canonical name that is not
+// `owner/repo` is returned bare, since the same envelope delivered again fails on it again.
 //
 // The read is spared where GitHub has already answered for the event (headReadCovers): the
 // stored row is GitHub's answer to a read, at least as new as the envelope by GitHub's own

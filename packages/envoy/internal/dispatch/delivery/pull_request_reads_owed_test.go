@@ -79,7 +79,7 @@ func TestAnOutagesOwedReadIsNotHeldBehindForgedRefusals(t *testing.T) {
 				t.Fatal("the real envelope's read during the outage = nil, want ErrHeadNotStored")
 			}
 			raw := fmt.Sprintf(`{"kind":"pr","repo":"acme/widgets","number":"%d"}`, real)
-			if err := intake.oweEnvelopesRead(ctx, raw); err != nil {
+			if _, _, err := intake.oweEnvelopesRead(ctx, raw); err != nil {
 				t.Fatalf("owe the real pull request's read at the cap: %v", err)
 			}
 			github.mu.Lock()
