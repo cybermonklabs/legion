@@ -11,6 +11,7 @@ import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { ApiError, api } from "../../api/client";
 import type {
+  Agent,
   Anchor,
   Artifact,
   ArtifactVersionText,
@@ -19,6 +20,8 @@ import type {
   DisplayTree,
   InboxRow,
   IssueDetails,
+  Message,
+  MessageRead,
   MyReplyRow,
   MyReplyThreadRow,
   Version,
@@ -28,7 +31,7 @@ import type { CreateEditor, EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
-import { plannerAgentRow } from "../threads/replies-fixture";
+import { agentRow, plannerAgentRow } from "../threads/replies-fixture";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import { ReadingPane } from "./ReadingPane";
@@ -1517,5 +1520,151 @@ test("the next thread's reply box shows no upload refused in the thread before i
     view.unmount();
     listAgents.mockRestore();
     uploadArtifact.mockRestore();
+  }
+});
+
+// Text typed in a thread's reply box and not sent is that thread's. The column draws the next
+// thread's box without it, and back on the first thread its box holds the text again.
+test("text typed and not sent in a thread's reply box waits there for the reader's return, and never shows in another thread's", async () => {
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const first = threadRow({ issue: { key: "CORE-1", title: "Fix the thing" }, unread: false });
+  const { rerender, view } = renderThread(first, (client) => {
+    client.setQueryData(["comments", "CORE-1"], [rootComment("comment-1", "CORE-1")]);
+    // The second thread's comments are read already, as they are once the reader has been on
+    // its row, so the column draws its box at once, with no skeleton between the two.
+    client.setQueryData(["comments", "CORE-2"], [rootComment("comment-9", "CORE-2")]);
+  });
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("textbox", { name: "Reply" }));
+    await user.paste("Half a reply");
+
+    rerender(
+      threadRow({
+        issue: { key: "CORE-2", title: "Other issue" },
+        ref: "/issues/CORE-2?comment=comment-9",
+        thread_id: "comment-9",
+        unread: false,
+      })
+    );
+    const pane = screen.getByTestId("inbox-pane");
+    expect(pane.querySelector('[data-inbox-thread="comment-9"]')).not.toBeNull();
+    expect(within(pane).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" }).value).toBe(
+      ""
+    );
+
+    rerender(first);
+    expect(pane.querySelector('[data-inbox-thread="comment-1"]')).not.toBeNull();
+    expect(within(pane).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" }).value).toBe(
+      "Half a reply"
+    );
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
+  }
+});
+
+/** The Planner session, live, which takes a Send. */
+const planner: Agent = {
+  capabilities: ["steer", "btw"],
+  dir: "/work",
+  host: "box",
+  last_activity: "2026-10-12T00:00:00Z",
+  last_seen: Date.now(),
+  machine_id: "box",
+  open_asks: 0,
+  roles: [],
+  session_id: "planner",
+  state: "live",
+  title: "Planner",
+};
+
+/** A message `id` the reader sent the Planner, answered by the session's `reply`. */
+function plannerExchange(id: string, reply: string): MessageRead {
+  const sent: Message = {
+    author: { id: "alice", kind: "user" },
+    body: `Question ${id}`,
+    broadcast_id: null,
+    created_at: "2026-10-12T00:00:00Z",
+    deliveries: [],
+    id,
+    in_reply_to: null,
+    issue_key: null,
+    reply_block: null,
+    target: "session:planner",
+  };
+  return {
+    message: sent,
+    replies: [
+      {
+        ...sent,
+        author: { id: "planner", kind: "session" },
+        body: `Answer ${reply}`,
+        created_at: "2026-10-12T01:00:00Z",
+        id: reply,
+        in_reply_to: id,
+      },
+    ],
+  };
+}
+
+// The column draws an Agent row's thread box for one thread after another, and two threads can be
+// one session's. A reply Dispatch refused in the first is that thread's: the next thread's box
+// shows none of it - no draft, no refusal, no pending turn, no Retry that would send it as a reply
+// there - and what that box sends is its own reply, under its own thread's newest message.
+test("the next Agent thread of a session shows nothing of a reply refused in the thread before it", async () => {
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
+  const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue([
+    plannerExchange("message-1", "reply-1"),
+    plannerExchange("message-2", "reply-2"),
+  ]);
+  const createAgentMessage = spyOn(api, "createAgentMessage")
+    .mockRejectedValueOnce(
+      new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
+    )
+    .mockResolvedValue({} as never);
+  const first = plannerAgentRow();
+  const { rerender, view } = renderThread(first);
+  try {
+    const user = userEvent.setup();
+    const pane = await screen.findByTestId("inbox-pane");
+    await user.click(await within(pane).findByRole("textbox", { name: "Comment" }));
+    await user.paste("Reply meant for the first");
+    await user.click(within(pane).getByRole("button", { name: "Send" }));
+    await within(pane).findByText("Couldn't send — Dispatch refused the message");
+
+    rerender(
+      agentRow("message-2", {
+        ...first,
+        reply: { ...first.reply, id: "reply-2" },
+        thread_id: "message-2",
+        unread_reply_ids: ["reply-2"],
+      })
+    );
+    expect(pane.querySelector('[data-inbox-thread="message-2"]')).not.toBeNull();
+    const next = within(pane).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    expect(next.value).toBe("");
+    expect(within(pane).queryByRole("alert")).toBeNull();
+    expect(within(pane).queryByTestId("agent-send-held")).toBeNull();
+
+    await user.click(next);
+    await user.paste("Reply for the second");
+    await user.click(within(pane).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(createAgentMessage).toHaveBeenCalledTimes(2));
+    expect(
+      createAgentMessage.mock.calls.map(([sessionId, input]) => [
+        sessionId,
+        input.in_reply_to,
+        input.body,
+      ])
+    ).toEqual([
+      ["planner", "reply-1", "Reply meant for the first"],
+      ["planner", "reply-2", "Reply for the second"],
+    ]);
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
+    listAgentMessages.mockRestore();
+    createAgentMessage.mockRestore();
   }
 });

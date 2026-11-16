@@ -35,7 +35,9 @@ export interface AgentReply {
  *  (`useSending`) to hold what a message on its way has already fixed - the picker and the Reply
  *  buttons - and the composer names its send with it, so the two keys cannot drift apart. A row
  *  that mounts again while its send is out, or after it was refused - the reader came back to the
- *  page - shows that send (`useComposerSend`), and holds for it. */
+ *  page - shows that send (`useComposerSend`), and holds for it. The Inbox's thread box names its
+ *  send by its thread instead (`threadSendKey` in ThreadBody.tsx): two threads can be one
+ *  session's, and each holds its own reply. */
 export function agentSendKey(sessionID: string): MutationKey {
   return ["agent-composer", sessionID];
 }
@@ -54,6 +56,7 @@ export function AgentMessageComposer({
   replyTo,
   sendKey,
   standing = false,
+  thread,
 }: {
   agent: Agent;
   /** The row's hold on that send (`useSending(sendKey)`): while it is out the message is
@@ -66,22 +69,32 @@ export function AgentMessageComposer({
    *  which is NOT one level out; that case is filtered below. */
   onClose: () => void;
   replyTo: AgentReply | null;
-  /** The row's `agentSendKey`, which names the composer's send. */
+  /** The name of the composer's send: the row's `agentSendKey`, or the Inbox thread's own. */
   sendKey: MutationKey;
   /** The reply target is this box's standing address rather than a Reply the reader pressed,
    *  so the box takes no focus of its own (`MentionComposer`'s `standing`): what the Inbox
    *  column's thread box is, mounted again for every row the reader steps onto. */
   standing?: boolean;
+  /** The ids of the messages of the one thread this box answers, where it is a thread's box (the
+   *  Inbox's): of the session's other sends it shows only those answering one of them, since a
+   *  send into another thread, or a message of its own, is not this thread's. */
+  thread?: ReadonlySet<string>;
 }): ReactNode {
   const queryClient = useQueryClient();
   const store = useHeldSends();
   const { sending, sendingNow } = hold;
   // The session's other messages still on their way - its live view's - show here too, as their
   // own turns, and Retry, Discard or Stop trying here acts on the same write there: the session is
-  // the write's target, not the surface that made it. This composer's own send shows in it.
+  // the write's target, not the surface that made it. This composer's own send shows in it. A
+  // thread's box shows those answering its thread alone.
   const sends = useSessionSends(agent.session_id);
   const ownName = hashKey(sendKey);
-  const others = sends.pending.filter((held) => hashKey(held.mutationKey) !== ownName);
+  const others = sends.pending.filter(
+    (held) =>
+      hashKey(held.mutationKey) !== ownName &&
+      (thread === undefined ||
+        (held.request.replyTo !== null && thread.has(held.request.replyTo.id)))
+  );
   // The issue a held send went to - out, or refused - is the one the picker names when the row
   // mounts again, so what the toggle says and where Retry sends stay one issue.
   const [issueKey, setIssueKey] = useState(() => {

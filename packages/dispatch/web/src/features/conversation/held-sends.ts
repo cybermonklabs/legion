@@ -29,6 +29,7 @@ import {
   requestFor,
   type SentDraft,
   type SentRequest,
+  sameAddress,
   saveCommentEdit,
   sendAttempt,
 } from "./send-request";
@@ -416,10 +417,15 @@ export class HeldSends {
   /** Sends `request` under `mutationKey` and holds it until it lands - unless a send under that
    *  name is out already, which refuses this one: a composer holds one draft. A refused send's
    *  entry gives way to the new one, its Retry, which is no Discard (`Writes.supersede`): a
-   *  margin compose's mark stays in the document for it. */
+   *  margin compose's mark stays in the document for it. The refused draft was written for its
+   *  send's address, so only a request to that address is its Retry (`sameAddress`): one from a
+   *  composer its host has moved to another - an Agents row's issue pick, the docked composer's
+   *  Cancel reply - is refused too, and the refusal stands. */
   send(mutationKey: MutationKey, request: SentRequest): boolean {
     const held = this.get(mutationKey);
-    if (held !== undefined && held.status !== "refused") return false;
+    if (held !== undefined && (held.status !== "refused" || !sameAddress(held.request, request))) {
+      return false;
+    }
     if (held !== undefined) this.#writes.supersede(held.id);
     const { owner } = request;
     this.#writes

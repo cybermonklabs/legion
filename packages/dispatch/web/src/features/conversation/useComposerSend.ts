@@ -8,9 +8,10 @@ import type { SentRequest } from "./send-request";
 export interface ComposerSend {
   /** The send its target holds - out, or refused - which a composer mounting now shows. */
   readonly held: HeldSend | undefined;
-  /** Builds the request and sends it, unless a send under the composer's name is out; `build`
-   *  runs only when it goes, handed the refused send it replaces, if any - its request and what
-   *  refused it. */
+  /** Builds the request and sends it, unless a send under the composer's name is out, or the
+   *  refusal it holds was written for another address than the request's (`HeldSends.send`);
+   *  `build` runs only when no send is out, handed the refused send it replaces, if any - its
+   *  request and what refused it. */
   readonly send: (build: (refused: HeldSend | undefined) => SentRequest) => void;
   /** Whether a send is out, past its deadline included, as of the last render. */
   readonly sending: boolean;

@@ -196,16 +196,41 @@ function sameMessage(refused: SentRequest, next: Omit<SentRequest, "sendKey">): 
   );
 }
 
+/** Whether `a` and `b` are one owner: one issue, one document, or one session. */
+function sameOwner(a: ComposerOwner, b: ComposerOwner): boolean {
+  switch (a.kind) {
+    case "issue":
+      return b.kind === "issue" && b.issueKey === a.issueKey;
+    case "artifact":
+      return b.kind === "artifact" && b.artifactId === a.artifactId;
+    case "session":
+      return b.kind === "session" && b.sessionId === a.sessionId;
+  }
+}
+
+/** Where a send goes: its owner, the mark it is anchored to, the reply it answers, and, for an
+ *  edit, the comment it saves. */
+type Address = Pick<SentRequest, "anchor" | "edit" | "owner" | "replyTo">;
+
+/** Whether `next` goes where `sent` went. A refused send belongs to that address: its draft was
+ *  written for it, so a press from a composer that shows another address now is not its Retry
+ *  (`HeldSends.send`). */
+export function sameAddress(sent: Address, next: Address): boolean {
+  return (
+    sameOwner(sent.owner, next.owner) &&
+    sent.anchor?.artifact === next.anchor?.artifact &&
+    sent.anchor?.mark_id === next.anchor?.mark_id &&
+    sent.replyTo?.id === next.replyTo?.id &&
+    sent.edit?.id === next.edit?.id
+  );
+}
+
 /** Whether `next` is the refused send unedited: the same draft - its text, accepted mentions and a
  *  suggestion's replacement, and an ask's fields - to the same place, in the same kind. */
 export function unedited(refused: SentRequest, next: Omit<SentRequest, "sendKey">): boolean {
   return (
     refused.kind === next.kind &&
-    JSON.stringify(refused.owner) === JSON.stringify(next.owner) &&
-    refused.anchor?.artifact === next.anchor?.artifact &&
-    refused.anchor?.mark_id === next.anchor?.mark_id &&
-    refused.replyTo?.id === next.replyTo?.id &&
-    refused.edit?.id === next.edit?.id &&
+    sameAddress(refused, next) &&
     refused.draft.body === next.draft.body &&
     refused.draft.replacement === next.draft.replacement &&
     JSON.stringify(refused.draft.mentions) === JSON.stringify(next.draft.mentions) &&
@@ -223,7 +248,9 @@ export function unedited(refused: SentRequest, next: Omit<SentRequest, "sendKey"
  * under a new key: for a message to one session, unedited, the refused request as it was sent - its
  * mode, picked or plain - so a message the live view sent in a mode it picked never goes out again
  * in the Agents row's mode; for anything else, and an edited draft, the request as the composer
- * shows it now, a comment in the modes its mentioned sessions advertise now.
+ * shows it now, a comment in the modes its mentioned sessions advertise now. Either way it is a
+ * Retry only from a composer that shows the refused send's own address (`sameAddress`): the store
+ * refuses one from a composer that has moved to another (`HeldSends.send`).
  */
 export function requestFor(
   refused: SentRequest | undefined,

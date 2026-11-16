@@ -2535,8 +2535,9 @@ test("a Retry after Dispatch's refusal goes under a new key, even of the same te
   }
 });
 
-// After Dispatch's refusal every Retry is a new action: another body, another mode, another reply,
-// and the same message again, each under a key of its own.
+// After Dispatch's refusal every Retry is a new action: another body, another mode, and the same
+// message again, each under a key of its own. Another reply is another address, which the refused
+// message was not written for: from there it has no Retry at all.
 test("after Dispatch's refusal every Retry, edited or not, gets a key of its own", async () => {
   const createAgentMessage = spyOn(api, "createAgentMessage").mockRejectedValue(messageRefused);
   const direct = { kind: "session" as const, sessionId: "A" };
@@ -2572,32 +2573,28 @@ test("after Dispatch's refusal every Retry, edited or not, gets a key of its own
       await user.keyboard("{Control>}a{/Control}");
       await user.paste("/aside Status please, now");
     });
-    await retry(4, async () => {
-      // Another reply, which the reader starts afresh, in its thread's mode.
-      rerender({
-        owner: direct,
-        replyTo: {
-          actor: { id: "A", kind: "session", origin: { session_title: "Planner" } },
-          excerpt: "Question",
-          id: "message-9",
-          thread: { delivery: "btw", target: "session:A" },
-        },
-      });
-      await user.click(field);
-      await user.keyboard("{Control>}a{/Control}");
-      await user.paste("Status please, now");
+    await screen.findByText(refusedText);
+    rerender({
+      owner: direct,
+      replyTo: {
+        actor: { id: "A", kind: "session", origin: { session_title: "Planner" } },
+        excerpt: "Question",
+        id: "message-9",
+        thread: { delivery: "btw", target: "session:A" },
+      },
     });
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    rerender({ owner: direct, replyTo: null });
     // And nothing changed since: the same message, under a key of its own all the same.
-    await retry(5);
+    await retry(4);
 
     const keys = sentKeys(createAgentMessage);
-    expect(new Set(keys).size).toBe(5);
+    expect(new Set(keys).size).toBe(4);
     expect(createAgentMessage.mock.calls.map(([, input]) => input)).toEqual([
       { body: "Status please", delivery: "steer" },
       { body: "Status please, now", delivery: "steer" },
       { body: "Status please, now", delivery: "aside" },
-      { body: "Status please, now", delivery: "btw", in_reply_to: "message-9" },
-      { body: "Status please, now", delivery: "btw", in_reply_to: "message-9" },
+      { body: "Status please, now", delivery: "aside" },
     ]);
   } finally {
     view.unmount();

@@ -105,10 +105,12 @@ import {
   requestFor,
   type SaveCommentEdit,
   type SentRequest,
+  sameAddress,
   saveCommentEdit,
   survivingMentions,
   unedited,
 } from "./send-request";
+import { useUnsentDrafts } from "./unsent-drafts";
 import { useAgents } from "./useAgents";
 import { useComposerSend } from "./useComposerSend";
 
@@ -473,6 +475,38 @@ function refusalMessage(
     : `Couldn't send — ${apiErrorMessage(refusal, "network error")}`;
 }
 
+/** What Send says while the refusal the composer holds was written for another address than the
+ *  one it shows now (`sameAddress`): where it was written for, and the two ways out - back there,
+ *  where Retry sends it, or Discard. */
+function writtenElsewhere({ owner, replyTo }: SentRequest): string {
+  if (replyTo !== null) {
+    return (
+      "This message was written as a reply. " +
+      "Reply to that message again to send it, or discard it."
+    );
+  }
+  const where =
+    owner.kind === "issue"
+      ? `for ${owner.issueKey}`
+      : owner.kind === "session"
+        ? "as a direct message"
+        : "for another document";
+  return `This message was written ${where}. Go back to it to send it, or discard it.`;
+}
+
+/** What a refused upload says while the composer addresses another owner than the one its file
+ *  was pasted for: a Retry from here would upload it there and add its reference to a message for
+ *  somewhere else, so the Retry waits for the composer to be back there. */
+function pastedElsewhere(owner: ArtifactOwner): string {
+  const where =
+    "issue" in owner
+      ? `for ${owner.issue}`
+      : "session" in owner
+        ? "into a direct message"
+        : "for another document";
+  return `This file was pasted ${where}. Go back to it to try the upload again.`;
+}
+
 interface MentionComposerProps {
   readonly agents?: readonly Agent[];
   readonly anchor?: ComposerAnchor;
@@ -526,7 +560,10 @@ interface MentionComposerProps {
    *  pressed: the Inbox reading column's thread box, which is the thread's permanent reply and
    *  is remounted whenever the column follows the selection onto another row. Taking a target
    *  normally takes the focus, so the reader can write at once; a standing box takes neither,
-   *  since the reader's place is the list the column follows and the next `j` belongs to it. */
+   *  since the reader's place is the list the column follows and the next `j` belongs to it. What
+   *  the reader types into a standing box and does not send is its thread's, kept under the
+   *  box's send name (`unsent-drafts.ts`), so the box drawn when the column comes back to the
+   *  thread shows it again. */
   readonly standing?: boolean;
   /** Shows the Comment / Suggest / Ask switch and hands each pick to the host, which answers
    *  through `kind` - a selected document mark is the only surface where the kind can change, and
@@ -568,8 +605,11 @@ export function MentionComposer({
   const registerComposer = useComposerRegistry();
   /** This composer's send by name, which is what the margin looks it up by. */
   const composerName = mutationKey === undefined ? undefined : hashKey(mutationKey);
+  /** Where a standing box keeps the draft the reader has not sent: under its send name. */
+  const unsentName = standing ? composerName : undefined;
+  const unsent = useUnsentDrafts();
   // Only the mount reads it, so it is computed once rather than on every keystroke: the held
-  // send's draft, or what the channel seeds.
+  // send's draft, else the unsent draft a standing box kept, else what the channel seeds.
   const [initial] = useState(() => {
     const held = outgoing.held?.draft;
     if (held !== undefined) {
@@ -578,7 +618,12 @@ export function MentionComposer({
         body: held.draft.body,
         mentions: [...held.draft.mentions],
         replacement: held.draft.replacement,
+        taken: true,
       };
+    }
+    const kept = unsentName === undefined ? undefined : unsent.read(unsentName);
+    if (kept !== undefined) {
+      return { ask: undefined, ...kept, mentions: [...kept.mentions], taken: true };
     }
     const seeded = seededDraft(seedMentions, undefined, owner);
     return {
@@ -586,6 +631,7 @@ export function MentionComposer({
       body: edit?.body ?? seeded.body,
       mentions: seeded.mentions,
       replacement: "",
+      taken: false,
     };
   });
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -600,8 +646,9 @@ export function MentionComposer({
     { before: string; inputType: string; range: TextEditRange } | undefined
   >(undefined);
   const previousReply = useRef<string | undefined>(undefined);
-  // Whether this mount took a held send's draft, which the reply prefill must not replace.
-  const mountedHeld = useRef(outgoing.held !== undefined);
+  // Whether this mount took a draft - a held send's, or the unsent one a standing box kept -
+  // which the reply prefill must not replace.
+  const mountedHeld = useRef(initial.taken);
   const [body, setBody] = useState(initial.body);
   const [replacement, setReplacement] = useState(initial.replacement);
   const [mentions, setMentions] = useState<AcceptedMention[]>(initial.mentions);
@@ -765,8 +812,13 @@ export function MentionComposer({
   useEffect(() => {
     if (suppliedAgents === undefined && autocompleteOpen) void live.refetch();
   }, [autocompleteOpen, live.refetch, suppliedAgents]);
+  /** Whether a send of this composer's holds its draft: out, or refused. */
+  const holdsSend = outgoing.held !== undefined;
   useEffect(() => {
-    // A mount that took a held send's draft keeps it: the prefill is for a new reply.
+    // A mount that took a draft keeps it, and while a send holds the field's draft - out, or
+    // refused - so does a reply the host starts then: the field is that send's draft, and a
+    // refusal's belongs to the address it was written for (`elsewhere`), which the prefill of a
+    // new reply would write over. The prefill is for a new reply.
     const tookHeldDraft = mountedHeld.current;
     mountedHeld.current = false;
     if (replyTo === null) {
@@ -780,7 +832,7 @@ export function MentionComposer({
     const takeFocus = () => {
       if (!standing) textarea.current?.focus();
     };
-    if (tookHeldDraft) {
+    if (tookHeldDraft || holdsSend) {
       takeFocus();
       return;
     }
@@ -806,7 +858,7 @@ export function MentionComposer({
       }),
     });
     takeFocus();
-  }, [replaceDraft, replyTo, standing]);
+  }, [holdsSend, replaceDraft, replyTo, standing]);
 
   /** A send the server took, while this composer is mounted: the store has refreshed what it
    *  wrote. The draft is the composer's own, so it clears to what the channel it addresses now
@@ -838,13 +890,17 @@ export function MentionComposer({
   // out ignores), so the composer that mounts next shows it - and so a reload does: a refusal's
   // draft is the only copy of that message, and the entry it is kept in is what survives the
   // page (`write-storage.ts`). It is written as this composer unmounts, a short wait after each
-  // keystroke, and as the page goes, which no unmount follows.
+  // keystroke, and as the page goes, which no unmount follows. A refusal whose address the
+  // composer has moved off (`elsewhere`, below) keeps the draft it was written with: what is
+  // typed over it there is for that other address.
   const keepDraft = useRef(() => {});
-  keepDraft.current = () =>
+  keepDraft.current = () => {
+    if (elsewhere !== undefined) return;
     outgoing.keep({
       ask: { multiple, options: submittedAskOptions(askOptions), urgency },
       draft: { body, mentions, replacement },
     });
+  };
   useEffect(() => () => keepDraft.current(), []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the draft's own fields are the trigger; the write reads them as they stand
   useEffect(() => {
@@ -856,6 +912,16 @@ export function MentionComposer({
     window.addEventListener("pagehide", keepNow);
     return () => window.removeEventListener("pagehide", keepNow);
   }, []);
+  // A standing box's unsent draft is written under its send name while no send of its own holds
+  // the draft. From Send on the held send keeps it, so Send drops the unsent copy in its own task
+  // (`send`): a box drawn after that send landed must not bring back words already sent.
+  useEffect(() => {
+    if (unsentName === undefined || holdsSend) return;
+    unsent.write(
+      unsentName,
+      hasUnsavedInput(body, replacement) ? { body, mentions, replacement } : undefined
+    );
+  }, [body, holdsSend, mentions, replacement, unsent, unsentName]);
   // The margin sends a refused margin compose again itself, once it has written the mark it is
   // anchored to again (`reanchor` in margin-context.tsx), and that retry carries the draft the
   // store holds. The writes above are a keystroke's wait behind what the reader has typed, so
@@ -935,6 +1001,19 @@ export function MentionComposer({
         : owner.kind === "artifact"
           ? { project: owner.project }
           : { session: owner.sessionId };
+  // A file goes to the owner its paste or drop named, and a refused upload's Retry makes that
+  // press again (`DraftUpload.retry`): to that owner, adding the file's reference to the field as
+  // it stands. A host can move the composer to another owner in between - an Agents row's issue
+  // pick - so the owner the newest press named is kept, and while the composer addresses another
+  // the refusal offers no Retry here: it says where the file was pasted, and its Retry is back
+  // once the composer is.
+  const [uploadedFor, setUploadedFor] = useState<ArtifactOwner>();
+  const uploadElsewhere =
+    upload.isError &&
+    uploadedFor !== undefined &&
+    JSON.stringify(uploadedFor) !== JSON.stringify(uploadOwner)
+      ? uploadedFor
+      : undefined;
 
   const addMention = (option: MentionOption) => {
     const current = textarea.current?.value ?? body;
@@ -1152,22 +1231,33 @@ export function MentionComposer({
     heldPicked === undefined
       ? deliveryPlan(body, inheritedDelivery)
       : { body, delivery: heldPicked };
+  // A refusal belongs to the address its send was written for (`sameAddress`). A host can move
+  // the composer to another while it holds one - an Agents row's issue pick or Reply, the docked
+  // composer's Cancel reply - and from there neither Send nor Retry is that refusal's Retry: Send
+  // says where the draft was written for, and Discard drops it. The store refuses such a press
+  // too (`HeldSends.send`), whichever render made it.
+  const elsewhere =
+    refusal !== undefined && held !== undefined && !sameAddress(held, composedRequest())
+      ? writtenElsewhere(held)
+      : undefined;
   // A closed issue refuses a suggestion or an ask: the composer is only still here for a send of
   // its own that is out, or its refusal, and Send says why it cannot go.
   const submitReason = refusedKind
     ? "This issue is closed. Reopen it to send."
-    : draftRefusal(kind, body, replacement, outbound);
+    : (elsewhere ?? draftRefusal(kind, body, replacement, outbound));
   const footId = useId();
   const canSubmit = canSubmitComposer(submitReason, sending, upload.pending);
   /** Sends the draft as it stands, its whole request frozen here (`sentRequest`), so nothing done
    *  after this call can change where it goes. Until the server answers, one fieldset holds every
    *  control that could change or discard the draft; the held send covers that hold in this task
-   *  before React can disable the fieldset. */
+   *  before React can disable the fieldset. From here on the held send keeps the draft, so a
+   *  standing box's unsent copy goes. */
   const send = () =>
     outgoing.send((refused) => {
       setConfirmingDiscard(false);
       setAutocomplete(undefined);
       setReferencePickerOpen(false);
+      if (unsentName !== undefined) unsent.write(unsentName, undefined);
       return sentRequest(refused);
     });
   /** The hold on the draft from Send's own task on, before React can disable the fieldset: the
@@ -1360,7 +1450,10 @@ export function MentionComposer({
           onDrop={
             uploadOwner === undefined
               ? undefined
-              : (event: DragEvent<HTMLTextAreaElement>) => upload.drop(event, uploadOwner)
+              : (event: DragEvent<HTMLTextAreaElement>) => {
+                  if (event.dataTransfer.files.length > 0) setUploadedFor(uploadOwner);
+                  upload.drop(event, uploadOwner);
+                }
           }
           onInput={
             inline
@@ -1386,7 +1479,10 @@ export function MentionComposer({
           onPaste={
             uploadOwner === undefined
               ? undefined
-              : (event: ClipboardEvent<HTMLTextAreaElement>) => upload.paste(event, uploadOwner)
+              : (event: ClipboardEvent<HTMLTextAreaElement>) => {
+                  if (event.clipboardData.files.length > 0) setUploadedFor(uploadOwner);
+                  upload.paste(event, uploadOwner);
+                }
           }
           ref={bodyFieldRef}
           rows={1}
@@ -1598,7 +1694,16 @@ export function MentionComposer({
           ) : null}
         </>
       )}
-      {uploadOwner === undefined ? null : <DraftUploadStatus upload={upload} />}
+      {uploadOwner === undefined ? null : (
+        // An upload refused for another owner is that owner's: its refusal shows here in words of
+        // its own, with no Retry (`uploadElsewhere`), and the status shows the rest.
+        <DraftUploadStatus
+          upload={uploadElsewhere === undefined ? upload : { ...upload, isError: false }}
+        />
+      )}
+      {uploadElsewhere === undefined ? null : (
+        <QueryError message={pastedElsewhere(uploadElsewhere)} />
+      )}
       {refusal === undefined ? null : (
         <div className="flex flex-wrap items-center gap-3">
           <QueryError
@@ -1607,10 +1712,11 @@ export function MentionComposer({
             onRetry={canSubmit ? send : undefined}
             retrying={sending}
           />
-          {/* A kind the closed issue refuses takes no Retry, so the refusal's own way out is to
-              drop the draft it handed back, once the reader has it; a send the reader stopped
-              offers both ways. */}
-          {refusedKind || refusal instanceof SendStoppedError ? (
+          {/* A kind the closed issue refuses takes no Retry, and neither does a draft written for
+              another address than the composer shows, so the refusal's own way out is to drop
+              the draft it handed back, once the reader has it; a send the reader stopped offers
+              both ways. */}
+          {refusedKind || elsewhere !== undefined || refusal instanceof SendStoppedError ? (
             <button
               className={`text-sm font-medium underline ${dangerText}`}
               onClick={discard}

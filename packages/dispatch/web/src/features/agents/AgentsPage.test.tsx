@@ -11,7 +11,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
-import { jump, realClock, tick } from "../../__tests__/fake-clock";
+import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -1249,6 +1249,118 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
   } finally {
     page.view.unmount();
     page.restore();
+  }
+});
+
+/** Opens a row's issue picker and picks `issue`, the empty value being No issue. */
+async function pickIssue(user: UserEvent, row: HTMLElement, issue: string): Promise<void> {
+  await user.click(within(row).getByRole("button", { name: "Choose issue" }));
+  await user.selectOptions(await within(row).findByRole("combobox", { name: "Issue" }), issue);
+}
+
+// An Agents row's composer is one box for its session, whose address the issue picker moves. A
+// message Dispatch refused belongs to the address it was written for: while the row is on another,
+// Send and Retry are refused there and say why, and back on that address the Retry goes to it.
+test("a direct message refused on an Agents row is not sent to the issue the row moves onto", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ issues: [coreIssue] });
+  page.createAgentMessage.mockRejectedValueOnce(
+    new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
+  );
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    const composer = within(planner).getByRole("form", { name: "Comment composer" });
+    await type(user, field, "Status please");
+    // The composer's own form submit, which user-event has no form for.
+    fireEvent.submit(composer);
+    await within(planner).findByText("Couldn't send — Dispatch refused the message");
+
+    await pickIssue(user, planner, "CORE-1");
+    await waitFor(() => expect(field.value).toBe("@Planner Status please"));
+    fireEvent.submit(composer);
+    await act(settle);
+    expect(page.createComment.mock.calls.map(([issue, input]) => [issue, input.body])).toEqual([]);
+    expect(within(planner).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(
+      within(planner).getByText(
+        "This message was written as a direct message. Go back to it to send it, or discard it."
+      )
+    ).toBeTruthy();
+
+    await pickIssue(user, planner, "");
+    await waitFor(() => expect(field.value).toBe("Status please"));
+    await user.click(within(planner).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(page.createAgentMessage).toHaveBeenCalledTimes(2));
+    expect(
+      page.createAgentMessage.mock.calls.map(([session, input]) => [session, input.body])
+    ).toEqual([
+      ["planner-session", "Status please"],
+      ["planner-session", "Status please"],
+    ]);
+    expect(page.createComment).not.toHaveBeenCalled();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+/** A picture pasted into a row's message. */
+const shot = new File(["bytes"], "shot.png", { type: "image/png" });
+
+// A file pasted into an Agents row is uploaded to the address the row was on, as a message is
+// sent to it. A refused upload belongs to that address: while the row is on another, it offers no
+// Retry, which would upload to the first and add the file to a message for the second; back on
+// it, the Retry uploads there and adds the file to the message written for it.
+test("an upload refused on an Agents row's issue is retried only once the row is back on that issue", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ issues: [coreIssue] });
+  const uploadArtifact = spyOn(api, "uploadArtifact")
+    .mockRejectedValueOnce(
+      new ApiError(413, { code: "FILE_TOO_LARGE", error: "That file is too large." })
+    )
+    .mockResolvedValue({
+      artifact: { name: "shot.png", slug: "shot-png" },
+      version: { number: 1 },
+    } as never);
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await pickIssue(user, planner, "CORE-1");
+    await waitFor(() => expect(field.value).toBe("@Planner"));
+    // user-event's paste carries text, never the file this field uploads.
+    fireEvent.paste(field, { clipboardData: { files: [shot] } });
+    await within(planner).findByText("That file is too large.");
+
+    await pickIssue(user, planner, "");
+    await waitFor(() => expect(field.value).toBe(""));
+    expect(within(planner).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(
+      within(planner).getByText(
+        "This file was pasted for CORE-1. Go back to it to try the upload again."
+      )
+    ).toBeTruthy();
+
+    await pickIssue(user, planner, "CORE-1");
+    await waitFor(() => expect(field.value).toBe("@Planner"));
+    await user.click(within(planner).getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(field.value).toBe("@Planner ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")
+    );
+    expect(uploadArtifact.mock.calls.map(([owner]) => owner)).toEqual([
+      { issue: "CORE-1" },
+      { issue: "CORE-1" },
+    ]);
+  } finally {
+    page.view.unmount();
+    page.restore();
+    uploadArtifact.mockRestore();
   }
 });
 

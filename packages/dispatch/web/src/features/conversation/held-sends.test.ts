@@ -32,7 +32,7 @@ import { KEPT_SEND_RESUME_MS } from "../writes/write-storage";
 import { Writes } from "../writes/write-store";
 import { type HeldSend, HeldSends, heldSends, stoppable } from "./held-sends";
 import { PendingSendTurn } from "./PendingSendTurn";
-import { carriedIdsOf, type SentRequest, saveCommentEdit } from "./send-request";
+import { carriedIdsOf, requestFor, type SentRequest, saveCommentEdit } from "./send-request";
 import { useSessionSends } from "./useSessionSends";
 
 const request: SentRequest = {
@@ -710,4 +710,135 @@ test("a send re-pressed under its key sends nothing under it after a reload", as
       expect(kept).toMatchObject({ carried: "POST", request: null, sent: false });
     }
   });
+});
+
+/** A comment on a project document, Send's own. */
+const documentSend: SentRequest = {
+  ...request,
+  owner: { artifactId: "artifact-1", kind: "artifact", project: "CORE" },
+  sendKey: "send-document",
+};
+
+/** A reply to comment `id` on CORE-1, Send's own. */
+function replySend(id: string): SentRequest {
+  return {
+    ...request,
+    replyTo: { actor: { id: "bob", kind: "user" }, excerpt: "Earlier", id, parentKind: "comment" },
+    sendKey: `send-reply-${id}`,
+  };
+}
+
+/** Every write a composer's send makes, by the address it reaches: the first is refused with
+ *  Dispatch's verdict, and every later one lands. */
+function watchAddresses(): { reached: string[]; restore: () => void } {
+  const reached: string[] = [];
+  const reach = async (where: string, reply: string | null | undefined): Promise<never> => {
+    reached.push(reply === null || reply === undefined ? where : `${where}, reply to ${reply}`);
+    if (reached.length === 1) throw verdict;
+    return {} as never;
+  };
+  const spies = [
+    spyOn(api, "createAgentMessage").mockImplementation((session, input) =>
+      reach(`session ${session}`, input.in_reply_to)
+    ),
+    spyOn(api, "createComment").mockImplementation((issue, input) =>
+      reach(`issue ${issue}`, input.reply_to)
+    ),
+    spyOn(api, "createArtifactComment").mockImplementation((artifact, input) =>
+      reach(`document ${artifact}`, input.reply_to)
+    ),
+  ];
+  return {
+    reached,
+    restore: () => {
+      for (const spy of spies) spy.mockRestore();
+    },
+  };
+}
+
+/** A composer's Send or Retry over the refusal it holds under `name`, as `MentionComposer` makes
+ *  one (`useComposerSend`'s `send`): the request `requestFor` builds from what the composer shows
+ *  now, handed to the store. Says whether the store took it. */
+function pressOver(
+  store: HeldSends,
+  name: MutationKey,
+  shown: Omit<SentRequest, "sendKey">
+): boolean {
+  const held = store.get(name);
+  return store.send(
+    name,
+    requestFor(held?.request, held?.status === "refused" ? held.refusal : undefined, shown)
+  );
+}
+
+/** `sent` as a composer shows it, without the key its Send minted, with `change` over it. */
+function shownAs(
+  sent: SentRequest,
+  change: Partial<Omit<SentRequest, "sendKey">> = {}
+): Omit<SentRequest, "sendKey"> {
+  const { sendKey: _key, ...shown } = sent;
+  return { ...shown, ...change };
+}
+
+/** Refuses `sent` under a composer's name, then presses that composer's Retry twice: once while
+ *  it shows `elsewhere`, another address than the one `sent` was written for, and once back on
+ *  that address, with `draft` in the field both times. Answers every address a write reached. */
+async function retriedFrom(
+  sent: SentRequest,
+  elsewhere: Partial<Omit<SentRequest, "sendKey">>,
+  draft: SentRequest["draft"] = sent.draft
+): Promise<{ away: boolean; reached: string[] }> {
+  const watched = watchAddresses();
+  const { held } = heldOf();
+  const name: MutationKey = ["composer", sent.sendKey];
+  try {
+    held.send(name, sent);
+    await waitFor(() => expect(held.get(name)?.status).toBe("refused"));
+    const away = pressOver(held, name, shownAs(sent, { ...elsewhere, draft }));
+    await settle();
+    // Whatever the store made of that press, the composer is back on the send's own address.
+    if (held.get(name)?.status === "refused") pressOver(held, name, shownAs(sent, { draft }));
+    await waitFor(() => expect(held.get(name)).toBeUndefined());
+    return { away, reached: watched.reached };
+  } finally {
+    watched.restore();
+  }
+}
+
+// A Retry belongs to the address its refused send was written for. From a composer that shows
+// another one now - an Agents row moved onto an issue - it is refused, and nothing goes; back on
+// that address, it goes there.
+test("a refused message to a session is retried to that session alone", async () => {
+  const { away, reached } = await retriedFrom(agentSend, {
+    owner: { issueKey: "CORE-1", kind: "issue" },
+  });
+  expect(reached).toEqual(["session planner-session", "session planner-session"]);
+  expect(away).toBe(false);
+});
+
+// The same of a comment on an issue, from an Agents row moved back onto the session.
+test("a refused comment on an issue is retried to that issue alone", async () => {
+  const { away, reached } = await retriedFrom(request, {
+    owner: { kind: "session", sessionId: "planner-session" },
+  });
+  expect(reached).toEqual(["issue CORE-1", "issue CORE-1"]);
+  expect(away).toBe(false);
+});
+
+// The same of a comment on a document, from a composer drawn for another document.
+test("a refused comment on a document is retried to that document alone", async () => {
+  const { away, reached } = await retriedFrom(documentSend, {
+    owner: { artifactId: "artifact-2", kind: "artifact", project: "CORE" },
+  });
+  expect(reached).toEqual(["document artifact-1", "document artifact-1"]);
+  expect(away).toBe(false);
+});
+
+// An edited draft is still the one written for that address: a docked composer whose reply was
+// cancelled refuses its Retry, and back on the reply it sends the edited words there.
+test("an edited reply refused once is retried as a reply to the same comment alone", async () => {
+  const edited = { body: "Held, and then some", mentions: [], replacement: "" };
+  const { away, reached } = await retriedFrom(replySend("comment-1"), { replyTo: null }, edited);
+  expect(reached).toEqual(["issue CORE-1, reply to comment-1", "issue CORE-1, reply to comment-1"]);
+  expect(away).toBe(false);
 });

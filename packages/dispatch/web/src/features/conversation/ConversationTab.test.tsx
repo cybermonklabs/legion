@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { jump } from "../../__tests__/fake-clock";
+import { jump, settle } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import {
   dwellOn,
@@ -1582,6 +1582,66 @@ test("another message's Reply redirects onto the one whose refusal the docked co
   } finally {
     view.unmount();
     createMessage.mockRestore();
+    stub.restore();
+  }
+});
+
+// The docked composer is one box for the issue, whose reply its Reply and Cancel reply move. A
+// reply Dispatch refused belongs to the comment it answers: once Cancel reply leaves the box on a
+// comment of its own, Send and Retry are refused there - the reply never posts as a new comment -
+// and the comment's Reply puts the box back on it, where the Retry answers it.
+test("a reply the docked composer holds refused is not posted as a new comment after Cancel reply", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists({
+    comments: [comment("comment-a", { body: "Comment A", created_at: "2026-09-20T00:00:00Z" })],
+  });
+  const createComment = spyOn(api, "createComment")
+    .mockRejectedValueOnce(new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" }))
+    .mockResolvedValue(comment("reply-a"));
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const turn = () => {
+    const element = view.container.querySelector<HTMLElement>('[data-turn="comment:comment-a"]');
+    if (element === null) throw new Error("expected comment-a's turn");
+    return element;
+  };
+
+  try {
+    await screen.findByText("Comment A");
+    await user.click(within(turn()).getByRole("button", { name: "Reply" }));
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.clear(field);
+    await user.click(field);
+    await user.paste("Reply meant for A");
+    await user.click(within(composer).getByRole("button", { name: "Send" }));
+    await within(composer).findByText(refusedText);
+
+    await user.click(within(composer).getByRole("button", { name: "Cancel reply" }));
+    expect(within(composer).queryByText(/Comment A/)).not.toBeInTheDocument();
+    fireEvent.submit(composer);
+    await act(settle);
+    expect(createComment.mock.calls.map(([, input]) => input)).toEqual([
+      { body: "Reply meant for A", reply_to: "comment-a" },
+    ]);
+    expect(within(composer).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(
+      within(composer).getByText(
+        "This message was written as a reply. Reply to that message again to send it, or discard it."
+      )
+    ).toBeTruthy();
+
+    await user.click(within(turn()).getByRole("button", { name: "Reply" }));
+    expect(field.value).toBe("Reply meant for A");
+    await user.click(within(composer).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+    expect(createComment.mock.calls.map(([, input]) => input)).toEqual([
+      { body: "Reply meant for A", reply_to: "comment-a" },
+      { body: "Reply meant for A", reply_to: "comment-a" },
+    ]);
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
     stub.restore();
   }
 });

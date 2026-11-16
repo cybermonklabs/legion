@@ -48,7 +48,7 @@ import {
   textMutedOnSurfaceMuted,
   textPrimaryOnSurfaceMuted,
 } from "../../theme/classes";
-import { AgentMessageComposer, agentSendKey } from "../agents/AgentMessageComposer";
+import { AgentMessageComposer } from "../agents/AgentMessageComposer";
 import { agentReplyTo, newestAttempt } from "../agents/exchange-delivery";
 import { useMarkShownRepliesRead } from "../agents/unread";
 import type { ComposerOwner } from "../conversation/composer-model";
@@ -226,7 +226,8 @@ function ThreadTurns({
 type ThreadOwner = Extract<ComposerOwner, { kind: "issue" } | { kind: "artifact" }>;
 
 /** The name the thread's reply is sent under: one per thread, so a reply still out or refused is
- *  shown by whichever surface mounts the composer again (`held-sends.ts`). */
+ *  shown by whichever surface mounts the composer again (`held-sends.ts`), and by no box drawn for
+ *  another thread - an Agent row's thread too, though its session has threads besides. */
 function threadSendKey(threadId: string): readonly unknown[] {
   return ["inbox-thread-reply", threadId];
 }
@@ -330,11 +331,12 @@ function CommentThreadBody({
       composer={
         root === undefined ? null : (
           // Keyed by the thread its send is named for (`threadSendKey`): the column draws this
-          // body for one thread after another, and the composer holds the draft and the uploads
-          // made in it - an upload's refusal and its Retry with them - so the next thread is
-          // drawn with a composer of its own, never under this one's refusal. The key names the
-          // composer too: the thread's root is drawn beside it under the thread's id, and
-          // siblings are told apart by their keys.
+          // body for one thread after another, and the composer holds the uploads made in it -
+          // an upload's refusal and its Retry with them - so the next thread is drawn with a
+          // composer of its own, never under this one's refusal. What the reader typed and did
+          // not send waits under the same name (`standing`), for the box drawn when the column
+          // comes back to this thread. The key names the composer too: the thread's root is
+          // drawn beside it under the thread's id, and siblings are told apart by their keys.
           <MentionComposer
             closed={issue.data !== undefined && issue.data.closed_at !== null}
             frame="mt-2"
@@ -540,7 +542,7 @@ function AgentThreadBody({
   const messages = useQuery(agentMessagesQuery(sessionId));
   const live = useQuery(agentsQuery());
   const agent = live.data?.find((candidate) => candidate.session_id === sessionId);
-  const sendKey = agentSendKey(sessionId);
+  const sendKey = threadSendKey(thread.thread_id);
   const hold = useSending(sendKey);
   // Read before the loading branches, because the mark below is a hook: the thread's own
   // conversation among the session's, which is undefined until the read lands.
@@ -575,9 +577,10 @@ function AgentThreadBody({
                   </p>
                 </>
               ) : null}
-              {/* Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`):
-                  the send is the session's (`agentSendKey`), the draft and its uploads are this
-                  thread's. */}
+              {/* Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`), and
+                  its send named by it (`threadSendKey`): the draft, its uploads and its reply out
+                  or refused are this thread's, and the session's other sends it shows are the
+                  ones answering this thread. */}
               <AgentMessageComposer
                 agent={agent}
                 hold={hold}
@@ -587,6 +590,7 @@ function AgentThreadBody({
                 replyTo={agentReplyTo(agent, read, newest)}
                 sendKey={sendKey}
                 standing
+                thread={new Set(turns.map((shown) => shown.id))}
               />
             </div>
           )
