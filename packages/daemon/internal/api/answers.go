@@ -174,9 +174,12 @@ type EnumeratedValue struct {
 // the field is optional, so a body carrying a ninth value is refused whole by a reader of the
 // eight — the same refusal an added key gets from a reader before dispatch://INFRA-1048. So
 // both halves of this change read the table: the serving-down takes from a caller's body every
-// value whose arrival is above that caller's contract (shaping.go's valueStrips), and the
-// records carry the value domain of each field beside its key paths, so a value added with no
-// serving-down fails the gate as an added key does (contract_shapes_test.go).
+// value that arrived after its field and above that caller's contract (shaping.go's
+// valueStrips), and the records carry the value domain of each field beside its key paths, so a
+// value added with no serving-down fails the gate as an added key does
+// (contract_shapes_test.go). A value that arrived with its field needs no serving-down of its
+// own: a reader below that arrival knows no such key, and the key is served down with the
+// values it carries (shaping.go's stateNarrowings).
 //
 // A field no row declares is a field the records carry no domain for and the gate holds to
 // nothing, so a strictly parsed field belongs here the day it arrives. What counts as one: a
@@ -191,6 +194,8 @@ type EnumeratedValue struct {
 // Each value's arrival is the later of two readings, and each row says which of them decided
 // it: the contract the value first appears in the plugin's own list at, and the contract the
 // field itself arrived at, since a field that arrives at 55 can carry no value older than 55.
+// So the earliest arrival of a list is its field's own, which is how the serving-down tells a
+// value that arrived with its field from one that arrived after it (shaping.go's arrivalsOf).
 // The first reading is measured rather than guessed: `legion-api.ts` and `legion-roles.ts` were
 // read at the commit that declared each contract of SupportedContracts, and the members of
 // every `z.enum` diffed. The lists below that ever grew are `answeredBy`, which gained

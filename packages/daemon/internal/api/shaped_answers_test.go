@@ -266,7 +266,7 @@ func TestAPodWhoseNewestBuildStatesItsOwnContractIsServedTheOldests(t *testing.T
 }
 
 // undeclaredValue is a word no list of the declared table names (answers.go's EnumeratedFields).
-// It is made up for the bodies valueArrival's fallback is read on, and
+// It is made up for the bodies the fallback of fieldArrivals.heldBack is read on, and
 // TestEveryValueStripHoldsBackAValueNoRowDeclares holds the table to not naming it.
 const undeclaredValue = "a_word_no_row_declares"
 
@@ -283,6 +283,13 @@ type valueStripCase struct {
 	// stays holds the mixed pod's body to what the strip leaves of it, read beside the body
 	// served at this daemon's own contract.
 	stays func(t *testing.T, whole, mixed []byte)
+	// beforeField is a contract below the arrival of the row's field, and withField the values a
+	// served body carries that arrived with that field, each under the issue that carries it. A
+	// case gives both where its row's field arrived above the floor. Where the field is older
+	// than the floor it gives neither: no contract this daemon serves is below such a field's
+	// arrival, so no pod records one beside a contract that reads the field.
+	beforeField int
+	withField   func(t *testing.T, body []byte) map[string]string
 	// undeclaredState and undeclaredIssue carry undeclaredValue in the field the row strips: the
 	// first is the body the row's half of the state's own values is handed, and the second the
 	// body its half of an issue's values is. A case gives one for each half its row has.
@@ -301,7 +308,8 @@ func valueStripCases() map[string]valueStripCase {
 		// retired entries, since the pod's 51 process parses `strandedClaims[].state` with an
 		// enum of `suspended` and `failed` and refuses the whole body for the `retired` of
 		// version.go's 56. Every entry whose state that process knows stays, in the order the
-		// report named it.
+		// report named it. The field is older than the floor, so the case names no value that
+		// arrived with it.
 		droppedStrandedState: {
 			state: populatedState, low: treeContract, high: fixAttemptsContract,
 			carries: func(t *testing.T, body []byte) bool {
@@ -339,7 +347,8 @@ func valueStripCases() map[string]valueStripCase {
 		// A pod recording 64 and 85 is served the wait of every root a person declined without
 		// its answered pair: `declined` arrived at version.go's 68, and the pod's 64 process
 		// parses `answeredBy` with an enumeration of the eight values before it. The `waitingOn`
-		// block itself stays, with the kind and the moment every contract reads.
+		// block itself stays, with the kind and the moment every contract reads. The field is
+		// older than the floor, so the case names no value that arrived with it.
 		droppedWaitAnswer: {
 			state: stateCarryingTheRestOfTheShape, low: 64, high: whyAndLineFieldsContract,
 			carries: func(t *testing.T, body []byte) bool {
@@ -383,6 +392,13 @@ func valueStripCases() map[string]valueStripCase {
 		// `mergeWait`, which is what tells a strip keyed to the lowest from one keyed to the
 		// highest on one body. Every other field of the member stays, each a field of
 		// whyAndLineFieldsContract, and so does every member of another kind.
+		//
+		// `kind` arrived at 85 with those four words, and they ride the band of that contract
+		// and not this strip. A pod recording 46 and 133 is served each of them: its 133 process
+		// reads the line's fields, and its 46 process knows no `kind` key, so it has no
+		// enumeration to refuse a word of it by. That pod is still served no `waiting_on_issue`,
+		// which arrived after the field. The fixture stands a member of the kind `queued_root`
+		// and one of the kind `answered` beside the member that waits on another issue.
 		droppedLineKind: {
 			state: narrowingState, low: quietTimeContract, high: mergeWaitContract,
 			carries: func(t *testing.T, body []byte) bool {
@@ -414,6 +430,16 @@ func valueStripCases() map[string]valueStripCase {
 							quietTimeContract, mergeWaitContract, key, WaitingLineField, served[key], want, quietTimeContract)
 					}
 				}
+			},
+			beforeField: ServingFloor,
+			withField: func(t *testing.T, body []byte) map[string]string {
+				kinds := map[string]string{}
+				for key, member := range waitingLineFieldsServed(t, body) {
+					if kind, carried := member["kind"]; carried && kind != waitingOnIssue {
+						kinds[key] = kind
+					}
+				}
+				return kinds
 			},
 			// A member of the waiting line whose `kind` is a word no row declares.
 			undeclaredIssue: Issue{Key: "LEGION-213", WaitingLine: &WaitingLineView{
@@ -458,6 +484,14 @@ func eachValueStrip(t *testing.T, read func(t *testing.T, row valueStrip, tc val
 // The pod's third claim records no contract and moves neither half, and every contract of each
 // pod is one this daemon describes, so neither edge line is written.
 //
+// That is the rule of a value newer than its field, which is what a row takes. A value that
+// arrived with its field rides the band of the field's key, which follows the pod's highest
+// contract: a reader below that arrival knows no such key and has no enumeration of it. So a row
+// whose field arrived above the floor is read on a second mixed pod, one whose claims record a
+// contract below the field's arrival beside high. That pod is served every value that arrived
+// with the field, and still none the row takes. A strip that took every value above the pod's
+// lowest contract would take those values too and fail here.
+//
 // A row with no case fails, so a strip is added to the table with the mixed pod it is read on
 // (eachValueStrip).
 func TestEveryValueStripFollowsThePodsLowestContract(t *testing.T) {
@@ -483,6 +517,22 @@ func TestEveryValueStripFollowsThePodsLowestContract(t *testing.T) {
 				tc.low, tc.high, tc.low, tc.low, mixed)
 		}
 		tc.stays(t, whole, mixed)
+
+		if tc.withField != nil {
+			arrived := tc.withField(t, whole)
+			if len(arrived) == 0 {
+				t.Fatalf("the body served at %d carries no value that arrived with this strip's field; this proves nothing: %s", DaemonAPIVersion, whole)
+			}
+			spanning := stateStating(t, shapedServer(t, state, mixedPodClaims(tc.beforeField, tc.high), logs, true), statePodAddr+":41000", 0)
+			if served := tc.withField(t, spanning); !reflect.DeepEqual(served, arrived) {
+				t.Errorf("the {%d, %d} pod is served the values that arrived with their field as %v, want %v: they ride the band of the field's key, which follows the pod's %d process; %s",
+					tc.beforeField, tc.high, served, arrived, tc.high, spanning)
+			}
+			if tc.carries(t, spanning) {
+				t.Errorf("the {%d, %d} pod is served a value this strip takes, want none: the value arrived after its field and above %d; %s",
+					tc.beforeField, tc.high, tc.beforeField, spanning)
+			}
+		}
 		if logs.Len() != 0 {
 			t.Errorf("the pods logged %s, want no line: every contract they record is one this daemon describes", logs)
 		}
@@ -490,12 +540,12 @@ func TestEveryValueStripFollowsThePodsLowestContract(t *testing.T) {
 }
 
 // A value no row of the declared table names is read as arriving at this daemon's own contract
-// (valueArrival): no older reader is known to admit it, so every row of valueStrips holds it
-// back from a caller below DaemonAPIVersion and serves it to a caller at DaemonAPIVersion. Each
-// half a row has is handed a body carrying such a value in the field it strips, at both
-// contracts (wantUndeclaredValueHeldBack). A strip that takes the words it names, and not every
-// word the table does not admit, serves the caller below a value its reader refuses the whole
-// body for, and fails here.
+// (fieldArrivals.heldBack): no older reader is known to admit it, so every row of valueStrips
+// holds it back from a caller below DaemonAPIVersion and serves it to a caller at
+// DaemonAPIVersion. Each half a row has is handed a body carrying such a value in the field it
+// strips, at both contracts (wantUndeclaredValueHeldBack). A strip that takes the words it
+// names, and not every word the table does not admit, serves the caller below a value its
+// reader refuses the whole body for, and fails here.
 //
 // The value is a made-up word, and the table is held to naming it in no list before any row is
 // read: a list that declared it at this daemon's own contract would pass a row by that arrival
@@ -521,12 +571,13 @@ func TestEveryValueStripHoldsBackAValueNoRowDeclares(t *testing.T) {
 	})
 }
 
-// wantUndeclaredValueHeldBack holds take, one half of a row of valueStrips, to valueArrival's
-// fallback on body, which carries undeclaredValue in the field that half strips. At the
-// contract below this daemon's own the word goes and the half reports that it took it; at this
-// daemon's own the body comes back as it was and the half reports nothing. The word is looked
-// for in the marshalled body, which is what a caller is served. The body is marshalled before
-// either reading, so a half that wrote through to the body it was handed fails the second one.
+// wantUndeclaredValueHeldBack holds take, one half of a row of valueStrips, to the fallback of
+// fieldArrivals.heldBack on body, which carries undeclaredValue in the field that half strips.
+// At the contract below this daemon's own the word goes and the half reports that it took it;
+// at this daemon's own the body comes back as it was and the half reports nothing. The word is
+// looked for in the marshalled body, which is what a caller is served. The body is marshalled
+// before either reading, so a half that wrote through to the body it was handed fails the
+// second one.
 func wantUndeclaredValueHeldBack[T any](t *testing.T, take func(T, int) (T, bool), body T) {
 	t.Helper()
 	word := []byte(strconv.Quote(undeclaredValue))
