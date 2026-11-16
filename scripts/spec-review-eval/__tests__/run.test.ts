@@ -271,6 +271,31 @@ describe("compareFindings", () => {
   });
 });
 
+// The form check reads a statement in two forms: a requirement block, and the entry line of the
+// how-to of The Spec. A run judges the reviewer at each node, so the fixtures' nodes are read in
+// both forms too.
+describe("blockIds", () => {
+  test("reads the id of a requirement block, a check block and an entry line", () => {
+    const markdown = [
+      ":::requirement{#door-closes}",
+      "The door closes after 60 seconds.",
+      ":::",
+      '::::check{#v-door-closes serves="dispatch://ACME-1/spec#b-door-closes"}',
+      "The door closes.",
+      "::::",
+      "- **The kiosk prints one receipt.** `kiosk-receipt` · under: `kiosk` · check: none",
+      "* **The kiosk beeps once.** `kiosk-beep` · under: `kiosk` · check: none",
+      "- **A term**: not a statement.",
+    ].join("\n");
+    expect(blockIds(markdown)).toEqual([
+      "door-closes",
+      "v-door-closes",
+      "kiosk-receipt",
+      "kiosk-beep",
+    ]);
+  });
+});
+
 describe("specFormCalled", () => {
   const event = (toolName: string, args: Record<string, unknown>): string =>
     JSON.stringify({ type: "tool_execution_start", toolName, args });
@@ -340,7 +365,7 @@ describe("formProblems", () => {
 });
 
 describe("the fixtures", () => {
-  test("hold nine change requests under the three roots", () => {
+  test("hold ten change requests under the three roots", () => {
     expect(plan.fixtures.map((one) => one.id)).toEqual([
       "1-principle",
       "2-undefined-noun",
@@ -351,8 +376,25 @@ describe("the fixtures", () => {
       "7-check-faults",
       "8-check-shape-passing",
       "9-form-findings",
+      "10-entry-lines",
     ]);
     expect(plan.roots.map((root) => root.key)).toEqual(["ACME-1", "ACME-2", "ACME-3"]);
+  });
+
+  // The Spec's own documents write each statement as an entry line, and its how-to puts the terms
+  // under a heading Terms of any level. Fixture 10 is fixture 1 in that form, with a term of the
+  // request under a heading of level three, so a reviewer that reads requirement blocks alone
+  // misses its principle, and one that reads `## Terms` alone names its own term.
+  test("fixture 10 is fixture 1 as entry lines, with a term of its own under ### Terms", () => {
+    const ten = fixture("10-entry-lines");
+    expect(ten.specText).not.toContain(":::requirement");
+    expect(blockIds(ten.specText)).toEqual(["inbox-simple", "inbox-overdue-first"]);
+    expect(ten.specText).toMatch(/^### Terms$/m);
+    expect(termNames(ten.specText)).toEqual(["overdue ask"]);
+    expect(ten.specText).toContain(
+      "- **The inbox is simple, and the person always knows what to do next.** `inbox-simple`"
+    );
+    expect(ten.planted).toEqual(fixture("1-principle").planted);
   });
 
   test("plant each of the seven kinds of the skill in some fixture", () => {

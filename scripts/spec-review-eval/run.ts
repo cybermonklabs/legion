@@ -295,11 +295,17 @@ export function specFormCalled(stdout: string): boolean {
   return false;
 }
 
-/** The ids of the requirement and check blocks of a document. */
+/**
+ * The ids of the requirement and check blocks of a document, and of its entry lines of the how-to
+ * of The Spec (`- **<statement>** `<id>` · under: …`), in their order, as specform.ExtractDocument
+ * reads them.
+ */
 export function blockIds(markdown: string): string[] {
-  return [...markdown.matchAll(/^:::(?:requirement|check)\{#([^\s}]+)/gm)].map(
-    (match) => match[1] ?? ""
-  );
+  return [
+    ...markdown.matchAll(
+      /^(?::{3,}(?:requirement|check)\{#([^\s}]+)|\s*[-*+] \*\*.+?\*\* `([^`]+)` · under:)/gm
+    ),
+  ].map((match) => match[1] ?? match[2] ?? "");
 }
 
 /**
