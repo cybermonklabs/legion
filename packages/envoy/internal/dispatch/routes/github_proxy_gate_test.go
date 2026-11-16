@@ -59,6 +59,37 @@ func TestTheGitHubProxyAnswersAHiddenRepositoryAsUninstalled(t *testing.T) {
 	}
 }
 
+// A router with no database has no viewer to resolve for the cookie's person, so its proxy gate
+// fails closed: a repository the App is installed on answers as one it is not, and GitHub is not
+// read.
+func TestTheGitHubProxyOfARouterWithNoDatabaseHidesEveryRepository(t *testing.T) {
+	fake := &gateGitHub{installed: true}
+	_, pem := githubapptest.Key(t)
+	people := newMemoryPeople()
+	ctx, err := BuildAppContext(AppContextOptions{
+		SigningKey:    testSigningKey,
+		People:        people,
+		Identity:      identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		App:           &auth.AppConfig{ClientID: "Iv1.gate", PEM: pem},
+		GitHubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: fake.serve}),
+		Lifetime:      t.Context(),
+	})
+	if err != nil {
+		t.Fatalf("build context: %v", err)
+	}
+	handler, _ := New(ctx)
+	request := httptest.NewRequest(http.MethodGet, "http://dispatch.test"+gateRead, nil)
+	request.Header.Set("X-Dispatch-User", "alice@example.com")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "not installed on acme/web") {
+		t.Fatalf("a router with no database answered %s as %d %s, want 503 not installed", gateRead, response.Code, response.Body.String())
+	}
+	if reads := fake.repositoryReads(); len(reads) != 0 {
+		t.Fatalf("GitHub was read through a router with no database: %q", reads)
+	}
+}
+
 // gateRig is one deployment the gate test reads through: a database seeded with PRIV, alice and
 // carol, and a fake GitHub. A hiding rig has the App installed on acme/web and maps it to PRIV; the
 // other has neither.

@@ -1263,7 +1263,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure. */
+    /** @description Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure. A repository the caller may not see - one mapped to no project it sees, or one no project maps for a restricted member or a credential that lists projects - answers what one the App is not installed on answers. */
     get: operations["getApiV1GithubAppInstallationByOwnerByRepo"];
     put?: never;
     post?: never;

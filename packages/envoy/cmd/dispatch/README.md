@@ -4045,6 +4045,7 @@ Each item below names a path with its method and identity, then its purpose.
   Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository:
   `200 {installed}`, `false` when GitHub answers 404.
   `503 GITHUB_APP_UNCONFIGURED` when Dispatch holds no App key, `502 GITHUB_UNREADABLE` naming the repository and GitHub's error on any other failure.
+  A repository the caller may not see — one mapped to no project it sees, or one no project maps for a restricted member or a credential that lists projects — answers what one the App is not installed on answers.
   The Legion daemon asks it for every repository it serves, for `legion state`.
 
 - `/api/v1/ci-reconcile/passes` (GET; cookie, trusted header, or bearer)
