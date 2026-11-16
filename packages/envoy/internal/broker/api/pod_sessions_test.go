@@ -163,8 +163,44 @@ func withExchangeAccounts(t *testing.T, accounts ...string) func(*api.Deps) {
 
 // wirePodSession is POST /v1/oauth/exchange/pod-sessions's answer as a registrar reads it.
 type wirePodSession struct {
-	PodUID  string `json:"pod_uid"`
-	Session string `json:"session"`
+	PodUID     string `json:"pod_uid"`
+	Session    string `json:"session"`
+	Thumbprint string `json:"thumbprint"`
+}
+
+// TestTheRegistrationRouteHoldsTheThumbprintsShape: a registration's thumbprint is an RFC 7638
+// SHA-256 thumbprint, 43 base64url characters, or the route refuses it 400 THUMBPRINT_INVALID
+// and writes nothing; one of that shape is stored and answered back.
+func TestTheRegistrationRouteHoldsTheThumbprintsShape(t *testing.T) {
+	ts := newTestServerWith(t, withExchangeAccounts(t, daemonAccount, workerAccount))
+	registrar := ts.accountToken(t, daemonAccount, "", time.Hour)
+	podToken := ts.accountToken(t, workerAccount, "pod-uid-issue", time.Hour)
+	register := func(thumbprint string) (int, []byte) {
+		return ts.req(t, http.MethodPost, "/v1/oauth/exchange/pod-sessions",
+			map[string]string{"Authorization": "Bearer " + registrar},
+			map[string]any{"pod_token": podToken, "session": "implementer-g1", "thumbprint": thumbprint})
+	}
+	for _, malformed := range []string{
+		strings.Repeat("A", 42),
+		strings.Repeat("A", 44),
+		strings.Repeat("A", 42) + "=",
+		strings.Repeat("A", 42) + "+",
+		strings.Repeat("A", 42) + "/",
+		" " + strings.Repeat("A", 42),
+	} {
+		status, body := register(malformed)
+		if code := decode[wireError](t, body).Code; status != http.StatusBadRequest || code != "THUMBPRINT_INVALID" {
+			t.Fatalf("a registration naming the thumbprint %q = %d %s, want 400 THUMBPRINT_INVALID", malformed, status, body)
+		}
+	}
+	if rows := ts.column(t, `select pod_uid from oauth_pod_sessions`); len(rows) != 0 {
+		t.Fatalf("the refused registrations wrote %v", rows)
+	}
+	const good = "0123456789abcdefghijklmnopqrstuvwxyzABCDE_-"
+	status, body := register(good)
+	if registration := decode[wirePodSession](t, body); status != http.StatusOK || registration.Thumbprint != good {
+		t.Fatalf("a registration naming the thumbprint %s = %d %s, want 200 answering it back", good, status, body)
+	}
 }
 
 // TestARegistrarRegistersAnyPodButTheOneItRunsIn: the route writes a registration for any pod but

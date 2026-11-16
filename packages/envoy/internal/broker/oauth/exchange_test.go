@@ -157,7 +157,7 @@ func (f *exchangeFixture) podTokenOf(t *testing.T, of, uid string) string {
 // pod. A pod of an entry that fixes no session writes under nothing else.
 func (f *exchangeFixture) registers(t *testing.T, of, uid, session string) {
 	t.Helper()
-	if _, err := f.provider.RegisterPodSession(context.Background(), of, uid, session); err != nil {
+	if _, _, err := f.provider.RegisterPodSession(context.Background(), of, uid, session, ""); err != nil {
 		t.Fatalf("register %s's pod %s for %s: %v", of, uid, session, err)
 	}
 }

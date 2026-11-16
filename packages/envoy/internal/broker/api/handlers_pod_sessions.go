@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
+
+// thumbprintShape is an RFC 7638 SHA-256 thumbprint as a registrar sends it: 32 bytes,
+// base64url-encoded with no padding.
+var thumbprintShape = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 
 // podSessionBody is POST /v1/oauth/exchange/pod-sessions's exact shape.
 type podSessionBody struct {
@@ -22,6 +27,11 @@ type podSessionBody struct {
 	PodToken string `json:"pod_token"`
 	// The session name that pod may exchange under.
 	Session string `json:"session"`
+	// The RFC 7638 thumbprint of the key the session's own role proves (its agent-secrets key),
+	// which binds the registration to that key: the exchange refuses a trade for this session
+	// proved with another. Absent, the registration is the pod's, as a session pod's one session
+	// is registered.
+	Thumbprint string `json:"thumbprint,omitempty"`
 }
 
 // podSessionResponse is POST /v1/oauth/exchange/pod-sessions's answer: the registration as it now
@@ -32,6 +42,9 @@ type podSessionResponse struct {
 	PodUID string `json:"pod_uid"`
 	// The session name that pod may exchange under.
 	Session string `json:"session"`
+	// The thumbprint the registration is bound to, as it now stands; absent for one bound to the
+	// pod alone.
+	Thumbprint string `json:"thumbprint,omitempty"`
 	// When the broker stops honouring the registration unless it is written again.
 	ExpiresAt time.Time `json:"expires_at"`
 }
@@ -63,6 +76,11 @@ type podSessionResponse struct {
 // SESSION_FIXED, since such a pod needs no registration and registering one would say something
 // the configuration already says), and a session name no request could name back (400
 // SESSION_INVALID). Each refusal names the account or the name it refused and repeats no token.
+//
+// The body may name the thumbprint of the key the session's own role proves, which binds the
+// registration to that key (oauthstore.Store.RegisterPodSession), and a thumbprint that is not
+// 43 base64url characters is 400 THUMBPRINT_INVALID. The answer names the key the registration is
+// bound to after this write: a write naming none keeps the binding a live row already holds.
 func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, registrar machine.ServiceAccount) {
 	var body podSessionBody
 	if !readJSON(w, r, &body, "INVALID_REQUEST") {
@@ -82,7 +100,12 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 			fmt.Sprintf("this is the caller's own pod, %s of %s, and a registrar registers a pod other than the one it runs in", claims.PodUID, claims.Subject))
 		return
 	}
-	expires, err := s.deps.OAuth.RegisterPodSession(r.Context(), claims.Subject, claims.PodUID, body.Session)
+	if body.Thumbprint != "" && !thumbprintShape.MatchString(body.Thumbprint) {
+		writeError(w, http.StatusBadRequest, "THUMBPRINT_INVALID",
+			"the thumbprint must be a key's RFC 7638 SHA-256 thumbprint: 43 base64url characters, unpadded")
+		return
+	}
+	expires, bound, err := s.deps.OAuth.RegisterPodSession(r.Context(), claims.Subject, claims.PodUID, body.Session, body.Thumbprint)
 	switch {
 	case errors.Is(err, exchange.ErrNoPodBinding):
 		writeError(w, http.StatusBadRequest, "POD_NOT_BOUND", err.Error())
@@ -98,7 +121,7 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 		// The one record of who may now write under this name: the registrar is the authority
 		// here, so a write it made and a write it stopped making are both read from this line.
 		slog.Info("broker: registered a pod to write under a session name",
-			"service", registrar.Service, "account", claims.Subject, "pod", claims.PodUID, "session", body.Session)
-		writeJSON(w, http.StatusOK, podSessionResponse{PodUID: claims.PodUID, Session: body.Session, ExpiresAt: expires})
+			"service", registrar.Service, "account", claims.Subject, "pod", claims.PodUID, "session", body.Session, "thumbprint", bound)
+		writeJSON(w, http.StatusOK, podSessionResponse{PodUID: claims.PodUID, Session: body.Session, Thumbprint: bound, ExpiresAt: expires})
 	}
 }
