@@ -26,9 +26,11 @@ body: |-
   installed on with the code `DEFAULT_OWNER_NOT_INSTALLED`, which was
   `DEFAULT_OWNER_OUTSIDE_PROJECT`, and the daemon's WARN line for that refusal carries the new
   code. The project's mapping no longer limits which owner a controller may ask for, so the old
-  code stated a rule that is gone. The status (400), the condition and the message are the same.
-  Nothing in Legion reads the code; a log filter or alert that matched the old code must match
-  the new one.
+  code stated a rule that is gone. The status is the same, 400. The MESSAGE is not: it read
+  "is not an owner of the project's repositories" and now reads "is no owner the controller's
+  App is installed on", because the rule behind it changed, so a filter matching the old text
+  matches nothing now either. Nothing in Legion reads the code; a log filter or alert that
+  matched the old code or the old message must match the new one.
 
   The daemon lets go of a repository GitHub did not answer for once no unrecorded todo issue
   names it, or once the mapping or the issues the daemon records answer for it. Before, it read

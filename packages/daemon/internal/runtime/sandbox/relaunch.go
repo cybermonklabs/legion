@@ -930,9 +930,11 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 //
 // The controller's bundle is asked for by owner (Options.ControllerCredential), the one function
 // a controller's bundle is made from here, by this launch and by the refresh of the pod it makes
-// (refreshGitHubCredential). The launch asks for no owner, which takes the first owner the
-// review App is installed on that the mint answered for, sorted (appauth's bundleDefault), and
-// records it as the pod's default; a controller works no repository, so its every directory is
+// (refreshGitHubCredential). The launch asks for no owner, which takes the first DIRECTORY of the
+// bundle, sorted (appauth's bundleDefault), and records it as the pod's default. That is usually
+// an owner the review App is installed on that the mint answered for, but a configured rename
+// also puts the pair's `from` owner in the bundle as an alias directory (bundleDirs), and such a
+// name can sort first and be taken; a controller works no repository, so its every directory is
 // read-only.
 //
 // The launch's roles run as two Apps and work the one repository, and a bundle is that pair and

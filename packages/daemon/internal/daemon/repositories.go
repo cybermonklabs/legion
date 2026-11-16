@@ -1565,8 +1565,11 @@ func (w *workflowRuntime) requestMappingRead() uint64 {
 // It asks Dispatch of its GitHub App on each repository only a live record names
 // (checkRecordedWebhookApps) first, as it starts, and then after each read that applies, over the
 // live set that read took, once the read has marked its requests covered (mappingApplied) and its
-// recovery is done, so neither an admission held for the read nor the recovery waits on it. The
-// check holds no lock across its reads of Dispatch, so no recording waits on it either.
+// recovery is done, so the admissions and the recovery of THAT read do not wait on it. The check
+// holds no lock across its reads of Dispatch, so no recording waits on it either. What does wait
+// is a read requested while a check runs: both are the refresher's own goroutine
+// (awaitMappingRead, readAnswered), so such a read begins once the check ends, at most
+// ceil(n/mappingReads) × installReadAttempt later for n repositories.
 func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
 	after := w.recheckAfter
 	if after == nil {

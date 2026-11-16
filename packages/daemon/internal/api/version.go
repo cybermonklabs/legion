@@ -1967,9 +1967,11 @@ package api
 // none.
 // That route's refusal of a default owner the review App is not installed on answers
 // `DEFAULT_OWNER_NOT_INSTALLED` at this contract, renamed from a code that said the project's
-// repository mapping bounds the owner, which it no longer does: the status, the condition and the
-// message are the same, and nothing in Legion reads the code, so what a rename reaches is an
-// operator's own log filter or alert.
+// repository mapping bounds the owner, which it no longer does. The status is the same, 400, and
+// nothing in Legion reads the code, so what the rename reaches is an operator's own log filter or
+// alert. The MESSAGE changed with the rule, not with the rename: against main it reads "is not an
+// owner of the project's repositories", and here it reads "is no owner the controller's App is
+// installed on", so a filter matching the old text is told nothing by the code alone.
 // (This branch's own base carried 59; it declared 80 until the forward merge of 2026-11-12 that
 // brought main in at 85, and then 86, which five other open heads declared as well, and then 88,
 // which the forward merge that brought main in at 86 left standing, and then 102 at the forward

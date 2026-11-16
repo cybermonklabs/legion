@@ -3492,7 +3492,7 @@ They are an issue pod's role's; `<generation>` is the role's own generation coun
 `<owner>`, `<repo>`, `<key-lower>` and `<generation>` are the pod's own:
 the owner and repository of the issue's repository, the issue key in lower case, and the role's generation counter.
 The daemon-launched controller's container differs:
-of these eleven names its agent carries no `LEGION_WORKSPACE`, because it is told no tree, issue or checkout (`controllerPod.agentEnv`, `podkind.go`), and its `GH_CONFIG_DIR` is its bundle's first owner's directory, because its launch names no repository: the default is then the first owner the review App is installed on whose lease the mint answered for, sorted, and the bundle is one read-only directory per owner that App is installed on, with none for a repository (`appauth.ControllerCredential` and `bundleDefault`, `credential.go`);
+of these eleven names its agent carries no `LEGION_WORKSPACE`, because it is told no tree, issue or checkout (`controllerPod.agentEnv`, `podkind.go`), and its `GH_CONFIG_DIR` is its bundle's first owner's directory, because its launch names no repository: the default is then the bundle's first directory, sorted, which is usually an owner the review App is installed on whose lease the mint answered for, though a configured rename also puts the pair's `from` owner in the bundle as an alias directory, and such a name can sort first and be taken, and the bundle is one read-only directory per owner that App is installed on, with none for a repository (`appauth.ControllerCredential` and `bundleDefault`, `credential.go`);
 [Daemon-launched controller](#daemon-launched-controller) has the rest of it.
 
 The token behind `DISPATCH_TOKEN_FILE` is the daemon's own, not the role's.
