@@ -119,8 +119,13 @@ architect for it, whatever it asks. For a person's mention, take the first of th
   says, so `admission.active` names some of a tree's waits as well as its work. Say what you
   read, citing for each fact the `read_state` field or the `dispatch read` line it came from.
 - **A request for work.** Someone wants a change made, a bug fixed, something investigated. Search
-  first (`skill://dispatch-first`): when an open issue already tracks it, reply with that issue and
-  file nothing. Otherwise file one issue in the project:
+  first (`skill://dispatch-first`).
+  When the open issue that tracks it is one Legion runs, the request is work for that tree and
+  reaches it through its architect, as **Something an issue's architect owns** below says: no reply
+  of yours and no issue you file takes it there, and a request answered with the issue's name alone
+  never reaches that issue's spec.
+  When the issue that tracks it is nobody's tree, reply with that issue and file nothing.
+  Otherwise file one issue in the project:
 
   ```text
   dispatch issue --project <PROJECT> --title '<the request, as a title>' --spec-file - <<'EOF'
