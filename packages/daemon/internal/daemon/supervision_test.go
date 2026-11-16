@@ -34,7 +34,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -62,39 +62,39 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 			c.NatsNkeySeedFile = filepath.Join(c.StateDir, "absent")
 		}, "nats_nkey_seed_file names " + "{state}/absent, which could not be read"},
 		{"a blank NATS nkey seed file", func(c *config.Config, _ *overrides) {
-			c.NatsNkeySeedFile = testnats.SeedFile(t, " \n")
+			c.NatsNkeySeedFile = testnkeys.SeedFile(t, " \n")
 		}, "nats_nkey_seed_file names {seed}, which is empty"},
 		{"a NATS nkey seed file holding no seed", func(c *config.Config, _ *overrides) {
-			c.NatsNkeySeedFile = testnats.SeedFile(t, "SUNOTASEED")
+			c.NatsNkeySeedFile = testnkeys.SeedFile(t, "SUNOTASEED")
 		}, "nats_nkey_seed_file ({seed}) does not hold a valid nkey seed"},
 		{"a NATS nkey seed file holding an account's seed", func(c *config.Config, _ *overrides) {
-			c.NatsNkeySeedFile = testnats.SeedFile(t, testnats.Account(t))
+			c.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.Account(t))
 		}, "nats_nkey_seed_file ({seed}) holds an nkey seed that is not a user's"},
 		{"NATS_NKEY_SEED_FILE set but empty", func(_ *config.Config, o *overrides) {
-			o.environ = []string{"NATS_NKEY_SEED_FILE=", "NATS_NKEY_SEED=" + testnats.UserSeed(t)}
+			o.environ = []string{"NATS_NKEY_SEED_FILE=", "NATS_NKEY_SEED=" + testnkeys.UserSeed(t)}
 		}, "NATS_NKEY_SEED_FILE is set but empty"},
 		{"NATS_NKEY_SEED_FILE naming a missing file", func(c *config.Config, o *overrides) {
 			o.environ = []string{"NATS_NKEY_SEED_FILE=" + filepath.Join(c.StateDir, "absent")}
 		}, "NATS_NKEY_SEED_FILE names {state}/absent, which could not be read"},
 		{"a provider key naming the NATS nkey seed beside the daemon's", func(c *config.Config, _ *overrides) {
-			c.NatsNkeySeedFile = testnats.SeedFile(t, testnats.UserSeed(t))
+			c.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 			c.ProviderKeys = []config.ProviderKey{{Env: "NATS_NKEY_SEED", Secret: "NATS_NKEY_SEED_TESTS"}}
 		}, "provider_keys names NATS_NKEY_SEED, the launch secret every launch carries behind its NATS_NKEY_SEED_FILE pointer: a provider key may not name a launch secret"},
 		{"NATS_NKEY_SEED holding no seed", func(_ *config.Config, o *overrides) {
 			o.environ = []string{"NATS_NKEY_SEED=hunter2"}
 		}, "NATS_NKEY_SEED does not hold a valid nkey seed"},
 		{"a daemon NATS nkey seed file that is not there, beside a usable pane seed", func(c *config.Config, _ *overrides) {
-			c.NatsNkeySeedFile = testnats.SeedFile(t, testnats.UserSeed(t))
+			c.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 			c.NatsDaemonNkeySeedFile = filepath.Join(c.StateDir, "absent")
 		}, "nats_daemon_nkey_seed_file names {state}/absent, which could not be read"},
 		{"a daemon NATS nkey seed file holding an account's seed", func(c *config.Config, _ *overrides) {
 			c.NatsDaemonNkeySeedFile = filepath.Join(c.StateDir, "daemon.seed")
-			if err := os.WriteFile(c.NatsDaemonNkeySeedFile, []byte(testnats.Account(t)), 0o600); err != nil {
+			if err := os.WriteFile(c.NatsDaemonNkeySeedFile, []byte(testnkeys.Account(t)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}, "nats_daemon_nkey_seed_file ({state}/daemon.seed) holds an nkey seed that is not a user's"},
 		{"NATS_DAEMON_NKEY_SEED_FILE set but empty", func(_ *config.Config, o *overrides) {
-			o.environ = []string{"NATS_DAEMON_NKEY_SEED_FILE=", "NATS_DAEMON_NKEY_SEED=" + testnats.UserSeed(t)}
+			o.environ = []string{"NATS_DAEMON_NKEY_SEED_FILE=", "NATS_DAEMON_NKEY_SEED=" + testnkeys.UserSeed(t)}
 		}, "NATS_DAEMON_NKEY_SEED_FILE is set but empty"},
 		{"NATS_DAEMON_NKEY_SEED holding no seed", func(_ *config.Config, o *overrides) {
 			o.environ = []string{"NATS_DAEMON_NKEY_SEED=hunter2"}
@@ -210,15 +210,15 @@ func TestRunLaunchesWithThePromptInstructionsAndSecretsItWasGiven(t *testing.T) 
 // which each runtime hands the agent behind a NATS_NKEY_SEED_FILE pointer, never as a value; and a
 // daemon with none hands none.
 func TestEveryLaunchCarriesTheNatsSeedTheDaemonResolved(t *testing.T) {
-	keySeed, envSeed := testnats.UserSeed(t), testnats.UserSeed(t)
+	keySeed, envSeed := testnkeys.UserSeed(t), testnkeys.UserSeed(t)
 	for _, tc := range []struct {
 		name    string
 		key     string
 		environ []string
 		want    string
 	}{
-		{"nats_nkey_seed_file, over the environment", testnats.SeedFile(t, "\n"+keySeed+"\n"), []string{"NATS_NKEY_SEED=hunter2"}, keySeed},
-		{"NATS_NKEY_SEED_FILE, over NATS_NKEY_SEED", "", []string{"NATS_NKEY_SEED_FILE=" + testnats.SeedFile(t, envSeed), "NATS_NKEY_SEED=hunter2"}, envSeed},
+		{"nats_nkey_seed_file, over the environment", testnkeys.SeedFile(t, "\n"+keySeed+"\n"), []string{"NATS_NKEY_SEED=hunter2"}, keySeed},
+		{"NATS_NKEY_SEED_FILE, over NATS_NKEY_SEED", "", []string{"NATS_NKEY_SEED_FILE=" + testnkeys.SeedFile(t, envSeed), "NATS_NKEY_SEED=hunter2"}, envSeed},
 		{"NATS_NKEY_SEED", "", []string{"NATS_NKEY_SEED=" + envSeed}, envSeed},
 		{"no seed", "", []string{}, ""},
 	} {

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/registry"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -1100,7 +1101,7 @@ func rewrite(t *testing.T, path, old, replacement string) {
 // naming the seed's public key and never the seed.
 func TestStartCheckConfigReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 	legionState(t)
-	seed, public := nkeyUser(t)
+	seed, public := testnkeys.User(t)
 	const seedKey, envoyKey = "nats_nkey_seed_file", "envoy_token_file"
 	for _, tc := range []struct {
 		name     string
@@ -1168,8 +1169,8 @@ func TestStartCheckConfigReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 // words, or an OK line naming both users by public key, never either seed.
 func TestStartCheckConfigReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 	legionState(t)
-	paneSeed, paneUser := nkeyUser(t)
-	daemonSeed, daemonUser := nkeyUser(t)
+	paneSeed, paneUser := testnkeys.User(t)
+	daemonSeed, daemonUser := testnkeys.User(t)
 	for _, tc := range []struct {
 		name     string
 		contents string
