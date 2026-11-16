@@ -15,7 +15,6 @@
  */
 
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
 
 import { markInboxReadRequest } from "../../api/client";
 import {
@@ -32,7 +31,7 @@ import type {
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
 import { inboxWriteScope, inWriteScope } from "./write-scope";
@@ -106,7 +105,9 @@ export interface MarkAllRead {
   readonly markAll: () => void;
   /** How the last press ended where it did not land, until the next press: `refused` by
    *  Dispatch, which takes the press back (`MARK_ALL_REFUSED_TEXT`), or `stopped` by the reader,
-   *  which reads the list again (`MARK_ALL_STOPPED_TEXT`). The one thing this says to the reader. */
+   *  which reads the list again (`MARK_ALL_STOPPED_TEXT`). The one thing this says to the reader,
+   *  and only beside the list that press was made over: it goes once the reader narrows the list
+   *  another way. */
   readonly failure: "refused" | "stopped" | undefined;
   /** Whether the list holds a row this would mark: the button shows only then. */
   readonly offered: boolean;
@@ -140,9 +141,9 @@ export function useMarkAllRead({
   readonly rows: readonly InboxListRow[];
 }): MarkAllRead {
   const queryClient = useQueryClient();
-  const [failure, setFailure] = useState<"refused" | "stopped" | undefined>(undefined);
   const threadsKey = inboxThreadsQuery().queryKey;
   const countKey = myRepliesCountQuery().queryKey;
+  const scope = inboxWriteScope(filters);
   const body = asOf === undefined ? undefined : markAllReadBody(filters, asOf);
   // What a press may have marked is read again from the server: the list, its counts, and the
   // per-session agent state the Agents page's **New replies** badge counts.
@@ -163,17 +164,14 @@ export function useMarkAllRead({
       // A press the reader stopped may have marked the rows, so they are not drawn unread again:
       // what Dispatch holds is read instead.
       if (error instanceof SendStoppedError) {
-        setFailure("stopped");
         readAgain();
         return;
       }
-      setFailure("refused");
       if (rollback === undefined) return;
       queryClient.setQueryData(threadsKey, rollback.threads);
       queryClient.setQueryData(countKey, rollback.count);
     },
     onMutate: (input) => {
-      setFailure(undefined);
       const threads = queryClient.getQueryData<MyRepliesResponse>(threadsKey);
       const count = queryClient.getQueryData<number>(countKey);
       const marked = new Set(
@@ -197,9 +195,18 @@ export function useMarkAllRead({
     request: (input) => markInboxReadRequest(input),
     target: () => "inbox:read",
   });
+  // A press belongs to the list it was made over, which is its narrowing - the four fields its
+  // body carries: what it marked or did not mark is said beside that list alone, and once the
+  // reader narrows the list another way the bar says nothing of a press they did not make there
+  // (`useRefusalOfSubject`).
+  const failed = useRefusalOfSubject(write, (input) =>
+    (["kind", "priority", "project", "urgency"] as const).every(
+      (field) => JSON.stringify(input[field]) === JSON.stringify(scope[field])
+    )
+  );
 
   return {
-    failure,
+    failure: failed ? (write.error instanceof SendStoppedError ? "stopped" : "refused") : undefined,
     markAll: () => {
       if (body !== undefined) write.mutate(body);
     },

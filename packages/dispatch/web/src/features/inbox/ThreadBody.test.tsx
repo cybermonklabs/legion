@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -110,7 +110,7 @@ function comment(id: string, body: string, overrides: Partial<Comment> = {}): Co
   };
 }
 
-function renderCard(thread: MyReplyRow): void {
+function renderCard(thread: MyReplyRow): QueryClient {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   const tree: ReactNode = (
@@ -121,6 +121,7 @@ function renderCard(thread: MyReplyRow): void {
     </MemoryRouter>
   );
   render(tree);
+  return client;
 }
 
 test("an Agent row's card draws the message, the session's reply and the composer", async () => {
@@ -348,4 +349,48 @@ test("an Agent card shows nothing of a reply refused in another card of its sess
     ["planner", "reply-1"],
     ["planner", "reply-1"],
   ]);
+});
+
+// An Agent card's box replies under its thread's newest message, which no press of the reader's
+// moves. A message that comes while the box holds a refused reply moves the box onto it, so the
+// refusal has no Retry there, and the box says what it can do: Discard, to write a reply to the
+// newer message - never "reply to that message again", which it offers no way to do.
+test("an Agent card whose thread moves on under a refused reply says what its box can do", async () => {
+  spy("listAgents", [session]);
+  const answer = (id: string, body: string, at: string) =>
+    message(id, body, {
+      author: { id: "planner", kind: "session" },
+      created_at: at,
+      in_reply_to: "message-1",
+    });
+  const thread = (replies: Message[]): MessageRead[] => [
+    { message: message("message-1", "Have a look at the build"), replies },
+  ];
+  const first = answer("reply-1", "Looked at it.", "2026-10-12T01:00:00Z");
+  const list = spyOn(api, "listAgentMessages").mockResolvedValue(thread([first]));
+  restores.push(list);
+  const createAgentMessage = spyOn(api, "createAgentMessage").mockRejectedValue(
+    new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
+  );
+  restores.push(createAgentMessage);
+  const client = renderCard(plannerAgentRow());
+  const user = userEvent.setup();
+
+  await user.click(await screen.findByRole("textbox", { name: "Comment" }));
+  await user.paste("Reply to the first answer");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await screen.findByText("Couldn't send — Dispatch refused the message");
+
+  list.mockResolvedValue(
+    thread([first, answer("reply-2", "And one more thing.", "2026-10-12T02:00:00Z")])
+  );
+  await act(() => client.invalidateQueries());
+  expect(
+    await screen.findByText(
+      "This message was written as a reply to an earlier message, and this box now replies to a newer one. Discard it to write a reply here."
+    )
+  ).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Discard draft" })).toBeTruthy();
+  expect(createAgentMessage).toHaveBeenCalledTimes(1);
 });

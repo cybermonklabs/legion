@@ -2833,7 +2833,9 @@ test("a closed suggestion composer shows only a send of its own still out, then 
 
 // An upload carries its target from the paste that starts it: a host that re-addresses the
 // composer in the paste's own task - before React re-renders - moves where the next upload goes,
-// never this one, and the reference it appends names where the file went.
+// never this one, and the reference names where the file went. That reference belongs to the
+// draft the file was pasted into: it waits, and the composer says so, while the composer is on
+// CORE-2, and joins the message once the composer is back on CORE-1.
 test("a pick in the paste's own task cannot move the upload", async () => {
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue({
     artifact: { slug: "notes-md" } as never,
@@ -2853,6 +2855,14 @@ test("a pick in the paste's own task cannot move the upload", async () => {
 
     await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
     expect(uploadArtifact.mock.calls[0]?.[0]).toEqual({ issue: "CORE-1" });
+    expect(
+      await screen.findByText(
+        "The file pasted for CORE-1 is uploaded. Its reference joins the message when you go back to it."
+      )
+    ).toBeTruthy();
+    expect(field.value).toBe("");
+
+    rerender({});
     await waitFor(() => expect(field.value).toBe("dispatch://CORE-1/artifact/notes-md"));
   } finally {
     view.unmount();

@@ -28,6 +28,8 @@ const crew: DeliverySessionGroup = {
 const titles = { s1: "Planner one", s2: "Planner two", s3: "Reviewer" };
 const counts = { s1: 3, s2: 2, s3: 1 };
 
+/** The editor over `groups`; `regroup` draws it again over other groups, over the same client, as
+ *  the Delivery page does when Dispatch's delta changes them. */
 function renderEditor(
   groups: readonly DeliverySessionGroup[] = [],
   values: {
@@ -39,13 +41,13 @@ function renderEditor(
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   // The agent registry, as the shell's poller last read it: none listed unless a test says so.
   queryClient.setQueryData(["agents"], values.agents ?? []);
-  render(
+  const tree = (shown: readonly DeliverySessionGroup[]) => (
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
           <SessionGroupsEditor
             counts={values.counts ?? counts}
-            groups={groups}
+            groups={shown}
             onClose={() => {}}
             titles={values.titles ?? titles}
           />
@@ -53,7 +55,11 @@ function renderEditor(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return queryClient;
+  const view = render(tree(groups));
+  return {
+    queryClient,
+    regroup: (shown: readonly DeliverySessionGroup[]) => view.rerender(tree(shown)),
+  };
 }
 
 test("it lists the window's sessions busiest first, each with its title, count and group", () => {
@@ -124,7 +130,7 @@ test("a session reads by its registry title, else its stored title, else its sho
 test("create: two selected sessions and a name become a group; the live views hear of it from Dispatch, and only the reads that are not live read again", async () => {
   const user = userEvent.setup();
   const create = spyOn(api, "createDeliverySessionGroup").mockResolvedValue(crew);
-  const queryClient = renderEditor();
+  const { queryClient } = renderEditor();
   const reads = seedDeliveryReads(queryClient);
   try {
     await user.click(screen.getByRole("checkbox", { name: "Planner one" }));
@@ -190,13 +196,13 @@ test("a change the reader stopped says it may have been saved, not that it faile
   const remove = spyOn(api, "deleteDeliverySessionGroup").mockRejectedValue(
     new NetworkError("/api/v1/delivery/session-groups", new TypeError("Failed to fetch"))
   );
-  const queryClient = renderEditor([crew]);
+  const { queryClient } = renderEditor([crew]);
   try {
     const group = screen.getByRole("group", { name: "Release crew" });
     await user.click(within(group).getByRole("button", { name: "Delete group" }));
     await stopTheLateWrite(queryClient);
     expect(screen.getByRole("alert").textContent).toBe(
-      stoppedWriteNote("this change to the session groups", "saved", {
+      stoppedWriteNote("the deletion of the group Release crew", "saved", {
         anew: "Making it again sends it as a new write.",
       })
     );
@@ -276,12 +282,47 @@ test("a refusal shows as the server wrote it", async () => {
     await user.click(screen.getByRole("button", { name: "Create group" }));
     expect(
       await screen.findByText(
-        'session s2 is already in the group "Release crew"; remove it there first'
+        `Couldn't save the new group Other — session s2 is already in the group "Release crew"; remove it there first`
       )
     ).toBeDefined();
   } finally {
     cleanup();
     create.mockRestore();
+  }
+});
+
+// One refusal speaks for every group, so it names the group it was about, and goes once that
+// group is renamed or removed - from another tab, or by another person - rather than stand beside
+// groups it was never about, naming one that is not there.
+test("a refusal goes once the group it was about is renamed or removed", async () => {
+  const user = userEvent.setup();
+  const remove = spyOn(api, "deleteDeliverySessionGroup").mockRejectedValue(
+    new ApiError(403, { code: "FORBIDDEN", error: "only its maker may delete a group" })
+  );
+  const other: DeliverySessionGroup = { ...crew, id: "2", name: "Night crew", sessions: ["s3"] };
+  const editor = renderEditor([crew, other]);
+  try {
+    const refusal = (group: string) =>
+      `Couldn't save the deletion of the group ${group} — only its maker may delete a group`;
+    const deleteOf = async (group: string) =>
+      user.click(
+        within(screen.getByRole("group", { name: group })).getByRole("button", {
+          name: "Delete group",
+        })
+      );
+
+    await deleteOf("Release crew");
+    expect(await screen.findByText(refusal("Release crew"))).toBeDefined();
+    editor.regroup([{ ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:00Z" }, other]);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    await deleteOf("Night crew");
+    expect(await screen.findByText(refusal("Night crew"))).toBeDefined();
+    editor.regroup([{ ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:00Z" }]);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    cleanup();
+    remove.mockRestore();
   }
 });
 
@@ -293,7 +334,7 @@ test("a group made with its answer lost clears the form and says so, and a secon
   const create = spyOn(api, "createDeliverySessionGroup").mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "made; the answer was lost" })
   );
-  const queryClient = renderEditor();
+  const { queryClient } = renderEditor();
   const reads = seedDeliveryReads(queryClient);
   try {
     await user.click(screen.getByRole("checkbox", { name: "Planner one" }));

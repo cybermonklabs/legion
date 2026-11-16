@@ -270,6 +270,36 @@ test("a sign-out the reader stopped does not say the person is still signed in",
   }
 });
 
+// The shell is not drawn again for another person: someone signed in from another tab arrives
+// here in place. A sign-out Dispatch refused is the person's it was pressed for, so once someone
+// else is signed in its refusal - which would tell them they are still signed in, with every
+// change - and its Retry, which would sign them out, are gone.
+test("a sign-out refused for one person is gone, its Retry with it, once another signs in from another tab", async () => {
+  const user = userEvent.setup();
+  let login = "alice";
+  const app = renderApp({
+    logout: () => Promise.reject(new ApiError(403, { code: "FORBIDDEN", error: "not now" })),
+    whoAmI: async () => ({ event_head: "0", kind: "user", login }),
+  });
+  const tab = new BroadcastChannel("dispatch-sign-in");
+  const refusal = "The sign-out did not go through. You are still signed in, with every change.";
+  try {
+    await screen.findByText("Signed in as alice");
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(await screen.findByText(refusal)).toBeTruthy();
+
+    login = "bob";
+    act(() => tab.postMessage("bob"));
+    await screen.findByText("Signed in as bob");
+    expect(screen.queryByText(refusal)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(app.logout).toHaveBeenCalledTimes(1);
+  } finally {
+    tab.close();
+    app.teardown();
+  }
+});
+
 // `/auth/logout` sits outside Dispatch's keyed layer: the sign-out is a `POST` that sends no key,
 // and its write says so (`Write.keyed`), as a `PUT`'s or a `DELETE`'s does.
 test("a sign-out's write says it goes under no key, since /auth/logout sends none", async () => {

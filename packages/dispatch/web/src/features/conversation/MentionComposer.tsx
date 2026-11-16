@@ -476,14 +476,17 @@ function refusalMessage(
 }
 
 /** What Send says while the refusal the composer holds was written for another address than the
- *  one it shows now (`sameAddress`): where it was written for, and the two ways out - back there,
- *  where Retry sends it, or Discard. */
-function writtenElsewhere({ owner, replyTo }: SentRequest): string {
+ *  one it shows now (`sameAddress`): where it was written for, and the ways out - back there,
+ *  where Retry sends it, or Discard. A standing box answers what its host gives it and no Reply
+ *  the reader presses (`standing`): an Inbox agent thread's box replies to the thread's newest
+ *  message, so one that has come since the refusal moved the box, and no press brings it back. */
+function writtenElsewhere({ owner, replyTo }: SentRequest, standing: boolean): string {
   if (replyTo !== null) {
-    return (
-      "This message was written as a reply. " +
-      "Reply to that message again to send it, or discard it."
-    );
+    return standing
+      ? "This message was written as a reply to an earlier message, and this box now replies " +
+          "to a newer one. Discard it to write a reply here."
+      : "This message was written as a reply. " +
+          "Reply to that message again to send it, or discard it.";
   }
   const where =
     owner.kind === "issue"
@@ -494,17 +497,31 @@ function writtenElsewhere({ owner, replyTo }: SentRequest): string {
   return `This message was written ${where}. Go back to it to send it, or discard it.`;
 }
 
+/** Where a file was pasted, as the composer's sentences of its upload name it: `for CORE-1`. */
+function pastedWhere(owner: ArtifactOwner): string {
+  return "issue" in owner
+    ? `for ${owner.issue}`
+    : "session" in owner
+      ? "into a direct message"
+      : "for another document";
+}
+
 /** What a refused upload says while the composer addresses another owner than the one its file
  *  was pasted for: a Retry from here would upload it there and add its reference to a message for
  *  somewhere else, so the Retry waits for the composer to be back there. */
 function pastedElsewhere(owner: ArtifactOwner): string {
-  const where =
-    "issue" in owner
-      ? `for ${owner.issue}`
-      : "session" in owner
-        ? "into a direct message"
-        : "for another document";
-  return `This file was pasted ${where}. Go back to it to try the upload again.`;
+  return `This file was pasted ${pastedWhere(owner)}. Go back to it to try the upload again.`;
+}
+
+/** What the composer says of files that landed for another owner than the one it addresses now:
+ *  their references wait for the draft they were pasted into, and join it once the composer is
+ *  back there. */
+function landedFor(owner: ArtifactOwner, files: number): string {
+  return files === 1
+    ? `The file pasted ${pastedWhere(owner)} is uploaded. ` +
+        "Its reference joins the message when you go back to it."
+    : `The ${files} files pasted ${pastedWhere(owner)} are uploaded. ` +
+        "Their references join the message when you go back to it.";
 }
 
 interface MentionComposerProps {
@@ -984,13 +1001,22 @@ export function MentionComposer({
     frame === undefined ? formRef : frameRef,
     !dormant && (docked || frame !== undefined)
   );
-  const upload = useDraftUpload((text) => {
-    setBody((current) => {
-      const next = appendToDraft(current, text);
-      previousBody.current = next;
-      return next;
-    });
-  });
+  // A file's reference belongs to the draft it was pasted or dropped into, which is the draft for
+  // the owner the paste named, so each press carries that owner as its draft (`useDraftUpload`),
+  // as an ask card's carries its ask. A host can move the composer to another owner while a file
+  // is out - an Agents row's issue pick - and the field is then that owner's message, where a
+  // reference to a file stored elsewhere does not belong. So what lands is kept here by the owner
+  // it was pasted for, and joins the field while the composer addresses that owner: at once, or
+  // once the composer is back there, and the composer says so until then.
+  const [uploadedFiles, setUploadedFiles] = useState<
+    readonly { readonly key: string; readonly owner: ArtifactOwner; readonly text: string }[]
+  >([]);
+  const upload = useDraftUpload((text: string, pastedFor: ArtifactOwner) =>
+    setUploadedFiles((current) => [
+      ...current,
+      { key: JSON.stringify(pastedFor), owner: pastedFor, text },
+    ])
+  );
   // Where a pasted or dropped file goes: the issue or the project document the draft is for, or,
   // for a direct message, the agent's conversation. An edit takes no files.
   const uploadOwner: ArtifactOwner | undefined =
@@ -1001,17 +1027,32 @@ export function MentionComposer({
         : owner.kind === "artifact"
           ? { project: owner.project }
           : { session: owner.sessionId };
+  const uploadKey = uploadOwner === undefined ? undefined : JSON.stringify(uploadOwner);
+  useEffect(() => {
+    const here = uploadedFiles.filter((file) => file.key === uploadKey);
+    if (here.length === 0) return;
+    setUploadedFiles((current) => current.filter((file) => !here.includes(file)));
+    setBody((current) => {
+      const next = here.reduce((draft, file) => appendToDraft(draft, file.text), current);
+      previousBody.current = next;
+      return next;
+    });
+  }, [uploadedFiles, uploadKey]);
+  /** What landed for another owner than the composer addresses, one entry per owner. */
+  const landedElsewhere = new Map<string, { owner: ArtifactOwner; files: number }>();
+  for (const file of uploadedFiles) {
+    if (file.key === uploadKey) continue;
+    const files = (landedElsewhere.get(file.key)?.files ?? 0) + 1;
+    landedElsewhere.set(file.key, { files, owner: file.owner });
+  }
   // A file goes to the owner its paste or drop named, and a refused upload's Retry makes that
-  // press again (`DraftUpload.retry`): to that owner, adding the file's reference to the field as
-  // it stands. A host can move the composer to another owner in between - an Agents row's issue
-  // pick - so the owner the newest press named is kept, and while the composer addresses another
-  // the refusal offers no Retry here: it says where the file was pasted, and its Retry is back
-  // once the composer is.
+  // press again (`DraftUpload.retry`): to that owner, and for the draft it was pasted into. A host
+  // can move the composer to another owner in between, so the owner the newest press named is
+  // kept, and while the composer addresses another the refusal offers no Retry here: it says where
+  // the file was pasted, and its Retry is back once the composer is.
   const [uploadedFor, setUploadedFor] = useState<ArtifactOwner>();
   const uploadElsewhere =
-    upload.isError &&
-    uploadedFor !== undefined &&
-    JSON.stringify(uploadedFor) !== JSON.stringify(uploadOwner)
+    upload.isError && uploadedFor !== undefined && JSON.stringify(uploadedFor) !== uploadKey
       ? uploadedFor
       : undefined;
 
@@ -1238,7 +1279,7 @@ export function MentionComposer({
   // too (`HeldSends.send`), whichever render made it.
   const elsewhere =
     refusal !== undefined && held !== undefined && !sameAddress(held, composedRequest())
-      ? writtenElsewhere(held)
+      ? writtenElsewhere(held, standing)
       : undefined;
   // A closed issue refuses a suggestion or an ask: the composer is only still here for a send of
   // its own that is out, or its refusal, and Send says why it cannot go.
@@ -1452,7 +1493,7 @@ export function MentionComposer({
               ? undefined
               : (event: DragEvent<HTMLTextAreaElement>) => {
                   if (event.dataTransfer.files.length > 0) setUploadedFor(uploadOwner);
-                  upload.drop(event, uploadOwner);
+                  upload.drop(event, uploadOwner, uploadOwner);
                 }
           }
           onInput={
@@ -1481,7 +1522,7 @@ export function MentionComposer({
               ? undefined
               : (event: ClipboardEvent<HTMLTextAreaElement>) => {
                   if (event.clipboardData.files.length > 0) setUploadedFor(uploadOwner);
-                  upload.paste(event, uploadOwner);
+                  upload.paste(event, uploadOwner, uploadOwner);
                 }
           }
           ref={bodyFieldRef}
@@ -1704,6 +1745,11 @@ export function MentionComposer({
       {uploadElsewhere === undefined ? null : (
         <QueryError message={pastedElsewhere(uploadElsewhere)} />
       )}
+      {[...landedElsewhere].map(([key, { files, owner: pastedFor }]) => (
+        <p className={`text-sm ${textMutedOnSurfaceMuted}`} key={key} role="status">
+          {landedFor(pastedFor, files)}
+        </p>
+      ))}
       {refusal === undefined ? null : (
         <div className="flex flex-wrap items-center gap-3">
           <QueryError

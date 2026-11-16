@@ -70,7 +70,7 @@ import "./features/writes/kinds";
 import { KeptWrites } from "./features/writes/KeptWrites";
 import { SendStoppedError, stoppedWriteNote } from "./features/writes/keyed-write";
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
-import { useKeyedWrite } from "./features/writes/useKeyedWrite";
+import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
 import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
 import {
@@ -637,16 +637,18 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     },
   ]);
   const login = user.login;
+  // Each press signs out the person signed in when it was made, and carries their login: the
+  // channel's words of how it ended name that person, and its refusal is theirs alone (below).
   const signOut = useKeyedWrite({
     // A session that lapses while the sign-out is still out has ended as it asked: the sign-out
     // lands, and its landing discards (`Writes.signedIn`).
     endsWithSession: true,
     inline: true,
-    label: () => "Sign out",
+    label: (_signingOut: string) => "Sign out",
     // Refused or stopped, the sign-out discarded nothing: the person is still signed in, and every
     // other tab lets their writes go on, as this one's store does (`Writes.release`).
-    onError: () => signIns.stillSignedIn(login),
-    onSuccess: () => {
+    onError: (_error, signingOut) => signIns.stillSignedIn(signingOut),
+    onSuccess: (_answer, signingOut) => {
       // `resetQueries` (not `clear`) forces the active `["whoami"]` observer in AuthGate to
       // refetch immediately — a signed-out user must land on sign-in without a manual reload.
       void queryClient.resetQueries({ queryKey: ["whoami"] });
@@ -655,7 +657,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       // browser: none outlives their session, the next person to sign in here resumes nothing of
       // theirs and sees none of their refusals, and the page stops asking to confirm leaving.
       writesOf(queryClient).clear();
-      signIns.signedOut(login);
+      signIns.signedOut(signingOut);
     },
     // A `POST`, though `/auth/logout` sits outside Dispatch's keyed layer and sends no key
     // (`api.logout`): the store reads that from `endsWithSession`, so the write says it goes under
@@ -675,6 +677,11 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           isNoIdentity(error) ? { ok: true as const } : Promise.reject(error)
         ),
   });
+  // The shell is not drawn again for another person: one signed in from another tab arrives here
+  // in place (`AuthGate`). A sign-out's refusal, and the Retry beside it, are the person's it was
+  // pressed for, so they go once someone else is signed in: under their name the refusal would
+  // say a false thing, and its Retry would sign them out (`useRefusalOfSubject`).
+  const signOutRefused = useRefusalOfSubject(signOut, (signingOut) => signingOut === login);
   // A page that goes while its sign-out is out says nothing of how it ended, because it does not
   // know: its `{gone}` leaves every other tab to read who is signed in and decide (`holderGone`).
   //
@@ -729,10 +736,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           const question = signOutQuestion([...unsent.values()], elsewhere.unanswered);
           if (ask && !window.confirm(question)) return;
           signIns.signingOut(login);
-          signOut.mutate();
+          signOut.mutate(login);
         });
       }}
-      signOutError={signOut.isError ? signOutFailure(signOut.error) : undefined}
+      signOutError={
+        signOutRefused && signOut.error !== null ? signOutFailure(signOut.error) : undefined
+      }
       signOutPending={signOut.isPending || askingTabs}
       user={user}
     />

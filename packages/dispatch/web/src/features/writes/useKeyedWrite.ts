@@ -7,9 +7,14 @@ import {
   type UseMutationResult,
   useMutation,
 } from "@tanstack/react-query";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
-import type { WriteBounds, WriteMethod, WriteRequest } from "../../api/client";
+import {
+  apiErrorMessage,
+  type WriteBounds,
+  type WriteMethod,
+  type WriteRequest,
+} from "../../api/client";
 import { newSendKey } from "../../lib/send-key";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "./keyed-write";
 import { plainWrite, useWrites } from "./write-store";
@@ -143,6 +148,41 @@ export function stoppedNote<
   return endedStopped(write)
     ? stoppedWriteNote(what, made, { method: write.method, stopped: write.error })
     : undefined;
+}
+
+/** The sentence a surface shows for its write Dispatch refused, naming the press it refused -
+ *  `what` it could not do, as `revoke your sign-in on devbox` - with Dispatch's own words of why
+ *  after it where Dispatch gave any (`apiErrorMessage`). A surface whose one line speaks for many
+ *  subjects says which one this way (`useRefusalOfSubject`). */
+export function refusedNote(what: string, refusal: unknown): string {
+  const why = apiErrorMessage(refusal, "");
+  return why === "" ? `Couldn't ${what}.` : `Couldn't ${what} — ${why}`;
+}
+
+/**
+ * Whether a surface shows the refusal of `write`'s newest press: while the subject that press was
+ * about is still on the surface (`here`, handed the press's variables), and never after. A surface
+ * drawn once for many subjects - a table of rows, a list under the reader's filters, the shell
+ * under whoever is signed in - holds one refusal for all of them, and one that outlived its
+ * subject would tell the reader something false about what is in front of them, its Retry a
+ * press of something gone. So the moment `here` stops holding - the row removed or renamed, the
+ * filter changed, another person signed in - the write lets that refusal go (`reset`), before the
+ * screen is drawn, and it does not come back with the subject.
+ */
+export function useRefusalOfSubject<TVariables>(
+  write: {
+    readonly isError: boolean;
+    readonly reset: () => void;
+    readonly variables: TVariables | undefined;
+  },
+  here: (variables: TVariables) => boolean
+): boolean {
+  const gone = write.isError && write.variables !== undefined && !here(write.variables);
+  const { reset } = write;
+  useLayoutEffect(() => {
+    if (gone) reset();
+  }, [gone, reset]);
+  return write.isError && !gone;
 }
 
 /** The callbacks a surface hands one `mutate`, as TanStack calls them with the press the hook made

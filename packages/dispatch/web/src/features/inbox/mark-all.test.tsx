@@ -75,6 +75,8 @@ function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
   );
 }
 
+/** The bar over `rows`, the shared count at `count`, under `filters`; `narrow` draws it again
+ *  under other filters, over the same client, as the reader's Filter does. */
 function renderBar(rows: readonly MyReplyRow[], count: number, filters?: InboxFilters) {
   const client = new QueryClient({
     defaultOptions: {
@@ -85,14 +87,15 @@ function renderBar(rows: readonly MyReplyRow[], count: number, filters?: InboxFi
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   client.setQueryData(inboxThreadsQuery().queryKey, threadsRead(rows));
   client.setQueryData(myRepliesCountQuery().queryKey, count);
-  render(
+  const tree = (narrowed: InboxFilters | undefined): ReactNode => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <Bar filters={filters} />
+        <Bar filters={narrowed} />
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return client;
+  const view = render(tree(filters));
+  return { client, narrow: (narrowed: InboxFilters) => view.rerender(tree(narrowed)) };
 }
 
 function inboxCount(): string {
@@ -196,6 +199,24 @@ test("a refused press brings the rows and the counts back and says nothing was m
   expect(listed()).toBe("2");
 });
 
+// A press is the list's under the narrowing it was made over. Its refusal is said beside that
+// list alone: once the reader narrows the list another way, the bar says nothing of a press they
+// did not make there, and the refusal does not come back when they return to the first list.
+test("a refused press's word goes once the reader narrows the list another way", async () => {
+  const user = userEvent.setup();
+  answerInboxReads().mockRejectedValue(new ApiError(404, { error: "not found" }));
+  const bar = renderBar([replyRow("c1", { priority: 1 }), replyRow("c2")], 2);
+
+  await user.click(screen.getByRole("button", { name: "Mark all read" }));
+  expect((await screen.findByRole("alert")).textContent).toBe(MARK_ALL_REFUSED_TEXT);
+
+  bar.narrow({ priority: ["P1"] });
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Mark all read" })).toBeTruthy();
+  bar.narrow({});
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
 // A press the reader stopped is no refusal: it may have marked the rows, and here it had. So the
 // bar does not say nothing was marked, and the rows are not drawn unread again: the list and its
 // count are read again from Dispatch, which holds them read.
@@ -210,7 +231,7 @@ test("a stopped press reads the list again rather than saying nothing was marked
       ? threadsRead([])
       : threadsRead([replyRow("c1", { unread: false }), replyRow("c2", { unread: false })])
   );
-  const client = renderBar([replyRow("c1"), replyRow("c2")], 2);
+  const { client } = renderBar([replyRow("c1"), replyRow("c2")], 2);
   try {
     await user.click(screen.getByRole("button", { name: "Mark all read" }));
     await stopTheLateWrite(client);

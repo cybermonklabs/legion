@@ -21,9 +21,9 @@ import { SignInsSection } from "./SignInsSection";
 interface Section {
   empty: string;
   heading: string;
+  /** The listed row as the section's sentences of its revoke name it. */
+  name: string;
   refusal: string;
-  /** What the section calls a revoke in the sentence of one the reader stopped. */
-  stopped: string;
   rowId: string;
   section: () => ReactNode;
   stub: (revoke: (id: string) => Promise<void>) => {
@@ -37,8 +37,8 @@ const sections: Section[] = [
   {
     empty: "No live grants.",
     heading: "Live grants",
+    name: "the grant of WORKER_TOKEN to session · box-1 · ada@example.com",
     refusal: "only the grant's approver or its enrollment's operator may revoke it",
-    stopped: "the revoke of this grant",
     rowId: "grant-1",
     section: () => <GrantsSection />,
     stub: (revoke) => {
@@ -76,8 +76,8 @@ const sections: Section[] = [
   {
     empty: "No live machine logins.",
     heading: "Machine logins",
+    name: "the machine login for devbox.example.com",
     refusal: "only the person who approved a person's machine login may revoke it",
-    stopped: "the revoke of this machine login",
     rowId: "cred-devbox",
     section: () => <MachineLoginsSection />,
     stub: (revoke) => {
@@ -109,8 +109,8 @@ const sections: Section[] = [
   {
     empty: "No sign-ins.",
     heading: "Sign-ins",
+    name: "your sign-in on devbox.example.com",
     refusal: "only the person a sign-in is of may revoke it",
-    stopped: "the revoke of this sign-in",
     rowId: "signin-1",
     section: () => <SignInsSection />,
     stub: (revoke) => {
@@ -207,9 +207,40 @@ for (const section of sections) {
     const confirm = spyOn(window, "confirm").mockReturnValue(true);
     try {
       await user.click(await renderSection(section));
-      expect(await screen.findByText(section.refusal)).toBeDefined();
+      expect(
+        await screen.findByText(`Couldn't revoke ${section.name} — ${section.refusal}`)
+      ).toBeDefined();
     } finally {
       cleanup();
+      confirm.mockRestore();
+      stubs.restore();
+    }
+  });
+
+  // One line under the table speaks for every row, so it is the refused row's for as long as that
+  // row is listed: once the row leaves the list - revoked elsewhere, or expired - the line goes
+  // with it, rather than stand under rows it was never about.
+  test(`${section.heading}: a refused revoke's line goes once its row leaves the list`, async () => {
+    const user = userEvent.setup();
+    const stubs = section.stub(async () => {
+      throw new ApiError(403, { code: "NOT_APPROVER", error: section.refusal });
+    });
+    const confirm = spyOn(window, "confirm").mockReturnValue(true);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      render(<QueryClientProvider client={queryClient}>{section.section()}</QueryClientProvider>);
+      const region = within(await screen.findByRole("region", { name: section.heading }));
+      await user.click(await region.findByRole("button", { name: "Revoke" }));
+      const refusal = `Couldn't revoke ${section.name} — ${section.refusal}`;
+      expect(await region.findByText(refusal)).toBeDefined();
+
+      stubs.clearList();
+      await act(() => queryClient.invalidateQueries());
+      expect(await region.findByText(section.empty)).toBeDefined();
+      expect(region.queryByText(refusal)).not.toBeInTheDocument();
+    } finally {
+      cleanup();
+      queryClient.clear();
       confirm.mockRestore();
       stubs.restore();
     }
@@ -250,7 +281,7 @@ for (const section of sections) {
       await stopTheLateWrite(queryClient);
       expect(
         region.getByText(
-          stoppedWriteNote(section.stopped, "made", {
+          stoppedWriteNote(`the revoke of ${section.name}`, "made", {
             anew: "Pressing Revoke again sends a new revoke.",
           })
         )

@@ -19,7 +19,12 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import {
+  refusedNote,
+  stoppedNote,
+  useKeyedWrite,
+  useRefusalOfSubject,
+} from "../writes/useKeyedWrite";
 import {
   ownerRepoPattern,
   settingsFieldLabel,
@@ -35,6 +40,11 @@ import { ProjectSelect } from "./ProjectSelect";
 interface SourceKey {
   readonly project: string;
   readonly repo: string;
+}
+
+/** `source` as the section's sentences name it: `the architecture source acme/web for CORE`. */
+function sourceName(source: SourceKey): string {
+  return `the architecture source ${source.repo} for ${source.project}`;
 }
 
 /** A project's architecture sources, one row per repository: the branch its architecture
@@ -95,6 +105,18 @@ export function ArchitectureSourcesSection(): ReactNode {
     event.preventDefault();
     submitGuard.guard(() => saveSource.mutate({ branch, project, repo: repository }));
   };
+  // A removal's and a refresh's refusals sit under the table, each one line for every row, so each
+  // names the source it was about, and goes once that source leaves the list - removed in another
+  // tab, or by another person - rather than stand under sources it was never about.
+  const listed = (source: SourceKey) =>
+    sources.data?.some((row) => row.project === source.project && row.repo === source.repo) ===
+    true;
+  const deleteRefused = useRefusalOfSubject(deleteSource, listed)
+    ? deleteSource.variables
+    : undefined;
+  const refreshRefused = useRefusalOfSubject(refreshSource, listed)
+    ? refreshSource.variables
+    : undefined;
 
   return (
     <section aria-labelledby="architecture-sources-heading">
@@ -294,30 +316,36 @@ export function ArchitectureSourcesSection(): ReactNode {
               />
             </div>
           ) : null}
-          {deleteSource.isError ? (
+          {deleteRefused === undefined ? null : (
             <div className="mt-4">
               <QueryError
                 message={
-                  stoppedNote(deleteSource, "the removal of the architecture source", "made") ??
-                  "Couldn't delete the architecture source."
+                  stoppedNote(
+                    deleteSource,
+                    `the removal of ${sourceName(deleteRefused)}`,
+                    "made"
+                  ) ?? `Couldn't delete ${sourceName(deleteRefused)}.`
                 }
                 onRetry={deleteSource.retry}
                 retrying={deleteSource.isPending}
               />
             </div>
-          ) : null}
-          {refreshSource.isError ? (
+          )}
+          {refreshRefused === undefined ? null : (
             <div className="mt-4">
               <QueryError
                 message={
-                  stoppedNote(refreshSource, "the refresh of the architecture source", "made") ??
-                  apiErrorMessage(refreshSource.error, "Couldn't refresh the architecture source.")
+                  stoppedNote(
+                    refreshSource,
+                    `the refresh of ${sourceName(refreshRefused)}`,
+                    "made"
+                  ) ?? refusedNote(`refresh ${sourceName(refreshRefused)}`, refreshSource.error)
                 }
                 onRetry={refreshSource.retry}
                 retrying={refreshSource.isPending}
               />
             </div>
-          ) : null}
+          )}
         </>
       ) : null}
     </section>

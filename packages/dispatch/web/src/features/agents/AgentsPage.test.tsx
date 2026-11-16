@@ -1364,6 +1364,56 @@ test("an upload refused on an Agents row's issue is retried only once the row is
   }
 });
 
+// A file's reference belongs to the draft it was pasted into. One that lands after the row moved
+// onto another address is not added to the message written there: the row says it waits, and it
+// joins the message once the row is back on the address the file was pasted for.
+test("an upload that lands after an Agents row moves joins the message only back on its issue", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ issues: [coreIssue] });
+  const stored = Promise.withResolvers<never>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockReturnValue(stored.promise);
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await pickIssue(user, planner, "CORE-1");
+    await waitFor(() => expect(field.value).toBe("@Planner"));
+    // user-event's paste carries text, never the file this field uploads.
+    fireEvent.paste(field, { clipboardData: { files: [shot] } });
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
+
+    await pickIssue(user, planner, "");
+    await waitFor(() => expect(field.value).toBe(""));
+    act(() =>
+      stored.resolve({
+        artifact: { name: "shot.png", slug: "shot-png" },
+        version: { number: 1 },
+      } as never)
+    );
+    // Settled once the composer no longer says it is uploading, on its status line or on Send.
+    await waitFor(() => expect(within(planner).queryAllByText("Uploading file…")).toEqual([]));
+    expect(field.value).toBe("");
+    expect(
+      within(planner).getByText(
+        "The file pasted for CORE-1 is uploaded. Its reference joins the message when you go back to it."
+      )
+    ).toBeTruthy();
+
+    await pickIssue(user, planner, "CORE-1");
+    await waitFor(() =>
+      expect(field.value).toBe("@Planner ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")
+    );
+    expect(within(planner).queryByText(/is uploaded/)).not.toBeInTheDocument();
+    expect(uploadArtifact).toHaveBeenCalledTimes(1);
+  } finally {
+    page.view.unmount();
+    page.restore();
+    uploadArtifact.mockRestore();
+  }
+});
+
 test("Agents loads only open issues when an optional picker is opened", async () => {
   const user = userEvent.setup();
   const page = renderAgents();

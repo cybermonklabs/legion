@@ -99,6 +99,34 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   `features/agents/broadcast-queue.ts`, below).
   An upload carries its target as its own mutation variable, taken by the paste or drop that
   starts it, so a pick in that task moves the next message, never the file.
+  Its reference belongs to the draft it was pasted into, which the press carries as well (the
+  owner it was pasted for, as `useDraftUpload`'s `draft`, which an ask card fills with its ask).
+  A file that lands while the composer addresses another owner - an Agents row's issue pick - waits
+  until the composer is back on that owner, where its reference joins the message, and the composer
+  says so meanwhile (`landedFor` in `MentionComposer.tsx`).
+  A refused upload's Retry is offered only there too: while the composer addresses another owner the
+  refusal names where the file was pasted and has no Retry (`pastedElsewhere`), since one would
+  upload the file to the first owner and add it to a message for the second.
+  A refused send belongs to the address it was written for as well as to its send name:
+  `HeldSends.send` refuses a request whose owner, anchor, reply or edited comment is not the
+  refusal's (`sameAddress` in `features/conversation/send-request.ts`), so a composer its host has
+  moved - an Agents row's issue pick, the docked composer's Cancel reply, a newer message in an
+  Inbox agent thread - sends no Retry of that draft to the address it shows now.
+  There `MentionComposer` turns Send and Retry off, offers Discard, and says where the draft was
+  written for (`writtenElsewhere`), and back on that address its Retry goes there; while it is
+  elsewhere nothing typed is written into that refusal's draft, and a Reply's prefill leaves it.
+  A standing box (`standing`) answers what its host hands it, not a Reply the reader pressed, so
+  its sentence offers Discard alone: an Inbox agent thread's box replies to the thread's newest
+  message, and a message that comes after the refusal moves the box onto it.
+  The Inbox's agent thread boxes, in the reading pane and on a card (`AgentThreadBody` in
+  `features/inbox/ThreadBody.tsx`), name their send by the thread (`threadSendKey`), as its comment
+  and message boxes do, and show only the session's sends that answer that thread (`thread` on
+  `AgentMessageComposer`), so a reply refused in one thread is never shown, or retried, in another
+  thread of the same session.
+  What the reader types into a standing box and does not send waits in that box, by its send name
+  (`features/conversation/unsent-drafts.ts`, a draft store of the kind the ask's answer and reply
+  drafts are kept in): the box drawn when the column comes back to that thread shows it again, no
+  other thread's box shows it, and Send drops it, since from then on the held send keeps the draft.
   On a phone, a comment's thread opens full-screen over the Conversation. The docked composer stays
   mounted under it, hidden, and a comment's Reply answers in the thread by a composer of its own,
   with its own reply and its own send name beneath the tab's, which the thread view keeps mounted,
@@ -292,7 +320,11 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   belongs to the session, so a row that comes back - the reader left the page, or the session
   left the registry and returned - shows the send the store holds for it and holds its picker and
   Reply until it lands.
-  An upload's reference names where the file went, whatever was picked while it was out.
+  The Inbox's box for an agent thread names its send by that thread instead (`threadSendKey`,
+  above): a reply it holds is that thread's, not this row's.
+  An upload's reference names where the file went, whatever was picked while it was out, and joins
+  the message for the address the file was pasted for: one that lands, or is refused, while the
+  row is on another waits for the row to be back there (`landedFor`, `pastedElsewhere`, above).
   The row's name is `AgentName`'s `control` variant ("How an agent is shown", below): the toggle
   button inside the heading keeps the name, and the component draws the running state before the
   heading and the live link (`↗`, `Open live conversation with <title>`) after it, both outside
