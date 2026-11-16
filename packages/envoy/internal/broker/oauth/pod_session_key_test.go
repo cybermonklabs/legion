@@ -28,7 +28,7 @@ const (
 // DPoP proof of the key whose thumbprint is jkt, as the Legion daemon registers each role.
 func (f *exchangeFixture) registersBound(t *testing.T, of, uid, session, jkt string) {
 	t.Helper()
-	if _, _, err := f.provider.RegisterPodSession(context.Background(), of, uid, session, jkt); err != nil {
+	if _, err := f.provider.RegisterPodSession(context.Background(), of, uid, session, jkt, 0); err != nil {
 		t.Fatalf("register %s's pod %s for %s bound to %s: %v", of, uid, session, jkt, err)
 	}
 }
