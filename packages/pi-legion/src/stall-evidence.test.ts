@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { LegionState } from "@legion/contracts/legion-api";
-import type { PublishInput } from "@legion/envoy-client/transport";
+import type { PublishInput, PublishResult } from "@legion/envoy-client/transport";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { EnvoyPublish } from "@legion/pi-shared/phase-reminder";
 import { DEFAULT_STALL_LIMITS, defaultCallBoundMs } from "@legion/pi-shared/stall-limits";
@@ -267,7 +267,7 @@ interface TellerRig {
   readonly published: PublishInput[];
   readonly warnings: { readonly message: string; readonly context?: Record<string, unknown> }[];
   /** What the listener answers; a string makes the publish throw that message. */
-  publishAnswer: { kept?: boolean } | string;
+  publishAnswer: Pick<PublishResult, "kept" | "keptUntil"> | string;
   /** Whether Envoy is on for this session. */
   envoy: boolean;
   /** Whether `pi.appendEntry` takes the record. */
@@ -359,7 +359,7 @@ test("a phase worker's session tells the issue's own live architect, with the ev
   expect(notice.message).toContain('command="sleep 100000" pty=true');
   expect(JSON.parse(notice.payload as string)).toEqual(written);
   expect(notice.idempotencyKey).toBe("legion-stall:toolu_stuck");
-  expect(notice.keep).toBe(false);
+  expect(notice).not.toHaveProperty("keep");
   expect("sourceSessionID" in notice && notice.sourceSessionID).toBe("ses_worker");
 });
 
@@ -386,6 +386,35 @@ test("a root architect's own session tells the controller role", async () => {
   expect(rig.published).toHaveLength(1);
   expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-controller");
   expect(rig.published[0]?.message).toContain("The architect of INFRA-1000");
+});
+
+// The notice sends no `keep` field, so a listener keeps it for an owner's role that no live
+// session holds, and answers 202 kept. That has told no owner yet, and the notice is sent once and
+// never again, so the teller reports `ownerTold: false`: for the architect, and for the
+// controller, which owns a root architect's own call (dispatch://INFRA-2846, R6).
+test("the owner notice is kept", async () => {
+  const architect = tellerRig();
+  const controller = tellerRig({
+    session: { kind: "root-architect", tree: "INFRA-1000" },
+    claim: claimOf({ issue: "INFRA-1000", role: "architect", sessionID: "ses_root" }),
+  });
+  for (const [rig, topic] of [
+    [architect, "notifications.role.legion-legion-infra-1274-architect"],
+    [controller, "notifications.role.legion-legion-controller"],
+  ] as const) {
+    rig.publishAnswer = { kept: true, keptUntil: START + 60 * MINUTE };
+    expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+      evidenceWritten: true,
+      ownerTold: false,
+    });
+    expect(rig.published).toHaveLength(1);
+    expect(rig.published[0]?.topic).toBe(topic);
+    expect(rig.published[0]).not.toHaveProperty("keep");
+    expect(rig.warnings).toContainEqual({
+      message: "legion: the listener kept the stall notice; no owner has taken it",
+      context: expect.objectContaining({ topic }),
+    });
+  }
 });
 
 test("the controller's own session publishes nothing and writes its evidence instead", async () => {
@@ -441,11 +470,6 @@ test("a refused publish and a session with Envoy off leave a line in the log", a
   expect(refused.warnings.map((line) => line.message)).toContain(
     "legion: the owner was not told about this session's stuck tool call"
   );
-
-  // A listener that kept the notice has told no architect, so nobody was told.
-  const kept = tellerRig();
-  kept.publishAnswer = { kept: true };
-  expect((await kept.teller.tellOverdue(evidenceOf())).ownerTold).toBe(false);
 
   const off = tellerRig();
   off.envoy = false;

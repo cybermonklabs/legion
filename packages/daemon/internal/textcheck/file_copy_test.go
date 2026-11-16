@@ -1,4 +1,4 @@
-package testpg
+package textcheck
 
 import (
 	"go/scanner"

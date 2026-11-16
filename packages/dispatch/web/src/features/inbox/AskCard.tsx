@@ -10,7 +10,13 @@ import {
   useState,
 } from "react";
 
-import { type ArtifactOwner, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
+import {
+  type ArtifactOwner,
+  api,
+  type DeclineAskInput,
+  isSpecFormRefusal,
+  type WriteBounds,
+} from "../../api/client";
 import { usersQuery } from "../../api/queries";
 import type {
   AnswerAskInput,
@@ -397,6 +403,15 @@ export function AskCard({
   if (changing !== seededFor) {
     setSeededFor(changing);
     if (changing && variant === "compact" && answerText.trim() !== "") setOwnWordsOpen(true);
+  }
+  // A refusal of the form fills the reason of Request changes with what Dispatch wrote for the
+  // author (`useAskAnswerForm`); a compact card shows that reason too rather than folding the
+  // text the next press sends behind its disclosure. The same pattern as the change above.
+  const formRefusal = isSpecFormRefusal(mutation.error) ? mutation.error : null;
+  const [shownFormRefusal, setShownFormRefusal] = useState(formRefusal);
+  if (formRefusal !== shownFormRefusal) {
+    setShownFormRefusal(formRefusal);
+    if (formRefusal !== null && variant === "compact") setOwnWordsOpen(true);
   }
   // One page can host the same ask twice (a decision block and the margin sheet), so the
   // panel each control names is this instance's.

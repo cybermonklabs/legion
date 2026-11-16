@@ -1,3 +1,8 @@
+//go:build !race
+
+// The guard is static, as lock_level_test.go's is and for the reason given there: it reads the
+// module's source, so the race detector adds nothing to it.
+
 package api
 
 import (
@@ -136,7 +141,7 @@ func namesAsksIdentifier(literal *ast.CompositeLit) bool {
 	})
 }
 
-// moduleRelative is a source path from moduleSources(t, "../../.."), relative to the module.
+// moduleRelative is a source path from moduleSources (moduleRoot), relative to the module.
 func moduleRelative(source string) string {
 	return strings.TrimPrefix(filepath.ToSlash(source), "../../../")
 }
@@ -250,7 +255,7 @@ func plantedSource(t *testing.T, code string) moduleSource {
 // fewer than six and fails; each control plants one writer the census must name, or one the
 // patterns must leave out, or a second caller that the caller part must refuse.
 func TestOnlyTheFormGateOpensOrAnswersAPersonsApproval(t *testing.T) {
-	sources := moduleSources(t, "../../..")
+	sources := moduleSources(t)
 	if problems := approvalCallerProblems(sources); len(problems) > 0 {
 		t.Fatalf("the calls the form gate's census rests on moved:\n\t%s", strings.Join(problems, "\n\t"))
 	}

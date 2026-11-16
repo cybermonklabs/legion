@@ -495,10 +495,15 @@ func (p *idleRigRoleProcess) run() error {
 		return err
 	}
 	go p.watchActivity()
-	// The registration goes when the process does, as a session's Envoy plugin drops it when its
-	// process ends: a released pod's session must be gone from the listener's registry, or a
-	// message published to its role topic would be forwarded to a session nothing is left of
-	// instead of being answered 404 and reported as the wake it is.
+	// The registration goes when the process does, and the role claim stays: unregister sends the
+	// daemon's clean stop of a role's session (notify's DeleteSession, DELETE /v1/sessions/<id>)
+	// and nothing else, so the listener holds what that stop leaves behind, the session's record
+	// gone and its claim still naming the session. A message published to the role topic then
+	// finds a holder that is not live: the listener keeps it for the role's next live holder
+	// (kept_reason holder_lapsed), or answers one that keeps nothing 404 holder_lapsed, and reports
+	// the wake either way. A record left standing would have the message forwarded to a session
+	// nothing is left of instead. This stand-in gives the listener the state after that clean stop;
+	// it does not claim to show what Oh My Pi does on its own when its process ends.
 	defer p.unregister()
 	stopping := make(chan os.Signal, 1)
 	signal.Notify(stopping, syscall.SIGTERM, syscall.SIGINT)
@@ -510,11 +515,12 @@ func (p *idleRigRoleProcess) run() error {
 	return p.serve()
 }
 
-// unregister drops the session's role claim and its registration with the listener.
+// unregister removes the session's registration with the listener, as the daemon's clean stop
+// does (notify's DeleteSession), and leaves its role claim and its interest record standing: the
+// claim still names this session, which is the claim a released pod's role publish finds lapsed.
 func (p *idleRigRoleProcess) unregister() {
 	p.unregisterOnce.Do(func() {
 		_ = p.delete(p.envoy + "/v1/sessions/" + p.session)
-		_ = p.delete(p.envoy + "/v1/interests/" + p.session)
 	})
 }
 

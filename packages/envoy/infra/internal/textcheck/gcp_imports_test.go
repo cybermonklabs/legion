@@ -1,7 +1,6 @@
-package gcp_test
+package textcheck
 
 import (
-	"os/exec"
 	"strings"
 	"testing"
 
@@ -12,9 +11,9 @@ import (
 // compiles none of theirs, so a GCP-only consumer's plugin build and SDK hold no AWS type. go list
 // lists the gcp package's whole import graph, its tests' imports aside.
 func TestTheHubCompilesNoAWSPackage(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", ".").CombinedOutput()
-	require.NoError(t, err, string(out))
-	deps := strings.Fields(string(out))
+	// Beside the other go list of this package, for the reason its test gives.
+	t.Parallel()
+	deps := moduleDeps(t, "./gcp")
 	require.Contains(t, deps, "github.com/sjawhar/envoy/infra/nats", "the hub takes the shared rules type")
 	for _, dep := range deps {
 		require.False(t, dep == "github.com/sjawhar/envoy/infra/aws" || strings.HasPrefix(dep, "github.com/sjawhar/envoy/infra/aws/"),

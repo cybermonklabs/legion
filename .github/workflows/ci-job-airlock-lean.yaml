@@ -1,0 +1,88 @@
+name: CI job airlock-lean
+
+# The steps of ci.yaml's `airlock-lean` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  airlock-lean:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # The built model the two runs below compare the Go code against. Naming no file makes
+      # FuzzAirlock skip (internal/broker/airlock/airlock_fuzz_test.go:32-46), and a skip is a
+      # pass, so the build step checks the binary is there before those runs read this.
+      AIRLOCK_MODEL: ${{ github.workspace }}/packages/envoy/internal/broker/airlock/lean/.lake/build/bin/airlock-model
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # No Go cache family: the airlock package imports the standard library alone, so this job
+      # downloads no module and compiles no third-party code, as envoy-go-race-api does.
+      #
+      # elan and the Lean toolchain it installs, under the ELAN_HOME
+      # .github/actions/install-elan sets ($RUNNER_TEMP/elan, under the runner's work directory),
+      # keyed on the content of the lean-toolchain the model is built with. No restore-keys: an
+      # entry of another toolchain is exactly what this key keeps out, and `lake` would download
+      # the named one anyway. .github/workflows/ci-caches.yaml fills it on a push to main, as it
+      # fills every family this file restores.
+      - id: elan-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/elan
+          key: elan-${{ runner.os }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
+      - uses: ./.github/actions/install-elan
+      - name: Build the Lean model
+        run: |
+          lake build
+          test -x .lake/build/bin/airlock-model
+        working-directory: packages/envoy/internal/broker/airlock/lean
+      # What the three axioms are, and why fewer theorems printed than the model has is a
+      # failure, is in the script. Check k15 of packages/envoy/scripts/airlock-check.sh runs the
+      # same one, so the rule and the count it holds are written once.
+      - name: Print the theorems' axioms
+        run: bash packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/broker/airlock/lean
+      # The committed seed corpus (testdata/fuzz/FuzzAirlock): every seed through both sides.
+      - name: Compare the Go airlock with the model over the seed corpus
+        run: go test -run FuzzAirlock ./internal/broker/airlock/
+        working-directory: packages/envoy
+      - name: Fuzz the Go airlock against the model
+        run: go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/broker/airlock/
+        working-directory: packages/envoy
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: airlock-lean
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

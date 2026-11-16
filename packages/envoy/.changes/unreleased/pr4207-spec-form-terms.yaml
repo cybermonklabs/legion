@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  Dispatch refuses an approval request and a person's approval that hold a second definition of a
+  term of The Spec. A reopen leaves such a request resolved, with the finding as its reason. The
+  list of terms of a root holds the term lines of the versions that a person approved. These are the
+  root's terms.md and each covered spec and Verification document under the root. The finding names
+  the term and the document that defines it. A definition of more than one sentence also breaks the
+  form. GET /api/v1/artifacts/{id}/spec-form answers the list of terms of the document's root.
+custom:
+    Issue: pr4207

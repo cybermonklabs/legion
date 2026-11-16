@@ -405,7 +405,8 @@ func readRecordedAskAuthors(ctx context.Context, q Queryer, room string) (map[st
 // in indexed, which an ask row names from now on, and of each block held does not hold, the ask
 // blocks of the tree the settlement reconciled: a block deleted from the document, or an id a
 // stamp replaced. A block still waiting for its ask - a copy, one whose observer has not run, one
-// settlement cannot read - keeps its row.
+// settlement cannot read, one a closed issue's settlement left with no row until the issue
+// reopens (reconcileAskBlocks) - keeps its row.
 func deleteSettledAskAuthors(ctx context.Context, tx pgx.Tx, room string, indexed []string, held map[string]struct{}) error {
 	// Neither array may be NULL: `not block_id = any(NULL)` is NULL, which would keep every row of a
 	// document that holds no ask block at all.

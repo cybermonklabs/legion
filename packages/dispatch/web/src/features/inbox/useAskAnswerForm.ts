@@ -1,7 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 
-import { ApiError, api, apiErrorMessage, type WriteBounds } from "../../api/client";
+import {
+  ApiError,
+  api,
+  apiErrorMessage,
+  isSpecFormRefusal,
+  type WriteBounds,
+} from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type {
   AnswerAskInput,
@@ -54,8 +60,10 @@ interface AskAnswerFailure {
 /**
  * The refusals the same answer is refused with again however often it is sent, and what the card
  * says for each: the ask was answered or closed elsewhere, its question changed (the card reloads
- * it, so the next answer is to the new wording), or writing even its server state would leave the
- * document's live state past what the server can decode. Any other failure may pass on a retry.
+ * it, so the next answer is to the new wording), writing even its server state would leave the
+ * document's live state past what the server can decode, or an approval of a document whose text
+ * breaks the form of The Spec (Dispatch's own words, which name each text and the next step). Any
+ * other failure may pass on a retry.
  */
 function answerFailure(error: Error): AskAnswerFailure {
   if (error instanceof ApiError) {
@@ -95,6 +103,8 @@ function answerFailure(error: Error): AskAnswerFailure {
           ),
           retryable: false,
         };
+      case "SPEC_FORM":
+        return { message: error.message, retryable: false };
     }
   }
   return { message: "Could not save your answer.", retryable: true };
@@ -186,6 +196,12 @@ export function useAskAnswerForm({
         replacing.current = undefined;
         setJustAnswered(null);
         setChanging(false);
+      }
+      if (isSpecFormRefusal(error)) {
+        // Dispatch refused the approval and wrote the reason a request for changes sends to the
+        // author: the card picks Request changes with that reason, and one more press sends it.
+        setSelected(["Request changes"]);
+        setAnswerText(error.changesReason ?? "");
       }
     },
     onSettled: () => {
