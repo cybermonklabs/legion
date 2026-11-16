@@ -156,7 +156,13 @@ func bothInstalledGh(t *testing.T) func(t *testing.T, args ...string) (int, stri
 	check := leakguardtest.Write(t, t.TempDir(), ghCheckPasses)
 	return func(t *testing.T, args ...string) (int, string) {
 		t.Helper()
-		cmd := exec.Command("gh", args...)
+		// By the absolute path of the `gh` this helper wrote, never the bare name: Go resolves a
+		// bare name against the PATH of the process making the call and never against the one the
+		// child's Env holds (docs/testing.md), and realGHForCapture has put a `gh` of its own
+		// first on this process's PATH (ghWrapperFirstOnPath), so a bare name ran that one and
+		// the script written here never ran at all. The child's PATH still holds bin first, so
+		// every gh the wrapper resolves for itself is this helper's.
+		cmd := exec.Command(filepath.Join(bin, "gh"), args...)
 		cmd.Dir = home
 		cmd.Env = []string{
 			"PATH=" + bin + ":/usr/bin:/bin", "HOME=" + home,

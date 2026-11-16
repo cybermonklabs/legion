@@ -1795,8 +1795,8 @@ SESSIONS_STEP = "Test the session message-wait script"
 # harness or its subject selects the job and exactly that step's gate is true in it.
 #
 # Every harness under .github/scripts sources test-lib.sh for its `check`, `is` and `summary`,
-# so each of those gates reads it and a change to it runs them all; scripts/sessions-import-pods.test.sh
-# and scripts/priorities-seed-check.test.sh, which are not among them, carry their own helpers.
+# so each of those gates reads it and a change to it runs them all;
+# scripts/priorities-seed-check.test.sh, which is not among them, carries its own helpers.
 SCRIPTS = ".github/scripts"
 TEST_LIB = f"{SCRIPTS}/test-lib.sh"
 
@@ -2005,11 +2005,7 @@ SCRIPT_TEST_GATES = [
     harness("disk_watch_test", "Test the machine watch", f"{SCRIPTS}/disk_watch.test.sh", [
         (f"{SCRIPTS}/disk_watch.py", "the module under test"),
     ]),
-    # The two harnesses of the job that are not under .github/scripts and source no test-lib.sh.
-    harness("sessions_import_pods_test", "Test the session import pods script (a stand-in kubectl)",
-            "scripts/sessions-import-pods.test.sh", [
-        ("scripts/sessions-import-pods.sh", "the script under test (scripts/sessions-import-pods.test.sh:113 runs it)"),
-    ], lib=False),
+    # The one harness of the job that is not under .github/scripts and sources no test-lib.sh.
     harness("priorities_seed_check_test", "Test the priorities seed check (a stand-in Dispatch)",
             "scripts/priorities-seed-check.test.sh", [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),

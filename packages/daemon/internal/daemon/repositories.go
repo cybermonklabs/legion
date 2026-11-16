@@ -92,9 +92,12 @@ type repositories struct {
 	// that answer and from the mapping (Accepted), and the repository caches and the
 	// repositories block of legion state from the mapping and the live records
 	// (workflowRuntime.cacheRepositories, served), neither from this set. So the cost is that
-	// admission, whose roles' next bundle build reads GitHub for the App again and names it
-	// where the installation has left the owner altogether (runtime.ErrNoGitHubOwner). No token
-	// reaches a repository because of it.
+	// admission, whose roles' next bundle build reads GitHub for the App again and fails on the
+	// default owner's own mint, naming that owner and GitHub's answer for it (mintBundle returns
+	// the named failure of the default owner rather than leaving it out). runtime.ErrNoGitHubOwner
+	// is another case and not this one: it is the App installed nowhere at all, which an issue
+	// that has a repository never reaches, since bundleDirs always holds a directory for that
+	// repository's own owner. No token reaches a repository because of any of it.
 	recorded map[string]ghbranch.Repository
 	// live is each repository a live issue record of the project names, by its lowercased
 	// <owner>/<name>, as the record keeps GitHub's spelling of it (record.Issue.GitHubRepo): the
@@ -1928,7 +1931,11 @@ func (w *workflowRuntime) heldPastBound() bool {
 // that issue in its scope. An answer GitHub gave during the pass marks the repository too
 // (readAnswered), so a repository is counted recovered only by a pass that began after it.
 func (w *workflowRuntime) settleRecovery(names []string, waits map[string]map[string]releaseWait, todo map[string]bool, marks map[string]uint64) (answered []string, told map[string]releaseWait, dropped []letGo) {
-	// lookup takes the mapping's lock, so it is read before recoveringMu is taken.
+	// The lock order is recoveringMu first and the mapping's lock (repositories.mu) nested inside
+	// it, which is sound because nothing holding the mapping's lock ever takes recoveringMu
+	// (awaitRecovery says the same). These lookups are made before recoveringMu all the same, not
+	// because the order requires it, but because what they read is each repository's source as
+	// another pass left it, which is a fact about the mapping and not about this pass's set.
 	readElsewhere := make(map[string]bool, len(names))
 	for _, repo := range names {
 		readElsewhere[repo] = w.repositories.lookup(repo).source != fromNeither
