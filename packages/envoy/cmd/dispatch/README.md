@@ -3106,10 +3106,13 @@ It rewrites, with a marker naming the node and the `graph_erasures` record where
 - **The blocks that hold the erased block** (`document_block_texts.text` and `document_blocks.excerpt` of each block up its `parent_block_id` chain whose text quotes it): each projects a block node of its own, and a live node no row projects is a difference `census --store` reads.
   The text is rewritten only where the erased text stands as a block of its own, at the start of a line after its markdown framing and at the end of a line, so a sibling's words inside a longer line stand.
   An excerpt is cut again from the rewritten text the way the indexer cuts it, and `text_sha256` is left where it is, since it is the digest the indexer compares a later version's block against.
+
 - **The excerpt a mention of the document shows** (`refs.excerpt_text`) where it was cut from the erased block or one holding it: it is cleared and marked owed, so the reconciliation cuts it again from the latest version left.
+
 - **The events about the node** (`events.payload`): a comment's own events, whose payload is the comment or names it as `comment_id`, and a block's document events (`artifact.*`, `block.*`).
   A document event's payload quotes the whole document, so in it the erased text is replaced only where it stands as a block of its own, as in a container's text, and a sibling's line in a version's markdown or a diff stands.
   The log is append-only, so the row stays with its id, its time and its actor, and the bytes go from inside its JSON string values alone: a key is never touched, so an erase of `kind` leaves every `"kind"` key and redacts a body reading `kind`.
+
 - **The live editing state** of a block's document, and of each document whose margin record holds an erased comment's body (`doc_updates`, with `doc_checkpoints` and `doc_snapshots`), the ygo history its room loads from.
   A deleted item keeps its bytes in those rows until a fold collects it, and a text substitution inside an update would leave one no load decodes, so no row is edited: the erase replaces the whole history with one fresh update of the live document as it leaves it, through the statements a rebuild writes (`docs.ReadErasedLiveText`, `PgVersioned.RebuildTx`).
   For a block, that update holds the live document with the marker in place of the erased text inside the erased block's own range and nowhere else.
@@ -3122,9 +3125,13 @@ It rewrites, with a marker naming the node and the `graph_erasures` record where
   What that costs is the edits before the erase as separate steps, the anchor marks inside the erased block, and the keystrokes of an editor open on it that were not yet stored.
   A history that does not load, a tree outside the schema, and a redaction that drops an open ask block refuse the erase, naming the document.
   The match is byte for byte on markdown: where the erased block holds the erased bytes but its markdown spells them otherwise - an escaped `*` or `_`, for one - the seed would keep them, so the run lists the document as **not redacted** and refuses, removing nothing.
+
 - **The search rows** standing on a version that went: `document_search` is written again from the latest version left, by touching its `search` so `20261101182454`'s trigger writes the row, and an issue whose spec lost a version has its own `search` written again by the statement `20261105145243`'s trigger runs.
+
 - **The term statistics** (`search_term_stats`, `search_term_totals`) of every project whose items moved are counted again in full as the items stand in the erase's transaction (`api.RecountSearchTermStatsTx`), and the queue rows that transaction wrote are deleted, since the count already holds what they say.
+
 - **The embedding store** (`embeddings`, with `embedding_window_states`): the node's own rows and window state go, and for a block the windows of its document whose `covers` name it or whose snapshot holds its text, its document's whole-text row and, where the document is a spec, the issue's row; each such issue's row is written again by the statement migration `0140`'s trigger runs, and the document is marked owed its windows (`document_block_versions.windows_owed_at`) where a version with markdown is left.
+
 - **The stored display trees** (`text_trees`), keyed by the SHA-256 of a whole text: the row of every text the erase removes or rewrites goes - the node's own texts, each deleted version's markdown, the texts of the blocks holding it, each event-payload string the redaction rewrites and its document's live text.
   A read that began before the commit stores the trees it read on a goroutine of its own, bounded by `api.StoreTreesTimeout` (30 seconds), so the command waits that bound out after the commit and deletes the same keys once more, counting what it found on a `text_trees swept after the commit: <n>` line.
   The keys are held in the command's memory alone, since each is the digest of an erased text, so a sweep that fails cannot be run again, and the command says so and exits 2 after printing the report of the erase that did commit.
@@ -3419,6 +3426,9 @@ An issue title is at most 1,000 characters (`contracts.IssueTitleMax`, UTF-16 un
 The check scores the project's issues whose status is not `done`, less the new issue's ancestors (its parent and every issue above it), on the share of the new text's rarest words that a candidate's title vector and its primary document's latest vector hold together:
 the terms are the related-item check's own (`pickRelatedTerms`, `api/related_terms.go`), and the statement drives from them into `issues.search` and `document_search`, so each term is one probe of a GIN index and no candidate's spec vector is read more than once per term.
 Every lexeme an issue key contributes is dropped from those terms, so a spec that cites the nearest issue it ruled out is not refused for citing it.
+Because no key is scored, titles filed from one template, one for each issue they concern, would score as copies of each other;
+so the scoring statement leaves a candidate out when both titles name issue keys (`[A-Z][A-Z0-9]{1,9}-[0-9]+`, which also reads a word such as `SHA-256`) and the new title names neither the candidate's own key nor any key the candidate's title names (`duplicateNamesAnotherIssue`, a condition inside the statement, before its limit of five candidates).
+A key in a spec does not count.
 A text whose picked terms number fewer than `duplicateMinTerms` (3), or that holds no more than three lexemes of its own, is not scored at all:
 a share of one or two terms is 1.0 against any issue that holds them.
 Such a text is judged by equality instead (`duplicateEqualLexemesQuery`):

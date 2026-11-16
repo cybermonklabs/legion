@@ -256,6 +256,22 @@ describe("the files the claim reads", () => {
     await expect(idsInFiles([join(at, "missing.jsonl")])).rejects.toThrow(CorpusError);
   });
 
+  test("a record that names no id stops the claim, beside a record that names one", async () => {
+    const at = await directory();
+    const named = join(at, "rows.jsonl");
+    await writeFile(named, `{"request":"dispatch://INFRA-1/ask/${ASK_ONE}"}\n`);
+    for (const [name, text] of [
+      ["empty.jsonl", ""],
+      ["truncated.jsonl", '{"request":"dispatch://INFRA-1/ask/0b1d5a9e-3f4c"}\n'],
+      ["sessions.txt", "the sessions of the round\n"],
+    ] as const) {
+      const empty = join(at, name);
+      await writeFile(empty, text);
+      await expect(idsInFiles([empty])).rejects.toThrow(`${empty} names no id`);
+      await expect(idsInFiles([named, empty])).rejects.toThrow(CorpusError);
+    }
+  });
+
   test("a corpus built before the build wrote its trees cannot be drawn by the claim", async () => {
     const at = await directory();
     await expect(readTrees(at)).rejects.toThrow(CorpusError);

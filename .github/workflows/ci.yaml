@@ -394,7 +394,7 @@ jobs:
       broker_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.broker_multiprocess }}
       # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
       # so it comes back on every push that selects it, as the two suites above do.
-      airlock_lean: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.airlock_lean }}
+      airlock_lean: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.airlock_lean }}
       # A slow suite, gated as the comment above `envoy_go` says.
       envoy_smoke: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter2.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.envoy_e2e_local }}
@@ -607,6 +607,7 @@ jobs:
               # text's testdata too: the daemon's race-tested packages compile it, and a compiled
               # package's testdata is read by the job that compiles it.
               - 'packages/envoy/internal/dispatch/text/**'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -689,6 +690,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/prioritystore/*'
               - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/rank/*'
+              - 'packages/envoy/internal/dispatch/readclass/*'
               - 'packages/envoy/internal/dispatch/redeliver/*'
               - 'packages/envoy/internal/dispatch/refs/*'
               - 'packages/envoy/internal/dispatch/retry/*'
@@ -701,6 +703,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/texttreefill/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -812,6 +815,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
@@ -835,6 +839,7 @@ jobs:
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dedupe/*'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/ghrename/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -1950,6 +1955,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/prioritystore/*'
               - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/rank/*'
+              - 'packages/envoy/internal/dispatch/readclass/*'
               - 'packages/envoy/internal/dispatch/redeliver/*'
               - 'packages/envoy/internal/dispatch/refs/*'
               - 'packages/envoy/internal/dispatch/retry/*'
@@ -1962,6 +1968,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/texttreefill/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -1993,6 +2000,7 @@ jobs:
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dedupe/*'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/ghrename/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -2041,6 +2049,7 @@ jobs:
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
               - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
@@ -2253,6 +2262,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
@@ -3118,6 +3128,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/prioritystore/*'
               - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/rank/*'
+              - 'packages/envoy/internal/dispatch/readclass/*'
               - 'packages/envoy/internal/dispatch/refs/*'
               - 'packages/envoy/internal/dispatch/retry/*'
               - 'packages/envoy/internal/dispatch/sessionanswers/*'
@@ -3199,6 +3210,7 @@ jobs:
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/logging/*'
@@ -3222,26 +3234,6 @@ jobs:
               - '!packages/envoy/cmd/agent-secrets/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
-              # END generated
-            # The Lean model of the airlock and the Go code it covers (airlock-lean): `lake build`
-            # and the axiom print read the model's own project, and the two fuzz runs compile the
-            # airlock package and compare it against the model's program, so a change to either
-            # side runs the job. Both sides live under internal/broker/airlock, which one glob
-            # names; the axiom check is a script of its own, which check k15 runs too; the Lean
-            # toolchain comes from the elan the job's action installs, and that action reads the
-            # `elan` row of the tool manifest through the fetch helper every install goes through.
-            airlock_lean:
-              - *ci_router
-              - '.github/workflows/ci-job-airlock-lean.yaml'
-              - *go_workspace
-              - 'packages/envoy/internal/broker/airlock/**'
-              - 'packages/envoy/scripts/airlock-lean-axioms.sh'
-              - '.github/actions/install-elan/**'
-              - '.github/ci-tools.yaml'
-              - '.github/scripts/ci-tools.sh'
-              # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
-              # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
-              - '!packages/envoy/internal/broker/airlock/airlocktest/**/*_test.go'
               # END generated
             # Every file packages/envoy/docker/Dockerfile builds from, so envoy-smoke runs whenever
             # the image it smokes changes, every file the held-port image built on top of it reads
@@ -3351,6 +3343,7 @@ jobs:
               - '!packages/envoy/internal/dedupe/**/*_test.go'
               - '!packages/envoy/internal/dispatch/**/*_test.go'
               - '!packages/envoy/internal/envconf/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/ghrename/**/*_test.go'
               - '!packages/envoy/internal/googleidentity/**/*_test.go'
               - '!packages/envoy/internal/goroutinetest/**/*_test.go'
@@ -3702,8 +3695,9 @@ jobs:
       # race lane filters are here, and so is envoy_client, which the first step had no room for
       # once main's new test files grew its generated blocks, and so is private_names_port, whose
       # generated block names every migration test of the daemon's store and grows with each one
-      # main adds. They share no group with a filter of the other steps but ci_router,
-      # go_workspace, bun_install and legion_command, which this string writes again.
+      # main adds, and so is airlock_lean, moved here when the private-project packages took the
+      # second within that margin. They share no group with a filter of the other steps but
+      # ci_router, go_workspace, bun_install and legion_command, which this string writes again.
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter3
         if: github.event_name != 'workflow_dispatch'
@@ -3899,6 +3893,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/prioritystore/**/*_test.go'
               - '!packages/envoy/internal/dispatch/processes/**/*_test.go'
               - '!packages/envoy/internal/dispatch/rank/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/readclass/**/*_test.go'
               - '!packages/envoy/internal/dispatch/redeliver/**/*_test.go'
               - '!packages/envoy/internal/dispatch/refs/**/*_test.go'
               - '!packages/envoy/internal/dispatch/retry/**/*_test.go'
@@ -3910,6 +3905,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/texttreefill/**/*_test.go'
               - '!packages/envoy/internal/dispatch/texttrees/**/*_test.go'
               - '!packages/envoy/internal/envconf/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/ghrename/**/*_test.go'
               - '!packages/envoy/internal/googleidentity/**/*_test.go'
               - '!packages/envoy/internal/goroutinetest/**/*_test.go'
@@ -3933,6 +3929,7 @@ jobs:
               - '!packages/envoy/internal/textcheck/**/*_test.go'
               - '!packages/envoy/internal/verify/**/*_test.go'
               - '!packages/envoy/internal/webhook/**/*_test.go'
+              - '!packages/envoy/internal/weborigin/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/loadtest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
@@ -4039,6 +4036,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/prioritystore/*'
               - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/rank/*'
+              - 'packages/envoy/internal/dispatch/readclass/*'
               - 'packages/envoy/internal/dispatch/refs/*'
               - 'packages/envoy/internal/dispatch/retry/*'
               - 'packages/envoy/internal/dispatch/sessionanswers/*'
@@ -4053,6 +4051,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/explaintest/*'
               - 'packages/envoy/internal/fixtureenv/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/googleidentity/*'
@@ -4132,6 +4131,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/prioritystore/**/*_test.go'
               - '!packages/envoy/internal/dispatch/processes/**/*_test.go'
               - '!packages/envoy/internal/dispatch/rank/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/readclass/**/*_test.go'
               - '!packages/envoy/internal/dispatch/refs/**/*_test.go'
               - '!packages/envoy/internal/dispatch/retry/**/*_test.go'
               - '!packages/envoy/internal/dispatch/sessionanswers/**/*_test.go'
@@ -4139,6 +4139,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/testlimits/**/*_test.go'
               - '!packages/envoy/internal/dispatch/text/**/*_test.go'
               - '!packages/envoy/internal/dispatch/texttrees/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/googleidentity/**/*_test.go'
               - '!packages/envoy/internal/kvwatch/**/*_test.go'
               - '!packages/envoy/internal/metrics/**/*_test.go'
@@ -4174,6 +4175,9 @@ jobs:
               - '.github/scripts/pg-connection-ceiling.sh'
               - *go_workspace
               - 'packages/envoy/internal/contracts/*'
+              # docs reads who may see a document's room through the access rule (roomstate.go,
+              # socket_admission.go).
+              - 'packages/envoy/internal/dispatch/access/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/asks/*'
               - 'packages/envoy/internal/dispatch/auth/*'
@@ -4215,6 +4219,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/explaintest/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
               # room_recovery_test.go reads the goroutine dump through it.
               - 'packages/envoy/internal/goroutinetest/*'
@@ -4230,6 +4235,7 @@ jobs:
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/internal/contracts/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/access/**/*_test.go'
               - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
               - '!packages/envoy/internal/dispatch/asks/**/*_test.go'
               - '!packages/envoy/internal/dispatch/auth/**/*_test.go'
@@ -4250,6 +4256,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/testlimits/**/*_test.go'
               - '!packages/envoy/internal/dispatch/text/**/*_test.go'
               - '!packages/envoy/internal/dispatch/texttrees/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/goroutinetest/**/*_test.go'
               - '!packages/envoy/internal/oidc/**/*_test.go'
               - '!packages/envoy/internal/pglisten/**/*_test.go'
@@ -4345,6 +4352,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
@@ -4383,6 +4391,29 @@ jobs:
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!**/*_test.go'
+              # END generated
+            # The Lean model of the airlock and the Go code it covers (airlock-lean): `lake build`
+            # and the axiom print read the model's own project, and the two fuzz runs compile the
+            # airlock package and compare it against the model's program, so a change to either
+            # side runs the job. Both sides live under internal/broker/airlock, which one glob
+            # names, and the Go side also compiles internal/fold, the case fold it compares names
+            # in; the axiom check is a script of its own, which check k15 runs too; the Lean
+            # toolchain comes from the elan the job's action installs, and that action reads the
+            # `elan` row of the tool manifest through the fetch helper every install goes through.
+            airlock_lean:
+              - *ci_router
+              - '.github/workflows/ci-job-airlock-lean.yaml'
+              - *go_workspace
+              - 'packages/envoy/internal/broker/airlock/**'
+              - 'packages/envoy/internal/fold/*'
+              - 'packages/envoy/scripts/airlock-lean-axioms.sh'
+              - '.github/actions/install-elan/**'
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
+              # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
+              # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+              - '!packages/envoy/internal/broker/airlock/airlocktest/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
               # END generated
 
       # filter_verdicts above is one object over the three steps, the shape .github/scripts/ci-ok.jq

@@ -59,13 +59,14 @@ type Release struct {
 }
 
 // grantRelease is a live grant as checkRelease found it: the enrollment that holds it, the
-// request it came of, when it expires, the names it was granted, and the policy snapshot its
-// re-checks were made against, which the reads that follow mint from.
+// request it came of and the reason that request gave, when it expires, the names it was
+// granted, and the policy snapshot its re-checks were made against, which the reads that follow
+// mint from.
 type grantRelease struct {
-	enrollmentID, requestID string
-	expires                 *time.Time
-	granted                 []requestedSecret
-	set                     *policy.Set
+	enrollmentID, requestID, reason string
+	expires                         *time.Time
+	granted                         []requestedSecret
+	set                             *policy.Set
 }
 
 // checkRelease is every check a release of a grant makes before it reads a value, shared by
@@ -87,16 +88,16 @@ type grantRelease struct {
 // that grant's placeholders, which AirlockConnection checked, and the session it belongs to is
 // what the row answers rather than what the caller claims.
 func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (grantRelease, error) {
-	var enrollmentID, requestID, policyVersion, decidedBy string
+	var enrollmentID, requestID, reason, policyVersion, decidedBy string
 	var expires *time.Time
 	var lifetime *int
 	var live bool
 	var enr enrollmentRow
 	err := m.Store.Pool.QueryRow(ctx, `select g.enrollment_id, g.expires_at, g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at),
-		g.request_id, r.rules_version, coalesce(r.decided_by, ''), r.lifetime_seconds, e.kind, e.operator, e.subject, c.service, c.host
+		g.request_id, r.reason, r.rules_version, coalesce(r.decided_by, ''), r.lifetime_seconds, e.kind, e.operator, e.subject, c.service, c.host
 		from grants g join enrollments e on e.id=g.enrollment_id join requests r on r.id=g.request_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id where g.id=$1`, grantID).
-		Scan(&enrollmentID, &expires, &live, &requestID, &policyVersion, &decidedBy, &lifetime, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Service, &enr.Host)
+		Scan(&enrollmentID, &expires, &live, &requestID, &reason, &policyVersion, &decidedBy, &lifetime, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Service, &enr.Host)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return grantRelease{}, ErrGrantNotLive
 	}
@@ -164,7 +165,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 			}
 		}
 	}
-	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, expires: expires, granted: granted, set: set}, nil
+	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, reason: reason, expires: expires, granted: granted, set: set}, nil
 }
 
 // Values releases the values of a live grant to its own enrollment, and when the grant expires:
@@ -187,7 +188,12 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 // altogether — a CLI from before the airlock finds it missing and runs nothing, rather than
 // running the command with a placeholder it does not understand — and what the session needs to
 // reach it is Release.Airlock.
-func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narrowing *secrets.GitHubNarrowing) (Release, error) {
+//
+// call is what the session says of this release: the command it starts and the reason its own
+// call gave. The release records both, with the reason of the grant's request, in its grant.used
+// row and its ReleasedMessage line (auditGrantUsed); nothing else reads them, and they decide
+// nothing about the release.
+func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narrowing *secrets.GitHubNarrowing, call ReleaseCall) (Release, error) {
 	checked, err := m.checkRelease(ctx, grantID, enrollmentID)
 	if err != nil {
 		return Release{}, err
@@ -221,11 +227,14 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 			return Release{}, err
 		}
 	}
-	detail := auditDetail{"names": releasedNames(read)}
-	if narrowing != nil {
-		detail["github_app"] = auditDetail{"owner": narrowing.Owner, "repositories": narrowing.Repositories, "read_only": narrowing.ReadOnly}
+	// A release with no command, every release from a client from before the field among them,
+	// collects and parses nothing for a redaction it would not make.
+	command := []string{}
+	if len(call.Command) > 0 {
+		command = loggedCommand(call.Command, handedOut(read, release.Airlock))
 	}
-	if err := m.auditGrantUsed(ctx, grantID, checked, detail); err != nil {
+	use := grantUse{names: releasedNames(read), command: command, callReason: callReasonOf(call.Reason, checked.reason), narrowing: narrowing}
+	if err := m.auditGrantUsed(ctx, grantID, checked, use); err != nil {
 		return Release{}, err
 	}
 	return release, nil

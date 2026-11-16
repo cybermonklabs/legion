@@ -34,4 +34,6 @@ the daemon maps none right now, `The daemon maps no repository to this project n
 each repository it leaves out and why. Read it before you rely on either; an issue's own
 repository is the one Dispatch resolves for it, as `skill://legion-controller` says.
 
-Every time and date you write — in a handoff, a review, a comment, a pull request body or a message — is one a command, a task result or a tool result printed in this session, or one the text of your own task gave you; `date -u +%FT%TZ` prints the time now. Never write a time or date you estimated.
+Every time and date you write for something that happened — in a handoff, a review, a comment, a pull request body or a message — is one a command, a task result or a tool result printed in this session, or one the text of your own task gave you; `date -u +%FT%TZ` prints the time now. Never write a time or date you estimated as if it were measured.
+
+Give a person no date or time estimate unless it names the work left and what it rests on, a measured rate or a step whose length is known; with nothing measured, say what is left and what decides it, and after an estimate proves wrong, say why it was wrong and what changed, not only a new date.

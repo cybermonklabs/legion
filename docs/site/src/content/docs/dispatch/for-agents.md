@@ -195,9 +195,9 @@ names a picture the session was already shown instead of sending it again, becau
 carries the session's history and Anthropic refuses one over 32 MB. `dispatch doc-read` always
 shows the picture, which is how an agent gets one back after compaction.
 
-Write every ask for a person reading on a phone who has not read the code. Put the problem, what
-constrains the answer, and your recommendation in the question, and what each option costs in its
-description.
+Write every ask so that a person who has not read the code answers it with no other reading. Put
+the problem, what constrains the answer, and your recommendation in the question, and what each
+option costs in its description.
 
 ## Documents
 

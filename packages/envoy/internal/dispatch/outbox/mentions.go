@@ -758,9 +758,10 @@ func (h mentionHolds) liveUnnamed() bool {
 //
 // The copy that asks it is a role route's forward (roleCopyWaitsForAMention), and it is the one
 // copy of the comment that waits in the event's list past that lease rather than being held as
-// a comment_fallback_copies row: nothing else delivers a role copy - a keep waits for the
-// role's next claim and a forward is the holder's one copy - so a copy taken out of the list
-// would let the owner's later events reach that holder first (destination.waiting, planChains).
+// a comment_fallback_copies row: nothing else delivers a role copy - a keep waits up to its hour
+// for the role's next live holder and a forward is the holder's one copy - so a copy taken out of
+// the list would let the owner's later events reach that holder first (destination.waiting,
+// planChains).
 // What the wait costs while it holds is the re-read mentionPendingDelay sets, and the holder's
 // later events of the issue, which the waiting forward holds behind its key for up to
 // unnamedForwardBound - the cost that bound exists to cap (planChains). Every other destination

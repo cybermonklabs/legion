@@ -641,8 +641,8 @@ sub-architect, an architect whose issue is not its tree), running it on the phas
 every harness shares (`executePhaseOp` in `@legion/pi-shared/legion-phase-ops`) and closing the
 phase (`onPhaseCompleted`) only once it succeeded. A file-backed phase (planning, implementing,
 testing, reviewing) ends with a handoff record on the Dispatch issue, which the worker writes with
-`dispatch handoff-write --issue <issue> --phase <word> --body-file <file>`, the body file under
-`$TMPDIR` rather than the workspace, whose every file jj snapshots; no handoff is a commit or a
+`dispatch handoff-write --issue <issue> --phase <word> --body-file -`, the body on standard input
+or in a file outside the workspace, whose every file jj snapshots; no handoff is a commit or a
 push. The operation finds
 what it reports in the pane first (`@legion/pi-shared/handoff-record`): the issue's phase from
 the daemon's state, the role from the session; for a file-backed phase the role works or, once
@@ -757,15 +757,23 @@ block, Oh My Pi's name for it; `assistantRanTool` also takes Claude Code's `tool
 daemon's assignment, an Envoy delivery. At `LEGION_STALL_ARCHITECT_AFTER` the session tells the
 architect that owns the issue over Envoy (its own while its architect claim is live, else the
 tree's), once per run of reminders: the notice carries the issue, role, phase, the count and the
-head of the
-worker's last message under one idempotency key, minted at the first attempt and kept until the
-count resets, so a listener that holds no architect session yet is tried again by the next
-reminder. A reminder is dropped when the daemon's record says this role no longer works this phase
-or that the daemon has failed this role's claim (the `read_record` state, bounded at 5 s and
-failing open otherwise, since an unreachable daemon is exactly when a stalled worker must still be
-nudged). A worker the daemon relaunched into an open phase is
-reminded from a timer `LEGION_STALL_RESUME_MS` after its claim boots, since nothing else would
-wake it.
+head of the worker's last message under one idempotency key, minted at the first attempt and kept
+until the count resets. The notice sends no `keep` field, so when no live session holds the
+architect role, the listener keeps the notice on the role's kept lane for one hour and answers 202
+kept. A kept answer does not mean that the architect was told, so the next reminder publishes the
+notice again. When the answer names `kept_until`, that publish uses the same key: the listener
+answers it with the copy it still holds, or keeps a new copy once that copy has been forwarded or
+its hour has ended. A listener of an earlier release names no `kept_until` and answers a repeated
+key as the first copy for 72 hours, so such an answer clears the key, and the next attempt mints
+a new one. The stall watch's notice of a stuck tool call (`src/stall-evidence.ts`), to the
+architect or, for a root architect's own call, to the controller, also sends no `keep` field, and
+a kept answer reports that no owner was told. A kept notice that no session takes in its hour
+comes back to this worker's session as a dead letter, an Envoy card that names it, unless Envoy
+drops it more than an hour late. A reminder is dropped when the daemon's record says this role no
+longer works this phase or that the daemon has failed this role's claim (the `read_record` state,
+bounded at 5 s and failing open otherwise, since an unreachable daemon is exactly when a stalled
+worker must still be nudged). A worker the daemon relaunched into an open phase is reminded from a
+timer `LEGION_STALL_RESUME_MS` after its claim boots, since nothing else would wake it.
 
 A turn the provider refused earns no reminder at all, neither the continuation nor a timer's.
 `session_stop` classifies the settling message (`turnEndOf`): a reply Oh My Pi stopped at `error`

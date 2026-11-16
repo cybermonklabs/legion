@@ -127,9 +127,6 @@ func TestDispatchOutsideOriginTakesEveryPlainHost(t *testing.T) {
 		"https://xn--bcher-kva.example.com",
 		"https://example-outside.example-tailnet.ts.net",
 		"https://dispatch-outside.example.com:8443",
-		// np is on the public suffix list only as a "*.np" rule, as ck, er, fk, jm, kh, mm and pg
-		// are, so its top-level domain is one Google takes although the bare np has no rule.
-		"https://dispatch.example.com.np",
 	} {
 		t.Run(origin, func(t *testing.T) {
 			args := dispatchArgs()
@@ -215,33 +212,15 @@ func TestDispatchPodWithoutOutsideInputsIsUnchanged(t *testing.T) {
 
 // Each outside input the component cannot serve is refused by its own name before anything
 // registers: outside sign-in with no browser sign-in to extend, either input in a sandbox, and a
-// second origin that is no https origin, whose host has a label of the reserved form
-// weborigin.ReservedLabel refuses, or that is the front door's own. An nkey seed in outsideOrigin
-// is refused with every other plain input's (TestDispatchRefusesAnNKeySeedInAPlainInput), and
-// clusterOnly refuses both as it refuses every input that configures Dispatch
-// (TestDispatchClusterOnlyRefusesEveryDispatchInput).
+// second origin weborigin.Parse refuses, that is no https origin, that is the front door's own, or
+// whose host Google refuses in a redirect URI while browser sign-in is on. An nkey seed in
+// outsideOrigin is refused with every other plain input's
+// (TestDispatchRefusesAnNKeySeedInAPlainInput), and clusterOnly refuses both as it refuses every
+// input that configures Dispatch (TestDispatchClusterOnlyRefusesEveryDispatchInput).
 func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
-	// The web-origin refusals are weborigin.Parse's, prefixed with the input's name; that
-	// package's own test holds its whole table, and these rows hold that the component asks it.
+	// weborigin.Parse's own test holds its whole table; the rows here that expect notOrigin hold
+	// that the component asks it and prefixes its refusal with the input's name.
 	const notOrigin = "outsideOrigin: must be an absolute http or https URL with no path, user, query or fragment, as an origin is (not echoed)"
-	reserved := func(label string) string {
-		return `outsideOrigin: host label "` + label + `" has "--" as its third and fourth characters, a reserved form (RFC 5890 section 2.3.1) public certificate authorities refuse to issue for`
-	}
-	fakeALabel := func(label string) string {
-		return `outsideOrigin: host label "` + label + `" is an xn-- label the IDNA lookup profile refuses, a Fake A-label (RFC 5890 section 2.3.1)`
-	}
-	notCanonical := func(canonical string) string {
-		return "outsideOrigin: must be written as a browser writes this origin, " + canonical + ": a lowercase scheme and no default port"
-	}
-	badPort := func(port string) string {
-		return `outsideOrigin: port "` + port + `" is not a port 1-65535 written without a leading zero`
-	}
-	notIPv4 := func(host string) string {
-		return "outsideOrigin: host " + host + " ends in a number and is no IPv4 address in its canonical form, which a browser refuses or rewrites"
-	}
-	notLabel := func(label string) string {
-		return `outsideOrigin: host label "` + label + `" is not a lowercase DNS label`
-	}
 	withOrigin := func(origin string) func() *gcp.DispatchArgs {
 		return func() *gcp.DispatchArgs {
 			args := dispatchArgs()
@@ -290,32 +269,6 @@ func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 		{"outsideOrigin with a query", withOrigin("https://dispatch-outside.example.com?a=b"), notOrigin},
 		{"outsideOrigin with a fragment", withOrigin("https://dispatch-outside.example.com#top"), notOrigin},
 		{"outsideOrigin with a user", withOrigin("https://example-user@dispatch-outside.example.com"), notOrigin},
-		{"outsideOrigin with an upper-case label", withOrigin("https://Dispatch-Outside.example.com"), notLabel("Dispatch-Outside")},
-		{"outsideOrigin with an empty label", withOrigin("https://dispatch-outside..example.com"), notLabel("")},
-		{"outsideOrigin with a label longer than 63", withOrigin("https://" + strings.Repeat("a", 64) + ".example.com"), notLabel(strings.Repeat("a", 64))},
-		{"outsideOrigin with a leading hyphen", withOrigin("https://-outside.example.com"), notLabel("-outside")},
-		{"outsideOrigin with a trailing hyphen", withOrigin("https://outside-.example.com"), notLabel("outside-")},
-		{"outsideOrigin with a reserved label", withOrigin("https://ab--cd.example.com"), reserved("ab--cd")},
-		{"outsideOrigin with a reserved label further up", withOrigin("https://outside.ab--cd.com"), reserved("ab--cd")},
-		{"outsideOrigin with an xn-- label the IDNA lookup profile refuses", withOrigin("https://xn--a.example.com"), fakeALabel("xn--a")},
-		// Dispatch compares the Origin a browser sends with the rendered string, so a string other
-		// than the browser's own form of the origin, or one no browser opens, is refused rather than
-		// rewritten (WHATWG URL's origin serialization, as Node's new URL(v).origin prints it).
-		{"outsideOrigin with :443", withOrigin("https://dispatch-outside.example.com:443"), notCanonical("https://dispatch-outside.example.com")},
-		{"outsideOrigin with :443 on another host", withOrigin("https://outside.test:443"), notCanonical("https://outside.test")},
-		{"outsideOrigin with an upper-case scheme", withOrigin("HTTPS://dispatch-outside.example.com"), notCanonical("https://dispatch-outside.example.com")},
-		{"outsideOrigin with an empty port", withOrigin("https://dispatch-outside.example.com:"), badPort("")},
-		{"outsideOrigin with a leading-zero port", withOrigin("https://dispatch-outside.example.com:0443"), badPort("0443")},
-		{"outsideOrigin with port 0", withOrigin("https://dispatch-outside.example.com:0"), badPort("0")},
-		{"outsideOrigin with a port above 65535", withOrigin("https://dispatch-outside.example.com:65536"), badPort("65536")},
-		{"outsideOrigin with a five-nines port", withOrigin("https://dispatch-outside.example.com:99999"), badPort("99999")},
-		{"outsideOrigin with a short IPv4", withOrigin("https://127.1"), notIPv4("127.1")},
-		{"outsideOrigin with a hex IPv4 octet", withOrigin("https://0x7f.0.0.1"), notIPv4("0x7f.0.0.1")},
-		{"outsideOrigin with a whole-number IPv4", withOrigin("https://2130706433"), notIPv4("2130706433")},
-		{"outsideOrigin with an octal IPv4 octet", withOrigin("https://010.0.0.1"), notIPv4("010.0.0.1")},
-		{"outsideOrigin with five numeric labels", withOrigin("https://1.2.3.4.5"), notIPv4("1.2.3.4.5")},
-		{"outsideOrigin with a numeric top label", withOrigin("https://example.123"), notIPv4("example.123")},
-		{"outsideOrigin with a hex top label", withOrigin("https://a.example.0x1"), notIPv4("a.example.0x1")},
 		{
 			name: "outsideOrigin with the front door's host",
 			args: withOrigin("https://example-dispatch.example-tailnet.ts.net"),

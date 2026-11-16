@@ -51,9 +51,14 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
+// issueKeyShape is a Dispatch issue key, `INFRA-431`, unanchored. Go's regular expressions and
+// Postgres's read it alike, so issueKeyPattern and the near-copy gate's title rule
+// (duplicateTitleKeyPattern) take the same shape from it.
+const issueKeyShape = `[A-Z][A-Z0-9]{1,9}-[0-9]+`
+
 var (
 	projectKeyPattern = regexp.MustCompile(contracts.ProjectKeyPattern)
-	issueKeyPattern   = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}-[0-9]+$`)
+	issueKeyPattern   = regexp.MustCompile(`^` + issueKeyShape + `$`)
 )
 
 // projectKeyProblem is every route's refusal of a value that is not a project key: the field it

@@ -4,7 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strings"
+
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // The reasons WorkspaceLogin and VerifiedLogin refuse a Google sign-in, one per rule, so each
@@ -22,12 +23,13 @@ var (
 var EmailShape = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 
 // WorkspaceLogin applies the Google Workspace person rule to the claims a domain-mode code flow read
-// from a verified Google ID token, and returns the person's login: the lowercased email, the
-// canonical form logins are compared in. The account must have a subject, an email of an address's
-// shape that Google has verified, and hd, the account's Workspace domain, equal to domain; the
-// domain is read from hd alone, never from the email's suffix, which a personal Google account can
-// share with a Workspace. An empty domain admits nobody, rather than every account outside any
-// Workspace. A refusal wraps one of ErrNoSubject, ErrNoEmail, ErrNotInDomain or
+// from a verified Google ID token, and returns the person's login: the email with its ASCII letters
+// lowered (fold.ASCII), the canonical form logins are compared in, so no Unicode letter is folded
+// onto the ASCII one of another person's address. The account must have a subject, an email of an
+// address's shape that Google has verified, and hd, the account's Workspace domain, equal to
+// domain; the domain is read from hd alone, never from the email's suffix, which a personal Google
+// account can share with a Workspace. An empty domain admits nobody, rather than every account
+// outside any Workspace. A refusal wraps one of ErrNoSubject, ErrNoEmail, ErrNotInDomain or
 // ErrEmailNotVerified, and still returns the login when the email has an address's shape, so the
 // refusal can name the person.
 func WorkspaceLogin(claims Claims, domain string) (string, error) {
@@ -45,11 +47,12 @@ func WorkspaceLogin(claims Claims, domain string) (string, error) {
 }
 
 // VerifiedLogin applies WorkspaceLogin's rules but the domain to a Google ID token's claims, and
-// returns the person's login, the lowercased email: the account must have a subject and an email
-// of an address's shape that Google has verified, whatever its hd. It is for an account outside
-// any Workspace, which a caller admits on a rule of its own (Dispatch's outside sign-in, admitting
-// an address a project's access list names). A refusal wraps ErrNoSubject, ErrNoEmail or
-// ErrEmailNotVerified, and still returns the login when the email has an address's shape.
+// returns the person's login, the email with its ASCII letters lowered (fold.ASCII): the account
+// must have a subject and an email of an address's shape that Google has verified, whatever its
+// hd. It is for an account outside any Workspace, which a caller admits on a rule of its own
+// (Dispatch's outside sign-in, admitting an address a project's access list names). A refusal
+// wraps ErrNoSubject, ErrNoEmail or ErrEmailNotVerified, and still returns the login when the
+// email has an address's shape.
 func VerifiedLogin(claims Claims) (string, error) {
 	login, err := accountLogin(claims)
 	if err != nil {
@@ -61,8 +64,9 @@ func VerifiedLogin(claims Claims) (string, error) {
 	return login, nil
 }
 
-// accountLogin is the lowercased email of claims, refusing an account with no subject
-// (ErrNoSubject) or with no email of an address's shape (ErrNoEmail).
+// accountLogin is the login of claims, its email with its ASCII letters lowered (fold.ASCII),
+// refusing an account with no subject (ErrNoSubject) or with no email of an address's shape
+// (ErrNoEmail).
 func accountLogin(claims Claims) (string, error) {
 	if claims.Subject == "" {
 		return "", ErrNoSubject
@@ -70,5 +74,5 @@ func accountLogin(claims Claims) (string, error) {
 	if !EmailShape.MatchString(claims.Email) {
 		return "", ErrNoEmail
 	}
-	return strings.ToLower(claims.Email), nil
+	return fold.ASCII(claims.Email), nil
 }

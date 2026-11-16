@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -101,15 +102,15 @@ func (r GroupRule) WriteConfirm(ctx context.Context, people auth.PeopleStore, pe
 	return people.Confirm(ctx, person.Email, refreshToken)
 }
 
-// providerEmail is the lowercased email a federated provider's username carries, the Cognito
-// sign-in pool's `<provider>_<email>` shape.
+// providerEmail is the email a federated provider's username carries, the Cognito sign-in pool's
+// `<provider>_<email>` shape, with its ASCII letters lowered (fold.ASCII) and nothing else folded.
 func providerEmail(claims oidc.Claims) (string, bool) {
 	for _, provider := range claims.Providers {
 		if provider == "" {
 			continue
 		}
 		if rest, ok := strings.CutPrefix(claims.Username, provider+"_"); ok && oidc.EmailShape.MatchString(rest) {
-			return strings.ToLower(rest), true
+			return fold.ASCII(rest), true
 		}
 	}
 	return "", false

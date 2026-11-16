@@ -1881,14 +1881,16 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("DISPATCH_TEST_HOOKS=true: hooks on, want only 1 to mount them")
 			}
 			// The routes the flag mounts: the e2e harness's hooks that close every open live socket, as
-			// a restart (1012) or the socket's age (4001) does.
+			// a restart (1012) or the socket's age (4001) does. They are deployment writes, and a router
+			// with no database reads every caller as the closed viewer, which no deployment write
+			// admits, so the router gets the store a deployment has.
 			t.Run("router", func(t *testing.T) {
 				for _, hook := range []string{"/api/v1/live/_test/disconnect", "/api/v1/live/_test/rotate"} {
 					for value, want := range map[string]int{"1": http.StatusOK, "": http.StatusNotFound} {
 						request := signedIn(t, httptest.NewRequest(http.MethodPost, hook, nil), "alice")
 						request.Header.Set("Sec-Fetch-Site", "same-origin")
 						response := httptest.NewRecorder()
-						routerFor(t, resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": value}), routes.AppContextOptions{}).ServeHTTP(response, request)
+						routerFor(t, resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": value}), routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 						if response.Code != want {
 							t.Errorf("DISPATCH_TEST_HOOKS=%q: POST %s answered %d %s, want %d", value, hook, response.Code, response.Body.String(), want)
 						}

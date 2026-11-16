@@ -155,7 +155,8 @@ Each item below names a script, then what it proves.
   a `SIGSTOP`ped session reads `unresponsive` with its own `last_seen`, is left out of the default list and answered the old `no live session` 404, is listed by `include=unresponsive`, and is read the same by a second listener and across a restart, `SIGCONT` returning it to `live`;
   two stalled sessions keep their role claim and their issue claim across a three-minute bus outage;
   a send to a stalled self-subscribed session is accepted `recipient_state: unresponsive` and a send to a stalled session that receives on a serving port is refused `404` naming that state, while a stored mention and message each reach the session once when it answers again, with nothing on `notifications.envoy.exceptions.*`;
-  five lookups, two publishes and a reaper pass leave `envoy_roles` holder and `claimed_at` untouched and each answer `holder_lapsed` with `claim_released: false`, and only a soft claim takes the role;
+  a role publish to that stalled holder is kept `202` with `kept_reason: holder_lapsed` naming it, and the registration that makes the holder live again hands it to the session once, which the check waits up to a minute for after the stored mention and message have reached the session, keeping no margin for the five-minute sweep to stand in for that handover;
+  five lookups, a publish, a direct NATS publish and a reaper pass leave `envoy_roles` holder and `claimed_at` untouched, each lookup answers `holder_lapsed` with `claim_released: false`, the publish is kept `202` with `kept_reason: holder_lapsed`, and only a soft claim takes the role;
   another agent's `dispatch claim` and release are refused naming the state and since when, which `dispatch read --issue` prints with the takeable time;
   a `SIGKILL`ed session is `unresponsive` until a 90-second gone horizon and then `gone`, the latency measured and printed, its role claim released only then, while `/clear` and `new_session` leave the id each replaces `gone` at once and `claude --resume` gets its topics back;
   both hosts show their model the peer's state and `last_seen`;
@@ -4624,7 +4625,7 @@ The same proof against a checkout whose two pod-rule parts are at the merge base
 ``the planner legion-teste4efebf18d84-teste4efebf18d84-1-planner ran Oh My Pi as pid 31352, launched with a prompt of 44137 bytes that does not carry part 1 of 2 of the completion-after-work rule: "`head` (the 40-character lower-case commit"``,
 which a run from before the rule had its third part printed.
 Against one whose order sentence in that paragraph has `, then report completion` taken out it fails in step 4 on the third part:
-``the planner legion-test6a865c2ec3b9-test6a865c2ec3b9-1-planner ran Oh My Pi as pid 42729, launched with a prompt of 45112 bytes that does not carry part 3 of 3 of the completion-after-work rule: "record it with `dispatch handoff-write --issue <issue> --phase plan --body-file \"$TMPDIR/<issue>-plan.json\"`, then report completion"``.
+``the planner legion-test6a865c2ec3b9-test6a865c2ec3b9-1-planner ran Oh My Pi as pid 42729, launched with a prompt of 45112 bytes that does not carry part 3 of 3 of the completion-after-work rule: "Record it with `dispatch handoff-write --issue <issue> --phase plan --body-file - <<'EOF'`, the JSON on the lines after it and `EOF` alone on the last line, then report completion"``.
 What the proof stands in for lies outside the rule, and is what [`claim-compaction.sh`](#claim-compactionsh) stands in for: the broker is a native `nats-server`, GitHub is the REST stand-in the whole-daemon drivers share, Dispatch is their board, Envoy's listener is the package's `noticeListener`, the two Apps' tokens are placeholders, and each pane's provider is a stand-in of the driver's own, which answers every turn alike.
 `ROLE_PROMPT_RULE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own and the driver's output;
 the run's work directory, the driver binary among it, is under `TMPDIR` too.
@@ -5047,14 +5048,14 @@ A client of a server a window has stopped therefore waits rather than being refu
 Only a listener of a `--build-from` revision that takes no `ENVOY_LISTEN_FD` (`c3d09eec` and `926040d9` take none) binds a number:
 it can bind only the `PORT` it is given, so it gets a port picked free below the kernel's ephemeral range, and its restart binds the same number again.
 
-Windows a to f publish these events.
+Windows a to g publish these events.
 Each event carries a marker of its own in its text:
 
 | kind | events |
 | :--- | :--- |
 | agent | `POST /v1/messages/send` to each session; a Dispatch message to each session (an aside from a session actor, on a second issue the sessions do not follow) |
 | issue | two Dispatch comments on the followed issue |
-| role | `POST /v1/messages/publish` to each session's role; a core NATS publish of an Envoy envelope on `notifications.role.<role>`, which the role lane forwards |
+| role | `POST /v1/messages/publish` to each session's role; a core NATS publish of an Envoy envelope on `notifications.role.<role>`, which the role lane forwards; each is expected once in every window, since a holder that is not live (window g's cleanly stopped session, whose claim stands) gets a `202` kept copy that its registration hands over when it comes back, and only a `404` publish, which kept nothing, is expected 0 times |
 | team | `POST /v1/messages/publish` to the team topic both sessions follow, one event counted in both of them; `notifications.team.>` is a stream subject, so the publish is stored and each session's own consumer holds it until that session is back: in window a, which SIGKILLs both sessions, the row must still read 1 for each |
 
 Window h publishes none of them.

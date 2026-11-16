@@ -220,11 +220,12 @@ func (b *narrowBroker) answersRequests(answer requestAnswer) {
 // TestTheGitHubFlagsNarrowTheRelease: the exec form's --github-owner, --github-repo and
 // --github-read-only send the release a github_app narrowing, the owner lowercased and the
 // repositories sorted, each once, and run the command once the broker answers that it applied that
-// narrowing. Without them the release carries no body at all, as before.
+// narrowing. Without them the release carries no github_app, only the command it starts.
 func TestTheGitHubFlagsNarrowTheRelease(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	b := newNarrowBroker(t, nil)
 	keyDir := newKeyDir(t)
+	const command = `"command":["sh","-c","echo \"ran $APP\""]`
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -234,11 +235,11 @@ func TestTheGitHubFlagsNarrowTheRelease(t *testing.T) {
 		{
 			"every flag",
 			[]string{"APP", "--github-owner", "Acme-Org", "--github-repo", "widgets", "--github-repo=proofs", "--github-repo", "widgets", "--github-read-only"},
-			`{"github_app":{"owner":"acme-org","repositories":["proofs","widgets"],"read_only":true}}`,
+			`{"github_app":{"owner":"acme-org","repositories":["proofs","widgets"],"read_only":true},` + command + `}`,
 			"narrowed",
 		},
-		{"the owner and read-only", []string{"APP", "--github-owner=ada", "--github-read-only"}, `{"github_app":{"owner":"ada","read_only":true}}`, "narrowed"},
-		{"no flag", []string{"APP"}, "", "owner-wide"},
+		{"the owner and read-only", []string{"APP", "--github-owner=ada", "--github-read-only"}, `{"github_app":{"owner":"ada","read_only":true},` + command + `}`, "narrowed"},
+		{"no flag", []string{"APP"}, `{` + command + `}`, "owner-wide"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := append(tc.args, "--", "sh", "-c", `echo "ran $APP"`)
