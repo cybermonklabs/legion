@@ -1,5 +1,13 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { type AddressInfo, connect, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
@@ -242,17 +250,26 @@ async function answerWithin(port: number, milliseconds: number): Promise<string>
   }
 }
 
-// listenRows returns the fields of every socket in the LISTEN state in /proc/net/tcp and
-// /proc/net/tcp6: local_address is the address in the host's byte order (127.0.0.1 is 0100007F on
+// listenRows returns the fields of every socket in the LISTEN state in <root>/net/tcp and
+// <root>/net/tcp6: local_address is the address in the host's byte order (127.0.0.1 is 0100007F on
 // the little-endian machines the tests run on) and the port, in hexadecimal; st 0A is LISTEN, and
-// the tenth field is the inode.
-function listenRows(): string[][] {
-  return ["/proc/net/tcp", "/proc/net/tcp6"].flatMap((table) =>
-    readFileSync(table, "utf8")
+// the tenth field is the inode. A machine with IPv6 off has no tcp6 table, and any other failure to
+// read either table is the error, as the Go tests of packages/envoy read the two. root is /proc, or
+// a directory a row lays tables out in.
+function listenRows(root = "/proc"): string[][] {
+  return ["tcp", "tcp6"].flatMap((table) => {
+    let text: string;
+    try {
+      text = readFileSync(join(root, "net", table), "utf8");
+    } catch (error) {
+      if (table === "tcp6" && (error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    return text
       .split("\n")
       .map((line) => line.trim().split(/\s+/))
-      .filter((fields) => fields.length > 9 && fields[3] === "0A")
-  );
+      .filter((fields) => fields.length > 9 && fields[3] === "0A");
+  });
 }
 
 // listeningInode returns the inode of the socket listening on 127.0.0.1:port, or undefined when
@@ -458,4 +475,47 @@ describe.skipIf(skip)("held-port.py keep", () => {
     // The kept socket is gone with the keeper, and its port with it.
     expect(listens(kept)).toBe(false);
   }, 120_000);
+});
+
+// The two tables as listenRows reads them, laid out under a root of the row's own, so the rows run
+// on any machine and say the same on every one: one whose IPv6 is off has no tcp6 table at all.
+describe("listenRows", () => {
+  const tables = temporaryDirectories("held-port-tables");
+  const header =
+    "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode";
+  const listening = (local: string, inode: number) =>
+    `   0: ${local} 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 ${inode} 1 0000000000000000 100 0 0 10 0`;
+  const connected = (local: string, inode: number) =>
+    `   1: ${local} 0100007F:9C40 01 00000000:00000000 00:00000000 00000000  1000        0 ${inode} 1 0000000000000000 20 4 30 10 -1`;
+  /** A root whose net directory holds each table named, with its rows after the header. */
+  function root(contents: Record<string, string[]>): string {
+    const dir = tables();
+    mkdirSync(join(dir, "net"));
+    for (const [table, rows] of Object.entries(contents)) {
+      writeFileSync(join(dir, "net", table), `${[header, ...rows].join("\n")}\n`);
+    }
+    return dir;
+  }
+
+  test("reads the listening rows of both tables", () => {
+    const both = root({
+      tcp: [listening("0100007F:1F90", 101), connected("0100007F:1F91", 102)],
+      tcp6: [listening("00000000000000000000000001000000:1F92", 103)],
+    });
+    expect(listenRows(both).map((fields) => fields[9])).toEqual(["101", "103"]);
+  });
+
+  test("reads tcp alone on a machine with no tcp6 table", () => {
+    const ipv4Only = root({ tcp: [listening("0100007F:1F90", 201)] });
+    expect(listenRows(ipv4Only).map((fields) => fields[9])).toEqual(["201"]);
+  });
+
+  test("fails when tcp is missing, and when tcp6 is there but cannot be read", () => {
+    expect(() =>
+      listenRows(root({ tcp6: [listening("00000000000000000000000001000000:1F92", 301)] }))
+    ).toThrow(/ENOENT/);
+    const unreadable = root({ tcp: [listening("0100007F:1F90", 302)] });
+    mkdirSync(join(unreadable, "net", "tcp6"));
+    expect(() => listenRows(unreadable)).toThrow(/EISDIR/);
+  });
 });
