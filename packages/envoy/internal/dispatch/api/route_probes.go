@@ -16,6 +16,9 @@ type RouteProbe struct {
 	// Body is the JSON a write sends with both fills; absent for a read and for a write that
 	// sends none.
 	Body json.RawMessage `json:"body,omitempty"`
+	// TestHook is whether the row is a test hook: one the server mounts only under
+	// DISPATCH_TEST_HOOKS, which no deployment sets, so the driver leaves it out, naming why.
+	TestHook bool `json:"test_hook,omitempty"`
 }
 
 // RouteProbes is every row of the route table, test hooks included, in table order, with its
@@ -23,11 +26,16 @@ type RouteProbe struct {
 // internal/dispatch/api/cmd/routeprobes prints it as JSON for the driver, which therefore reads
 // the table the server mounts rather than a list of its own.
 func RouteProbes() []RouteProbe {
+	deployed := map[string]bool{}
+	for _, route := range (&server{}).routes() {
+		deployed[route.Method+" "+route.Pattern] = true
+	}
 	table := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	probes := make([]RouteProbe, len(table))
 	for index, route := range table {
-		row := RouteProbe{Method: route.Method, Pattern: route.Pattern}
-		if entry, ok := readClasses[route.Method+" "+route.Pattern]; ok {
+		name := route.Method + " " + route.Pattern
+		row := RouteProbe{Method: route.Method, Pattern: route.Pattern, TestHook: !deployed[name]}
+		if entry, ok := readClasses[name]; ok {
 			row.Probe = probeMap(entry.Probe)
 		}
 		probes[index] = row

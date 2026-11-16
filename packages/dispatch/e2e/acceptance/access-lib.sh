@@ -220,10 +220,13 @@ mint_token() {
 #                 the timing summary {count, p50, p95, max, over_300ms} of the related-item checks
 #                 the run made (GET /api/v1/related-checks)
 #   since         the start of a window that ends at the read, an RFC 3339 instant
-#                 (GET /api/v1/agents/{session_id}/answers)
+#                 (GET /api/v1/agents/{session_id}/answers); and, as a decimal event id, the
+#                 cursor the live socket's events_start frame names, which is the event log's
+#                 head, so it counts every event of the server, a hidden one's included
 readonly durations='["took_ms","age_seconds"]'
 readonly timings='["keyword_ms","meaning_ms","total_ms"]'
 readonly window_starts='["since"]'
+readonly event_cursors='["since"]'
 
 # mask BUILD FILE [EXTRA] prints FILE with every id BUILD's seed recorded replaced by <LABEL>, each
 # `LABEL<tab>VALUE` line of the file EXTRA likewise, every RFC 3339 instant the run wrote (between
@@ -238,6 +241,7 @@ mask() {
     --argjson durations "$durations" \
     --argjson timings "$timings" \
     --argjson window_starts "$window_starts" \
+    --argjson event_cursors "$event_cursors" \
     --argjson from "$run_epoch" \
     --argjson to "$(date +%s)" '
       def literal: gsub("(?<c>[.*+?^$|(){}\\[\\]\\\\/])"; "\\\(.c)");
@@ -253,7 +257,8 @@ mask() {
       | reduce $durations[] as $member (.; gsub("\"\($member)\":[0-9]+"; "\"\($member)\":<duration>"))
       | reduce $timings[] as $member (.; gsub("\"\($member)\":\\{[^{}]*\\}"; "\"\($member)\":<duration>"))
       | reduce $window_starts[] as $member (.;
-          gsub("\"\($member)\":\"[0-9]{4}-[0-9]{2}-[0-9]{2}T[^\"]*\""; "\"\($member)\":\"<time>\""))' "$file"
+          gsub("\"\($member)\":\"[0-9]{4}-[0-9]{2}-[0-9]{2}T[^\"]*\""; "\"\($member)\":\"<time>\""))
+      | reduce $event_cursors[] as $member (.; gsub("\"\($member)\":\"[0-9]+\""; "\"\($member)\":\"<event id>\""))' "$file"
 }
 
 # keep_answer NAME BUILD [EXTRA] keeps the last answer, masked as BUILD's (mask), as

@@ -154,6 +154,9 @@ declare -A missing=(
 # The kinds no project owns: a row that names one reads the same object for every caller, so it
 # has no object of PRIV to hide, and the walk names it rather than compares it.
 readonly projectless_kinds=" priority delivery-run live-pause "
+# The kinds of no-project node a Probe names (spec v34, Design: "A node of no project"): both
+# servers hold the same ones, and the walk fills them alike on both sides.
+readonly no_project_kinds=" session person "
 
 # priv_object KIND PATTERN prints PRIV's object of KIND in main's seed for a row of PATTERN, or
 # nothing when the seed holds none. A document is PRIV-1's spec, whose blocks the seed knows; a
@@ -214,9 +217,10 @@ for server in main twin; do
   envoy_pid_var=envoy_${server}_pid
   await_start "envoy_$server" "${!envoy_pid_var}" 60 "the $server fake Envoy to answer /healthz" \
     curl -fsS --max-time 2 "http://127.0.0.1:$envoy_port/healthz"
-  # Each project's agent session: the twin never holds PRIV's.
+  # Both servers' listeners hold the same sessions: a session is a no-project node, not an object
+  # PRIV wrote, so the twin holds PRIV's session too.
   sessions='[{"session_id":"ses-pub-session","title":"Works on PUB","projects":["PUB"]}'
-  [ "$server" = twin ] || sessions+=',{"session_id":"ses-priv-session","title":"Works on PRIV","projects":["PRIV"]}'
+  sessions+=',{"session_id":"ses-priv-session","title":"Works on PRIV","projects":["PRIV"]}'
   curl -fsS --max-time 5 -X PUT -H 'Content-Type: application/json' "http://127.0.0.1:$envoy_port/__fixture/sessions" \
     -d "$sessions]" >/dev/null || fail "the $server fake Envoy refused its sessions"
   database_var=${server}_database_url
@@ -272,7 +276,9 @@ for server in main twin; do
   expect_status 201 "$server: carol messages the PUB session"
   remember "$server" "PUB direct message" "$(jq -r .id "$work/body")"
 done
+# bob is a person, not an object PRIV wrote, so both servers hold him alike.
 mark_restricted main bob
+mark_restricted twin bob
 make_project main PRIV
 for person in "$bob" "$carol"; do
   send main carol PUT "/api/v1/projects/PRIV/access/people/$(jq -rn --arg v "$person" '$v|@uri')"
@@ -423,13 +429,22 @@ indexed() {
 # path names an object is filled from its Probe with PRIV's objects and with missing ones, and
 # each unseeing caller is answered the same for both; a GET row that names no object is a list,
 # answered as the twin answers it. A row that names an object with no Probe, or one whose object
-# the seed does not hold, is written to what did not run.
+# the seed does not hold, is written to what did not run. A test hook (RouteProbe's test_hook) is
+# left out, named: the server mounts it only under DISPATCH_TEST_HOOKS, which no deployment sets.
+# A session and a person are no-project nodes, which spec v34 (Design, "A node of no project")
+# shows to an open viewer as it does today, and both servers hold the same ones: a row whose every
+# wildcard is one of them is filled alike on both servers and answered as the twin answers it.
 walk_rows() {
   local row method pattern wildcards entry hidden none skip wildcard kind object body caller
   walked=0 lists=0
   while IFS= read -r row; do
     method=$(jq -r .method <<<"$row")
     pattern=$(jq -r .path <<<"$row")
+    entry=$(jq -c --arg m "$method" --arg p "$pattern" 'map(select(.method == $m and .pattern == $p))[0] // empty' "$work/probes.json")
+    if [ "$(jq -r '.test_hook // false' <<<"${entry:-null}")" = true ]; then
+      note "left out: $method $pattern is a test hook, which only DISPATCH_TEST_HOOKS mounts"
+      continue
+    fi
     wildcards=$(grep -oE '\{[^}]+\}' <<<"$pattern" | tr -d '{}' || true)
     if [ -z "$wildcards" ]; then
       if [ "$method" = GET ]; then
@@ -438,7 +453,6 @@ walk_rows() {
       fi
       continue
     fi
-    entry=$(jq -c --arg m "$method" --arg p "$pattern" 'map(select(.method == $m and .pattern == $p))[0] // empty' "$work/probes.json")
     if [ -z "$entry" ] || [ "$(jq -c '.probe' <<<"$entry")" = null ]; then
       unrun "$method $pattern names an object and has no Probe"
       continue
@@ -462,6 +476,11 @@ walk_rows() {
         break
       fi
       hidden=${hidden//"{$wildcard}"/$(jq -rn --arg v "$object" '$v|@uri')}
+      # A no-project node fills both sides alike: it is no object PRIV wrote.
+      if [[ "$no_project_kinds" == *" $kind "* ]]; then
+        none=${none//"{$wildcard}"/$(jq -rn --arg v "$object" '$v|@uri')}
+        continue
+      fi
       none=${none//"{$wildcard}"/$(jq -rn --arg v "${missing[$kind]}" '$v|@uri')}
       # A fill that is the same on both sides is no difference to mask.
       if [ "$object" != "${missing[$kind]}" ]; then
@@ -470,6 +489,13 @@ walk_rows() {
       fi
     done
     [ -z "$skip" ] || continue
+    if [ "$hidden" = "$none" ]; then
+      # Every wildcard is a no-project node: the path is the same on both servers.
+      [ "$method" = GET ] || { unrun "$method $pattern: a write that names only no-project nodes is not walked"; continue; }
+      for caller in "${unseeing_callers[@]}"; do compare_twin "$caller" "$hidden"; done
+      lists=$((lists + 1))
+      continue
+    fi
     body=$(jq -c '.body // empty' <<<"$entry")
     for caller in "${unseeing_callers[@]}"; do
       compare_missing "$caller" "$method" "$pattern" "$hidden" "$none" "$work/fill-hidden" "$work/fill-missing" "$body"
@@ -525,13 +551,27 @@ if [ "$priv_private" = 1 ]; then
     done
     same_answers "$caller /ws/live (beside the twin)" main twin
   done
-  for caller in "${listed_callers[@]}"; do
+  # The document socket admits a person by their cookie alone, at the merge base as now, so a
+  # token has no document-socket path to any project: bob and carol find PRIV's spec there, and a
+  # token that lists PRIV is refused alike for PUB's spec and PRIV's. This is the one path on which
+  # "find each object of PRIV" is read as "refused alike" (the integrator's decision of t-a-22).
+  for caller in bob carol; do
     answer=$(bun "$(dirname "$0")/socket-access.ts" doc "${build_url[main]}" "$work/auth/main-$caller" "$(recalled main "PRIV spec")" "$schema_version" 2>&1) || true
     [[ "$answer" == authenticated* ]] || {
       printf '%s /ws/doc/{PRIV spec}: %s, want authenticated\n' "$caller" "$answer" >>"$work/differences"
       differed=$((differed + 1))
     }
   done
+  printf 'document\t%s\n' "$(recalled main "PUB spec")" >"$work/fill-pub"
+  for side in pub hidden; do
+    project=PRIV
+    [ "$side" = hidden ] || project=PUB
+    status=socket
+    bun "$(dirname "$0")/socket-access.ts" doc "${build_url[main]}" "$work/auth/main-carol-priv-token" \
+      "$(recalled main "$project spec")" "$schema_version" >"$work/body" 2>&1 || status=error
+    keep_answer "$side" main "$work/fill-$side"
+  done
+  same_answers "carol-priv-token /ws/doc/{room}: PUB's spec and PRIV's (a token is refused alike)" pub hidden
   pass
 
   begin proxy

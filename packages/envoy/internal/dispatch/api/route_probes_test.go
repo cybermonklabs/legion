@@ -52,6 +52,12 @@ func TestRouteProbesNameEveryRowAndFillEveryGETWildcard(t *testing.T) {
 		if row.Method == http.MethodGet && row.Pattern == "/api/v1/issues/{key}" && row.Probe["key"] != string(probeIssue) {
 			t.Errorf("GET /api/v1/issues/{key}: the Probe fills {key} with %q, want %q", row.Probe["key"], probeIssue)
 		}
+		if row.Method == http.MethodGet && row.Pattern == "/api/v1/issues/{key}" && row.TestHook {
+			t.Errorf("GET /api/v1/issues/{key} is marked a test hook, though every deployment mounts it")
+		}
+		if row.Method == http.MethodGet && row.Pattern == "/api/v1/artifacts/_test/rooms" && !row.TestHook {
+			t.Errorf("GET /api/v1/artifacts/_test/rooms is not marked a test hook, though only DISPATCH_TEST_HOOKS mounts it")
+		}
 	}
 
 	none, err := json.Marshal(RouteProbe{Method: http.MethodPut, Pattern: "/api/v1/things/{id}"})
