@@ -500,11 +500,11 @@ func (p *Provider) writeRevocationError(ctx context.Context, w http.ResponseWrit
 // that fixes a session are each refused, the last because the name such an entry writes under is
 // the configuration's and its pods need no registration at all. A caller maps those sentinels
 // onto its own refusals; anything else is the store's.
-func (p *Provider) RegisterPodSession(ctx context.Context, account, podUID, session string) (time.Time, error) {
+func (p *Provider) RegisterPodSession(ctx context.Context, account, podUID, session, jkt string) (time.Time, string, error) {
 	if err := p.exchange.Policy.Registration(account, podUID, session); err != nil {
-		return time.Time{}, err
+		return time.Time{}, "", err
 	}
-	return p.store.RegisterPodSession(ctx, podUID, session)
+	return p.store.RegisterPodSession(ctx, podUID, session, jkt)
 }
 
 // writeError answers err as the library's OAuth error JSON, logging a server error's cause.
