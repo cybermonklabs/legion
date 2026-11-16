@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  The worker skill names the upstream issue about a Claude Code subagent's shell environment as
+  Claude Code issue 46696.
