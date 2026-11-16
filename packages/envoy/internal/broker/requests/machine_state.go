@@ -988,10 +988,12 @@ const SignInOffActor = "broker:signin-off"
 // (PendingForApprover: its signed request verifies for this broker's own audience) is denied
 // here, policy.ReasonSignInOff, with its record's denied event and its request.denied audit row
 // in one statement, rather than left on the approver's list behind a page that is gone until its
-// deadline. No time bounds the selection: while this pod runs it denies what a pod with sign-in
-// on queues too, so a roll between the two settings denies the requests of its overlap, each
-// one's session told why, and a session asks again once the roll is done. A bound taken per
-// process cannot do better, since a later or restarted pod with sign-in off takes a later one.
+// deadline. The sweep expires overdue ones first (expirePending), so one past its deadline is
+// never denied. No time bounds the selection: while this pod runs it denies what a pod with
+// sign-in on queues too, so a roll between the two settings denies each request of its overlap
+// that no person approved first on such a pod, each one's session told why, and a session asks
+// again once the roll is done. A bound taken per process cannot do better, since a later or
+// restarted pod with sign-in off takes a later one.
 // A request signed for another BROKER_PUBLIC_URL is left alone: it belongs to another broker
 // sharing this database, whose page may still be served, and this broker lists it for nobody
 // anyway. It returns the requests it denied, so the sweep wakes each one's session once the
@@ -1005,26 +1007,22 @@ func (m *Machine) denyUndecidable(ctx context.Context, now time.Time) ([]store.E
 	if err != nil {
 		return nil, err
 	}
-	var ours []string
-	for rows.Next() {
-		var id, canonical string
-		var createdAt time.Time
-		if err := rows.Scan(&id, &canonical, &createdAt); err != nil {
-			rows.Close()
-			return nil, err
-		}
+	var undecidable []string
+	var id, canonical string
+	var createdAt time.Time
+	if _, err := pgx.ForEachRow(rows, []any{&id, &canonical, &createdAt}, func() error {
 		if _, err := m.requestedIdentifiers(canonical, createdAt); err == nil {
-			ours = append(ours, id)
+			undecidable = append(undecidable, id)
 		}
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
-	if len(ours) == 0 {
+	if len(undecidable) == 0 {
 		return nil, nil
 	}
 	actor := SignInOffActor
-	return m.endPending(ctx, store.RequestsByIDs, ours, store.RequestEnd{
+	return m.endPending(ctx, store.RequestsByIDs, undecidable, store.RequestEnd{
 		State: "denied", Actor: actor, DecidedBy: &actor, DecidedAt: &now, Detail: policy.ReasonSignInOff,
 	})
 }

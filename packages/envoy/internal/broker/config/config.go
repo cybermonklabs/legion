@@ -1383,7 +1383,10 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.DatabaseIAM, err = databaseIAM(cfg.DatabaseURL); err != nil {
 		return Config{}, err
 	}
-	if parsed, err := url.Parse(cfg.PublicURL); err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Path != "" {
+	// publicURL is BROKER_PUBLIC_URL parsed, held to an absolute URL with no path here and to an
+	// http or https scheme by Load's last check.
+	publicURL, parseErr := url.Parse(cfg.PublicURL)
+	if parseErr != nil || publicURL.Scheme == "" || publicURL.Host == "" || publicURL.Path != "" {
 		return Config{}, fmt.Errorf("BROKER_PUBLIC_URL must be an absolute URL with no path: %q", redact.URL(cfg.PublicURL))
 	}
 	// Optional, and still held to its form when it is given: a page the broker cannot build an
@@ -1725,8 +1728,8 @@ func Load(getenv func(string) string) (Config, error) {
 	// page, so the rule is held here. It is Load's last check, so every other refusal comes first,
 	// in the order it always did, and only a configuration the page would have refused is refused
 	// here. The scheme alone is printed: it holds no credential.
-	if parsed, err := url.Parse(cfg.PublicURL); err == nil && parsed.Scheme != "https" && parsed.Scheme != "http" {
-		return Config{}, fmt.Errorf("BROKER_PUBLIC_URL must be an http or https URL, got the scheme %q", parsed.Scheme)
+	if publicURL.Scheme != "https" && publicURL.Scheme != "http" {
+		return Config{}, fmt.Errorf("BROKER_PUBLIC_URL must be an http or https URL, got the scheme %q", publicURL.Scheme)
 	}
 	return cfg, nil
 }

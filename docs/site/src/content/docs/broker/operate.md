@@ -577,7 +577,8 @@ pods as any broker does and approves nothing:
   still on sign-in queues during a roll — is denied by the next sweep, within
   `BROKER_SWEEP_SECONDS`, and leaves the approver's Inbox: the session reads `was denied: a person
   must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)`, and the request records
-  `broker:signin-off` as having decided it. No clock bounds the selection, so the database's
+  `broker:signin-off` as having decided it. One whose deadline has already passed is expired by
+  that sweep instead, as on any broker. No clock bounds the selection, so the database's
   `created_at` cannot hide a request from it. A grant a person approved before stays until it
   ends as any grant does, and a request signed for another broker sharing the database, at
   another `BROKER_PUBLIC_URL`, is left to that broker.
@@ -596,18 +597,19 @@ missing a sign-in setting refuses exactly as above, so a deployment that lost it
 never starts without its approval page.
 
 Moving between the two settings is a roll of the broker's pods, and while pods of both kinds
-share the database, every request a person would decide is denied: an `off` pod denies at once
-each one it serves, and its sweep denies each one a pod with sign-in on queues, within
-`BROKER_SWEEP_SECONDS`. A pod cannot tell a request queued in the overlap from one an earlier run
-left, so a cutover that denies nothing queued during it has no overlap: stop every pod of the old
+share the database, a request a person would decide is refused unless a person approves it on a
+pod with sign-in on before the sweep reaches it: an `off` pod denies at once each one it serves,
+and its sweep, within `BROKER_SWEEP_SECONDS`, denies each one a pod with sign-in on queued that
+is still pending. A pod cannot tell a request queued in the overlap from one an earlier run left,
+so a cutover that denies nothing queued during it has no overlap: stop every pod of the old
 setting before the first pod of the new one starts.
 
 - **Turning sign-in on.** Set the four `BROKER_SIGNIN_*` settings, unset `BROKER_SIGNIN`, and
   roll the pods. A session denied during the roll reads `BROKER_SIGNIN=off` in its denial and asks
   again once the last `off` pod has stopped.
 - **Turning sign-in off.** Set `BROKER_SIGNIN=off`, unset every `BROKER_SIGNIN_*` setting and
-  the model judge's, and roll the pods. Every request still pending when the first `off` pod
-  starts, and every one queued until the last pod with sign-in on stops, is denied by the sweep.
+  the model judge's, and roll the pods. Every request still pending when the first `off` pod's
+  sweep reaches it, whether an earlier run or a pod still on sign-in queued it, is denied.
 
 ## Signing in to RDS by IAM token
 

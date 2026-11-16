@@ -821,7 +821,7 @@ A broker that signs nobody in, `BROKER_SIGNIN=off`
 ([Operate](/legion/broker/operate/#a-broker-that-signs-nobody-in)), serves no such page, so no
 request waits on it: every request that would reach a person is denied at once
 ([Requests and grants](#requests-and-grants)), and one a broker with sign-in on left pending is
-denied by the broker's next sweep.
+ended by the broker's next sweep: denied, or expired if its deadline has passed.
 
 The broker checks the signed-in person against the record's approver: anyone else gets a page
 saying who may decide it, with a link to sign in as someone else, and no buttons. A request for a
