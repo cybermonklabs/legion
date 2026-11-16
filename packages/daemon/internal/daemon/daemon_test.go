@@ -298,7 +298,7 @@ type built struct {
 	mu         sync.Mutex
 	conns      runtime.Conns
 	address    string
-	apps       appauth.Tokens
+	apps       appauth.Source
 	repository func(context.Context, string) (ghrepo.Repository, string, error)
 	store      *store.Store
 	mapped     func() []ghrepo.Repository
@@ -308,7 +308,7 @@ type built struct {
 // real stream listener, store, and machines, with nothing launched for real.
 func fakeRuntime(rt runtime.Runtime, record *built) overrides {
 	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
+		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Source,
 			repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 			record.mu.Lock()
 			defer record.mu.Unlock()
@@ -1663,6 +1663,13 @@ func (r *workflowTokenRecorder) InstalledOn(_ context.Context, role appauth.AppR
 		return false, err
 	}
 	return !r.missing[key], nil
+}
+
+// InstalledOwners answers no owner list: the recorder knows which repositories each App is
+// installed on (InstalledOn) and not the accounts, and no rig builds a gh bundle over it, since
+// each replaces the runtime that would. A rig that builds one names its owners itself.
+func (r *workflowTokenRecorder) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return nil, errors.New("the workflow token recorder lists no owner accounts, which a gh bundle holds one directory per owner of")
 }
 
 // servedBootCall answers the calls every boot makes of Dispatch, whatever the test is about:

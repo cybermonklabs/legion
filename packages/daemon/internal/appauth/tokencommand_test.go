@@ -350,7 +350,7 @@ func TestTokenModeARepositoryOutsideTheInstallationsListIsNotInstalled(t *testin
 // A narrowing the broker refuses is ErrNarrowingRefused, the refusal key mode gives, and the
 // mapping's installation read is the one source of its own answer: it runs the command and reads
 // GitHub however recently a narrowing was refused for the read scope it asks under
-// (listInstallation, ForgetNarrowingRefusal). Served from the Manager's memory instead, an
+// (listInstallation, forgetNarrowingRefusal). Served from the Manager's memory instead, an
 // operator who fixes what the broker refused and saves the mapping inside the five minutes a
 // refusal is remembered for would be told the check failed, while the bundle refreshes behind it
 // kept that memory alive (INFRA-513).

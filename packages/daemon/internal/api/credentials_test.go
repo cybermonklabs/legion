@@ -39,7 +39,7 @@ func (tokenSource) InstalledOwners(context.Context, appauth.AppRole) ([]string, 
 	return []string{"acme", "sjawhar"}, nil
 }
 
-func newCredentialHarness(t *testing.T, tokens appauth.Tokens) *harness {
+func newCredentialHarness(t *testing.T, tokens appauth.Source) *harness {
 	t.Helper()
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{

@@ -70,9 +70,13 @@ type specs struct {
 	// workflow does not record); nil for a daemon with no workflow, whose launches work no
 	// repository.
 	repository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
-	// appOwners is the owner accounts the role's own GitHub App is installed on, lowercased and
-	// sorted: the reach a worker's addressing names beside its own issue's repository, and the
-	// controller's after its design gate steps (RepositoriesClause). The daemon answers it from
+	// appOwners is the owner accounts the role's own GitHub App is installed on AND the role's gh
+	// bundle holds a directory for, lowercased and sorted: the reach a worker's addressing names
+	// beside its own issue's repository, and the controller's after its design gate steps
+	// (RepositoriesClause). The two conditions are one rule, GitHubDirs': an installed owner the
+	// last bundle left out — not installed, suspended, granted none, permissions refused, or a
+	// login that is no directory name — holds no token this role could use, so naming it would
+	// promise a reach the role does not have. The daemon answers it from
 	// what the last gh bundle of that App read from GitHub (appauth.Installed, plan.appOwners),
 	// which costs no read of its own on a launch; a role whose App no bundle has been built for
 	// yet — the first launch of a daemon that has built none — is answered the owners of the

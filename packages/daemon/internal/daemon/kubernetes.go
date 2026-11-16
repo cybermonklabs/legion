@@ -191,7 +191,7 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	// The memory guards' kill holder (memoryGuardKills), on the plan by pointer, so the plan's own
 	// copy carries the one holder the factory closed over, as plan.repositories does.
 	p.memoryGuardKills = &memoryGuardKills{}
-	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, p.installed, o.githubAPI, p.memoryGuardKills)
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI, p.memoryGuardKills)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -505,9 +505,10 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // and the directory set those directories are compared with (appauth.GitHubDirs), which the
 // runtime reads a running pod's gh projection against — a pod lacking an owner's directory
 // holds no token of that owner (sandbox's movedGhDirs) — the three over two records of what
-// the bundles found: the owners each App's last bundle read installed (appauth.NewInstalled),
+// the bundles found, both the plan's own (plan.installed, plan.left): the owners each App's
+// last bundle read installed (appauth.Installed),
 // which is what the drift check may honestly compare a pod against without a call to GitHub of
-// its own, and the directories the mints found GitHub refuses (appauth.NewLeftOut), so the set
+// its own, and the directories the mints found GitHub refuses (appauth.LeftOut), so the set
 // a pod is compared against is the set a mint produces and an owner left out of every bundle of
 // the Apps that pod runs is named by no comparison of it — the roles the runtime asks for being
 // its pod's own, so the implement App's refusal of an owner costs the controller's pod, which
@@ -527,8 +528,8 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 //
 // kills is the memory guards' kill holder (memoryGuardKills).
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
-	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, githubAPI string, kills *memoryGuardKills) runtimeFactory {
-	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
+	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut, githubAPI string, kills *memoryGuardKills) runtimeFactory {
+	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
 		// The two halves of the release's saved work: an idle release puts the issue's unpushed
@@ -549,22 +550,17 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// holder (memoryGuardKills).
 		opts.MemoryGuardKilled = kills.killed
 		if apps != nil {
-			installations, ok := apps.(appauth.OwnerInstallations)
-			if !ok {
-				return nil, fmt.Errorf("the GitHub App token source answers no App installations, " +
-					"which every role's gh bundle holds one directory per owner of")
-			}
 			// Two records per project, written by the two credentials and read by the directory
 			// set for the Apps of the pod it answers for: the owners each App's last bundle read
 			// installed (appauth.Installed), which is all the drift check may say about a pod
 			// without calling GitHub per pod per sweep, and the directories a mint found GitHub
 			// refuses, so no pod is replaced for a directory no mint of its own Apps can produce
-			// (appauth.LeftOut). installed is the daemon's own (plan.installed), which every
-			// launch's addressing reads its role's App's owners out of beside the drift check.
-			left := appauth.NewLeftOut()
+			// (appauth.LeftOut). Both are the daemon's own (plan.installed, plan.left), which
+			// every launch's addressing reads its role's App's owners out of beside the drift
+			// check.
 			opts.Tokens = newImplementTokens(apps, serving)
-			opts.GitHubCredential = appauth.GitHubCredential(apps, installations, repos, renames, installed, left, opts.Log)
-			opts.ControllerCredential = appauth.ControllerCredential(apps, installations, repos, renames, installed, left, opts.Log)
+			opts.GitHubCredential = appauth.GitHubCredential(apps, repos, renames, installed, left, opts.Log)
+			opts.ControllerCredential = appauth.ControllerCredential(apps, repos, renames, installed, left, opts.Log)
 			opts.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 				return appauth.GitHubDirs(repos, renames, installed, left, roles, repo)
 			}

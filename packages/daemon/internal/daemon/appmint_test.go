@@ -125,19 +125,19 @@ func installed(w http.ResponseWriter) {
 }
 
 // bootsOrExits runs the daemon until it answers /healthz or run returns, and says which.
-func bootsOrExits(t *testing.T, cfg config.Config, tokens appauth.Tokens, within time.Duration) error {
+func bootsOrExits(t *testing.T, cfg config.Config, tokens appauth.Source, within time.Duration) error {
 	t.Helper()
 	return bootsOrExitsLogging(t, cfg, tokens, within, quietLogger())
 }
 
 // bootsOrExitsLogging is bootsOrExits with the daemon logging to log.
-func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Tokens, within time.Duration, log *slog.Logger) error {
+func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Source, within time.Duration, log *slog.Logger) error {
 	t.Helper()
 	return bootsOrExitsOn(t, cfg, tokens, repositoriesGitHub(t), within, log)
 }
 
 // bootsOrExitsOn is bootsOrExitsLogging with the daemon reading GitHub's REST API at githubAPI.
-func bootsOrExitsOn(t *testing.T, cfg config.Config, tokens appauth.Tokens, githubAPI string, within time.Duration, log *slog.Logger) error {
+func bootsOrExitsOn(t *testing.T, cfg config.Config, tokens appauth.Source, githubAPI string, within time.Duration, log *slog.Logger) error {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

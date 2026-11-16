@@ -318,7 +318,7 @@ func (r *claimCompactionLive) registerController() {
 // first rung a compaction's own send comes inside of — is measured where it is real.
 func (r *claimCompactionLive) overrides() overrides {
 	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Tokens,
+		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
 			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
 			r.built.mu.Lock()
 			defer r.built.mu.Unlock()

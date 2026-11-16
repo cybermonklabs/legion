@@ -156,8 +156,10 @@ type Options struct {
 	Decisions *RouteDecisions
 	// Log receives what the routes decide; nil is slog.Default().
 	Log *slog.Logger
-	// Tokens mints the GitHub App leases credential routes return after redeeming a grant.
-	Tokens appauth.Tokens
+	// Tokens mints the GitHub App leases credential routes return after redeeming a grant, and
+	// answers the owners each App is installed on, which the controller's gh bundle holds one
+	// directory per owner of (appauth.Source, appauth.ControllerCredential).
+	Tokens appauth.Source
 	// GitHubRepositories are the project's repositories as the daemon serves them
 	// (daemon's repositories.Accepted): the controller's gh bundle holds a read-only token per
 	// owner of them, each narrowed to that owner's repositories (appauth.ControllerCredential).
@@ -317,7 +319,7 @@ type server struct {
 	// controllerMu orders a capability mint against a registration and a controller grant, so a
 	// grant the replaced registration authorised is never recorded after the mint revoked them.
 	controllerMu       sync.Mutex
-	tokens             appauth.Tokens
+	tokens             appauth.Source
 	githubRepositories func() []ghrepo.Repository
 	// renames is the deployment's repository equivalence (Options.RepositoryRenames): the rule
 	// that says which owner's installation holds a repository recorded under the name a transfer

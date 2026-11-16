@@ -279,15 +279,14 @@ type pendingInstallations struct {
 	err    error
 }
 
-// A Manager answers every interface a caller reaches it through, the optional one included: a
-// bundle takes the RefusalForgetter by type assertion (listInstallation's caller is the other),
-// so a method renamed without its interface would leave the Manager silently un-forgotten
-// rather than fail the build.
+// A Manager answers every interface a caller reaches it through. The daemon's wiring takes it
+// as a Source, which the build holds it to wherever it is handed over. Forgetter is taken by
+// type assertion instead (internal/daemon's openWorkflow and leakCheckSource), so a Forget
+// renamed without its interface would fail the daemon's boot, or leave the leak check serving
+// a token GitHub refused, rather than fail the build.
 var (
-	_ Tokens             = (*Manager)(nil)
-	_ OwnerInstallations = (*Manager)(nil)
-	_ Forgetter          = (*Manager)(nil)
-	_ RefusalForgetter   = (*Manager)(nil)
+	_ Source    = (*Manager)(nil)
+	_ Forgetter = (*Manager)(nil)
 )
 
 // New makes an App token manager. Config.Load resolves command and secret key sources before
@@ -381,23 +380,14 @@ func (m *Manager) Forget(role AppRole, owner string) {
 	})
 }
 
-// RefusalForgetter drops the narrowing refusal a token source remembers for one owner's read
-// lease, so the next ask of that scope reaches GitHub rather than the memory
-// (Manager.ForgetNarrowingRefusal). It is optional, as Forgetter is: a source that remembers no
-// refusal has none to drop, so a test fake and a harness that implement Tokens alone keep
-// working.
-type RefusalForgetter interface {
-	ForgetNarrowingRefusal(role AppRole, owner string)
-}
-
-// ForgetNarrowingRefusal drops the narrowing refusal remembered for role's read lease on owner
+// forgetNarrowingRefusal drops the narrowing refusal remembered for role's read lease on owner
 // (lease, narrowingRefusalWindow), and nothing else: no lease, and no other scope's refusal. It
 // is for the caller that knows that one memory is stale — the token-mode mapping check, which
 // asks whether the App's installation holds a repository and must have GitHub's answer rather
 // than the memory of a refusal met before an operator fixed the grant (listInstallation) —
 // where Forget, which drops every lease and every refusal of the owner, would throw away a
 // token that is good and make the owner's other scope mint again.
-func (m *Manager) ForgetNarrowingRefusal(role AppRole, owner string) {
+func (m *Manager) forgetNarrowingRefusal(role AppRole, owner string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.refusals, leaseScope(true, role, owner))
@@ -450,7 +440,7 @@ func (r mintRequest) scope() scope { return leaseScope(r.read, r.role, r.owner) 
 // The memory answers the ask that would repeat a refusal, never one that already knows better.
 // A caller holding what the window cannot know — the token-mode mapping check, which asks
 // whether an installation holds a repository after an operator may have changed the grant
-// (listInstallation) — drops that one scope's memory before it asks (ForgetNarrowingRefusal),
+// (listInstallation) — drops that one scope's memory before it asks (forgetNarrowingRefusal),
 // so what it is served is GitHub's answer now.
 //
 // What a cached answer is worth is worth saying, since a caller may read such an ask as what
@@ -684,10 +674,23 @@ var ErrNotInstalled = errors.New("github_app_not_installed")
 // the installation is the whole of a role's reach, since every token this package mints reaches
 // every repository its installation holds and names no repository at all (INFRA-2543), so the
 // accounts the App is installed on are the owners a bundle can hold a directory for. It is an
-// interface of its own, as Tokens is, so a bundle can be built over a fake in a test and over
-// the Manager in the daemon.
+// interface of its own, as Tokens is, so that a test fake answers one of the two and a Source
+// is put together from the pair.
 type OwnerInstallations interface {
 	InstalledOwners(ctx context.Context, role AppRole) ([]string, error)
+}
+
+// Source is a daemon's GitHub App token source whole: the leases it mints (Tokens) and the
+// owner accounts each App is installed on (OwnerInstallations). A gh bundle is built from both,
+// one directory per installed owner holding that owner's lease, so the two credentials and
+// every place the daemon hands its token source on take a Source (GitHubCredential,
+// ControllerCredential, internal/daemon's runtime factories, internal/api's Options.Tokens).
+// The type is what says a token source answers its installations: a value that does not is
+// refused by the build, where a type assertion at each of those places would find it only as
+// the daemon ran. The Manager is the daemon's one Source.
+type Source interface {
+	Tokens
+	OwnerInstallations
 }
 
 // InstalledOwners is the owner accounts role's App is installed on, lowercased and sorted, read

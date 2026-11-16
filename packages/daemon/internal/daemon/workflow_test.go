@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -54,6 +55,12 @@ func (t loginTokens) AppLogin(_ context.Context, role appauth.AppRole) (string, 
 
 func (loginTokens) InstalledOn(context.Context, appauth.AppRole, ghrepo.Repository) (bool, error) {
 	return true, nil
+}
+
+// InstalledOwners answers no owner list: opening the workflow builds no gh bundle, and a test
+// that builds one names its owners itself.
+func (loginTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return nil, errors.New("loginTokens lists no owner accounts, which a gh bundle holds one directory per owner of")
 }
 
 // Forget drops nothing: every lease is minted afresh.

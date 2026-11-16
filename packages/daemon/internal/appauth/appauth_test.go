@@ -156,11 +156,28 @@ var grantedEverythingAsked = map[string]string{
 
 // installationGranting is GitHub's GET /app/installations/{id}: the installation and the
 // permissions its account granted the App, which a mint reads before each exchange and cuts its
-// request down to (exchangeGranted).
+// request down to (exchangeGranted), with the null suspended_at GitHub answers for an
+// installation no account suspended.
 func installationGranting(id string, permissions map[string]string) string {
+	return installationAnswer(id, permissions, "null")
+}
+
+// suspendedSince is when the stand-in's suspended installations were suspended.
+const suspendedSince = "2026-11-14T08:00:00Z"
+
+// installationSuspended is installationGranting for an installation its account suspended: the
+// permissions stand as they were granted, and suspended_at is the time of the suspension, the
+// one field a mint reads a suspension from (grantedPermissions).
+func installationSuspended(id string, permissions map[string]string) string {
+	return installationAnswer(id, permissions, `"`+suspendedSince+`"`)
+}
+
+// installationAnswer is the installation id granted permissions, with suspendedAt as the JSON
+// value of its suspended_at.
+func installationAnswer(id string, permissions map[string]string, suspendedAt string) string {
 	// A map of strings always marshals, and json.Marshal sorts its keys.
 	encoded, _ := json.Marshal(permissions)
-	return fmt.Sprintf(`{"id":%s,"permissions":%s}`, id, encoded)
+	return fmt.Sprintf(`{"id":%s,"permissions":%s,"suspended_at":%s}`, id, encoded, suspendedAt)
 }
 
 func TestGenerateJWTSignsShippedClaims(t *testing.T) {
@@ -783,6 +800,54 @@ func TestGrantedPermissionsReadIsTransientOn5xxAndGoneOn404(t *testing.T) {
 	}
 }
 
+// A suspension is read from the installation's own suspended_at, which the read before every
+// exchange answers, and never from the words of GitHub's 403 to the token request. The account
+// here suspended the installation after GitHub listed it, so discovery lists it as any other
+// and only that read can find it. Its token request would be answered 403 in words that are not
+// GitHub's own today and name no suspension (forbiddenAnswer), as a message GitHub rewords
+// would be: a mint that read those words would take the suspension for a plain refusal, which
+// fails every bundle of the App. The mint is refused as a suspended installation's instead, for
+// the write lease and the read lease alike, which is the one refusal a bundle leaves the
+// owner's directory out over (leaveOutReason), and it asks GitHub for no token.
+func TestASuspensionIsReadFromTheInstallationAndNeverFromTheWordsOfA403(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mint func(*Manager) (Lease, error)
+	}{
+		{"the write lease", func(m *Manager) (Lease, error) { return m.Token(context.Background(), Implement, "pausedlabs") }},
+		{"the read lease", func(m *Manager) (Lease, error) { return m.ReadToken(context.Background(), Review, "pausedlabs") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+			var stderr bytes.Buffer
+			github := &keyModeGitHub{owners: []string{"pausedlabs"}, slug: "legion-implementer"}
+			github.forbids = func(owner string) bool { return owner == "pausedlabs" }
+			tokens := keyModeManager(t, github, &now, &stderr)
+
+			lease, err := tc.mint(tokens)
+			if lease.Token != "" || !errors.Is(err, errInstallationSuspended) {
+				t.Fatalf("a mint on a suspended installation = %q, %v; want no lease and errInstallationSuspended, whatever the 403 says", lease.Token, err)
+			}
+			var trouble *TransientError
+			if errors.As(err, &trouble) {
+				t.Errorf("the refusal %v is GitHub's trouble, want an answer about the installation", err)
+			}
+			if reason := leaveOutReason(err); reason != "suspended" {
+				t.Errorf("leaveOutReason = %q, want suspended: a bundle leaves this owner's directory out", reason)
+			}
+			if !strings.Contains(err.Error(), suspendedSince) {
+				t.Errorf("the refusal does not name when the installation was suspended (%s): %v", suspendedSince, err)
+			}
+			if reads := github.permissionReads(); !slices.Equal(reads, []string{"101"}) {
+				t.Errorf("the installation was read %v, want once: a suspended installation is not looked for again", reads)
+			}
+			if asked := github.exchanges(); len(asked) != 0 {
+				t.Errorf("%d token requests, want none: the read says the installation is suspended", len(asked))
+			}
+		})
+	}
+}
+
 // A 422 carrying GitHub's rate limit says nothing about what the installation is granted: it is
 // GitHub's trouble (TransientError), no lease is served, and nothing is said of a grant. GitHub
 // documents its limits on a 429 and a 403, so the three ways a 422 can still carry one are each
@@ -1027,10 +1092,12 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 // GitHub's own refusal of one is a request it answered.
 //
 // suspended is the owners whose installation GitHub lists with a suspended_at, every other one
-// listed with it null, as GitHub lists each installation; a suspended installation's exchange is
-// answered 403, as GitHub refuses every token of one. forbids, when it is set, is the owners whose
-// exchange is answered that same 403 while their installation is listed as any other: an
-// installation suspended between the listing and the mint, or one named in the configuration.
+// listed with it null, as GitHub lists each installation. forbids, when it is set, is the owners
+// whose installation is suspended while it is listed as any other: an installation suspended
+// between the listing and the mint, or one named in the configuration. The read of an
+// installation of either kind answers the time it was suspended at (installationSuspended),
+// before granted is asked, and its exchange is answered 403 (forbiddenAnswer), as GitHub refuses
+// every token of a suspended installation.
 // answers, when it is set, answers an owner's exchange itself where it reports that it did:
 // GitHub's trouble and its rate limits, which a test sends one owner alone.
 type keyModeGitHub struct {
@@ -1049,8 +1116,11 @@ type keyModeGitHub struct {
 	answers   func(w http.ResponseWriter, owner string) bool
 }
 
-// suspendedAnswer is GitHub's 403 to a token request on a suspended installation.
-const suspendedAnswer = `{"message":"This installation has been suspended","documentation_url":"https://docs.github.com/rest/apps/apps#create-an-installation-access-token-for-an-app","status":"403"}`
+// forbiddenAnswer is the stand-in's 403 to a token request on a suspended installation. Its
+// words are not the ones GitHub answers today ("This installation has been suspended") and
+// name no suspension: GitHub may reword that message, so nothing a mint decides may rest on it,
+// and a mint that read the message for a suspension would find none here.
+const forbiddenAnswer = `{"message":"Access to this installation is on hold","documentation_url":"https://docs.github.com/rest/apps/apps#create-an-installation-access-token-for-an-app","status":"403"}`
 
 // ownerOf is the account the installation id names, as /app/installations lists them.
 func (g *keyModeGitHub) ownerOf(installation string) string {
@@ -1076,7 +1146,7 @@ func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
 			for i, owner := range owners {
 				since := "null"
 				if suspended[strings.ToLower(owner)] {
-					since = `"2026-11-14T08:00:00Z"`
+					since = `"` + suspendedSince + `"`
 				}
 				listed = append(listed, fmt.Sprintf(`{"id":%d,"account":{"login":%q},"suspended_at":%s}`, 101+i, owner, since))
 			}
@@ -1094,7 +1164,7 @@ func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
 			}
 			if suspended[owner] || (forbids != nil && forbids(owner)) {
 				w.WriteHeader(http.StatusForbidden)
-				fmt.Fprint(w, suspendedAnswer)
+				fmt.Fprint(w, forbiddenAnswer)
 				return
 			}
 			if refuses != nil && refuses(owner) {
@@ -1109,16 +1179,20 @@ func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
 			installation := strings.TrimPrefix(r.URL.Path, "/app/installations/")
 			g.mu.Lock()
 			g.reads = append(g.reads, installation)
-			read, grants, granted := len(g.reads), g.grants, g.granted
+			read, grants, granted, suspended, forbids := len(g.reads), g.grants, g.granted, g.suspended, g.forbids
 			g.mu.Unlock()
+			if grants == nil {
+				grants = grantedEverythingAsked
+			}
+			if owner := g.ownerOf(installation); suspended[owner] || (forbids != nil && forbids(owner)) {
+				fmt.Fprint(w, installationSuspended(installation, grants))
+				return
+			}
 			if granted != nil {
 				status, answer := granted(installation, read)
 				w.WriteHeader(status)
 				fmt.Fprint(w, answer)
 				return
-			}
-			if grants == nil {
-				grants = grantedEverythingAsked
 			}
 			fmt.Fprint(w, installationGranting(installation, grants))
 		case r.URL.Path == "/app":

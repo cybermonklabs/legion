@@ -260,7 +260,7 @@ func (namedTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, 
 func renamedCredentialBundle(t *testing.T, served []ghrepo.Repository, renames ghrepo.Renames) (root, defaultDir string) {
 	t.Helper()
 	repos := func() []ghrepo.Repository { return served }
-	credential := appauth.GitHubCredential(namedTokens{}, namedTokens{}, repos, renames, nil, nil, slog.Default())
+	credential := appauth.GitHubCredential(namedTokens{}, repos, renames, nil, nil, slog.Default())
 	bundle, err := credential(context.Background(), legionclaim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
 	if err != nil {
 		t.Fatalf("build the bundle: %v", err)

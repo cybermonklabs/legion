@@ -32,7 +32,7 @@ func TestEveryDirectoryHoldsTheLeaseOfTheOwnerItsNameMeans(t *testing.T) {
 	renames := ghrepo.MustRenames(legionRename)
 	for _, rec := range []string{"sjawhar/tools", "sjawhar/legion", "cybermonklabs/tools", "cybermonklabs/legion"} {
 		t.Run("an issue recorded on "+rec, func(t *testing.T) {
-			credential := GitHubCredential(ownerTokens{}, installedOnOwners("cybermonklabs", "sjawhar"), repos,
+			credential := GitHubCredential(sourceOf(ownerTokens{}, installedOnOwners("cybermonklabs", "sjawhar")), repos,
 				renames, nil, nil, quietBundleLog())
 			bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse(rec))
 			if err != nil {

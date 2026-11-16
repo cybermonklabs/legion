@@ -117,19 +117,21 @@ func newControllerDaemonGated(t *testing.T, steps []record.DesignStep) *controll
 // newControllerDaemonWithTokens is newControllerDaemon whose GitHub credential route mints review
 // App tokens from tokens for a project under two owners, acme and sjawhar, for the tests of the
 // controller's GitHub credential fetch and refresh loop.
-func newControllerDaemonWithTokens(t *testing.T, tokens appauth.Tokens) *controllerDaemon {
+func newControllerDaemonWithTokens(t *testing.T, tokens appauth.Source) *controllerDaemon {
 	return newControllerDaemonWithOptions(t, controllerDaemonOptions{steps: config.DesignGateRootIssues.Steps(), tokens: tokens,
 		repos: []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}})
 }
 
 // controllerDaemonOptions configures newControllerDaemonWithOptions: the design-gate steps the
-// project gates, the project's mapped repositories (for the controller's addressing), and, for
-// the tests of the controller's GitHub credential route, a Tokens fake and the project's served
-// repositories, whose owners its bundle holds a directory each for.
+// project gates, the project's mapped repositories (for the state route), and, for
+// the tests of the controller's GitHub credential route, a Tokens fake, the project's served
+// repositories and the deployment's configured renames, which decide the directories its bundle
+// holds beside the ones of the owners the fake says the App is installed on.
 type controllerDaemonOptions struct {
 	steps        []record.DesignStep
-	tokens       appauth.Tokens
+	tokens       appauth.Source
 	repos        []ghrepo.Repository
+	renames      ghrepo.Renames
 	repositories []string
 	// rawStateBody, set, replaces GET /legion/v1/state's whole response body verbatim (for a
 	// malformed or structurally invalid body a real projection never produces: `{}`, `null`, a
@@ -181,13 +183,14 @@ func (fixedStateTransactions) BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, e
 
 // fixedStateSource is the controller test daemon's api.StateSource: a state holding only the
 // repositories the daemon serves and their owner accounts, as `GET /legion/v1/state` serves them
-// for the controller's own addressing (controllerRepositories), in the order given, as the daemon
-// serves them sorted. A nil repositories (the zero value, most tests' default) stands in for a
-// normally configured daemon and answers one fixed repository; a non-nil empty slice is the
-// explicit "this daemon serves nothing" case a test must ask for by name. The owners are derived
-// from the repositories, once each in first-seen order, as the daemon derives them
-// (daemon's repositories.Owners), since the addressing names the owners and not the
-// repositories. It answers no claims: this daemon knows no caller's pod, so the route reads none.
+// for the read `legion controller start` makes before the mint (checkControllerRepositories), in
+// the order given, as the daemon serves them sorted. A nil repositories (the zero value, most
+// tests' default) stands in for a normally configured daemon and answers one fixed repository; a
+// non-nil empty slice is the explicit "this daemon serves nothing" case a test must ask for by
+// name. The owners are derived from the repositories, once each in first-seen order, as the
+// daemon derives them (daemon's repositories.Owners). The controller's addressing names none of
+// them: it names the owners of its gh bundle, which the mapping does not decide. It answers no
+// claims: this daemon knows no caller's pod, so the route reads none.
 type fixedStateSource struct{ repositories []string }
 
 func (f fixedStateSource) State(context.Context, pgx.Tx) (api.State, []supervise.Claim, error) {
@@ -216,7 +219,7 @@ func newControllerDaemonWithOptions(t *testing.T, opts controllerDaemonOptions) 
 	handler := api.NewServer("127.0.0.1", 0, api.Options{
 		Project: controllerProject, OperatorToken: controllerOperatorToken, Controller: d.controller,
 		Steps: opts.steps, Dispatch: d.dispatch, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Tokens: opts.tokens, GitHubRepositories: func() []ghrepo.Repository { return opts.repos },
+		Tokens: opts.tokens, GitHubRepositories: func() []ghrepo.Repository { return opts.repos }, RepositoryRenames: opts.renames,
 		State: fixedStateSource{repositories: opts.repositories}, StateTransactions: fixedStateTransactions{},
 	}).Handler
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -661,11 +664,13 @@ func TestControllerStartWritesTheSecretAndTheControllersFilesUnderTheStateDirect
 }
 
 // Oh My Pi runs through the launch prefix, interactive (no --mode rpc, no --resume), with one
-// --append-system-prompt holding the controller prompt, the daemon's design gate steps, and the
-// deployment instructions, then the one word daemon.ControllerStartCommand; under the operator's own
+// --append-system-prompt holding the controller prompt, the daemon's design gate steps, the reach
+// of the controller's gh, and the deployment instructions, then the one word
+// daemon.ControllerStartCommand; under the operator's own
 // environment plus exactly the shared controller environment — the secrets as file pointers, never
 // values — including LEGION_CONTROLLER_START_MESSAGE, which that pi-legion command sends as the
-// session's first turn.
+// session's first turn. This default daemon has no GitHub App, so the controller's gh acts as
+// nobody and its prompt says its App is installed on no owner, whatever the mapping names.
 func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *testing.T) {
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
@@ -695,7 +700,7 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 	// `$(cat …)` drops each file's trailing newlines, as a shell does. The start message travels
 	// as LEGION_CONTROLLER_START_MESSAGE; argv ends with the command that sends it.
 	wantArgv := []string{"--append-system-prompt",
-		strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. Your role's GitHub App is installed on the owner acme, and its token reaches every repository of that owner.\n\n" +
+		strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. Your role's GitHub App is installed on no owner, so its token reaches no repository.\n\n" +
 			strings.TrimRight(string(instructions), "\n"),
 		"/legion-controller-start"}
 	if got := c.argv(); !slices.Equal(got, wantArgv) {
@@ -782,7 +787,8 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 // The controller is told the design-gate steps the daemon really gates, so under a deployment
 // that gates none its take comment promises no design approval that cannot happen, and under
 // one that gates several it names each (skill://legion-controller). `legion controller start`
-// accepts every answer the route gives, so each deployment launches.
+// accepts every answer the route gives, so each deployment launches. The sentence after the
+// steps is the reach of the controller's gh, which this daemon, having no GitHub App, gives none.
 func TestControllerStartTellsTheControllerTheDaemonsGatedSteps(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -800,7 +806,7 @@ func TestControllerStartTellsTheControllerTheDaemonsGatedSteps(t *testing.T) {
 				t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 			}
 			argv := c.argv()
-			want := "\n\n" + tc.line + " Your role's GitHub App is installed on the owner acme, and its token reaches every repository of that owner.\n\n"
+			want := "\n\n" + tc.line + " Your role's GitHub App is installed on no owner, so its token reaches no repository.\n\n"
 			if len(argv) != 3 || !strings.Contains(argv[1], want) {
 				t.Fatalf("Oh My Pi's argv = %q; want the system prompt to carry %q", argv, want)
 			}
@@ -809,23 +815,111 @@ func TestControllerStartTellsTheControllerTheDaemonsGatedSteps(t *testing.T) {
 }
 
 // The operator-launched controller's addressing gains the reach its GitHub App gives it after
-// its design gate steps, as a sentence of its own, read from the daemon's own GET
-// /legion/v1/state (the unauthenticated route): the owner accounts of the repositories the
-// daemon serves, in the order the daemon serves them, never the design-gate line alone, once the
-// daemon serves any repository. It names no repository, since the App installation and not the
-// mapping decides where the project may work (INFRA-2543).
+// its design gate steps, as a sentence of its own: the owner accounts the daemon read the review
+// App installed on as it built the gh bundle it has just answered (controllerReach). They are
+// not the owners of the repositories the project is mapped (GET /legion/v1/state): here the
+// mapping is acme/widgets alone and the review App is installed on theorem-labs too, so the
+// controller's gh holds both directories and its prompt names both. A prompt built from the
+// mapping told the controller it reached acme alone. It names no repository, since the App
+// installation and not the mapping decides where the project may work (INFRA-2543).
 func TestControllerStartsAddressingGainsTheReachItsAppGives(t *testing.T) {
+	tokens := newControllerCredentialTokens("ghs_first")
+	tokens.installOn("acme", "theorem-labs")
 	d := newControllerDaemonWithOptions(t, controllerDaemonOptions{
-		steps: config.DesignGateOff.Steps(), repositories: []string{"acme/widgets", "sjawhar/legion-smoke"},
+		steps: config.DesignGateOff.Steps(), tokens: tokens,
+		repos: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")}, repositories: []string{"acme/widgets"},
 	})
 	c := newControllerStart(t, d, controllerOptions{})
 	if code, _, errb := c.run(); code != 0 {
 		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 	}
+	for _, owner := range []string{"acme", "theorem-labs"} {
+		if _, err := os.Stat(filepath.Join(c.defaultDir, "gh", owner, ghconfig.HostsFile)); err != nil {
+			t.Fatalf("the controller's gh holds no token for %s (%v), so this case proves nothing", owner, err)
+		}
+	}
 	argv := c.argv()
-	want := "\n\nDesign gate steps: none. Your role's GitHub App is installed on the owners acme, sjawhar, and its token reaches every repository of those owners.\n\n"
+	want := "\n\nDesign gate steps: none. Your role's GitHub App is installed on the owners acme, theorem-labs, and its token reaches every repository of those owners.\n\n"
 	if len(argv) != 3 || !strings.Contains(argv[1], want) {
 		t.Fatalf("Oh My Pi's argv = %q; want it to contain %q", argv, want)
+	}
+}
+
+// The sentence names an owner only where both of its halves are true of it: the review App is
+// installed on the account, and the controller's gh holds a token of it. Neither of the two
+// lists the daemon answers is that set by itself, so the controller is told their intersection
+// (controllerReach), and this holds the two ways they differ.
+//
+// The bundle's directories hold an alias: the pair sjawhar/legion -> cybermonklabs/legion
+// resolves, so the bundle carries a sjawhar directory holding cybermonklabs' lease, on an
+// account the App is not installed on. A sentence built from the directories, which is what
+// this change first did, names sjawhar as an owner the App is installed on. The installations
+// hold an owner with no token: the App is installed on acme and GitHub refuses its reading
+// lease there, so the bundle holds no acme directory. A sentence built from the installations
+// alone says the controller's token reaches every repository of acme.
+func TestControllerStartsAddressingNamesNeitherARenameAliasNorAnOwnerItsGhHoldsNoTokenOf(t *testing.T) {
+	tokens := newControllerCredentialTokens("ghs_first")
+	tokens.installOn("acme", "cybermonklabs")
+	tokens.refuse("acme")
+	d := newControllerDaemonWithOptions(t, controllerDaemonOptions{
+		steps: config.DesignGateOff.Steps(), tokens: tokens,
+		repos:        []ghrepo.Repository{ghrepo.MustParse("cybermonklabs/legion")},
+		renames:      ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion")),
+		repositories: []string{"cybermonklabs/legion"},
+	})
+	c := newControllerStart(t, d, controllerOptions{})
+	if code, _, errb := c.run(); code != 0 {
+		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
+	}
+
+	// The two lists as the daemon answered them, which are the two sources a sentence could be
+	// built from: the directories the controller's gh holds, and the installations.
+	var answer api.ControllerCredentialResponse
+	for _, request := range d.requests() {
+		if request.path == "/legion/v1/controller/github-credential" {
+			if err := json.Unmarshal(request.answer, &answer); err != nil {
+				t.Fatalf("decode the daemon's answer %s: %v", request.answer, err)
+			}
+		}
+	}
+	dirs := slices.Sorted(maps.Keys(answer.Owners))
+	if want := []string{"cybermonklabs", "sjawhar"}; !slices.Equal(dirs, want) {
+		t.Fatalf("the bundle holds the directories %q, want %q: the alias sjawhar and no acme, so this case proves nothing otherwise", dirs, want)
+	}
+	if want := []string{"acme", "cybermonklabs"}; !slices.Equal(answer.Installed, want) {
+		t.Fatalf("the daemon answered installed %q, want %q: acme, whose lease GitHub refuses, and no sjawhar, so this case proves nothing otherwise", answer.Installed, want)
+	}
+	for _, owner := range dirs {
+		if _, err := os.Stat(filepath.Join(c.defaultDir, "gh", owner, ghconfig.HostsFile)); err != nil {
+			t.Fatalf("the controller's gh holds no token for %s (%v)", owner, err)
+		}
+	}
+
+	argv := c.argv()
+	if len(argv) != 3 {
+		t.Fatalf("Oh My Pi's argv = %q, want three words", argv)
+	}
+	want := "\n\nDesign gate steps: none. Your role's GitHub App is installed on the owner cybermonklabs, and its token reaches every repository of that owner.\n\n"
+	if !strings.Contains(argv[1], want) {
+		t.Errorf("Oh My Pi's argv = %q; want it to contain %q", argv, want)
+	}
+	// The negative controls: the sentence each source alone would have written is not the
+	// controller's, and each of them names the owner the other half is false of.
+	for _, control := range []struct {
+		source string
+		owners []string
+		names  string
+	}{
+		{"the bundle's directories", dirs, "sjawhar"},
+		{"the installations alone", answer.Installed, "acme"},
+	} {
+		sentence := daemon.RepositoriesSentence(control.owners)
+		if !strings.Contains(sentence, control.names) {
+			t.Fatalf("the sentence built from %s is %q, want it to name %s: the control proves nothing otherwise", control.source, sentence, control.names)
+		}
+		if strings.Contains(argv[1], sentence) {
+			t.Errorf("the controller's prompt carries %q, the sentence built from %s, which names %s", sentence, control.source, control.names)
+		}
 	}
 }
 
@@ -861,29 +955,39 @@ func TestControllerStartRefusesAnUnusableRepositoryMapping(t *testing.T) {
 }
 
 // An empty `mapped` with a non-empty `refused` (every candidate repository lacks an App, a
-// real, fully-booted state) launches on both paths, telling the controller that its App is
-// installed on no owner, rather than refusing and burning a launch budget the App install cannot
-// recover from on its own. The refused repositories are named in the state and no longer in the
-// addressing, which names no repository at all.
+// real, fully-booted state) launches on both paths, rather than refusing and burning a launch
+// budget the App install cannot recover from on its own. The controller is told the owners its
+// App is installed on and its gh holds a token of, which the mapping does not decide: here the
+// review App is installed on theorem-labs and not on acme, so the daemon refuses acme/widgets
+// and the controller's gh still reaches theorem-labs. A prompt built from the mapping said the
+// App was installed on no owner while the gh directory held that token. The refused
+// repositories are named in the state and never in the addressing, which names no repository at
+// all.
 func TestControllerStartLaunchesWithEveryRepositoryRefused(t *testing.T) {
+	tokens := newControllerCredentialTokens("ghs_first")
+	tokens.installOn("theorem-labs")
 	d := newControllerDaemonWithOptions(t, controllerDaemonOptions{
 		steps:        config.DesignGateOff.Steps(),
+		tokens:       tokens,
 		rawStateBody: `{"repositories":{"mapped":[],"refused":[{"repo":"acme/widgets","reason":"the review App is not installed on acme/widgets"}]}}`,
 	})
 	c := newControllerStart(t, d, controllerOptions{})
 	if code, _, errb := c.run(); code != 0 {
 		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 	}
+	if _, err := os.Stat(filepath.Join(c.defaultDir, "gh", "theorem-labs", ghconfig.HostsFile)); err != nil {
+		t.Fatalf("the controller's gh holds no token for theorem-labs (%v), so this case proves nothing", err)
+	}
 	argv := c.argv()
-	want := "Your role's GitHub App is installed on no owner, so its token reaches no repository.\n\n"
+	want := "\n\nDesign gate steps: none. Your role's GitHub App is installed on the owner theorem-labs, and its token reaches every repository of that owner.\n\n"
 	if len(argv) != 3 || !strings.Contains(argv[1], want) {
 		t.Fatalf("Oh My Pi's argv = %q; want it to contain %q", argv, want)
 	}
 }
 
 // An empty `mapped` with an empty `refused` too (no workflow reached, or every repository
-// unmapped by a refresh) also launches, naming the state for what it is — the same wording and
-// behavior on both launch paths.
+// unmapped by a refresh) also launches. This daemon has no GitHub App, so the controller is told
+// its App is installed on no owner — the same wording and behavior on both launch paths.
 func TestControllerStartLaunchesWithNoRepositoryMappedOrRefused(t *testing.T) {
 	d := newControllerDaemonWithOptions(t, controllerDaemonOptions{steps: config.DesignGateOff.Steps(), repositories: []string{}})
 	c := newControllerStart(t, d, controllerOptions{})
@@ -899,8 +1003,8 @@ func TestControllerStartLaunchesWithNoRepositoryMappedOrRefused(t *testing.T) {
 
 // A transient read failure (a non-2xx GET /legion/v1/state) is a refusal, never a launch on an
 // assumed empty mapping: "read failed" and "read succeeded with an empty mapping" are different
-// outcomes of controllerRepositories, and only the former refuses. This is what keeps a running
-// controller from being revoked for a replacement that never starts.
+// outcomes of checkControllerRepositories, and only the former refuses. This is what keeps a
+// running controller from being revoked for a replacement that never starts.
 func TestControllerStartNeverMintsWhenTheRepositoryReadFails(t *testing.T) {
 	d := newControllerDaemonWithOptions(t, controllerDaemonOptions{stateStatus: http.StatusServiceUnavailable})
 	c := newControllerStart(t, d, controllerOptions{})
@@ -1500,16 +1604,38 @@ func TestControllerStartUsage(t *testing.T) {
 // controllerCredentialTokens is a Tokens fake for the controller's GitHub credential route: each
 // owner's token is read and set under a lock, so a test can turn one owner's between the refresh
 // loop's ticks, or have every mint fail, for the 502 case. An owner with no token of its own gets
-// the fake's base token.
+// the fake's base token. installed is the owner accounts the review App is installed on, which
+// no mapping decides, and refused the ones among them whose leases GitHub refuses.
 type controllerCredentialTokens struct {
-	mu     sync.Mutex
-	token  string
-	owners map[string]string
-	err    error
+	mu        sync.Mutex
+	token     string
+	owners    map[string]string
+	installed []string
+	refused   []string
+	err       error
 }
 
+// newControllerCredentialTokens is the fake minting token for every owner, with the review App
+// installed on acme and sjawhar, the two accounts newControllerDaemonWithTokens' project serves
+// repositories under.
 func newControllerCredentialTokens(token string) *controllerCredentialTokens {
-	return &controllerCredentialTokens{token: token, owners: map[string]string{}}
+	return &controllerCredentialTokens{token: token, owners: map[string]string{}, installed: []string{"acme", "sjawhar"}}
+}
+
+// installOn replaces the owner accounts the review App is installed on.
+func (c *controllerCredentialTokens) installOn(owners ...string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.installed = owners
+}
+
+// refuse has GitHub refuse every lease of owner as it refuses a narrowing
+// (appauth.ErrNarrowingRefused): the App is installed on the account, and its installation does
+// not hold the permissions a lease asks for, so a bundle leaves that owner's directory out.
+func (c *controllerCredentialTokens) refuse(owner string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.refused = append(c.refused, owner)
 }
 
 // setOwner turns owner's token to token.
@@ -1535,11 +1661,13 @@ func (c *controllerCredentialTokens) ReadToken(_ context.Context, _ appauth.AppR
 	return lease, err
 }
 
-// InstalledOwners is the owner accounts the review App is installed on, which the controller's
-// bundle reads from GitHub at every build (appauth.OwnerInstallations): the two accounts this
-// daemon's project serves repositories under, which is what its bundle holds directories for.
+// InstalledOwners is the owner accounts the review App is installed on (installOn), which the
+// controller's bundle reads from GitHub at every build (appauth.OwnerInstallations) and holds a
+// directory for each of.
 func (c *controllerCredentialTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
-	return []string{"acme", "sjawhar"}, nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.installed), nil
 }
 
 func (c *controllerCredentialTokens) lease(owner string) (appauth.Lease, error) {
@@ -1547,6 +1675,9 @@ func (c *controllerCredentialTokens) lease(owner string) (appauth.Lease, error) 
 	defer c.mu.Unlock()
 	if c.err != nil {
 		return appauth.Lease{}, c.err
+	}
+	if slices.Contains(c.refused, owner) {
+		return appauth.Lease{}, fmt.Errorf("%w (owner %s)", appauth.ErrNarrowingRefused, owner)
 	}
 	token := c.token
 	if own, ok := c.owners[owner]; ok {

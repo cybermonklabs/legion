@@ -37,8 +37,8 @@ import (
 // process sees. GHConfigDir is the role's gh bundle root (LEGION_GH_OWNERS_DIR): the read-only
 // projection of its role Secret's gh files, one directory per entry of the role's gh bundle
 // (GitHubHostsKey(dir) as <dir>/ghconfig.HostsFile, GitHubConfigKey(dir) as
-// <dir>/ghconfig.ConfigFile, where a dir is a GitHub owner of the project or one of its
-// repositories, `<owner>/<repo>`), with the bundle's configured renames beside them in the root
+// <dir>/ghconfig.ConfigFile, where a dir is a GitHub owner account, a bundle of this daemon
+// holding no repository directory), with the bundle's configured renames beside them in the root
 // (GitHubPairsKey as ghconfig.PairsFile) and the default owner's directory (GitHubDefaultKey)
 // its GH_CONFIG_DIR, and which its gh (the image's `legion gh`) and the clone's `legion
 // git-credential` helper read the token that answers for the repository a command names from —

@@ -1,0 +1,23 @@
+kind: Changed
+body: |-
+  The GitHub App installation decides which repositories a project works in, and the project's
+  Dispatch repository mapping no longer does. Every role's GitHub credential bundle holds one
+  directory for each owner account the role's App is installed on, so a role reaches every
+  repository its App's installations cover. The daemon records an issue and runs it on any
+  repository both role Apps are installed on, whether or not the project maps it, and refuses a
+  repository only when a role App is not installed on it or its installation cannot be read. The
+  mapping still names the project's default repository and the repositories the daemon prepares
+  before an issue names one. On `GET /legion/v1/state`, `repositories.mapped` is every repository
+  the daemon serves, and each entry carries `apps`, which says whether each role App is installed
+  on it, at daemon API contract 152.
+
+  An installation whose GitHub login is no valid directory name is left out of the bundle, with
+  a WARN that names it; before, one such login failed every bundle of that App. It still fails
+  the bundle when that name is the bundle's default directory or the owner a controller asked
+  for. The daemon reads a suspended installation from the installation's own `suspended_at`, and
+  no longer from the words of a 403 to the token request, which is also the status of GitHub's
+  secondary rate limit. A suspended installation leaves its owner's directory out of the bundle,
+  and a message GitHub rewords can no longer turn it into a failure of every role's bundle.
+time: 2026-11-16T04:21:42Z
+custom:
+    Issue: pr3730

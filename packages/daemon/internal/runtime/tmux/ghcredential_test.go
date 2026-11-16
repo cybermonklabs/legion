@@ -694,7 +694,7 @@ func (leaseTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, 
 func TestAPaneWithNoRepositoryIsRenderedForThatSameAbsentRepository(t *testing.T) {
 	ctx := context.Background()
 	var logs strings.Builder
-	bundle := appauth.GitHubCredential(leaseTokens{}, leaseTokens{},
+	bundle := appauth.GitHubCredential(leaseTokens{},
 		func() []ghrepo.Repository {
 			return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}
 		},
@@ -774,7 +774,7 @@ func TestAPaneRecordedOnAPairsFromKeepsRefreshing(t *testing.T) {
 	ctx := context.Background()
 	var logs strings.Builder
 	pair := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
-	credential := appauth.GitHubCredential(pairTokens{}, pairTokens{},
+	credential := appauth.GitHubCredential(pairTokens{},
 		func() []ghrepo.Repository {
 			return []ghrepo.Repository{ghrepo.MustParse("cybermonklabs/legion"), ghrepo.MustParse("sjawhar/ygo")}
 		},

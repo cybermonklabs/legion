@@ -1289,7 +1289,7 @@ func TestControllerSecretResponseGolden(t *testing.T) {
 }
 
 // What `legion controller start` fetches for the review App's read-only tokens, one per owner,
-// each rendered as the two files `gh` reads.
+// each rendered as the two files `gh` reads, with the owner accounts that App is installed on.
 func TestControllerCredentialResponseGolden(t *testing.T) {
 	expiresAt := time.Date(2026, 9, 22, 10, 15, 2, 0, time.UTC)
 	acme := ghconfig.Render("ghs_placeholder_acme_token", "review", expiresAt)
@@ -1302,6 +1302,7 @@ func TestControllerCredentialResponseGolden(t *testing.T) {
 		Default:   "acme",
 		App:       "review",
 		ExpiresAt: expiresAt.UTC().Format(timeFormat),
+		Installed: []string{"acme", "sjawhar"},
 	})
 }
 

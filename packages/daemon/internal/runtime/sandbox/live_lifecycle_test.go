@@ -1309,9 +1309,11 @@ func (r *liveRig) checkIndependentProvision() error {
 // the wrapper's pick, since LEGION_E2E_REPO is private to its owner); git, through the clone's
 // `legion git-credential` helper, lists LEGION_E2E_REPO's refs; and GitHub serves the credential
 // that helper hands out for LEGION_E2E_REPO the receive-pack advertisement (200), the answer it
-// gives a token that may write. What a role reaches is its App's installations and nothing else:
-// an issue of one owner's repository holds a token that writes another owner's, and no repository
-// mapping narrows it. The advertisement is the request a `git push` opens with and writes nothing,
+// gives a token that may write. What a role reaches is its App's installations: an issue of one
+// owner's repository holds a token that writes another owner's. The run maps both repositories
+// (mapRepository, here and before the root's launch), so this proves reach across owners and
+// nothing about a repository no mapping names.
+// The advertisement is the request a `git push` opens with and writes nothing,
 // where a real push would leave a branch on a repository every run shares and nothing here would
 // delete it. That repository's cache is its own: the issue's launch makes it (its
 // Sandbox recorded for the teardown first), and the issue's feed comes from it alone.

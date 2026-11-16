@@ -2455,7 +2455,7 @@ func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
 
 // An operator reading plain `legion state` is told each served repository Dispatch's GitHub App is
 // not known to be installed on, one line each with why, as the daemon serves the state; with none
-// the one line says so. The body is the one contract 80 serves: a served repository carries each
+// the one line says so. The body is the one contract 152 serves: a served repository carries each
 // role App's installation (`apps`) beside its `default`.
 func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +

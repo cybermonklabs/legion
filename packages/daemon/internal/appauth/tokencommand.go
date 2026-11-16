@@ -579,7 +579,7 @@ func (m *Manager) installedFromCommand(ctx context.Context, role AppRole, repo g
 // among them.
 //
 // The read is that answer's one source, so it drops whatever the Manager remembers of that
-// scope's refusal first (ForgetNarrowingRefusal) and mints: the mapping's check is made
+// scope's refusal first (forgetNarrowingRefusal) and mints: the mapping's check is made
 // precisely when an operator has changed something — the App's installation above all — and a
 // refusal served from the five minutes one is remembered for would fail the check for an
 // account the App was just installed on (lease, narrowingRefusalWindow, INFRA-513). A refusal
@@ -587,7 +587,7 @@ func (m *Manager) installedFromCommand(ctx context.Context, role AppRole, repo g
 // which the bundles refreshing behind the check would otherwise ask for again at once, and the
 // next mapping read drops it again as this one did.
 func (m *Manager) listInstallation(ctx context.Context, role AppRole, repo ghrepo.Repository) (installed, refused bool, err error) {
-	m.ForgetNarrowingRefusal(role, repo.Owner())
+	m.forgetNarrowingRefusal(role, repo.Owner())
 	lease, err := m.ReadToken(ctx, role, repo.Owner())
 	if errors.Is(err, ErrNotInstalled) {
 		return false, false, nil

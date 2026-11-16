@@ -158,8 +158,12 @@ func ownerGHConfigDir(ownersDir, owner string) (string, error) {
 // account and never another's.
 //
 // The pairs are the bundle's own file, written by the daemon that wrote the directories
-// (ghconfig.ReadPairs, ghconfig.PairsFile), and no other source is read: a pane's own
-// configuration is the pane user's to write, and a token is what routing by it would hand out.
+// (ghconfig.ReadPairs, ghconfig.PairsFile), and no other source is read. In a pod the file is a
+// read-only projection of the role's Secret, which no agent can write. Under tmux the bundle's
+// root is the pane user's own, so a pane can rewrite the file until the daemon's next refresh
+// writes its own back (ghconfig.WriteBundle), and that hands out nothing new: a pair routes a
+// request only to a directory of this bundle, and every one of those holds a lease of the
+// role's own App, so a rewritten file reaches no token the pane does not already hold.
 // The rule is ghconfig.RouteDir, which the daemon routes the bundle's own default by as well
 // (appauth's bundleDirs), so the directory GH_CONFIG_DIR names for an issue is the one this
 // answers for the issue's repository.

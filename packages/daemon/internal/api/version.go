@@ -1949,11 +1949,16 @@ package api
 // `POST /legion/v1/controller/github-credential` carries the same pairs as `renames`, each with
 // its `from` and `to`, absent where the project has none that resolve, so the controller's own
 // bundle routes as a pod's does.
+// The same answer carries `installed`, the owner accounts the review App is installed on, sorted
+// and read with the bundle, which `legion controller start` names in its controller's addressing;
+// an older `legion controller start` decodes the answer with plain `json.Unmarshal` and ignores
+// the key, so the field is served to every caller and needs no serving down, as `renames` needs
+// none.
 // (This branch's own base carried 59; it declared 80 until the forward merge of 2026-11-12 that
 // brought main in at 85, and then 86, which five other open heads declared as well, and then 88,
 // which the forward merge that brought main in at 86 left standing, and then 102 at the forward
-// merge of 2026-11-13 that brought main in at 94 — main stands at 104, the entry right above
-// this one, after the merge of 17:3xZ that day — since 88 is
+// merge of 2026-11-13 that brought main in at 94 — main stood at 104 after the merge of 17:3xZ
+// that day, which was then the entry right above this one, where 144 is now — since 88 is
 // below that base, which the gate refuses (.github/scripts/check-daemon-api-contract.sh), and
 // since the two keys contract 94 added are served to a caller at the declared number alone
 // (api's phaseEntriesContract). It took 106 at the merge after that, because
