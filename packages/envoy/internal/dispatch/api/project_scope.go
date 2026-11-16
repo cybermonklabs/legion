@@ -37,7 +37,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 const (
@@ -50,6 +52,8 @@ const (
 	// codeSessionScope refuses a caller whose credential proved one session a write addressed
 	// to another session's own rows.
 	codeSessionScope = "SESSION_SCOPE"
+	// codeSessionNotFound answers a write to a session the caller may not see as one nobody holds.
+	codeSessionNotFound = "SESSION_NOT_FOUND"
 )
 
 // brokerCredentialActor is the caller an access token the secrets broker issued decided, and
@@ -191,6 +195,12 @@ func (s *server) refuseOutsideCallerProjects(w http.ResponseWriter, r *http.Requ
 // declares any, the caller holds them. A row that declares none is open to every authenticated
 // caller, and this check refuses a session other than the one it proved as it always did.
 //
+// The session itself is read as the caller sees it (access.SessionClause): a caller that is not
+// open - a restricted member, or a credential that lists projects - is answered 404
+// SESSION_NOT_FOUND for a session that is neither its own nor has acted in a project it sees,
+// exactly as for a session nobody holds, which passes that clause for it no more. An open viewer
+// sees every session, so it is answered as before and costs no read.
+//
 // Every other row returns the handler unchanged, so no route it does not cover pays for it.
 func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	if !addressesOneSession(route) {
@@ -198,18 +208,35 @@ func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) ht
 	}
 	personsOwnWrite := len(route.OAuthScopes) > 0
 	return func(w http.ResponseWriter, r *http.Request) {
-		proved, provedOne := s.callerSession(r)
-		if !provedOne {
-			handler(w, r)
-			return
-		}
-		if addressed := r.PathValue("session_id"); addressed != proved && !personsOwnWrite {
+		addressed := r.PathValue("session_id")
+		if proved, provedOne := s.callerSession(r); provedOne && addressed != proved && !personsOwnWrite {
 			writeError(w, codeSessionScope, http.StatusForbidden, fmt.Sprintf(
 				"this request's credential acts for session %s; %s %s writes into session %s",
 				proved, route.Method, route.Pattern, addressed))
 			return
 		}
-		handler(w, r)
+		reader, ok := s.readerOf(w, r)
+		if !ok {
+			return
+		}
+		if !reader.Viewer.Open {
+			pool, err := s.readyPool()
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			var sees bool
+			if err := pool.QueryRow(r.Context(), `select `+access.SessionClause("$1::text", "$2"),
+				addressed, refs.VisibilityArg(reader)).Scan(&sees); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			if !sees {
+				writeError(w, codeSessionNotFound, http.StatusNotFound, "no session "+addressed)
+				return
+			}
+		}
+		handler(w, r.WithContext(withReader(r.Context(), reader)))
 	}
 }
 

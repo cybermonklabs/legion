@@ -24,15 +24,13 @@ import (
 // answered as the row answers a missing object, so a body the row refuses before its read cannot
 // pass the row.
 //
-// Two callers walk it. alice, at a browser, is an open viewer who sees PUB and no object of PRIV.
-// alice's token that lists PRIV sees no project at all, since alice does not see PRIV, and is not
-// open, so it walks the deployment's rows too, which it is refused whatever they name.
-//
-// A session in a path is never the hidden object: it is the other party of the caller's own
-// conversation, a subscriber or follower of an object the path names, or the caller's own pin, and
-// no such write reads anything of the session (which sessions a credential reaches is the
-// listener's to hold, K6). So the rows that name a session and nothing else are walked by no caller,
-// and sessionOnlyRows names them.
+// Four callers walk it. alice, at a browser, is an open viewer who sees PUB and no object of PRIV,
+// and every session. alice's token that lists PRIV sees no project at all, since alice does not see
+// PRIV, and is not open: the deployment's rows are refused it whatever they name, and a session is
+// hidden from it unless it is its own or has acted in a project it sees (access.SessionClause).
+// bob, a restricted member, and carol's token that lists PRIV each see PRIV alone, so a session that
+// has acted in PUB alone is hidden from them too: they walk the rows whose one hidden object is a
+// session. Every row is walked by at least one of them.
 func TestNoWriteReachesAHiddenObject(t *testing.T) {
 	walk := seedHiddenWrites(t)
 	rows := objectWriteRows()
@@ -40,20 +38,28 @@ func TestNoWriteReachesAHiddenObject(t *testing.T) {
 		t.Fatalf("writeProbes does not describe the write rows that name an object:\n%s", strings.Join(problems, "\n"))
 	}
 	walked := map[string]bool{}
-	for _, caller := range []privateCaller{callerAlice, callerAlicePrivToken} {
-		open := caller == callerAlice
+	for _, caller := range []struct {
+		who          privateCaller
+		open         bool
+		sessionsOnly bool
+	}{
+		{callerAlice, true, false},
+		{callerAlicePrivToken, false, false},
+		{callerBob, false, true},
+		{callerCarolPrivToken, false, true},
+	} {
 		for _, name := range rows {
-			if !writeProbes[name].hides(open) {
+			probe := writeProbes[name]
+			if !probe.hides(caller.open) || caller.sessionsOnly && !probe.hidesOnlySessions(caller.open) {
 				continue
 			}
 			walked[name] = true
-			walk.compare(t, caller, open, name)
+			walk.compare(t, caller.who, caller.open, name)
 		}
 	}
 	for _, name := range rows {
-		if walked[name] == sessionOnlyRows[name] {
-			t.Errorf("%s: walked %t, named in sessionOnlyRows %t: a row is walked exactly when it names an object a caller of the walk does not see",
-				name, walked[name], sessionOnlyRows[name])
+		if !walked[name] {
+			t.Errorf("%s: no caller of the walk has an object of it hidden, so nothing called it", name)
 		}
 	}
 	t.Logf("walked %d of the %d write rows that name an object", len(walked), len(rows))
@@ -70,14 +76,6 @@ func TestNoWriteReachesAHiddenObject(t *testing.T) {
 				path, removed.Code, strings.TrimSpace(removed.Body.String()))
 		}
 	}
-}
-
-// sessionOnlyRows are the write rows whose only object is a session (the test's doc comment).
-var sessionOnlyRows = map[string]bool{
-	"POST /api/v1/agents/{session_id}/messages":             true,
-	"POST /api/v1/agents/{session_id}/artifacts":            true,
-	"POST /api/v1/agents/{session_id}/stream/_test/publish": true,
-	"PUT /api/v1/me/agents/{session_id}/state":              true,
 }
 
 // missingAnswers is what a row answers for an object nobody holds where that is no 404, and why.
@@ -154,19 +152,19 @@ func writeProbeProblems(rows []string) []string {
 	return problems
 }
 
-// hiddenFrom reports whether the walk names PRIV's object of kind in place of one nobody holds, for
-// an open caller or not: an object of a project is hidden from both callers, a personal token is
-// someone else's, and a row of the deployment is hidden from a caller that is not open. Every other
-// kind is part of an object the path already names - a document's slug, a version, a block, an
-// attempt, a phase, a person or group on a list, a repository, a pause point - or a session, and is
-// PRIV's own in both calls.
+// hiddenFrom reports whether the walk names a hidden object of kind in place of one nobody holds,
+// for an open caller or not: an object of a project is hidden from every caller of the walk, a
+// personal token is someone else's, and a row of the deployment and a session that acted in PUB
+// alone are hidden from a caller that is not open. Every other kind is part of an object the path
+// already names - a document's slug, a version, a block, an attempt, a phase, a person or group on
+// a list, a repository, a pause point - and is PRIV's own in both calls.
 func hiddenFrom(object probeObject, open bool) bool {
 	switch object {
 	case probeProject, probeIssue, probeDocument, probeAsk, probeComment, probeMessage, probeThread,
 		probeResult, probeAgentToken:
 		return true
-	case probePriority, probeSessionGroup, probeCredentialRequest, probeCredentialGrant, probeMachineLogin,
-		probeSignin:
+	case probeSession, probePriority, probeSessionGroup, probeCredentialRequest, probeCredentialGrant,
+		probeMachineLogin, probeSignin:
 		return !open
 	}
 	return false
@@ -182,8 +180,29 @@ func (p writeProbe) hides(open bool) bool {
 	return false
 }
 
-// probeFill is one kind's two values: PRIV's object, and one of that kind nobody holds.
-type probeFill struct{ hidden, missing string }
+// hidesOnlySessions reports whether every object the probe hides from the caller is a session.
+func (p writeProbe) hidesOnlySessions(open bool) bool {
+	for _, object := range p.Probe {
+		if hiddenFrom(object, open) && object != probeSession {
+			return false
+		}
+	}
+	return true
+}
+
+// probeFill is one kind's values: the hidden object, one of that kind nobody holds, and the one a
+// call names beside another kind's hidden object ("" for the hidden one): a session subscribed to
+// PRIV's issue is the one a subscriber row names beside that issue, and a session of PUB alone is
+// the one hidden from a caller that sees PRIV alone.
+type probeFill struct{ hidden, missing, beside string }
+
+// besideValue is the value a call names for a kind that is not the object it hides.
+func (f probeFill) besideValue() string {
+	if f.beside != "" {
+		return f.beside
+	}
+	return f.hidden
+}
 
 // hiddenWriteSeed is the seed the walk calls, with the value of every probe kind.
 type hiddenWriteSeed struct {
@@ -273,17 +292,21 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	sessionGroup := createdID(t, asCarol(http.MethodPost, "/api/v1/delivery/session-groups", map[string]any{
 		"name": "PRIV's sessions", "sessions": []string{"s1"},
 	}))
+	// s-pub acts in PUB alone, through the shared token, which sees PUB: a session hidden from
+	// every caller that sees PRIV alone.
+	createdID(t, seed.request(t, callerSharedToken, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/comments",
+		map[string]any{"body": "s-pub works on PUB.", "actor": map[string]any{"kind": "session", "id": "s-pub"}}))
 	var carolsToken string
 	if err := seed.database.Pool.QueryRow(context.Background(), `select id::text from agent_tokens where name = $1`,
 		string(callerCarolPrivToken)).Scan(&carolsToken); err != nil {
 		t.Fatalf("read the id of %s: %v", callerCarolPrivToken, err)
 	}
 
-	same := func(value string) probeFill { return probeFill{value, value} }
-	nobody := func(value string) probeFill { return probeFill{value, uuid.NewString()} }
+	same := func(value string) probeFill { return probeFill{hidden: value, missing: value} }
+	nobody := func(value string) probeFill { return probeFill{hidden: value, missing: uuid.NewString()} }
 	walk := hiddenWriteSeed{privateSeed: seed, fills: map[probeObject]probeFill{
-		probeProject:         {seedPrivate, "NOPE"},
-		probeIssue:           {issue, "NOPE-1"},
+		probeProject:         {hidden: seedPrivate, missing: "NOPE"},
+		probeIssue:           {hidden: issue, missing: "NOPE-1"},
 		probeDocument:        nobody(projectDocument.Artifact.ID),
 		probeDocumentSlug:    same(projectDocument.Artifact.Slug),
 		probeDocumentVersion: same("1"),
@@ -295,14 +318,14 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 		probeResult:          nobody(result),
 		probeAttempt:         same("1"),
 		probeHandoffPhase:    same("build"),
-		probeSession:         same("s1"),
+		probeSession:         {hidden: "s-pub", missing: "s-nobody", beside: "s1"},
 		probeEmail:           same(seedBob),
 		probeGroup:           same(group),
 		probeRepositoryOwner: same("acme"),
 		probeRepositoryName:  same("walked"),
 		probeLivePause:       same("walked"),
 		probeAgentToken:      nobody(carolsToken),
-		probePriority:        {priority, "no-such-priority"},
+		probePriority:        {hidden: priority, missing: "no-such-priority"},
 		probeSessionGroup:    nobody(sessionGroup),
 		// The secrets broker holds these, and the test server has none: both fills name nothing, and
 		// the walk holds the deployment's refusal of a caller that is not open.
@@ -323,9 +346,10 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	return walk
 }
 
-// fill is pattern with each wildcard filled for the caller: PRIV's object where hidden, and
-// otherwise one nobody holds of each kind hidden from it. It answers too what the second fill wrote
-// in place of the first, so an answer that names what the caller sent can be compared.
+// fill is pattern with each wildcard filled for the caller: the hidden object of each kind hidden
+// from it, or one nobody holds of that kind when hidden is false, and each other kind's value beside
+// it. It answers too what the second fill wrote in place of the first, so an answer that names what
+// the caller sent can be compared.
 func (w hiddenWriteSeed) fill(t *testing.T, pattern string, probe writeProbe, open, hidden bool) (string, map[string]string) {
 	t.Helper()
 	written := map[string]string{}
@@ -335,7 +359,10 @@ func (w hiddenWriteSeed) fill(t *testing.T, pattern string, probe writeProbe, op
 		if !ok {
 			t.Fatalf("%s: the walk holds no value of %q", pattern, object)
 		}
-		if hidden || !hiddenFrom(object, open) {
+		switch {
+		case !hiddenFrom(object, open):
+			return value.besideValue()
+		case hidden:
 			return value.hidden
 		}
 		written[value.missing] = value.hidden
