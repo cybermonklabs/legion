@@ -727,6 +727,27 @@ cookie for its thirty days, and no membership check is left behind it. A sandbox
 an older image exits 1 when it is given no `DISPATCH_SIGNIN_*` setting, so the app's pods never
 start.
 
+`sharedHostname` and `signInOutside`, both unset by default, are the component's part of sign-in
+for people outside the tailnet and outside `signInDomain`. Neither is in a group, and with both
+unset the component renders exactly what it rendered before they existed. `sharedHostname` is the
+machine name, a DNS label other than `hostname`, of a tailnet node that proxies HTTPS to the app's
+Service and that is shared with each such person's tailnet: Tailscale shares a device and never a
+Service, so `svc:<hostname>` cannot be that way in. It renders
+`DISPATCH_SHARED_ORIGIN=https://<sharedHostname>.<tailnetDnsName>` on the app's container, right
+after `DISPATCH_SERVER_URL`, and nothing else. The component does not build that node: the
+deployment builds it, and names its namespace in `allowedNamespaces` so the app's NetworkPolicy
+admits it on port 8766. `signInOutside: true` renders `DISPATCH_SIGNIN_OUTSIDE=1` right after
+`DISPATCH_SIGNIN_DOMAIN`, which lets a verified Google account outside `signInDomain` sign in as a
+restricted member while some project's owner or access list names its email directly, never
+through a group. Both need the tailnet group, so the sandbox refuses each by name, and
+`signInOutside` needs the sign-in group too, refused without it with the clause naming each
+sign-in input still unset. With them, the Google client `signInClientId` names must list
+`https://<sharedHostname>.<tailnetDnsName>/auth/callback` as an authorized redirect URI beside
+`https://<hostname>.<tailnetDnsName>/auth/callback`, and its OAuth consent screen's audience must
+be External, since an Internal one admits no account outside the organization. An `envoyImage`
+whose `envoy-dispatch` predates the two settings ignores both, as it ignores every variable its
+settings table (`packages/envoy/cmd/dispatch/settings.go`) does not list.
+
 `databaseVersion` defaults to `POSTGRES_18`; envoy-infra v2.9.1 and every release before this
 change defaulted to `POSTGRES_16`. A stack that leaves `databaseVersion` unset is upgraded in place
 from its current major version to PostgreSQL 18 at its first `pulumi up` after its `envoy-infra`
@@ -1135,7 +1156,8 @@ negative `signingKeyGenerations` entry, which names no resource, or a repeated o
 render the same key twice and which the server refuses at its boot, missing inputs, and nkey
 seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, an
-`oidcIssuer` with no `oidcAudience`, an
+`oidcIssuer` with no `oidcAudience`, a `sharedHostname` that is not a DNS label, is `hostname` or
+comes without the tailnet inputs, a `signInOutside` without the sign-in inputs, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside
@@ -1647,6 +1669,17 @@ JetStream numbers both containers carry; every other property above is unchanged
       natsReplicas: 3
       streamMaxBytes: 1073741824
 ```
+
+A deployment that lets people from outside the tailnet and outside `signInDomain` sign in names
+the shared node it builds and turns outside sign-in on; every other property above is unchanged:
+
+```yaml
+      sharedHostname: dispatch-shared
+      signInOutside: true
+```
+
+Its app then carries `DISPATCH_SHARED_ORIGIN=https://dispatch-shared.example-tailnet.ts.net` and
+`DISPATCH_SIGNIN_OUTSIDE=1` ([Inputs](#inputs-1)).
 
 A sandbox stack sets neither the tailnet group nor the sign-in group, and sets the two inputs the
 mode then requires: `natsInCluster`, since no front door runs a proxy to a tailnet hub, and

@@ -174,6 +174,19 @@ type DispatchArgs struct {
 	SignInClientId     string             `pulumi:"signInClientId,optional"`
 	SignInClientSecret pulumi.StringInput `pulumi:"signInClientSecret,optional" provider:"secret"`
 	SignInDomain       string             `pulumi:"signInDomain,optional"`
+	// SharedHostname is the machine name, on the tailnet tailnetDnsName names, of a node that
+	// proxies HTTPS to the app and is shared with people outside the tailnet: Tailscale shares a
+	// device and never a Service, so that node is Dispatch's second origin. It renders
+	// DISPATCH_SHARED_ORIGIN, https://<sharedHostname>.<tailnetDnsName>, and nothing else: the node
+	// itself is the deployment's to build, and the app's NetworkPolicy admits its namespace through
+	// allowedNamespaces. It needs the tailnet inputs, is a DNS label and is not hostname. Unset
+	// renders nothing.
+	SharedHostname string `pulumi:"sharedHostname,optional"`
+	// SignInOutside renders DISPATCH_SIGNIN_OUTSIDE=1, which lets a verified Google account outside
+	// signInDomain sign in as a restricted member while some project's owner or access list names
+	// its email directly. It needs the sign-in inputs and is no member of their group, so a
+	// deployment that sets them leaves it unset and renders what it always rendered.
+	SignInOutside bool `pulumi:"signInOutside,optional"`
 
 	// AgentSecretsUrl and agentSecretsAudience turn on Dispatch's secrets-broker relay together:
 	// DISPATCH_AGENT_SECRETS_URL (an absolute http(s) URL with no path; a trailing slash is
@@ -408,6 +421,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"frontDoorToolsImage", args.FrontDoorToolsImage},
 		{"signInClientId", args.SignInClientId},
 		{"signInDomain", args.SignInDomain},
+		{"sharedHostname", args.SharedHostname},
 		{"agentSecretsUrl", args.AgentSecretsUrl},
 		{"agentSecretsAudience", args.AgentSecretsAudience},
 		{"oidcAudience", args.OidcAudience},
@@ -506,8 +520,10 @@ type Dispatch struct {
 // when any tailnet input is, where the component builds the front door and Dispatch is reached at
 // its tailnet name, and signInOn when any sign-in input is, where the app runs browser sign-in.
 // With neither the component is the sandbox: Dispatch is reached in the cluster alone, by readers
-// the app's NetworkPolicy admits, and tailnetDNSName, tags, the tailscale and tools images and
-// signIn are empty, since nothing reads them.
+// the app's NetworkPolicy admits, and tailnetDNSName, tags, the tailscale and tools images,
+// sharedHostname, signIn and signInOutside are empty, since nothing reads them. signInOutside is
+// set only with signInOn, and sharedHostname is "" when its input is unset, where the component
+// renders no shared origin (sharedOrigin).
 // oidcIssuer is "" when its input is unset and oidcAudience is set, where the issuer rendered is
 // the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
 // field here.
@@ -515,9 +531,11 @@ type dispatchSettings struct {
 	clusterOnly                                 bool
 	frontDoor, signInOn                         bool
 	hostname, tailnetDNSName, region, namespace string
+	sharedHostname                              string
 	tags                                        []string
 	images                                      struct{ envoy, tailscale, proxy, tools string }
 	signIn                                      struct{ clientID, domain string }
+	signInOutside                               bool
 	databaseVersion, databaseTier               string
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
@@ -566,6 +584,17 @@ func (s dispatchSettings) serverURL() string {
 		return "https://" + core.TailnetHostName(s.hostname, s.tailnetDNSName)
 	}
 	return s.clusterURL()
+}
+
+// sharedOrigin is the app's DISPATCH_SHARED_ORIGIN, the origin people outside the tailnet reach it
+// at through the shared node: https, as serverURL is with a front door, and the node's name on the
+// same tailnet, with no port and no path, since it is an origin. "" with sharedHostname unset,
+// where nothing renders.
+func (s dispatchSettings) sharedOrigin() string {
+	if s.sharedHostname == "" {
+		return ""
+	}
+	return "https://" + core.TailnetHostName(s.sharedHostname, s.tailnetDNSName)
 }
 
 // dispatchAzure is the Azure embedder's plain configuration together with the Azure sign-in the
@@ -823,6 +852,8 @@ func dispatchSignInInputs(args *DispatchArgs) []dispatchInput {
 // here without being written down a second time.
 func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 	return slices.Concat(dispatchTailnetInputs(args), dispatchSignInInputs(args), []dispatchInput{
+		{"sharedHostname", args.SharedHostname != ""},
+		{"signInOutside", args.SignInOutside},
 		{"envoyImage", args.EnvoyImage != ""},
 		{"cloudSqlProxyImage", args.CloudSqlProxyImage != ""},
 		{"natsUrl", args.NatsUrl != nil},
@@ -954,18 +985,22 @@ func refuseDispatchTailnetGroup(args *DispatchArgs, clause string) error {
 
 // refuseDispatchSandbox judges what the sandbox cannot make good, and requires the two inputs the
 // mode needs. It runs only while the tailnet group is wholly unset, which is what asks for the
-// mode: no front door is built, so a sign-in input would ask an OAuth provider to redirect to an
-// in-cluster http:// address, frontDoorReplicas and frontDoorPdbMinAvailable size and protect a
+// mode: no front door is built, so a sign-in input, signInOutside among them, would ask an OAuth
+// provider to redirect to an in-cluster http:// address, sharedHostname would name a node on a
+// tailnet Dispatch is not on, frontDoorReplicas and frontDoorPdbMinAvailable size and protect a
 // Deployment that does not exist, the pods reach a NATS hub only inside their own cluster, and
 // the app's own policy is its only ingress. Each is refused by its own name rather than accepted
 // and quietly dropped. The sign-in inputs are refused here, before the sign-in group's own
 // checks, so one sent to a sandbox is refused for being sent at all and not for the rest of its
 // group being missing.
 func refuseDispatchSandbox(args *DispatchArgs, signInGroup []dispatchInput) error {
-	for _, in := range signInGroup {
+	for _, in := range slices.Concat(signInGroup, []dispatchInput{{"signInOutside", args.SignInOutside}}) {
 		if in.set {
 			return fmt.Errorf("%s configures browser sign-in, which needs the tailnet inputs: without them Dispatch is reached at an in-cluster http:// address, which no OAuth provider takes as a redirect origin, so no browser could sign in; unset the sign-in inputs, or set the tailnet inputs", in.input)
 		}
+	}
+	if args.SharedHostname != "" {
+		return errors.New("sharedHostname names a node on the tailnet, which needs the tailnet inputs: without them Dispatch is on no tailnet, so no node of it can be shared; unset sharedHostname, or set the tailnet inputs")
 	}
 	if args.NatsInCluster == nil || !*args.NatsInCluster {
 		return errors.New("natsInCluster is required without the tailnet inputs: the pods reach a tailnet NATS hub only through the front door's SOCKS5 proxy, and no front door is built, so the hub must run in the cluster")
@@ -996,6 +1031,24 @@ func refuseDispatchSignInGroup(args *DispatchArgs, clause string) error {
 	}
 	if args.SignInClientSecret == nil {
 		return fmt.Errorf("signInClientSecret is required%s", clause)
+	}
+	return nil
+}
+
+// refuseDispatchSharedHostname judges sharedHostname where the tailnet group is set, the one place
+// it may be set: unset passes, and a set one must be a DNS label, since it is the shared node's
+// machine name on the tailnet and the first label of its MagicDNS name, and must not be hostname,
+// whose name on the same tailnet the front door's Tailscale Service already holds.
+func refuseDispatchSharedHostname(args *DispatchArgs) error {
+	if args.SharedHostname == "" {
+		return nil
+	}
+	if !dnsLabel(args.SharedHostname) {
+		return fmt.Errorf("sharedHostname %q must be a DNS label: it is the shared node's machine name on the tailnet", args.SharedHostname)
+	}
+	if args.SharedHostname == args.Hostname {
+		return fmt.Errorf("sharedHostname %q is hostname: the front door's Tailscale Service holds %s, so the shared node needs a name of its own",
+			args.SharedHostname, core.TailnetHostName(args.Hostname, args.TailnetDnsName))
 	}
 	return nil
 }
@@ -1061,11 +1114,16 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		return dispatchSettings{}, err
 	}
 	// Each group is judged by its own function while it is set, and what the sandbox cannot make
-	// good by a third while the tailnet group is unset.
+	// good by a third while the tailnet group is unset. The two outside inputs belong to no group:
+	// sharedHostname is judged with the tailnet group it needs, and signInOutside, which needs the
+	// sign-in group, is refused without it, naming every sign-in input still unset.
 	tailnetGroup, signInGroup := dispatchTailnetInputs(args), dispatchSignInInputs(args)
 	frontDoor, signInOn := dispatchGroupSet(tailnetGroup), dispatchGroupSet(signInGroup)
 	if frontDoor {
 		if err := refuseDispatchTailnetGroup(args, dispatchGroupClause("tailnet", tailnetGroup)); err != nil {
+			return dispatchSettings{}, err
+		}
+		if err := refuseDispatchSharedHostname(args); err != nil {
 			return dispatchSettings{}, err
 		}
 	} else if err := refuseDispatchSandbox(args, signInGroup); err != nil {
@@ -1075,6 +1133,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if err := refuseDispatchSignInGroup(args, dispatchGroupClause("sign-in", signInGroup)); err != nil {
 			return dispatchSettings{}, err
 		}
+	} else if args.SignInOutside {
+		return dispatchSettings{}, fmt.Errorf("signInOutside needs browser sign-in: it lets Google accounts outside signInDomain sign in beside the domain's own people%s",
+			dispatchGroupClause("sign-in", signInGroup))
 	}
 	// The app's two images, which the app's pod runs in either mode: they belong to no group, so
 	// every consumer sets both and neither refusal trails a clause. The front door's two are the
@@ -1180,6 +1241,8 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.images.tools = args.FrontDoorToolsImage
 	s.signIn.clientID = args.SignInClientId
 	s.signIn.domain = args.SignInDomain
+	s.signInOutside = args.SignInOutside
+	s.sharedHostname = args.SharedHostname
 	s.agentSecretsURL = agentSecretsURL
 	s.agentSecretsAudience = args.AgentSecretsAudience
 	s.oidcAudience = args.OidcAudience
