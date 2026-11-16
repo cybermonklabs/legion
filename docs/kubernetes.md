@@ -3547,6 +3547,7 @@ The namespaces keep a role's tokens and private files out of a sibling's own rea
 One credential is the pod's and not a role's: the exchange token of `runtime.kubernetes.agent_secrets.exchange_audience` ([Operator configuration](#operator-configuration)), which every role of the pod reads at the same path, and every role's session is registered for that one pod.
 Each role's session is registered bound to that role's own key: the thumbprint of the key the role's shim names at its hello, which the daemon sends with every write of the registration.
 The broker refuses a trade for a session proved with any other key, so a sibling role that holds the pod's exchange token and its own key is refused another role's session.
+Until t-e-54 holds each session id to the claim that first recorded it, and t-e-53 makes a role trade with its own key (dispatch://INFRA-840), the daemon registers whatever session id a role's agent reports, so a role can still have its own claim registered under another claim's session, and a role's own trade is refused; set no `exchange_audience` before both are in your daemon and its pods.
 That closes a direct mint only: the roles of one issue are no boundary against code a sibling plants in another role's process, which then runs with that role's key as it runs with that role's tokens ([Trust model](#trust-model-the-provisioning-token) lists what a plant reaches).
 Through the helper, every git a role runs, the setup command's ([Configuration](#configuration)) and an agent's own clone of another repository included, answers `https://github.com/<owner>/…` from the role's own files when `<owner>` is an owner the bundle holds a directory for (one of the project's) and the role's App is installed on that repository;
 git in the shared clone asks the same helper it asked before, and every other host is left to the configuration files.
@@ -6211,7 +6212,8 @@ each issue's pod (every role of it alike) and the image probe's.
 
   - Every registration is made at or after the role's shim hello, with that hello's thumbprint, and never before it: none is sent for a role whose hello has not arrived or names no thumbprint.
 
-  - The registration needs a broker that binds it to the key: a broker before this release refuses the `thumbprint` field as `400 INVALID_REQUEST`, which the daemon logs and does not write again, so set the key only with this release's broker.
+  - The registration needs a broker that binds it to the key: a broker before this release refuses the `thumbprint` field as `400 INVALID_REQUEST`, which the daemon logs and does not write again.
+    Until t-e-54 holds each session id to the claim that first recorded it, and t-e-53 makes a role trade with its own key (dispatch://INFRA-840), the daemon registers whatever session id a role's agent reports, so a role can still have its own claim registered under another claim's session, and a role's own trade is refused; set no `exchange_audience` before both are in your daemon and its pods.
 
   - An Oh My Pi role's session is registered when its agent registers, before the daemon answers it;
     a Claude Code role's, whose id the daemon chose for the launch, at its shim's hello, before its agent registers;
@@ -6229,7 +6231,8 @@ each issue's pod (every role of it alike) and the image probe's.
 
   - Unset, the daemon makes no registration call.
 
-  - The exchange token is the pod's, not a role's: every role reads it at the same path, and every role's session is registered for the same pod, but each bound to that role's own key, so the broker refuses a sibling role a trade for another role's session ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) says what that closes and what it does not).
+  - The exchange token is the pod's, not a role's: every role reads it at the same path, and every role's session is registered for the same pod, each bound to the key of the role whose registration it is, so the broker refuses a trade for that session proved with any other key.
+    Which session a role registers is still its agent's word until t-e-54 (the gate above), so this does not yet keep a role out of another claim's session ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) says what that closes and what it does not).
 
 - **`provider_keys`** (top-level) maps each variable Oh My Pi reads to a key of the providers Secret, `legion-<project>-providers`, which the operator creates.
   Every pod mounts the keys `provider_keys` names and no other key of the Secret, each at a file named for its variable, and the shim exports each into Oh My Pi's environment, never its own.
