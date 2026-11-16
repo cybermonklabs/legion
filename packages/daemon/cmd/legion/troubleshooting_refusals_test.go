@@ -148,6 +148,9 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	`projects.<KEY>.experiments.<NAME>.unit must be tree or issue (got "…")`: func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {plan-length: {unit: pod, variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
 	},
+	`projects.<KEY>.experiments.<NAME>.roles names "…", which is not a Legion issue role (…)`: func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {plan-length: {roles: [controller], variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
+	},
 	"projects.<KEY>.experiments.<NAME>.variants is required: an experiment draws among the variants its block lists": func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {plan-length: {mode: random}}\n"}.refuse(t)
 	},
