@@ -621,11 +621,12 @@ by drive-by User NONE "$work/reviews.1"
 by drive-by User CONTRIBUTOR "$work/review-comments.1"
 run_pr_text
 check "a stranger's comment, review and review comment naming private things pass" "$(is "$status" 0)"
-check "names the skipped comment and its author" \
-  "$(contains "$out" '^skipped comment:401: author drive-by (NONE) is not trusted$')"
-check "names the skipped review" "$(contains "$out" '^skipped review:402: author drive-by (NONE) is not trusted$')"
+check "names the skipped comment and its author's association" \
+  "$(contains "$out" '^skipped comment:401: its author (NONE) is not trusted$')"
+check "names the skipped review" "$(contains "$out" '^skipped review:402: its author (NONE) is not trusted$')"
 check "names the skipped review comment, whose author contributed before" \
-  "$(contains "$out" '^skipped review-comment:403: author drive-by (CONTRIBUTOR) is not trusted$')"
+  "$(contains "$out" '^skipped review-comment:403: its author (CONTRIBUTOR) is not trusted$')"
+check "does not print the stranger's login" "$(is "$(contains "$out" 'drive-by')" false)"
 check "does not print the company" "$(is "$(contains "$out" "$company_proper")" false)"
 check "does not print the key" "$(is "$(contains "$out" "$key")" false)"
 check "does not print the repository" "$(is "$(contains "$out" "$repo")" false)"
@@ -636,7 +637,7 @@ jq -c '.[0].user = null | .[0].author_association = "NONE"' "$work/comments.1" >
 mv "$work/comments.next" "$work/comments.1"
 run_pr_text
 check "a comment GitHub names no author for is skipped" \
-  "$(contains "$out" '^skipped comment:404: author <none> (NONE) is not trusted$')"
+  "$(contains "$out" '^skipped comment:404: its author (NONE) is not trusted$')"
 
 for author in "dev-app[bot] Bot CONTRIBUTOR" "new-app[bot] Bot NONE" "owner User OWNER" \
   "member User MEMBER" "collaborator User COLLABORATOR"; do
@@ -659,7 +660,7 @@ by drive-by User NONE "$work/comments.1" 1
 run_pr_text
 check "a stranger's clean comment after an App's red one still fails, so it clears nothing" "$(is "$status" 1)"
 check "names the App's comment" "$(contains "$out" 'comment:405:1: names the company')"
-check "skips the stranger's" "$(contains "$out" '^skipped comment:406: author drive-by (NONE) is not trusted$')"
+check "skips the stranger's" "$(contains "$out" '^skipped comment:406: its author (NONE) is not trusted$')"
 
 finish_self_log
 summary "check-private-names.sh"
