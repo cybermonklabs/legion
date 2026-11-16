@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  Each release of a grant writes one INFO line, `broker: released a grant`, after its `grant.used`
+  audit row, and both name the reason the grant's request gave. `POST /v1/grants/{id}/values` takes
+  two optional fields, which `agent-secrets NAME -- <command>` sends: `command`, recorded as its
+  first 32 arguments, each cut to 256 bytes, with every value the release handed out replaced by
+  `[redacted]`; and `reason`, this call's own `--reason`, recorded as `call_reason` where it differs
+  from the grant's, which it does when the call got a live grant back. The airlock proxy's release
+  writes `airlock=true` in their place. A client meeting a broker from before these fields sends
+  the release once more without them.

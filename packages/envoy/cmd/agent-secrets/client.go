@@ -535,21 +535,32 @@ type AirlockName struct {
 	Hosts []string `json:"hosts"`
 }
 
+// releaseCall is what this client says of one release to the broker, which logs it with the
+// grant's reason and decides nothing by it: the command the release starts, nil for none, and
+// the reason this call gave, "" for none. That reason can differ from the grant's, since a call
+// that asks again for names its session holds a live grant of gets that grant back.
+type releaseCall struct {
+	Command []string `json:"command,omitempty"`
+	Reason  string   `json:"reason,omitempty"`
+}
+
+// says reports whether call names anything, which is what puts it in a release's body.
+func (call releaseCall) says() bool { return len(call.Command) > 0 || call.Reason != "" }
+
 // GrantValues releases grantID's values, asking the broker to narrow its GitHub App tokens when
-// narrowing is not nil, and naming command, the argument vector this release starts, which the
-// broker logs with the grant's reason; with neither it sends no body, the release as the grant
-// holds it. A broker from before the command field refuses a body holding it, 400
-// INVALID_NARROWING naming the unknown field, and releases nothing (commandRefused), so the same
-// release is sent once more without it: a newer client releases from an older broker as before,
-// only unlogged. This stays: a client can meet an older broker on every future independent
-// rollout.
-func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing, command []string) (GrantValues, error) {
+// narrowing is not nil, and naming what call says of the release; with neither it sends no body,
+// the release as the grant holds it. A broker from before the command or the reason field
+// refuses a body holding it, 400 INVALID_NARROWING naming the unknown field, and releases nothing
+// (callRefused), so the same release is sent once more without either: a newer client releases
+// from an older broker as before, only unlogged. This stays: a client can meet an older broker
+// on every future independent rollout.
+func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing, call releaseCall) (GrantValues, error) {
 	if err := pathID("a grant id", grantID); err != nil {
 		return GrantValues{}, err
 	}
-	raw, err := c.release(ctx, signer, grantID, narrowing, command)
-	if len(command) > 0 && commandRefused(err) {
-		raw, err = c.release(ctx, signer, grantID, narrowing, nil)
+	raw, err := c.release(ctx, signer, grantID, narrowing, call)
+	if call.says() && callRefused(err) {
+		raw, err = c.release(ctx, signer, grantID, narrowing, releaseCall{})
 	}
 	if err != nil {
 		return GrantValues{}, err
@@ -561,15 +572,15 @@ func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string,
 	return values, nil
 }
 
-// release is one POST /v1/grants/{id}/values, its body holding narrowing and command where each
-// is given, and no body when neither is.
-func (c *client) release(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing, command []string) ([]byte, error) {
+// release is one POST /v1/grants/{id}/values, its body holding narrowing and what call says
+// where each is given, and no body when none is.
+func (c *client) release(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing, call releaseCall) ([]byte, error) {
 	var body []byte
-	if narrowing != nil || len(command) > 0 {
+	if narrowing != nil || call.says() {
 		encoded, err := json.Marshal(struct {
 			GitHubApp *GitHubNarrowing `json:"github_app,omitempty"`
-			Command   []string         `json:"command,omitempty"`
-		}{narrowing, command})
+			releaseCall
+		}{narrowing, call})
 		if err != nil {
 			return nil, fmt.Errorf("encode the release: %w", err)
 		}
@@ -578,14 +589,14 @@ func (c *client) release(ctx context.Context, signer Signer, grantID string, nar
 	return c.doProof(ctx, signer, http.MethodPost, "/v1/grants/"+grantID+"/values", body)
 }
 
-// commandRefused reports whether err is a broker from before the command field refusing a
-// release for holding it: its body reader answers 400 INVALID_NARROWING, the release route's
-// code for a body it cannot read, with the JSON decoder's own words for a field it does not
-// declare, before anything is released.
-func commandRefused(err error) bool {
+// callRefused reports whether err is a broker from before the command or the reason field
+// refusing a release for holding one: its body reader answers 400 INVALID_NARROWING, the release
+// route's code for a body it cannot read, with the JSON decoder's own words for a field it does
+// not declare, before anything is released.
+func callRefused(err error) bool {
 	var refusal *apiError
 	return errors.As(err, &refusal) && refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_NARROWING" &&
-		strings.Contains(refusal.Message, `unknown field "command"`)
+		(strings.Contains(refusal.Message, `unknown field "command"`) || strings.Contains(refusal.Message, `unknown field "reason"`))
 }
 
 func (c *client) RevokeGrant(ctx context.Context, signer Signer, grantID string) error {

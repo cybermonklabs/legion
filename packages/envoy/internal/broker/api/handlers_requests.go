@@ -217,6 +217,13 @@ type grantValuesBody struct {
 	// from before this field refuses a body that holds it, as INVALID_NARROWING naming the
 	// unknown field, and releases nothing.
 	Command []string `json:"command"`
+	// Optional: the reason this call of the session gave, which can differ from the reason of the
+	// request the grant came of when the call got a live grant back. The broker logs it beside the
+	// grant's reason where the two differ, held to a request's rules: the runes a request's
+	// reason may not carry dropped and the rest cut to 400 runes. It decides nothing about the
+	// release. A broker from before this field refuses a body that holds it, as
+	// INVALID_NARROWING naming the unknown field, and releases nothing.
+	Reason string `json:"reason"`
 }
 
 // githubNarrowing is one release's narrowing of its GitHub App tokens: as the request names it,
@@ -489,7 +496,7 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 	if narrowing != nil {
 		applied = &githubNarrowing{Owner: narrowing.Owner, Repositories: narrowing.Repositories, ReadOnly: narrowing.ReadOnly}
 	}
-	release, err := s.deps.Machine.Values(r.Context(), id, enrollmentID, narrowing, body.Command)
+	release, err := s.deps.Machine.Values(r.Context(), id, enrollmentID, narrowing, requests.ReleaseCall{Command: body.Command, Reason: body.Reason})
 	switch {
 	case errors.Is(err, requests.ErrNotYours):
 		writeError(w, http.StatusForbidden, "NOT_YOURS", err.Error())

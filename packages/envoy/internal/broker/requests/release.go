@@ -18,16 +18,19 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
+	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
 // ReleasedMessage is logged, at INFO, once for each release of a grant, once its grant.used row
 // is written, followed by grant=, request=, enrollment=, names=<the names it released>,
 // reason=<the reason the grant's request gave> and then, for the session's release (Values),
-// command=<the argument vector the session said the release starts, as loggedCommand records
-// it: empty from a client from before the field>, or, for the proxy's (AirlockValues),
-// airlock=true, since that release starts no command. It is the operator's line for what each
-// grant was spent on, and never holds a value the release handed out.
+// call_reason=<the reason the session's own call gave, as callReasonOf records it> where that
+// says something the grant's reason does not, and command=<the argument vector the session said
+// the release starts, as loggedCommand records it: empty from a client from before the field>,
+// or, for the proxy's (AirlockValues), airlock=true, since that release starts no command. It is
+// the operator's line for what each grant was spent on and why, and never holds a value the
+// release handed out.
 const ReleasedMessage = "broker: released a grant"
 
 // The bounds of the command a release records (loggedCommand). The session names its own
@@ -41,16 +44,29 @@ const (
 // command holds.
 const redactedArgument = "[redacted]"
 
+// ReleaseCall is what a session says of one release of its grant (Values): the command the
+// release starts, nil for none, and the reason its own call gave, "" for none. That reason can
+// differ from the reason of the request the grant came of, since a session that asks again for
+// names it holds a live grant of gets that grant back (reuseLiveGrant) and its new reason goes
+// into no request row. A client from before either field sends neither.
+type ReleaseCall struct {
+	Command []string
+	Reason  string
+}
+
 // grantUse is one release as its grant.used row and its ReleasedMessage line record it, beside
 // the reason of the grant's request, which checkRelease read: the names it released and what its
 // caller adds.
 type grantUse struct {
 	names []string
 	// airlock marks the proxy's release (AirlockValues), which starts no command and narrows
-	// nothing; command and narrowing are the session's release's (Values) alone.
+	// nothing; command, callReason and narrowing are the session's release's (Values) alone.
 	airlock bool
 	// command is the argument vector the session's release starts, as loggedCommand records it.
 	command []string
+	// callReason is the reason the session's own call gave, as callReasonOf records it: "" when
+	// it gave none or gave the grant's own.
+	callReason string
 	// narrowing is the GitHub App narrowing the session's release applied, nil for none.
 	narrowing *secrets.GitHubNarrowing
 }
@@ -62,11 +78,36 @@ func (u grantUse) detail(reason string) auditDetail {
 		detail["airlock"] = true
 		return detail
 	}
+	if u.callReason != "" {
+		detail["call_reason"] = u.callReason
+	}
 	detail["command"] = u.command
 	if u.narrowing != nil {
 		detail["github_app"] = auditDetail{"owner": u.narrowing.Owner, "repositories": u.narrowing.Repositories, "read_only": u.narrowing.ReadOnly}
 	}
 	return detail
+}
+
+// callReasonOf is the reason a session's call gave (said) as its release records it, beside
+// granted, the reason of the request the grant came of: held to a request's own rules
+// (record.validateReason), with every rune record.ReasonRefuses dropped and the rest cut to
+// record.MaxReasonRunes, since nothing refused it before the release and a field of the log must
+// not stop one. It answers "" when that leaves nothing or leaves granted itself, so the row and
+// the line name a call's reason only where it says something the grant's does not.
+func callReasonOf(said, granted string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if record.ReasonRefuses(r) {
+			return -1
+		}
+		return r
+	}, said)
+	if utf8.RuneCountInString(cleaned) > record.MaxReasonRunes {
+		cleaned = string([]rune(cleaned)[:record.MaxReasonRunes])
+	}
+	if cleaned == granted {
+		return ""
+	}
+	return cleaned
 }
 
 // loggedCommand is command as a release records it: its first maxLoggedArguments arguments, in
@@ -219,19 +260,23 @@ func releasedNames(read []releasedName) []string {
 
 // auditGrantUsed writes the one grant.used row a release writes and then its ReleasedMessage
 // line, both naming the reason of the grant's request beside use, the caller's own: the names it
-// released and, for the session's release, the command it starts and the narrowing it applied;
-// for the proxy's, that the values went behind the airlock. The row says the values did leave
-// the broker, so each caller writes it last, once everything that release hands over is minted
-// and recorded; the line follows the row, so a release whose row failed logs nothing.
+// released and, for the session's release, its call's own reason, the command it starts and the
+// narrowing it applied; for the proxy's, that the values went behind the airlock. The row says
+// the values did leave the broker, so each caller writes it last, once everything that release
+// hands over is minted and recorded; the line follows the row, so a release whose row failed
+// logs nothing.
 func (m *Machine) auditGrantUsed(ctx context.Context, grantID string, checked grantRelease, use grantUse) error {
 	if _, err := m.Store.Pool.Exec(ctx, `insert into audit (kind, enrollment_id, request_id, grant_id, actor, detail) values ('grant.used',$1,$2,$3,$4,$5)`,
 		checked.enrollmentID, checked.requestID, grantID, "session:"+checked.enrollmentID, use.detail(checked.reason)); err != nil {
 		return err
 	}
 	attrs := []any{"grant", grantID, "request", checked.requestID, "enrollment", checked.enrollmentID, "names", use.names, "reason", checked.reason}
-	if use.airlock {
+	switch {
+	case use.airlock:
 		attrs = append(attrs, "airlock", true)
-	} else {
+	case use.callReason != "":
+		attrs = append(attrs, "call_reason", use.callReason, "command", use.command)
+	default:
 		attrs = append(attrs, "command", use.command)
 	}
 	slog.Info(ReleasedMessage, attrs...)

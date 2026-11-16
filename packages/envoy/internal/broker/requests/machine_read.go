@@ -189,11 +189,11 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 // running the command with a placeholder it does not understand — and what the session needs to
 // reach it is Release.Airlock.
 //
-// command is the argument vector the session says this release starts, nil for none. The release
-// records it, with the reason of the grant's request, in its grant.used row and its
-// ReleasedMessage line (auditGrantUsed), clipped and with every value it handed out redacted
-// (loggedCommand); nothing else reads it, and it decides nothing about the release.
-func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narrowing *secrets.GitHubNarrowing, command []string) (Release, error) {
+// call is what the session says of this release: the command it starts and the reason its own
+// call gave. The release records both, with the reason of the grant's request, in its grant.used
+// row and its ReleasedMessage line (auditGrantUsed); nothing else reads them, and they decide
+// nothing about the release.
+func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narrowing *secrets.GitHubNarrowing, call ReleaseCall) (Release, error) {
 	checked, err := m.checkRelease(ctx, grantID, enrollmentID)
 	if err != nil {
 		return Release{}, err
@@ -227,7 +227,12 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 			return Release{}, err
 		}
 	}
-	use := grantUse{names: releasedNames(read), command: loggedCommand(command, handedOut(read, release.Airlock)), narrowing: narrowing}
+	use := grantUse{
+		names:      releasedNames(read),
+		command:    loggedCommand(call.Command, handedOut(read, release.Airlock)),
+		callReason: callReasonOf(call.Reason, checked.reason),
+		narrowing:  narrowing,
+	}
 	if err := m.auditGrantUsed(ctx, grantID, checked, use); err != nil {
 		return Release{}, err
 	}

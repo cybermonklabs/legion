@@ -303,7 +303,7 @@ func TestGrantLogLogsEveryDecisionAndEveryGrantEndAndNothingElse(t *testing.T) {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want a grant", automatic, err)
 	}
 	for range 3 {
-		if _, err := m.Values(ctx, *automatic.GrantID, enr, nil, nil); err != nil {
+		if _, err := m.Values(ctx, *automatic.GrantID, enr, nil, ReleaseCall{}); err != nil {
 			t.Fatalf("Values: %v", err)
 		}
 	}
@@ -340,7 +340,7 @@ func TestGrantLogLogsEveryDecisionAndEveryGrantEndAndNothingElse(t *testing.T) {
 	capped := policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "shared-v1")
 	capped.Tags[policy.TagMaxGrant] = "1m"
 	retag(t, m, capped)
-	if _, err := m.Values(ctx, decision.GrantID, enr, nil, nil); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := m.Values(ctx, decision.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values under a max-grant below the grant's own lifetime = %v, want ErrGrantNotLive", err)
 	}
 
