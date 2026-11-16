@@ -8,6 +8,7 @@ package weborigin
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -17,14 +18,12 @@ import (
 )
 
 var (
-	// labelRule is a lowercase DNS label; its length, at most 63, is checked beside it.
 	labelRule = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-	// numericLabelRule is a host label a browser's URL parser reads as a number, decimal or hex,
-	// and ipv4Rule an IPv4 address in its one canonical form: four decimal octets, no leading
-	// zero. A host whose last label is numeric is an IPv4 address to a browser (WHATWG URL, "ends
-	// in a number"), which it refuses or rewrites unless it is already in that form.
+	// numericLabelRule is a host label a browser's URL parser reads as a number, decimal or hex.
+	// A host whose last label is numeric is an IPv4 address to a browser (WHATWG URL, "ends in a
+	// number"), which it refuses or rewrites unless it is already in its one canonical form: four
+	// decimal octets with no leading zero, the only IPv4 form netip.ParseAddr takes.
 	numericLabelRule = regexp.MustCompile(`^(?:[0-9]+|0x[0-9a-f]*)$`)
-	ipv4Rule         = regexp.MustCompile(`^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$`)
 	// defaultPorts are the ports a browser leaves out of an origin, by scheme.
 	defaultPorts = map[string]int{"http": 80, "https": 443}
 )
@@ -55,8 +54,10 @@ func Parse(raw string) (*url.URL, error) {
 			return nil, err
 		}
 	}
-	if numericLabelRule.MatchString(labels[len(labels)-1]) && !ipv4Rule.MatchString(host) {
-		return nil, fmt.Errorf("host %s ends in a number and is no IPv4 address in its canonical form, which a browser refuses or rewrites", host)
+	if numericLabelRule.MatchString(labels[len(labels)-1]) {
+		if addr, err := netip.ParseAddr(host); err != nil || !addr.Is4() {
+			return nil, fmt.Errorf("host %s ends in a number and is no IPv4 address in its canonical form, which a browser refuses or rewrites", host)
+		}
 	}
 	canonical := parsed.Scheme + "://" + host
 	if port := parsed.Port(); port != "" || strings.HasSuffix(parsed.Host, ":") {

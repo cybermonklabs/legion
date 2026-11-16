@@ -981,8 +981,6 @@ func refuseDispatchTailnetGroup(args *DispatchArgs, clause string) error {
 	return nil
 }
 
-// dispatchSandboxSignInRefusal is the refusal of an input that configures browser sign-in sent to
-// a sandbox: the input, then what to unset.
 const dispatchSandboxSignInRefusal = "%s configures browser sign-in, which needs the tailnet inputs: without them Dispatch is reached at an in-cluster http:// address, which no OAuth provider takes as a redirect origin, so no browser could sign in; unset %s, or set the tailnet inputs"
 
 // refuseDispatchSandbox judges what the sandbox cannot make good, and requires the two inputs the
@@ -1063,20 +1061,22 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, signInOn bool) (string, err
 	if origin.Scheme != "https" {
 		return "", errors.New("outsideOrigin must be an https origin: browser sign-in at it needs TLS, as the front door's does")
 	}
-	if frontDoor := core.TailnetHostName(args.Hostname, args.TailnetDnsName); origin.Hostname() == frontDoor {
+	host := origin.Hostname()
+	if frontDoor := core.TailnetHostName(args.Hostname, args.TailnetDnsName); host == frontDoor {
 		return "", fmt.Errorf("outsideOrigin's host %s is the front door's: a second origin needs a host of its own", frontDoor)
 	}
 	if !signInOn {
 		return origin.String(), nil
 	}
-	host := origin.Hostname()
 	if net.ParseIP(host) != nil {
 		return "", fmt.Errorf("outsideOrigin's host %s is an IP address, which Google refuses as the host of an OAuth redirect URI, so browser sign-in at it could not complete: name the origin by a DNS name", host)
 	}
-	labels := strings.Split(host, ".")
-	if tld := labels[len(labels)-1]; len(labels) < 2 {
+	dot := strings.LastIndexByte(host, '.')
+	if dot < 0 {
 		return "", fmt.Errorf("outsideOrigin's host %s is a single label, with no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete", host)
-	} else if _, icann := publicsuffix.PublicSuffix("x." + tld); !icann {
+	}
+	tld := host[dot+1:]
+	if _, icann := publicsuffix.PublicSuffix("x." + tld); !icann {
 		return "", fmt.Errorf("outsideOrigin's host %s ends in %s, no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete", host, tld)
 	}
 	return origin.String(), nil
@@ -1143,9 +1143,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		return dispatchSettings{}, err
 	}
 	// Each group is judged by its own function while it is set, and what the sandbox cannot make
-	// good by a third while the tailnet group is unset. The two outside inputs belong to no group:
-	// outsideOrigin is judged with the tailnet group it needs, and signInOutside, which needs the
-	// sign-in group, is refused without it, naming every sign-in input still unset.
+	// good by a third while the tailnet group is unset.
 	tailnetGroup, signInGroup := dispatchTailnetInputs(args), dispatchSignInInputs(args)
 	frontDoor, signInOn := dispatchGroupSet(tailnetGroup), dispatchGroupSet(signInGroup)
 	var outsideOrigin string
