@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 )
@@ -163,13 +164,14 @@ func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
 }
 
 // Issues reports whether raw's iss claim, read without verifying anything, names this verifier's
-// issuer. A caller that trusts several issuers picks with it the one verifier a token is for, so
-// a token of one issuer never makes another's verifier fetch its keys; Verify still checks the
-// issuer with everything else. It reads unverified text, so it picks a verifier and decides
-// nothing about a caller: no claim anyone is admitted on comes from it.
+// issuer, Google's scheme-less spelling included when the verifier is Google's (namesIssuer). A
+// caller that trusts several issuers picks with it the one verifier a token is for, so a token of
+// one issuer never makes another's verifier fetch its keys; Verify still checks the issuer with
+// everything else. It reads unverified text, so it picks a verifier and decides nothing about a
+// caller: no claim anyone is admitted on comes from it.
 func (v *Verifier) Issues(raw string) bool {
 	claims, err := decodeClaims(raw)
-	return err == nil && claims.Issuer == v.issuer
+	return err == nil && v.namesIssuer(claims.Issuer)
 }
 
 // Verify checks raw against the issuer's published keys, the configured
@@ -200,18 +202,26 @@ func (v *Verifier) VerifyClaims(ctx context.Context, raw string, into ...any) (C
 
 // verify is Verify's whole check, and it answers the verified token too: token.Claims reads the
 // payload the signature covers (go-oidc keeps the bytes the key set returned), which is where
-// every claim a caller is admitted on is read from. A token in any serialization but the compact
-// one is refused before anything else, so the payload a signature covers is always the token's
-// own middle segment: go-jose also verifies the JWS JSON serialization, whose text can carry a
-// second, unsigned claim set between dots.
+// every claim a caller is admitted on is read from.
+//
+// raw is read as go-jose's ParseSigned read a compact token before this check existed: every
+// space is removed (stripSpaces), so a token with a trailing line feed or an inner space verifies
+// as it always did. What is left must be the compact serialization, three base64url segments
+// joined by dots, and anything else is refused as malformed before go-oidc sees it: go-jose also
+// verifies the JWS JSON serialization, whose text can carry a second, unsigned claim set between
+// dots, so the one serialization taken is the one whose middle segment is the signed payload.
+// This refusal is the only compact check the sign-in's verifier has, since its keys come from
+// go-oidc's own RemoteKeySet (newVerifier). A refusal's class is read from raw as given, as it
+// was before.
 func (v *Verifier) verify(ctx context.Context, raw string) (*gooidc.IDToken, Claims, error) {
-	if !compactSerialization(raw) {
+	compact := stripSpaces(raw)
+	if !compactSerialization(compact) {
 		return nil, Claims{}, fmt.Errorf("%w: not a JWS compact serialization", ErrMalformed)
 	}
 	// The slot the key source's own error comes back in: go-oidc flattens it
 	// (keyset.go, keySetError).
 	keyCtx, keySetErr := withKeySetError(ctx)
-	token, err := v.verifier.Verify(keyCtx, raw)
+	token, err := v.verifier.Verify(keyCtx, compact)
 	if err != nil {
 		return nil, Claims{}, v.classify(ctx, raw, err, keySetErr.err)
 	}
@@ -326,8 +336,8 @@ func (a *audience) UnmarshalJSON(data []byte) error {
 }
 
 // decodeClaims reads raw's claims without verifying anything. It decides nothing about a caller:
-// its readers are Issues and IssuesGoogleIdentity, which pick the verifier a token goes to,
-// and classify, which names the class of a token already refused.
+// its readers are Issues, which picks the verifier a token goes to, and classify, which names the
+// class of a token already refused. It reads raw as it always did, so both answer as before.
 func decodeClaims(raw string) (tokenClaims, error) {
 	var claims tokenClaims
 	payload, err := tokenPayload(raw)
@@ -343,14 +353,27 @@ func decodeClaims(raw string) (tokenClaims, error) {
 // tokenPayload is the JSON payload of raw, a compact JWT, decoded from base64url without verifying
 // anything.
 func tokenPayload(raw string) ([]byte, error) {
-	if !compactSerialization(raw) {
-		return nil, errors.New("not a JWS compact serialization")
+	if !LooksLikeJWT(raw) {
+		return nil, errors.New("not three dot-separated segments")
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(raw[strings.IndexByte(raw, '.')+1 : strings.LastIndexByte(raw, '.')])
 	if err != nil {
 		return nil, fmt.Errorf("payload is not base64url: %w", err)
 	}
 	return payload, nil
+}
+
+// stripSpaces is raw with every space removed (unicode.IsSpace), go-jose's own stripWhitespace,
+// which its ParseSigned applied to every compact token before verify took the compact
+// serialization only; verify applies it first so a token verifies exactly when it did before,
+// the JSON serialization apart.
+func stripSpaces(raw string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, raw)
 }
 
 // compactSerialization reports whether raw is a JWS in the compact serialization: three non-empty

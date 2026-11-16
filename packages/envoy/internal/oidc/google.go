@@ -14,20 +14,10 @@ const GoogleIssuer = "https://accounts.google.com"
 const googleSchemelessIssuer = "accounts.google.com"
 
 // namesIssuer reports whether iss is this verifier's issuer, taking Google's scheme-less spelling
-// as Google's, as the go-oidc verifier underneath does. Verify's classification and
-// IssuesGoogleIdentity both read it, so a token Verify would accept is never called another
-// issuer's.
+// as Google's, as the go-oidc verifier underneath does. Verify's classification and Issues both
+// read it, so a token Verify would accept is never called another issuer's.
 func (v *Verifier) namesIssuer(iss string) bool {
 	return iss == v.issuer || v.issuer == GoogleIssuer && iss == googleSchemelessIssuer
-}
-
-// IssuesGoogleIdentity reports whether raw names this verifier's issuer, including Google's
-// scheme-less spelling when the verifier is Google's. Verify accepts that spelling too. It reads
-// unverified text, so it only picks the verifier a token goes to and decides nothing about a
-// caller; VerifyGoogleIdentity checks the token and reads every claim from its verified payload.
-func (v *Verifier) IssuesGoogleIdentity(raw string) bool {
-	claims, err := decodeClaims(raw)
-	return err == nil && v.namesIssuer(claims.Issuer)
 }
 
 // VerifyGoogleIdentity is Verify for a Google identity token, which names its caller by an

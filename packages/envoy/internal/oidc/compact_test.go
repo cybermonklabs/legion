@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	gooidc "github.com/coreos/go-oidc/v3/oidc"
+
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -82,5 +84,67 @@ func TestVerifyClaimsReadsTheVerifiedPayload(t *testing.T) {
 	}
 	if got.Subject != testSubject || private.Kubernetes.Pod.UID != "example-pod-uid" || registered.IssuedAt == 0 {
 		t.Fatalf("VerifyClaims = %+v, pod uid %q, iat %d; want the subject, the pod uid and the issue time", got, private.Kubernetes.Pod.UID, registered.IssuedAt)
+	}
+}
+
+// whiteSpaced is compact carrying white space in each of the places a token has been seen to
+// carry it or could: a trailing line feed, a trailing CRLF, a space inside the payload segment, a
+// tab inside the signature and a trailing no-break space. go-jose's ParseSigned stripped every
+// space before it parsed a compact token, so each verified before only the compact serialization
+// was taken, and each must verify still: the change refuses the JSON serialization and nothing
+// else.
+func whiteSpaced(compact string) map[string]string {
+	dot := strings.IndexByte(compact, '.') + 5
+	last := strings.LastIndexByte(compact, '.') + 5
+	return map[string]string{
+		"a trailing LF":                   compact + "\n",
+		"a trailing CRLF":                 compact + "\r\n",
+		"a space inside the payload":      compact[:dot] + " " + compact[dot:],
+		"a tab inside the signature":      compact[:last] + "\t" + compact[last:],
+		"a no-break space before the end": compact + "\u00a0",
+	}
+}
+
+func TestATokenCarryingWhiteSpaceVerifiesAsBefore(t *testing.T) {
+	issuer := oidctest.New(t)
+	signing := oidctest.NewKey(t, "signing-key")
+	issuer.Publish(signing)
+	verifier, err := New(context.Background(), issuer.URL(), testAudience)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	compact := issuer.Mint(t, signing, issuer.Claims(testSubject, testAudience))
+	for name, raw := range whiteSpaced(compact) {
+		claims, err := verifier.Verify(context.Background(), raw)
+		if err != nil || claims.Subject != testSubject {
+			t.Errorf("%s: claims %+v, err %v; want it verified as the compact token is", name, claims, err)
+		}
+	}
+}
+
+// The sign-in's verifier (newVerifier) checks signatures with go-oidc's own RemoteKeySet, which
+// verifies the JWS JSON serialization too, so verify's own refusal is the one compact check that
+// verifier has: a JSON-form ID token is refused as malformed there, and a compact one, white
+// space and all, verifies.
+func TestTheSignInVerifierTakesOnlyTheCompactSerialization(t *testing.T) {
+	issuer := oidctest.New(t)
+	signing := oidctest.NewKey(t, "signing-key")
+	issuer.Publish(signing)
+	provider, err := gooidc.NewProvider(context.Background(), issuer.URL())
+	if err != nil {
+		t.Fatalf("gooidc.NewProvider(%s): %v", issuer.URL(), err)
+	}
+	verifier := newVerifier(provider, issuer.URL(), testAudience)
+	compact := issuer.Mint(t, signing, issuer.Claims(testSubject, testAudience))
+	if claims, err := verifier.Verify(context.Background(), compact); err != nil || claims.Subject != testSubject {
+		t.Fatalf("the compact form: claims %+v, err %v; want it verified", claims, err)
+	}
+	if _, err := verifier.Verify(context.Background(), jwsJSON(t, compact)); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("the JWS JSON serialization: err = %v, want %v", err, ErrMalformed)
+	}
+	for name, raw := range whiteSpaced(compact) {
+		if claims, err := verifier.Verify(context.Background(), raw); err != nil || claims.Subject != testSubject {
+			t.Errorf("%s: claims %+v, err %v; want it verified as the compact token is", name, claims, err)
+		}
 	}
 }

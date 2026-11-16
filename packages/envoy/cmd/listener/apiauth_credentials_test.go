@@ -250,6 +250,9 @@ func TestAnUnlistedGoogleIdentityIsRefused(t *testing.T) {
 	}{
 		{name: "an account the list does not name", token: google.token(t, listenerGoogleOtherEmail, true, listenerGoogleAudience), wantReason: "not_listed", wantAccount: listenerGoogleOtherEmail},
 		{name: "a listed account whose address Google has not verified", token: google.token(t, listenerGoogleAccount, false, listenerGoogleAudience), wantReason: "email_not_verified", wantAccount: listenerGoogleAccount},
+		// Addresses are compared in ASCII lower case only: Unicode's lower case of the Kelvin sign
+		// U+212A is k, so a Unicode fold would read this address as the listed one.
+		{name: "an address that only Unicode case folding makes the listed one", token: google.token(t, strings.Replace(listenerGoogleAccount, "k", "\u212a", 1), true, listenerGoogleAudience), wantReason: "not_listed", wantAccount: strings.Replace(listenerGoogleAccount, "k", "\u212a", 1)},
 		{name: "a token minted without format=full, which names no account", token: google.token(t, "", nil, listenerGoogleAudience), wantReason: "no_email"},
 		{name: "a listed account's token for another audience", token: google.token(t, listenerGoogleAccount, true, "https://other.example"), wantReason: "audience"},
 		{name: "a projected token on a listener that takes only Google identities", token: cluster.token(t, listenerListedSubject), wantReason: "issuer"},

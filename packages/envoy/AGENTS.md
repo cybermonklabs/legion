@@ -5376,15 +5376,15 @@ a comma that leaves an entry empty (a leading or trailing comma, or two commas w
 An unlisted subject gets the same 401 as every other refused credential, and its warning carries the class `not_listed` and the subject as `account`.
 The Google pair is for a caller on Google's platform that holds no Kubernetes token, such as the alert sink on Cloud Run.
 The listener admits a token that Google (`https://accounts.google.com`, `oidc.GoogleIssuer`) signed for `ENVOY_OIDC_GOOGLE_AUDIENCE`
-and that names, in its `email` claim, an account `ENVOY_OIDC_GOOGLE_ACCOUNTS` lists (addresses separated by commas or white space, compared in lower case) whose address Google verified,
+and that names, in its `email` claim, an account `ENVOY_OIDC_GOOGLE_ACCOUNTS` lists (addresses separated by commas or white space, compared in ASCII lower case, so no Unicode fold makes another address a listed one) whose address Google verified,
 so the caller asks its metadata server for the token with `format=full`, the form that carries the address (`oidc.Verifier.VerifyGoogleIdentity`).
 Every claim a caller is admitted on, the address and `email_verified` among them, is read from the payload the verified signature covers (`oidc.Verifier.VerifyClaims`, `IDToken.Claims`), never from the token's text;
-a token in any serialization but the compact one (the JWS JSON form go-jose also verifies, whose text can carry an unsigned claim set beside the signed members) is refused as `malformed` before its signature is checked.
+a token in any serialization but the compact one (the JWS JSON form go-jose also verifies, whose text can carry an unsigned claim set beside the signed members) is refused as `malformed` before its signature is checked; white space in a compact token is removed first, as go-jose removed it, so such a token verifies as it always did.
 One of the pair without the other refuses the start, naming the missing one, and so does an entry that is not an address.
 A refused Google token is one `listener: Google identity token rejected` warning carrying the class
 — `oidc.Reason`'s, `no_email`, `email_not_verified` or `not_listed` —
 the path, and, for a token that verifies, the account it names, never the token.
-The token's own issuer decides which of the two identity-token branches judges it (`oidc.Verifier.IssuesGoogleIdentity`, which takes Google's scheme-less `accounts.google.com` as Google's too, as the verifier does), and a listener that takes only one of them gives it every token.
+The token's own issuer decides which of the two identity-token branches judges it (`oidc.Verifier.Issues`, which takes Google's scheme-less `accounts.google.com` as Google's too, as the verifier does), and a listener that takes only one of them gives it every token.
 The exempt paths (`/healthz`, `/metrics`, `/webhook/*`) require none of them, and `/livez`, which the mux answers in front of `apiAuth`, never reaches the check.
 `/v1` is open only when none is configured, so an empty `ENVOY_API_TOKEN` opens it only while no verifier is configured, and a listener whose address is not loopback refuses to start with none unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is set.
 That flag is how an operator declares that something else fences the listener's port.

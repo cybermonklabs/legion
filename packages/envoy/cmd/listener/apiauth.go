@@ -103,7 +103,7 @@ type googleIdentities struct {
 // for one minted without format=full (it names no account), email_not_verified, and not_listed.
 func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.Logger) bool {
 	claims, err := g.verifier.VerifyGoogleIdentity(r.Context(), raw)
-	account := strings.ToLower(claims.Email)
+	account := asciiLower(claims.Email)
 	var reason string
 	switch {
 	case err != nil:
@@ -123,6 +123,19 @@ func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.L
 	}
 	logger.Warn("listener: Google identity token rejected", attrs...)
 	return false
+}
+
+// asciiLower is s with its ASCII capitals lowered and every other character kept, the one fold
+// both sides of a Google address comparison take (the claim here, ENVOY_OIDC_GOOGLE_ACCOUNTS in
+// resolveListenerGoogleConfig). strings.ToLower would fold more: the Kelvin sign U+212A lowers to
+// k, so an address no listed account owns would compare equal to one that is listed.
+func asciiLower(s string) string {
+	return strings.Map(func(r rune) rune {
+		if 'A' <= r && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, s)
 }
 
 // admitsServiceAccount reports whether raw is a projected service-account token the verifier
@@ -211,7 +224,7 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // listener is configured for.
 //
 // The two identity-token bearers are told apart by the token's own issuer
-// (oidc.Verifier.IssuesGoogleIdentity), including Google's scheme-less issuer spelling: a token
+// (oidc.Verifier.Issues), including Google's scheme-less issuer spelling: a token
 // Google issued goes to the Google branch, any other to the projected-token one, and a listener
 // that takes only one of them gives it every token, so each refusal is logged with its class and
 // no token is judged twice.
@@ -312,7 +325,7 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 
 		if raw, ok := strings.CutPrefix(authorization, bearerPrefix); ok && oidc.LooksLikeJWT(raw) {
 			switch {
-			case auth.google != nil && (auth.verifier == nil || auth.google.verifier.IssuesGoogleIdentity(raw)):
+			case auth.google != nil && (auth.verifier == nil || auth.google.verifier.Issues(raw)):
 				if auth.google.admits(r, raw, auth.logger) {
 					admit(w, r, credentialGoogle)
 					return
@@ -463,7 +476,7 @@ func resolveListenerOIDCAccounts(getenv func(string) string, issuer string) ([]s
 // entry, and an entry that is not an address, is a refusal naming it.
 func resolveListenerGoogleConfig(getenv func(string) string) (audience string, accounts []string, err error) {
 	audience = strings.TrimSpace(getenv("ENVOY_OIDC_GOOGLE_AUDIENCE"))
-	if value := strings.ToLower(getenv("ENVOY_OIDC_GOOGLE_ACCOUNTS")); strings.TrimSpace(value) != "" {
+	if value := asciiLower(getenv("ENVOY_OIDC_GOOGLE_ACCOUNTS")); strings.TrimSpace(value) != "" {
 		if accounts, err = splitAccountList("ENVOY_OIDC_GOOGLE_ACCOUNTS", value); err != nil {
 			return "", nil, err
 		}
