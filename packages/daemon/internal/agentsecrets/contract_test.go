@@ -15,6 +15,7 @@ package agentsecrets
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -203,5 +204,36 @@ func TestContractOnlyTheListedAccountWithALiveTokenLogsIn(t *testing.T) {
 	var api *APIError
 	if !errors.As(err, &api) || api.Code != "ACCOUNT_NOT_LISTED" {
 		t.Fatalf("Login once the account is unlisted = %v, want ACCOUNT_NOT_LISTED", err)
+	}
+}
+
+// TestContractARegistrationIsAuthenticatedByTheDaemonsOwnToken drives RegisterPodSession against
+// the real broker's POST /v1/oauth/exchange/pod-sessions. Its class is serviceAuth
+// (routes_table.go), which authenticates the bearer with the token login's own check
+// (server.go's serviceCaller: MachineLogin.VerifyServiceToken(bearer(r))). With the daemon's own
+// ServiceAccount token as that bearer, the write passes the route's authentication, its body
+// decodes and its pod token verifies, and the broker's exchange policy decides it: the rig's pods
+// run as an account its BROKER_EXCHANGE_ACCOUNTS does not list, so the answer is 403
+// POD_ACCOUNT_NOT_LISTED, which no earlier step can give. The control is the same write under
+// the token of an account BROKER_SERVICE_LOGINS does not list, which the route's authentication
+// refuses before the body is read.
+func TestContractARegistrationIsAuthenticatedByTheDaemonsOwnToken(t *testing.T) {
+	rig := newBrokerRig(t)
+	ctx := context.Background()
+	podToken := rig.MintPodToken(t, "pod-uid-registered")
+	for _, c := range []struct {
+		name, account string
+		status        int
+		code          string
+	}{
+		{"the daemon's own token", brokertest.DaemonAccount, http.StatusForbidden, "POD_ACCOUNT_NOT_LISTED"},
+		{"an unlisted account's token", "system:serviceaccount:legion-system:someone-else", http.StatusForbidden, "ACCOUNT_NOT_LISTED"},
+	} {
+		client := &Client{URL: rig.URL, TokenFile: daemonTokenFile(t, rig, c.account, time.Hour)}
+		_, err := client.RegisterPodSession(ctx, podToken, "ses_contract")
+		var api *APIError
+		if !errors.As(err, &api) || api.Status != c.status || api.Code != c.code {
+			t.Fatalf("%s: RegisterPodSession = %v, want %d %s", c.name, err, c.status, c.code)
+		}
 	}
 }
