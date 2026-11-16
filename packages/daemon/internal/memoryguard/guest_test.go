@@ -662,6 +662,57 @@ func TestGuestNamesNoProcessThatStartedAfterTheRise(t *testing.T) {
 	}
 }
 
+// Two rises inside one wait are two kills, each of a process the kernel picked by what that
+// process held when it was picked. The first kills the tester's node, which stays in /proc while
+// it frees its memory. The reviewer's rg starts after that rise. The tester's python3 then grows
+// past every other command and the second rise kills it, and it stays in /proc too. node leaves
+// and rg exits by itself. rg started after the first rise, and at the second rise it held less
+// than python3, so it is the victim of neither: the watch names node and python3, each to the
+// tester, and tells the reviewer nothing.
+func TestGuestNamesNoProcessThatStartedAfterTheFirstOfTwoRises(t *testing.T) {
+	const node, python, rg = 870, 871, 872
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(command(node, 8700, "node", 1400, 2*gib), command(python, 8710, "python3", 1340, 100*mib))
+	classes[node], classes[python], classes[rg] = Class{Role: "tester"}, Class{Role: "tester"}, Class{Role: "reviewer"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	// The kernel kills node, which stays in /proc.
+	cgroup.setKills(1)
+	h.tick()
+	// rg starts during the wait, and python3 grows to 3 GiB.
+	pod.addGuest(guestProcess{fakeProcess: fakeProcess{pid: rg, ppid: 1, start: 8720, args: []string{"rg"}, resident: 200 * mib}, score: 1360})
+	grown := command(python, 8710, "python3", 1700, 3*gib)
+	grown.adj = raisedScore
+	pod.addGuest(grown)
+	h.tick()
+	// The kernel kills python3, which stays in /proc.
+	cgroup.setKills(2)
+	h.tick()
+	// node leaves, and rg exits by itself.
+	pod.remove(node)
+	pod.remove(rg)
+	h.tick()
+	for _, kill := range h.reported() {
+		if kill.PID == rg {
+			t.Fatalf("the sink took %+v: the watch named rg (%d), which started after the first rise and held less than python3 at the second, and told the reviewer; the log:\n%s",
+				kill, rg, h.logged())
+		}
+	}
+	pod.remove(python)
+	h.tick()
+	h.tickAfter(guestKillWait)
+	kills := h.reported()
+	if len(kills) != 2 || kills[0].PID != node || kills[0].Role != "tester" || kills[1].PID != python || kills[1].Role != "tester" {
+		t.Fatalf("the sink took %+v, want node (%d) then python3 (%d), each the tester's; the log:\n%s", kills, node, python, h.logged())
+	}
+	if unnamed := h.lines("killed unnamed"); len(unnamed) != 0 {
+		t.Fatalf("the watch logged %q, want no unnamed kill", unnamed)
+	}
+}
+
 // A process of a role that the classifier protects, one of those that run the role's session
 // (the agent here, which Oh My Pi's in-process shell can grow past every command), that the kernel
 // killed has the guard's own line as every kill has, and one Kill of its role with the kernel's
