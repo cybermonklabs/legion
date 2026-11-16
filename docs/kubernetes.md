@@ -5123,7 +5123,7 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
   A release that lands between the daemon's read of the claim and that publish is refused `holder_lapsed`, and the refusal wakes the role all the same.
   An Envoy direct message to the session raises the wake, and the listener stores it for the stopped session, which its known-session store holds for 30 days: the answer says `state: stopped`, and the woken session reads the message.
   Until the listener's reaper frees the role claim, 5 to 10 minutes after the release, a message to the role's topic is answered `202`, kept with `kept_reason: holder_lapsed` and `holder_state: gone`; after that, it is answered `202` and kept with `kept_reason: unclaimed`.
-  Either way Envoy keeps it for one hour, as the list below says, and the woken role takes it when it registers again; one sent with `keep: false` is answered `404` with `holder_lapsed` and is not stored.
+  One sent with `keep: false` is not kept: it is answered `404` with `holder_lapsed` while the claim stands, and `404` with `unclaimed` once the reaper has freed it.
   A person's targeted Dispatch message to the session is recorded `queued`, and its card says so.
   The listener stores it for a session its known-session store holds.
   For a session that neither the listener's registry nor that store holds, Dispatch publishes the message on the session's agent subject itself.
@@ -5148,9 +5148,10 @@ The wakes are these:
   If it is not, Envoy drops it, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
   While it has at least 20 minutes of its hour left and no live session holds the role, the listener's sweep reports it again every five minutes.
   One sent with `keep: false` is not kept, and it still wakes the role, so the sender's next try reaches a session that is running.
-  The daemon sets `keep: false` on each of its publishes.
+  The daemon sets `keep: false` on each of its publishes but two, a phase-ended message and a hook prompt, which it publishes with `keep: true`.
   Its informational role messages to a released role (`outbox.roleMessage`, above) are neither published nor sent again, so they wake nothing and no next try reaches the role.
-  Its other messages to a role (a notice, a phase-ended message, a hook prompt, a merge-queue removal message) wake a released role themselves before they publish (`wakeForDelivery`, the first bullet);
+  Its other messages to a role (a notice, a phase-ended message, a hook prompt, a merge-queue removal message) wake a released role themselves before they publish (`wakeForDelivery`, the first bullet).
+  A phase-ended message and a hook prompt are then published while the woken session has not claimed its role yet, so Envoy keeps each of them for that session; a listener that keeps nothing for a role whose holder is not live answers them `404`, and their outbox rows end with them undelivered;
 
 - a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session;
 

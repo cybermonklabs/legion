@@ -119,6 +119,91 @@ func TestHTTPPublisherTellsANoHolderRefusalFromAnyOther(t *testing.T) {
 	}
 }
 
+// A kept publish asks the listener to keep a role message no live session holds the role for
+// (keep: true), and it has three answers: 200, a live holder took it; 202 kept, for a claim whose
+// holder is not live (holder_lapsed) or a role nobody claims (unclaimed), the listener of
+// cybermonklabs/legion#4079 keeping the copy on the role's kept lane for an hour; and the 404
+// holder_lapsed of a listener without #4079, which keeps nothing for a lapsed holder, and which
+// is ErrNoHolder. A 202 that does not say kept is no kept message and stays a plain refusal, and
+// a kept answer is read whole however long the envelope it carries is: the copy's message and
+// payload ride in it, and one cut off at the refusal bound would read as a refusal.
+func TestHTTPPublisherPublishKeptTellsAKeptMessageFromADeliveredOne(t *testing.T) {
+	long := strings.Repeat("x", refusalBodyLimit+1)
+	for _, tc := range []struct {
+		name     string
+		status   int
+		body     string
+		kept     bool
+		noHolder bool
+		refused  bool
+	}{
+		{"a live holder took it", http.StatusOK,
+			`{"event_id":"evt-1","topic":"notifications.role.legion-demo-implementer","holder":"ses_a","holder_state":"live"}`, false, false, false},
+		{"kept for a holder that lapsed", http.StatusAccepted,
+			`{"event_id":"evt-2","topic":"notifications.role.legion-demo-implementer","holder":"ses_a","holder_state":"gone","kept":true,"kept_reason":"holder_lapsed","kept_until":1900000000000,"last_seen":1}`, true, false, false},
+		{"kept for a role nobody claims", http.StatusAccepted,
+			`{"event_id":"evt-3","topic":"notifications.role.legion-demo-implementer","kept":true,"kept_reason":"unclaimed","kept_until":1900000000000}`, true, false, false},
+		{"kept with an envelope past the refusal bound", http.StatusAccepted,
+			`{"event_id":"evt-4","message":"` + long + `","kept":true,"kept_reason":"unclaimed","kept_until":1900000000000}`, true, false, false},
+		{"a listener without the lapsed holder's keep refuses it", http.StatusNotFound,
+			`{"error":"role legion-demo-implementer holder ses_a lapsed","reason":"holder_lapsed","holder":"ses_a","holder_state":"gone","last_seen":1,"claim_released":false}`, false, true, true},
+		{"a 202 that does not say kept", http.StatusAccepted, `{"event_id":"evt-5"}`, false, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					Topic     string `json:"topic"`
+					Message   string `json:"message"`
+					DedupeKey string `json:"dedupe_key"`
+					Keep      *bool  `json:"keep"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if body.Topic != "notifications.role.legion-demo-implementer" || body.Message != "the end of DEMO-1's testing phase" || body.DedupeKey != "legion-outbox:11" {
+					t.Errorf("kept publish body = %#v", body)
+				}
+				if body.Keep == nil || !*body.Keep {
+					t.Errorf("kept publish keep = %v, want true: the listener is to keep the message for the role's next holder", body.Keep)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			kept, err := New(server.URL, "").PublishKept(context.Background(), "notifications.role.legion-demo-implementer",
+				"the end of DEMO-1's testing phase", "the end of DEMO-1's testing phase", "legion-outbox:11")
+			if kept != tc.kept {
+				t.Fatalf("kept publish kept = %t with %v, want %t", kept, err, tc.kept)
+			}
+			if (err != nil) != tc.refused {
+				t.Fatalf("kept publish error = %v, want an error %t", err, tc.refused)
+			}
+			if tc.refused && !strings.Contains(err.Error(), tc.body) {
+				t.Fatalf("kept publish error = %v, want the listener's answer %s", err, tc.body)
+			}
+			if got := errors.Is(err, ErrNoHolder); got != tc.noHolder {
+				t.Fatalf("errors.Is(%v, ErrNoHolder) = %t, want %t", err, got, tc.noHolder)
+			}
+		})
+	}
+
+	// Publish asked to keep nothing, so a 202 kept is no answer it can give, and it stays the
+	// refusal it has always been.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"kept":true,"kept_reason":"unclaimed","kept_until":1900000000000}`))
+	}))
+	defer server.Close()
+	if err := New(server.URL, "").Publish(context.Background(), "notifications.role.legion-demo-implementer", "held on DEMO-1",
+		"held on DEMO-1", "legion-outbox:12"); err == nil || errors.Is(err, ErrNoHolder) {
+		t.Fatalf("publish keep: false answered 202 kept = %v, want a plain refusal", err)
+	}
+}
+
 // A listener that carries the session's state in its refusal tells an unresponsive holder from a
 // dead one (dispatch://INFRA-392): `holder_lapsed` with `holder_state` `unresponsive` is a session
 // past its live window but inside its gone horizon, which still holds the role, so the publish is

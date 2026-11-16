@@ -929,8 +929,8 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 // message to a released role was dropped all the same once that session expired; and a wake for
 // each would start a pod for every CI settlement and every gate move, once per released role.
 // Published, the message would meet a released role as one nobody holds: the listener answers
-// holder_lapsed and raises the role's wake beside that answer, so the pod would come back for a
-// message the row had already dropped.
+// holder_lapsed, or unclaimed once the reaper has freed the claim, and raises the role's wake
+// beside either, so the pod would come back for a message the row had already dropped.
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`
@@ -1085,9 +1085,12 @@ func (p PhaseEnded) Message(issue string) string {
 // that word. There is nothing for a hook to interpolate, because every fact it could ask for
 // stands above its words already.
 //
-// A role with no session holds no topic, and the row ends there undelivered with one log line, as
-// a phase-ended message nobody holds does: the words were written for the round the move back
-// opened, and a role that reads them later reads them of a round that is over.
+// The prompt is published with keep, as a phase-ended message is: for a role no live session
+// holds, the listener answers it kept and holds it for an hour for the role's next live holder,
+// and the row ends with one log line, the listener its keeper. A listener without the kept lane
+// answers it 404 and keeps nothing, and the row ends there undelivered with one log line: the
+// words were written for the round the move back opened, and a role that reads them later reads
+// them of a round that is over.
 type HookPrompt struct {
 	Hook        string         `json:"hook"`
 	Role        claim.Role     `json:"role"`

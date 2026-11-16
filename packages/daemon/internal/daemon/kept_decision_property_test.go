@@ -198,7 +198,9 @@ type keptRace struct {
 // keptPublisher is the listener as a role publish meets it, under one mode the run switches. It
 // counts the answer each catch-up drew, so a run reports which modes its catch-ups actually met,
 // holds one publish open for the interleaving a step armed (keptRace), and records, for each
-// catch-up it takes, the generation that catch-up's root stood at then (atPublish).
+// catch-up it takes, the generation that catch-up's root stood at then (atPublish). A kept
+// publish (PublishKept) is answered by the run's mode as any other is and never kept: the mode's
+// no-holder is the 404 of a listener without the kept lane.
 type keptPublisher struct {
 	mu        sync.Mutex
 	mode      keptPublishMode
@@ -218,6 +220,14 @@ type keptPublisher struct {
 }
 
 func (p *keptPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
+	return p.publish(topic, message, payload, key, false)
+}
+
+func (p *keptPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {
+	return false, p.publish(topic, message, payload, key, true)
+}
+
+func (p *keptPublisher) publish(topic, message string, payload any, key string, keep bool) error {
 	notice, isNotice := payload.(record.Notice)
 	catchUp := isNotice && notice.CatchUp != nil
 	var raced *keptRace
@@ -249,7 +259,7 @@ func (p *keptPublisher) Publish(_ context.Context, topic, message string, payloa
 	if err != nil {
 		return err
 	}
-	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload})
+	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload, keep: keep})
 	return nil
 }
 

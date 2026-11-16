@@ -863,9 +863,9 @@ func (r *idleWakeRig) awaitReleased(issues ...idleRigIssue) {
 			quieted = time.Now()
 			r.quiet()
 		}
-		// One listing for the fourteen pods, not one each: the operator's route answers every claim
+		// One listing for the fifteen pods, not one each: the operator's route answers every claim
 		// at once (daemon.claims, which daemon.claim reads to find one), and the pass this waits
-		// for reads the same rows through the same pool, so a wait that asked fourteen times a poll
+		// for reads the same rows through the same pool, so a wait that asked fifteen times a poll
 		// would be taking the daemon's own Postgres away from the release it is waiting for.
 		claims := r.api.claims()
 		released := true
@@ -1066,7 +1066,7 @@ const idleRigDeadlineMargin = 5 * time.Second
 
 // Every wait of this rig carries a span of its own, one of those below, and idleRigWaiting
 // clamps it by the run's own deadline. The spans are what the work behind each wait takes on a
-// loaded runner with fourteen pods, fourteen launchers, a nats-server, a Postgres and an Envoy
+// loaded runner with fifteen pods, fifteen launchers, a nats-server, a Postgres and an Envoy
 // listener on it; they are the bound a fault is reported at, so a release that never happens is
 // a failure naming the pods minutes into the run and not at the binary's timeout panic, which
 // would take the rest of internal/daemon with it.
@@ -1086,7 +1086,7 @@ const (
 	// it, which waits on that same pod.
 	idleRigPodWait = 150 * time.Second
 	// idleRigReleaseWait bounds the release of every pod of the rig by one pass of the idle
-	// tick: fourteen launches undone at once, and so the longest span here.
+	// tick: fifteen launches undone at once, and so the longest span here.
 	idleRigReleaseWait = 240 * time.Second
 	// idleRigRecordWait bounds a row the daemon writes, a task it gives or a message it
 	// delivers once the pod behind it is already up: a tick or two of the rig and the write
@@ -1094,7 +1094,7 @@ const (
 	idleRigRecordWait = 60 * time.Second
 	// idleRigWarningWait bounds the warning the daemon logs about a resume with no first turn,
 	// which its wake pass decides on the tick after the rig back-dates the resume, behind
-	// whatever else that pass is deciding for the other thirteen pods.
+	// whatever else that pass is deciding for the other fourteen pods.
 	idleRigWarningWait = 90 * time.Second
 	// idleRigStuckWait bounds the stuck flag reaching the resume's record once that warning is
 	// out: the same pass writes both, so this is the write alone.

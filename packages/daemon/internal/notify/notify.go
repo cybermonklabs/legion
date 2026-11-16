@@ -173,9 +173,12 @@ func ControllerTopic(project string) string {
 	return "notifications.legion." + project + ".controller"
 }
 
-// Publisher delivers a notice to one listener topic.
+// Publisher delivers a notice to one listener topic. Publish asks the listener to keep nothing
+// for a role no live session holds, and PublishKept asks it to keep the message for the role's
+// next holder and says whether it did.
 type Publisher interface {
 	Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error
+	PublishKept(ctx context.Context, topic, message string, payload any, dedupeKey string) (kept bool, err error)
 }
 
 // HTTPPublisher calls the Envoy listener's publish route.
@@ -199,23 +202,54 @@ func New(baseURL, token string) *HTTPPublisher {
 // architect's notices keep their order behind it, architectEnded finishes a row whose architect
 // is gone, a receipt timeout reholds the notice, and a merge-queue row posts a Dispatch message
 // when the role is unheld. One message has one keeper, so this sender keeps its own
-// (packages/daemon/internal/daemon/outbox.go).
-//
-// THIS BINARY SHIPS BEFORE THE ENVOY LISTENER THAT CARRIES THE KEPT LANE. The Envoy listener and
-// this binary are separate releases (.github/workflows/release-envoy-listener.yaml and
-// release.yaml), and a binary of the release before this one sends no keep field at all. Against
-// the new listener that publish is answered 202 with the message kept, which the older code reads
-// as neither success nor ErrNoHolder: its outbox row is held and keeps retrying while Envoy also
-// hands the message to the role's next holder, so the role gets it twice. Deploying this binary
-// first leaves no window in which two keepers hold one message. Measured on a live listener by
-// INFRA-839's tester on 2026-10-31: the old publisher got `listener returned 202 Accepted` with
-// errors.Is(err, ErrNoHolder) false, and the kept lane then held that message.
+// (packages/daemon/internal/daemon/outbox.go). The listener is the keeper of two of the daemon's
+// messages instead, a phase-ended message and a hook prompt, which the daemon publishes with
+// PublishKept: neither outbox row holds itself for a role no live session holds, each ends, so
+// the kept copy is the one keeper of the message, and it is what reaches a released role's woken
+// session, which claims the role only after the row's next attempt has published.
 func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
+	_, err := p.publish(ctx, topic, message, payload, dedupeKey, false)
+	return err
+}
+
+// PublishKept posts the envelope as Publish does, but with keep: true: a role message that no
+// live session holds the role for is kept on the role's kept lane for one hour and handed to the
+// role's next live holder (cybermonklabs/legion#4079). The listener answers it 202 with kept: true
+// (roleSend.kept, packages/envoy/cmd/listener/confirmed.go), whether nobody claims the role
+// (kept_reason unclaimed) or its claim's holder is not live (holder_lapsed), and that answer is
+// kept with no error: the listener is the message's keeper. A repeat of the same dedupe key while
+// the copy is kept is answered with that first copy and stores nothing new, so a publish sent
+// again is still one message. A 200 is a live holder that took the message: not kept, and no
+// error. Every other answer is the error Publish makes of it, a 202 that does not say kept: true
+// among them.
+//
+// A listener without #4079 keeps a message only for a role nobody claims. It answers a claim
+// whose holder is not live — the claim a released role leaves standing until the listener's
+// reaper frees it — 404 holder_lapsed, as it answers keep: false, and that is ErrNoHolder here as
+// it is for Publish, so against such a listener the caller's own rule for a role with no holder
+// still runs.
+func (p *HTTPPublisher) PublishKept(ctx context.Context, topic, message string, payload any, dedupeKey string) (bool, error) {
+	return p.publish(ctx, topic, message, payload, dedupeKey, true)
+}
+
+// keptAnswerBodyLimit bounds the body a kept publish's 202 is decoded from. It is not
+// refusalBodyLimit, which bounds an error body: the 202 carries the kept copy's whole envelope,
+// its message and payload included, and a hook prompt alone can pass 4 KiB, so an answer cut off
+// there would fail to decode and a message the listener kept would read as a refusal and be
+// published again. The envelope is one NATS message, which the server bounds at 1 MiB unless its
+// operator raises max_payload, so this is the same bound.
+const keptAnswerBodyLimit = 1 << 20
+
+// publish is the one body of Publish and PublishKept: it posts the envelope with keep as the
+// request's keep field, and answers whether the listener kept the message rather than
+// delivering it. Only a publish that asked to keep reads a 202 as kept; every other answer that
+// is not a 200 is the refusal it maps to.
+func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payload any, dedupeKey string, keep bool) (bool, error) {
 	// The listener carries a payload as a JSON document in a string (its messageBody,
 	// packages/envoy/cmd/listener/api.go:68-80); an object there is refused as invalid JSON.
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("encode notice payload for %s: %w", topic, err)
+		return false, fmt.Errorf("encode notice payload for %s: %w", topic, err)
 	}
 	body, err := json.Marshal(struct {
 		Topic     string `json:"topic"`
@@ -223,13 +257,13 @@ func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payl
 		Payload   string `json:"payload"`
 		DedupeKey string `json:"dedupe_key"`
 		Keep      bool   `json:"keep"`
-	}{Topic: topic, Message: message, Payload: string(encoded), DedupeKey: dedupeKey, Keep: false})
+	}{Topic: topic, Message: message, Payload: string(encoded), DedupeKey: dedupeKey, Keep: keep})
 	if err != nil {
-		return fmt.Errorf("encode notice for %s: %w", topic, err)
+		return false, fmt.Errorf("encode notice for %s: %w", topic, err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages/publish", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("build notice publish request for %s: %w", topic, err)
+		return false, fmt.Errorf("build notice publish request for %s: %w", topic, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if p.token != "" {
@@ -237,31 +271,45 @@ func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payl
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return fmt.Errorf("publish notice to %s: %w", topic, err)
+		return false, fmt.Errorf("publish notice to %s: %w", topic, err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
-		refusal := fmt.Errorf("publish notice to %s: listener returned %s: %s", topic, response.Status, strings.TrimSpace(string(body)))
-		var answer RoleRefusal
-		if json.Unmarshal(body, &answer) != nil {
-			return refusal
-		}
-		switch {
-		case response.StatusCode == http.StatusNotFound && answer.Reason == ReasonHolderLapsed && answer.HolderState == StateUnresponsive:
-			return fmt.Errorf("%w: %w", refusal, ErrHolderUnresponsive)
-		case response.StatusCode == http.StatusNotFound && roleholder.IsNoHolderReason(answer.Reason):
-			return fmt.Errorf("%w: %w", refusal, ErrNoHolder)
-		case response.StatusCode == http.StatusGatewayTimeout && (answer.Reason == ReasonReceiptTimeout || answer.Reason == ReasonDeliveryFailed):
-			return fmt.Errorf("%w: %w", refusal, ErrNotDelivered{Reason: answer.Reason, Holder: answer.Holder, EventID: answer.EventID})
-		case response.StatusCode == http.StatusForbidden && answer.Reason == "capability":
-			return fmt.Errorf("%w: %w", refusal, ErrRefusedByHolder{Holder: answer.Holder})
-		case response.StatusCode == http.StatusForbidden && strings.HasPrefix(answer.Error, publishDeniedPrefix):
-			return fmt.Errorf("%w: %w", refusal, ErrPublishDenied{Message: answer.Error})
-		}
-		return refusal
+	if response.StatusCode == http.StatusOK {
+		return false, nil
 	}
-	return nil
+	accepted := keep && response.StatusCode == http.StatusAccepted
+	limit := int64(refusalBodyLimit)
+	if accepted {
+		limit = keptAnswerBodyLimit
+	}
+	answered, _ := io.ReadAll(io.LimitReader(response.Body, limit))
+	if accepted {
+		var kept struct {
+			Kept bool `json:"kept"`
+		}
+		if json.Unmarshal(answered, &kept) == nil && kept.Kept {
+			return true, nil
+		}
+		answered = answered[:min(len(answered), refusalBodyLimit)]
+	}
+	refusal := fmt.Errorf("publish notice to %s: listener returned %s: %s", topic, response.Status, strings.TrimSpace(string(answered)))
+	var answer RoleRefusal
+	if json.Unmarshal(answered, &answer) != nil {
+		return false, refusal
+	}
+	switch {
+	case response.StatusCode == http.StatusNotFound && answer.Reason == ReasonHolderLapsed && answer.HolderState == StateUnresponsive:
+		return false, fmt.Errorf("%w: %w", refusal, ErrHolderUnresponsive)
+	case response.StatusCode == http.StatusNotFound && roleholder.IsNoHolderReason(answer.Reason):
+		return false, fmt.Errorf("%w: %w", refusal, ErrNoHolder)
+	case response.StatusCode == http.StatusGatewayTimeout && (answer.Reason == ReasonReceiptTimeout || answer.Reason == ReasonDeliveryFailed):
+		return false, fmt.Errorf("%w: %w", refusal, ErrNotDelivered{Reason: answer.Reason, Holder: answer.Holder, EventID: answer.EventID})
+	case response.StatusCode == http.StatusForbidden && answer.Reason == "capability":
+		return false, fmt.Errorf("%w: %w", refusal, ErrRefusedByHolder{Holder: answer.Holder})
+	case response.StatusCode == http.StatusForbidden && strings.HasPrefix(answer.Error, publishDeniedPrefix):
+		return false, fmt.Errorf("%w: %w", refusal, ErrPublishDenied{Message: answer.Error})
+	}
+	return false, refusal
 }
 
 // SessionDeleted is what the listener did with a conditional clean stop: Deleted is false only
@@ -406,7 +454,7 @@ type DeleteConditions struct {
 // has ended, found dead or stopped by a suspension. The listener then reads the session `gone` at
 // once rather than at the end of its live window, so its issue claims are free without the wait a
 // stopped process would otherwise cost (dispatch://INFRA-392), and a message to it raises the wake
-// rather than being stored. The role claim it held stays until the listener's role claim reaper
+// rather than being stored for a session nothing reads. The role claim it held stays until the listener's role claim reaper
 // finds the claim unanswered for the live window (store.Registry.ClaimRenewedWithin). A
 // registry that holds no record for the session answers 404: it is already gone, which is the
 // outcome asked for, so that is no failure.

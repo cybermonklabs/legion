@@ -101,6 +101,9 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 				t.Fatalf("the %s was told\n\t%q\nwant\n\t%q", tc.role, told[0].message, tc.message)
 			}
 			t.Logf("the %s was told: %s", tc.role, told[0].message)
+			if !told[0].keep {
+				t.Fatalf("the message was published with keep: false, want keep: the listener is its keeper for a role no live session holds")
+			}
 			if _, ok := record.ParseOutboxKey(told[0].key); !ok {
 				t.Fatalf("the message went under key %q, want its row's own (legion-outbox:<id>): a retried row is one delivery", told[0].key)
 			}
@@ -110,6 +113,9 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 			for _, published := range publisher.publishes() {
 				if notice, ok := published.payload.(record.Notice); ok && notice.Kind == "checks-red" && published.topic == architect {
 					notices++
+					if published.keep {
+						t.Fatalf("the architect's notice was published with keep, want keep: false: the daemon holds its own notice queue")
+					}
 				}
 			}
 			if notices != 1 {
@@ -124,7 +130,9 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 
 // A role topic with no live holder is the ordinary state before a session claims it, and the role's
 // next task from the daemon names its phase anyway: the row ends with one log line rather than
-// waiting as an architect's notice waits, and the implementer's start goes on all the same.
+// waiting as an architect's notice waits, and the implementer's start goes on all the same. The
+// listener here is one without the kept lane (holderPublisher's default), which refuses the kept
+// publish with its 404, so nothing keeps the message, and the row ends even so.
 func TestAPhaseEndedMessageNobodyHoldsEndsAndTheStartGoesOn(t *testing.T) {
 	ctx := context.Background()
 	publisher := &holderPublisher{}
@@ -154,6 +162,17 @@ func TestAPhaseEndedMessageNobodyHoldsEndsAndTheStartGoesOn(t *testing.T) {
 	if left := outboxRows(t, pool); left != 0 {
 		t.Fatalf("outbox rows left = %d, want the message finished rather than held", left)
 	}
+}
+
+// A released role's woken session claims its role only after the row's next attempt has
+// published, so that attempt meets a role no live session holds: the row publishes with keep, the
+// listener keeps the message for the role's next holder, which the woken session is, and the row
+// ends with the listener as the message's keeper, the pod woken once. Published with keep: false,
+// the message would meet the no-holder answer and the row would end with it kept nowhere, which
+// is how a woken role lost the end of its phase.
+func TestAPhaseEndedMessageForAReleasedPodIsKeptForItsWokenSession(t *testing.T) {
+	ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
+	keptAcrossTheWake(t, ended, claim.RoleTester, ended.Message("LEGION-208"))
 }
 
 // The three answers of the confirmed publish route are other failures, and keep the ordinary retry:

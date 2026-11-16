@@ -104,7 +104,8 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 // it reaches, as a phase-ended message stops nothing.
 //
 // The row is held as an architect's notice is held (notice_exceptions.go, noticeAnswered), not
-// dropped as a phase-ended message nobody holds is (phaseEnded). A phase-ended message is worth
+// ended as the row of a phase-ended message nobody holds is (phaseEnded), whose message the
+// listener keeps for the role's next holder for an hour at most. A phase-ended message is worth
 // nothing later, since the role's next task names its phase anyway. Nothing else tells a merger
 // of this removal: its pull request waits out of the queue with nobody to enqueue it again or send
 // the issue back, and a merger whose pod was released would learn of it only when the release's

@@ -90,16 +90,26 @@ type idleRigAdoption struct {
 // it registers again every idleRigRegistrationRefresh while it runs and deletes nothing when it
 // stops (idleRigRoleProcess.run).
 //
+// HoldsBeforeEnvoy is a process that registers with the daemon and then waits, before it
+// registers with the Envoy listener and claims its role, until the rig sets it a plan without
+// HoldsBeforeEnvoy: a woken Oh My Pi still starting, whose session holds no role yet while the
+// daemon publishes to it. The stand-in otherwise claims its role within a second of its pod's
+// start, far sooner than an Oh My Pi does, and a test that needs the daemon's publish to meet a
+// role its woken session has not claimed yet would be racing it.
+//
 // A process reads Topics and ExitsAsReleasedInProduction once, as it starts
-// (idleRigRoleProcess.run), and TakeTurn and Background at each task and each activity report.
-// So a plan that sets either of the first two reaches only a process that starts after it is
-// set. The daemon's boot starts the role process of every pod of the rig, so such a plan is given
-// to newIdleWakeRig, which sets it before the boot.
+// (idleRigRoleProcess.run), after the plan no longer holds it, and TakeTurn and Background at
+// each task and each activity report. So a plan that sets either of the first two, or
+// HoldsBeforeEnvoy, reaches only a process that starts after it is set. The daemon's boot starts
+// the role process of every pod of the rig, so a plan for that process is given to
+// newIdleWakeRig, which sets it before the boot; a plan for a woken process is set before its
+// wake.
 type idleRigPlan struct {
 	TakeTurn                    bool     `json:"takeTurn"`
 	Topics                      []string `json:"topics"`
 	Background                  []string `json:"background"`
 	ExitsAsReleasedInProduction bool     `json:"exitsAsReleasedInProduction"`
+	HoldsBeforeEnvoy            bool     `json:"holdsBeforeEnvoy"`
 }
 
 // idleRigAgents is the rig's own service: it hands each role process the boot token its pod's
@@ -488,8 +498,9 @@ func newIdleRigRoleProcess(rig string) (*idleRigRoleProcess, error) {
 	return p, nil
 }
 
-// run connects, registers, claims the role, reports ready, and then serves the daemon's frames
-// until it is shut down.
+// run connects, registers, waits while its plan holds it (idleRigPlan.HoldsBeforeEnvoy),
+// registers with the Envoy listener, claims the role, reports ready, and then serves the daemon's
+// frames until it is shut down.
 func (p *idleRigRoleProcess) run() error {
 	bootToken, err := p.bootToken()
 	if err != nil {
@@ -509,6 +520,12 @@ func (p *idleRigRoleProcess) run() error {
 	plan, err := p.plan()
 	if err != nil {
 		return err
+	}
+	for plan.HoldsBeforeEnvoy {
+		time.Sleep(idleRigPoll)
+		if plan, err = p.plan(); err != nil {
+			return err
+		}
 	}
 	if err := p.subscribe(plan.Topics); err != nil {
 		return err
