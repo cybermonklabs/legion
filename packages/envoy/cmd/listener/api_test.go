@@ -4534,8 +4534,11 @@ func noInterestRecordSessionID(t *testing.T, row map[string]json.RawMessage) str
 
 // seedNoInterestRecordSession registers the session the fixture's after row describes, and writes
 // no interest record for it: a session with no record is the state under test, so the entry is
-// written here rather than through setupSessionsTest's ports map, which would give it that
-// helper's own machine id and directory instead of the fixture's.
+// written here rather than through setupSessionsTest's live list, which would give it that
+// helper's own machine id and directory instead of the fixture's. The row's delivery is seeded
+// with the rest of the entry, since the listener reports the delivery the entry carries. Its
+// state is not: the listener judges it when it answers, from the registration time Put stamps
+// (session.StateOf), so a session written here is live.
 func seedNoInterestRecordSession(t *testing.T, sessions *session.SessionRegistry, row map[string]json.RawMessage) string {
 	t.Helper()
 	var fields struct {
@@ -4545,6 +4548,7 @@ func seedNoInterestRecordSession(t *testing.T, sessions *session.SessionRegistry
 		Port           int    `json:"port"`
 		Title          string `json:"title"`
 		SelfSubscribed bool   `json:"self_subscribed"`
+		Delivery       string `json:"delivery"`
 	}
 	raw, err := json.Marshal(row)
 	if err != nil {
@@ -4559,6 +4563,7 @@ func seedNoInterestRecordSession(t *testing.T, sessions *session.SessionRegistry
 		Dir:            fields.Dir,
 		Title:          fields.Title,
 		SelfSubscribed: fields.SelfSubscribed,
+		Delivery:       fields.Delivery,
 	}); err != nil {
 		t.Fatalf("register %s: %v", fields.SessionID, err)
 	}
@@ -4677,46 +4682,59 @@ func TestSessionEntryRouteForASessionWithNoInterestRecordMatchesTheFixture(t *te
 }
 
 // The fixture states a whole row, so it can only stay whole while it names every key sessionInfo
-// writes. A field added to sessionInfo later fails this test, and the fixture cannot fall behind
-// the struct with no test saying so. Only plugin and plugin_version are absent from the row: they
-// are omitempty, and the fixture's session registered through a plugin that predates them.
+// always writes, and while the keys a fixture row may lack are the ones sessionInfo leaves out
+// when they are empty. The fixture's session sits in no tmux pane, and its registration named no
+// plugin, no plugin build and no client instance, so its row lacks exactly those keys. The keys
+// are read from sessionInfo's own fields and json tags, never from a value of it: a field added
+// to sessionInfo later fails this test, omitempty or not, as does a field that gains or loses
+// omitempty, so neither the fixture nor the list of keys a fixture row may lack can fall behind
+// the struct unnoticed. A value with every field set cannot hold that, since a field added after
+// the value was written is left empty in it, and an omitempty one is then absent from its keys.
 func TestSessionInfoKeysForASessionWithNoInterestRecordAreTheFixtureRowsKeys(t *testing.T) {
 	fixture := readNoInterestRecordFixture(t)
-	raw, err := json.Marshal(sessionInfo{
-		SessionID:      "ses_every_field",
-		MachineID:      "every-field-machine",
-		Host:           "every-field-host",
-		Dir:            "/every/field",
-		Port:           4242,
-		Title:          "every field set",
-		Capabilities:   []string{"aside"},
-		SelfSubscribed: true,
-		Topics:         []string{"notifications.agent"},
-		Roles:          []string{"reviewer"},
-		UpdatedAt:      1,
-		LastSeen:       1,
-		Plugin:         "every-field-plugin",
-		PluginVersion:  "1.0.0",
-	})
-	if err != nil {
-		t.Fatalf("encode a sessionInfo with every field set: %v", err)
-	}
-	var got map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("decode that sessionInfo as a JSON object: %v", err)
-	}
-	want := map[string]bool{"plugin": true, "plugin_version": true}
-	for key := range fixture.AfterThisChange {
-		want[key] = true
-	}
-	for key := range got {
-		if !want[key] {
-			t.Errorf("sessionInfo writes %q, which is neither a fixture row key nor plugin or plugin_version; state it in the fixture", key)
+	alwaysWritten, leftOutWhenEmpty := map[string]bool{}, map[string]bool{}
+	infoType := reflect.TypeOf(sessionInfo{})
+	for i := range infoType.NumField() {
+		field := infoType.Field(i)
+		tag := field.Tag.Get("json")
+		if !field.IsExported() || tag == "-" {
+			continue
+		}
+		// An exported field with no name in its tag is written under its Go name, as encoding/json
+		// writes it, so a field added without a tag is still a key this test sees.
+		name, options, _ := strings.Cut(tag, ",")
+		if name == "" {
+			name = field.Name
+		}
+		if slices.Contains(strings.Split(options, ","), "omitempty") {
+			leftOutWhenEmpty[name] = true
+		} else {
+			alwaysWritten[name] = true
 		}
 	}
-	for key := range want {
-		if _, ok := got[key]; !ok {
-			t.Errorf("sessionInfo writes no %q, which the fixture row states; the fixture is ahead of the struct", key)
+	rowKeys := map[string]bool{}
+	for key := range fixture.AfterThisChange {
+		rowKeys[key] = true
+	}
+	for key := range alwaysWritten {
+		if !rowKeys[key] {
+			t.Errorf("sessionInfo always writes %q, which the fixture row does not state; capture the fixture again", key)
+		}
+	}
+	for key := range rowKeys {
+		if !alwaysWritten[key] {
+			t.Errorf("the fixture row states %q, which sessionInfo does not always write", key)
+		}
+	}
+	mayLack := map[string]bool{"tmux_place": true, "plugin": true, "plugin_version": true, "client_instance_id": true}
+	for key := range leftOutWhenEmpty {
+		if !mayLack[key] {
+			t.Errorf("sessionInfo leaves %q out when it is empty, which is not a key a fixture row may lack; capture the fixture again or name it here", key)
+		}
+	}
+	for key := range mayLack {
+		if !leftOutWhenEmpty[key] {
+			t.Errorf("a fixture row may lack %q, which sessionInfo does not leave out when it is empty", key)
 		}
 	}
 }
