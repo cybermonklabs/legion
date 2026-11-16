@@ -32,7 +32,7 @@
  * passes only on the skill's `NOT REVIEWED:` line for the failed `dispatch spec-form`: the
  * reviewer must say that it could not see, and never that it found nothing. The exit status is 0
  * when every run passes, 1 when one fails, and 2 when the command cannot run: a flag it refuses,
- * an --out that holds the files of an earlier run, a stack that does not start, or any other error
+ * an --out that is no directory or is not empty, a stack that does not start, or any other error
  * before every run has its verdict.
  */
 import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
@@ -173,10 +173,11 @@ function isKind(value: string): value is Kind {
 }
 
 /**
- * Reads an answer in the skill's output form. A `NOT REVIEWED:` line anywhere makes the answer no
- * verdict. The skill says "no other text", so any other line, a `FINDING` line out of the form,
- * and `NO FINDING` beside a finding make the answer unreadable, and so does an answer with
- * neither a `FINDING` nor a `NO FINDING` line.
+ * Reads an answer in the skill's output form. A `NOT REVIEWED:` line alone is no verdict; the
+ * skill says to print it "and stop", so beside any other line it is an answer of two verdicts, or
+ * of a verdict and prose, and unreadable. The skill says "no other text", so any other line, a
+ * `FINDING` line out of the form, and `NO FINDING` beside a finding make the answer unreadable,
+ * and so does an answer with neither a `FINDING` nor a `NO FINDING` line.
  */
 export function parseFindings(text: string): Answer {
   const lines = text
@@ -185,7 +186,12 @@ export function parseFindings(text: string): Answer {
     .filter((line) => line !== "");
   const notReviewed = lines.find((line) => line.startsWith(NOT_REVIEWED));
   if (notReviewed !== undefined) {
-    return { verdict: "not-reviewed", reason: notReviewed.slice(NOT_REVIEWED.length).trim() };
+    return lines.length === 1
+      ? { verdict: "not-reviewed", reason: notReviewed.slice(NOT_REVIEWED.length).trim() }
+      : {
+          verdict: "unreadable",
+          reason: `a NOT REVIEWED line beside another line: ${notReviewed}`,
+        };
   }
   const findings: Finding[] = [];
   let none = false;
@@ -749,11 +755,15 @@ async function evaluate(flags: Flags): Promise<number> {
   if (flags.out !== undefined) {
     const earlier = await readdir(flags.out).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return [];
+      if (error.code === "ENOTDIR")
+        throw new CannotRunError(`--out ${flags.out} is not a directory`);
       throw error;
     });
     if (earlier.length > 0) {
+      const shown = earlier.sort().slice(0, 3).join(", ");
+      const more = earlier.length > 3 ? ` and ${earlier.length - 3} more` : "";
       throw new CannotRunError(
-        `--out ${flags.out} holds the files of an earlier run; give a directory that is new or empty`
+        `--out ${flags.out} is not empty: it holds ${shown}${more}; give a directory that is new or empty`
       );
     }
   }
