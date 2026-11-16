@@ -17,12 +17,17 @@ import (
 
 // pprofAddress is where DISPATCH_PPROF_PORT asks the profiling listener to bind: 127.0.0.1 and
 // that port, so it is reachable only from inside the pod or through `kubectl port-forward`.
-// Unset or empty, it is "", and nothing listens. A value that is not a port 1-65535 refuses
-// startup naming the variable.
+// Unset or empty, it is "", and nothing listens. 0 is a port the kernel chooses, which the
+// listening line startPprof writes names: a test that starts Dispatch asks for it, since a port it
+// chose and gave back is any process's to take before Dispatch binds it. Any other value that is
+// not a port 1-65535 refuses startup naming the variable.
 func pprofAddress(env settingValues) (string, error) {
 	raw := strings.TrimSpace(env.get("DISPATCH_PPROF_PORT"))
 	if raw == "" {
 		return "", nil
+	}
+	if raw == "0" {
+		return net.JoinHostPort("127.0.0.1", "0"), nil
 	}
 	port, err := parsePort("DISPATCH_PPROF_PORT", raw)
 	if err != nil {

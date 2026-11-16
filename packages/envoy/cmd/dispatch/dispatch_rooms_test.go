@@ -3,26 +3,37 @@ package main
 import (
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
-	"strconv"
+	"regexp"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
+
+// pprofListening is the line Dispatch writes once the profiler listens (startPprof), with the
+// address it bound.
+var pprofListening = regexp.MustCompile(`msg="dispatch: pprof listening" addr=(127\.0\.0\.1:[0-9]+)`)
 
 // What the document rooms hold - how many rooms are resident, how many browsers are connected,
 // what their appends cost - is invisible from outside the process unless it is exported. The
 // loopback profiler's /debug/vars serves it as the expvar variable dispatch_rooms, which an
 // operator reads through `kubectl port-forward` while people edit: after two editors join two
 // documents, it names two resident rooms and two connections.
+//
+// The profiler takes port 0, a port the kernel chooses at its bind, and the test reads the port
+// from the line naming it: a port the test picked and let go of is any process's to take before
+// Dispatch binds it, which refuses the boot.
 func TestDispatchRoomsReportsTheRoomsHeld(t *testing.T) {
 	database := storetest.Open(t)
-	pprofPort := freeLoopbackPort(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
-		Env: map[string]string{"DISPATCH_PPROF_PORT": strconv.Itoa(pprofPort)},
+		Env: map[string]string{"DISPATCH_PPROF_PORT": "0"},
 	})
 	process.waitHealthy(t)
+	// The profiler binds before the server serves, so the line is in the output by now.
+	listening := pprofListening.FindStringSubmatch(process.Output.String())
+	if listening == nil {
+		t.Fatalf("Dispatch logged no line naming the profiler's address:\n%s", process.Output.String())
+	}
 	process.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ROOM","name":"Rooms"}`, http.StatusCreated)
 	for _, spec := range []string{"first", "second"} {
 		var issue struct {
@@ -35,7 +46,7 @@ func TestDispatchRoomsReportsTheRoomsHeld(t *testing.T) {
 		process.openEditor(t, issue.PrimaryArtifactID, spec+"\n")
 	}
 
-	response, err := http.Get("http://127.0.0.1:" + strconv.Itoa(pprofPort) + "/debug/vars")
+	response, err := http.Get("http://" + listening[1] + "/debug/vars")
 	if err != nil {
 		t.Fatalf("GET /debug/vars on the profiler: %v", err)
 	}
@@ -59,18 +70,4 @@ func TestDispatchRoomsReportsTheRoomsHeld(t *testing.T) {
 	if rooms.ResidentRooms == nil || *rooms.ResidentRooms != 2 || rooms.Connections == nil || *rooms.Connections != 2 {
 		t.Fatalf("dispatch_rooms = %s, want resident_rooms 2 and connections 2 with two editors in two documents", exported)
 	}
-}
-
-// freeLoopbackPort is a loopback port the kernel chose and nothing held when it returned. The
-// profiler takes its port by number (DISPATCH_PPROF_PORT, never 0), not as an inherited socket, so
-// the port is free only until another program binds it, which on a test machine none does.
-func freeLoopbackPort(t *testing.T) int {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	listener.Close()
-	return port
 }

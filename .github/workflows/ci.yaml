@@ -3103,6 +3103,7 @@ jobs:
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # cmd/listener/api_test.go:191,436,480, which the soak's run compiles too.
@@ -3178,6 +3179,7 @@ jobs:
               - 'packages/envoy/internal/serverwait/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # The step takes the multiprocess tag's test list from this script at run time.
@@ -3338,6 +3340,7 @@ jobs:
               - '!packages/envoy/internal/stacktest/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
               - '!packages/envoy/internal/testnats/**/*_test.go'
+              - '!packages/envoy/internal/testport/**/*_test.go'
               - '!packages/envoy/internal/testtmp/**/*_test.go'
               - '!packages/envoy/internal/textcheck/**/*_test.go'
               - '!packages/envoy/internal/verify/**/*_test.go'
@@ -3889,6 +3892,7 @@ jobs:
               - '!packages/envoy/internal/smoke/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
               - '!packages/envoy/internal/testnats/**/*_test.go'
+              - '!packages/envoy/internal/testport/**/*_test.go'
               - '!packages/envoy/internal/testtmp/**/*_test.go'
               - '!packages/envoy/internal/textcheck/**/*_test.go'
               - '!packages/envoy/internal/verify/**/*_test.go'
@@ -4029,6 +4033,7 @@ jobs:
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
@@ -4103,6 +4108,7 @@ jobs:
               - '!packages/envoy/internal/serverwait/**/*_test.go'
               - '!packages/envoy/internal/session/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
+              - '!packages/envoy/internal/testport/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated

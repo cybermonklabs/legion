@@ -1371,10 +1371,6 @@ type dispatchOptions struct {
 	// cmdtest.BuildStamped and runs it here, and the two-build test names an earlier build's
 	// binary here (twobuild_test.go).
 	Binary string
-	// BindsItsPort has the process bind DISPATCH_PORT itself rather than serve on the socket the
-	// test holds: a build before DISPATCH_LISTEN_FD, as the two-build test's previous build can be.
-	// The test lets go of the port just before the start, so another program can take it first.
-	BindsItsPort bool
 	// Env overrides and adds to the rows below, by name: a row the caller names wins over the
 	// one here, and a name not here is added. It is how a test gives the process a GitHub App,
 	// a sign-in issuer or cookie identity without every other test growing those rows.
@@ -1472,11 +1468,7 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 	for name, value := range environment {
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
-	if options.BindsItsPort {
-		held.Release()
-	} else {
-		held.Pass(cmd, "DISPATCH_LISTEN_FD")
-	}
+	held.Pass(cmd, "DISPATCH_LISTEN_FD")
 	// Sorted, so a failure's process listing and a test's own log read the same whichever run
 	// printed them: Go's map iteration order is not.
 	slices.Sort(cmd.Env)
