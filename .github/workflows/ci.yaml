@@ -2385,6 +2385,14 @@ jobs:
               # so that read is this gate's (ci_job_reads.py's dispatch_ui).
               - 'packages/envoy-client/src/**'
               - 'packages/envoy-client/test/**'
+              # e2e/__tests__/project-access-blob-base.test.ts copies the c-blob-unchanged driver
+              # and every shell file it sources into a repository of its own and runs it, so the
+              # files it sources outside packages/dispatch are this job's reads.
+              - 'scripts/e2e/lib/two-builds.sh'
+              - 'scripts/e2e/lib/rig.sh'
+              - 'scripts/e2e/lib/loopback-dsn.sh'
+              - 'scripts/e2e/lib/loopback-dsn.py'
+              - 'scripts/e2e/lib/port-file.sh'
             # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
             # holds: the shards, the three `-alone` projects, the two-process job, the
             # fake-embedder job, the visual review and the merge job. Every entry is something a

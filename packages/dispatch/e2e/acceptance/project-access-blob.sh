@@ -40,8 +40,9 @@
 # The harness is not needed: the run starts its own servers and its own fake Envoy, and reads
 # DATABASE_URL only for the server it names, whose database must hold the vector extension (the
 # harness's does: its server migrated it). --base-commit names the merge base; left out, it is
-# `git merge-base` of HEAD with origin/legion/INFRA-1149, the branch this stack is built on, or
-# with origin/main once that branch is gone. --control private-pub is the negative control: it
+# HEAD's merge base with origin/legion/INFRA-1149, the branch this stack is built on, or with
+# origin/main once that branch is gone, chosen as base_branch_merge_base says. --control
+# private-pub is the negative control: it
 # makes PUB private in the head's database after the seed, and the run must fail naming a route.
 #
 # The ports are the kernel's, chosen at the start. The work directory, under TMPDIR, holds the
@@ -115,12 +116,48 @@ trap 'blob_cleanup "$?"' EXIT
 trap 'blob_cleanup 130' INT
 trap 'blob_cleanup 143' TERM
 
+# base_branch_merge_base TARGET prints the one merge base of HEAD and TARGET this run compares
+# against: 0 with it, 1 when there is none, and 2 with UNKNOWN on stderr when it cannot say
+# which. A history that merged both ways (a criss-cross: the base branch merged main, and so did
+# this stack) has more than one merge base, and `git merge-base` alone answers whichever it finds
+# first, which can be main's commit, below every change the base branch holds, so every route of
+# the base branch would differ. So every merge base is read (`--all`), and of several the newest
+# on TARGET's first-parent line, the commits the base branch itself was at, is taken. A commit
+# stands at one place on that line, so two candidates cannot share the newest place; none on the
+# line is UNKNOWN, naming every candidate, rather than a guess.
+base_branch_merge_base() {
+  local target=$1 candidate line position best='' best_position=''
+  local -a candidates
+  mapfile -t candidates < <(git -C "$root" merge-base --all HEAD "$target")
+  [ ${#candidates[@]} -gt 0 ] || return 1
+  if [ ${#candidates[@]} -eq 1 ]; then
+    printf '%s\n' "${candidates[0]}"
+    return 0
+  fi
+  line=$(git -C "$root" rev-list --first-parent "$target")
+  for candidate in "${candidates[@]}"; do
+    position=$(awk -v c="$candidate" '$0 == c { print NR; exit }' <<<"$line")
+    if [ -n "$position" ] && { [ -z "$best_position" ] || [ "$position" -lt "$best_position" ]; }; then
+      best=$candidate best_position=$position
+    fi
+  done
+  if [ -z "$best" ]; then
+    echo "UNKNOWN: HEAD and $target have ${#candidates[@]} merge bases (${candidates[*]}), and none of them is on $target's first-parent line" >&2
+    return 2
+  fi
+  printf '%s\n' "$best"
+}
+
 if [ -z "$base_commit" ]; then
   target=origin/legion/INFRA-1149
   git -C "$root" rev-parse --verify --quiet "$target^{commit}" >/dev/null || target=origin/main
-  base_commit=$(git -C "$root" merge-base "$target" HEAD) ||
-    fail "no merge base of HEAD with $target: fetch it, or name the base with --base-commit"
-  note "the merge base is HEAD's with $target"
+  chose=0
+  base_commit=$(base_branch_merge_base "$target") || chose=$?
+  case "$chose" in
+    0) note "the merge base is HEAD's with $target: $base_commit" ;;
+    2) fail "the merge base of HEAD with $target is UNKNOWN (the line above names every candidate): name the base with --base-commit" ;;
+    *) fail "no merge base of HEAD with $target: fetch it, or name the base with --base-commit" ;;
+  esac
 fi
 
 # This driver's own prerequisite, beside the ones the two proofs share: it reads and masks every

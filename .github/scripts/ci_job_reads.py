@@ -2458,6 +2458,10 @@ GATES = [
                            "@legion/broker-client does not come with them, since no source of this program reaches "
                            "packages/envoy-client/src/broker-credential.ts"),
         (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them; packages/proof-editor/tests/build-upstream-tarball.test.ts imports its temporary-directories fixture, and {at('dispatch-ui', 'Test proof editor')} runs it"),
+        *[(path, f"packages/dispatch/e2e/__tests__/project-access-blob-base.test.ts copies it beside the c-blob-unchanged "
+                 f"driver, which sources it, and runs the driver; {at('dispatch-ui', 'Test dispatch dashboard')} runs the test")
+          for path in ("scripts/e2e/lib/two-builds.sh", "scripts/e2e/lib/rig.sh", "scripts/e2e/lib/loopback-dsn.sh",
+                       "scripts/e2e/lib/loopback-dsn.py", "scripts/e2e/lib/port-file.sh")],
     ) + bun_job("dispatch-ui")),
 
     # The browser suite, every row of it: the binaries job, the shard legs, the three `-alone`
