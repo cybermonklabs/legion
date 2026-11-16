@@ -60,6 +60,7 @@ describe("omp.skills / prepack manifest contract", () => {
         "envoy",
         "outside-message",
         "plain-words",
+        "spec-statement-review",
         "thermonuclear-code-quality",
         "thermonuclear-deep-review",
       ]);
