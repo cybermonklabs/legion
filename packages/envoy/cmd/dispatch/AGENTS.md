@@ -666,8 +666,8 @@ row — never a `mux.HandleFunc` line — with, for a `GET` row, its entry in `r
 -run TestRouteIndexListsEveryRouteSortedByPathThenMethod -args -update`); a pattern
 outside the table is mounted only through `readclass.Handle`, with its read classes. `auth` is
 `any` (user or bearer) or
-`bearer`; it describes the check the handler makes, the handler still enforces it. No route needs
-no credential but sign-in, `/healthz`, `/livez` and the dashboard's files, and none trusts the
+`bearer`; it describes the check the handler makes, the handler still enforces it. Every route
+needs a credential but sign-in, `/healthz`, `/livez` and the dashboard's files, and none trusts the
 caller's network address (`routes`' `TestEveryRouteNeedsACredentialButTheNamedOnes` and
 `TestNoRouteGrantsAccessByNetworkAddress`, over the process `routes.Process` builds). The OAuth
 scopes a route needs stand beside the table in `routeScopes`, keyed by `"<method> <pattern>"`,
