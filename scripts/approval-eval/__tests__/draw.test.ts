@@ -9,12 +9,14 @@ import {
   type DrawCase,
   DrawError,
   drawSlices,
+  type FinalTestSource,
   pinnedBacklogRoots,
   renderingCheckOf,
   TARGETS,
 } from "../draw";
 import { drawPath, readDraw, rootFactsOf, SLICES } from "../draw-io";
 import { type AskModel, type NeverDecideAnswer, neverDecide } from "../never-decide";
+import type { TreeOutcome } from "../trees";
 
 /**
  * The draw over a hand-written corpus: nothing here renders a document or reads Dispatch, and
@@ -291,16 +293,43 @@ describe("drawSlices", () => {
 });
 
 /**
- * A draw under a registered read of the reserve: report, the final test, takes only the groups
- * the reserve holds whole (`reserve.ts`, item 4 of the rule). Which cases the reserve holds is
- * handed to the draw, so these cases need no reserved key or creation time: here it holds every
- * case whose id starts `r-`.
+ * A draw under a registered read of the reserve: report, the final test, takes only the trees
+ * item 6 leaves eligible (`trees.ts`). The outcomes are handed to the draw, so these cases need no
+ * log: here each issue is its own tree, the reserve holds every case whose id starts `r-`, a tree
+ * is eligible when it holds such cases alone, and the issues in `beforeCut` had an ask before the
+ * cut.
  */
 describe("drawSlices under a read of the reserve", () => {
-  const source = {
-    reference: "claim:test",
-    holds: (row: CaseRow) => row.caseId.startsWith("r-"),
-  };
+  const holds = (row: CaseRow): boolean => row.caseId.startsWith("r-");
+
+  /**
+   * The source over `cases`: the issues in `beforeCut` had an ask before the cut, and the cases in
+   * `leftOut` are the ones the command left out before rendering, as it does for such a tree.
+   */
+  function source(
+    cases: readonly DrawCase[],
+    beforeCut: readonly string[] = [],
+    leftOut: readonly DrawCase[] = []
+  ): FinalTestSource {
+    const outcomes = new Map<string, TreeOutcome>();
+    for (const one of [...cases, ...leftOut]) {
+      const key = `tree:${one.row.issueKey}`;
+      if (beforeCut.includes(one.row.issueKey ?? "")) outcomes.set(key, "ask-before-cut");
+      else if (!holds(one.row)) outcomes.set(key, "not-held-at-opening");
+      else if (!outcomes.has(key)) outcomes.set(key, "eligible");
+    }
+    return {
+      reference: "claim:test",
+      holds,
+      grouping: {
+        groupOf: (row) => `tree:${row.issueKey}`,
+        outcomes,
+        groups: new Map(),
+        joins: [],
+      },
+      beforeCut: leftOut.map((one) => one.row),
+    };
+  }
 
   /** `count` issues the reserve holds whole, three approval cases each. */
   function reserved(count: number): DrawCase[] {
@@ -313,22 +342,34 @@ describe("drawSlices under a read of the reserve", () => {
     return cases;
   }
 
-  test("report takes every group the reserve holds whole, before fit, and no other group", () => {
+  test("report takes every eligible tree, before fit, and no other tree", () => {
     const held = reserved(10);
-    const draw = drawSlices([...corpus(), ...held], 7, source);
+    const cases = [...corpus(), ...held];
+    const draw = drawSlices(cases, 7, source(cases));
     expect([...draw.slices.report].sort()).toEqual(held.map((one) => one.row.caseId).sort());
+    expect(draw.groupKey).toBe("tree");
     expect(draw.finalTest).toEqual({
       reference: "claim:test",
       groups: 10,
+      outcomes: {
+        "ask-before-cut": 0,
+        "not-held-at-opening": 180,
+        "read-by-scorer": 0,
+        "asked-by-round": 0,
+        eligible: 10,
+      },
+      beforeCut: { total: 0, cases: [] },
       heldOutsideReport: { total: 0, cases: [] },
+      parentChanges: [],
+      nearDuplicates: { threshold: 0.9, joins: [] },
     });
     expect(draw.counts.fit.approval).toBeGreaterThan(TARGETS.approval.fit - 3);
   });
 
-  test("a group holding a case the reserve does not hold never reaches report", () => {
+  test("a tree that is not eligible never reaches report, and its reserved cases are named", () => {
     const cases = [...corpus(), ...reserved(10)];
     cases.push(drawCase(caseRow("x-0", "approval", "RES-0")));
-    const draw = drawSlices(cases, 7, source);
+    const draw = drawSlices(cases, 7, source(cases));
     const where = placement(draw);
     expect(where.get("x-0")).not.toBe("report");
     expect(where.get("r-0-0")).toBe(where.get("x-0"));
@@ -337,10 +378,10 @@ describe("drawSlices under a read of the reserve", () => {
     expect(draw.finalTest?.heldOutsideReport.cases.sort()).toEqual(["r-0-0", "r-0-1", "r-0-2"]);
   });
 
-  test("a case the draw leaves out still keeps its group out of report", () => {
+  test("a case the draw leaves out still keeps its tree out of report", () => {
     const cases = [...corpus(), ...reserved(10)];
     cases.push(drawCase(caseRow("x-1", "question", "RES-1", 1)));
-    const draw = drawSlices(cases, 7, source);
+    const draw = drawSlices(cases, 7, source(cases));
     const where = placement(draw);
     expect(where.has("x-1")).toBe(false);
     expect(where.get("r-1-0")).not.toBe("report");
@@ -348,24 +389,45 @@ describe("drawSlices under a read of the reserve", () => {
     expect(draw.finalTest?.heldOutsideReport.total).toBe(3);
   });
 
-  test("a reserved group report has no room for goes to another slice and is named", () => {
-    const draw = drawSlices(reserved(90), 7, source);
+  test("a tree with an ask before the cut gives no case to any slice", () => {
+    const held = reserved(10);
+    // RES-2's cases were left out before rendering; ISSUE-a-0's reach the draw and are left out
+    // there.
+    const leftOut = held.filter((one) => one.row.issueKey === "RES-2");
+    const cases = [...corpus(), ...held.filter((one) => one.row.issueKey !== "RES-2")];
+    const draw = drawSlices(cases, 7, source(cases, ["RES-2", "ISSUE-a-0"], leftOut));
+    const where = placement(draw);
+    for (const caseId of ["r-2-0", "r-2-1", "r-2-2", "a-0-0", "a-0-1", "a-0-2"]) {
+      expect(where.has(caseId)).toBe(false);
+    }
+    expect(draw.finalTest?.beforeCut.cases.sort()).toEqual(
+      ["a-0-0", "a-0-1", "a-0-2", "r-2-0", "r-2-1", "r-2-2"].sort()
+    );
+    expect(draw.finalTest?.outcomes["ask-before-cut"]).toBe(2);
+    expect(draw.finalTest?.groups).toBe(9);
+    expect(draw.finalTest?.heldOutsideReport.total).toBe(0);
+  });
+
+  test("an eligible tree report has no room for goes to another slice and is named", () => {
+    const cases = reserved(90);
+    const draw = drawSlices(cases, 7, source(cases));
     expect(draw.counts.report.approval).toBe(249);
     expect(draw.finalTest?.groups).toBe(90);
     expect(draw.finalTest?.heldOutsideReport.total).toBe(21);
   });
 
-  test("with no case the reserve holds, report stays empty", () => {
-    const draw = drawSlices(corpus(), 7, source);
+  test("with no eligible tree, report stays empty", () => {
+    const cases = corpus();
+    const draw = drawSlices(cases, 7, source(cases));
     expect(draw.slices.report).toEqual([]);
     expect(draw.finalTest?.groups).toBe(0);
   });
 
   test("the registered seed draws the same final test whatever order the cases come in", () => {
     const cases = [...corpus(), ...reserved(90)];
-    const draw = drawSlices(cases, 12345, source);
-    expect(drawSlices([...cases].reverse(), 12345, source).slices).toEqual(draw.slices);
-    expect(drawSlices(cases, 12346, source).slices.report).not.toEqual(draw.slices.report);
+    const draw = drawSlices(cases, 12345, source(cases));
+    expect(drawSlices([...cases].reverse(), 12345, source(cases)).slices).toEqual(draw.slices);
+    expect(drawSlices(cases, 12346, source(cases)).slices.report).not.toEqual(draw.slices.report);
   });
 });
 

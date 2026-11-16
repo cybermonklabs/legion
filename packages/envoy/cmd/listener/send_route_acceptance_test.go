@@ -691,8 +691,9 @@ func TestListenerRecordsEverySendAndPublishRequest(t *testing.T) {
 	}
 
 	// The role is claimed, but by a session the store does not hold: the claim has lapsed and
-	// stands, so nothing is kept for it and the line is the refusal's, naming the holder the
-	// answer's own body names.
+	// stands, and the listener keeps the message for the role's next live holder as it does for a
+	// role nobody holds. The answer is 202, so the line is an accepted one, and it names the
+	// holder the answer's own body names, and the copy the answer names.
 	const lapsedHolder = "ses_recorded_lapsed_holder"
 	lapsedRole := "recorded-lapsed"
 	if _, err := registry.SetRole(lapsedHolder, "test-machine", lapsedRole, false); err != nil {
@@ -705,15 +706,26 @@ func TestListenerRecordsEverySendAndPublishRequest(t *testing.T) {
 		"source_session": sender,
 		"message":        "is the holder still there?",
 	}))
-	if lapsed.Code != http.StatusNotFound {
-		t.Fatalf("a publish to a role whose holder lapsed: status %d, body %s; want 404 with nothing kept", lapsed.Code, lapsed.Body.String())
+	if lapsed.Code != http.StatusAccepted {
+		t.Fatalf("a publish to a role whose holder lapsed: status %d, body %s; want 202 for a kept message", lapsed.Code, lapsed.Body.String())
+	}
+	var lapsedAnswer struct {
+		EventID string `json:"event_id"`
+		Holder  string `json:"holder"`
+	}
+	if err := json.Unmarshal(lapsed.Body.Bytes(), &lapsedAnswer); err != nil {
+		t.Fatalf("decode the answer %s: %v", lapsed.Body.String(), err)
+	}
+	if lapsedAnswer.Holder != lapsedHolder {
+		t.Fatalf("the kept answer names holder %q, want %s", lapsedAnswer.Holder, lapsedHolder)
 	}
 	assertRecordFields(t, lapsedRecord, map[string]any{
 		"msg":             "listener publish",
-		"level":           "WARN",
-		"outcome":         "role_lapsed",
-		"status":          float64(http.StatusNotFound),
+		"level":           "INFO",
+		"outcome":         "accepted",
+		"status":          float64(http.StatusAccepted),
 		"topic":           lapsedTopic,
+		"event_id":        lapsedAnswer.EventID,
 		"source":          "agent",
 		"source_session":  sender,
 		"payload_summary": "is the holder still there?",
