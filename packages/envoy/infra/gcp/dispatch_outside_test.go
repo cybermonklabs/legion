@@ -209,8 +209,10 @@ func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 	// package's own test holds its whole table, and these rows hold that the component asks it.
 	const notOrigin = "outsideOrigin: must be an absolute http or https URL with no path, user, query or fragment, as an origin is (not echoed)"
 	reserved := func(label string) string {
-		return `outsideOrigin: host label "` + label + `" has "--" as its third and fourth characters and is no valid internationalised (xn--) label, ` +
-			"a reserved form (RFC 5891 section 4.2.3.1) that no public certificate authority issues for, so the origin could serve no HTTPS"
+		return `outsideOrigin: host label "` + label + `" has "--" as its third and fourth characters, a reserved form (RFC 5890 section 2.3.1) public certificate authorities refuse to issue for`
+	}
+	fakeALabel := func(label string) string {
+		return `outsideOrigin: host label "` + label + `" is an xn-- label the IDNA lookup profile refuses, a Fake A-label (RFC 5890 section 2.3.1)`
 	}
 	notCanonical := func(canonical string) string {
 		return "outsideOrigin: must be written as a browser writes this origin, " + canonical + ": a lowercase scheme and no default port"
@@ -279,7 +281,7 @@ func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 		{"outsideOrigin with a trailing hyphen", withOrigin("https://outside-.example.com"), notLabel("outside-")},
 		{"outsideOrigin with a reserved label", withOrigin("https://ab--cd.example.com"), reserved("ab--cd")},
 		{"outsideOrigin with a reserved label further up", withOrigin("https://outside.ab--cd.com"), reserved("ab--cd")},
-		{"outsideOrigin with a malformed xn-- label", withOrigin("https://xn--a.example.com"), reserved("xn--a")},
+		{"outsideOrigin with an xn-- label the IDNA lookup profile refuses", withOrigin("https://xn--a.example.com"), fakeALabel("xn--a")},
 		// Dispatch compares the Origin a browser sends with the rendered string, so a string other
 		// than the browser's own form of the origin, or one no browser opens, is refused rather than
 		// rewritten (WHATWG URL's origin serialization, as Node's new URL(v).origin prints it).

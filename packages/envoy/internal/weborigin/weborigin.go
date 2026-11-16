@@ -33,9 +33,8 @@ var (
 // only its scheme and host, whose String is raw so trimmed. It refuses:
 //   - anything but an absolute http or https URL with no path, user, query or fragment, without
 //     echoing it, since a user or a query could carry a credential;
-//   - a host label that is not a lowercase DNS label, or that has "--" as its third and fourth
-//     characters (RFC 5890 section 2.3.1's reserved labels, xn-- among them), for which no public
-//     certificate authority issues, so the origin could serve no HTTPS;
+//   - a host label that is not a lowercase DNS label, or one ReservedLabel refuses: "--" as its
+//     third and fourth characters, unless it is an xn-- label the IDNA lookup profile takes;
 //   - a host ending in a number that is not an IPv4 address in its canonical form;
 //   - a port outside 1-65535, written with a leading zero, or empty;
 //   - any other spelling than the browser's: an upper-case scheme, or the scheme's default port.
@@ -75,18 +74,22 @@ func Parse(raw string) (*url.URL, error) {
 	return &url.URL{Scheme: parsed.Scheme, Host: parsed.Host}, nil
 }
 
-// ReservedLabel reports a host label no public certificate authority issues for: one with "--" as
-// its third and fourth characters, which RFC 5891 section 4.2.3.1 reserves, unless it is a valid
-// internationalised A-label, which a certificate authority does issue for. A valid A-label is one
-// the IDNA lookup profile decodes and encodes back to itself, so xn--bcher-kva (bücher) passes
-// while xn--a, whose Punycode decodes to nothing valid, and ab--cd, which is no A-label at all,
-// do not. nil means the label is one a certificate can carry.
+// ReservedLabel refuses a host label with "--" as its third and fourth characters, the reserved
+// form RFC 5890 section 2.3.1 names, except an xn-- label the IDNA lookup profile decodes and
+// encodes back to itself (such as xn--bcher-kva, bücher, or the emoji label xn--ls8h). The two
+// refusals give two reasons. An xn-- label that profile refuses, such as xn--a, is what RFC 5890
+// calls a Fake A-label. Any other label of the form, such as ab--cd, is one public certificate
+// authorities refuse to issue for (Let's Encrypt's errInvalidRLDH). A label without the form, such
+// as abc--d, passes. Each refusal names the label and no setting: callers prefix their own.
 func ReservedLabel(label string) error {
 	if len(label) < 4 || label[2:4] != "--" {
 		return nil
 	}
-	if ascii, err := idna.Lookup.ToASCII(label); err == nil && ascii == label {
-		return nil
+	if strings.HasPrefix(label, "xn--") {
+		if ascii, err := idna.Lookup.ToASCII(label); err == nil && ascii == label {
+			return nil
+		}
+		return fmt.Errorf("host label %q is an xn-- label the IDNA lookup profile refuses, a Fake A-label (RFC 5890 section 2.3.1)", label)
 	}
-	return fmt.Errorf("host label %q has \"--\" as its third and fourth characters and is no valid internationalised (xn--) label, a reserved form (RFC 5891 section 4.2.3.1) that no public certificate authority issues for, so the origin could serve no HTTPS", label)
+	return fmt.Errorf("host label %q has \"--\" as its third and fourth characters, a reserved form (RFC 5890 section 2.3.1) public certificate authorities refuse to issue for", label)
 }

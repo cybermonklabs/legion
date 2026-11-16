@@ -23,10 +23,11 @@ func TestParseTakesAnOriginWrittenAsABrowserWritesIt(t *testing.T) {
 		"https://1outside.example.com":                        "https://1outside.example.com",
 		"https://" + strings.Repeat("a", 63) + ".example.com": "https://" + strings.Repeat("a", 63) + ".example.com",
 		"https://single":                                      "https://single",
-		// A valid internationalised A-label is one a public certificate authority issues for, so
-		// the reserved-label rule lets it through (ReservedLabel).
+		// An xn-- label the IDNA lookup profile decodes and encodes back to itself passes the
+		// reserved-form rule (ReservedLabel), an emoji label among them.
 		"https://xn--bcher-kva.example.com": "https://xn--bcher-kva.example.com",
 		"https://xn--p1ai.example.com":      "https://xn--p1ai.example.com",
+		"https://xn--ls8h.example.com":      "https://xn--ls8h.example.com",
 	} {
 		t.Run(raw, func(t *testing.T) {
 			u, err := weborigin.Parse(raw)
@@ -45,8 +46,10 @@ func TestParseTakesAnOriginWrittenAsABrowserWritesIt(t *testing.T) {
 func TestParseRefusesWhatIsNoBrowsersOrigin(t *testing.T) {
 	const notOrigin = "must be an absolute http or https URL with no path, user, query or fragment, as an origin is (not echoed)"
 	reserved := func(label string) string {
-		return `host label "` + label + `" has "--" as its third and fourth characters and is no valid internationalised (xn--) label, ` +
-			"a reserved form (RFC 5891 section 4.2.3.1) that no public certificate authority issues for, so the origin could serve no HTTPS"
+		return `host label "` + label + `" has "--" as its third and fourth characters, a reserved form (RFC 5890 section 2.3.1) public certificate authorities refuse to issue for`
+	}
+	fakeALabel := func(label string) string {
+		return `host label "` + label + `" is an xn-- label the IDNA lookup profile refuses, a Fake A-label (RFC 5890 section 2.3.1)`
 	}
 	notLabel := func(label string) string { return `host label "` + label + `" is not a lowercase DNS label` }
 	notCanonical := func(canonical string) string {
@@ -77,7 +80,8 @@ func TestParseRefusesWhatIsNoBrowsersOrigin(t *testing.T) {
 		{"https://outside-.example.com", notLabel("outside-")},
 		{"https://ab--cd.example.com", reserved("ab--cd")},
 		{"https://outside.ab--cd.com", reserved("ab--cd")},
-		{"https://xn--a.example.com", reserved("xn--a")},
+		{"https://xn--a.example.com", fakeALabel("xn--a")},
+		{"https://xn--1ug.example.com", fakeALabel("xn--1ug")},
 		// "xn--" ends in a hyphen, so the DNS label rule refuses it before the reserved-label one.
 		{"https://xn--.example.com", notLabel("xn--")},
 		// The review's table: each of these resolved and rendered as written at 5cbf7456a0.
