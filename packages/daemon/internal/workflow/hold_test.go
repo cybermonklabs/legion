@@ -55,9 +55,10 @@ func TestATreeArchitectsFailedClaimIsNoticedAndHoldsNoPhase(t *testing.T) {
 // architect is told in a worker-died naming the role and saying the phase is not its, and the
 // issue's phase stands: nothing is held for a role that holds no phase, and the controller is not
 // told of a phase that is not stalled. A lingering tree and a child that left the workflow tell
-// nobody, since their claims were suspended. A child's sub-architect works no phase and nothing in
-// the workflow starts it, so its failure holds nothing and tells nobody: the child's notices go to
-// the architect above it, and the operator who started it relaunches it.
+// nobody, since their claims were suspended. A child's own architect works no phase either, so its
+// failure holds nothing: it is told in a worker-died of the architect on the child, which reaches
+// the architect above it, and that architect takes the child's notices until the daemon starts the
+// child's architect again (TestASubArchitectsFailedClaimTellsTheArchitectAboveIt).
 func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 	root := "LEGION-208"
 	until := time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)
@@ -111,6 +112,8 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 			root:  record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"},
 			child: record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root, Project: "LEGION", Title: "child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"},
 			role:  claim.RoleArchitect, wantPhase: phase.Implementing,
+			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Implementing,
+				Reason: "LEGION-209's own architect failed; its notices come to you until the daemon starts it again at LEGION-209's next phase start"}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

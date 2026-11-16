@@ -911,10 +911,16 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // worker-died names none: nobody inside the tree is left to read it, and the operator who
 // relaunches that architect reads the claim's own record (api.ClaimFailureView).
 //
-// A child's sub-architect works no phase and holds none: the operator starts it, and no transition
-// or admission ever starts an architect below the tree's root. Its claim failing holds nothing and
-// tells nobody, and the child's notices go to the architect above it, since the failed claim no
-// longer runs (the daemon's owningArchitect); whoever started it relaunches it.
+// A child's own architect works no phase and holds none: the daemon starts it with the child's
+// first phase (StartFirstPhase). Its claim failing holds nothing and is told as a worker-died of
+// the architect on the child, which reaches the architect above it, since the owner walk starts
+// at the child's parent for an architect's own worker-died (record.OwningArchitect). That
+// architect takes the child's notices from then on, because the failed claim no longer holds its
+// role, until the daemon starts the child's architect again at the child's next phase start
+// (start). The worker-died names the failure, as a finished role's does, so the architect above
+// it reads why the child's architect stopped; no controller copy goes with it, since an architect
+// inside the tree is left to act on it. A child that left the workflow or a member of a lingering
+// tree tells nobody, as below.
 //
 // A phase role that finished its phase stays live until its issue closes, so its claim can fail
 // while another role works the issue's phase, or while the issue waits on a person: the architect
@@ -936,7 +942,14 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase})
 	}
 	if fact.Role == claim.RoleArchitect {
-		return intake.Result{}, nil
+		if !record.InWorkflow(*issue) {
+			return intake.Result{}, nil
+		}
+		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
+			return intake.Result{}, err
+		}
+		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: noticeFailure(fact),
+			Reason: fmt.Sprintf("%s's own architect failed; its notices come to you until the daemon starts it again at %s's next phase start", issue.Key, issue.Key)})
 	}
 	// The failure of the role an open check records ends the look of its closed issue's production
 	// check, as its bound would. Which role that is the check's own row says (record.ProductionCheck.Role,
