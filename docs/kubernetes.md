@@ -3457,7 +3457,7 @@ A write that fails, as a write to a process that is not dumpable does, is logged
 The kernel counts each process it stops in the cgroup's `oom_kill`: the `oom_kill` line of `memory.events` on cgroup v2, and of `memory.oom_control` on cgroup v1.
 Nothing else tells the launcher which process it stopped, since a stopped command's exit goes to its parent, the shell that ran it, and not to the launcher.
 So at each scan the watch keeps every process it read, by its pid and its start time, with its role, whether it runs its role's session, and its resident size (the `rss` field of its `stat`), and it reads the counter after the scan.
-The watch reads a process's role and size again at each scan until a pass sees SIGKILL pending in it (below), and then keeps what the last scan before that pass read.
+The watch reads a process's role and size again at each scan until a pass sees SIGKILL pending in it (below), and then keeps what the last scan whose snapshot came before that pass read: a scan keeps what it read, its snapshot, only after its own pass.
 
 The watch names a process as stopped only on the sign that the kernel's stop leaves on it: the process is still in `/proc`, running or a zombie, and its `status` has SIGKILL pending for its whole thread group, the `0x100` bit of its `ShdPnd` mask.
 The kernel raises the counter and then sends SIGKILL to the process it stops (`__oom_kill_process` in the kernel's `mm/oom_kill.c`), and that SIGKILL stays pending until the process's parent reaps it.
@@ -3468,7 +3468,7 @@ It then reads that process's start time again, so that a pid back with another s
 A process that shows SIGKILL pending is not read again, and each pass weighs it until one names it or sets it aside; after that it is never weighed for a later kill while the watch holds it, so a process the kernel stopped is named once.
 Every pass follows one rule: it names a process only on the sign that process shows, so a delay can leave a kill unnamed but never names a wrong process.
 Of the processes that a pass weighs, it first sets aside those of a role whose session has ended (below).
-Where the rest are no more than the kills left to name, each is named for one kill, with the role and the size that the last scan before that pass read of it.
+Where the rest are no more than the kills left to name, each is named for one kill, with the role and the size that the last scan whose snapshot came before that pass read of it.
 Where they are more, the watch reads the counter again.
 Where the counter rose, the kernel has stopped another process since the last read: the pass names none of the rest and sets none of them aside, and it leaves them, with what the watch read of them, to the next pass, which weighs them against the larger count.
 That is the one case where a pass leaves a process to the next, and it comes after the pass has set aside the processes of a role whose session ended, which the next pass would set aside too: a role's session that has ended stays ended for the rest of the wait.
@@ -3479,15 +3479,15 @@ Once the role's shim has exited, `role-init` sends SIGTERM to every process of t
 On a stop, `role-init` sends that `kill(-1)` as soon as it has reaped the shim.
 So the watch keeps, for each role, the time that it last saw one of the role's session processes leave `/proc`: the role's `role-init`, its shim, or a direct child of its shim.
 Such a process has left where its `stat` is gone or its pid is back with another start time, and a zombie has not left.
-Every such SIGKILL comes after a session process of its role has left, so each pass looks for those processes before it reads any `status`, and again after the last one.
-A departure that only the second look finds can have come before a SIGKILL that the pass's `status` reads saw, and the watch records it as it records one that the first look finds, so that same pass sets the role's processes aside (below).
+Every such SIGKILL comes after a session process of its role has left, so each pass looks for those processes once, after its last `status` read.
+Such a SIGKILL that one of the pass's `status` reads saw came after the departure, so that look finds the departure, and that same pass sets the role's processes aside (below).
 Each such SIGKILL reaches the processes of its own role alone, so the pass weighs every other role's processes as ever.
 A scan lets go of a session process that it no longer holds only once that process has left, and it keeps a zombie.
 A role whose session process left at most 3 s before the first rise of the wait, or at any time since, has no process named for the rest of the wait.
 Its processes that show SIGKILL pending are set aside, and the kills stay pending, to end on the `killed unnamed` line.
 The 3 s are `roleNamespaceDrain` and a second more, which the launcher passes the watch (`SessionDrain`): `role-init` sends its `kill(-1)` within one 10 ms poll of the drain's end, and the rest of the second covers a `role-init` that the memory pressure behind the rise runs late.
 A session process that shows the sign before it leaves, as an agent that the kernel stopped does while it is a zombie its shim has not reaped, is named as any process is.
-Where the watch sees a session process of its role leave, that process itself among them, before the second look of the pass that would name it, it is set aside instead, and its kill ends on the `killed unnamed` line.
+Where a session process of its role, that process itself among them, has left by the time the pass that would name it looks for those processes, it is set aside instead, and its kill ends on the `killed unnamed` line.
 
 The classifier cannot tell the agent from the shim's other direct children, the secrets renewer, the working copy's adoption and the CodeGraph warm-up, so it counts them all as session processes.
 Where one of those ends by itself, the watch names no process of its role for the rest of that wait either.
@@ -3544,8 +3544,10 @@ The guest watch fills it from what it read:
 
 - `pid`, `role` and `executable` are the stopped process's, as the guard's lines give them, and `role=none` names a process of no role.
 
-- `size` is the process's resident size at the last scan before the pass, at a scan or at a wake, that saw SIGKILL pending in it, so its size before the kernel freed its memory.
-  The kernel raises the counter before it sends SIGKILL and frees the memory only after it, and a scan reads the processes before the counter and their `status` after both, so a process that a scan read while its memory was freed shows SIGKILL pending at that same scan.
+- `size` is the process's resident size at the last scan whose snapshot came before the pass, at a scan or at a wake, that saw SIGKILL pending in it, so its size before the kernel freed its memory.
+  The kernel raises the counter before it sends SIGKILL and frees the memory only after it, and a scan reads the processes before the counter and their `status` after both, so a process that the watch already held and that a scan read while its memory was freed shows SIGKILL pending at that same scan.
+  A pass reads only the processes that the watch already holds, so a process that started after one scan and that the kernel stopped before the next is first read by that next scan, while its memory is freed.
+  So the watch reads the `status` of each process that a scan reads for the first time, and a process that already shows SIGKILL pending is set aside: it is never named at that size, nor for a later kill, since that SIGKILL came before the watch knew the process, and its own kill ends on the `killed unnamed` line.
 
 - `reading` is the cgroup's anonymous memory, `anon` in `memory.stat` (`total_rss` on v1).
 

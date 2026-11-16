@@ -356,10 +356,10 @@ func (h *guestHarness) tickAfter(extra time.Duration) {
 }
 
 // tickReadingStatus lets the watch take its next scan with pid's status a named pipe, and returns
-// once that scan is done. The scan's evidence pass opens the pipe once it has read the session
-// processes it holds a first time; then between runs, and only then is status written into the
-// pipe, so the pass reads status after between and before anything it reads after its status
-// reads. pid's status is then a file holding status, for every later read.
+// once that scan is done. The scan's evidence pass opens the pipe among its status reads, and it
+// reads the session processes it holds once, after them; then between runs, and only then is
+// status written into the pipe, so the pass reads status after between and before anything it
+// reads after its status reads. pid's status is then a file holding status, for every later read.
 func (h *guestHarness) tickReadingStatus(pod *fakePod, pid int, status string, between func()) {
 	h.t.Helper()
 	path := filepath.Join(pod.proc, strconv.Itoa(pid), "status")
@@ -849,15 +849,15 @@ func TestGuestNamesAProcessThatShowsTheKillAfterTheRiseAtItsSizeBefore(t *testin
 	}
 }
 
-// A victim is named at its size at the last scan before the pass that showed its kill, though
-// kills were pending through every scan before it: in a burst the kernel's next victim is often a
-// process that grew after the first kill. The kernel kills the tester's cc1, whose parent reaps it
-// at once, so no process shows that kill and it stays pending. The tester's python3 then grows
-// from 40 MiB to 1500 MiB and node from 100 MiB to 900 MiB over five scans, and the next two rises
-// of the wait kill python3, then node, each showing the kill at the scan of its rise with its
-// memory freed. python3 is named at 1500 MiB and node at 900 MiB, each to the tester, and cc1's
-// kill has its unnamed line once the wait ends.
-func TestGuestNamesAVictimAtItsSizeAtTheLastScanBeforeThePassThatShowedItsKill(t *testing.T) {
+// A victim is named at its size at the last scan whose snapshot came before the pass that showed
+// its kill, though kills were pending through every scan before it: in a burst the kernel's next
+// victim is often a process that grew after the first kill. The kernel kills the tester's cc1,
+// whose parent reaps it at once, so no process shows that kill and it stays pending. The tester's
+// python3 then grows from 40 MiB to 1500 MiB and node from 100 MiB to 900 MiB over five scans, and
+// the next two rises of the wait kill python3, then node, each showing the kill at the scan of its
+// rise with its memory freed. python3 is named at 1500 MiB and node at 900 MiB, each to the tester,
+// and cc1's kill has its unnamed line once the wait ends.
+func TestGuestNamesAVictimAtItsSizeAtTheLastScanWhoseSnapshotCameBeforeThePassThatShowedItsKill(t *testing.T) {
 	const cc1, python, node = 990, 991, 992
 	pod := newFakePod(t)
 	pod.setSelfScore(0)
@@ -891,7 +891,7 @@ func TestGuestNamesAVictimAtItsSizeAtTheLastScanBeforeThePassThatShowedItsKill(t
 	kills := h.reported()
 	if len(kills) != 2 || kills[0].PID != python || kills[0].Role != "tester" || kills[0].Sequence != 1 || kills[0].SizeBytes != 1500*mib ||
 		kills[1].PID != node || kills[1].Role != "tester" || kills[1].Sequence != 2 || kills[1].SizeBytes != 900*mib {
-		t.Fatalf("the sink took %+v, want python3 (%d) at %d bytes, then node (%d) at %d bytes, each at its size at the scan before it showed the kill; the log:\n%s",
+		t.Fatalf("the sink took %+v, want python3 (%d) at %d bytes, then node (%d) at %d bytes, each at its size at the last scan whose snapshot came before the pass that showed its kill; the log:\n%s",
 			kills, python, 1500*mib, node, 900*mib, h.logged())
 	}
 	ended := h.log.with("ended ")
@@ -901,6 +901,76 @@ func TestGuestNamesAVictimAtItsSizeAtTheLastScanBeforeThePassThatShowedItsKill(t
 	}
 	if got, want := h.lines("killed unnamed"), unnamedLine(1, 3, 700*mib, gib, 16*mib); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the unnamed lines are %q, want %q alone; the log:\n%s", got, want, h.logged())
+	}
+}
+
+// A process that a scan first reads after the kernel killed it is set aside, and never named at
+// a size read while its memory is freed: a pass reads only the processes the watch already holds,
+// so a process that started after one scan and that the kernel killed before the next is first
+// read by that next scan's snapshot. The tester's cc1 starts after a scan and grows to 1200 MiB.
+// The kernel kills it, and before the next scan the counter rises and cc1 shows SIGKILL pending,
+// with 300 MiB of it left. cc1 is named at no pass, the tester is told nothing, and the kill has
+// its unnamed line once the wait ends.
+func TestGuestNamesNoProcessFirstReadAfterItsKill(t *testing.T) {
+	const cc1 = 950
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	classes[cc1] = Class{Role: "tester"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	// cc1 starts after that scan and grows to 1200 MiB. The kernel kills it, and 900 MiB of it is
+	// freed before the next scan reads it.
+	pod.addGuest(command(cc1, 9500, "cc1", 0, 300*mib))
+	showKill(pod, cc1, "cc1", false)
+	cgroup.setKills(1)
+	h.tick()
+	h.tick()
+	if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+		t.Fatalf("the watch wrote %q and reported %+v, want neither: cc1 (%d) was first read after its kill, with %d of its %d bytes left; the log:\n%s",
+			ended, kills, cc1, 300*mib, 1200*mib, h.logged())
+	}
+	h.tickAfter(guestKillWait)
+	if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+		t.Fatalf("the watch wrote %q and reported %+v after the wait, want neither; the log:\n%s", ended, kills, h.logged())
+	}
+	if got, want := h.lines("killed unnamed"), unnamedLine(1, 1, 700*mib, gib, 16*mib); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the unnamed lines are %q, want %q alone; the log:\n%s", got, want, h.logged())
+	}
+}
+
+// A process that a scan first reads with SIGKILL already pending is evidence for no later kill,
+// whether or not a kill is pending then: that SIGKILL came before the watch knew the process. The
+// first rise kills a process no scan read, and its wait ends with its unnamed line. The tester's
+// cc1, still freeing its memory with SIGKILL pending, is then first read by a scan. The second rise
+// kills the tester's python3, which shows the kill: python3 alone is named, and cc1 never.
+func TestGuestNamesNoProcessFirstReadWithSIGKILLPendingForALaterKill(t *testing.T) {
+	const cc1, python = 951, 952
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(command(python, 9520, "python3", 1300, 900*mib))
+	classes[cc1], classes[python] = Class{Role: "tester"}, Class{Role: "tester"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	cgroup.setKills(1)
+	h.tick()
+	h.tickAfter(guestKillWait)
+	if got := h.lines("killed unnamed"); len(got) != 1 {
+		t.Fatalf("the unnamed lines after the first wait are %q, want one; the log:\n%s", got, h.logged())
+	}
+	pod.addGuest(command(cc1, 9510, "cc1", 0, 300*mib))
+	showKill(pod, cc1, "cc1", false)
+	h.tick()
+	reaped(pod, python, 9520, "python3")
+	cgroup.setKills(2)
+	h.tick()
+	kills := h.reported()
+	if len(kills) != 1 || kills[0].PID != python || kills[0].SizeBytes != 900*mib {
+		t.Fatalf("the sink took %+v, want python3 (%d) alone at %d bytes; cc1 (%d) was first read with SIGKILL pending; the log:\n%s",
+			kills, python, 900*mib, cc1, h.logged())
 	}
 }
 
@@ -1844,7 +1914,8 @@ func TestGuestReadsTheCounterAgainWhereMoreProcessesShowTheKillThanArePending(t 
 // the kernel has freed, the kernel kills ld too: the counter reads two, and ld's status shows
 // SIGKILL pending. That pass reads two processes against one kill, reads the counter again, finds
 // two, and names neither; the pass at the scan after it names both, cc1 then ld, each at its size
-// at the last scan before the pass that showed its kill, and no kill is left unnamed.
+// at the last scan whose snapshot came before the pass that showed its kill, and no kill is left
+// unnamed.
 func TestGuestKeepsWhatAPassLeftAtARiseThroughTheScansSnapshot(t *testing.T) {
 	const cc1, ld = 944, 945
 	pod := newFakePod(t)
