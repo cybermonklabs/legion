@@ -1058,9 +1058,11 @@ jobs:
               - 'packages/broker-client/src/**'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
-              # src/__tests__/delivery.test.ts:16-17 and dispatch-config.test.ts:5.
+              # src/__tests__/delivery.test.ts:18 and dispatch-config.test.ts:5.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               - 'packages/contracts/fixtures/dispatch-public-url.json'
+              # src/__tests__/transport.test.ts:27.
+              - 'packages/contracts/fixtures/envoy-session-no-interests.json'
               # src/__tests__/dispatch-execute.test.ts holds goBlankPattern to this list, which
               # the Go test of packages/envoy/internal/dispatch/text holds unicode.IsSpace to:
               # an edit of the list alone must start both jobs, or the side it disagrees with
@@ -1142,7 +1144,7 @@ jobs:
               - 'packages/contracts/src/**'
               # Its tests import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
-              # extensions/envoy.test.ts:172-173.
+              # extensions/envoy.test.ts:297.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               - 'skills/**'
               - 'packages/daemon/internal/prompts/**'
@@ -1435,12 +1437,13 @@ jobs:
               # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document,
               # so an edit of it alone must start this job.
               - 'packages/contracts/schemas/dispatch-openapi.json'
-              # Fixtures its Go tests read: cmd/listener/api_test.go:191,
+              # Fixtures its Go tests read: cmd/listener/api_test.go:175,420,464,4511,
               # internal/contracts/dedupe_test.go:14, golden_test.go:72,
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011,
               # internal/dispatch/docs/approval_carry_test.go:26,
-              # internal/cistore/settlement_fixture_test.go:56.
+              # internal/cistore/settlement_fixture_test.go:57.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
+              - 'packages/contracts/fixtures/envoy-session-no-interests.json'
               - 'packages/contracts/fixtures/dedupe-keys.json'
               - 'packages/contracts/fixtures/github-envelopes/**'
               - 'packages/contracts/fixtures/live/**'
@@ -1527,8 +1530,10 @@ jobs:
               # listener-server-change takes its -run from this script, and this is the job that
               # runs cmd/listener's untagged tests, so it must run whenever the script changes.
               - '.github/scripts/go-tagged-tests.sh'
-              # The fixture cmd/listener/api_test.go:191,436,480 reads.
+              # The fixture cmd/listener/api_test.go:175,420,464 reads.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
+              # The fixture cmd/listener/api_test.go:4511 reads.
+              - 'packages/contracts/fixtures/envoy-session-no-interests.json'
             # The API race job. internal/dispatch/api's lock_level_test.go:120-133 walks every
             # non-test .go file under packages/envoy (event_insert_guard_test.go:32 and
             # review_write_guard_test.go:44 use the same walk), so this filter keeps the wide root
@@ -1712,8 +1717,10 @@ jobs:
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/internal/webhook/testdata/**'
               - 'packages/envoy/migrationid/*'
-              # cmd/listener/api_test.go:191,436,480, which the soak's run compiles too.
+              # cmd/listener/api_test.go:175,420,464, which the soak's run compiles too.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
+              # cmd/listener/api_test.go:4511, which the soak's run compiles too.
+              - 'packages/contracts/fixtures/envoy-session-no-interests.json'
               # The soak step takes the serverchange tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
             # `go test -tags multiprocess ./cmd/broker`, and the agent-secrets binary

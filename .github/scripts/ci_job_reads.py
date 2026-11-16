@@ -329,7 +329,9 @@ RULES = {
     f"{ENVOY}/cmd/dispatch/settings_test.go": reads(
         (f"{ENVOY}/cmd/dispatch/**", "cmd/dispatch/settings_test.go's environmentReads walks .go files"),
         (f"{ENVOY}/internal/dispatch/**", "cmd/dispatch/settings_test.go's environmentReads walks .go files")),
-    f"{ENVOY}/cmd/listener/api_test.go": reads((f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go:191,436,480")),
+    f"{ENVOY}/cmd/listener/api_test.go": reads(
+        (f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go:175,420,464"),
+        (f"{FIX}/envoy-session-no-interests.json", "cmd/listener/api_test.go:4511")),
     f"{ENVOY}/cmd/listener/grace_margin_doc_test.go": reads(
         (f"{INFRA}/README.md", "cmd/listener/grace_margin_doc_test.go:18"),
         (f"{INFRA}/docs/nats-hub.md", "cmd/listener/grace_margin_doc_test.go:19"),
@@ -341,7 +343,7 @@ RULES = {
         (f"{INFRA}/gcp/testdata/dispatch-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:28")),
     f"{ENVOY}/internal/broker/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem", "internal/broker/config/config_test.go:573")),
     f"{ENVOY}/internal/broker/oauth/claims_doc_test.go": reads(("docs/kubernetes.md", "internal/broker/oauth/claims_doc_test.go:161")),
-    f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:56")),
+    f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:57")),
     f"{ENVOY}/internal/contracts/dedupe_test.go": reads((f"{FIX}/dedupe-keys.json", "internal/contracts/dedupe_test.go:14")),
     f"{ENVOY}/internal/contracts/golden_test.go": reads(
         (f"{ENVOY}/scripts/fixtures/github/*", "internal/contracts/golden_test.go:47"),
@@ -1019,7 +1021,8 @@ GATES = [
         ("packages/envoy-client/**", f"{at('envoy-client', 'Lint Envoy client')}, typecheck, test and build in packages/envoy-client"),
         ("packages/broker-client/**", f"{at('envoy-client', 'Lint broker client')}, {at('envoy-client', 'Typecheck broker client')} and {at('envoy-client', 'Test broker client')}; packages/envoy-client/src/broker-credential.ts:21-22 imports @legion/broker-client/environment and @legion/broker-client/token-client"),
         (CONTRACTS_SRC, f"{at('envoy-client', 'Build contracts for Envoy client')}; tsconfig paths @legion/contracts -> ../contracts/src/index.ts"),
-        (f"{FIX}/dispatch-targeted-delivery.json", "packages/envoy-client/src/__tests__/delivery.test.ts:16-17, dispatch-text.test.ts:117-118"),
+        (f"{FIX}/dispatch-targeted-delivery.json", "packages/envoy-client/src/__tests__/delivery.test.ts:18, dispatch-text.test.ts:129"),
+        (f"{FIX}/envoy-session-no-interests.json", "packages/envoy-client/src/__tests__/transport.test.ts:27"),
         (f"{FIX}/dispatch-public-url.json", "packages/envoy-client/src/__tests__/dispatch-config.test.ts:5"),
         (f"{FIX}/go-unicode-isspace.json", "packages/envoy-client/src/__tests__/dispatch-execute.test.ts:27"),
         (f"{ENVOY}/internal/dispatch/api/testdata/**", "packages/envoy-client/src/__tests__/askgate-new-asks.test.ts:14-21 reads the Dispatch server's table of decision-block inserts, which packages/envoy/internal/dispatch/api's TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded reads too"),
@@ -1060,7 +1063,7 @@ GATES = [
         ("packages/envoy-client/bin/dispatch.ts", "packages/pi-envoy/package.json:23 build and scripts/pi-plugin-prepack.sh:92 run build-dispatch-cli.sh, entry bin/dispatch.ts"),
         ("packages/envoy-client/scripts/build-dispatch-cli.sh", "packages/pi-envoy/package.json:23; scripts/pi-plugin-prepack.sh:92"),
         (CONTRACTS_SRC, f"{at('pi-envoy', 'Build contracts for pi-envoy')}; tsconfig paths @legion/contracts"),
-        (f"{FIX}/dispatch-targeted-delivery.json", "packages/pi-envoy/extensions/envoy.test.ts:208"),
+        (f"{FIX}/dispatch-targeted-delivery.json", "packages/pi-envoy/extensions/envoy.test.ts:297"),
         ("skills/**", "packages/pi-envoy/src/skills-guard.test.ts:29-32; scripts/pi-plugin-prepack.sh:99 stages skills; extensions/envoy.ts's resolveSkillsDirectory"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-envoy/package.json:24 prepack ({at('pi-envoy', 'Pack pi-envoy')}); scripts/prepack.test.ts:73"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:93 writes dist/THIRD_PARTY_NOTICES"),
