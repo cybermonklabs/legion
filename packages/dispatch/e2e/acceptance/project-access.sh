@@ -295,6 +295,12 @@ mint_token twin alice alice-priv-token
 psql "$twin_database_url" -X -q -v ON_ERROR_STOP=1 \
   -c "update agent_tokens set projects = '{PRIV}' where id = '$(recalled twin "alice-priv-token id")'" >/dev/null ||
   fail "twin: could not write the list of alice's PRIV token"
+# carol's second token is a row of carol's, a no-project object; only its list names PRIV, and
+# that list is what a reader who does not see PRIV may not read. So the twin holds the same token,
+# listing nothing, used once as main's is used, and carol's list of her tokens compares alike.
+mint_token twin carol carol-priv-token
+send twin carol-priv-token GET /api/v1/whoami
+expect_status 200 "twin: carol's second token reads whoami"
 note "main holds PUB and PRIV, the twin PUB alone"
 pass
 
