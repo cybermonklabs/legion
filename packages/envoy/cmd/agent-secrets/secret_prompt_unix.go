@@ -172,7 +172,11 @@ func readHiddenAtTerminal(fd int, deadline time.Time, prompt func(), onDiscard f
 				if !entered && !r.inPaste && len(r.pending) == 0 && r.err == nil {
 					return nil, errValueTimedOut
 				}
-				expired, r.err, tty.notice = true, errValueTimedOut, errValueTimedOut
+				// The notice says what ends the entry from here (valueDeadlineNotice): inside an
+				// open paste a signal key is pasted text, and the interrupt key ends the process
+				// only where it has a signal to send.
+				notice := valueDeadlineNotice{inPaste: r.inPaste, interrupt: r.interruptKey()}
+				expired, r.err, tty.notice = true, errValueTimedOut, notice
 				if err := tty.whenHeld(tty.noticeDiscard); err != nil {
 					return nil, err
 				}
@@ -631,6 +635,16 @@ func (r *promptReader) key(c byte) (promptKey, bool) {
 		}
 	}
 	return promptKey{}, false
+}
+
+// interruptKey is the byte of the terminal's interrupt key where, outside a paste, it ends the
+// process by SIGINT, and 0 where no key does: VINTR not set, SIGINT inherited as ignored, or a
+// terminal that is not this process's controlling one (signalKeys).
+func (r *promptReader) interruptKey() byte {
+	if k := r.keys[0]; k.sig == syscall.SIGINT {
+		return k.c
+	}
+	return 0
 }
 
 // feed scans a whole read's bytes and reports whether the read is over: the line has ended and no

@@ -237,6 +237,37 @@ var errPromptStopped = errors.New("the terminal stopped while reading the value"
 // its deadline.
 var errValueTimedOut = errors.New("no value came in time")
 
+// valueDeadlineNotice is the reason the value prompt hands onDiscard when the value deadline passes
+// with an entry under way (it is errValueTimedOut): whether a bracketed paste was open then, inside
+// which a signal key is pasted text, and the byte of the interrupt key that ends the process by
+// SIGINT, 0 where no key does (none set, SIGINT inherited as ignored, or a terminal that is not
+// this process's controlling one). The notice names only what ends the entry from there.
+type valueDeadlineNotice struct {
+	inPaste   bool
+	interrupt byte
+}
+
+func (valueDeadlineNotice) Error() string { return errValueTimedOut.Error() }
+
+func (valueDeadlineNotice) Is(target error) bool { return target == errValueTimedOut }
+
+// ends says how the entry under way ends, and so when a create deletes the empty secret it made:
+// a paste must end before Enter can end the entry; the interrupt key, where it ends the process,
+// deletes it at once; and where it does not, ending the process does.
+func (n valueDeadlineNotice) ends() string {
+	switch {
+	case n.inPaste:
+		return "this entry ends: finish the paste, then press Enter, and the create deletes it then"
+	case n.interrupt != 0:
+		key := "Ctrl-C"
+		if n.interrupt != 0x03 {
+			key = promptControlByteError{c: n.interrupt}.name()
+		}
+		return "you press Enter to end this entry, and the create deletes it then; " + key + " deletes it now"
+	}
+	return "you press Enter to end this entry, or end this process (close this terminal, or send it SIGTERM), and the create deletes it then"
+}
+
 // valueReadWindow is how long `secret create` reads the value of the secret it made before it
 // gives up and discards that secret: policy.PendingValueWindow, the time the broker holds such a
 // secret as waiting for its value (pending-value), so the create ends its read when the broker
@@ -368,11 +399,12 @@ func readSecretValue(name, pipeTo, shape string, deadline time.Time, stderr io.W
 			}
 			fmt.Fprintf(stderr, "Value for %s: ", name)
 		}, func(reason error) {
-			if errors.Is(reason, errValueTimedOut) {
-				// Only a create's read has a deadline, and only where it made the secret first
-				// (GCP): the prompt reads on until this entry ends, and the create deletes that
-				// empty secret only then, or at once on a signal (pendingCreate.interrupted).
-				fmt.Fprintf(stderr, "\nThe value deadline passed with an entry under way: no value came within %s of the create, so none is stored. The empty secret %s stays in the store until you press Enter to end this entry, and the create deletes it then; Ctrl-C deletes it now. Then run %s again and type the whole value.\n", valueWindowText(), name, pipeTo)
+			// Only a create's read has a deadline, and only where it made the secret first (GCP):
+			// the prompt reads on until this entry ends, and the create deletes that empty secret
+			// only then, or at once on a signal that ends the process (pendingCreate.interrupted).
+			var timedOut valueDeadlineNotice
+			if errors.As(reason, &timedOut) {
+				fmt.Fprintf(stderr, "\nThe value deadline passed with an entry under way: no value came within %s of the create, so none is stored. The empty secret %s stays in the store until %s. Then run %s again and type the whole value.\n", valueWindowText(), name, timedOut.ends(), pipeTo)
 				return
 			}
 			fmt.Fprintf(stderr, "\nNothing was stored. Press Enter to finish discarding this entry, then run %s again and type the whole value.\n", pipeTo)

@@ -37,6 +37,9 @@ type promptShell struct {
 	pid      int
 	history  string
 	env      string // variables start sets for the helper, each followed by a space
+	// wrapperIgnores is the signals start's wrapper shell ignores (`trap '' <signals>`), which the
+	// helper it starts inherits as ignored; "TSTP" when empty.
+	wrapperIgnores string
 }
 
 // rawFd answers f's file descriptor through its SyscallConn, which, unlike
@@ -133,7 +136,11 @@ func (s *promptShell) start(wrapper bool, background bool) {
 		command = "AGENT_SECRETS_JOB_REFERENCE=" + s.foregroundState() + " " + command
 	}
 	if wrapper {
-		command = "bash -c " + shellWord("trap '' TSTP; "+command+"; echo WRAPPER_DONE")
+		ignores := s.wrapperIgnores
+		if ignores == "" {
+			ignores = "TSTP"
+		}
+		command = "bash -c " + shellWord("trap '' "+ignores+"; "+command+"; echo WRAPPER_DONE")
 	}
 	if background {
 		command += " &"
@@ -302,11 +309,14 @@ func TestPromptJobHelper(t *testing.T) {
 		}
 	}
 	// AGENT_SECRETS_JOB_DEADLINE gives the read a deadline that long after it starts, as a create's
-	// window does, and names it so in the timeout's message. AGENT_SECRETS_JOB_DEADLINE_IN_PASTE
-	// places that deadline inside a paste: the reader's first wait after it has read input, with a
-	// bound below the paste's own (the deadline's), lasts until the deadline has passed and then
-	// ends with nothing read, as a paste that falls quiet across the deadline does. The helper
-	// prints DEADLINE_PASSED then, and READING_ON at the reader's next wait, if it waits again.
+	// window does, and names it so in the timeout's message. AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY
+	// places that deadline inside the entry: the reader's first wait lasts until input comes,
+	// however late, so the entry is under way when the deadline passes; its first wait after that
+	// input, with a bound below a paste's own (the deadline's), lasts until the deadline has passed
+	// and then ends with nothing read, as an entry, typed or pasted, that falls quiet across the
+	// deadline does. The helper prints DEADLINE_PASSED then, and READING_ON at the reader's next
+	// wait, if it waits again; where the input itself came after the deadline, the reader is
+	// already reading on, and it prints both at once.
 	var window time.Duration
 	if d := os.Getenv("AGENT_SECRETS_JOB_DEADLINE"); d != "" {
 		var err error
@@ -316,10 +326,13 @@ func TestPromptJobHelper(t *testing.T) {
 		valueReadWindow = window
 	}
 	var deadline time.Time
-	inPaste, held, readOn := os.Getenv("AGENT_SECRETS_JOB_DEADLINE_IN_PASTE") != "", false, false
+	midEntry, held, readOn := os.Getenv("AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY") != "", false, false
 	real := readTerminal
 	quiet, readSome := false, false
 	readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
+		if midEntry && !readSome {
+			timeout = -1
+		}
 		if timeout >= 0 && !quiet {
 			quiet = true
 			fmt.Println("QUIET_READY")
@@ -333,11 +346,17 @@ func TestPromptJobHelper(t *testing.T) {
 			readOn = true
 			fmt.Println("READING_ON")
 		}
-		if inPaste && readSome && !held && timeout >= 0 && timeout < int(maxPasteDrain.Milliseconds()) {
+		if midEntry && readSome && !held && timeout < int(maxPasteDrain.Milliseconds()) {
 			held = true
-			time.Sleep(time.Until(deadline))
-			fmt.Println("DEADLINE_PASSED")
-			timeout = 0
+			if timeout >= 0 {
+				time.Sleep(time.Until(deadline))
+				timeout = 0
+				fmt.Println("DEADLINE_PASSED")
+			} else {
+				readOn = true
+				fmt.Println("DEADLINE_PASSED")
+				fmt.Println("READING_ON")
+			}
 		}
 		n, err := real(fd, wake, buf, timeout)
 		if n > 0 && !readSome {

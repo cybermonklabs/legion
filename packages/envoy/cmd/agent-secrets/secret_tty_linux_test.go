@@ -159,7 +159,9 @@ func TestPromptEndsAtTheValueDeadline(t *testing.T) {
 // (onDiscard, with errValueTimedOut), reads the rest of the entry to the line's end, and only then
 // answers errValueTimedOut, so what is typed after the deadline is neither echoed nor left for the
 // shell. The rest is typed once the prompt has either said so or answered, whichever comes first,
-// so a prompt that gives the entry up at the deadline shows the rest reaching the shell.
+// so a prompt that gives the entry up at the deadline shows the rest reaching the shell. The
+// pseudo-terminal is not this process's controlling terminal, so no key of it sends a signal: the
+// reason the notice reads names no interrupt key, and no open paste.
 func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
 	controller, terminal := openPTY(t)
 	deadline := time.Now().Add(2 * time.Second)
@@ -176,8 +178,9 @@ func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
 	var early *promptRead
 	select {
 	case reason := <-noticed:
-		if !errors.Is(reason, errValueTimedOut) {
-			t.Fatalf("the prompt refused the entry for %v; want errValueTimedOut", reason)
+		var notice valueDeadlineNotice
+		if !errors.Is(reason, errValueTimedOut) || !errors.As(reason, &notice) || notice.interrupt != 0 || notice.inPaste {
+			t.Fatalf("the prompt refused the entry for %#v; want a valueDeadlineNotice naming no interrupt key and no open paste, on a terminal that is not the controlling one", reason)
 		}
 	case got := <-answer:
 		early = &got

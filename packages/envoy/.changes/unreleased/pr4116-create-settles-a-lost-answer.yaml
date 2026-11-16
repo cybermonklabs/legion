@@ -11,12 +11,16 @@ body: |-
   it never deletes the secret, since the add may still land, and says what the list of versions
   showed. Before it asks for the value it asks IAM whether the sign-in may add one
   (`secretmanager.versions.add`), and where it may not, deletes the empty secret and stops. On
-  Google Cloud it reads the value for ten minutes at most, the time the broker waits for it, then
+  Google Cloud the time the broker waits for the value, ten minutes, is the read's deadline: with
+  nothing typed or pasted by then, or a pipe that has not ended, it gives up its read of the value,
   deletes the empty secret and exits 1; the prompt names the time the value must come by. Where
   the ten minutes run out while the value is typed or pasted, the prompt says so at once and reads
   the rest of the entry, a paste through its closing mark, before it gives the terminal back, so
-  none of it is echoed or reaches the shell; a value that ends only after the ten minutes is not
-  stored, and a prompt waiting in the background for `fg` gives up then too. On AWS, where it
+  none of it is echoed or reaches the shell; it deletes the empty secret when that entry ends, at
+  Enter, or at a signal that ends the process, such as a hang-up, or Ctrl-C typed outside a paste
+  where SIGINT is not ignored, and the notice names which of those apply. A value that ends only
+  after the ten minutes is not stored, and a prompt waiting in the background for `fg` gives up
+  then too. On AWS, where it
   makes nothing first, the read has no limit. Each `gcloud auth print-access-token` that refreshes a gcloud login's
   token has the 60-second store-call deadline of its own. On AWS, a `CreateSecret` the SDK tried
   once and that was refused before Secrets Manager acted (a name taken, access denied, a request, a

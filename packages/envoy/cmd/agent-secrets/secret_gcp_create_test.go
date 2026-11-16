@@ -938,31 +938,55 @@ func TestGCPSecretCreateWhoseDeleteAnswerIsLostReadsTheSecretBack(t *testing.T) 
 // TestGCPSecretCreateDeadlineNoticeSaysTheEmptySecretStaysUntilEnter: where the value deadline
 // passes with an entry under way, the prompt reads on until the entry ends, and the create deletes
 // its empty secret only then. So the notice the prompt prints at the deadline says that the empty
-// secret, named, stays in the store until Enter ends the entry, and that Ctrl-C deletes it now. The
-// prompt is stubbed to give that notice, then end as the entry's Enter does.
+// secret, named, stays in the store until the entry ends, and names only what ends it from there
+// (valueDeadlineNotice): Enter, and the interrupt key, by its name, where it ends the process; with
+// no such key, ending the process; inside an open paste, where Ctrl-C is pasted text, finishing the
+// paste first. The prompt is stubbed to give that notice, then end as the entry's Enter does.
 func TestGCPSecretCreateDeadlineNoticeSaysTheEmptySecretStaysUntilEnter(t *testing.T) {
-	fake := newFakeSecretManager()
-	startFakeSecretManager(t, fake)
-	useGCPIdentity(t, "authorized_user", "ada@example.com")
-	broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-	useTerminal(t)
-	readHidden = func(_ int, deadline time.Time, prompt func(), onDiscard func(error)) ([]byte, error) {
-		if deadline.IsZero() {
-			t.Fatal("a GCP create read its value with no deadline")
-		}
-		prompt()
-		onDiscard(errValueTimedOut)
-		return nil, errValueTimedOut
-	}
+	for _, row := range []struct {
+		name      string
+		notice    valueDeadlineNotice
+		want, not []string
+	}{
+		{"the interrupt key live", valueDeadlineNotice{interrupt: 0x03},
+			[]string{"until you press Enter to end this entry, and the create deletes it then; Ctrl-C deletes it now"}, nil},
+		{"another interrupt key", valueDeadlineNotice{interrupt: 0x7f},
+			[]string{"until you press Enter to end this entry, and the create deletes it then; Delete deletes it now"}, []string{"Ctrl-C"}},
+		{"no interrupt key", valueDeadlineNotice{},
+			[]string{"until you press Enter to end this entry, or end this process (close this terminal, or send it SIGTERM), and the create deletes it then"}, []string{"Ctrl-C"}},
+		{"a paste open", valueDeadlineNotice{inPaste: true, interrupt: 0x03},
+			[]string{"until this entry ends: finish the paste, then press Enter, and the create deletes it then"}, []string{"Ctrl-C"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			fake := newFakeSecretManager()
+			startFakeSecretManager(t, fake)
+			useGCPIdentity(t, "authorized_user", "ada@example.com")
+			broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+			useTerminal(t)
+			readHidden = func(_ int, deadline time.Time, prompt func(), onDiscard func(error)) ([]byte, error) {
+				if deadline.IsZero() {
+					t.Fatal("a GCP create read its value with no deadline")
+				}
+				prompt()
+				onDiscard(row.notice)
+				return nil, errValueTimedOut
+			}
 
-	_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
-	if code != 1 {
-		t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
+			_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
+			if code != 1 {
+				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
+			}
+			for _, want := range append([]string{"The value deadline passed with an entry under way", "The empty secret NEW_TEST stays in the store until"}, row.want...) {
+				if !strings.Contains(stderr, want) {
+					t.Fatalf("stderr %q; want the notice to say %q", stderr, want)
+				}
+			}
+			for _, not := range row.not {
+				if strings.Contains(stderr, not) {
+					t.Fatalf("stderr %q; want no %q", stderr, not)
+				}
+			}
+			requireNothingLeft(t, fake, broker, "NEW_TEST")
+		})
 	}
-	for _, want := range []string{"The value deadline passed with an entry under way", "The empty secret NEW_TEST stays in the store until you press Enter to end this entry", "Ctrl-C deletes it now"} {
-		if !strings.Contains(stderr, want) {
-			t.Fatalf("stderr %q; want the notice to say %q", stderr, want)
-		}
-	}
-	requireNothingLeft(t, fake, broker, "NEW_TEST")
 }
