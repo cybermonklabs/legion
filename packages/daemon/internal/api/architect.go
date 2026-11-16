@@ -747,11 +747,14 @@ func (s *server) clearChildReleaseRetry(w http.ResponseWriter, r *http.Request, 
 // has not reached the daemon: CHILD_NOT_RECORDED with the backoff before the next attempt, the
 // backoff itself while one runs, and after maxChildReleaseAttempts CHILD_RELEASE_STALLED, with one
 // child-release-stalled notice queued on the releasing architect's own issue (grant.Issue), as
-// tellReleaseWait queues its own.
+// tellReleaseWait queues its own. The retry is the child's, and every architect that may release
+// the child shares it, so only the call that runs out the attempts queues the notice, and only its
+// answer names the architect it told. A later call is told the notice was queued when the attempts
+// ran out, naming no issue: the retry does not record whose call that was.
 func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Request, grant credential.Grant, child dispatch.Issue, parent string) bool {
 	now := time.Now().UTC()
 	var retry record.ReleaseRetry
-	var exhausted, backoff bool
+	var exhausted, told, backoff bool
 	// The retry is its own transaction, so it owns the commit hook the stalled notice's write
 	// registers (the daemon's projectRecords, intake.OnCommit), as ApplyFact does for a fact's rows.
 	scoped, committed := intake.WithCommitHooks(r.Context())
@@ -784,7 +787,7 @@ func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Reques
 			if err := s.records.Enqueue(scoped, tx, row); err != nil {
 				return err
 			}
-			exhausted = true
+			exhausted, told = true, true
 		}
 		return s.records.PutReleaseRetry(scoped, tx, retry)
 	}); err != nil {
@@ -793,7 +796,11 @@ func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Reques
 	}
 	committed()
 	if exhausted {
-		writeFailure(w, http.StatusConflict, "CHILD_RELEASE_STALLED", fmt.Sprintf("%s is todo but its parent %s has not reached the daemon after %d attempts; the architect of %s was notified", child.Key, parent, retry.Attempts, grant.Issue))
+		notified := "a child-release-stalled notice was queued when the attempts ran out"
+		if told {
+			notified = fmt.Sprintf("the architect of %s was notified", grant.Issue)
+		}
+		writeFailure(w, http.StatusConflict, "CHILD_RELEASE_STALLED", fmt.Sprintf("%s is todo but its parent %s has not reached the daemon after %d attempts; %s", child.Key, parent, retry.Attempts, notified))
 		return false
 	}
 	if backoff {
