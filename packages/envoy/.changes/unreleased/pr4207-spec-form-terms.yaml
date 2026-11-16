@@ -1,17 +1,18 @@
 kind: Added
 body: |-
   Dispatch refuses an approval request and a person's approval that hold a second definition of a
-  term of The Spec. A reopen leaves such a request resolved, with the finding as its reason. The
-  list of terms of a root holds the term lines of the versions that a person approved. These are the
-  root's terms.md and each covered spec and Verification document under the root. The list holds
-  one definition of each term. The root's terms.md comes first, then each other document in the
-  order of its first approval. A reparent into the root adds no second definition to the list. The
-  read of the other document names the definition that the list holds. Dispatch compares the names
-  of terms in the Unicode compatibility form, in lower case and with each run of spaces as one
-  space. A person's approval takes the lock of the root's list, so two approvals at one time cannot
-  both add a definition of one term. The finding names the term and the document that defines it.
-  A definition of more than one sentence also breaks the form. So does a line under a heading Terms
-  that is no term line "- **<term>**: <definition>". GET /api/v1/artifacts/{id}/spec-form answers
-  the list of terms of the document's root.
+  term of The Spec. A reopen and the repair pass leave such a request resolved, with the finding as
+  its reason. The list of terms of a root holds the term lines of the versions that a person
+  approved. These are the root's terms.md and each covered spec and Verification document under the
+  root. The list holds one definition of each term. The root's terms.md comes first, then each
+  other document in the order of its first approval. A reparent into the root adds no second
+  definition to the list. The read of the other document names the definition that the list holds.
+  Dispatch compares the names of terms in the Unicode compatibility form, in lower case and with
+  each run of spaces as one space. A person's approval takes the lock of the root's list, so two
+  approvals at one time cannot both add a definition of one term. The finding names the term and
+  the document that defines it. A definition with no sentence, or with more than one, also breaks
+  the form, and a sentence holds a word with a letter. A line under a heading Terms that is no term
+  line "- **<term>**: <definition>" breaks it too. GET /api/v1/artifacts/{id}/spec-form answers the
+  list of terms of the document's root.
 custom:
     Issue: pr4207

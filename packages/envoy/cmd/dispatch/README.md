@@ -4675,7 +4675,7 @@ With no request open, these are the documents that the request names.
 With a request open, they are the documents that the open request names.
 These texts break the form: a statement of no sentence or of more than two, and a sentence of more than 25 words.
 A hard finding of ASD-STE100 also breaks it.
-A sentence holds a word with a letter, so a statement such as `42`, `...` or `12:30.` has no sentence.
+A sentence holds a word with a letter, so a statement or a definition such as `42`, `...` or `12:30.` has no sentence.
 A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
 A definition of a term has one sentence, and a term has one definition.
 A term line is `- **<term>**: <definition>` under a heading `Terms`.

@@ -5,8 +5,6 @@ import (
 	"strings"
 
 	"golang.org/x/text/unicode/norm"
-
-	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 )
 
 // The rules of R50, by the ids of the refusal. term-line is the rule of a line under a heading
@@ -52,12 +50,13 @@ func indexTerms(in Input) termIndex {
 }
 
 // breaks is each rule of R50 that the proposed definition at of term breaks: a definition of
-// other than one sentence; a second definition of a term the list holds, which names where the
-// list defines it; and the second definition of a term the proposal defines more than once, which
-// counts the definitions.
+// other than one sentence, counted as the rules of R49 count one (sentencesOf), so a definition
+// with no word that has a letter has no sentence; a second definition of a term the list holds,
+// which names where the list defines it; and the second definition of a term the proposal
+// defines more than once, which counts the definitions.
 func (index termIndex) breaks(at int, term Term) []broken {
 	var found []broken
-	if sentences := len(ste.Sentences(oneLine(term.Definition))); sentences != 1 {
+	if sentences := len(sentencesOf(oneLine(term.Definition))); sentences != 1 {
 		found = append(found, broken{ruleDefinitionSentences, fmt.Sprintf("the definition has %d sentences, and a definition has one", sentences)})
 	}
 	key := TermKey(term.Name)

@@ -60,6 +60,29 @@ func TestDefinitionOfTwoSentencesIsRefused(t *testing.T) {
 	}
 }
 
+// A definition with no word is no sentence: R50 says a term has "one definition of one sentence",
+// and "42", "...", "—" and "12:30." hold no word with a letter. The control: a definition of one
+// sentence breaks no rule.
+func TestADefinitionWithNoWordIsRefused(t *testing.T) {
+	for _, body := range []string{"42", "...", "\u2014", "12:30."} {
+		term := Term{Name: "mark", Definition: body, Where: where}
+		got := Check(planted(), Input{Proposed: []Term{term}})
+		refused := false
+		for _, f := range got {
+			if f.Rule == ruleDefinitionSentences {
+				refused = true
+			}
+		}
+		if !refused {
+			t.Errorf("Check of the definition %q = %#v, want a finding of rule %s", body, got, ruleDefinitionSentences)
+		}
+	}
+	one := Term{Name: "mark", Definition: "The sign that a reviewer puts on one line.", Where: where}
+	if got := Check(planted(), Input{Proposed: []Term{one}}); len(got) != 0 {
+		t.Fatalf("control, one sentence: Check = %#v, want no finding", got)
+	}
+}
+
 // Two term names are one term when they are the same in lower case with each run of spaces
 // collapsed to one. The control: a plural is another term.
 func TestTermNamesCompareLowercaseWithSpacesCollapsed(t *testing.T) {
