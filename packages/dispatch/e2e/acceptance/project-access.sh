@@ -21,7 +21,10 @@
 #   confined    bob and carol's PRIV token find nothing of PUB, no person and no agent outside
 #               PRIV, and no direct message that is not their own.
 #   private     PRIV is made private through PATCH /api/v1/projects/PRIV/access; the sections
-#               below need it, and are reported as not run when the route refuses.
+#               below need it, and are reported as not run when the route refuses. With
+#               --private-by-sql, a route that refuses is stood in for by the store write it
+#               makes (`update projects set visibility = 'private'`), so every section below
+#               runs; the stand-in is written to what did not run, so such a run never passes.
 #   walk        for alice, alice's PRIV token, carol's token that lists no project and the shared
 #               token ("the unseeing callers"): every GET row of GET /api/v1 and every write row
 #               whose path names an object, filled once with PRIV's objects and once with ids that
@@ -77,7 +80,13 @@ timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=access-lib.sh
 . "$(dirname "$0")/access-lib.sh"
 
-[ $# -eq 0 ] || fail "this driver takes no argument"
+private_by_sql=0
+case "${1:-}" in
+  '') ;;
+  --private-by-sql) private_by_sql=1 ;;
+  *) fail "unknown argument '$1': this driver takes --private-by-sql alone" ;;
+esac
+[ $# -le 1 ] || fail "this driver takes --private-by-sql alone"
 # two_builds_setup reads DATABASE_URL, drops every DISPATCH_*, ENVOY_*, NATS_* and PG* setting the
 # shell inherited, and arms two-builds' teardown, which access_cleanup below runs last.
 two_builds_setup 'project access e2e'
@@ -386,8 +395,17 @@ if [ "$status" = 200 ]; then
   note "PRIV is private"
 else
   priv_private=0
-  unrun "PRIV is not private: PATCH /api/v1/projects/PRIV/access {visibility: private} answered HTTP $status $(head -c 300 "$work/body"); the walk, search, sockets and proxy sections need it and did not run"
-  note "PRIV is not private: HTTP $status"
+  refusal="PATCH /api/v1/projects/PRIV/access {visibility: private} answered HTTP $status $(head -c 300 "$work/body")"
+  if [ "$private_by_sql" = 1 ]; then
+    psql "$main_database_url" -X -q -v ON_ERROR_STOP=1 -c "update projects set visibility = 'private' where key = 'PRIV'" >/dev/null ||
+      fail "main: the stand-in could not make PRIV private"
+    priv_private=1
+    unrun "PRIV was made private by the store write, not the route: $refusal"
+    note "PRIV is private by the stand-in (--private-by-sql); the route answered HTTP $status"
+  else
+    unrun "PRIV is not private: $refusal; the walk, search, sockets, proxy and writes sections need it and did not run"
+    note "PRIV is not private: HTTP $status"
+  fi
 fi
 pass
 
