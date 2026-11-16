@@ -115,7 +115,11 @@ names the protocol that endpoint speaks and has a default. The
 [configuration reference](/legion/broker/reference/config/) names each and gives its accepted
 values. `BROKER_JUDGE_TEST_SKIP_CHECKS` turns the judge's checks before the model off, as the
 local stack's negative control of them, and a production start — one with
-`BROKER_FAKE_SECRETS_FILE` unset — is refused naming it.
+`BROKER_FAKE_SECRETS_FILE` unset — is refused naming it. The broker reads the same Dispatch for
+one more thing: the assignee of the issue a Legion worker pod's claim names, whose Inbox alone lists
+that pod's request for a shared human-tier secret
+([Concepts](/legion/broker/concepts/#approvals)). With the judge's settings unset it reads no
+assignee, and such a request waits in every person's Inbox.
 
 `BROKER_SECRETS_STORE` picks the secret store: `aws-secrets-manager`, the default when it is unset,
 as above, or `gcp-secret-manager`, which takes the Google Cloud forms of the namespace and the key
@@ -326,10 +330,12 @@ account as a VM service. The remaining fleet settings are optional, subject to t
 - `BROKER_VM_EXCHANGE_ACCOUNTS`: `<service account email>=<project>=<person>[=<session>]`, the
   person and the Dispatch project a fleet writes for. An account `BROKER_VM_SERVICES` lists and
   this setting does not gets a token that names its service and no person, which Dispatch and the
-  Envoy listener read. Either way it reaches the fleet's Dispatch token alone and never its
+  Envoy listener read. Either way it reaches the fleet's Dispatch token and never its
   secrets: the machine login the exchange mints names no person, so a machine reads what its
   service owns and the shared agent-tier secrets, and a person reaches their own on that machine
-  only by signing in on it.
+  only by signing in on it. The person an entry names is also whose Inbox lists a request one of
+  the fleet's machines makes for a shared human-tier secret; an account with no person leaves such
+  a request in every person's Inbox.
 
 One fleet's entry, `example-fleet`, whose machines run as one account in `example-project`, are
 named `example-vm-...`, and write for one person:
@@ -653,7 +659,7 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 | Kubernetes (optional) | To enroll pods, and to let a service log in with its token (`BROKER_SERVICE_LOGINS`), `BROKER_K8S_OIDC_ISSUER` and `BROKER_K8S_OIDC_AUDIENCE` name the cluster's service-account token issuer and the audience the pods' and the services' projected tokens carry. The broker fetches the issuer's discovery document at startup and refuses to start if it cannot. |
 | Google Cloud (optional) | To let machines trade their Google identity tokens, `BROKER_GOOGLE_OIDC_AUDIENCE` names the audience of those tokens, and `BROKER_VM_SERVICES`, `BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES` and `BROKER_VM_EXCHANGE_ACCOUNTS` describe each fleet. The broker fetches Google's discovery document at startup and refuses to start if it cannot. |
 | Envoy (optional) | With `BROKER_ENVOY_URL`, the broker tells a waiting agent session, best effort, when its pending request expires. |
-| The model judge (optional) | Outbound HTTPS access to the model endpoint `BROKER_JUDGE_MODEL_URL` names, which the broker reaches with its machine's own Google identity token for `BROKER_JUDGE_MODEL_AUDIENCE`, and to the Dispatch `BROKER_JUDGE_DISPATCH_URL` names, which it reads with the projected ServiceAccount token in the file `BROKER_JUDGE_DISPATCH_TOKEN_FILE` names, read at call time and never at boot, so a rotation needs no restart. It reads one issue and that issue's spec document there and writes nothing. With those settings unset the broker makes neither call and runs no judge ([Concepts](/legion/broker/concepts/#the-model-judge)). |
+| The model judge (optional) | Outbound HTTPS access to the model endpoint `BROKER_JUDGE_MODEL_URL` names, which the broker reaches with its machine's own Google identity token for `BROKER_JUDGE_MODEL_AUDIENCE`, and to the Dispatch `BROKER_JUDGE_DISPATCH_URL` names, which it reads with the projected ServiceAccount token in the file `BROKER_JUDGE_DISPATCH_TOKEN_FILE` names, read at call time and never at boot, so a rotation needs no restart. It reads one issue and that issue's spec document there for the judge, and one issue's assignee for a Legion worker pod's request for a shared secret, and writes nothing. With those settings unset the broker makes neither call and runs no judge ([Concepts](/legion/broker/concepts/#the-model-judge)). |
 | Dispatch's project access (optional) | To let a token name the projects its person may see, `BROKER_PROJECT_ACCESS_URL` names the Dispatch the token exchange asks whether a person may see a project and what kind of member a person is, through Dispatch's `GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person` routes, and `BROKER_PROJECT_ACCESS_TOKEN_FILE` names the broker's own projected ServiceAccount token for Dispatch's audience, read at call time and never at boot. No Dispatch release serves those routes yet: leave both unset until the broker can reach one that does, since against one that does not, every trade naming a project is refused `temporarily_unavailable`. Dispatch must list that account as one that may ask: until it does, Dispatch answers 403 and every trade that asks it is refused `server_error`, saying Dispatch refused the broker's account; so is every such trade while the broker cannot read the token file, and while Dispatch answers a member kind the broker does not know. The two are set together or not at all. Answers are kept 30 seconds, and the questions are asked before the exchange's database transaction begins. While Dispatch cannot be asked, a token naming no project is minted as before, and each such mint logs a warning naming the account or person and the session; every trade naming a project, an operator entry's included, is refused `temporarily_unavailable`. With neither set the broker asks Dispatch nothing: a token naming no project and an operator entry's token are minted as before, and a person's trade naming a project is refused. The boot log's `project access check state=on` or `state=off` line says which. |
 
 ## Network and trust
@@ -668,7 +674,9 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   too, whose DPoP proofs name `BROKER_PUBLIC_URL/v1/oauth/token`.
 - The model judge adds two outbound calls. The broker reads one Dispatch issue and that issue's
   spec document at `BROKER_JUDGE_DISPATCH_URL`, with its own projected ServiceAccount token, and
-  writes nothing there: no ask, no comment, no status. It calls the model at
+  writes nothing there: no ask, no comment, no status. At the same address and with the same token
+  it reads the issue a Legion worker pod's claim names, for its assignee alone, when that pod asks
+  for a shared human-tier secret. It calls the model at
   `BROKER_JUDGE_MODEL_URL`, presenting its machine's own Google identity token for
   `BROKER_JUDGE_MODEL_AUDIENCE`. Each call carries the broker's own identity and no session's,
   and neither carries a secret value: what reaches the model is the secret's name and rules, the

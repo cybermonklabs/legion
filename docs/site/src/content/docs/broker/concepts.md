@@ -37,8 +37,10 @@ broker's token exchange, which answers a Dispatch access token and the machine l
 minted, and the machine enrols with that login. That login names the machine's fleet and no
 person, so the session acts for the fleet's service: it reads the secrets that service owns and
 the shared agent-tier ones, and no person's. The person a fleet's
-`BROKER_VM_EXCHANGE_ACCOUNTS` entry names reaches the Dispatch token alone; that person reaches
-their own secrets on the machine only by signing in on it.
+`BROKER_VM_EXCHANGE_ACCOUNTS` entry names reaches the Dispatch token and no secret, and is the
+person whose Inbox lists a request the machine makes for a shared human-tier secret
+([Approvals](#approvals)); that person reaches their own secrets on the machine only by signing in
+on it.
 
 A person signs in on a machine with `agent-secrets login`, which runs Google's device flow and then
 trades the person's own identity token at the exchange with the machine's as the actor token. That
@@ -949,9 +951,17 @@ The broker checks the signed-in person against the record's approver: anyone els
 saying who may decide it, with a link to sign in as someone else, and no buttons. A request for a
 shared
 human-tier secret, or for a shared agent-tier secret its session's operator withheld from it,
-names the approver `anyone`: it waits in every person's Inbox, anyone who signs in to the broker may
-decide it, and the
-broker records the email of whoever did. A withheld secret is its owner's to approve for that
+names the approver `anyone`: anyone who signs in to the broker may decide it, and the
+broker records the email of whoever did. It waits in the Inbox of the person responsible for the
+agent that asked, which the broker records when the request is made, in this order: the session's
+operator (the person of an `agent-secrets login` sign-in, or the person who approved its machine
+login); for a fleet machine's own session, the person its `BROKER_VM_EXCHANGE_ACCOUNTS` entry
+names; for a Legion worker pod, the assignee of the Dispatch issue its claim names, which the broker
+reads at `BROKER_JUDGE_DISPATCH_URL` and stops waiting for after three seconds. Where none of these
+names a person — a pod with no claim, a broker with no judge settings, a Dispatch that did not
+answer in time, an issue nobody is assigned to, a machine whose fleet names nobody — it waits in
+every person's Inbox, so no request waits where nobody sees it. Who is asked changes nobody's right
+to decide: anyone signed in still decides it from its page. A withheld secret is its owner's to approve for that
 session even in a request that was already waiting when the operator withheld it: a request that
 waited on anyone for a shared human-tier secret and the operator's own withheld secret is then the
 operator's alone to approve, and anyone else's approval is refused `NOT_APPROVER`. While the broker
@@ -1053,10 +1063,11 @@ asks afresh, as a new request, which the judge refuses while the tag stands. The
 one secret, a lifetime the rules still let the judge decide for it, and a reason naming an issue
 key, so a forged record, and one a rules change left behind, release nothing either.
 
-The issue check is the broker's one read of Dispatch: two GETs, the issue and the text of its
-spec document, with the broker's own projected ServiceAccount token, read again from its file once
-the copy it holds is 30 seconds old. The broker writes nothing there — no ask, no comment, no
-status — and reads nothing that belongs to a person. It reaches its model at the endpoint its
+The issue check is one of the broker's two reads of Dispatch: two GETs, the issue and the text of
+its spec document, with the broker's own projected ServiceAccount token, read again from its file
+once the copy it holds is 30 seconds old. The other is one GET of the issue a Legion worker pod's
+claim names, for its assignee alone ([Approvals](#approvals)). The broker writes nothing there — no
+ask, no comment, no status — and reads nothing that belongs to a person. It reaches its model at the endpoint its
 settings name, presenting the broker machine's own Google identity token for the audience they
 name. Those settings are all-or-none, and the
 [configuration reference](/legion/broker/reference/config/) gives each one.
