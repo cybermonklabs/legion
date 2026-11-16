@@ -151,11 +151,8 @@ var (
 	rendered *clusteredHubRender
 )
 
-// renderClusteredHub renders the hub's chart once per test binary, so the cluster test runs the
-// configuration the chart test checked: it runs the hub under the mocks for liveHubArgs with fresh
-// keys, writes the values its chart registration holds to a file, and runs helm template on the
-// vendored archive of the chart and version the registration names, under its release name and
-// namespace, after checking the archive's SHA-256.
+// renderClusteredHub renders the hub's chart for liveHubArgs with fresh keys once per test binary,
+// so the cluster test runs the configuration the chart test checked.
 func renderClusteredHub(t *testing.T) *clusteredHubRender {
 	t.Helper()
 	renderMu.Lock()
@@ -163,14 +160,31 @@ func renderClusteredHub(t *testing.T) *clusteredHubRender {
 	if rendered != nil {
 		return rendered
 	}
+	keys := newLiveHubKeys(t)
+	rendered = renderClusteredHubArgs(t, keys, liveHubArgs(keys))
+	return rendered
+}
+
+// newLiveHubKeys makes fresh keys for the live hub's users.
+func newLiveHubKeys(t *testing.T) liveHubKeys {
+	t.Helper()
 	var keys liveHubKeys
 	keys.operatorSeed, keys.operatorKey = testnats.User(t)
 	keys.hostSeed, keys.hostKey = testnats.User(t)
 	_, keys.sessionKey = testnats.User(t)
-	settings, err := gcp.ResolveClusteredNatsHub(liveHubArgs(keys))
+	return keys
+}
+
+// renderClusteredHubArgs renders the hub's chart for args, whose users hold keys: it runs the hub
+// under the mocks for args, writes the values its chart registration holds to a file, and runs helm
+// template on the vendored archive of the chart and version the registration names, under its
+// release name and namespace, after checking the archive's SHA-256.
+func renderClusteredHubArgs(t *testing.T, keys liveHubKeys, args *gcp.ClusteredNatsHubArgs) *clusteredHubRender {
+	t.Helper()
+	settings, err := gcp.ResolveClusteredNatsHub(args)
 	require.NoError(t, err)
 
-	m := runClusteredHub(t, liveHubArgs(keys))
+	m := runClusteredHub(t, args)
 	chart := m.One(t, chartType)
 	release, namespace := chart.Inputs["name"].StringValue(), chart.Inputs["namespace"].StringValue()
 	archive := filepath.Join("testdata", chart.Inputs["chart"].StringValue()+"-"+chart.Inputs["version"].StringValue()+".tgz")
@@ -199,7 +213,6 @@ func renderClusteredHub(t *testing.T) *clusteredHubRender {
 	r.natsConf, r.authConf = data["nats.conf"].(string), data[clusteredHubAuthConfKey].(string)
 	t.Logf("%s rendered release %s in namespace %s from %s (sha256 %s) with the values of the hub's chart registration: %d manifests",
 		helmTool, release, namespace, archive, clusteredHubChartSHA256, len(r.manifests))
-	rendered = r
 	return r
 }
 
@@ -398,16 +411,46 @@ func TestClusteredNatsHubChart(t *testing.T) {
 
 // hubServer is one nats-server of the local cluster, on the rendered nats.conf and auth.conf in a
 // directory of its own. Its command line is built at each start from its ports and its peers'
-// route ports as they are then (commandArgs), so a start that draws new ports runs on them.
+// route ports as they are then (commandArgs), so a start that draws new ports runs on them, its
+// own route port among them.
 type hubServer struct {
 	name                   string
 	dir                    string
 	client, monitor, route int
 	binary                 string
 	podArgs, env           []string
-	peers                  []*hubServer
-	ports                  *loopbackPorts
-	proc                   *cmdtest.Process
+	// peers are the servers whose route ports it solicits, itself included, as the chart's
+	// cluster.routes names all three pods; nats-server ignores a route to itself.
+	peers []*hubServer
+	// routeURLs, when set, are routes it solicits in place of its peers' route ports, as a route
+	// through a proxy.
+	routeURLs []string
+	ports     *loopbackPorts
+	proc      *cmdtest.Process
+}
+
+// newHubServer is a server named name of the pods r renders, on natsConf and r's auth.conf, as the
+// pod runs nats-server: the container's arguments with the ConfigMap's mount replaced by the
+// server's directory, and SERVER_NAME set to its pod's name. drawn are its client, monitoring and
+// route ports, from ports, which a first start that cannot bind them draws again from.
+func (r *clusteredHubRender) newHubServer(t *testing.T, name, binary, natsConf string, ports *loopbackPorts, drawn []int) *hubServer {
+	t.Helper()
+	s := &hubServer{name: name, dir: t.TempDir(), binary: binary, ports: ports, client: drawn[0], monitor: drawn[1], route: drawn[2]}
+	// jetstream.store_dir: /data, the pod's claim, is the one value replaced in the server's copy
+	// of nats.conf: nats-server v2.15.1 reads the file onto the options its flags set and refuses
+	// -sd beside a store_dir in the file ("Duplicate 'store_dir' configuration"), so no
+	// command-line override exists for it.
+	storeDir := `"store_dir": "/data"`
+	require.Equal(t, 1, strings.Count(natsConf, storeDir), "the rendered nats.conf sets %s once", storeDir)
+	natsConf = strings.Replace(natsConf, storeDir, fmt.Sprintf(`"store_dir": %q`, filepath.Join(s.dir, "data")), 1)
+	require.NoError(t, os.WriteFile(filepath.Join(s.dir, "nats.conf"), []byte(natsConf), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(s.dir, clusteredHubAuthConfKey), []byte(r.authConf), 0o600))
+	s.podArgs = podArgs(t, stringList(t, r.container(t, "nats")["args"]), map[string]string{"/etc/nats-config/": s.dir + "/"})
+	// server_name: $SERVER_NAME, which the container sets to its pod's name.
+	require.Contains(t, r.container(t, "nats")["env"], map[string]any{"name": "SERVER_NAME", "value": "$(POD_NAME)"},
+		"each server is named after its pod")
+	s.env = []string{"SERVER_NAME=" + s.name}
+	return s
 }
 
 // commandArgs is the container's own arguments (--config /etc/nats-config/nats.conf, with the
@@ -415,10 +458,10 @@ type hubServer struct {
 // test adds for itself, then a command-line override for each other value of nats.conf that a pod
 // fixes, since three servers here share one host and filesystem.
 func (s *hubServer) commandArgs() []string {
-	var routes []string
-	for _, other := range s.peers {
-		if other != s {
-			routes = append(routes, fmt.Sprintf("nats://127.0.0.1:%d", other.route))
+	routes := s.routeURLs
+	if routes == nil {
+		for _, peer := range s.peers {
+			routes = append(routes, fmt.Sprintf("nats://127.0.0.1:%d", peer.route))
 		}
 	}
 	return append(slices.Clone(s.podArgs),
@@ -433,12 +476,29 @@ func (s *hubServer) commandArgs() []string {
 		"-m", strconv.Itoa(s.monitor),
 		// cluster.port: 6222, the route port.
 		"--cluster", fmt.Sprintf("nats://127.0.0.1:%d", s.route),
-		// cluster.routes, the three pods' DNS names in the headless Service: here the other two
-		// servers' route ports.
+		// cluster.routes, the three pods' DNS names in the headless Service, each pod's own
+		// included: here every peer's route port, its own included, or routeURLs.
 		"--routes", strings.Join(routes, ","),
 		// pid_file: /var/run/nats/nats.pid, the emptyDir the pod shares with the reloader.
 		"-P", filepath.Join(s.dir, "nats.pid"),
 	)
+}
+
+// routeRemotes is the set of servers the server's /routez names at the other end of its routes.
+func (s *hubServer) routeRemotes() (map[string]bool, error) {
+	var routez struct {
+		Routes []struct {
+			RemoteName string `json:"remote_name"`
+		} `json:"routes"`
+	}
+	if err := s.monitorJSON("/routez", &routez); err != nil {
+		return nil, err
+	}
+	remotes := map[string]bool{}
+	for _, route := range routez.Routes {
+		remotes[route.RemoteName] = true
+	}
+	return remotes, nil
 }
 
 // start starts the server and waits until it listens on all three of its ports (its last bind is
@@ -880,33 +940,16 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 		liveTool{exporterTool, "prometheus-nats-exporter"})
 	natsServer, reloader, exporter := tools[0], tools[1], tools[2]
 
-	natsContainer := r.container(t, "nats")
-	require.Contains(t, natsContainer["env"], map[string]any{"name": "SERVER_NAME", "value": "$(POD_NAME)"},
-		"each server is named after its pod")
 	// One draw of the nine server ports, all held until the last is chosen, so no two servers share
 	// one; the exporters' ports come from the same pool, distinct from these.
 	ports := newLoopbackPorts()
 	serverPorts := ports.draw(t, 9)
 	servers := make([]*hubServer, 3)
 	for i := range servers {
-		servers[i] = &hubServer{
-			name: fmt.Sprintf("%s-%d", r.release, i), dir: t.TempDir(), binary: natsServer, peers: servers, ports: ports,
-			client: serverPorts[3*i], monitor: serverPorts[3*i+1], route: serverPorts[3*i+2],
-		}
+		servers[i] = r.newHubServer(t, fmt.Sprintf("%s-%d", r.release, i), natsServer, r.natsConf, ports, serverPorts[3*i:3*i+3])
+		servers[i].peers = servers
 	}
 	for _, s := range servers {
-		// jetstream.store_dir: /data, the pod's claim, is the one value replaced in the server's
-		// copy of nats.conf: nats-server v2.15.1 reads the file onto the options its flags set and
-		// refuses -sd beside a store_dir in the file ("Duplicate 'store_dir' configuration"), so
-		// no command-line override exists for it.
-		storeDir := `"store_dir": "/data"`
-		require.Equal(t, 1, strings.Count(r.natsConf, storeDir), "the rendered nats.conf sets %s once", storeDir)
-		natsConf := strings.Replace(r.natsConf, storeDir, fmt.Sprintf(`"store_dir": %q`, filepath.Join(s.dir, "data")), 1)
-		require.NoError(t, os.WriteFile(filepath.Join(s.dir, "nats.conf"), []byte(natsConf), 0o600))
-		require.NoError(t, os.WriteFile(filepath.Join(s.dir, clusteredHubAuthConfKey), []byte(r.authConf), 0o600))
-		s.podArgs = podArgs(t, stringList(t, natsContainer["args"]), map[string]string{"/etc/nats-config/": s.dir + "/"})
-		// server_name: $SERVER_NAME, which the container sets to its pod's name.
-		s.env = []string{"SERVER_NAME=" + s.name}
 		s.start(t)
 		t.Logf("%s: nats-server %s", s.name, strings.Join(s.commandArgs(), " "))
 	}
@@ -939,17 +982,9 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 			if varz.ServerName != s.name || varz.Cluster.Name != clusterName[1] {
 				return fmt.Errorf("%s's /varz names server %q in cluster %q", s.name, varz.ServerName, varz.Cluster.Name)
 			}
-			var routez struct {
-				Routes []struct {
-					RemoteName string `json:"remote_name"`
-				} `json:"routes"`
-			}
-			if err := s.monitorJSON("/routez", &routez); err != nil {
+			remotes, err := s.routeRemotes()
+			if err != nil {
 				return err
-			}
-			remotes := map[string]bool{}
-			for _, route := range routez.Routes {
-				remotes[route.RemoteName] = true
 			}
 			if len(remotes) != 2 || remotes[s.name] {
 				return fmt.Errorf("%s routes to %v", s.name, remotes)

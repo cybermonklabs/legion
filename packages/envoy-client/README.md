@@ -360,7 +360,7 @@ Pi sets it in `process.env` at load, Claude Code's `SessionStart` hook appends i
 
 The `dispatch` command reads the file its session's plugin chose: with `DISPATCH_HOST` set, the
 file `ENVOY_CONFIG_FILE` names, else its host's own rule (`envoyConfigPath(host)`). A Bash that
-lacks what the hook wrote, as a Claude Code subagent's can (anthropics/claude-code#46696), has
+lacks what the hook wrote, as a Claude Code subagent's can (Claude Code issue 46696), has
 `DISPATCH_HOST` unset and `CLAUDE_CODE_CHILD_SESSION=1`, which Claude Code sets in every Bash it
 runs; `dispatch` then takes host `claude` and Claude Code's rule, so `CLAUDE_CONFIG_DIR`, the
 session's own directory, comes ahead of any `ENVOY_CONFIG_FILE` an outer session exported.
@@ -724,6 +724,11 @@ trades that person, as the Go client does:
   `<thumbprint>` is the first 12 characters of the box key's thumbprint (Go's `SessionFor`). It
   is never `AGENT_SECRETS_SESSION`: the machine trades under that name, and the broker gives a
   name to one identity only.
+- The projects the token names are the ones `AGENT_SECRETS_PROJECTS` lists, project keys separated
+  by spaces (`tradeProjects`). The broker names them only when Dispatch says the person may see
+  each one, and refuses the trade naming the first they may not see. A person who signs in is of
+  the broker's sign-in domain, so the broker asks Dispatch no member kind for this trade. A value
+  that is no list fails the call naming the variable. The machine's own trade names no project.
 
 Dispatch gives the token that names a person the `person` and `approve` scopes, so the session
 writes as that person.

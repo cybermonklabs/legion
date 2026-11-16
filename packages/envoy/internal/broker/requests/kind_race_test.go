@@ -90,7 +90,7 @@ func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T)
 				store.Put(policytest.KindSecret("RACED_LOGIN", fixtureOperator, tier, policy.KindGoogleLogin, canary))
 				return nil
 			}}
-			release, err := machine.Values(t.Context(), grantID, enrollmentID, nil)
+			release, err := machine.Values(t.Context(), grantID, enrollmentID, nil, ReleaseCall{})
 			if duringErr != nil {
 				t.Fatalf("the retag during the read: %v", duringErr)
 			}

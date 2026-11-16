@@ -32,6 +32,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // The two bounds on what the broker reads of an exchange: a token request's form, which carries
@@ -266,7 +267,7 @@ func (s *Server) azureAccess(ctx context.Context, info connInfo, chosen pair, se
 		return "", errors.New("the slot of this placeholder names no https token endpoint")
 	}
 	entry := s.rules.Lookup(chosen.name)
-	if entry == nil || !airlock.HostBound(entry.Hosts, airlock.ASCIILower(endpoint.Hostname())) {
+	if entry == nil || !airlock.HostBound(entry.Hosts, fold.ASCII(endpoint.Hostname())) {
 		// The exchange is a call the broker makes with the real federated token, so where it
 		// is made is held to the same hosts as every other call of this name: the rules file's.
 		return "", errors.New("the token endpoint this slot names is no host " + chosen.name + " is bound to")

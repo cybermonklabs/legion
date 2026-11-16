@@ -37,7 +37,7 @@ message from Dispatch's Agents page as that person's own turn.
   `.opencode/envoy.json`, which is not read, is one `envoy: <file> is not read: mkdir -p … && mv …`
   line while the checkout has no `.envoy/envoy.json`. The `dispatch` command reads the file
   `ENVOY_CONFIG_FILE` names whenever `DISPATCH_HOST` is set. A subagent's Bash can lack what the
-  hook writes there (anthropics/claude-code#46696); its `dispatch` command, finding no
+  hook writes there (Claude Code issue 46696); its `dispatch` command, finding no
   `DISPATCH_HOST`, then takes host `claude` from the `CLAUDE_CODE_CHILD_SESSION=1` Claude Code sets
   in every Bash, and reads `CLAUDE_CONFIG_DIR` itself. With Dispatch configured,
   `dist/session-hook.js dispatch-first` puts the `dispatch-first` skill into the context of every
