@@ -5362,16 +5362,41 @@ the outbox marks them published without republishing an agent-topic envelope, wh
 They are excluded from global `/search` and issue reference closures.
 Targeted issue `message.created` skips bound-route and author fan-out because the synchronous listener call records the sent or failed attempt instead of blind republishing.
 
-`/v1` accepts two bearer kinds: the `ENVOY_API_TOKEN` shared token, and
+`/v1` accepts three bearer kinds: the `ENVOY_API_TOKEN` shared token;
 — when `ENVOY_OIDC_ISSUER` and `ENVOY_OIDC_AUDIENCE` are both set, one without the other being a startup refusal naming the missing variable
-— a projected service-account token that issuer signed for that audience.
-The exempt paths (`/healthz`, `/metrics`, `/webhook/*`) require neither, and `/livez`, which the mux answers in front of `apiAuth`, never reaches the check.
-`/v1` is open only when neither is configured, so an empty `ENVOY_API_TOKEN` opens it only while no verifier is configured, and a listener whose address is not loopback refuses to start with neither unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is set.
+— a projected service-account token that issuer signed for that audience;
+and — when `ENVOY_OIDC_GOOGLE_AUDIENCE` and `ENVOY_OIDC_GOOGLE_ACCOUNTS` are both set — a Google identity token.
+`ENVOY_OIDC_ACCOUNTS`, whitespace-separated `system:serviceaccount:<namespace>:<name>` subjects, holds the projected-token branch to the subjects it lists:
+any pod of the cluster can project a token for any audience, and that branch names no session, so a verified token alone does not say which caller it is.
+Unset, the branch admits every subject the issuer signed for, as it did before the list existed;
+set beside no `ENVOY_OIDC_ISSUER`, or holding an entry of any other shape, it refuses the start, naming the entry.
+An unlisted subject gets the same 401 as every other refused credential, and its warning carries the class `not_listed` and the subject as `account`.
+The Google pair is for a caller on Google's platform that holds no Kubernetes token, such as the alert sink on Cloud Run.
+The listener admits a token that Google (`https://accounts.google.com`, `oidc.GoogleIssuer`) signed for `ENVOY_OIDC_GOOGLE_AUDIENCE`
+and that names, in its `email` claim, an account `ENVOY_OIDC_GOOGLE_ACCOUNTS` lists (whitespace-separated addresses, compared in lower case) whose address Google verified,
+so the caller asks its metadata server for the token with `format=full`, the form that carries the address (`oidc.Verifier.VerifyGoogleIdentity`).
+One of the pair without the other refuses the start, naming the missing one, and so does an entry that is not an address.
+A refused Google token is one `listener: Google identity token rejected` warning carrying the class
+— `oidc.Reason`'s, `no_email`, `email_not_verified` or `not_listed` —
+the path, and the account when the token names one, never the token.
+The token's own issuer decides which of the two identity-token branches judges it (`oidc.Verifier.Issues`), and a listener that takes only one of them gives it every token.
+The exempt paths (`/healthz`, `/metrics`, `/webhook/*`) require none of them, and `/livez`, which the mux answers in front of `apiAuth`, never reaches the check.
+`/v1` is open only when none is configured, so an empty `ENVOY_API_TOKEN` opens it only while no verifier is configured, and a listener whose address is not loopback refuses to start with none unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is set.
 That flag is how an operator declares that something else fences the listener's port.
 The clustered hub's session listener is the deployment in this repository that sets it: it binds `0.0.0.0` in a pod of its own, behind a NetworkPolicy that admits TCP 9020 from the tailnet entry's pods alone (`infra/gcp/clusteredhub_listener.go`).
-The boot log names what is on: `shared token`, `oidc <issuer>`, both, or `disabled`.
+The boot log names what is on, joined by `and`: `shared token`, `oidc <issuer>` (with ` for <subjects>` when `ENVOY_OIDC_ACCOUNTS` is set), `google <audience> for <accounts>`, and the broker's credential below; or `disabled`.
 
-Beside the two bearers it takes one credential that is not a bearer: an access token the secrets broker issued, presented under RFC 9449's DPoP scheme as `Authorization: DPoP <token>` with a `DPoP:` proof header (`internal/brokertoken`, `cmd/listener/brokerauth.go`).
+Every request `/v1` admits is counted in `envoy_listener_requests_total{credential,path}` on `/metrics`.
+`credential` is the one that admitted it:
+`shared_token`, `none` (the open `/v1`, which admits a request that presents no credential it knows), `oidc`, `google` or `broker`.
+`path` is the pattern of the route that serves the request (`startingGate.route`), never the path itself, so a session id never becomes a series of its own;
+before `/v1` opens, and for a path no route matches, it is the pattern that routed the request to the gate, `/v1` or `/v1/`.
+A refused request is counted nowhere.
+`shared_token` and `none` are the census the removal of the shared token and of the open `/v1` waits on: each must read zero on every deployed listener for 72 hours before they go.
+An admission on either also logs a warning, at most once a minute for each:
+`listener: request admitted on the shared token` or `listener: request admitted with no credential`, carrying the credential, the route, the caller's address (`remote`), and `held`, how many admissions of that credential it held back since its last line.
+
+Beside the bearers it takes one credential that is not a bearer: an access token the secrets broker issued, presented under RFC 9449's DPoP scheme as `Authorization: DPoP <token>` with a `DPoP:` proof header (`internal/brokertoken`, `cmd/listener/brokerauth.go`).
 Four variables configure it, all or none, and any of them set without the rest is a startup refusal naming what is missing:
 
 | Variable | Form | Default |
@@ -5382,7 +5407,7 @@ Four variables configure it, all or none, and any of them set without the rest i
 | `ENVOY_PUBLIC_URL` | this listener's own origin, an absolute http(s) URL with no path, which a proof's `htu` is checked against plus the request's path and never a forwarded header | unset |
 
 The account identity is the file or the audience and never both: the broker resolves the calling service from whichever token it is presented (`BROKER_API_ACCOUNTS`, which takes a Kubernetes subject or a Google account's email).
-Configuring the credential opens nothing and closes nothing: a request presenting no token is judged exactly as it was before it existed, so an open listener still serves one, the `Host` and `Content-Type` fences still apply, and the non-loopback fence still counts only the two bearers — a broker token says who is calling, never whether `/v1` may be reached.
+Configuring the credential opens nothing and closes nothing: a request presenting no token is judged exactly as it was before it existed, so an open listener still serves one, the `Host` and `Content-Type` fences still apply, and the non-loopback fence still counts only the bearers — a broker token says who is calling, never whether `/v1` may be reached.
 A listener with none of the four variables set takes no such credential and reads `Authorization: DPoP` as it read every header it did not know before this credential existed: the open listener serves the request with no session bound, and a listener that requires a bearer answers the 401 it always answered, with nothing asked of any broker and no refusal logged.
 That is what keeps the no-bearer listeners a GCP VM and the clustered hub run serving their clients, which send `Authorization: DPoP` to whatever listener they are pointed at whenever they have a broker and an identity to trade and no Envoy bearer is set (`packages/envoy-client/src/envoy-settings.ts`).
 The VM's listener is on loopback and the clustered hub's serves off loopback behind its NetworkPolicy, and neither takes a bearer.

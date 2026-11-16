@@ -198,7 +198,7 @@ func TestAPIAuth(t *testing.T) {
 				configured = verifier
 			}
 			var logged bytes.Buffer
-			apiAuth(tc.token, configured, nil, nil, logging.NewWithWriter("test-machine", &logged), next).
+			apiAuth(listenerAPIAuth{token: tc.token, verifier: configured, logger: logging.NewWithWriter("test-machine", &logged)}, next).
 				ServeHTTP(recorder, request)
 
 			if recorder.Code != tc.wantStatus {
@@ -287,7 +287,7 @@ func TestAPIAuthValidatesV1BodyContentType(t *testing.T) {
 			}
 			recorder := httptest.NewRecorder()
 
-			apiAuth("", nil, nil, nil, logging.NewWithWriter("test-machine", io.Discard), next).ServeHTTP(recorder, request)
+			apiAuth(listenerAPIAuth{logger: logging.NewWithWriter("test-machine", io.Discard)}, next).ServeHTTP(recorder, request)
 
 			if recorder.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d; body = %s", recorder.Code, tc.wantStatus, recorder.Body.String())
@@ -336,6 +336,7 @@ func TestValidateListenerAPIAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
 	}
+	google := newGoogleStandIn(t, listenerGoogleAccount)
 
 	cases := []struct {
 		name                 string
@@ -343,6 +344,7 @@ func TestValidateListenerAPIAuth(t *testing.T) {
 		apiToken             string
 		allowUnauthenticated string
 		oidc                 bool
+		google               bool
 		wantError            bool
 	}{
 		{
@@ -373,6 +375,11 @@ func TestValidateListenerAPIAuth(t *testing.T) {
 			oidc:       true,
 		},
 		{
+			name:       "allows non-loopback bind with only Google identities",
+			listenHost: "0.0.0.0",
+			google:     true,
+		},
+		{
 			name:                 "allows explicit unauthenticated non-loopback bind",
 			listenHost:           "0.0.0.0",
 			allowUnauthenticated: "1",
@@ -381,13 +388,16 @@ func TestValidateListenerAPIAuth(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var configured *oidc.Verifier
+			auth := listenerAPIAuth{token: tc.apiToken}
 			if tc.oidc {
-				configured = verifier
+				auth.verifier = verifier
 			}
-			err := validateListenerAPIAuth(config.Service{ListenHost: tc.listenHost}, tc.apiToken, tc.allowUnauthenticated, configured)
+			if tc.google {
+				auth.google = google.identities
+			}
+			err := validateListenerAPIAuth(config.Service{ListenHost: tc.listenHost}, auth, tc.allowUnauthenticated)
 			if (err != nil) != tc.wantError {
-				t.Fatalf("validateListenerAPIAuth(%q, token set: %t, allow unauthenticated: %q, verifier set: %t) error = %v, want error: %t", tc.listenHost, tc.apiToken != "", tc.allowUnauthenticated, configured != nil, err, tc.wantError)
+				t.Fatalf("validateListenerAPIAuth(%q, token set: %t, allow unauthenticated: %q, verifier set: %t, google set: %t) error = %v, want error: %t", tc.listenHost, tc.apiToken != "", tc.allowUnauthenticated, tc.oidc, tc.google, err, tc.wantError)
 			}
 		})
 	}
@@ -450,11 +460,13 @@ func TestResolveListenerOIDCConfig(t *testing.T) {
 
 func TestDescribeListenerAPIAuth(t *testing.T) {
 	cases := []struct {
-		name    string
-		token   string
-		issuer  string
-		brokers *brokerTokens
-		want    string
+		name     string
+		token    string
+		issuer   string
+		accounts []string
+		google   *googleIdentities
+		brokers  *brokerTokens
+		want     string
 	}{
 		{
 			name: "neither is disabled",
@@ -475,6 +487,17 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 			token:  "expected-token",
 			issuer: "https://oidc.eks.example/id/CLUSTER",
 			want:   "shared token and oidc https://oidc.eks.example/id/CLUSTER",
+		},
+		{
+			name:     "the verifier names the subjects ENVOY_OIDC_ACCOUNTS holds it to",
+			issuer:   "https://oidc.eks.example/id/CLUSTER",
+			accounts: []string{"system:serviceaccount:dispatch:envoy-broker", "system:serviceaccount:dispatch:dispatch"},
+			want:     "oidc https://oidc.eks.example/id/CLUSTER for system:serviceaccount:dispatch:envoy-broker, system:serviceaccount:dispatch:dispatch",
+		},
+		{
+			name:   "Google identities name their audience and accounts",
+			google: &googleIdentities{audience: "https://listener.example", accounts: []string{"example-sink@example-project.iam.gserviceaccount.com"}},
+			want:   "google https://listener.example for example-sink@example-project.iam.gserviceaccount.com",
 		},
 		{
 			name: "only broker tokens name the broker and the projected token it calls as",
@@ -505,12 +528,25 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 			}),
 			want: "shared token and oidc https://oidc.eks.example/id/CLUSTER and broker tokens at https://broker.example as projected token /var/run/secrets/broker/token",
 		},
+		{
+			name:   "every credential names itself, the bearers first",
+			token:  "expected-token",
+			issuer: "https://oidc.eks.example/id/CLUSTER",
+			google: &googleIdentities{audience: "https://listener.example", accounts: []string{"example-sink@example-project.iam.gserviceaccount.com"}},
+			brokers: newBrokerTokens(listenerBrokerConfig{
+				BrokerURL:      "https://broker.example",
+				GoogleAudience: "legion-broker-pod",
+				Origin:         "https://listener.example",
+			}),
+			want: "shared token and oidc https://oidc.eks.example/id/CLUSTER and google https://listener.example for example-sink@example-project.iam.gserviceaccount.com and broker tokens at https://broker.example as google audience legion-broker-pod",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := describeListenerAPIAuth(tc.token, tc.issuer, tc.brokers); got != tc.want {
-				t.Fatalf("describeListenerAPIAuth(token set: %t, %q, brokers set: %t) = %q, want %q", tc.token != "", tc.issuer, tc.brokers != nil, got, tc.want)
+			auth := listenerAPIAuth{token: tc.token, accounts: tc.accounts, google: tc.google, brokers: tc.brokers}
+			if got := describeListenerAPIAuth(auth, tc.issuer); got != tc.want {
+				t.Fatalf("describeListenerAPIAuth(token set: %t, %q, accounts %q, google set: %t, brokers set: %t) = %q, want %q", tc.token != "", tc.issuer, tc.accounts, tc.google != nil, tc.brokers != nil, got, tc.want)
 			}
 		})
 	}
@@ -564,7 +600,7 @@ func TestAPIAuthRefusesHostsAnUnauthenticatedListenerDoesNotServe(t *testing.T) 
 			recorder := httptest.NewRecorder()
 			var logged bytes.Buffer
 
-			apiAuth(tc.token, nil, nil, allowed, logging.NewWithWriter("test-machine", &logged), next).ServeHTTP(recorder, request)
+			apiAuth(listenerAPIAuth{token: tc.token, allowedHosts: allowed, logger: logging.NewWithWriter("test-machine", &logged)}, next).ServeHTTP(recorder, request)
 
 			if recorder.Code != tc.wantStatus {
 				t.Fatalf("Host %q: status = %d, want %d; body = %s", tc.host, recorder.Code, tc.wantStatus, recorder.Body.String())
