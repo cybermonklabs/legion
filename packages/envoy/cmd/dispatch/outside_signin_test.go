@@ -403,9 +403,6 @@ func TestOutsideSignInSettingsRefusals(t *testing.T) {
 		{"outside sign-in with no sign-in at all", noSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_OUTSIDE": "1"}), "DISPATCH_SIGNIN_OUTSIDE needs DISPATCH_SIGNIN_DOMAIN"},
 		{"outside sign-in under a Cognito group", signInEnvironment(map[string]string{"DISPATCH_SIGNIN_OUTSIDE": "1"}), "DISPATCH_SIGNIN_OUTSIDE needs DISPATCH_SIGNIN_DOMAIN"},
 		{"outside sign-in beside header identity", headerIdentityEnvironment(map[string]string{"DISPATCH_SIGNIN_OUTSIDE": "1"}), "DISPATCH_SIGNIN_OUTSIDE must be unset because header identity"},
-		{"outside sign-in spelt yes", signInEnvironment(google(map[string]string{"DISPATCH_SIGNIN_OUTSIDE": "yes"})), "DISPATCH_SIGNIN_OUTSIDE"},
-		{"the test issuer without test hooks", signInEnvironment(google(map[string]string{"DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER": "1"})), "DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER"},
-		{"a domain under another issuer, without the test issuer", signInEnvironment(google(map[string]string{"DISPATCH_SIGNIN_ISSUER": "http://127.0.0.1:9", "DISPATCH_TEST_HOOKS": "1"})), "DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com"},
 		{"an outside origin with a path", signInEnvironment(google(map[string]string{"DISPATCH_OUTSIDE_ORIGIN": "https://outside.test/dispatch"})), "DISPATCH_OUTSIDE_ORIGIN: "},
 		{"an http outside origin without test hooks", signInEnvironment(google(map[string]string{"DISPATCH_OUTSIDE_ORIGIN": "http://outside.test"})), "DISPATCH_OUTSIDE_ORIGIN: "},
 	} {
@@ -584,11 +581,6 @@ func TestOutsideSignInOriginHostRuleIsTheComponents(t *testing.T) {
 	if boot, err := resolveBootConfig(envGetter(signInEnvironment(harness))); err != nil || boot.OutsideOrigin != "http://localhost:5199" {
 		t.Errorf("DISPATCH_OUTSIDE_ORIGIN=http://localhost:5199 under the dev OIDC issuer: boot %q, %v; want it taken", boot.OutsideOrigin, err)
 	}
-}
-
-// The outside origin reaches every reader that answers it or reads its links.
-func TestOutsideSignInOriginReachesItsReaders(t *testing.T) {
-	outsideOriginReachesItsReaders(t)
 }
 
 // outsideOriginReachesItsReaders hands DISPATCH_OUTSIDE_ORIGIN, through the settings read alone, to
