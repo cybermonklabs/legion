@@ -729,3 +729,30 @@ describe("parseArguments", () => {
     ]);
   });
 });
+
+describe("liveDispatch", () => {
+  test("meaning-search-check's coverage read hands its credential the request's deadline", async () => {
+    // A broker credential waiting on a pod's missing registration stops at the deadline it is
+    // given, naming the session; one given none waits until the registration lands.
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.json({}) });
+    try {
+      const given: (AbortSignal | undefined)[] = [];
+      const bearer = bearerCredential("token");
+      const credential = {
+        ...bearer,
+        headers: (method: string, url: string, session?: string, signal?: AbortSignal) => {
+          given.push(signal);
+          return bearer.headers(method, url, session, signal);
+        },
+      };
+      await liveDispatch({ url: `http://127.0.0.1:${server.port}`, credential }).coverage();
+      expect(given.length).toBe(1);
+      expect(
+        given[0],
+        "meaning-search-check's coverage read handed its credential no deadline"
+      ).toBeInstanceOf(AbortSignal);
+    } finally {
+      server.stop(true);
+    }
+  });
+});

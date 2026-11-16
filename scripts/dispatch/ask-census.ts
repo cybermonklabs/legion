@@ -390,7 +390,8 @@ function parseArguments(argv: readonly string[]): RunOptions {
   };
 }
 
-async function get<T>(config: DispatchConfig, path: string): Promise<T> {
+/** One read of Dispatch that goes around DispatchClient (`run`'s issue lists), as JSON. */
+export async function get<T>(config: DispatchConfig, path: string): Promise<T> {
   const url = `${config.url}${path}`;
   // The bearer, or the access token this machine traded its own identity for, with the proof
   // that goes with it: this read goes around DispatchClient, so it presents the credential itself,

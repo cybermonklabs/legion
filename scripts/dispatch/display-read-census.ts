@@ -337,7 +337,7 @@ export function artifactVersions(artifacts: readonly ApiArtifact[]): VersionRef[
 // --- reading production ---------------------------------------------------------------------
 
 /** A token bucket: `rate` requests a second over the whole run, however many run at once. */
-class Rate {
+export class Rate {
   private next = 0;
   private readonly gap: number;
 
@@ -366,11 +366,17 @@ class HttpError extends Error {
 
 /** What one unit spends. Each unit counts its own requests: one counter shared by the eight
  * units in flight would attribute to each of them every request the others made while it ran. */
-interface Spend {
+export interface Spend {
   requests: number;
 }
 
-async function get<T>(config: DispatchConfig, path: string, rate: Rate, spend: Spend): Promise<T> {
+/** One read of Dispatch, as JSON: a 5xx or a failed connection tried again, a 4xx answered. */
+export async function get<T>(
+  config: DispatchConfig,
+  path: string,
+  rate: Rate,
+  spend: Spend
+): Promise<T> {
   let last = "";
   for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
     await rate.take();

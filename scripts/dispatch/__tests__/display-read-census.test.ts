@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { bearerCredential } from "../../../packages/envoy-client/src/bearer.ts";
 import fixture from "../__fixtures__/display-read-census.json" with { type: "json" };
 import {
   CLASSES,
@@ -6,10 +7,12 @@ import {
   censusReport,
   classify,
   type Group,
+  get,
   isSubsequence,
   MIN_STORED_PARAGRAPH,
   type PmNode,
   paragraphs,
+  Rate,
   readingMode,
   type StoredText,
   storedParagraphs,
@@ -255,5 +258,33 @@ describe("--check-no-stored-text", () => {
     expect(storedTextIn("wrapped.md", wrapped, index).map((hit) => hit.id)).toEqual([
       "version/guard-2/1",
     ]);
+  });
+});
+
+describe("reading production", () => {
+  test("display-read-census's read hands its credential the request's deadline", async () => {
+    // A broker credential waiting on a pod's missing registration stops at the deadline it is
+    // given, naming the session; one given none waits until the registration lands.
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.json([]) });
+    try {
+      const given: (AbortSignal | undefined)[] = [];
+      const bearer = bearerCredential("token");
+      const credential = {
+        ...bearer,
+        headers: (method: string, url: string, session?: string, signal?: AbortSignal) => {
+          given.push(signal);
+          return bearer.headers(method, url, session, signal);
+        },
+      };
+      const config = { url: `http://127.0.0.1:${server.port}`, credential };
+      await get(config, "/api/v1/projects", new Rate(1000), { requests: 0 });
+      expect(given.length).toBe(1);
+      expect(
+        given[0],
+        "display-read-census's read handed its credential no deadline"
+      ).toBeInstanceOf(AbortSignal);
+    } finally {
+      server.stop(true);
+    }
   });
 });
