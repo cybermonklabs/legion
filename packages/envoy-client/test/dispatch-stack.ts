@@ -60,6 +60,11 @@ export interface DispatchStackOptions {
    * `startDispatchStack` is called, and one stack has it to itself.
    */
   readonly work: string;
+  /**
+   * Variables the server gets beside its own, such as `DISPATCH_SPEC_ROOTS`. Where the stack
+   * sets a name too, the value here is the one the server gets.
+   */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 const WEB_DIST = path.resolve(import.meta.dir, "../../dispatch/web/dist");
@@ -87,7 +92,7 @@ function testDatabaseServer(): string {
  * The server runs with NATS off and with header identity on (`X-Dispatch-User`), as
  * `startScratchDispatchOn` runs it for the daemon's own tests: no event leaves the process, and a
  * person's write is the header alone. Nothing of the caller's Dispatch, Envoy or NATS environment
- * reaches it, since the child is given the environment below and nothing else.
+ * reaches it, since the child is given the environment below, with `options.env`, and nothing else.
  *
  * The stack works in `options.work`, which the caller reserved with
  * {@link useDispatchStackDirectory}: `stop` leaves it, and the fixture removes it when the file
@@ -145,6 +150,7 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
         DISPATCH_PORT: String(port),
         DISPATCH_SERVER_URL: url,
         DISPATCH_WEB_DIST: WEB_DIST,
+        ...options.env,
       },
       stdout: out,
       stderr: out,

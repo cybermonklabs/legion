@@ -913,6 +913,10 @@ jobs:
               - 'scripts/sessions/**'
               # The approval-eval statistics: its lint, typecheck and test steps read it.
               - 'scripts/approval-eval/**'
+              # The statement review evaluation: its lint, typecheck and test steps read it. Its
+              # typecheck also compiles the Dispatch stack that its run.ts starts, which
+              # *claude_envoy's packages/envoy-client/test/** covers.
+              - 'scripts/spec-review-eval/**'
               # The tools the job installs: jj, mise and Oh My Pi, uv, changie, and the NATS images.
               - *omp_install
               - '.github/actions/install-uv/**'
@@ -4095,6 +4099,16 @@ jobs:
 
       - name: Test the approval-eval statistics
         run: bun test scripts/approval-eval
+
+      - name: Lint the statement review evaluation
+        run: bunx biome check --error-on-warnings scripts/spec-review-eval
+
+      # scripts/spec-review-eval is no workspace either; the root package pins its TypeScript and Bun types.
+      - name: Typecheck the statement review evaluation
+        run: bunx tsc --noEmit -p scripts/spec-review-eval
+
+      - name: Test the statement review evaluation
+        run: bun test scripts/spec-review-eval
 
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

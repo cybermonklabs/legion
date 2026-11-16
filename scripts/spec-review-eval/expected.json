@@ -1,0 +1,69 @@
+{
+  "roots": [
+    {
+      "name": "without",
+      "key": "ACME-1",
+      "title": "The inbox of the person, with no digest in its terms",
+      "terms": "terms-without.md"
+    },
+    {
+      "name": "with",
+      "key": "ACME-2",
+      "title": "The inbox of the person, with the digest in its terms",
+      "terms": "terms-with.md"
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "1-principle",
+      "root": "without",
+      "spec": "1-principle.md",
+      "planted": [{ "kind": "principle", "node": "inbox-simple" }],
+      "mustNotName": [{ "node": "inbox-page-limit" }]
+    },
+    {
+      "id": "2-undefined-noun",
+      "root": "without",
+      "spec": "2-undefined-noun.md",
+      "planted": [{ "kind": "undefined-noun", "node": "daily-digest", "subject": "digest" }],
+      "mustNotName": [{ "node": "answer-closes-ask" }]
+    },
+    {
+      "id": "3-defined-noun",
+      "root": "with",
+      "spec": "2-undefined-noun.md",
+      "planted": [],
+      "mustNotName": [
+        { "node": "daily-digest", "subject": "digest" },
+        { "node": "answer-closes-ask" }
+      ]
+    },
+    {
+      "id": "4-other-meaning",
+      "root": "without",
+      "spec": "4-other-meaning.md",
+      "planted": [{ "kind": "other-meaning", "node": "person-session-ends", "subject": "session" }],
+      "mustNotName": [{ "node": "session-in-ask" }]
+    },
+    {
+      "id": "5-repeated-meaning",
+      "root": "without",
+      "spec": "5-repeated-meaning.md",
+      "planted": [{ "kind": "repeated-meaning", "node": "terms", "subject": "agent thread" }],
+      "mustNotName": [{ "node": "read-state-set" }, { "node": "terms", "subject": "read state" }]
+    },
+    {
+      "id": "6-checks-in-verification",
+      "root": "without",
+      "spec": "6-checks-in-verification.md",
+      "verification": "6-checks-in-verification.verification.md",
+      "planted": [{ "kind": "agent-where-program", "node": "v-second-answer-agent" }],
+      "mustNotName": [
+        { "node": "v-second-answer-409" },
+        { "node": "v-summary-meaning" },
+        { "node": "second-answer-refused" },
+        { "node": "summary-says-what" }
+      ]
+    }
+  ]
+}
