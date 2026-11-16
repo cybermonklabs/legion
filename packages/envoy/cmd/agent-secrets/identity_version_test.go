@@ -10,7 +10,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/broker/helper"
 )
 
 // versionedHelper listens at a socket of the test's own and answers each connection by the op of
@@ -105,5 +108,21 @@ func TestIdentitySourceNamesAnOlderHelper(t *testing.T) {
 	code, stdout, stderr := r.run("identity", "--source")
 	if code != 0 || stdout != want {
 		t.Fatalf("identity --source: exit %d, stdout %q, stderr %q; want exit 0 and stdout %q", code, stdout, stderr, want)
+	}
+}
+
+// TestAnOlderHelperIsNamedOnAKernelWithoutPeerPidfd: a kernel before Linux 6.5, and gVisor, do
+// not answer SO_PEERPIDFD, which is how helper.PeerOf pins a peer. The older-helper line still
+// names the binary of the process on the socket there, by the pid SO_PEERCRED reads, since that
+// pid is only shown to a reader. The pin is replaced by one that fails as such a kernel does, so
+// this holds on any kernel; the fake helper runs in this test process, whose pid the line names.
+func TestAnOlderHelperIsNamedOnAKernelWithoutPeerPidfd(t *testing.T) {
+	sock := versionedHelper(t, helperSignsAnswer, olderHelperVersionAns)
+	noPidfd := func(*net.UnixConn) (*helper.Peer, error) {
+		return nil, fmt.Errorf("SO_PEERPIDFD: %w", syscall.ENOPROTOOPT)
+	}
+	want := fmt.Sprintf(" (a helper from before this release; its binary is /proc/%d/exe)", os.Getpid())
+	if got := versionSuffix(sock, noPidfd); got != want {
+		t.Fatalf("versionSuffix with no SO_PEERPIDFD: %q, want %q", got, want)
 	}
 }
