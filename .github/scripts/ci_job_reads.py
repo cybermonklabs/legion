@@ -2848,6 +2848,7 @@ GATES = [
         ("packages/dispatch/e2e/acceptance/project-access-blob.sh", at(PROJECT_ACCESS, PROJECT_ACCESS_BLOB_STEP)),
         ("packages/dispatch/e2e/fake-envoy.ts", f"{TWO_BUILDS}'s two_builds_fake_envoy runs it with bun"),
         ("packages/dispatch/e2e/harness-ports.ts", "packages/dispatch/e2e/fake-envoy.ts:3 imports it"),
+        ("packages/dispatch/e2e/acceptance/access-lib.sh", "packages/dispatch/e2e/acceptance/project-access-blob.sh sources it"),
         (CONTRACTS_SRC, "packages/dispatch/e2e/fake-envoy.ts:1 imports @legion/contracts, which Bun resolves to its "
                         "src (packages/contracts/package.json's bun export)"),
         ("packages/contracts/package.json", "Bun reads its exports to resolve the import of packages/dispatch/e2e/fake-envoy.ts:1"),

@@ -5,21 +5,21 @@
 # It builds the merge base and this checkout through scripts/e2e/lib/two-builds.sh and starts each
 # on a database of its own, made here on the server DATABASE_URL names and dropped when the run
 # ends, so the two seeds cannot see each other and nothing the caller's database holds is touched.
-# It seeds both builds alike, through the routes both builds have: one public project PUB and one
-# PRIV, public too, made by carol, each with an issue, a comment, an ask, a message, an issue
-# document and a project document; three people who sign in at the dev sign-in route, every one a
-# full member; a personal token of each, which names no project, since the merge base has no list
-# to name one in; and the shared agent token. Then, as each of the seven callers in turn, it makes
-# `POST /api/v1/projects` and reads the fixed list below from both builds, and compares the status
-# and the bytes of each pair of answers.
+# It seeds both builds alike, through the routes both builds have (access-lib.sh): three people
+# who sign in at the dev sign-in route, every one a full member; one public project PUB and one
+# PRIV, public too, made by carol, each with an issue whose spec is a document with blocks, a
+# comment, an ask, a message, an issue document and a project document; a personal token of each
+# person, which names no project, since the merge base has no list to name one in; and the shared
+# agent token. Then, as each of the seven callers in turn, it makes `POST /api/v1/projects` and
+# reads the fixed list below from both builds, and compares the status and the bytes of each pair
+# of answers.
 #
-# What it masks, each named, and nothing else:
-#   - every id the seed writes new: each object's id as its create answered it, each personal
-#     token's id, plaintext and prefix, and each document's spec id, recorded under one label per
-#     object (`remember`), so the same object reads as the same label in both builds;
+# What it masks, each named, and nothing else (access-lib.sh's mask):
+#   - every id the seed writes new: each object's id as its create answered it, each document's
+#     spec id and first block, and each personal token's plaintext, id and prefix, recorded under
+#     one label per object (`remember`), so the same object reads as the same label in both builds;
 #   - every time the run wrote: an RFC 3339 instant between the run's start and the moment the
-#     answer is masked, and each duration `durations` names, a number of seconds or milliseconds
-#     measured from such an instant or by the request itself.
+#     answer is masked, and each duration access-lib.sh's `durations` names.
 # Issue keys, project keys, slugs, names, versions and event numbers are the seed's own and are
 # compared as they are.
 #
@@ -38,7 +38,8 @@
 #     [--base-commit <rev>] [--control private-pub]
 #
 # The harness is not needed: the run starts its own servers and its own fake Envoy, and reads
-# DATABASE_URL only for the server it names. --base-commit names the merge base; left out, it is
+# DATABASE_URL only for the server it names, whose database must hold the vector extension (the
+# harness's does: its server migrated it). --base-commit names the merge base; left out, it is
 # `git merge-base` of HEAD with origin/legion/INFRA-1149, the branch this stack is built on, or
 # with origin/main once that branch is gone. --control private-pub is the negative control: it
 # makes PUB private in the head's database after the seed, and the run must fail naming a route.
@@ -72,6 +73,8 @@ evidence=''
 timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=../../../../scripts/e2e/lib/two-builds.sh
 . "$root/scripts/e2e/lib/two-builds.sh"
+# shellcheck source-path=SCRIPTDIR source=access-lib.sh
+. "$(dirname "$0")/access-lib.sh"
 
 # This driver's own argument, read before two_builds_setup, which takes --base-commit alone.
 control=''
@@ -94,35 +97,19 @@ case "$control" in
   *) fail "unknown control '$control': the one control is private-pub" ;;
 esac
 
-# free_port prints a port the kernel chose and nothing holds. Another process can take it before
-# the server binds it; two_builds_prerequisites refuses a port that answers, so a run that loses
-# that race fails at once rather than talking to a stranger.
-free_port() {
-  python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
-}
 base_port=$(free_port)
 head_port=$(free_port)
 envoy_port=$(free_port)
-# The databases this run makes, named once two_builds_setup has armed the teardown, and dropped
-# by blob_cleanup only when made_databases says the create ran.
-base_database_url=''
-head_database_url=''
-made_databases=()
 two_builds_setup 'project access blob e2e' "${forwarded[@]}"
-
-# blob_cleanup stops both servers, drops the databases this run made, and hands over to
-# two-builds' cleanup, which stops the rest and exits with the run's status.
+# Both servers stop before the databases they serve are dropped; two-builds' cleanup stops the
+# rest and exits with the run's status.
 blob_cleanup() {
-  local rc=$1 name
   stop_pid "$head_pid"
   stop_pid "$base_pid"
   head_pid=''
   base_pid=''
-  for name in "${made_databases[@]}"; do
-    psql "$database_url" -X -q -c "drop database if exists \"$name\" with (force)" >/dev/null 2>&1 ||
-      echo "could not drop database $name; drop it by hand" >&2
-  done
-  cleanup "$rc"
+  drop_own_databases
+  cleanup "$1"
 }
 trap 'blob_cleanup "$?"' EXIT
 trap 'blob_cleanup 130' INT
@@ -146,27 +133,11 @@ pass
 
 begin build
 two_builds_build project-access-blob
-mkdir -p "$work/cookies" "$work/auth" "$work/answers"
 pass
 
-# own_database VAR BUILD makes the database BUILD serves, on the server DATABASE_URL names, and
-# assigns VAR its connection string. The name carries this shell's pid and random bytes, so two
-# runs on one server never meet. It runs in this shell, not in a substitution, so made_databases
-# holds every database it made for blob_cleanup to drop.
-own_database() {
-  local name _url
-  name="project_access_blob_$$_$(openssl rand -hex 4)_$2"
-  run_database_url _url DATABASE_URL "$database_url" "$name" "this run creates and drops a database there" ||
-    fail "$_url"
-  psql "$database_url" -X -q -v ON_ERROR_STOP=1 -c "create database \"$name\"" >/dev/null ||
-    fail "could not create database $name"
-  made_databases+=("$name")
-  psql "$_url" -X -q -v ON_ERROR_STOP=1 -c 'create extension if not exists vector' >/dev/null ||
-    fail "could not install the vector extension in $name, which only the cluster's master role can"
-  printf -v "$1" '%s' "$_url"
-}
-
 begin databases
+base_database_url=''
+head_database_url=''
 own_database base_database_url base
 own_database head_database_url head
 note "two databases of this run's own: ${made_databases[*]}"
@@ -177,6 +148,8 @@ two_builds_fake_envoy
 pass
 
 two_builds_identity
+build_url[base]=$base_url
+build_url[head]=$head_url
 
 # Both builds run with the test hooks on and no embedder, so search answers its keyword leg alone
 # and no answer waits on a model call or on a queue that drains in its own time.
@@ -190,117 +163,22 @@ await_start head "$head_pid" 120 "this build to answer /healthz" curl -fsS --max
 note "the base build serves $base_url, this build $head_url"
 pass
 
-# The seed's people, each a full member, and the seven callers, in the order verification v17
-# names their kinds: the three people at a browser, a personal token of each and the shared token.
-readonly alice=alice@example.com bob=bob@outside.example carol=carol@example.com
+# The seven callers, in the order verification v17 names their kinds: the three people at a
+# browser, a personal token of each and the shared token.
 readonly callers=(alice bob carol alice-token bob-token carol-token shared)
-readonly session=project-access-blob
 
-url_of() { if [ "$1" = base ]; then printf '%s' "$base_url"; else printf '%s' "$head_url"; fi; }
-email_of() {
-  case "$1" in
-    alice*) printf '%s' "$alice" ;;
-    bob*) printf '%s' "$bob" ;;
-    carol*) printf '%s' "$carol" ;;
-  esac
-}
-
-# send BUILD CALLER METHOD PATH [BODY]: one request to BUILD as CALLER, the status in $status and
-# the body in $work/body. A person sends their session cookie and the build's origin, as a browser
-# does; a token sends its bearer from a header file, so no argument list holds it.
-send() {
-  local build=$1 caller=$2 method=$3 path=$4 body=${5:-} url
-  local -a credential data=()
-  url=$(url_of "$build")
-  case "$caller" in
-    alice | bob | carol) credential=(-b "$work/cookies/$build-$caller" -H "Origin: $url") ;;
-    *) credential=(-H "@$work/auth/$build-$caller") ;;
-  esac
-  [ -z "$body" ] || data=(-H 'Content-Type: application/json' --data-binary "$body")
-  status=$(curl -sS -o "$work/body" -w '%{http_code}' --max-time "$call_seconds" -X "$method" \
-    "${credential[@]}" "${data[@]}" "$url$path" 2>"$work/curl") || status="curl failed: $(<"$work/curl")"
-}
-
-# expect_status CODE WHAT: the last answer is CODE.
-expect_status() {
-  [ "$status" = "$1" ] || fail "$2: HTTP $status, want $1: $(head -c 600 "$work/body")"
-}
-
-# remember BUILD LABEL VALUE records VALUE, an id BUILD's seed wrote new, under LABEL: the mask
-# reads it as <LABEL>, and a path in the read list names it as {LABEL}.
-remember() {
-  [ -n "$3" ] && [ "$3" != null ] || fail "the seed of the $1 build read no $2"
-  printf '%s\t%s\n' "$2" "$3" >>"$work/ids-$1.tsv"
-}
-recalled() { awk -F '\t' -v label="$2" '$1 == label { print $2; exit }' "$work/ids-$1.tsv"; }
-
-# actor: the shared token's writes name the session that makes them; a person's and a personal
-# token's name none, since the credential is the writer.
-with_actor() {
-  if [ "$1" = shared ]; then
-    jq -c --arg s "$session" '. + {actor: {kind: "session", id: $s}}' <<<"$2"
-  else
-    printf '%s' "$2"
-  fi
-}
-
-# seed BUILD writes the seed into BUILD, in one order, so both builds hold the same rows.
+# seed BUILD writes the seed into BUILD, in one order, so both builds hold the same rows. Every
+# person is a full member and both projects are public, the deployment R9 speaks of.
 seed() {
-  local build=$1 person project key minted
-  : >"$work/ids-$build.tsv"
-  printf 'Authorization: Bearer %s\n' "$agent_token" >"$work/auth/$build-shared"
+  local build=$1 person
+  seed_people "$build"
+  make_project "$build" PUB
+  make_project "$build" PRIV
   for person in alice bob carol; do
-    sign_in_as "$build" "$person"
+    mint_token "$build" "$person" "$person-token"
   done
-  for project in PUB PRIV; do
-    send "$build" carol POST /api/v1/projects "$(jq -cn --arg k "$project" '{key: $k, name: ("Project " + $k)}')"
-    expect_status 201 "$build: carol makes $project"
-  done
-  for person in alice bob carol; do
-    send "$build" "$person" POST /api/v1/me/agent-tokens "$(jq -cn --arg n "$person's token" '{name: $n}')"
-    expect_status 201 "$build: $person mints a token"
-    minted=$(jq -r .token "$work/body")
-    printf 'Authorization: Bearer %s\n' "$minted" >"$work/auth/$build-$person-token"
-    remember "$build" "$person token" "$minted"
-    remember "$build" "$person token id" "$(jq -r .id "$work/body")"
-    remember "$build" "$person token prefix" "$(jq -r .prefix "$work/body")"
-  done
-  for project in PUB PRIV; do
-    send "$build" carol POST /api/v1/issues "$(jq -cn --arg p "$project" \
-      '{project: $p, title: ("The issue of " + $p), spec: "# Spec\n\nThe first paragraph.\n"}')"
-    expect_status 201 "$build: carol opens the issue of $project"
-    key=$(jq -r .key "$work/body")
-    [ "$key" = "$project-1" ] || fail "$build: the issue of $project is $key, not $project-1"
-    send "$build" carol GET "/api/v1/issues/$key/summary"
-    expect_status 200 "$build: carol reads $key"
-    remember "$build" "$project spec" "$(jq -r '.documents[] | select(.primary) | .id' "$work/body")"
-    send "$build" alice POST "/api/v1/issues/$key/comments" '{"body":"A remark from alice."}'
-    expect_status 201 "$build: alice comments on $key"
-    remember "$build" "$project comment" "$(jq -r .id "$work/body")"
-    send "$build" bob POST "/api/v1/issues/$key/asks" '{"question":"Does bob see this?"}'
-    expect_status 201 "$build: bob asks on $key"
-    remember "$build" "$project ask" "$(jq -r .id "$work/body")"
-    send "$build" carol POST "/api/v1/issues/$key/messages" '{"body":"A message from carol."}'
-    expect_status 201 "$build: carol writes a message on $key"
-    remember "$build" "$project message" "$(jq -r .id "$work/body")"
-    send "$build" carol POST "/api/v1/issues/$key/artifacts" '{"name":"notes.md","content":"# Notes\n\nCarol'"'"'s notes.\n"}'
-    expect_status 201 "$build: carol uploads a document to $key"
-    remember "$build" "$project notes" "$(jq -r .artifact.id "$work/body")"
-    send "$build" carol POST "/api/v1/projects/$project/artifacts" '{"name":"Playbook.md","content":"# Playbook\n\nHow we work.\n"}'
-    expect_status 201 "$build: carol uploads a document to $project"
-    remember "$build" "$project playbook" "$(jq -r .artifact.id "$work/body")"
-  done
-}
-
-# sign_in_as BUILD PERSON signs PERSON in at BUILD's dev sign-in route, which records them in
-# `people` as a real sign-in does, and keeps their session cookie for send.
-sign_in_as() {
-  local build=$1 person=$2 answer
-  answer=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$call_seconds" -c "$work/cookies/$build-$person" \
-    "$(url_of "$build")/auth/_dev/signin?login=$(email_of "$person")") || answer=000
-  if [ "$answer" != 302 ] || ! grep -q dsession "$work/cookies/$build-$person"; then
-    fail "$build: the dev sign-in of $person answered $answer with no session cookie"
-  fi
+  seed_objects "$build" PUB alice
+  seed_objects "$build" PRIV bob
 }
 
 begin seed
@@ -360,98 +238,21 @@ readonly project_reads=(
   "/api/v1/asks/{{P} ask}"
   "/api/v1/messages/{{P} message}"
   "/api/v1/artifacts/{{P} spec}"
+  "/api/v1/artifacts/{{P} spec}/blocks"
   "/api/v1/artifacts/{{P} notes}"
   "/api/v1/artifacts/{{P} playbook}"
 )
 
-# resolve BUILD PATH prints PATH with each {LABEL} replaced by the id BUILD's seed recorded under
-# it, URL-encoded as one path or query component.
-resolve() {
-  local build=$1 path=$2 label value
-  while [[ "$path" =~ \{([^{}]+)\} ]]; do
-    label=${BASH_REMATCH[1]}
-    value=$(recalled "$build" "$label")
-    [ -n "$value" ] || fail "the seed of the $build build recorded no $label"
-    path=${path//"{$label}"/$(jq -rn --arg v "$value" '$v|@uri')}
-  done
-  printf '%s' "$path"
-}
-
-# The durations the mask reads as <duration>, by their JSON member: each is a time the run wrote,
-# measured again at every read, so no two reads of the same row agree on it.
-#   took_ms       how long a search took (GET /api/v1/search)
-#   age_seconds   how old an open ask is (GET /api/v1/asks/open)
-readonly durations='["took_ms","age_seconds"]'
-
-# mask BUILD FILE prints FILE with every id BUILD's seed recorded replaced by <LABEL>, every
-# RFC 3339 instant the run wrote by <time>, and every duration by <duration>, byte for byte
-# otherwise: jq reads the body as one raw string and writes it back as it was.
-mask() {
-  local build=$1 file=$2
-  jq -Rrj --slurp \
-    --rawfile ids "$work/ids-$build.tsv" \
-    --argjson durations "$durations" \
-    --argjson from "$run_epoch" \
-    --argjson to "$(date +%s)" '
-      def literal: gsub("(?<c>[.*+?^$|(){}\\[\\]\\\\/])"; "\\\(.c)");
-      def instant:
-        (sub("\\.[0-9]+"; "") | sub("Z$"; "+00:00")) as $t
-        | ($t[0:19] + "Z" | fromdateiso8601)
-          - (($t[19:20] + "1" | tonumber) * (($t[20:22] | tonumber) * 3600 + ($t[23:25] | tonumber) * 60));
-      def written: (try instant catch null) as $at | $at != null and $at >= $from - 1 and $at <= $to + 1;
-      reduce ($ids | split("\n")[] | select(. != "") | split("\t")) as $id (.;
-        gsub($id[1] | literal; "<" + $id[0] + ">"))
-      | gsub("(?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2}))";
-          if (.t | written) then "<time>" else .t end)
-      | reduce $durations[] as $member (.; gsub("\"\($member)\":[0-9]+"; "\"\($member)\":<duration>"))' "$file"
-}
-
-compared=0
-differed=0
-# first_difference A B prints the 1-based offset of the first byte at which the files A and B
-# differ, as cmp names it; past the end of the shorter file, that is one past its length. It
-# returns 1, printing nothing, when they are the same.
-first_difference() {
-  local said
-  said=$(cmp "$1" "$2" 2>&1) && return 1
-  case "$said" in
-    *'is empty'*) echo 1 ;;
-    *EOF*) echo $(($(sed -nE 's/.*after (byte|char) ([0-9]+).*/\2/p' <<<"$said") + 1)) ;;
-    *) sed -nE 's/.*differ: (byte|char) ([0-9]+),.*/\2/p' <<<"$said" ;;
-  esac
-}
-
 # compare CALLER METHOD PATH [BODY]: the base build's answer and this build's, to the same request
-# made as CALLER, are the same status and, masked, the same bytes. A pair that differs is written
-# to $work/differences, which the end of the run reads.
+# made as CALLER, are the same status and, masked, the same bytes (same_answers).
 compare() {
-  local caller=$1 method=$2 path=$3 body=${4:-} build at target
+  local caller=$1 method=$2 path=$3 body=${4:-} build target
   for build in base head; do
     target=$(resolve "$build" "$path")
     send "$build" "$caller" "$method" "$target" "$body"
-    printf '%s' "$status" >"$work/answers/$build.status"
-    mask "$build" "$work/body" >"$work/answers/$build.body"
+    keep_answer "$build" "$build"
   done
-  compared=$((compared + 1))
-  printf '%s\n' "$(<"$work/answers/head.status")" >>"$work/statuses"
-  if [ "$(<"$work/answers/base.status")" != "$(<"$work/answers/head.status")" ]; then
-    differed=$((differed + 1))
-    printf '%s %s %s: the base build answered HTTP %s, this build HTTP %s\n   base: %s\n   head: %s\n' \
-      "$caller" "$method" "$path" "$(<"$work/answers/base.status")" "$(<"$work/answers/head.status")" \
-      "$(head -c 400 "$work/answers/base.body")" "$(head -c 400 "$work/answers/head.body")" >>"$work/differences"
-  elif at=$(first_difference "$work/answers/base.body" "$work/answers/head.body"); then
-    differed=$((differed + 1))
-    printf '%s %s %s (HTTP %s): the answers differ at byte %s\n   base: %s\n   head: %s\n' \
-      "$caller" "$method" "$path" "$(<"$work/answers/head.status")" "$at" \
-      "$(tail -c +"$((at > 120 ? at - 120 : 1))" "$work/answers/base.body" | head -c 240)" \
-      "$(tail -c +"$((at > 120 ? at - 120 : 1))" "$work/answers/head.body" | head -c 240)" >>"$work/differences"
-  fi
-}
-
-# no_difference fails the check when any answer so far differed, printing every one.
-no_difference() {
-  [ "$differed" -eq 0 ] || fail "$differed of $compared answers differ:
-$(<"$work/differences")"
+  same_answers "$caller $method $path" base head
 }
 
 begin create-projects
@@ -477,8 +278,6 @@ for caller in "${callers[@]}"; do
   done
 done
 no_difference
-# The statuses the answers came back with, so a run whose every answer is the same refusal reads
-# as that rather than as a pass over the seed.
 note "$compared answers compared, each the same status and the same masked bytes at both builds;" \
-  "by this build's status: $(sort "$work/statuses" | uniq -c | awk '{ printf "%s%s %s", sep, $2, $1; sep = ", " }')"
+  "by this build's status: $(statuses)"
 pass
