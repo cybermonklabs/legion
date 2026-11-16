@@ -375,8 +375,8 @@ type LauncherVolumeMissing struct {
 const (
 	// VolumeEpisodeFirst is the trimmer's first episode: its reading reached the high mark.
 	VolumeEpisodeFirst = "first"
-	// VolumeEpisodeRecovery is a reading that fell below the low mark after having been at or
-	// above the high mark.
+	// VolumeEpisodeRecovery is a reading of the trimmer's own below the low mark, an interval's or
+	// a sweep's last, after one at or above the high mark.
 	VolumeEpisodeRecovery = "recovery"
 	// VolumeEpisodeRise is a floor five percentage points or more above the anchor of the
 	// episode it ends, the floor being the lower of the last two reported sweep starts, and no
@@ -385,14 +385,18 @@ const (
 	// reported sweeps, which a later reported sweep that starts lower lowers; that of one a rise
 	// raised is the floor that raised it, which never moves. So a volume that keeps filling raises
 	// a new episode at each five points its sweep starts climb, one reported sweep after the
-	// volume first stands there, and a peak that one start reads raises nothing. Each rise lifts
-	// the anchor five points or more and every floor is a reported sweep's start, so until a
-	// recovery the rises are at most (100 − high mark) / 5, rounded down: three at the default
-	// high mark of 85. An anchor above 95% can never be passed, since a reading is at most 100%,
-	// and from one of 95% a rise needs two reported sweeps in a row that start at exactly 100.0%.
-	// The daemon sends a report of an episode raised this way without holding it for the pod's
-	// hour, and holds it to the three of its episode like any other, which only the report of a
-	// trimmer that switched itself off passes (internal/workflow's volumeNoticeHeldBy).
+	// volume first stands there, except after two reported starts in a row read a transient high
+	// such as 97%: that raises a rise anchored there, and a fill from lower down then raises none
+	// until two starts stand five points above it, and none at all where it is above 95%. A peak
+	// that one start reads raises nothing. Each rise lifts the anchor five points or more and a
+	// reading is at most 100%, so until a recovery a chain whose anchor is A at its first rise
+	// holds at most (100 − A) / 5 rises, rounded down; every anchor is a reported sweep's start,
+	// at or above the high mark that sweep ran by, so a chain anchored at the high mark holds at
+	// most (100 − high mark) / 5, three at the default of 85. An anchor above 95% can never be
+	// passed, and from one of 95% a rise needs two reported sweeps in a row that start at exactly
+	// 100.0%. The daemon sends a report of an episode raised this way without holding it for the
+	// pod's hour, and holds it to the three of its episode like any other, which only the report
+	// of a trimmer that switched itself off passes (internal/workflow's volumeNoticeHeldBy).
 	VolumeEpisodeRise = "rise"
 )
 

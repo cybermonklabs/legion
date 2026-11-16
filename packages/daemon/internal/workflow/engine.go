@@ -1255,10 +1255,11 @@ func (e *Engine) volumeNearFull(ctx context.Context, tx pgx.Tx, fact intake.Volu
 //     of that start and the one before it stands five points or more above the episode's
 //     anchor, and at no smaller climb (internal/launcher's riseAt). The anchor is the lowest
 //     start of the episode's reported sweeps where no rise raised it, and the floor that raised
-//     it where one did, which never moves, so until a recovery the rises are at most
-//     (100 − high mark) / 5, rounded down. An anchor above 95% can never be passed, since a
-//     reading is at most 100%, so no rise follows one; the bound above holds every episode to
-//     three notices however it was raised. This function reads the word alone.
+//     it where one did, which never moves, so until a recovery a chain whose anchor is A at its
+//     first rise holds at most (100 − A) / 5 rises, rounded down: (100 − high mark) / 5 for one
+//     anchored at the high mark. An anchor above 95% can never be passed, since a reading is at
+//     most 100%, so no rise follows one; the bound above holds every episode to three notices
+//     however it was raised. This function reads the word alone.
 //   - Everything else waits an hour from the pod's newest notice, whatever trimmer or episode
 //     wrote it — a recovery-raised episode included, which is a volume doing what it did before.
 func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeCounts, now time.Time) string {

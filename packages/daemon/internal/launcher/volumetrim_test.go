@@ -3794,7 +3794,7 @@ func TestTheAnchorOfAnEpisodeNoRiseRaisedIsTheLowestStartOfItsReportedSweeps(t *
 		{1, shimwire.VolumeEpisodeFirst}, // the first sweep from 92%
 		{2, shimwire.VolumeEpisodeRise},  // the second sweep from 92%
 	})
-	assertOneRise(t, f, "the volume is 92.0%, 5.0 points above the 87.0%")
+	assertOneRise(t, f, "the floor of the last two reported sweep starts, 92.0% and 92.0%, is 92.0%, 5.0 points above the 87.0%")
 }
 
 // The line that raises a rise names the gap the trimmer read, not the five points that make a
@@ -3804,9 +3804,11 @@ func TestTheAnchorOfAnEpisodeNoRiseRaisedIsTheLowestStartOfItsReportedSweeps(t *
 // and the third raises the rise from a floor of 95%, nine points above the 86% the first sweep
 // started from. The negative control is the line as it was at b844518c, which printed the rule's
 // five points as the gap ("5 points above the 86.0%"), and the line that printed the gap as the
-// constant again: the anchor cases rise at exactly five points, where the two figures agree, so
-// none of them could tell them apart. Round 30 restaged this case with a third sweep, since a
-// floor of two starts can raise no rise at an episode's second reported sweep.
+// constant again: of the other cases that read the rise line, every one but the rise from an
+// anchor above 95% (TestARiseAnchorsTheEpisodeItRaisesAtTheFloorThatRaisedIt, 5.5 points) rises at
+// exactly five points, where the two figures agree, so those cases could not tell the two lines
+// apart. Round 30 restaged this case with a third sweep, since a floor of two starts can raise no
+// rise at the second reported sweep of an episode no rise raised, which the first episode is.
 func TestTheRiseLineNamesTheGapTheTrimmerRead(t *testing.T) {
 	f := newTrimFixture(t, 0)
 	f.useVolume(func(interval int) volumeUsage {
@@ -3825,7 +3827,7 @@ func TestTheRiseLineNamesTheGapTheTrimmerRead(t *testing.T) {
 		{1, shimwire.VolumeEpisodeFirst}, // the first sweep from 95%, after the one from 86%
 		{2, shimwire.VolumeEpisodeRise},  // the second sweep from 95%
 	})
-	assertOneRise(t, f, "the volume is 95.0%, 9.0 points above the 86.0%", "where 5 points raise a new episode")
+	assertOneRise(t, f, "the floor of the last two reported sweep starts, 95.0% and 95.0%, is 95.0%, 9.0 points above the 86.0%", "where 5 points raise a new episode")
 }
 
 // A volume that only goes up and down between the same two readings raises no new episode on
@@ -3952,8 +3954,8 @@ func TestARiseAnchorsTheEpisodeItRaisesAtTheFloorThatRaisedIt(t *testing.T) {
 			{3, shimwire.VolumeEpisodeRise},  // from 100% once more, which raises nothing
 		})
 		assertRises(t, f,
-			"the volume is 95.0%, 5.0 points above the 90.0%",
-			"the volume is 100.0%, 5.0 points above the 95.0%",
+			"the floor of the last two reported sweep starts, 95.0% and 96.0%, is 95.0%, 5.0 points above the 90.0%",
+			"the floor of the last two reported sweep starts, 100.0% and 100.0%, is 100.0%, 5.0 points above the 95.0%",
 		)
 	})
 
@@ -3975,7 +3977,7 @@ func TestARiseAnchorsTheEpisodeItRaisesAtTheFloorThatRaisedIt(t *testing.T) {
 			{2, shimwire.VolumeEpisodeRise},
 			{2, shimwire.VolumeEpisodeRise},
 		})
-		assertRises(t, f, "the volume is 95.5%, 5.5 points above the 90.0%")
+		assertRises(t, f, "the floor of the last two reported sweep starts, 95.5% and 95.5%, is 95.5%, 5.5 points above the 90.0%")
 	})
 }
 
@@ -4095,13 +4097,14 @@ func TestARecurringPeakAtSweepStartsRaisesNoEpisodeOnEveryCycle(t *testing.T) {
 	})
 }
 
-// The rises before a recovery are at most (100 − high mark) / 5, rounded down: each rise lifts the
-// anchor five points or more, a rise's anchor never comes down, every floor is a reported sweep's
-// start and so at or above the high mark, and a reading is at most 100%. The bound is the high
-// mark's, not a flat three: at a high mark of 50%, ten. The case drives the longest chain there
-// is to its end: the first sweep starts at the high mark, each next floor stands exactly five
-// points above the anchor before it, two starts in a row at 55%, at 60% and so on to 100%, and
-// three more sweeps from 100% raise nothing.
+// The rises of a chain anchored at the high mark are at most (100 − high mark) / 5, rounded down,
+// before a recovery: each rise lifts the anchor five points or more, a rise's anchor never comes
+// down, every floor is a reported sweep's start and so at or above the high mark, which this case
+// never changes, and a reading is at most 100%. The bound is the high mark's, not a flat three: at
+// a high mark of 50%, ten. The case drives the longest chain there is to its end: the first sweep
+// starts at the high mark, each next floor stands exactly five points above the anchor before it,
+// two starts in a row at 55%, at 60% and so on to 100%, and three more sweeps from 100% raise
+// nothing.
 func TestTheRisesBeforeARecoveryAreBoundedByTheRoomAboveTheHighMark(t *testing.T) {
 	const high = 50
 	starts := []float64{high}
