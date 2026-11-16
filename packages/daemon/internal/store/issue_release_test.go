@@ -291,25 +291,26 @@ func TestTheReleasesBoundaryCancelsOnWorkThePodWasGivenAfterTheMark(t *testing.T
 	}
 }
 
-// releaseThroughTheStore marks a release of the root issue the way the idle tick does — the three
-// rows in one transaction with the mark that records them (ReleaseIdleIssue) — and answers the
-// ids the mark holds: the save, the role stop that is its boundary, and the teardown.
-func releaseThroughTheStore(t *testing.T, st *Store) (first, boundary, last int64) {
+// releaseThroughTheStore marks a release of issue's pod under project legion the way the idle
+// tick does — the three rows in one transaction with the mark that records them
+// (ReleaseIdleIssue) — and answers the ids the mark holds: the save, the role stop that is its
+// boundary, and the teardown.
+func releaseThroughTheStore(t *testing.T, st *Store, issue string) (first, boundary, last int64) {
 	t.Helper()
 	ctx := context.Background()
-	marked, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(pods.IdleView) (IdleReleaseMark, error) {
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", issue, func(pods.IdleView) (IdleReleaseMark, error) {
 		return IdleReleaseMark{Generation: 1, Role: claim.RoleArchitect, Rows: []IdleReleaseRow{
-			{Kind: "issue_bundle", Payload: []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"architect"}`)},
-			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"LEGION-208","role":"architect","generation":1}`), Boundary: true},
-			{Kind: "issue_release", Payload: []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1}`)},
+			{Kind: "issue_bundle", Payload: []byte(fmt.Sprintf(`{"tree":%q,"generation":1,"treeGeneration":1,"role":"architect"}`, issue))},
+			{Kind: "supervise", Payload: []byte(fmt.Sprintf(`{"op":"release","tree":%q,"role":"architect","generation":1}`, issue)), Boundary: true},
+			{Kind: "issue_release", Payload: []byte(fmt.Sprintf(`{"tree":%q,"generation":1,"treeGeneration":1}`, issue))},
 		}}, nil
 	})
 	if err != nil || !marked {
-		t.Fatalf("ReleaseIdleIssue = %t, %v; want the release marked", marked, err)
+		t.Fatalf("ReleaseIdleIssue of %s = %t, %v; want the release marked", issue, marked, err)
 	}
 	if err := st.Pool().QueryRow(ctx, `select first_row, boundary_row, last_row from issue_releases
-		where project = 'legion' and issue = $1`, rootIssue).Scan(&first, &boundary, &last); err != nil {
-		t.Fatalf("read the release's mark: %v", err)
+		where project = 'legion' and issue = $1`, issue).Scan(&first, &boundary, &last); err != nil {
+		t.Fatalf("read the mark of the release of %s: %v", issue, err)
 	}
 	return first, boundary, last
 }
@@ -343,7 +344,7 @@ func TestWorkThePodIsGivenAfterTheMarkCancelsTheReleaseAtItsBoundary(t *testing.
 			if err := st.PutClaim(ctx, live); err != nil {
 				t.Fatal(err)
 			}
-			_, boundary, _ := releaseThroughTheStore(t, st)
+			_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
 
 			// The delivery takes its id from the outbox's own sequence, as every writer of the
 			// outbox does, so it lands above every row the release queued.
@@ -396,7 +397,7 @@ func TestARowOfACancelledReleaseNeitherActsNorCancelsTheReleaseRunningNow(t *tes
 		t.Fatal(err)
 	}
 
-	firstA, boundaryA, lastA := releaseThroughTheStore(t, st)
+	firstA, boundaryA, lastA := releaseThroughTheStore(t, st, rootIssue)
 	if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
 		values ('notice', $1, '{"kind":"todo","reason":"r"}', 0, now(), '')`, rootIssue); err != nil {
 		t.Fatal(err)
@@ -412,7 +413,7 @@ func TestARowOfACancelledReleaseNeitherActsNorCancelsTheReleaseRunningNow(t *tes
 	if _, err := st.Pool().Exec(ctx, `delete from outbox where issue = $1`, rootIssue); err != nil {
 		t.Fatal(err)
 	}
-	firstB, boundaryB, lastB := releaseThroughTheStore(t, st)
+	firstB, boundaryB, lastB := releaseThroughTheStore(t, st, rootIssue)
 	if firstB <= lastA {
 		t.Fatalf("the second release's rows are %d..%d, want them above the first's %d..%d", firstB, lastB, firstA, lastA)
 	}
@@ -772,7 +773,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 				t.Fatalf("take the wake before the mark = %t, %v; want it taken", taken, err)
 			}
 
-			first, boundary, last := releaseThroughTheStore(t, st)
+			first, boundary, last := releaseThroughTheStore(t, st, rootIssue)
 			if !tc.late && !tc.unrecorded {
 				recordRelease(t, st, at)
 			}
@@ -828,7 +829,7 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 	ctx := context.Background()
 	openRunningTree(t, st)
 	releasedClaim(t, st, claim.RoleImplementer)
-	first, boundary, last := releaseThroughTheStore(t, st)
+	first, boundary, last := releaseThroughTheStore(t, st, rootIssue)
 	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, claim.RoleImplementer, boundary); err != nil {
 		t.Fatalf("record the implementer's suspension: %v", err)
 	}

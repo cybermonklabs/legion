@@ -613,12 +613,15 @@ func (p *PodRecords) TakeHeldPodWake(ctx context.Context, tx pgx.Tx, issue strin
 	return true, CancelPodBackstops(ctx, tx, p.project, issue, role)
 }
 
-// PauseOf is the id of the open pause of issue's project, 0 while the project runs, read inside
-// the caller's transaction with its row locked for share (LockIssuePauseTx): a wake the workflow
+// OpenPauseID is the id of the project's open pause, 0 while the project runs, read inside the
+// caller's transaction with its row locked for share (LockOpenPauseByTokenTx): a wake the workflow
 // takes while the project is paused is a held wake of that pause (TakeHeldPodWake, decision 15 of
-// dispatch://INFRA-3759), and the resume's end of the pause waits for the wake to commit.
-func (p *PodRecords) PauseOf(ctx context.Context, tx pgx.Tx, issue string) (int64, error) {
-	held, open, err := LockIssuePauseTx(ctx, tx, issue)
+// dispatch://INFRA-3759), and the resume's end of the pause waits for the wake to commit. The
+// pause is that of the project whose pod tables these are, whatever project the woken issue's key
+// names: a claim of another project's issue, which the operator's spawn makes under this
+// project's token, is part of this project's pause, and its wake is held by it.
+func (p *PodRecords) OpenPauseID(ctx context.Context, tx pgx.Tx) (int64, error) {
+	held, open, err := LockOpenPauseByTokenTx(ctx, tx, p.project)
 	if err != nil || !open {
 		return 0, err
 	}

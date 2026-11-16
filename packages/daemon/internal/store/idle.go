@@ -328,14 +328,17 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // cancelled — a release that suspended no role resumes none, so an empty answer there is the
 // whole story rather than a release whose claims another path took over.
 //
-// A cancel made while the issue's project is paused queues no resume (decision 12 of
+// A cancel made while the project is paused queues no resume (decision 12 of
 // dispatch://INFRA-3759): the pause holds every role of the project, and a resume would be a
 // start the pause holds anyway. It records each role it would have resumed as stopped by that
 // pause instead (stopReleasedForPause), with the pod held and the backstop the stop transaction
 // arms, and answers the pause and those roles (ReleaseCancelled.Pause, Stopped). paused is what
-// that needs of the workflow and the clock. The pause is read after the issue's lock
-// (LockIssueForPause), which this transaction takes after the serializer, the one order every
-// writer of a pod hold keeps (decision 13).
+// that needs of the workflow and the clock. The pause is project's, read by its token
+// (LockOpenPauseByTokenTx), and never the pause of the issue key's prefix: the pod of a claim of
+// another project's issue, which the operator's spawn makes under this project's token, is this
+// project's to pause. It is read after the issue's lock (LockIssueForPause), which this
+// transaction takes after the serializer, the one order every writer of a pod hold keeps
+// (decision 13).
 //
 // An issue the record no longer holds, one that has left the workflow, and one whose tree
 // lingers are given no resume at all, and the mark goes all the same: those claims are a close's
@@ -411,7 +414,7 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 			if err := LockIssueForPause(ctx, tx, issue); err != nil {
 				return err
 			}
-			held, open, err := LockIssuePauseTx(ctx, tx, issue)
+			held, open, err := LockOpenPauseByTokenTx(ctx, tx, project)
 			if err != nil {
 				return err
 			}
@@ -444,10 +447,10 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 	return cancelled, nil
 }
 
-// ReleaseCancelPause is what a cancel made while the issue's project is paused needs beside the
-// store (decision 12 of dispatch://INFRA-3759): the moment the stops it records, the pod's hold
-// and a backstop's due time are stamped with (At, the caller's clock), the backstop the stop of
-// the issue's open phase's worker arms (the idle release's backstop_minutes; zero arms none, as
+// ReleaseCancelPause is what a cancel made while the project is paused needs beside the store
+// (decision 12 of dispatch://INFRA-3759): the moment the stops it records, the pod's hold and a
+// backstop's due time are stamped with (At, the caller's clock), the backstop the stop of the
+// issue's open phase's worker arms (the idle release's backstop_minutes; zero arms none, as
 // where the deployment releases no pod), and which role works an issue's open phase
 // (workflow.OpenPhaseRole), which the store does not restate (nil arms no backstop). At is
 // required of every cancel, since whether the project is paused is read inside the cancel's own
@@ -460,10 +463,10 @@ type ReleaseCancelPause struct {
 
 // ReleaseCancelled is what one cancel of a release did (CancelIssueRelease). Resumed are the roles
 // it queued a resume for, and SuspendsNoRole whether the release was one that suspends no role.
-// Stopped are the roles it recorded stopped by the open pause of the issue's project in place of
-// resuming them, and Pause that pause; Pause is 0 where the cancel recorded no role stopped: while
-// the project runs, and while it is paused where the cancel found no role to resume. A cancel
-// that met a pause resumes none.
+// Stopped are the roles it recorded stopped by the project's open pause in place of resuming
+// them, and Pause that pause; Pause is 0 where the cancel recorded no role stopped: while the
+// project runs, and while it is paused where the cancel found no role to resume. A cancel that
+// met a pause resumes none.
 type ReleaseCancelled struct {
 	Resumed        []claim.Role
 	SuspendsNoRole bool

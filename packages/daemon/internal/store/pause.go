@@ -436,10 +436,28 @@ func scanPause(row pgx.Row) (Pause, error) {
 }
 
 // readOpenPause is project's open pause and whether there is one, read with lock appended to the
-// select (" for share", " for update", or "" for none).
+// select (" for share", " for update", or "" for none). project is the Dispatch key.
 func readOpenPause(ctx context.Context, db queryRower, project, lock string) (Pause, bool, error) {
-	p, err := scanPause(db.QueryRow(ctx, `select `+pauseColumns+` from project_pauses
-		where project = $1 and ended_at is null`+lock, project))
+	return scanOpenPause(db.QueryRow(ctx, `select `+pauseColumns+` from project_pauses
+		where project = $1 and ended_at is null`+lock, project), project)
+}
+
+// readOpenPauseByToken is readOpenPause for the project whose token is token
+// (claim.ProjectToken), the spelling the claim and pod tables hold. project_pauses holds the
+// Dispatch key, which the token lowercases for every key the table admits (^[A-Z][A-Z0-9]*$),
+// so the read matches lower(project), as readIdleView's does. A path that acts for a claim reads
+// the pause by the claim's token and never by its issue key's prefix: a claim of another
+// project's issue, which the operator's spawn makes under this project's token, is part of this
+// project's pause.
+func readOpenPauseByToken(ctx context.Context, db queryRower, token, lock string) (Pause, bool, error) {
+	return scanOpenPause(db.QueryRow(ctx, `select `+pauseColumns+` from project_pauses
+		where lower(project) = $1 and ended_at is null`+lock, token), token)
+}
+
+// scanOpenPause is the open pause row read, and whether it read one; project, in either
+// spelling, names the project in an error.
+func scanOpenPause(row pgx.Row, project string) (Pause, bool, error) {
+	p, err := scanPause(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Pause{}, false, nil
 	}
@@ -467,20 +485,15 @@ func LockOpenPauseTx(ctx context.Context, tx pgx.Tx, project string) (Pause, boo
 	return readOpenPause(ctx, tx, project, " for share")
 }
 
-// issueProject is the Dispatch key of issue's project, the spelling project_pauses holds: the
-// part of the key before its dash, as the outbox's split_part(outbox.issue, '-', 1) reads it.
-func issueProject(issue string) string {
-	project, _, _ := strings.Cut(issue, "-")
-	return project
-}
-
-// LockIssuePauseTx is the open pause of issue's project with its row locked for share, and
-// whether one is open: what a wake the workflow takes inside a fact's transaction reads to mark a
-// wake the pause holds (decision 15 of dispatch://INFRA-3759, PodRecords.PauseOf). The resume's
-// end of that pause then waits for the fact to commit, and sets the stuck clock of the held wake
-// it wrote (SetProjectResumeClocksTx).
-func LockIssuePauseTx(ctx context.Context, tx pgx.Tx, issue string) (Pause, bool, error) {
-	return readOpenPause(ctx, tx, issueProject(issue), " for share")
+// LockOpenPauseByTokenTx is the open pause of the project whose token is token
+// (readOpenPauseByToken) with its row locked for share, and whether one is open. A wake the
+// workflow takes inside a fact's transaction reads it to mark a wake the pause holds (decision 15
+// of dispatch://INFRA-3759, PodRecords.OpenPauseID), and a cancel of an idle release reads it to
+// record the roles it would resume as stopped by the pause (decision 12, CancelIssueRelease). The
+// resume's end of that pause then waits for the caller to commit, and sets the stuck clock of a
+// held wake it wrote (SetProjectResumeClocksTx).
+func LockOpenPauseByTokenTx(ctx context.Context, tx pgx.Tx, token string) (Pause, bool, error) {
+	return readOpenPauseByToken(ctx, tx, token, " for share")
 }
 
 // LockPauseTx is pause id read with its row locked for share: the stop transaction of decision 6

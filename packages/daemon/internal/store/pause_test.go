@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,7 +55,7 @@ func pauseStopRow(pause Pause, stop PauseStopClaim) (PauseRow, error) {
 	request := record.SuperviseRequest{Op: "pause_stop", Tree: stop.Tree, Role: stop.Role,
 		Generation: stop.Generation, Pause: pause.ID}
 	key := stop.Issue
-	if issueProject(stop.Issue) != pause.Project {
+	if project, _, _ := strings.Cut(stop.Issue, "-"); project != pause.Project {
 		key, request.Issue = pause.Project, stop.Issue
 	}
 	row, err := record.NewOutboxRow(key, request, pause.Since)
@@ -82,10 +83,17 @@ func pauseNoticeRow(kind record.NoticeKind) func(Pause) (PauseRow, error) {
 // pauseLegion pauses project LEGION as the operator, through the store's own transaction.
 func pauseLegion(t *testing.T, st *Store, at time.Time) (Pause, []PauseStopClaim) {
 	t.Helper()
-	pause, stops, err := st.Pause(context.Background(), PauseRequest{Project: "LEGION", By: PauseActor{Kind: PauseByOperator},
+	return pauseProject(t, st, "LEGION", at)
+}
+
+// pauseProject pauses project, a Dispatch key, as the operator, through the store's own
+// transaction.
+func pauseProject(t *testing.T, st *Store, project string, at time.Time) (Pause, []PauseStopClaim) {
+	t.Helper()
+	pause, stops, err := st.Pause(context.Background(), PauseRequest{Project: project, By: PauseActor{Kind: PauseByOperator},
 		Reason: "the model provider is down", At: at, StopRow: pauseStopRow, Notice: pauseNoticeRow(record.ProjectPausedNotice)})
 	if err != nil {
-		t.Fatalf("pause LEGION: %v", err)
+		t.Fatalf("pause %s: %v", project, err)
 	}
 	return pause, stops
 }
@@ -570,6 +578,37 @@ func TestAHeldWakeRecordsItsPauseAndPairsWithNoRelease(t *testing.T) {
 	})
 	if set, err := st.SetResumeClock(ctx, "legion", "LEGION-208", claim.RoleImplementer, pausedAt.Add(2*time.Hour)); err != nil || set {
 		t.Fatalf("set the clock of a closed resume = %t, %v; want no open resume found", set, err)
+	}
+}
+
+// Decision 15 of dispatch://INFRA-3759, for a claim of another project's issue, which the
+// operator's spawn (`legion claims spawn`) makes under this project's token: a wake of it is held
+// by this project's pause, as every other claim's is. OpenPauseID reads the open pause of the
+// project whose pod tables it is, never another project's: it answers 0 while only OTHER is
+// paused, and LEGION's pause once LEGION is paused too.
+func TestAWakeOfAClaimOfAnotherProjectsIssueIsHeldByThisProjectsPause(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := podRecords(t, st)
+	pauseOf := func() int64 {
+		t.Helper()
+		var pause int64
+		inTx(t, st, func(tx pgx.Tx) error {
+			var err error
+			pause, err = records.OpenPauseID(ctx, tx)
+			return err
+		})
+		return pause
+	}
+
+	other, _ := pauseProject(t, st, "OTHER", pausedAt)
+	if got := pauseOf(); got != 0 {
+		t.Fatalf("OpenPauseID through legion's pod records while only OTHER is paused = %d, want 0: OTHER's pause %d is not this project's",
+			got, other.ID)
+	}
+	legion, _ := pauseLegion(t, st, pausedAt.Add(time.Minute))
+	if got := pauseOf(); got != legion.ID {
+		t.Fatalf("OpenPauseID through legion's pod records while LEGION is paused = %d, want LEGION's pause %d", got, legion.ID)
 	}
 }
 

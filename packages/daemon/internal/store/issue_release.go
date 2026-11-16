@@ -74,8 +74,8 @@ const (
 	// left the workflow, its tree lingers, or its cleanup is reserved. None of those is a
 	// release's business, and each of them is a close's.
 	ReleaseCauseUnauthorized
-	// ReleaseCausePaused: the issue's project is paused at the release's save. The pause saves
-	// no workspace and deletes no pod, so the release is cancelled before it stores a bundle
+	// ReleaseCausePaused: the project is paused at the release's save. The pause saves no
+	// workspace and deletes no pod, so the release is cancelled before it stores a bundle
 	// (IssueReleaseSave, decision 12 and departure 4 of dispatch://INFRA-3759).
 	ReleaseCausePaused
 )
@@ -301,12 +301,14 @@ func (s *Store) ReleaseSuspendedClaim(ctx context.Context, project, issue string
 // does write the issue's one stored bundle, and a save of a finished release must not replace the
 // bundle the live one stored.
 //
-// A save that finds the issue's project paused cancels the release (ReleaseCausePaused): the
-// pause saves no workspace and deletes no pod, so a release whose save had not run when the pause
-// began is cancelled and keeps its pod, whatever reached its roles first (decision 12 and
-// departure 4 of dispatch://INFRA-3759). A release that saved before the pause finishes as it
-// does while the project runs: its role stops and its teardown read no pause. The open pause is
-// the one fact this reads of it, in this transaction.
+// A save that finds the project paused cancels the release (ReleaseCausePaused): the pause saves
+// no workspace and deletes no pod, so a release whose save had not run when the pause began is
+// cancelled and keeps its pod, whatever reached its roles first (decision 12 and departure 4 of
+// dispatch://INFRA-3759). The pause is project's, read by its token (readOpenPauseByToken), and
+// never the pause of the issue key's prefix: the pod of a claim of another project's issue, which
+// the operator's spawn makes under this project's token, is this project's to pause. A release
+// that saved before the pause finishes as it does while the project runs: its role stops and its
+// teardown read no pause. The open pause is the one fact this reads of it, in this transaction.
 //
 // The decision carries the release's id, which the save puts on the bundle it stores
 // (PutWorkspaceBundle): the restore of the pod that replaces the released one names the release
@@ -324,7 +326,7 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 		}
 		decision.Act, decision.Release = ReleaseActs, mark.id
 		decision.Suspended, decision.SuspendsNoRole = mark.roles(), mark.suspendsNoRole()
-		_, paused, err := readOpenPause(ctx, tx, issueProject(issue), "")
+		_, paused, err := readOpenPauseByToken(ctx, tx, project, "")
 		if err != nil {
 			return err
 		}
