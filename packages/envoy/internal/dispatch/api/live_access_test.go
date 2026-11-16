@@ -221,3 +221,22 @@ func TestARemovedPersonsSocketRefreshesWithoutTheProject(t *testing.T) {
 		})
 	}
 }
+
+// TestAResumeOverEventsTheCallerMayNotReadIsComplete: a resume's gap is the events its caller may
+// read. The seed's log holds PRIV's events, its access changes among them, and a caller that does
+// not see PRIV is replayed none of them (TestTheLiveSocketSendsNoEventOfAHiddenProject), so its
+// resume from the log's start misses nothing it may read and says replay_complete true, as it does
+// on a deployment where PRIV was never written. Every caller that does not see PRIV is asked,
+// carol's token that lists no project among them, though PRIV's list names carol: she was added,
+// and an addition takes nothing from her.
+func TestAResumeOverEventsTheCallerMayNotReadIsComplete(t *testing.T) {
+	seed := seedPrivateProject(t)
+	url := liveURLOf(t, seed.handler)
+	start := int64(0)
+	for _, caller := range callersBlindToPrivate {
+		client := dialLive(t, url, seed.liveHeader(t, caller))
+		if got := subscribeEventsStart(t, client, "feed", &start); !got.ReplayComplete {
+			t.Errorf("%s's resume from 0 over a log holding PRIV's events says its replay is not complete: %+v", caller, got)
+		}
+	}
+}

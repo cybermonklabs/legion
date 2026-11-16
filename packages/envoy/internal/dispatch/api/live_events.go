@@ -169,7 +169,7 @@ func (s *server) feedEvents(ctx context.Context, stream liveStreamer, sub string
 		// that gap (eventSubscriptionCheck), so a resume reads the pool once before its replay
 		// rather than twice.
 		var cursorAt *time.Time
-		if head, cursorAt, behind, accessChanged, err = eventSubscriptionCheck(ctx, s.deps.Store.Pool, subscription.head, since); err != nil {
+		if head, cursorAt, behind, accessChanged, err = eventSubscriptionCheck(ctx, s.deps.Store.Pool, reader, subscription.head, since); err != nil {
 			endEventsAfterFailure(ctx, stream, sub, "read the event log's head", err)
 			return
 		}
@@ -497,8 +497,8 @@ func (s *server) resolveEventReplay(ctx context.Context, reader model.Actor, sin
 func (s *server) replayThrough(ctx context.Context, reader model.Actor, from, published int64, complete bool, behind int) (eventReplay, error) {
 	if behind < 0 {
 		if err := s.deps.Store.Pool.QueryRow(ctx, `
-			select count(*) from (select 1 from events where id > $1 and id <= $2 order by id limit $3) as behind
-		`, from, published, maxLiveReplay+1).Scan(&behind); err != nil {
+			select count(*) from (select 1 from events e where e.id > $1 and e.id <= $2 and `+eventGapSQL("e", "$4")+` order by e.id limit $3) as behind
+		`, from, published, maxLiveReplay+1, refs.VisibilityArg(reader)).Scan(&behind); err != nil {
 			return eventReplay{}, err
 		}
 	}
@@ -543,7 +543,7 @@ func (s *server) resumeAfterOverflow(ctx context.Context, caller model.Actor, af
 		next.cancel()
 		return relaySubscription{}, eventReplay{}, eventsReader{}, false
 	}
-	head, cursorAt, behind, accessChanged, err := eventSubscriptionCheck(ctx, s.deps.Store.Pool, next.head, &after)
+	head, cursorAt, behind, accessChanged, err := eventSubscriptionCheck(ctx, s.deps.Store.Pool, reader, next.head, &after)
 	if err != nil || eventLogWasReset(next.head, next.headAt, head, cursorAt) {
 		next.cancel()
 		return relaySubscription{}, eventReplay{}, eventsReader{}, false
@@ -558,22 +558,35 @@ func (s *server) resumeAfterOverflow(ctx context.Context, caller model.Actor, af
 
 // eventSubscriptionCheck is eventCursorCheck for an events subscription whose relay subscription
 // began at cursor, and in the same statement how many events a resume from since stands behind
-// it: the rows of (since, cursor], counted up to maxLiveReplay+1, which is all the bound needs
-// (replayThrough), and whether an access change stands among them (accessChanged). behind is -1
-// when there is nothing to count: no since, or a since above the cursor, which resolveEventReplay
-// answers without a replay read. One statement, so a resume waits for the shared pool once before
-// its replay read rather than twice: on a restart every page resumes at once, behind every
-// request queued for a connection.
-func eventSubscriptionCheck(ctx context.Context, q queryer, cursor int64, since *int64) (maxID int64, cursorAt *time.Time, behind int, accessChanged bool, err error) {
+// it: the rows of (since, cursor] in the gap of reader's page (eventGapSQL), counted up to
+// maxLiveReplay+1, which is all the bound needs (replayThrough), and whether an access change
+// stands among them (accessChanged). behind is -1 when there is nothing to count: no since, or a
+// since above the cursor, which resolveEventReplay answers without a replay read. One statement,
+// so a resume waits for the shared pool once before its replay read rather than twice: on a
+// restart every page resumes at once, behind every request queued for a connection.
+func eventSubscriptionCheck(ctx context.Context, q queryer, reader model.Actor, cursor int64, since *int64) (maxID int64, cursorAt *time.Time, behind int, accessChanged bool, err error) {
 	if err := q.QueryRow(ctx, `
 		select coalesce((select max(id) from events), 0), (select created_at from events where id = $1),
 			case when $2::bigint is null or $2::bigint > $1 then -1 else count(*)::int end,
 			coalesce(bool_or(missed.type in ('`+projectAccessChangedEvent+`', '`+accessGroupChangedEvent+`')), false)
-		from (select type from events where id > $2::bigint and id <= $1 order by id limit $3) as missed
-	`, cursor, since, maxLiveReplay+1).Scan(&maxID, &cursorAt, &behind, &accessChanged); err != nil {
+		from (select e.type from events e where e.id > $2::bigint and e.id <= $1 and `+eventGapSQL("e", "$4")+` order by e.id limit $3) as missed
+	`, cursor, since, maxLiveReplay+1, refs.VisibilityArg(reader)).Scan(&maxID, &cursorAt, &behind, &accessChanged); err != nil {
 		return 0, nil, 0, false, err
 	}
 	return maxID, cursorAt, behind, accessChanged, nil
+}
+
+// eventGapSQL passes the events row eventAlias names when it belongs to the gap of a resume read
+// for the viewer bound at viewerParam: an event that viewer may read (eventReadableSQL), which a
+// complete replay sends, and the removal of the viewer's own person from a project's access list,
+// which the viewer no longer reads once it is made, and which takes from the page what it read of
+// that project (accessChanged). Every other event is one the page never held and would not be
+// sent, so it is no gap: a resume across a project the caller never saw is complete.
+func eventGapSQL(eventAlias, viewerParam string) string {
+	e := eventAlias
+	return `(` + eventReadableSQL(e, viewerParam) + `
+		or (` + e + `.type = '` + projectAccessChangedEvent + `' and ` + e + `.payload->>'change' = '` + model.AccessPersonRemoved + `'
+			and ` + e + `.payload->>'principal' = ` + viewerParam + `::jsonb->>'person'))`
 }
 
 // endEventsAfterFailure ends a subscription whose read failed, with an ended frame (behind), so its
