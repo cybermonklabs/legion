@@ -145,7 +145,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the issue: %v", err)
 	}
-	artifacts, err := served.loadArtifacts(ctx, pool, issue.Key)
+	artifacts, err := served.loadArtifacts(ctx, pool, everyReader, issue.Key)
 	if err != nil {
 		t.Fatalf("load the artifacts: %v", err)
 	}

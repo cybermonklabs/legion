@@ -6,13 +6,16 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // A project imports its component model from any number of sources, one per repository, and a
@@ -20,13 +23,14 @@ import (
 // is authAny: agents save, remove and refresh sources as people do, and a bearer save or removal
 // names its session in actor.
 
-// listArchitectureSources answers every source of every project, by project and then in the
-// order each project's sources were added.
+// listArchitectureSources answers every source of every project the caller sees, by project and
+// then in the order each project's sources were added.
 func (s *server) listArchitectureSources(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
-	sources, err := querySources(r.Context(), s.deps.Store.Pool, `order by project_key, id`)
+	sources, err := querySources(r.Context(), s.deps.Store.Pool, who, `true`, `project_key, id`)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -37,19 +41,21 @@ func (s *server) listArchitectureSources(w http.ResponseWriter, r *http.Request)
 // listProjectArchitectureSources answers the project's sources in the order they were added. A
 // project with none answers [], since whether a project has a model is a question with an
 // ordinary negative answer; a project that does not exist is still a 404, so a mistyped key is
-// reported rather than read as "no model".
+// reported rather than read as "no model". A project the caller does not see is one that does
+// not exist.
 func (s *server) listProjectArchitectureSources(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	key := r.PathValue("key")
-	sources, err := querySources(r.Context(), s.deps.Store.Pool, `where project_key = $1 order by id`, key)
+	sources, err := querySources(r.Context(), s.deps.Store.Pool, who, `project_key = $1`, `id`, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	if len(sources) == 0 {
-		if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", key).Scan(new(string)); err != nil {
+		if err := s.requireVisibleProject(r.Context(), who, key); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -59,22 +65,24 @@ func (s *server) listProjectArchitectureSources(w http.ResponseWriter, r *http.R
 
 // getArchitectureSource answers the singular read that dispatch clients older than this release
 // make on every issue create: the project's first source in id order, or null when it has none
-// (they read only whether it is null), and 404 for a project that does not exist. The CLI and the
-// server ship separately, so a removed route turned every create into false "Could not check"
-// advice (#1522 fixed the same skew); it stays until no such client is left.
+// (they read only whether it is null), and 404 for a project that does not exist or that the
+// caller does not see. The CLI and the server ship separately, so a removed route turned every
+// create into false "Could not check" advice (#1522 fixed the same skew); it stays until no such
+// client is left.
 func (s *server) getArchitectureSource(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	key := r.PathValue("key")
 	slog.Warn("dispatch: GET /api/v1/projects/{key}/architecture-source called by a dispatch client older than this release; upgrade it, the route will be removed", "project", key)
-	sources, err := querySources(r.Context(), s.deps.Store.Pool, `where project_key = $1 order by id limit 1`, key)
+	sources, err := querySources(r.Context(), s.deps.Store.Pool, who, `project_key = $1`, `id limit 1`, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	if len(sources) == 0 {
-		if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", key).Scan(new(string)); err != nil {
+		if err := s.requireVisibleProject(r.Context(), who, key); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -84,9 +92,21 @@ func (s *server) getArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, sources[0])
 }
 
-// querySources reads the source rows the tail (a where and order by clause) selects.
-func querySources(ctx context.Context, q queryer, tail string, args ...any) ([]model.ArchitectureSource, error) {
-	rows, err := q.Query(ctx, `select `+architecture.SourceColumns+` from architecture_sources `+tail, args...)
+// requireVisibleProject answers pgx.ErrNoRows, writeHandlerError's 404 NOT_FOUND, for a project
+// key no project holds, or one who does not see (access.ProjectClause).
+func (s *server) requireVisibleProject(ctx context.Context, who model.Actor, key string) error {
+	return s.deps.Store.Pool.QueryRow(ctx, "select key from projects where key = $1 and "+access.ProjectClause("key", "$2"),
+		key, refs.VisibilityArg(who)).Scan(new(string))
+}
+
+// querySources reads the source rows that condition (over architecture_sources' columns, its
+// placeholders args' from $1) selects, in order, of the projects who sees: the viewer is bound
+// after args, so a project who does not see holds no source.
+func querySources(ctx context.Context, q queryer, who model.Actor, condition, order string, args ...any) ([]model.ArchitectureSource, error) {
+	seen := "$" + strconv.Itoa(len(args)+1)
+	rows, err := q.Query(ctx, `select `+architecture.SourceColumns+` from architecture_sources
+		where (`+condition+`) and `+access.ProjectClause("project_key", seen)+` order by `+order,
+		append(args, refs.VisibilityArg(who))...)
 	if err != nil {
 		return nil, err
 	}

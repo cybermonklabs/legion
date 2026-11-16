@@ -99,7 +99,7 @@ func (s *server) getProjectDocumentSummary(w http.ResponseWriter, r *http.Reques
 		var summary documentSummary
 		err := q.QueryRow(ctx, `
 			select a.id::text, coalesce(a.project_key, ''), a.slug, a.name, a.kind, `+summaryLatestVersion+`
-			from artifacts a where `+predicate+` and `+access.ProjectClause("a.project_key", "$2"), value, viewer).Scan(
+			from artifacts a where `+predicate+` and `+documentClause("a", "$2"), value, viewer).Scan(
 			&summary.ID, &summary.Project, &summary.Slug, &summary.Name, &summary.Kind, &summary.LatestVersion,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -107,7 +107,7 @@ func (s *server) getProjectDocumentSummary(w http.ResponseWriter, r *http.Reques
 		}
 		return summary, err
 	}
-	summary, err := resolveDocumentReference(ctx, s, q, artifactTarget{Project: r.PathValue("key")}, r.PathValue("slug"),
+	summary, err := resolveDocumentReference(ctx, s, q, who, artifactTarget{Project: r.PathValue("key")}, r.PathValue("slug"),
 		func(refKey string) (documentSummary, error) { return read(`a.ref_key = $1`, refKey) },
 		func(id string) (documentSummary, error) { return read(`a.id = $1::uuid`, id) },
 	)

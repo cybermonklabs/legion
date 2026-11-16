@@ -33,7 +33,11 @@ func (s *server) rebuildArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, who, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -92,10 +96,11 @@ func (s *server) injectArtifactNewerContent(w http.ResponseWriter, r *http.Reque
 
 // injectArtifactForTest runs a docs test hook on the request's document and answers 204.
 func (s *server) injectArtifactForTest(w http.ResponseWriter, r *http.Request, inject func(ctx context.Context, artifactID string) error) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
-	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
+	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, who, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

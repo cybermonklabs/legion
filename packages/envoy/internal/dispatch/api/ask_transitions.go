@@ -272,6 +272,12 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 		}
 		return recordAnswer(ctx, tx, ask)
 	}
+	// The answerer as a reader, resolved before the answer's transaction opens: the ask is closed
+	// as it reads it, and an approval's document is read as it (transition.After below).
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	// An approval ask's answer is a review of every document it names, each pinned to the version
 	// its question named: that document's latest settled one, which every version write moves the
 	// request to, and the one the human reviewed (revision). A request naming a spec and its
@@ -284,7 +290,7 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		artifact, err := s.loadArtifact(ctx, tx, ask.Approval.ArtifactID)
+		artifact, err := s.loadArtifact(ctx, tx, who, ask.Approval.ArtifactID)
 		if err != nil {
 			return nil, err
 		}
@@ -293,10 +299,6 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		return events, nil
-	}
-	who, ok := s.readerOf(w, r)
-	if !ok {
-		return
 	}
 	ask, err := s.closeAsk(r.Context(), who, r.PathValue("id"), actor, transition)
 	if err != nil {

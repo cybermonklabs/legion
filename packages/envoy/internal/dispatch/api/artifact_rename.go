@@ -40,7 +40,11 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 	// The name is trimmed of spaces before every rule, as an upload's name is
 	// (jsonArtifactUpload), so the rules read what would be stored.
 	name := strings.TrimSpace(input.Name)
-	tx, artifact, target, ok := s.beginArtifactWrite(w, r)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	tx, artifact, target, ok := s.beginArtifactWrite(w, r, who)
 	if !ok {
 		return
 	}
@@ -91,7 +95,7 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	// The row as it now is, with the versions and the approval every artifact read carries, is
 	// what GET /api/v1/artifacts/{id} answers and what this route answers too.
-	if err := loadArtifactDetails(r.Context(), tx, []*model.Artifact{&renamed}); err != nil {
+	if err := loadArtifactDetails(r.Context(), tx, who, []*model.Artifact{&renamed}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

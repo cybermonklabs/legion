@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -21,15 +22,19 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
+// listRepoProjects answers the repository mappings of the projects the caller sees: a mapping to a
+// project it does not see is one the list does not hold (access.ProjectClause).
 func (s *server) listRepoProjects(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select `+repoProjectColumns+`
 		from repo_projects
+		where `+access.ProjectClause("project", "$1")+`
 		order by repo
-	`)
+	`, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

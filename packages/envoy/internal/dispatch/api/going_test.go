@@ -85,7 +85,7 @@ func TestAGoingRequestRecordsItsWindowAndReadsBack(t *testing.T) {
 		t.Fatalf("the run's window is %v (created_at %v, ends_at %v), want %v",
 			window, recorded.CreatedAt, recorded.EndsAt, contracts.GoingRunWindow)
 	}
-	read, err := rig.server.readGoingRequest(context.Background(), recorded.ID)
+	read, err := rig.server.readGoingRequest(context.Background(), everyReader, recorded.ID)
 	if err != nil {
 		t.Fatalf("read the run back: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestAGoingRequestRecordsItsWindowAndReadsBack(t *testing.T) {
 	if !read.CreatedAt.Equal(recorded.CreatedAt) || !read.EndsAt.Equal(recorded.EndsAt) || read.ID != recorded.ID {
 		t.Fatalf("read back %+v, want the row the POST stored %+v", read, recorded)
 	}
-	_, err = rig.server.readGoingRequest(context.Background(), "00000000-0000-4000-8000-00000000000a")
+	_, err = rig.server.readGoingRequest(context.Background(), everyReader, "00000000-0000-4000-8000-00000000000a")
 	if !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("reading a run nobody asked for: %v, want pgx.ErrNoRows", err)
 	}
@@ -287,7 +287,7 @@ func TestTheGoingSweepDeletesARunPastItsTTL(t *testing.T) {
 	if err := sweepGoingRequests(ctx, rig.database.Pool); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	if _, err := rig.server.readGoingRequest(ctx, old.ID); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := rig.server.readGoingRequest(ctx, everyReader, old.ID); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("the run past its TTL reads %v, want pgx.ErrNoRows", err)
 	}
 	var frames int
@@ -297,7 +297,7 @@ func TestTheGoingSweepDeletesARunPastItsTTL(t *testing.T) {
 	if frames != 0 {
 		t.Fatalf("the deleted run left %d frames, want none: they go with it", frames)
 	}
-	if _, err := rig.server.readGoingRequest(ctx, young.ID); err != nil {
+	if _, err := rig.server.readGoingRequest(ctx, everyReader, young.ID); err != nil {
 		t.Fatalf("the run inside its TTL: %v, want it kept", err)
 	}
 }
@@ -373,7 +373,7 @@ func TestAGoingTerminalWriteForAMissingRunLeavesItsBatchStanding(t *testing.T) {
 	if err := sweepGoingRequests(ctx, rig.database.Pool); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	if _, err := rig.server.readGoingRequest(ctx, stale.ID); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := rig.server.readGoingRequest(ctx, everyReader, stale.ID); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("the run past its TTL reads %v, want pgx.ErrNoRows: the pass reached its delete", err)
 	}
 }

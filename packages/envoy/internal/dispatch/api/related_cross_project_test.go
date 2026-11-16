@@ -149,10 +149,11 @@ func seedAnsweredQuestion(
 	return id
 }
 
-// crossProjectCheck runs one check whose write is a question, as an ask create runs it.
+// crossProjectCheck runs one check whose write is a question, as an ask create runs it, read as
+// the server's own viewer, which sees every project.
 func crossProjectCheck(srv *server, project string) *model.Suggestions {
 	return srv.relatedCheck(context.Background(), relatedInput{
-		project: project, text: crossProjectQuestion, title: crossProjectQuestion, question: true,
+		who: everyReader, project: project, text: crossProjectQuestion, title: crossProjectQuestion, question: true,
 	})
 }
 

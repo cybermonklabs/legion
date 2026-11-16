@@ -11,7 +11,9 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -112,14 +114,20 @@ func (s *server) recordGoingRequest(ctx context.Context, author model.Actor, pro
 	return request, nil
 }
 
-// readGoingRequest is one run by id, pgx.ErrNoRows when the record holds none: a run that was
-// never asked, or one the sweep has deleted past contracts.GoingRequestTTL. What a run the
-// caller does not own answers is the caller's to decide, which is why the row carries its
-// Author: model.Actor.SameCredential compares it with the reader's.
-func (s *server) readGoingRequest(ctx context.Context, id string) (goingRequest, error) {
+// readGoingRequest is one run by id as who reads it, pgx.ErrNoRows when the record holds none: a
+// run that was never asked, one the sweep has deleted past contracts.GoingRequestTTL, or one
+// asked of a project who does not see (access.ProjectClause), whose frames hold that project's
+// hits and so answer as a run nobody asked. A run asked of every project (""), or of a key no
+// project holds, which holds no project's content, is read by its author whatever it sees, as it
+// was before a project could be hidden. What a run the caller does not own answers is the
+// caller's to decide, which is why the row carries its Author: model.Actor.SameCredential
+// compares it with the reader's.
+func (s *server) readGoingRequest(ctx context.Context, who model.Actor, id string) (goingRequest, error) {
 	return scanGoingRequest(s.deps.Store.Pool.QueryRow(ctx, `
-		select `+goingRequestColumns+` from going_requests where id = $1::uuid
-	`, id))
+		select `+goingRequestColumns+` from going_requests r
+		where r.id = $1::uuid and (r.project = '' or `+access.ProjectClause("r.project", "$2")+`
+			or not exists (select 1 from projects asked where asked.key = r.project offset 0))
+	`, id, refs.VisibilityArg(who)))
 }
 
 // appendGoingEvent stores event as the run's next frame and answers the sequence it took. The

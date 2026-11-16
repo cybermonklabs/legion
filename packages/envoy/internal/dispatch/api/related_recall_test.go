@@ -321,7 +321,7 @@ func recallNewSearch(ctx context.Context, srv *server, project string, picked re
 	if picked.NoLexemes || len(picked.Terms) == 0 {
 		return nil, nil
 	}
-	response, err := srv.relatedSearch(ctx, srv.deps.Store.Pool, relatedKeywordStatement, project, picked, nil)
+	response, err := srv.relatedSearch(ctx, srv.deps.Store.Pool, everyReader, relatedKeywordStatement, project, picked, nil)
 	return response.Results, err
 }
 

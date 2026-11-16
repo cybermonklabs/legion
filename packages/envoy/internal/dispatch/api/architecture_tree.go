@@ -7,25 +7,30 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // getArchitectureTree answers the project's component model — every source's components
 // together — with the work attached to it: each source's sync bookkeeping, every component with
 // its source repository, counts and issue rows, and the issues no component counts —
 // unassigned, declared not architectural, or linked only to retired components. 404
-// SOURCE_NOT_FOUND when the project has no architecture source.
+// SOURCE_NOT_FOUND when the project has no architecture source, or is one the caller does not
+// see, whose sources every statement here reads as none (access.ProjectClause).
 func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	project := r.PathValue("key")
+	seen := refs.VisibilityArg(who)
 	pool := s.deps.Store.Pool
 	var tree model.ArchitectureTree
 	rows, err := pool.Query(r.Context(), `
 		select repo, branch, last_commit, last_sync_at, last_error from architecture_sources
-		where project_key = $1 order by id
-	`, project)
+		where project_key = $1 and `+access.ProjectClause("project_key", "$2")+` order by id
+	`, project, seen)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -39,7 +44,7 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "SOURCE_NOT_FOUND", http.StatusNotFound, "no architecture source configured for "+project)
 		return
 	}
-	components, byID, err := loadTreeComponents(r.Context(), pool, project)
+	components, byID, err := loadTreeComponents(r.Context(), pool, seen, project)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -48,12 +53,12 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	// into the answer below: the trees are the table's rows where it holds them, and the read
 	// stores what it did not.
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	issues, err := loadTreeIssues(r.Context(), pool, project)
+	issues, err := loadTreeIssues(r.Context(), pool, seen, project)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := attachTreeIssues(r.Context(), pool, project, issues, byID); err != nil {
+	if err := attachTreeIssues(r.Context(), pool, seen, project, issues, byID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -116,15 +121,16 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 
 // loadTreeComponents reads the project's current model — every source's components — in id
 // order, each component with its source repository, its dependency ids and an empty issue list.
-func loadTreeComponents(ctx context.Context, q queryer, project string) ([]*model.ArchitectureTreeComponent, map[string]*model.ArchitectureTreeComponent, error) {
+// seen is the reader's visibility argument (refs.VisibilityArg).
+func loadTreeComponents(ctx context.Context, q queryer, seen any, project string) ([]*model.ArchitectureTreeComponent, map[string]*model.ArchitectureTreeComponent, error) {
 	rows, err := q.Query(ctx, `
 		select c.id, s.repo, c.title, c.parent, c.external, c.paths, c.prose,
 		       coalesce((select array_agg(d.to_id order by d.to_id) from component_depends d
 		                 where d.project_key = c.project_key and d.from_id = c.id), '{}'::text[])
 		from components c
 		join architecture_sources s on s.project_key = c.project_key and s.id = c.source_id
-		where c.project_key = $1 order by c.id
-	`, project)
+		where c.project_key = $1 and `+access.ProjectClause("c.project_key", "$2")+` order by c.id
+	`, project, seen)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -151,8 +157,9 @@ type treeIssue struct {
 	Components model.IssueComponents
 }
 
-// treeIssuesQuery is the architecture tree's read of a project's issues with their components.
-// The text is built once, at start, for the reason issueRowStatement gives.
+// treeIssuesQuery is the architecture tree's read of a project's issues with their components,
+// $2 the reader's visibility argument. The text is built once, at start, for the reason
+// issueRowStatement gives.
 var treeIssuesQuery = `
 		with recursive subjects as (select i.key from issues i where i.project_key = $1),
 		` + issueComponentsTerms + `
@@ -162,14 +169,15 @@ var treeIssuesQuery = `
 		       ` + issueComponentsColumns + `
 		from issues i
 		` + issueComponentsJoin + `
-		where i.project_key = $1
+		where i.project_key = $1 and ` + access.ProjectClause("i.project_key", "$2") + `
 		order by ` + issueStatusCase + `, i.rank asc, i.created_at asc
 	`
 
 // loadTreeIssues reads every issue of the project — icebox and closed included — with its
-// effective attachment resolved, in the issue list's order (lifecycle status, then rank).
-func loadTreeIssues(ctx context.Context, q queryer, project string) ([]treeIssue, error) {
-	rows, err := q.Query(ctx, treeIssuesQuery, project)
+// effective attachment resolved, in the issue list's order (lifecycle status, then rank), seen
+// being the reader's visibility argument.
+func loadTreeIssues(ctx context.Context, q queryer, seen any, project string) ([]treeIssue, error) {
+	rows, err := q.Query(ctx, treeIssuesQuery, project, seen)
 	if err != nil {
 		return nil, err
 	}
@@ -197,11 +205,13 @@ func loadTreeIssues(ctx context.Context, q queryer, project string) ([]treeIssue
 // issue once to every component it counts for, in the issues' order. When an issue qualifies
 // several ways the strongest wins: direct (its own row names the component) over inherited (an
 // ancestor's row does) over contained (its set names a component this one contains; via is
-// that component). Retired ids match no component and count for nothing.
-func attachTreeIssues(ctx context.Context, q queryer, project string, issues []treeIssue, byID map[string]*model.ArchitectureTreeComponent) error {
+// that component). Retired ids match no component and count for nothing. Its walk starts from
+// the project's issues as the reader whose visibility argument is seen reads them.
+func attachTreeIssues(ctx context.Context, q queryer, seen any, project string, issues []treeIssue, byID map[string]*model.ArchitectureTreeComponent) error {
 	rows, err := q.Query(ctx, `
 		with recursive chain as (
-			select i.key as start, i.key, i.parent_key, 0 as depth from issues i where i.project_key = $1
+			select i.key as start, i.key, i.parent_key, 0 as depth from issues i
+			where i.project_key = $1 and `+access.ProjectClause("i.project_key", "$2")+`
 			union
 			select c.start, p.key, p.parent_key, c.depth + 1
 			from chain c join issues p on p.key = c.parent_key
@@ -226,7 +236,7 @@ func attachTreeIssues(ctx context.Context, q queryer, project string, issues []t
 		)
 		select distinct on (key, component_id) key, component_id, via, strength
 		from qualified order by key, component_id, strength, via
-	`, project)
+	`, project, seen)
 	if err != nil {
 		return err
 	}

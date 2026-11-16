@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 )
 
@@ -38,11 +39,11 @@ import (
 // object no row names, which a later upload of the same bytes reuses. The row records the hash
 // the object is keyed by, and the bytes too only while a live server process has no bucket
 // (fleetServesFilesFromRows).
-func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, kind, sha string, input artifactUploadInput, target artifactTarget) bool {
+func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, who model.Actor, kind, sha string, input artifactUploadInput, target artifactTarget) bool {
 	if kind == "doc" || s.deps.Files == nil {
 		return true
 	}
-	if err := s.refuseUploadBeforeItsObject(r.Context(), target, input.name, kind); err != nil {
+	if err := s.refuseUploadBeforeItsObject(r.Context(), who, target, input.name, kind); err != nil {
 		s.writeHandlerError(w, err)
 		return false
 	}
@@ -59,10 +60,10 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, kind, s
 // project that does not exist, an artifact the name or slug finds whose kind is not kind, or a new
 // artifact whose name or reference key is past its bound. It reads as that transaction reads, so
 // the two refuse alike whenever nothing writes the owner's artifacts between them.
-func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifactTarget, name, kind string) error {
+func (s *server) refuseUploadBeforeItsObject(ctx context.Context, who model.Actor, target artifactTarget, name, kind string) error {
 	pool := s.deps.Store.Pool
 	if target.IssueKey == nil && target.Session == "" {
-		if _, err := s.loadProject(ctx, pool, target.Project); err != nil {
+		if _, err := s.loadProject(ctx, pool, who, target.Project); err != nil {
 			return err
 		}
 	}

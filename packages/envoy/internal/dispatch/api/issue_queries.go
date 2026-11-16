@@ -937,7 +937,7 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 		links = scanned
 		return err
 	})
-	first.Queue(issueArtifactsStatement, key).Query(func(rows pgx.Rows) error {
+	first.Queue(issueArtifactsStatement, key, refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
 		scanned, err := collectArtifacts(rows)
 		artifacts = scanned
 		return err
@@ -989,7 +989,7 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 // nothing, so it queues nothing and sends no batch.
 func (s *server) readIssueDetails(ctx context.Context, who model.Actor, artifacts []*model.Artifact, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
-	applyArtifacts := queueArtifactDetails(batch, artifacts)
+	applyArtifacts := queueArtifactDetails(batch, who, artifacts)
 	applyAsks := queueAskDetails(batch, who, asks)
 	if batch.Len() == 0 {
 		return nil

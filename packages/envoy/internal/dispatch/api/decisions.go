@@ -12,7 +12,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -111,7 +110,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	document, found, err := s.issueDecisionsDocument(r.Context(), key)
+	document, found, err := s.issueDecisionsDocument(r.Context(), who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -145,9 +144,9 @@ func artifactReference(document model.Artifact) string {
 // who reads it. An issue with none, an issue that does not exist and an issue who does not see
 // answer found false: the view is a read, and an issue with no spec simply holds no decision link.
 func (s *server) issueSpecDocument(ctx context.Context, who model.Actor, key string) (model.Artifact, bool, error) {
-	artifact, err := s.loadArtifactRow(ctx, s.deps.Store.Pool, s.deps.Store.Pool.QueryRow(ctx, `
+	artifact, err := s.loadArtifactRow(ctx, s.deps.Store.Pool, who, s.deps.Store.Pool.QueryRow(ctx, `
 		select `+artifactColumns+`
-		from artifacts where issue_key = $1 and is_primary and kind = 'doc' and `+access.ProjectClause("project_key", "$2")+`
+		from artifacts where issue_key = $1 and is_primary and kind = 'doc' and `+documentClause("artifacts", "$2")+`
 	`, key, refs.VisibilityArg(who)))
 	if err != nil {
 		if artifactMissing(err) {
@@ -160,16 +159,16 @@ func (s *server) issueSpecDocument(ctx context.Context, who model.Actor, key str
 
 // issueDecisionsDocument is the issue's decisions.md: the document at the slug its reference
 // names, else the one whose filename it is, as every document reference resolves.
-func (s *server) issueDecisionsDocument(ctx context.Context, key string) (model.Artifact, bool, error) {
+func (s *server) issueDecisionsDocument(ctx context.Context, who model.Actor, key string) (model.Artifact, bool, error) {
 	target := artifactTarget{IssueKey: &key}
-	document, err := s.loadArtifactByRefKey(ctx, s.deps.Store.Pool, target.refPrefix()+"/"+decisionsDocumentSlug)
+	document, err := s.loadArtifactByRefKey(ctx, s.deps.Store.Pool, who, target.refPrefix()+"/"+decisionsDocumentSlug)
 	if err == nil {
 		return document, true, nil
 	}
 	if !isArtifactNotFound(err) {
 		return model.Artifact{}, false, err
 	}
-	document, err = s.loadArtifactByDocumentReference(ctx, s.deps.Store.Pool, target, decisionsDocumentName)
+	document, err = s.loadArtifactByDocumentReference(ctx, s.deps.Store.Pool, who, target, decisionsDocumentName)
 	if err != nil {
 		if artifactMissing(err) {
 			return model.Artifact{}, false, nil
@@ -797,7 +796,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 			"text_sha256 is the text_sha256 the decision was read at")
 		return
 	}
-	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -859,7 +858,7 @@ func (s *server) keptDecision(ctx context.Context, who model.Actor, document mod
 	if document.IssueKey == nil {
 		return model.Decision{}, notFound
 	}
-	decisionsDocument, found, err := s.issueDecisionsDocument(ctx, *document.IssueKey)
+	decisionsDocument, found, err := s.issueDecisionsDocument(ctx, who, *document.IssueKey)
 	if err != nil {
 		return model.Decision{}, err
 	}
@@ -889,7 +888,7 @@ func (s *server) getDocumentRead(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -931,7 +930,11 @@ func (s *server) putDocumentRead(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_STATE", http.StatusBadRequest, "version must be a whole number that is not negative")
 		return
 	}
-	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

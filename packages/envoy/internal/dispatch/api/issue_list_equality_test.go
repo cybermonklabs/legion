@@ -295,7 +295,7 @@ func TestTheOtherResolvedReadsAnswerWhatMainsLateralsDid(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read main's tree facts: %v", err)
 	}
-	tree, err := loadTreeIssues(ctx, pool, "LIST")
+	tree, err := loadTreeIssues(ctx, pool, refs.VisibilityArg(everyReader), "LIST")
 	if err != nil {
 		t.Fatalf("read the tree's issues: %v", err)
 	}

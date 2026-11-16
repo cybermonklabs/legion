@@ -9437,7 +9437,7 @@
     },
     "/api/v1/projects": {
       "get": {
-        "description": "List projects. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope.",
+        "description": "List the projects the caller sees; a private project carries visibility private, and a public one no visibility. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope.",
         "operationId": "getApiV1Projects",
         "parameters": [
           {

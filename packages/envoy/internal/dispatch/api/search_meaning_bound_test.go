@@ -178,14 +178,14 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 	processAllPending(t, database, embedder)
 
 	// The check searched by meaning on this server before the bound was shortened.
-	healthy := srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
+	healthy := srv.relatedCheck(context.Background(), relatedInput{who: everyReader, project: "MBOUND", text: text})
 	if healthy.Search != "meaning_and_keywords" || healthy.SearchNote != "" {
 		t.Fatalf("suggestions = %+v before the bound was shortened, want found by meaning and keywords", healthy)
 	}
 
 	endMeaningStatementsAt(t, "1ms")
 	started := time.Now()
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
+	suggestions := srv.relatedCheck(context.Background(), relatedInput{who: everyReader, project: "MBOUND", text: text})
 	elapsed := time.Since(started)
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" ||
 		suggestions.SearchNote != "meaning search did not answer within 3s" {

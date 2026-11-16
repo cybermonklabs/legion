@@ -652,7 +652,7 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	artifact, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	artifact, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

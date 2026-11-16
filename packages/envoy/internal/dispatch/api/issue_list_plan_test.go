@@ -303,7 +303,7 @@ func analyzeGenericListingPlan(t *testing.T, database *store.Store, moved bool) 
 // a subquery run for each project row, and the asks it counts are read once.
 func TestTheProjectListRunsNoSubqueryPerProject(t *testing.T) {
 	fixture := newIssueListFixture(t)
-	plan, text := analyzePlan(t, fixture.database, projectListQuery)
+	plan, text := analyzePlan(t, fixture.database, projectListQuery, refs.VisibilityArg(everyReader))
 	for _, node := range plan.everyNode() {
 		if node.Relationship == "SubPlan" {
 			t.Errorf("the project list runs %s as a subplan, want one grouped read for every project:\n%s", node.name(), text)

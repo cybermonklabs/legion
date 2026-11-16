@@ -146,7 +146,7 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 			// blocks of the document the {id} names, read under the id the step above left
 			// there. An {id} that is no document's names no blocks to match among, and the
 			// route answers for that {id} rather than for its block.
-			document, err := s.documentRefKey(r.Context(), r.PathValue("id"))
+			document, err := s.documentRefKey(r.Context(), who, r.PathValue("id"))
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return
@@ -248,18 +248,19 @@ func itemNotFound(notFound, prefix string) string {
 }
 
 // documentRefKey is the ref_key of the document id names, the address refs.Scope holds a
-// document under; "" for an id that is no uuid or that no document has, which is an id the
-// route behind this is about to refuse anyway.
+// document under; "" for an id that is no uuid, that no document has, or whose document who may
+// not read (documentClause), which is an id the route behind this is about to refuse anyway.
 //
 // The id is the one this layer canonicalized a step earlier (canonicalizeUUIDPath), so it is
 // sent as it stands, and the parse here decides one thing only: whether the value is an id at
 // all, since a value that is none names no document.
-func (s *server) documentRefKey(ctx context.Context, id string) (string, error) {
+func (s *server) documentRefKey(ctx context.Context, who model.Actor, id string) (string, error) {
 	if _, err := uuid.Parse(id); err != nil {
 		return "", nil
 	}
 	var refKey string
-	if err := s.deps.Store.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid`, id).Scan(&refKey); err != nil {
+	if err := s.deps.Store.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid and `+documentClause("artifacts", "$2"),
+		id, refs.VisibilityArg(who)).Scan(&refKey); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", nil
 		}

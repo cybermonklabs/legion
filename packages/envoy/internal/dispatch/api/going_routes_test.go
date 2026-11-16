@@ -204,7 +204,7 @@ func TestGoingRequestRecordsTheQuestionAndItsFramesReachTheRecord(t *testing.T) 
 	if window := run.EndsAt.Sub(run.CreatedAt); window != contracts.GoingRunWindow {
 		t.Errorf("the run's window is %v, want %v", window, contracts.GoingRunWindow)
 	}
-	recorded, err := rig.server.readGoingRequest(context.Background(), run.ID)
+	recorded, err := rig.server.readGoingRequest(context.Background(), everyReader, run.ID)
 	if err != nil {
 		t.Fatalf("read the recorded run: %v", err)
 	}

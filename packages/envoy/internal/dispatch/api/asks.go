@@ -143,7 +143,10 @@ type createAskInput struct {
 }
 
 func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owner) {
-	if !s.requireAuthenticated(w, r) {
+	// The asker as a reader, resolved before the transaction opens: the related-item check below
+	// offers only what it may read (relatedInput.who).
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	var input createAskInput
@@ -362,7 +365,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// (newShapedAsk). It is resolved before the response is written.
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	suggestions := s.relatedCheck(r.Context(), relatedInput{
-		text: ask.Question, title: ask.Question, source: source, question: true, record: true,
+		who: who, text: ask.Question, title: ask.Question, source: source, question: true, record: true,
 		trees: trees,
 	})
 	trees.resolve()

@@ -7,7 +7,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // owner identifies the issue, unlinked artifact, or project that owns collaboration.
@@ -47,8 +49,8 @@ func ownerForArtifact(artifact model.Artifact) owner {
 	return documentOwner(artifact.ID)
 }
 
-func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, r *http.Request) (model.Artifact, owner, error) {
-	artifact, err := s.loadArtifact(ctx, q, r.PathValue("id"))
+func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, who model.Actor, r *http.Request) (model.Artifact, owner, error) {
+	artifact, err := s.loadArtifact(ctx, q, who, r.PathValue("id"))
 	if err != nil {
 		return model.Artifact{}, owner{}, err
 	}
@@ -72,9 +74,12 @@ func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, r *htt
 	return artifact, documentOwner(artifact.ID), nil
 }
 
-func (s *server) loadProject(ctx context.Context, q queryer, key string) (model.Project, error) {
+// loadProject reads the project key names as who reads it: a project who does not see is a row the
+// read does not find (access.ProjectClause), and answers PROJECT_NOT_FOUND as a key nobody holds.
+func (s *server) loadProject(ctx context.Context, q queryer, who model.Actor, key string) (model.Project, error) {
 	var project model.Project
-	if err := q.QueryRow(ctx, `select key, name, created_at from projects where key = $1`, key).Scan(
+	if err := q.QueryRow(ctx, `select key, name, created_at from projects where key = $1 and `+access.ProjectClause("key", "$2"),
+		key, refs.VisibilityArg(who)).Scan(
 		&project.Key,
 		&project.Name,
 		&project.CreatedAt,

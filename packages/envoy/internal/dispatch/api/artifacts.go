@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -55,11 +56,31 @@ const (
 // coalesce because model.Artifact carries it as "" when the document plays no role.
 const artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ''), created_by, created_at`
 
+// documentClause passes the artifacts row alias to the viewer bound at viewerParam (refs.VisibilityArg):
+// a document of an issue or of a project by that project (access.ProjectClause), and a file of an
+// agent's conversation, which belongs to no project, by the parties of that conversation, its
+// session (access.PartyClause), the parties graphstore.ArtifactNode states on the document's node.
+// Every read of an artifact binds it in its own where, so a document its reader may not read is a
+// row the read does not find, and answers exactly as an id nobody holds.
+func documentClause(alias, viewerParam string) string {
+	return `(case when ` + alias + `.project_key is not null then ` + access.ProjectClause(alias+`.project_key`, viewerParam) +
+		` else ` + access.PartyClause(`array['`+graphstore.PartySession("")+`' || `+alias+`.session_id]`, viewerParam) + ` end)`
+}
+
+// documentVisible is documentClause over the artifact whose id idExpr names, for a statement that
+// reads a row its document owns - a version, a review, a comment anchored to it - rather than the
+// artifact's own row: the row is read only where its reader may read the document.
+func documentVisible(idExpr, viewerParam string) string {
+	return `exists (select 1 from artifacts visible_document where visible_document.id = ` + idExpr +
+		` and ` + documentClause("visible_document", viewerParam) + `)`
+}
+
 func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
-	artifacts, err := s.loadArtifacts(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
+	artifacts, err := s.loadArtifacts(r.Context(), s.deps.Store.Pool, who, r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -225,6 +246,12 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	if !ok {
 		return
 	}
+	// The reader the owner's project is read as (loadProject), resolved before the upload's
+	// transaction opens, as every resolution of a viewer is (access.Resolve takes a connection).
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	if input.name == "" {
 		writeError(w, "INVALID_ARTIFACT", http.StatusBadRequest, "artifact name is required")
 		return
@@ -262,7 +289,7 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 		}
 	}
 	input.contentType = storedType
-	s.storeArtifact(w, r, input, actor, kind, target)
+	s.storeArtifact(w, r, who, input, actor, kind, target)
 }
 
 // jsonArtifactUpload reads an inline upload's JSON body. As decodeJSON does, it ignores a member
@@ -441,6 +468,7 @@ func recordDocumentTaskProgress(ctx context.Context, tx pgx.Tx, artifactID strin
 func (s *server) storeArtifact(
 	w http.ResponseWriter,
 	r *http.Request,
+	who model.Actor,
 	input artifactUploadInput,
 	actor model.Actor,
 	kind string,
@@ -450,7 +478,7 @@ func (s *server) storeArtifact(
 	sha := hex.EncodeToString(checksum[:])
 	// A file's object is written before the transaction opens, once the refusals the transaction
 	// would make have been made (putUploadedFile, artifact_files.go).
-	if !s.putUploadedFile(w, r, kind, sha, input, target) {
+	if !s.putUploadedFile(w, r, who, kind, sha, input, target) {
 		return
 	}
 	tx, err := s.begin(r.Context())
@@ -479,7 +507,7 @@ func (s *server) storeArtifact(
 			return
 		}
 	default:
-		loaded, err := s.loadProject(r.Context(), tx, target.Project)
+		loaded, err := s.loadProject(r.Context(), tx, who, target.Project)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -810,10 +838,11 @@ func (s *server) storeArtifact(
 }
 
 func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.artifactReaderOf(w, r)
+	if !ok {
 		return
 	}
-	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
+	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, who, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -843,10 +872,11 @@ type artifactText struct {
 }
 
 func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.artifactReaderOf(w, r)
+	if !ok {
 		return
 	}
-	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
+	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, who, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -855,7 +885,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
-	markdown, token, blocks, err := s.artifactTextBody(r, artifact.ID)
+	markdown, token, blocks, err := s.artifactTextBody(r, who, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -864,7 +894,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 	// markdown can be ahead of the version while browser text is unsettled, and a version minted
 	// between the two reads can be ahead of the markdown. `token` is the route's concurrency
 	// primitive; `version` says which version the document has, not which one this markdown is.
-	version, err := latestVersionNumber(r.Context(), s.deps.Store.Pool, artifact.ID)
+	version, err := latestVersionNumber(r.Context(), s.deps.Store.Pool, who, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -890,7 +920,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 // rendering of one tree (docs.TextWithTokenAndBlocks), so a write by another session cannot leave
 // a listing's byte ranges indexing markdown they were not computed over; nil blocks for a request
 // that asked for none, which pays for none of that rendering.
-func (s *server) artifactTextBody(r *http.Request, artifactID string) (string, string, *[]model.ArtifactBlock, error) {
+func (s *server) artifactTextBody(r *http.Request, who model.Actor, artifactID string) (string, string, *[]model.ArtifactBlock, error) {
 	if r.URL.Query().Get("blocks") != "true" {
 		markdown, token, err := s.deps.Docs.TextWithToken(r.Context(), artifactID)
 		return markdown, token, nil, err
@@ -899,7 +929,7 @@ func (s *server) artifactTextBody(r *http.Request, artifactID string) (string, s
 	if err != nil {
 		return "", "", nil, err
 	}
-	if err := s.describeBlocks(r.Context(), artifactID, blocks); err != nil {
+	if err := s.describeBlocks(r.Context(), who, artifactID, blocks); err != nil {
 		return "", "", nil, err
 	}
 	// A document with no blocks answers the empty list, never a missing key: the key is absent
@@ -911,10 +941,11 @@ func (s *server) artifactTextBody(r *http.Request, artifactID string) (string, s
 }
 
 func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.artifactReaderOf(w, r)
+	if !ok {
 		return
 	}
-	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
+	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, who, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -928,7 +959,7 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := s.describeBlocks(r.Context(), artifact.ID, blocks); err != nil {
+	if err := s.describeBlocks(r.Context(), who, artifact.ID, blocks); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -941,8 +972,8 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 // written under the artifact id; a block the live document holds and no window covers - a block
 // inside another, whose text its parent's window already holds, and every block of a version the
 // indexer has not windowed yet - reads as model.BlockNotEmbedded.
-func (s *server) describeBlocks(ctx context.Context, artifactID string, blocks []model.ArtifactBlock) error {
-	references, err := s.blockReferences(ctx, artifactID)
+func (s *server) describeBlocks(ctx context.Context, who model.Actor, artifactID string, blocks []model.ArtifactBlock) error {
+	references, err := s.blockReferences(ctx, who, artifactID)
 	if err != nil {
 		return err
 	}
@@ -964,10 +995,11 @@ func (s *server) describeBlocks(ctx context.Context, artifactID string, blocks [
 }
 
 func (s *server) getArtifactBlockPath(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.artifactReaderOf(w, r)
+	if !ok {
 		return
 	}
-	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
+	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, who, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -988,8 +1020,9 @@ func (s *server) getArtifactBlockPath(w http.ResponseWriter, r *http.Request) {
 // getArtifactBlocks adds a table's descendant-cell counts before it serves the
 // table block. The predicate is two conjuncts (is not null, then not the empty
 // string) rather than nullif(...) is not null so the planner can use the partial
-// comments_/asks_anchor_block_id_idx indexes.
-func (s *server) blockReferences(ctx context.Context, artifactID string) (map[string]model.BlockReferences, error) {
+// comments_/asks_anchor_block_id_idx indexes. The rows are counted only where who may read the
+// document (documentVisible), one test of the document for the whole statement.
+func (s *server) blockReferences(ctx context.Context, who model.Actor, artifactID string) (map[string]model.BlockReferences, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select anchor_block_id,
 		       count(*) filter (where kind = 'comment'),
@@ -1003,8 +1036,9 @@ func (s *server) blockReferences(ctx context.Context, artifactID string) (map[st
 			from asks
 			where anchor->>'artifact_id' = $1 and anchor->>'block_id' is not null and anchor->>'block_id' <> ''
 		) anchored
+		where `+documentVisible("$1::uuid", "$2")+`
 		group by anchor_block_id
-	`, artifactID)
+	`, artifactID, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("list block references: %w", err)
 	}
@@ -1050,7 +1084,11 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	// Exactly `true` asks for the download, as `blocks=true` asks for the blocks of the /text
 	// routes; any other value, `1` included, answers as without the parameter.
 	download := r.URL.Query().Get("download") == "true"
-	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
+	who, ok := s.artifactReaderOf(w, r)
+	if !ok {
+		return
+	}
+	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, who, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1064,7 +1102,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	filename := versionFilename(artifact.Name, artifact.Kind, number, latest)
 	if artifact.Kind == "doc" {
 		var markdown string
-		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number, &markdown)
+		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, who, artifact.ID, number, &markdown)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1104,8 +1142,9 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	var contentType, sha *string
 	var size *int64
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
-		select content, mime, sha256, size from artifact_versions where artifact_id = $1 and number = $2
-	`, artifact.ID, number).Scan(&content, &contentType, &sha, &size); err != nil {
+		select content, mime, sha256, size from artifact_versions
+		where artifact_id = $1 and number = $2 and `+documentVisible("$1", "$3")+`
+	`, artifact.ID, number, refs.VisibilityArg(who)).Scan(&content, &contentType, &sha, &size); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1176,8 +1215,8 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_VERSION", http.StatusBadRequest, "named versions require a summary")
 		return
 	}
-	if err := validateArtifactRequestRef(r); err != nil {
-		s.writeHandlerError(w, err)
+	who, ok := s.artifactReaderOf(w, r)
+	if !ok {
 		return
 	}
 	tx, err := s.begin(r.Context())
@@ -1186,7 +1225,7 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	artifact, err := s.loadArtifactForRequest(r.Context(), tx, r)
+	artifact, err := s.loadArtifactForRequest(r.Context(), tx, who, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1269,7 +1308,11 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
+	who, ok := s.artifactReaderOf(w, r)
+	if !ok {
+		return
+	}
+	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, who, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1408,7 +1451,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	// code and containers, which a caller's own reading of that markdown would only approximate.
 	blocks := &editBlocks{
 		DecisionBlocksAdded: len(edit.AddedAskBlocks),
-		DecisionBlockChecks: s.decisionBlockChecks(r.Context(), artifact, edit.AddedAskBlocks, actor, wantsDisplayTrees(r)),
+		DecisionBlockChecks: s.decisionBlockChecks(r.Context(), artifact, edit.AddedAskBlocks, actor, who, wantsDisplayTrees(r)),
 	}
 	if artifact.IssueKey == nil || advice == nil {
 		WriteJSON(w, http.StatusOK, withRawAdvice(responsePayload, documentWriteAdvice{
@@ -1451,17 +1494,19 @@ func participantsOrEmpty(participants []model.Actor) []model.Actor {
 	return participants
 }
 
-// issueArtifactsStatement lists an issue's artifacts, $1 the issue key, in the order every
-// reader of the issue shows them; collectArtifacts reads its rows. The issue read queues it in
-// a batch with its other reads (getIssue), so the statement and the scan live apart from the
-// sequential loader that every other route calls.
-const issueArtifactsStatement = `
+// issueArtifactsStatement lists an issue's artifacts, $1 the issue key and $2 the reader's
+// visibility argument (refs.VisibilityArg), in the order every reader of the issue shows them;
+// collectArtifacts reads its rows. The issue read queues it in a batch with its other reads
+// (getIssue), so the statement and the scan live apart from the sequential loader that every
+// other route calls. An issue its reader does not see lists no artifact, as an issue nobody holds.
+var issueArtifactsStatement = `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 order by created_at, id
+		from artifacts where issue_key = $1 and ` + documentClause("artifacts", "$2") + `
+		order by created_at, id
 	`
 
-func (s *server) loadArtifacts(ctx context.Context, q queryer, issueKey string) ([]model.Artifact, error) {
-	rows, err := q.Query(ctx, issueArtifactsStatement, issueKey)
+func (s *server) loadArtifacts(ctx context.Context, q queryer, who model.Actor, issueKey string) ([]model.Artifact, error) {
+	rows, err := q.Query(ctx, issueArtifactsStatement, issueKey, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}
@@ -1469,7 +1514,7 @@ func (s *server) loadArtifacts(ctx context.Context, q queryer, issueKey string) 
 	if err != nil {
 		return nil, err
 	}
-	if err := loadArtifactDetails(ctx, q, artifactPointers(artifacts)); err != nil {
+	if err := loadArtifactDetails(ctx, q, who, artifactPointers(artifacts)); err != nil {
 		return nil, err
 	}
 	return artifacts, nil
@@ -1517,14 +1562,14 @@ func artifactIDs(artifacts []*model.Artifact) []string {
 // The apply fills the versions first, since an approval's state reads them (applyApprovals), and
 // leaves an artifact with no version a non-nil empty list (applyVersions). No artifact queues
 // nothing and its apply fills nothing.
-func queueArtifactDetails(b *pgx.Batch, artifacts []*model.Artifact) func() {
+func queueArtifactDetails(b *pgx.Batch, who model.Actor, artifacts []*model.Artifact) func() {
 	versions := map[string][]model.Version{}
 	if ids := artifactIDs(artifacts); len(ids) > 0 {
-		b.Queue(artifactVersionsStatement, ids).Query(func(rows pgx.Rows) error {
+		b.Queue(artifactVersionsStatement, ids, refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
 			return scanVersionsByArtifact(rows, versions)
 		})
 	}
-	approvals := queueApprovals(b, artifacts)
+	approvals := queueApprovals(b, who, artifacts)
 	return func() {
 		applyVersions(artifacts, versions)
 		approvals()
@@ -1536,9 +1581,9 @@ func queueArtifactDetails(b *pgx.Batch, artifacts []*model.Artifact) func() {
 // (listProjectArtifacts), one artifact read by id (loadArtifact) and one read by ref_key or as
 // an issue's spec (loadArtifactRow). The batch holds q's connection until its results close, so
 // nothing else reads the database in between.
-func loadArtifactDetails(ctx context.Context, q queryer, artifacts []*model.Artifact) error {
+func loadArtifactDetails(ctx context.Context, q queryer, who model.Actor, artifacts []*model.Artifact) error {
 	batch := &pgx.Batch{}
-	apply := queueArtifactDetails(batch, artifacts)
+	apply := queueArtifactDetails(batch, who, artifacts)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -1549,12 +1594,32 @@ func loadArtifactDetails(ctx context.Context, q queryer, artifacts []*model.Arti
 	return nil
 }
 
+// validateArtifactRequestRef refuses an artifact route's {id} that is no uuid, as an id no row
+// holds; a route that names its artifact by owner and slug ({key} or {session_id}) has none.
 func validateArtifactRequestRef(r *http.Request) error {
-	if r.PathValue("key") != "" {
+	if r.PathValue("key") != "" || r.PathValue("session_id") != "" {
 		return nil
 	}
 	_, err := parseArtifactID(r.PathValue("id"))
 	return err
+}
+
+// artifactReaderOf is readerOf for a route that names an artifact: the caller is resolved as
+// every gate resolves it, and then an {id} that is no uuid is refused as an id no row holds
+// (validateArtifactRequestRef) before the viewer is read, so such a request reaches no database
+// (TestArtifactIDRoutesValidateBeforeDatabaseUse). The caller is resolved once: readerOf reads
+// the resolution this kept in the request's context.
+func (s *server) artifactReaderOf(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
+	actor, human, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return model.Actor{}, false
+	}
+	if err := validateArtifactRequestRef(r); err != nil {
+		s.writeHandlerError(w, err)
+		return model.Actor{}, false
+	}
+	return s.readerOf(w, r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human})))
 }
 
 func parseArtifactID(id string) (string, error) {
@@ -1565,39 +1630,41 @@ func parseArtifactID(id string) (string, error) {
 	return parsed.String(), nil
 }
 
-func (s *server) loadArtifactForRequest(ctx context.Context, q queryer, r *http.Request) (model.Artifact, error) {
+func (s *server) loadArtifactForRequest(ctx context.Context, q queryer, who model.Actor, r *http.Request) (model.Artifact, error) {
 	if r.PathValue("session_id") != "" {
-		return s.loadAgentArtifact(ctx, q, r)
+		return s.loadAgentArtifact(ctx, q, who, r)
 	}
 	if key := r.PathValue("key"); key != "" {
 		target := artifactTarget{Project: key}
 		if strings.HasPrefix(r.URL.Path, "/api/v1/issues/") {
 			target = artifactTarget{IssueKey: &key}
 		}
-		return s.loadArtifactByDocumentReference(ctx, q, target, r.PathValue("slug"))
+		return s.loadArtifactByDocumentReference(ctx, q, who, target, r.PathValue("slug"))
 	}
-	return s.loadArtifact(ctx, q, r.PathValue("id"))
+	return s.loadArtifact(ctx, q, who, r.PathValue("id"))
 }
 
 const documentHintLimit = 8
 
 // loadArtifactByDocumentReference reads an issue's or a project's artifact at slug reference, or
 // the one document whose filename it is.
-func (s *server) loadArtifactByDocumentReference(ctx context.Context, q queryer, target artifactTarget, reference string) (model.Artifact, error) {
-	return resolveDocumentReference(ctx, s, q, target, reference,
-		func(refKey string) (model.Artifact, error) { return s.loadArtifactByRefKey(ctx, q, refKey) },
-		func(id string) (model.Artifact, error) { return s.loadArtifact(ctx, q, id) },
+func (s *server) loadArtifactByDocumentReference(ctx context.Context, q queryer, who model.Actor, target artifactTarget, reference string) (model.Artifact, error) {
+	return resolveDocumentReference(ctx, s, q, who, target, reference,
+		func(refKey string) (model.Artifact, error) { return s.loadArtifactByRefKey(ctx, q, who, refKey) },
+		func(id string) (model.Artifact, error) { return s.loadArtifact(ctx, q, who, id) },
 	)
 }
 
 // resolveDocumentReference is the one resolution of an issue's or a project's document reference,
 // shared by the full read and the summary: the artifact at slug reference (byRefKey, given the
 // ref_key), else the one document whose filename it is (byID, given its id). Each reader answers
-// ARTIFACT_NOT_FOUND for no row, and reads only the shape its route serves.
+// ARTIFACT_NOT_FOUND for no row, and reads only the shape its route serves. The documents a
+// reference is matched among, and named in a refusal, are the ones who may read.
 func resolveDocumentReference[T any](
 	ctx context.Context,
 	s *server,
 	q queryer,
+	who model.Actor,
 	target artifactTarget,
 	reference string,
 	byRefKey func(refKey string) (T, error),
@@ -1608,7 +1675,7 @@ func resolveDocumentReference[T any](
 		return found, err
 	}
 	var none T
-	documents, listErr := s.loadDocumentReferences(ctx, q, target)
+	documents, listErr := s.loadDocumentReferences(ctx, q, who, target)
 	if listErr != nil {
 		return none, listErr
 	}
@@ -1633,19 +1700,18 @@ func isArtifactNotFound(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.code == "ARTIFACT_NOT_FOUND"
 }
 
-func (s *server) loadDocumentReferences(ctx context.Context, q queryer, target artifactTarget) ([]model.Artifact, error) {
-	query := `
-		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 and kind = 'doc' order by created_at, id`
+func (s *server) loadDocumentReferences(ctx context.Context, q queryer, who model.Actor, target artifactTarget) ([]model.Artifact, error) {
+	owner := `issue_key = $1`
 	value := target.Project
 	if target.IssueKey != nil {
 		value = *target.IssueKey
 	} else {
-		query = `
-			select ` + artifactColumns + `
-			from artifacts where project_key = $1 and issue_key is null and kind = 'doc' order by created_at, id`
+		owner = `project_key = $1 and issue_key is null`
 	}
-	rows, err := q.Query(ctx, query, value)
+	rows, err := q.Query(ctx, `
+		select `+artifactColumns+`
+		from artifacts where `+owner+` and kind = 'doc' and `+documentClause("artifacts", "$2")+`
+		order by created_at, id`, value, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}
@@ -1828,34 +1894,34 @@ func documentReferenceLabels(documents []model.Artifact) string {
 
 // loadArtifact reads one artifact by id, with the details every artifact read carries: the row
 // loadArtifactRowByID finds, and then its versions and its approval (loadArtifactDetails).
-func (s *server) loadArtifact(ctx context.Context, q queryer, id string) (model.Artifact, error) {
-	artifact, err := loadArtifactRowByID(ctx, q, id)
+func (s *server) loadArtifact(ctx context.Context, q queryer, who model.Actor, id string) (model.Artifact, error) {
+	artifact, err := loadArtifactRowByID(ctx, q, who, id)
 	if err != nil {
 		return model.Artifact{}, err
 	}
-	if err := loadArtifactDetails(ctx, q, []*model.Artifact{&artifact}); err != nil {
+	if err := loadArtifactDetails(ctx, q, who, []*model.Artifact{&artifact}); err != nil {
 		return model.Artifact{}, err
 	}
 	return artifact, nil
 }
 
-func (s *server) loadArtifactByRefKey(ctx context.Context, q queryer, refKey string) (model.Artifact, error) {
-	return s.loadArtifactRow(ctx, q, q.QueryRow(ctx, `
+func (s *server) loadArtifactByRefKey(ctx context.Context, q queryer, who model.Actor, refKey string) (model.Artifact, error) {
+	return s.loadArtifactRow(ctx, q, who, q.QueryRow(ctx, `
 		select `+artifactColumns+`
-		from artifacts where ref_key = $1
-	`, refKey))
+		from artifacts where ref_key = $1 and `+documentClause("artifacts", "$2")+`
+	`, refKey, refs.VisibilityArg(who)))
 }
 
 // loadArtifactRow reads one artifact from the row a lookup by ref_key or by any other column
 // returns, with the details every artifact read carries - its versions, and its approval when it
 // is a document - in one batch (loadArtifactDetails), so the read costs that lookup and one
-// round trip more.
-func (s *server) loadArtifactRow(ctx context.Context, q queryer, row pgx.Row) (model.Artifact, error) {
+// round trip more. The lookup binds documentClause for who, as every read of an artifact does.
+func (s *server) loadArtifactRow(ctx context.Context, q queryer, who model.Actor, row pgx.Row) (model.Artifact, error) {
 	artifact, err := scanArtifactOrNotFound(row)
 	if err != nil {
 		return model.Artifact{}, err
 	}
-	if err := loadArtifactDetails(ctx, q, []*model.Artifact{&artifact}); err != nil {
+	if err := loadArtifactDetails(ctx, q, who, []*model.Artifact{&artifact}); err != nil {
 		return model.Artifact{}, err
 	}
 	return artifact, nil
@@ -1881,16 +1947,17 @@ func scanArtifactOrNotFound(row pgx.Row) (model.Artifact, error) {
 // under it (beginArtifactWrite), so each of its two reads costs one round trip rather than two.
 // The id is a whole one: the prefix layer resolved a short one into the path before the handler
 // saw it (resolveIDPrefixes), and parseArtifactID answers the same 404 as a row that is not
-// there for anything that is no uuid.
-func loadArtifactRowByID(ctx context.Context, q queryer, id string) (model.Artifact, error) {
+// there for anything that is no uuid. A document who may not read is a row the read does not find
+// (documentClause), so it answers that same 404.
+func loadArtifactRowByID(ctx context.Context, q queryer, who model.Actor, id string) (model.Artifact, error) {
 	parsed, err := parseArtifactID(id)
 	if err != nil {
 		return model.Artifact{}, err
 	}
 	return scanArtifactOrNotFound(q.QueryRow(ctx, `
 		select `+artifactColumns+`
-		from artifacts where id = $1
-	`, parsed))
+		from artifacts where id = $1 and `+documentClause("artifacts", "$2")+`
+	`, parsed, refs.VisibilityArg(who)))
 }
 
 // scanArtifact reads artifactColumns. A session-owned artifact's project is "".
@@ -1956,12 +2023,14 @@ func lookupArtifactByNameOrSlug(ctx context.Context, q queryer, target artifactT
 const versionColumns = `v.number, v.named, v.summary, v.authors, v.created_at, ` + model.VersionSize + `, v.mime, v.sha256`
 
 // artifactVersionsStatement reads the versions of every artifact in $1 at once, so a list of
-// artifacts costs one statement rather than one per artifact. Ordering by the artifact first
-// leaves each artifact's own versions in `order by v.number`, the order one artifact's read
-// answers; scanVersionsByArtifact keys them by the artifact id the columns end on.
-const artifactVersionsStatement = `
+// artifacts costs one statement rather than one per artifact, each only where the reader whose
+// visibility argument is $2 may read its document. Ordering by the artifact first leaves each
+// artifact's own versions in `order by v.number`, the order one artifact's read answers;
+// scanVersionsByArtifact keys them by the artifact id the columns end on.
+var artifactVersionsStatement = `
 		select ` + versionColumns + `, v.artifact_id::text
-		from artifact_versions v where v.artifact_id = any($1::uuid[]) order by v.artifact_id, v.number
+		from artifact_versions v where v.artifact_id = any($1::uuid[]) and ` + documentVisible("v.artifact_id", "$2") + `
+		order by v.artifact_id, v.number
 	`
 
 // scanVersion reads versionColumns from row; extra receives the columns after them.
@@ -2031,13 +2100,13 @@ func (s *server) loadVersions(ctx context.Context, q queryer, artifactID string)
 
 // loadVersion reads one version of a document with its markdown, which the content route answers,
 // so its size is that markdown's length rather than a second read of the column.
-func (s *server) loadVersion(ctx context.Context, q queryer, artifactID string, number int, markdown *string) (model.Version, error) {
+func (s *server) loadVersion(ctx context.Context, q queryer, who model.Actor, artifactID string, number int, markdown *string) (model.Version, error) {
 	var version model.Version
 	var authors []byte
 	if err := q.QueryRow(ctx, `
 		select v.number, v.named, v.summary, v.authors, v.created_at, v.mime, v.sha256, v.markdown
-		from artifact_versions v where v.artifact_id = $1 and v.number = $2
-	`, artifactID, number).Scan(
+		from artifact_versions v where v.artifact_id = $1 and v.number = $2 and `+documentVisible("v.artifact_id", "$3")+`
+	`, artifactID, number, refs.VisibilityArg(who)).Scan(
 		&version.Number, &version.Named, &version.Summary, &authors, &version.CreatedAt,
 		&version.MIME, &version.SHA256, markdown,
 	); err != nil {
@@ -2273,13 +2342,14 @@ func lockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error 
 //
 // The row is read again under that lock, so every refusal of the handler, and the document its
 // event carries, read the row as it is now: the first read ran before the lock and a correction
-// or a removal of the same document may have committed since.
+// or a removal of the same document may have committed since. Both reads are made as who, the
+// caller's reader, so a document who may not read is one neither finds.
 //
 // The caller rolls back the transaction it is answered, as it commits it; a preamble that
 // refuses rolls its own transaction back and writes the refusal itself.
-func (s *server) beginArtifactWrite(w http.ResponseWriter, r *http.Request) (pgx.Tx, model.Artifact, artifactTarget, bool) {
+func (s *server) beginArtifactWrite(w http.ResponseWriter, r *http.Request, who model.Actor) (pgx.Tx, model.Artifact, artifactTarget, bool) {
 	ctx := r.Context()
-	artifact, err := loadArtifactRowByID(ctx, s.deps.Store.Pool, r.PathValue("id"))
+	artifact, err := loadArtifactRowByID(ctx, s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return nil, model.Artifact{}, artifactTarget{}, false
@@ -2307,7 +2377,7 @@ func (s *server) beginArtifactWrite(w http.ResponseWriter, r *http.Request) (pgx
 			return refused(err)
 		}
 	}
-	locked, err := loadArtifactRowByID(ctx, tx, artifact.ID)
+	locked, err := loadArtifactRowByID(ctx, tx, who, artifact.ID)
 	if err != nil {
 		return refused(err)
 	}

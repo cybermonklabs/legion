@@ -215,7 +215,7 @@ func servingBlockCounts(ctx context.Context, q queryer, viewer any, specArtifact
 // could not count the gaps rather than that it found none. Reading the document itself is the
 // request's error, as it is inside the transaction.
 func (s *server) approvalCoverage(ctx context.Context, q queryer, who model.Actor, id string) (gaps []string, unread bool, err error) {
-	artifact, err := s.loadArtifact(ctx, q, id)
+	artifact, err := s.loadArtifact(ctx, q, who, id)
 	if err != nil {
 		return nil, false, err
 	}

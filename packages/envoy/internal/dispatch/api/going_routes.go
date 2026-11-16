@@ -98,13 +98,14 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// The caller's own credential names the writer: this route takes no `actor`, so a question
 	// is recorded for whoever asked it - the person at the browser, the session a broker-issued
 	// token proved, or the person a personal token belongs to - and the stream compares the
-	// reader with it. Recorded, as every actor a row holds is (model.Actor.Recorded).
-	caller, _, err := s.optionalActor(r)
-	if err != nil {
-		s.writeAuthenticationError(w, err)
+	// reader with it. Recorded, as every actor a row holds is (model.Actor.Recorded). The reader
+	// is resolved here, at the start, with what that credential may see (readerOf), and the run's
+	// search reads as it (goingSearch).
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
-	actor := caller.Recorded()
+	actor := reader.Recorded()
 	// A credential that names nobody asks nothing: see codeGoingAskerNamesNobody. The rule is
 	// graphstore.ProvesAuthor, which lives beside the store that records an author, and which
 	// every author-private read of the graph asks too, in Go and in SQL
@@ -143,12 +144,6 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// project asks only of that project, and asking of every project is asking outside it.
 	if covers, scoped := s.callerProject(r); scoped && covers != project {
 		refuseWriteOutsideProjectScope(w, covers, project)
-		return
-	}
-	// What the asker may see, resolved while its credential is in hand: the run outlives this
-	// request, and the author the record keeps carries no credential, so no list of its projects.
-	reader, ok := s.readerOf(w, r)
-	if !ok {
 		return
 	}
 	// Detached from the request, as a broadcast's deliveries are (broadcasts.go): SIGTERM
@@ -278,10 +273,17 @@ func (s *server) goingBodies(ctx context.Context, hits []going.Hit) (map[string]
 func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	// Resolved once rather than through requireAuthenticated and a second resolution: the actor
 	// is what this route compares the run's author with, and a credential resolves at a cost -
-	// a token row, the sign-in issuer's confirmation - worth paying once.
-	actor, _, err := s.optionalActor(r)
+	// a token row, the sign-in issuer's confirmation - worth paying once. The reader the run is
+	// read as (readGoingRequest) is resolved from that same resolution, kept in the request's
+	// context as every layer that resolves the caller keeps it.
+	actor, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
+		return
+	}
+	r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human}))
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	id := r.PathValue("id")
@@ -292,7 +294,7 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 		writeGoingRequestNotFound(w)
 		return
 	}
-	request, err := s.readGoingRequest(r.Context(), id)
+	request, err := s.readGoingRequest(r.Context(), who, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeGoingRequestNotFound(w)
 		return

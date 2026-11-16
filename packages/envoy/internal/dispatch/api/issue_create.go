@@ -73,7 +73,8 @@ type createIssueInput struct {
 
 func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// The reader is resolved before any connection is held: the body's project, and an issue an
-	// external ref names, are read as the caller reads them.
+	// external ref names, are read as the caller reads them, and the related-item check below
+	// offers only what it may read (relatedInput.who).
 	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
@@ -542,6 +543,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// response is written.
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	suggestions := s.relatedCheck(r.Context(), relatedInput{
+		who:     who,
 		project: input.Project,
 		text:    input.Title + "\n" + markdown,
 		title:   input.Title,

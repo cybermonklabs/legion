@@ -122,7 +122,7 @@ func (s *server) listArtifactSubscribers(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	artifact, _, err := s.documentOwnerFromRequest(r.Context(), s.deps.Store.Pool, r)
+	artifact, _, err := s.documentOwnerFromRequest(r.Context(), s.deps.Store.Pool, who, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -243,7 +243,11 @@ func (s *server) unsubscribeArtifactSession(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	artifact, own, err := s.documentOwnerFromRequest(r.Context(), s.deps.Store.Pool, r)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	artifact, own, err := s.documentOwnerFromRequest(r.Context(), s.deps.Store.Pool, who, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

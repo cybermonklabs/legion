@@ -5,6 +5,9 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // A project's default assignee is the last step of the chain that decides who a question
@@ -40,18 +43,23 @@ type projectDefaultAssigneeUpdated struct {
 	ThreadLogins []string `json:"thread_logins"`
 }
 
-// listProjectDefaultAssignees answers every project with the person it defaults to, by project
-// key: the Settings page's one read. Every project is listed, because every project names a
-// default, and no project at all is an empty list, never null.
+// listProjectDefaultAssignees answers every project the caller sees with the person it defaults
+// to, by project key: the Settings page's one read. Every such project is listed, because every
+// project names a default, and no project at all is an empty list, never null.
 func (s *server) listProjectDefaultAssignees(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select key, default_assignee
 		from projects
+		where `+access.ProjectClause("key", "$1")+`
 		order by key
-	`)
+	`, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
