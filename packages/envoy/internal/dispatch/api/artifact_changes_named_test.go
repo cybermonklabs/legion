@@ -19,11 +19,10 @@ func TestAChangeSetNamesASectionMovedAcrossATopLevelHeading(t *testing.T) {
 		risks    = "## Risks\n\nNone known.\n\n"
 		appendix = "# Appendix\n\nBackground.\n\n"
 	)
-	artifactID := uploadVersions(t, handler, "plan.md",
+	artifactID := uploadDocumentVersions(t, handler, "plan.md",
 		head+goal+scope+risks,
 		head+goal+appendix+scope+risks,
-		head+goal+scope+appendix+risks,
-	)
+		head+goal+scope+appendix+risks)
 
 	added := readChanges(t, handler, artifactID, 1, 2)
 	if added.DecisionOnly || len(added.Sections)+len(added.Blocks) == 0 {

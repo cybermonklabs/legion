@@ -16,7 +16,7 @@ import (
 // already answers 404.
 func TestAVersionNumberAboveTheColumnsRangeIsRefusedNotAFault(t *testing.T) {
 	handler := newTestHandler(t)
-	artifactID := uploadVersions(t, handler, "plan.md", "# Plan\n\nOne.\n", "# Plan\n\nTwo.\n")
+	artifactID := uploadDocumentVersions(t, handler, "plan.md", "# Plan\n\nOne.\n", "# Plan\n\nTwo.\n")
 
 	for _, path := range []string{
 		fmt.Sprintf("/api/v1/artifacts/%s/changes?from=1&to=2147483648", artifactID),

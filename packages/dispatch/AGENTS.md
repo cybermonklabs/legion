@@ -1429,7 +1429,8 @@ with `downloadRequest` set, and then leaves the reader on the page, so it does n
 Chromium, `shell.e2e.ts` follows one and then fails a chunk, and the page reloads. Playwright's
 Firefox follows it with a second `navigate` to the same URL and no `downloadRequest`, so the first
 navigation to another document after a download does not count either when it goes to the
-download's URL (`DeploymentResilience.test.tsx` has the sequence; no e2e row runs it in Firefox).
+download's URL (`DeploymentResilience.test.tsx` has the sequence, and the
+`firefox-download-navigation` project runs that `shell.e2e.ts` row in Firefox).
 The page counts as staying again once it is shown (`pageshow`, or the tab turning
 visible) or pressed (a pointer or a key), since a navigation cancelled at a leave prompt, stopped,
 or answered by the server with a download fires no event of its own.
@@ -2786,10 +2787,10 @@ and a restart close sets the attempt counter back to 0.
 
 The `webkit` Playwright project runs the rows tagged `@webkit` (`webkitTagged` in
 `e2e/playwright.config.ts`) of `e2e/collab-cursor.e2e.ts`, `e2e/deep-links.e2e.ts`,
-`e2e/heavy-streamed-turn.e2e.ts`, `e2e/keyboard-agents-picker.e2e.ts`,
+`e2e/download-names.e2e.ts`, `e2e/heavy-streamed-turn.e2e.ts`, `e2e/keyboard-agents-picker.e2e.ts`,
 `e2e/keyboard-session-pickers.e2e.ts`, `e2e/keyed-send.e2e.ts`, `e2e/keyed-writes.e2e.ts`,
 `e2e/doc-reload-line.e2e.ts`, `e2e/live-socket.e2e.ts`, `e2e/mermaid.e2e.ts` and
-`e2e/offline-edits.e2e.ts`, 40 rows; the comment
+`e2e/offline-edits.e2e.ts`, 46 rows; the comment
 above the project names each engine behaviour and the rows that exercise it, and a comment above
 each tagged row names which. Every row of the live-socket spec runs in `chromium`, and its one-socket
 row also runs in `firefox`, `webkit` and `webkit-iphone`: a tab holds one live socket in every
@@ -2875,16 +2876,16 @@ The `webkit-iphone` project runs, in WebKit with the iPhone 13 profile, four row
 No Playwright hook asserts what a project's title `grep` selected, so that guard is a one-time manual check: rename one selected test in a scratch copy and confirm `bunx playwright test --config e2e/playwright.config.ts --project=webkit-iphone --list` drops it (the count falls by one, with no error), then restore it. Repeat it whenever the `grep` or the titles change.
 
 The `firefox` Playwright project runs the rows tagged `@firefox` (`firefoxTagged` in
-`e2e/playwright.config.ts`), 39 rows: the same rows of the same specs as `webkit` but
+`e2e/playwright.config.ts`), 45 rows: the same rows of the same specs as `webkit` but
 `e2e/collab-cursor.e2e.ts`'s and the two `webkit` alone carries, and the rows of `e2e/code-line-replace.e2e.ts` and
 `e2e/picture-link-click.e2e.ts`. Firefox's native editing puts text
 typed over a code block's last line before that line's newline, and deletes a paragraph's hard break
 along with the text after it, which Chromium and WebKit never do, so that spec is the one that needs
-a second engine; the picker, deep-link, keyed, live-socket, offline-edits, mermaid and streamed-turn
-rows run for the reasons given under `webkit` above and in the comment above the project; and a
-click on a link inside the editor meets the engine's focus rule — Firefox focuses the editing host,
-not the link — so the picture view's fallback link is clicked there too. CI installs Firefox beside
-Chromium for them (`bun run e2e:install` does the same locally).
+a second engine; the picker, deep-link, download-name, keyed, live-socket, offline-edits, mermaid
+and streamed-turn rows run for the reasons given under `webkit` above and in the comment above the
+project; and a click on a link inside the editor meets the engine's focus rule — Firefox focuses
+the editing host, not the link — so the picture view's fallback link is clicked there too.
+CI installs Firefox beside Chromium for them (`bun run e2e:install` does the same locally).
 
 The `chromium-plain-http` project runs `e2e/plain-http-origin.e2e.ts` and
 `e2e/plain-http-proxy.e2e.ts`, selected by file name: Chromium maps `dispatch-e2e.test` to
@@ -2940,7 +2941,7 @@ before, for the reasons given under `webkit` and `firefox` above.
 No project above them runs those three files, so each row runs once.
 Each of the three sets `default: false`, which leaves it out of a run that names no project and
 takes nothing from a run that names one, so the commands at the top of this section name them
-and a bare `bun run e2e` holds none of their 54 rows (a listing of the three at this head: 54
+and a bare `bun run e2e` holds none of their 51 rows (a listing of the three at this head: 51
 tests in 3 files).
 Until dispatch://INFRA-1280 each named every project before it in `dependencies` instead, which
 ordered the run and also pulled the whole suite in behind any command naming one of the three

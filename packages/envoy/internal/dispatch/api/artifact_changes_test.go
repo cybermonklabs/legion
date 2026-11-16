@@ -90,9 +90,9 @@ func readChanges(t *testing.T, handler http.Handler, artifactID string, from, to
 	return decodeBody[servedChanges](t, response)
 }
 
-// uploadVersions uploads each text in turn as one document of a new issue, so text i is version
-// i+1, and answers the document's id.
-func uploadVersions(t *testing.T, handler http.Handler, name string, texts ...string) string {
+// uploadDocumentVersions uploads each text in turn as one document of a new issue, so text i is
+// version i+1, and answers the document's id.
+func uploadDocumentVersions(t *testing.T, handler http.Handler, name string, texts ...string) string {
 	t.Helper()
 	return uploadVersionsTo(t, handler, createArtifactIssue(t, handler).Key, name, texts...)
 }
@@ -133,10 +133,9 @@ func requireChanges(t *testing.T, changes servedChanges, sections []servedSectio
 // above every section, are not named. The answer names the document and the versions it read.
 func TestTheChangeSetNamesAChangedSectionByItsHeading(t *testing.T) {
 	handler := newTestHandler(t)
-	artifactID := uploadVersions(t, handler, "plan.md",
+	artifactID := uploadDocumentVersions(t, handler, "plan.md",
 		"# Plan\n\n## Goal\n\nShip the service behind a flag.\n\n## Scope\n\nTwo regions.\n\n## Risks\n\nNone known.\n",
-		"# Plan\n\n## Goal\n\nShip the service behind a flag and a canary.\n\n## Scope\n\nTwo regions.\n\n## Rollout\n\nOne region a day.\n",
-	)
+		"# Plan\n\n## Goal\n\nShip the service behind a flag and a canary.\n\n## Scope\n\nTwo regions.\n\n## Rollout\n\nOne region a day.\n")
 
 	changes := readChanges(t, handler, artifactID, 1, 2)
 	if changes.ArtifactID != artifactID || changes.From != 1 || changes.To != 2 {
@@ -155,10 +154,9 @@ func TestTheChangeSetNamesAChangedSectionByItsHeading(t *testing.T) {
 // place before the first section, and the `##` section after it, left as it was, is not named.
 func TestAChangeBeforeTheFirstSectionNamesTheRunBeforeTheFirstSection(t *testing.T) {
 	handler := newTestHandler(t)
-	artifactID := uploadVersions(t, handler, "plan.md",
+	artifactID := uploadDocumentVersions(t, handler, "plan.md",
 		"# Plan\n\nThe plan ships in May.\n\n## Goal\n\nShip the service behind a flag.\n",
-		"# Plan\n\nThe plan ships in June.\n\n## Goal\n\nShip the service behind a flag.\n",
-	)
+		"# Plan\n\nThe plan ships in June.\n\n## Goal\n\nShip the service behind a flag.\n")
 
 	requireChanges(t, readChanges(t, handler, artifactID, 1, 2),
 		[]servedSection{runBeforeTheFirstSection("changed")}, []servedBlockRef{})
@@ -169,10 +167,9 @@ func TestAChangeBeforeTheFirstSectionNamesTheRunBeforeTheFirstSection(t *testing
 // them, and is named too.
 func TestTheChangeSetNamesAnAddedAndARemovedRequirement(t *testing.T) {
 	handler := newTestHandler(t)
-	artifactID := uploadVersions(t, handler, "requirements.md",
+	artifactID := uploadDocumentVersions(t, handler, "requirements.md",
 		"# Spec\n\n## Requirements\n\n:::requirement{#r1}\nThe read succeeds.\n:::\n\n:::requirement{#r2}\nThe read is fast.\n:::\n",
-		"# Spec\n\n## Requirements\n\n:::requirement{#r1}\nThe read succeeds.\n:::\n\n:::requirement{#r3}\nThe read is logged.\n:::\n",
-	)
+		"# Spec\n\n## Requirements\n\n:::requirement{#r1}\nThe read succeeds.\n:::\n\n:::requirement{#r3}\nThe read is logged.\n:::\n")
 
 	requireChanges(t, readChanges(t, handler, artifactID, 1, 2),
 		[]servedSection{{Heading: "Requirements", Occurrence: 0, Change: "changed"}},
@@ -192,7 +189,7 @@ func TestTheChangeSetNamesACheckWhoseRunOrWordsChanged(t *testing.T) {
 	check := func(id, attributes, words string) string {
 		return ":::check{#" + id + " " + attributes + "}\n" + words + "\n:::\n\n"
 	}
-	artifactID := uploadVersions(t, handler, "verification.md",
+	artifactID := uploadDocumentVersions(t, handler, "verification.md",
 		check("k1", `surface="cli" run="go test ./a/"`, "The read returns 200.")+
 			check("k2", `surface="api" run="go test ./b/"`, "The write returns 201.")+
 			check("k3", ciControl+` ci_check="build"`, "The server builds at the head.")+
@@ -200,8 +197,7 @@ func TestTheChangeSetNamesACheckWhoseRunOrWordsChanged(t *testing.T) {
 		check("k1", `surface="cli" run="go test ./a/ -run TestRead"`, "The read returns 200.")+
 			check("k2", `surface="api" run="go test ./b/"`, "The write returns 201 with the row.")+
 			check("k3", ciControl+` ci_check="test"`, "The server builds at the head.")+
-			check("k4", `surface="cli" run="go test ./d/"`, "The list is sorted."),
-	)
+			check("k4", `surface="cli" run="go test ./d/"`, "The list is sorted."))
 
 	requireChanges(t, readChanges(t, handler, artifactID, 1, 2), []servedSection{runBeforeTheFirstSection("changed")}, []servedBlockRef{
 		{ID: "k1", Type: "check", Change: "changed"},
@@ -259,10 +255,9 @@ func TestAnAskAnsweredBesideAChangedSectionIsNoDecisionOnlyChange(t *testing.T) 
 // heading: a change to the second names occurrence 1 and leaves the first unnamed.
 func TestTwoSectionsOfOneHeadingAreToldApartByOccurrence(t *testing.T) {
 	handler := newTestHandler(t)
-	artifactID := uploadVersions(t, handler, "steps.md",
+	artifactID := uploadDocumentVersions(t, handler, "steps.md",
 		"# Steps\n\n## Step\n\nBuild it.\n\n## Step\n\nShip it.\n",
-		"# Steps\n\n## Step\n\nBuild it.\n\n## Step\n\nShip it on a Tuesday.\n",
-	)
+		"# Steps\n\n## Step\n\nBuild it.\n\n## Step\n\nShip it on a Tuesday.\n")
 
 	requireChanges(t, readChanges(t, handler, artifactID, 1, 2),
 		[]servedSection{{Heading: "Step", Occurrence: 1, Change: "changed"}}, []servedBlockRef{})
@@ -287,10 +282,9 @@ func sectionedPlan(sections ...string) string {
 // keeping its place among the sections both versions hold. The section after them is not named.
 func TestTheChangeSetNamesOneOfTwoSwappedSectionsMoved(t *testing.T) {
 	handler := newTestHandler(t)
-	artifactID := uploadVersions(t, handler, "plan.md",
+	artifactID := uploadDocumentVersions(t, handler, "plan.md",
 		sectionedPlan(goalSection, scopeSection, risksSection),
-		sectionedPlan(scopeSection, goalSection, risksSection),
-	)
+		sectionedPlan(scopeSection, goalSection, risksSection))
 
 	requireChanges(t, readChanges(t, handler, artifactID, 1, 2),
 		[]servedSection{{Heading: "Goal", Occurrence: 0, Change: "moved"}}, []servedBlockRef{})
@@ -300,10 +294,9 @@ func TestTheChangeSetNamesOneOfTwoSwappedSectionsMoved(t *testing.T) {
 // order, so none of them moved, though each stands one place lower.
 func TestTheChangeSetNamesASectionLiftedToTheTopAsTheOnlyOneMoved(t *testing.T) {
 	handler := newTestHandler(t)
-	artifactID := uploadVersions(t, handler, "plan.md",
+	artifactID := uploadDocumentVersions(t, handler, "plan.md",
 		sectionedPlan(goalSection, scopeSection, risksSection, rolloutSection),
-		sectionedPlan(rolloutSection, goalSection, scopeSection, risksSection),
-	)
+		sectionedPlan(rolloutSection, goalSection, scopeSection, risksSection))
 
 	requireChanges(t, readChanges(t, handler, artifactID, 1, 2),
 		[]servedSection{{Heading: "Rollout", Occurrence: 0, Change: "moved"}}, []servedBlockRef{})
@@ -315,10 +308,9 @@ func TestTheChangeSetNamesASectionLiftedToTheTopAsTheOnlyOneMoved(t *testing.T) 
 // is named moved.
 func TestAMovedSectionWhoseTextChangedIsNamedChangedNotMoved(t *testing.T) {
 	handler := newTestHandler(t)
-	artifactID := uploadVersions(t, handler, "plan.md",
+	artifactID := uploadDocumentVersions(t, handler, "plan.md",
 		sectionedPlan(goalSection, scopeSection, risksSection, rolloutSection),
-		sectionedPlan(scopeSection, "## Goal\n\nShip the service behind a flag and a canary.\n", rolloutSection, risksSection),
-	)
+		sectionedPlan(scopeSection, "## Goal\n\nShip the service behind a flag and a canary.\n", rolloutSection, risksSection))
 
 	requireChanges(t, readChanges(t, handler, artifactID, 1, 2), []servedSection{
 		{Heading: "Goal", Occurrence: 0, Change: "changed"},
@@ -330,10 +322,9 @@ func TestAMovedSectionWhoseTextChangedIsNamedChangedNotMoved(t *testing.T) {
 // where the later version holds it, and the added one after it.
 func TestTheChangeSetNamesAReorderBesideAnAddedSection(t *testing.T) {
 	handler := newTestHandler(t)
-	artifactID := uploadVersions(t, handler, "plan.md",
+	artifactID := uploadDocumentVersions(t, handler, "plan.md",
 		sectionedPlan(goalSection, scopeSection, risksSection),
-		sectionedPlan(scopeSection, goalSection, rolloutSection, risksSection),
-	)
+		sectionedPlan(scopeSection, goalSection, rolloutSection, risksSection))
 
 	requireChanges(t, readChanges(t, handler, artifactID, 1, 2), []servedSection{
 		{Heading: "Goal", Occurrence: 0, Change: "moved"},
@@ -368,11 +359,10 @@ func setextAppendixRun(words string) string {
 // nothing here.
 func TestAChangeUnderASetextHeadingIsNamedUnderThatHeading(t *testing.T) {
 	handler := newTestHandler(t)
-	artifactID := uploadVersions(t, handler, "plan.md",
+	artifactID := uploadDocumentVersions(t, handler, "plan.md",
 		sectionedPlan(goalSection, setextScopeSection("Two regions."), risksSection, setextAppendixRun("Background.")),
 		sectionedPlan(goalSection, setextScopeSection("Three regions."), risksSection, setextAppendixRun("Background.")),
-		sectionedPlan(goalSection, setextScopeSection("Three regions."), risksSection, setextAppendixRun("Background and history.")),
-	)
+		sectionedPlan(goalSection, setextScopeSection("Three regions."), risksSection, setextAppendixRun("Background and history.")))
 	stored := versionMarkdown(t, handler, artifactID, 1)
 	if !strings.Contains(stored, "\nScope\\\nwide\n---\n") || !strings.Contains(stored, "\nAppendix\\\nnotes\n===\n") {
 		t.Fatalf("version 1 is stored as %q, want both headings in setext form", stored)
@@ -451,7 +441,7 @@ func TestATopLevelHeadingLiftedAboveASectionNamesEachRunWhereItStands(t *testing
 		texts = append(texts, tc.before, tc.after)
 	}
 	handler := newTestHandler(t)
-	artifactID := uploadVersions(t, handler, "plan.md", texts...)
+	artifactID := uploadDocumentVersions(t, handler, "plan.md", texts...)
 
 	for index, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -517,7 +507,7 @@ func TestTheChangeSetNamesEachRunOutsideTheSectionsWhereItStands(t *testing.T) {
 		texts = append(texts, tc.before, tc.after)
 	}
 	handler := newTestHandler(t)
-	artifactID := uploadVersions(t, handler, "plan.md", texts...)
+	artifactID := uploadDocumentVersions(t, handler, "plan.md", texts...)
 
 	for index, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -700,7 +690,7 @@ func TestAChangeSetNamesNoBlockUnderAnIDNeitherStoredVersionCarries(t *testing.T
 // is not positive is, and the refusal is the error envelope every artifact route answers.
 func TestTheChangeSetRefusesFromNotBelowTo(t *testing.T) {
 	handler := newTestHandler(t)
-	artifactID := uploadVersions(t, handler, "plan.md", "# Plan\n\nOne.\n", "# Plan\n\nTwo.\n")
+	artifactID := uploadDocumentVersions(t, handler, "plan.md", "# Plan\n\nOne.\n", "# Plan\n\nTwo.\n")
 
 	for _, query := range []string{"from=2&to=2", "from=2&to=1", "from=0&to=2", "from=one&to=2", "to=2"} {
 		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/changes?"+query, nil, "alice")
@@ -718,7 +708,7 @@ func TestTheChangeSetRefusesFromNotBelowTo(t *testing.T) {
 // ARTIFACT_NOT_FOUND every artifact route answers.
 func TestTheChangeSetAnswersAMissingVersionNotFound(t *testing.T) {
 	handler := newTestHandler(t)
-	artifactID := uploadVersions(t, handler, "plan.md", "# Plan\n\nOne.\n", "# Plan\n\nTwo.\n")
+	artifactID := uploadDocumentVersions(t, handler, "plan.md", "# Plan\n\nOne.\n", "# Plan\n\nTwo.\n")
 
 	missing := dispatchRequest(t, handler, http.MethodGet, changesPath(artifactID, 1, 3), nil, "alice")
 	if missing.Code != http.StatusNotFound {
