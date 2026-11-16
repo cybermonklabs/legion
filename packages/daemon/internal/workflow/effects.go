@@ -454,11 +454,24 @@ const testerVerdictLabel = "Tester's verdict"
 // never a transition's start. movedBack is whether the move into that phase was a move back to an
 // earlier one, which is written on the row beside the entry and is the transition's to read, not
 // this function's: the issue record already names the phase it moved into by the time a start
-// is made. A phase with no worker, and accepting, whose architect is already started — admission
-// starts a root's with its tree and a child's own starts with the child's first phase
-// (StartFirstPhase) — start nobody.
+// is made. A phase with no worker starts nobody. Accepting starts no worker either: its role is
+// the architect, which is already started — admission starts a root's with its tree and a child's
+// own starts with the child's first phase (StartFirstPhase).
+//
+// Every phase start of a child, the move into accepting among them, first starts the child's own
+// architect again when its claim has failed (reviveArchitect). This is the one place that does:
+// the transitions are the only phase starts. A restart of a held phase (restart), a promoted
+// start (StartPromotedWorker), an owed entry (SendOwedEntry) and a resume task each hand a role
+// the work of a phase the issue already stands in, and the owed-entry sweep runs every minute, so
+// none of them revives the architect.
 func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack bool) error {
-	if role == "" || role == claim.RoleArchitect {
+	if role == "" {
+		return nil
+	}
+	if err := e.reviveArchitect(ctx, tx, issue); err != nil {
+		return err
+	}
+	if role == claim.RoleArchitect {
 		return nil
 	}
 	entry, err := e.enter(ctx, tx, issue, role, task, movedBack)
@@ -466,6 +479,54 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 		return err
 	}
 	return e.started(ctx, tx, issue, role, task, entry, startMarks{})
+}
+
+// reviveArchitect queues the start of the architect of issue, a child, when the store records its
+// claim failed and holds no start of it queued: a failed sub-architect starts again at its child's
+// next phase start (dispatch://INFRA-3915 R2), and until then its child's notices go to the
+// architect above it (record.OwningArchitect). The outbox's start retries a failed claim with
+// fresh budgets in the session it recorded (supervise.RequestRetry). A tree root's architect is
+// admission's, started with its tree, so a root revives nothing here.
+//
+// The claim's state is read in the transaction, and no row carries a mark that asks for the
+// revive: an older daemon's strict decoder refuses an outbox row with a field it does not know
+// (record.DecodeOutboxPayload), and a row it refuses fails every read of its role's runs
+// (record.Store.RoleRuns), each admission pass of the issue among them. So the start is the plain
+// one admission gives a root's architect, with no phase, task, entry, slot mark or kept
+// decisions. The read is stable: a failed claim stays failed until something starts it, and a
+// start already queued is that start — the one the child's first phase start queues whatever the
+// claim's state (gateOpened), or an earlier phase start's the outbox has not run yet — so no
+// second start is queued beside it. An issue whose key makes no claim token has no claim to
+// revive.
+func (e *Engine) reviveArchitect(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	if claim.IsTreeRoot(issue.Key, issue.Tree) {
+		return nil
+	}
+	project, err := claim.ProjectToken(e.cfg.Project)
+	if err != nil {
+		return err
+	}
+	token, err := claim.NewToken(project, issue.Key, claim.RoleArchitect)
+	if err != nil {
+		return nil
+	}
+	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, claim.RoleArchitect, issue.Generation)
+	if err != nil {
+		return err
+	}
+	if run.Claim == nil || run.Claim.State != supervise.StateFailed {
+		return nil
+	}
+	for _, queued := range run.Queued {
+		if queued.Request.Op == "start" {
+			return nil
+		}
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation}); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a child's phase start starts its failed architect again", "issue", issue.Key, "tree", issue.Tree, "phase", issue.Phase)
+	return nil
 }
 
 // restart starts the phase worker of a phase entry the issue never left: the architect's or the
