@@ -59,10 +59,10 @@
       "mustNotName": [{ "node": "read-state-set" }, { "node": "terms", "subject": "read state" }]
     },
     {
-      "id": "6-checks-in-verification",
+      "id": "6-split-checks",
       "root": "without",
-      "spec": "6-checks-in-verification.md",
-      "verification": "6-checks-in-verification.verification.md",
+      "spec": "6-split-checks.md",
+      "verification": "6-split-checks.verification.md",
       "planted": [{ "kind": "agent-where-program", "node": "v-second-answer-agent" }],
       "mustNotName": [
         { "node": "v-second-answer-409" },
@@ -120,10 +120,10 @@
       ]
     },
     {
-      "id": "9-form-findings",
+      "id": "9-decided-findings",
       "root": "locker",
-      "spec": "9-form-findings.md",
-      "edit": "9-form-findings.edit.json",
+      "spec": "9-decided-findings.md",
+      "edit": "9-decided-findings.edit.json",
       "form": [
         { "kind": "statement", "node": "night-quiet" },
         { "kind": "definition", "node": "parcel" }
@@ -159,6 +159,26 @@
         { "node": "ask-wait-minutes" },
         { "node": "summary-file" },
         { "node": "answer-message" }
+      ]
+    },
+    {
+      "id": "13-markup-heading",
+      "root": "locker",
+      "spec": "13-markup-heading.md",
+      "planted": [
+        { "kind": "undefined-noun", "node": "door-alarm-start", "subject": "door alarm" }
+      ],
+      "mustNotName": []
+    },
+    {
+      "id": "14-quoted-blocks",
+      "root": "locker",
+      "spec": "14-quoted-blocks.md",
+      "planted": [],
+      "mustNotName": [
+        { "node": "door-close-60" },
+        { "node": "quoted-calm" },
+        { "node": "quoted-entry" }
       ]
     }
   ]
