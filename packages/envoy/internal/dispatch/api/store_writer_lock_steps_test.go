@@ -150,11 +150,13 @@ type storeWriterRun struct {
 // it, and normalizedStatement lowers it and folds its whitespace before it is compared.
 const (
 	// issueOwnerStatement is ownerStatus's lock of an issue (issueStatus, ownerRowLock), which the
-	// comment path takes through lockCommentOwner and a reply through lockOwnerOfComment.
-	issueOwnerStatement = "select status, closed_at is null from issues where key = $1 for no key update"
+	// comment path takes through lockCommentOwner and a reply through lockOwnerOfComment. Its head
+	// stops where the writer's project clause starts, which the statement binds as it reads.
+	issueOwnerStatement = "select status, closed_at is null from issues where key = $1 and"
 	// documentOwnerStatement is ownerStatus's lock of a project document, which the comment path
-	// takes through lockCommentOwner on a comment the document owns.
-	documentOwnerStatement = "select true from artifacts where id = $1 and issue_key is null for no key update"
+	// takes through lockCommentOwner on a comment the document owns. Its head stops where the
+	// writer's document clause starts.
+	documentOwnerStatement = "select true from artifacts where id = $1 and issue_key is null and"
 	// eventOwnerStatement is events.Broker's lock of an issue event's owner, which a delivery's
 	// settle takes through LockOwners before anything else (settleDeliveryAttempt).
 	eventOwnerStatement = "select last_seq, project_key, pg_current_xact_id() from issues where key = $1 for no key update"

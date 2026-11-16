@@ -30,6 +30,7 @@ package api
 // name, since the name is the caller's own.
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"slices"
@@ -54,6 +55,8 @@ const (
 	codeSessionScope = "SESSION_SCOPE"
 	// codeSessionNotFound answers a write to a session the caller may not see as one nobody holds.
 	codeSessionNotFound = "SESSION_NOT_FOUND"
+	// codeRestrictedMember refuses a restricted member a write that belongs to the deployment.
+	codeRestrictedMember = "RESTRICTED_MEMBER"
 )
 
 // brokerCredentialActor is the caller an access token the secrets broker issued decided, and
@@ -110,10 +113,11 @@ func (s *server) callerSession(r *http.Request) (string, bool) {
 	return actor.ID, true
 }
 
-// withinProjectScope runs in front of one mutating route's handler. It resolves the caller's
-// viewer once (readerOf) and puts it in the request's context, where the handler and every
-// loader it reads through find it (resolveReader), so a write reads the viewer once. A row that
-// writes nothing and reads no row (scopeNoWrite) needs none and is returned unchanged.
+// withinProjectScope runs in front of one mutating route's handler. It resolves the caller once
+// (withCallerResolved) and the caller's viewer once (readerOf), and puts both in the request's
+// context, where the handler and every loader it reads through find them (optionalActor,
+// resolveReader), so a write reads each once. A row that writes nothing and reads no row
+// (scopeNoWrite) needs neither and is returned unchanged.
 //
 // A row of the deployment (scopeDeployment) is refused to a viewer that is not open — a
 // restricted member, or a credential that lists projects — as the read of the deployment's rows
@@ -126,22 +130,43 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 	}
 	deployment := route.Scope == scopeDeployment
 	return func(w http.ResponseWriter, r *http.Request) {
+		r = s.withCallerResolved(r)
 		reader, ok := s.readerOf(w, r)
 		if !ok {
 			return
 		}
 		if deployment && !reader.Viewer.Open {
-			s.refuseDeploymentWrite(w, r, route)
+			s.refuseDeploymentWrite(w, r, route, reader.Viewer.Restricted)
 			return
 		}
 		handler(w, r.WithContext(withReader(r.Context(), reader)))
 	}
 }
 
-// refuseDeploymentWrite names the row and why the caller may not write it: the projects its
-// credential lists, which are the caller's own, or that it is a restricted member.
-func (s *server) refuseDeploymentWrite(w http.ResponseWriter, r *http.Request, route apiRoute) {
-	why := "this caller is a restricted member, who writes only the projects an access list names"
+// withCallerResolved is r with its caller resolved once (optionalActor) and kept in its context,
+// where every later layer and the handler read it rather than resolving it again. That keeps the
+// access-log line naming the caller the handler names last (accesslog.Note: the last resolution
+// wins), such as the session a shared-token write names in its body, rather than a layer's second
+// resolution after the handler's.
+func (s *server) withCallerResolved(r *http.Request) *http.Request {
+	if _, ok := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); ok {
+		return r
+	}
+	actor, human, err := s.optionalActor(r)
+	return r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human, err: err}))
+}
+
+// refuseDeploymentWrite names the row and why the caller may not write it: a restricted member
+// is 403 RESTRICTED_MEMBER, the refusal every write of the deployment a restricted member makes
+// answers (creating a project or a group among them), and a credential that lists projects is
+// 403 PROJECT_SCOPE_DEPLOYMENT, naming its list, which is the caller's own.
+func (s *server) refuseDeploymentWrite(w http.ResponseWriter, r *http.Request, route apiRoute, restricted bool) {
+	if restricted {
+		writeError(w, codeRestrictedMember, http.StatusForbidden, fmt.Sprintf(
+			"a restricted member cannot write %s %s, which belongs to the deployment rather than to a project", route.Method, route.Pattern))
+		return
+	}
+	why := "this request's credential sees no project"
 	if listed, ok := s.callerProjects(r); ok {
 		why = "this request's credential may write " + projectsNamed(listed) + " and nothing else"
 	}
@@ -208,6 +233,7 @@ func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) ht
 	}
 	personsOwnWrite := len(route.OAuthScopes) > 0
 	return func(w http.ResponseWriter, r *http.Request) {
+		r = s.withCallerResolved(r)
 		addressed := r.PathValue("session_id")
 		if proved, provedOne := s.callerSession(r); provedOne && addressed != proved && !personsOwnWrite {
 			writeError(w, codeSessionScope, http.StatusForbidden, fmt.Sprintf(

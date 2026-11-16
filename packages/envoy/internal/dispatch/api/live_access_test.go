@@ -192,7 +192,14 @@ func TestARemovedPersonsSocketRefreshesWithoutTheProject(t *testing.T) {
 		{
 			name:   "a direct removal",
 			person: seedBob,
-			grant:  func(*testing.T, privateSeed) {},
+			// bob is restricted, so he sees only the projects a list names him on, and a session
+			// only when it acted in one of them: PUB lists him too, and s1 acts in PUB, so the
+			// pin that marks the end of his feed (markAgentState) names a session he still sees.
+			grant: func(t *testing.T, seed privateSeed) {
+				seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPublic+"/access/people/"+seedBob, nil, http.StatusOK)
+				seed.mustRequest(t, callerSharedToken, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/comments",
+					map[string]any{"body": "s1 works on PUB.", "actor": map[string]any{"kind": "session", "id": "s1"}}, http.StatusCreated)
+			},
 			remove: func(t *testing.T, seed privateSeed) {
 				seed.mustRequest(t, callerCarol, http.MethodDelete, "/api/v1/projects/"+seedPrivate+"/access/people/"+seedBob, nil, http.StatusOK)
 			},
