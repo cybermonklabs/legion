@@ -53,7 +53,7 @@ func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T)
 					return secrets.Minted{Value: "access-token"}, nil
 				},
 			}
-			request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "RACED_LOGIN"), "")
+			request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "RACED_LOGIN"), "", nil)
 			if err != nil {
 				t.Fatalf("Create = %v", err)
 			}
@@ -65,7 +65,7 @@ func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T)
 				}
 				grantID = *request.GrantID
 			case "reused":
-				reused, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read again", "RACED_LOGIN"), "")
+				reused, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read again", "RACED_LOGIN"), "", nil)
 				if err != nil || reused.GrantID == nil || request.GrantID == nil || *reused.GrantID != *request.GrantID {
 					t.Fatalf("second Create = %+v, %v; want the first request's grant reused", reused, err)
 				}

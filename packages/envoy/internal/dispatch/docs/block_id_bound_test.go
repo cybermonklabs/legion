@@ -114,7 +114,7 @@ func requireIndexedWithoutLongIDs(t *testing.T, database *store.Store, service *
 // written in one starts at the innermost node holding it.
 func TestAVersionHoldingABlockIDPastTheBoundIsWrittenAndIndexed(t *testing.T) {
 	database, service := blockIndexService(t)
-	spec := createOwedDocument(t, database, service, "", "spec", boundSpec, "")
+	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", boundSpec, "")
 	long := giveLongBlockIDs(t, service, spec)
 
 	result, err := namedVersion(t, service, spec, "a version holding long block ids", model.Actor{Kind: "user", ID: "alice"})
@@ -135,7 +135,7 @@ func TestAVersionHoldingABlockIDPastTheBoundIsWrittenAndIndexed(t *testing.T) {
 // nodes, the long-id blocks none, and it is owed nothing more, so the next tick has nothing to do.
 func TestADocumentAlreadyHoldingABlockIDPastTheBoundIsIndexedAndLeavesOwed(t *testing.T) {
 	database, service := blockIndexService(t)
-	spec := createOwedDocument(t, database, service, "", "spec", boundSpec, "")
+	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", boundSpec, "")
 	settle(t, database, spec)
 	long := giveLongBlockIDs(t, service, spec)
 	version, _ := writeAsAnOlderBuild(t, database, service, spec, "Other paragraph.", "Other paragraph, edited.")
