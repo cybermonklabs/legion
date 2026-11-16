@@ -416,7 +416,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		})
 		request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 		response := httptest.NewRecorder()
-		routerFor(t, boot, routes.AppContextOptions{}).ServeHTTP(response, request)
+		// A database, as every deployment has: the read check resolves the signed-in caller's
+		// viewer from it before the route reads the broker, and a server with none reads every
+		// caller as the closed viewer, which no deployment-wide read admits.
+		routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
 			t.Fatalf("GET /api/v1/credential-requests: %d %s", response.Code, response.Body.String())
 		}
@@ -1511,7 +1514,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				}
 				request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 				response := httptest.NewRecorder()
-				routerFor(t, resolveWith(t, nil), routes.AppContextOptions{}).ServeHTTP(response, request)
+				routerFor(t, resolveWith(t, nil), routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 				if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "null" {
 					t.Errorf("unset: GET /api/v1/credential-requests answered %d %s, want 200 null", response.Code, response.Body.String())
 				}
@@ -2319,7 +2322,7 @@ func TestACredentialPageWithAnUnreadableAccountTokenDoesNotBlameTheBroker(t *tes
 			})
 			request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 			response := httptest.NewRecorder()
-			routerFor(t, boot, routes.AppContextOptions{}).ServeHTTP(response, request)
+			routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 			if called {
 				t.Fatal("the broker was called with no token Dispatch could read")
 			}

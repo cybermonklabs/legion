@@ -233,6 +233,10 @@ var readClasses = map[string]readEntry{
 //     viewer could be held to, so a viewer that is not open - a restricted member, or a credential
 //     that lists projects - is 403 DEPLOYMENT_READ_REFUSED, naming the row.
 //   - none, caller and testHook need neither, and the handler runs as it is.
+//
+// A server with no database, a test's, reads every caller as the closed viewer, which sees no
+// project and is not open: readerOf decides that, as it decides every other viewer, so the check
+// fails closed there.
 func (s *server) withinReadScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	if slices.Contains(route.Reads, readclass.AccessAccount) {
 		return func(w http.ResponseWriter, r *http.Request) {
