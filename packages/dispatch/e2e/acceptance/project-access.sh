@@ -312,6 +312,27 @@ readonly object_reads=(
   "/api/v1/artifacts/{{P} playbook}"
 )
 
+begin private
+send main carol PATCH /api/v1/projects/PRIV/access '{"visibility":"private"}'
+if [ "$status" = 200 ]; then
+  priv_private=1
+  note "PRIV is private"
+else
+  priv_private=0
+  refusal="PATCH /api/v1/projects/PRIV/access {visibility: private} answered HTTP $status $(head -c 300 "$work/body")"
+  if [ "$private_by_sql" = 1 ]; then
+    psql "$main_database_url" -X -q -v ON_ERROR_STOP=1 -c "update projects set visibility = 'private' where key = 'PRIV'" >/dev/null ||
+      fail "main: the stand-in could not make PRIV private"
+    priv_private=1
+    unrun "PRIV was made private by the store write, not the route: $refusal"
+    note "PRIV is private by the stand-in (--private-by-sql); the route answered HTTP $status"
+  else
+    unrun "PRIV is not private: $refusal; the walk, search, sockets, proxy and writes sections need it and did not run"
+    note "PRIV is not private: HTTP $status"
+  fi
+fi
+pass
+
 begin listed
 # Each listed caller reads each object of PRIV: 200, and the answer names the object.
 found=0
@@ -392,27 +413,6 @@ for caller in bob carol-priv-token; do
   fi
 done
 note "bob and carol's PRIV token read PUB's objects, the projects, the people, the agents and a direct message"
-pass
-
-begin private
-send main carol PATCH /api/v1/projects/PRIV/access '{"visibility":"private"}'
-if [ "$status" = 200 ]; then
-  priv_private=1
-  note "PRIV is private"
-else
-  priv_private=0
-  refusal="PATCH /api/v1/projects/PRIV/access {visibility: private} answered HTTP $status $(head -c 300 "$work/body")"
-  if [ "$private_by_sql" = 1 ]; then
-    psql "$main_database_url" -X -q -v ON_ERROR_STOP=1 -c "update projects set visibility = 'private' where key = 'PRIV'" >/dev/null ||
-      fail "main: the stand-in could not make PRIV private"
-    priv_private=1
-    unrun "PRIV was made private by the store write, not the route: $refusal"
-    note "PRIV is private by the stand-in (--private-by-sql); the route answered HTTP $status"
-  else
-    unrun "PRIV is not private: $refusal; the walk, search, sockets, proxy and writes sections need it and did not run"
-    note "PRIV is not private: HTTP $status"
-  fi
-fi
 pass
 
 # Meaning search answers from vectors the embedding queue writes behind each write, so both
