@@ -35,7 +35,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -318,7 +317,7 @@ func newControllerStart(t *testing.T, d *controllerDaemon, opts controllerOption
 	c.write("instructions.md", "Always be kind.\n", 0o600)
 	c.write("envoy-token", "envoy-bearer\n", 0o600)
 	c.write("dispatch-token", "dispatch-bearer\n", 0o600)
-	c.write("nats-seed", testnats.UserSeed(t)+"\n", 0o600)
+	c.write("nats-seed", nkeyUserSeed(t)+"\n", 0o600)
 	lines := opts.lines
 	if lines == nil {
 		lines = []string{
@@ -1113,7 +1112,7 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 	t.Run("a NATS nkey seed file holding no user seed", func(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{})
-		seed := testnats.Account(t)
+		seed := nkeyAccount(t)
 		c.write("nats-seed", seed+"\n", 0o600)
 		want := fmt.Sprintf("nats_nkey_seed_file (%s) holds an nkey seed that is not a user's", filepath.Join(c.dir, "nats-seed"))
 		if code, _, errb := c.run(); code != 1 || !strings.Contains(errb, want) || strings.Contains(errb, seed) {
