@@ -602,6 +602,52 @@ test("a read with no text that gives words takes out a list an older copy placed
   expect(await withSessionAnswers([...tools], requestOf(read, noBranch, session))).toBeUndefined();
 });
 
+// An older copy's list rendered from its cache names the read that failed. Over a placed list with
+// the same items it keeps the placed bytes, so that line leaves the request, and the failure it
+// names is told to `unshownFailure` instead, once, as this copy's own failed reads are.
+test("an older copy's list naming a failed read, kept behind the placed bytes, tells that failure once", async () => {
+  const session = {};
+  const told: string[] = [];
+  const request = {
+    ...requestOf(readingEach(LIST), noBranch, session),
+    unshownFailure: (reason: string) => {
+      told.push(reason);
+    },
+  };
+  expect(await withSessionAnswers([skill, ask], request)).toEqual([skill, ask, list]);
+  const older = {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: `${SESSION_ANSWERS_MARKER}\nAs read at 2026-10-27T11:00:00.000Z; this read failed: Dispatch did not answer within 800 ms.\n\n2026-10-27T10:00:00.000Z · alice answered your ask\nShip it.`,
+      },
+    ],
+    timestamp: 0,
+  };
+  const turn = [skill, ask, readCall, readResult];
+  expect(await withSessionAnswers([...turn, older], request)).toEqual([
+    skill,
+    ask,
+    list,
+    readCall,
+    readResult,
+  ]);
+  expect(told).toEqual(["Dispatch did not answer within 800 ms."]);
+  // The next such list keeps the placed bytes too, and is not told again.
+  const tools = [...turn, grepCall, grepResult];
+  expect(await withSessionAnswers([...tools, older], request)).toEqual([
+    skill,
+    ask,
+    list,
+    readCall,
+    readResult,
+    grepCall,
+    grepResult,
+  ]);
+  expect(told).toEqual(["Dispatch did not answer within 800 ms."]);
+});
+
 // A person's own paragraph can read like the line the renderer writes when the cap dropped older
 // items. It must not be taken for that line: an item whose only unseen words sit in such a
 // paragraph would be swallowed, and the model would never read what that person wrote.

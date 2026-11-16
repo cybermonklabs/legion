@@ -17874,7 +17874,7 @@ console.log(JSON.stringify(args));
     });
     const unshown = () => warnings.filter((warning) => warning.includes("could not be read"));
     const failure =
-      "envoy: people's answers could not be read (Dispatch answered with something that is not an answers list); the request keeps the list placed before, which does not say so";
+      "envoy: people's answers could not be read (Dispatch answered with something that is not an answers list); the request keeps the list placed before, which does not name this read's failure";
     try {
       const first = contextMessages(
         await fixture.handlers.get("context")?.({ messages: [prompt] }, context)

@@ -205,7 +205,8 @@ conversionsGlobal[CONVERSIONS_KEY] = conversions;
  *  undefined when the read gave none; when the read gave them, what the people wrote in every item
  *  Dispatch sent inside the read's window (`SessionAnswersRead.words`) and where that window starts
  *  (`SessionAnswersRead.since`); when the read failed and gave the cached list instead, why it
- *  failed (`SessionAnswersRead.reason`); and whether Dispatch answered it (`source: "fresh"`). */
+ *  failed (`SessionAnswersRead.reason`, or for an older copy's list the failure its read line
+ *  names, `placedLegacy`); and whether Dispatch answered it (`source: "fresh"`). */
 export interface CarriedAnswers {
   readonly text: string | undefined;
   readonly words?: readonly string[] | undefined;
@@ -445,11 +446,12 @@ export interface SessionAnswersRequest {
    *  takes a placed failure line out (`keptWithoutText`). */
   readonly read: () => Promise<CarriedAnswers | undefined>;
   /** Told why this request's read failed (`CarriedAnswers.reason`) when that read gave the cached
-   *  list and the request keeps the placed bytes, which do not say the read failed: on the first
-   *  such request of the session, and not again until one of its reads has answered
-   *  (`CarriedAnswers.answered`), so a lasting failure, such as a Dispatch with no answers route,
-   *  is told once. Nothing else that a read gives is told here: a newer list, a retraction and the
-   *  failure line each reach the model. The extension logs it. */
+   *  list, or an older copy's list names a failed read (`placedLegacy`), and the request keeps the
+   *  placed bytes, which do not name this read's failure: on the first such request of the
+   *  session, and not again until one of its reads has answered (`CarriedAnswers.answered`), so a
+   *  lasting failure, such as a Dispatch with no answers route, is told once. Nothing else that a
+   *  read gives is told here: a newer list, a retraction and the failure line each reach the
+   *  model. The extension logs it. */
   readonly unshownFailure: (reason: string) => void;
 }
 
@@ -533,7 +535,10 @@ export async function withSessionAnswers(
 /**
  * The request an older copy of this extension, which puts the list after the last message of
  * every request, already gave its list: that list moved where `placeList` puts it, with no read of
- * this copy's own. The older copy decided which requests carry one.
+ * this copy's own. The older copy decided which requests carry one. A list it rendered from its
+ * cache names the failed read on its second line (`As read at …; this read failed: …`); that
+ * failure goes to `placeList` as the read's `reason`, so where the placed bytes stay and the line
+ * leaves the request, `unshownFailure` is told it under the same rule as this copy's own reads.
  */
 function placedLegacy(
   messages: readonly unknown[],
@@ -548,7 +553,11 @@ function placedLegacy(
   if (text === undefined || !added) return undefined;
   const recorded = conversions.get(request.session);
   const compacting = (typeof recorded === "object" && recorded.afterCut) || request.compacting();
-  const placed = placeList(messages.slice(0, -1), { text }, request, compacting);
+  const readLine = text.split("\n")[1] ?? "";
+  const failed = "; this read failed: ";
+  const at = readLine.startsWith("As read at ") ? readLine.indexOf(failed) : -1;
+  const reason = at < 0 ? undefined : readLine.slice(at + failed.length);
+  const placed = placeList(messages.slice(0, -1), { text, reason }, request, compacting);
   decided.add(placed);
   return placed;
 }
