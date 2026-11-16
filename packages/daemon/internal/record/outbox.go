@@ -915,13 +915,22 @@ type WorkspaceRemove struct {
 func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemove }
 
 // RoleMessage is one message the daemon sends a role holder, published to that role's topic: Role
-// is the claim token, which the
-// runner addresses as a role topic, and Body is the whole of what the holder is told. It is how
-// the daemon reaches a worker with something to read rather than a task to do - a settled head's
-// check results, which move nothing (workflow's tellChecks, dispatch://INFRA-714/spec R1). A role
-// with no live holder is told nothing: the row finishes, since the message is of a moment that
-// has passed by the time anyone claims the role, and every recipient can read the pull request's
-// checks on GitHub for itself.
+// is the claim token, which the runner addresses as a role topic, and Body is the whole of what the
+// holder is told. It is how the daemon reaches a worker with something to read rather than a task
+// to do - a settled head's check results, which move nothing (workflow's tellChecks,
+// dispatch://INFRA-714/spec R1). A role with no live holder is told nothing: the row finishes,
+// since the message is of a moment that has passed by the time anyone claims the role, and every
+// recipient can read the pull request's checks on GitHub for itself.
+//
+// A role whose claim is released is told nothing either, and is not woken for the message: the
+// row finishes without a publish. The message's three senders in the workflow - tellChecks (a CI
+// settlement), tellGateMoved (a design gate's move) and tellStuckMergeState (an approved round
+// stuck on its merge state) - only inform; before a release stopped its session cleanly, such a
+// message to a released role was dropped all the same once that session expired; and a wake for
+// each would start a pod for every CI settlement and every gate move, once per released role.
+// Published, the message would meet a released role as one nobody holds: the listener answers
+// holder_lapsed and raises the role's wake beside that answer, so the pod would come back for a
+// message the row had already dropped.
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`

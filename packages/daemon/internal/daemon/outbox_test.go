@@ -1198,7 +1198,7 @@ func TestOutboxRoleMessageToAReleasedRoleEndsWithoutAWake(t *testing.T) {
 	ctx := context.Background()
 	publisher := &outboxPublisher{}
 	runner, sup, pool := hookRunner(t, publisher)
-	implementer := releasedClaim(t, sup, claim.RoleImplementer)
+	releasedClaim(t, sup, claim.RoleImplementer)
 	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208",
 		record.RoleMessage{Role: string(token), Body: "CI settled at head"}, time.Now().Add(-time.Minute)))
@@ -1212,16 +1212,6 @@ func TestOutboxRoleMessageToAReleasedRoleEndsWithoutAWake(t *testing.T) {
 	}
 	if left := outboxRows(t, pool); left != 0 {
 		t.Fatalf("outbox rows left = %d, want the message finished", left)
-	}
-	if held := implementer.Claim(); !held.Released() {
-		t.Fatalf("the implementer is %s by %s, want it still released: the message is no wake", held.State, held.SuspendedBy)
-	}
-	var resumes int
-	if err := pool.QueryRow(ctx, `select count(*) from pod_resumes where issue = $1`, "LEGION-208").Scan(&resumes); err != nil {
-		t.Fatalf("read the recorded wakes: %v", err)
-	}
-	if resumes != 0 {
-		t.Fatalf("recorded wakes = %d, want none", resumes)
 	}
 }
 

@@ -1438,19 +1438,11 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // the listener's live window but still holds the role, so the message is kept for it rather than
 // dropped as a message to a role nobody holds (dispatch://INFRA-392).
 //
-// A role whose claim is released is told nothing either, and is not woken: the claim is read
-// before the publish (as wakeForDelivery reads it) and a released one ends the row there. The
-// message's three senders in the workflow - tellChecks (a CI settlement), tellGateMoved (a design
-// gate's move) and tellStuckMergeState (an approved round stuck on its merge state) - only inform;
-// before a release stopped its session cleanly, such a message to a released role was dropped all
-// the same once that session expired; and a wake for each would start a pod for every CI
-// settlement and every gate move, once per released role. Left to the publish, the message would
-// meet a released role as one nobody holds: the listener answers holder_lapsed with the holder's
-// state gone (notify.ErrNoHolder below) and raises the role's wake beside that answer, so the pod
-// would come back for a message the row had already dropped. One window is left: a release
-// between this read and the publish, which the listener refuses (holder_lapsed) and wakes the role
-// on, as every release did before this read. An outbox with no supervisor (a test's), or a role no
-// machine of this daemon holds, publishes as before.
+// A role whose claim is released ends the row before the publish, with no wake (record.RoleMessage
+// says why). The claim is read from its machine's View, as wakeForDelivery reads it. One window is
+// left: a release between this read and the publish, which the listener refuses (holder_lapsed)
+// and wakes the role on. An outbox with no supervisor (a test's), or a role no machine of this
+// daemon holds, publishes as before.
 func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload record.RoleMessage) error {
 	if r.notices == nil {
 		return errors.New("role message executor has no Envoy publisher")
