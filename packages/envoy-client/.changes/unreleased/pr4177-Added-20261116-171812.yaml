@@ -1,0 +1,5 @@
+kind: Added
+body: '`dispatch whoami` names the projects the credential lists, as "It may use projects INFRA, OPS and no other.", and its details carry `projects` beside `project`. For a credential that lists none, and against a Dispatch that answers no `projects`, it says what it said before.'
+time: 2026-11-16T17:18:12.021627794Z
+custom:
+    Issue: pr4177

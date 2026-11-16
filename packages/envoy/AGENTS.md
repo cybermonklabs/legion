@@ -2707,6 +2707,19 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A project the migration left with no owner, one whose default assignee had never signed in, stops the boot, which names each such project and both repairs (`store.EnsureProjectOwners`, right after the default project's check):
   `DISPATCH_PROJECT_OWNER_FALLBACK`, a full member's lowercase email, whom the next boot makes their owner, or the command above (`cmd/dispatch/README.md`, "Giving a project to another owner").
 
+- A project is made private only where the deployment has provisioned it: `DISPATCH_PRIVATE_PROJECTS` holds the keys, comma-separated (`cmd/dispatch`'s `privateProjectsSetting`, then `api.Deps.PrivateProjects`).
+  `api.patchProjectAccess` takes a switch to private through these refusals, in this order:
+  `409 PRIVATE_PROJECTS_OFF` with an empty list, before anything is read;
+  `ownerWrite`'s two checks, `404 PROJECT_NOT_FOUND` for a project the caller does not see and `403 PROJECT_OWNER_REQUIRED` for one it sees and does not own;
+  `409 PRIVATE_PROJECT_NOT_PROVISIONED` for a key the list does not name (`privateProjectProvisioned`);
+  `409 PRIVATE_PROJECTS_INCOMPLETE`, naming the command that repairs it, while a row of the project has no node naming its project (`graphcensus.ProjectCompleteFor`) or `session_projects_filled` or `access_events_scrubbed` holds no row (`privateProjectIncomplete`);
+  `409 REPOSITORY_LANE_SHARED` for a repository of the project that shares a GitHub subject lane with another project's (`refuseSharedLane`);
+  and, as the transaction's last statement, `Deps.BusProjects.EnsurePrivate` through the route's own transaction, which writes the project's key in the hub's `envoy_private_projects` bucket, so a hub that refuses it, or no bus at all, is `409 PRIVATE_PROJECTS_UNAVAILABLE` with nothing changed (`ensurePrivate`).
+  A switch to public meets only the owner check, and the route makes no bus call for it.
+  A project the database holds private that the list does not name stays private, and every change of its visibility but its owner's switch to public is refused;
+  nothing about it refuses the boot: `reportPrivateProjects` logs an ERROR line naming it and both repairs at boot, `api.RunMaintenanceSweep` logs it every pass, and `/healthz` names it in `private_projects_unprovisioned` and leaves `ok` as it is.
+  So a key leaves the list only after its project is public, made so by its owner or by `envoy-dispatch project-visibility <KEY> public` (`cmd/dispatch/README.md`, "Making a project public without the server").
+
 - `session_projects` holds which projects each session has acted in, which is how a session is one of a project's agents (`access.SessionClause`).
   `events.Broker.AppendAll` records the (session, project) pair of each event whose credential proved its session (`events.provedSession`: an `act` naming the actor's own session and no personal token, which a broker-issued token's write carries), in the event's own transaction, only where no row holds it, since the table has no unique key on purpose; a session a request body named records nothing.
   `envoy-dispatch backfill-session-projects [--reset]` covers the events written before that, run after the deploy that carries the live insert:
@@ -2715,8 +2728,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - `project.access_changed` carries `{project, change}` alone (`model.ProjectAccessEventPayload`): every reader of a project's events reads it, so no email, group name or channel id is on it, and a reader that needs the list reads `GET /api/v1/projects/{key}/access`.
   `envoy-dispatch scrub-access-events` rewrites the payloads stored with the whole access before that, 10,000 events at a time, then writes the one `access_events_scrubbed` row (`cmd/dispatch/README.md`, "Scrubbing the access events").
 
-- `GET /api/v1/users` (needs the `person` scope) returns everyone in `people`, sorted by email, as `{users: [{login}]}` — the picker's options;
-  `GET /api/v1/whoami` (any auth) returns `{kind: "user", login, scopes}` (the person's lowercase email) for a cookie/header caller or `{kind: "agent", owner, scopes}` for a bearer (`owner` is the personal token's owner by lowercase email, null under the shared token; `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none) — what `dispatch whoami` reports.
+- `GET /api/v1/users` (needs the `person` scope) returns everyone in `people`, sorted by email, as `{users: [{login}]}` — the picker's options — and to a restricted member or a credential that lists projects only their own person and the people of the projects they see (`access.PersonClause`);
+  `GET /api/v1/whoami` (any auth) returns `{kind: "user", login, scopes}` (the person's lowercase email) for a cookie/header caller or `{kind: "agent", owner, service, session, projects, project, scopes}` for a bearer (`owner` is the personal token's owner by lowercase email, null under the shared token; `projects` is the credential's list, sorted, and left out when it lists none; `project` is deprecated, the one key of a one-key list and null for any other; `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none) — what `dispatch whoami` reports, printing `projects` where the answer carries it and `project` otherwise.
   Issue reads (`GET /issues/{key}`, summaries, pinned) carry `assignee`, and so does the `issue` on every inbox row.
 
 - Every issue has a nullable claim: the session that intends to implement it (`issues.claimed_by` — the actor JSON
@@ -3413,7 +3426,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A new route is a new row (and a bumped pin in `routes_table_test.go`), a mutating one a new line in `writeClasses` and a `GET` one a new entry in `readClasses`, or it is not served at all (Security, the project check).
   Every other pattern the server mounts goes through `readclass.Handle`, which takes its read classes; `readclass`'s `TestEveryMountedPatternHasAReadClass` refuses a direct `mux.Handle` or `mux.HandleFunc` anywhere else in the server.
   An unknown path under `/api`, `/v1`, `/auth`, `/ws`, or `/healthz` is `404 {"code":"NOT_FOUND","error":"no route for GET /v1/issues","hint":"GET /api/v1 lists every route"}` from `routes/router.go`, decided before any dashboard lookup, so an API caller never receives the SPA shell.
-  `GET /api/v1/agents` is readable by any authenticated caller (a session picks a message target by the `capabilities` it advertises);
+  `GET /api/v1/agents` is readable by any authenticated caller (a session picks a message target by the `capabilities` it advertises), and lists only the sessions that caller may see (`access.SessionClause`): every one for an open viewer, and for any other its own and those that have acted in a project it sees;
   the issue-less `POST /api/v1/agents/{session_id}/messages` and `GET /api/v1/agents/{session_id}/messages` need the `person` scope, since a person writing to a session is writing to someone else's conversation.
 
 - `GET /api/v1/dashboard/builds` (any authenticated caller, `api/dashboard_builds.go`) answers `{serving, live}`:
@@ -3962,33 +3975,35 @@ A new version of a document carries its approval only when every answer the carr
 without that test an agent its person narrowed to `person` alone could carry an approval of theirs by answering a block, which is the one thing the narrowing was meant to stop.
 `POST /api/v1/messages/{id}/deliveries/{attempt}/accept` refuses a message whose author carries an act, `409 ACCEPT_WRITTEN_BY_AGENT`, so such a message reaches the session as a card naming the agent and never as words the person typed.
 
-A credential that names one project writes that project and nothing else, and every write is decided in one place.
+What a caller sees is one rule, `access.Resolve`, one read of `access.VisibleProjectsSQL` over the request's own credential, resolved once per request (`api.readerOf`):
+a person at a browser sees every project they own, that lists them, that lists a group they are a full member of, or that is public while they are a full member;
+a credential that lists projects (`model.Credential.Projects`: a personal token's `agent_tokens.projects`, and the one project a broker-issued token was scoped to) sees the part of its list its person sees;
+one that lists none sees the public part of what its person sees, and no private project even where its person sees one;
+and one that names no person (the shared token, a service-account token, a broker-issued token naming a service) sees the public projects, within its list when it holds one.
+A viewer is open when it is not a restricted member and holds no list (`model.Viewer.Open`), and an open viewer reads every person, every session and every row of the whole deployment.
+Any other viewer reads, of what belongs to no project, only its own and the people and sessions of the projects it sees (`access.PersonClause`, `access.SessionClause`), and only the direct conversations it is a party to (`access.PartyClause`);
+`api.withinReadScope` refuses it every row of `readclass.Deployment`, `403 DEPLOYMENT_READ_REFUSED`.
+A project the caller does not see, and every object in it, answers exactly as one no row holds.
+With no private project in the deployment, a credential that lists nothing sees every project its person sees.
+
+A credential that lists projects writes those of them its person sees and nothing else, and every write is decided in one place.
 Each mutating row of the route table declares what its write belongs to (`api/routes_table.go`'s `writeClasses`, stamped onto `apiRoute.Scope`;
 a `GET` row declares what it reads instead (`readClasses`, `api/read_classes.go`), and a mutating row that declares nothing fails `TestEveryMutatingRouteIsClassed` and panics `Register` rather than being served unjudged).
-The four classes are *a project's* (the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue), *a project the body names* (the issue create alone, whose project its address does not name, so `createIssue` makes the same check itself once that project is settled), *the calling session's* (an agent conversation's own artifact and messages, the two routes a session answers its own delivery on, and the caller-private `me` rows) and *the deployment's* (the project create, the repository-to-project map, the delivery settings and session groups, the broadcast, and the credential and machine-login decisions).
+The four classes are *a project's* (the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue), *a project the body names* (the issue create and the going request, whose project their address does not name), *the calling session's* (an agent conversation's own artifact and messages, the two routes a session answers its own delivery on, and the caller-private `me` rows) and *the deployment's* (the project create, the repository-to-project map, the delivery settings and session groups, the broadcast, and the credential and machine-login decisions).
 `Register` wraps every mutating route in `api.withinProjectScope`, `api.withinSessionScope` and `api.writeNeedsASignedInPerson` (`api/project_scope.go`), which run after the caller is resolved and before the handler, outside the keyed-write layer and the upload's spool, so a refused write claims no idempotency key and costs no body.
 
-The project check resolves the project the addressed object belongs to
-— one resolver per addressing kind, each one read:
-the issue's or the project's own `project_key`, the `project_key` every artifact carries, the ask's through the join `askSnoozeEvent` makes, and the comment's and the message's by one hop to their issue or document, since neither table holds a project.
-It fails closed: only a target that resolves to the caller's own project reaches the handler, and one that resolves to another project, to no project at all (an object belonging to none, such as an agent conversation's artifact or a direct message), or to nothing at all (no such row, or an id Postgres will not read as a uuid) is `403 PROJECT_SCOPE`, naming the project the credential covers and the project the write belongs to where one resolved, and nothing of the credential.
-The two refusals still read differently — a target of another project names that project, one that resolved to nothing says the write resolves to no project of that credential's
-— so failing closed does not close an existence oracle and does not claim to;
-nothing is read out that way, since no GET route is project-scoped, so every answer this check can colour is a refusal of the caller's own write.
-Each resolver sends the raw path value to Postgres, as the handler behind it does, so the parser that decides what the check resolved is the parser the handler then addresses its row by:
-Postgres reads a uuid with a hyphen after any group of four digits, which Go's `uuid.Parse` refuses, and a check that parsed in Go resolved such a path to nothing while the handler resolved it to a row and wrote it (INFRA-264).
-A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT`, naming that project and the route.
-A pre-handler read decides the write because nothing moves an object between projects:
-`project_key` is written at insert and no route updates it, and the writes that read another issue's project (a parent, a rank neighbour) refuse one outside the issue's own project rather than move anything.
-`POST /api/v1/issues` is the one project row whose address names no object
-— its project is in the body, or in the repository an external ref names
-— so `createIssue` makes the same check itself the moment that project is settled, before it resolves the ref to an issue already imported (`respondWithExistingExternalIssue`, which would otherwise answer another project's issue and record a related-check outcome on it) and before anything is written.
+The project check resolves the caller's viewer once for the write and puts it in the request's context (`withReader`), where the handler and every loader it reads through find it.
+An object of a project the caller does not see is a row that read does not find, so the write answers it exactly as an object nobody holds, with the same status and bytes and nothing written, whether the path names it or a field of the body does (a parent, a `blocked_by` target, a rank neighbour, a reply's parent);
+that is what holds a credential that lists projects to its list (`TestNoWriteReachesAHiddenObject`, `TestNoBodyReachesAHiddenObject`).
+A row of the deployment is refused a viewer that is not open (`refuseDeploymentWrite`): `403 RESTRICTED_MEMBER` to a restricted member, and `403 PROJECT_SCOPE_DEPLOYMENT`, naming the route and the credential's list, to a credential that lists projects.
+`POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so a credential that lists projects is refused one outside its list, `403 PROJECT_SCOPE`, naming its list and the project the body named, before anything is read (`refuseOutsideCallerProjects`).
 
 The session check holds every row classed *the calling session's* whose pattern names a session
 — the `agents/{session_id}` writes and `PUT /api/v1/me/agents/{session_id}/state` — to the session the caller's credential proved:
 another session's path is `403 SESSION_SCOPE`, naming the session the credential acts for, the route and the session addressed.
-A broker-issued token is the only credential that proves a session, so it is the only one this can refuse;
+A broker-issued token is the only credential that proves a session, so it is the only one `403 SESSION_SCOPE` can refuse;
 the other rows of that class are held to their caller by their own handlers (`403 ACCEPT_FORBIDDEN` and `403 REPLY_FORBIDDEN` for an attempt that is not the caller's session's, the `person` scope and the calling person's key for the `me` token rows), which is what the class comment on `scopeSession` records row by row.
+The session addressed is also read as the caller sees it: to a viewer that is not open, a session that is neither its own nor has acted in a project it sees is `404 SESSION_NOT_FOUND`, exactly as a session nobody holds (`sessionHiddenFromReader`).
 
 The sign-in check is the outermost of the three, so a caller that may make no write at all is told that rather than which project the write it tried belongs to.
 It refuses every write by a credential that names a service and no person — a broker token of a machine nobody has signed in on — `403 SIGN_IN_REQUIRED` (`contracts.DispatchSignInRequired`, generated from `packages/contracts`), naming that service and `agent-secrets login`, the one command that makes the write possible.

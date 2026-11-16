@@ -20,7 +20,8 @@ goes through a `dispatch` command.
 ## Connecting an agent
 
 1. A person signs in to Dispatch and opens **Settings → Agent tokens**.
-2. They type a label and choose **New token**. The token is shown once; copy it then.
+2. They type a label, pick under **Projects** the projects the token may use, and choose
+   **New token**. The token is shown once; copy it then.
 3. They give it to the agent in the `dispatch` section of its `envoy.json`:
 
    ```json
@@ -69,20 +70,43 @@ assignee goes to that person. An agent on the shared token has no such person, s
 its parent's assignee instead, and where no parent names one, the project's default assignee, set
 on the Settings page. Every project names a default assignee, so every issue has one.
 `dispatch issue` names the assignee Dispatch chose. `dispatch whoami`
-tells the agent who Dispatch takes it for.
+tells the agent who Dispatch takes it for, and which projects its token lists.
+
+What the agent sees depends on the projects its token lists:
+
+- A token that lists projects sees those of them its person sees, and nothing of any other
+  project. Of what belongs to no project, it reads only the people and agent sessions of those
+  projects, its own, and the direct conversations its person is in. A read of the whole
+  deployment, such as `dispatch priorities`, is refused `403 DEPLOYMENT_READ_REFUSED`, and a
+  write of the whole deployment, such as `dispatch project` or a broadcast,
+  `403 PROJECT_SCOPE_DEPLOYMENT`.
+- A token that lists no project sees the public projects its person sees, and no private one,
+  even one its person sees. It reads every person, every session and the whole deployment, unless
+  its person is a restricted member: such a person's token is held as a token that lists projects
+  is, and its writes of the whole deployment are refused `403 RESTRICTED_MEMBER`.
+- The shared token, and any other credential that acts for no person, sees the public projects,
+  within its list when it has one.
+
+A project the token cannot see, and everything in it, answers as one that does not exist: a read
+gets the `404` of a key nobody holds, and a write that names it, in its address or its body, gets
+the answer an unknown key gets. The one exception is the project of a new issue or a going
+request: a token that lists projects is refused one outside its list, `403 PROJECT_SCOPE`, naming
+its list. So an agent that works on a private project needs a token that lists that project, made
+by a person who can see it. With no private project in the deployment, a token that lists none
+sees every project its person sees.
 
 ## The commands
 
 | Area | Commands |
 | --- | --- |
-| Issues | `dispatch issue` creates one; `--blocked-by <key>`, repeated, names up to 20 issues it waits on, each of any project. `dispatch issue-update` changes status, title, labels, priority, assignee, parent, links, blockers, components, or the priorities the issue advances; `--assignee <email>` names the person the issue's asks wait on and `--clear-assignee` leaves them on the project's default assignee; its `--blocked-by` replaces the list, and `--clear-blocked-by` empties it; `--advance <id>`, repeated, replaces the priorities the issue states itself, `--clear-advances` drops them all, and `--advances-revision <n>` writes that set against the revision a refusal named rather than the one the command's own read answered; `--before <KEY>` and `--after <KEY>` move it on its project's board, above that issue, below it, or between the two. `dispatch claim` claims an issue before work starts. `dispatch issues` lists a project's issues. |
-| Priorities | `dispatch priorities` lists every live priority the deployment works towards, in rank order, with the work under each — its open issues by status, how many are claimed, their open asks, what closed in the last seven days, and when anything under it last moved — then the two faults: the work in flight under no priority and the work under a priority parked in backlog or icebox. `--project <KEY>`, repeated, narrows the counts and both lists to those projects. A priority belongs to no project, so this reads the whole deployment, and the id each row names is what `--advance` takes. |
-| Projects | `dispatch project` creates a project from a key and a name; a key that is already taken is refused. `--default-assignee <email>` names the person the project's unowned work lands on, and without it the project takes the person creating it, else the person the agent acts for; an agent that acts for nobody must name one. `dispatch projects` lists every project's key and name. |
+| Issues | `dispatch issue` creates one; `--blocked-by <key>`, repeated, names up to 20 issues it waits on, each of any project the token sees. `dispatch issue-update` changes status, title, labels, priority, assignee, parent, links, blockers, components, or the priorities the issue advances; `--assignee <email>` names the person the issue's asks wait on and `--clear-assignee` leaves them on the project's default assignee; its `--blocked-by` replaces the list, and `--clear-blocked-by` empties it; `--advance <id>`, repeated, replaces the priorities the issue states itself, `--clear-advances` drops them all, and `--advances-revision <n>` writes that set against the revision a refusal named rather than the one the command's own read answered; `--before <KEY>` and `--after <KEY>` move it on its project's board, above that issue, below it, or between the two. `dispatch claim` claims an issue before work starts. `dispatch issues` lists a project's issues. |
+| Priorities | `dispatch priorities` lists every live priority the deployment works towards, in rank order, with the work under each — its open issues by status, how many are claimed, their open asks, what closed in the last seven days, and when anything under it last moved — then the two faults: the work in flight under no priority and the work under a priority parked in backlog or icebox. `--project <KEY>`, repeated, narrows the counts and both lists to those projects. A priority belongs to no project, so this reads the whole deployment, counting only the work of the projects the token sees, and a token that lists projects is refused it; the id each row names is what `--advance` takes. |
+| Projects | `dispatch project` creates a project from a key and a name; a key that is already taken is refused, and so is any call from a token that lists projects. `--default-assignee <email>` names the person the project's unowned work lands on, and without it the project takes the person creating it, else the person the agent acts for; an agent that acts for nobody must name one. `dispatch projects` lists the key and name of every project the token sees. |
 | Asks | `dispatch ask` opens one. `dispatch edit-ask` rewords an open one. `dispatch resolve-ask` retracts or resolves one. `dispatch follow` follows or leaves an ask's thread. `dispatch open-asks` lists open asks. `dispatch answers` lists, in full and newest first, every answer, comment and message a person wrote to the session in the last 72 hours. |
 | Comments | `dispatch comment` comments on a document or replies in a thread. `dispatch suggest` proposes replacement text. `dispatch resolve-comment` resolves a thread. |
 | Messages | `dispatch message` posts a message or replies to one. |
 | Documents | `dispatch doc-read` reads a document, or the text of an uploaded file; with `--blocks` it lists the document's block ids, tokens and table rows that `dispatch doc-edit` addresses. `dispatch doc-edit` edits one in place. `dispatch artifact` uploads a file or a new document. `dispatch request-approval` asks a person to approve a document. |
-| Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `dispatch search` searches everything. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for, and the OAuth scopes its credential holds. `dispatch inbox` lists what the Inbox page of the person the agent acts for shows — Needs you, Waiting on agents, Later, Unread threads and Credential requests, in that order, each with its count and its rows — read with the agent's own credential, which must hold the `person` scope; a thread's line names its owner (the issue key, the document slug, or the session of an Agent row), its kind, the first 80 characters of its subject, who wrote the newest reply, how long ago and the thread's reference; it is the person's Dispatch Inbox, not the Envoy tool `envoy_inbox`, which lists what was delivered to this session. |
+| Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `dispatch search` searches everything the token sees. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for, the OAuth scopes its credential holds, and the projects it lists. `dispatch inbox` lists what the Inbox page of the person the agent acts for shows — Needs you, Waiting on agents, Later, Unread threads and Credential requests, in that order, each with its count and its rows — read with the agent's own credential, which must hold the `person` scope; a thread's line names its owner (the issue key, the document slug, or the session of an Agent row), its kind, the first 80 characters of its subject, who wrote the newest reply, how long ago and the thread's reference; it is the person's Dispatch Inbox, not the Envoy tool `envoy_inbox`, which lists what was delivered to this session. |
 | Handoffs | `dispatch handoff-write` records a phase handoff on an issue as the agent's session: `--phase <phase>` and `--body-file <path>` (`-` reads stdin), one JSON object stored exactly as written, each write the phase's next version. `dispatch handoff-read` prints one line naming the phase, version, id, writing session and time, then the body exactly as stored; `--version <n>` reads an earlier version. |
 | Architecture | `dispatch architecture-sync` imports a project's architecture model now, from every source repository with a line for each, or from one with `--repo <owner/name>`. |
 
@@ -375,6 +399,11 @@ The `dispatch` commands cover everyday work. For anything else, the [HTTP API re
 lists every route, and so does `GET /api/v1` on the server, with no credential: each route's
 method, who may call it, and what it does. An agent calls the API with its token as
 `Authorization: Bearer <token>`.
+
+`GET /api/v1/whoami` answers `projects`, the projects the token lists, sorted, and leaves the
+field out for a token that lists none. Its `project` is deprecated, and its value comes from that
+list alone: the one key of a one-key list, and `null` for any other list, an empty one included.
+Read `projects` instead.
 
 Every `POST` and `PATCH` an agent makes through `dispatch` is keyed: each write a command makes
 carries an `Idempotency-Key` header of its own, and the command asks again under that key when an

@@ -152,8 +152,8 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // above it, as 2,300 was above 2,297. The 23 words over 2,300 are a raise and not a cut because,
 // measured on 2026-11-12 line by line, each cut left in the three skills deletes a rule or a fact
 // an agent needs to apply one: the refusal code of the `blocked_by` bullet and "board rank" in
-// the stop-work bullets are the words of INFRA-2971's R4 (the code is `PROJECT_SCOPE` since a
-// link may name an issue of any project, which kept the bullet's word count), and "`todo` for an
+// the stop-work bullets are the words of INFRA-2971's R4 (the code is `BLOCKED_BY_INPUT` since
+// 2026-11-16, below), and "`todo` for an
 // issue from the queue" is its
 // decision on R4; "one agent keeps each project's order" is R3's owner of the board, whom the
 // next sentence tells the agent to tell; the claim sentence's "an outside claim can take the tree
@@ -172,7 +172,17 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // two strings the check reads, so the three skills, 2,325 words on main, stand at 2,325 + 14 =
 // 2,339 and the bound moves from 2,326 by those 14 to 2,340, keeping the margin above it the raise
 // before set and adding none.
-test("the three Dispatch skills total fewer than 2,340 words", () => {
+//
+// It moved again on 2026-11-16, when dispatch://INFRA-3862 let a token list the projects it may
+// use and answer every other project's items as missing: an agent whose token cannot see a
+// private project reads that project as gone, so the skill every session loads says what a token
+// sees, and no other skill holds that. The `blocked_by` bullet's refusal is `BLOCKED_BY_INPUT`
+// now, the answer to a key of a project the caller does not see as to an unknown key, and its
+// sentence, "A token links only issues it sees", is 1 word shorter. The token bullet gains 21:
+// "It sees the projects it lists, or with none the public ones, within what its person sees;
+// others answer as missing." So the three skills stand at 2,339 - 1 + 21 = 2,359, and the bound
+// moves by those 20 to 2,360, keeping the margin above it as it was.
+test("the three Dispatch skills total fewer than 2,360 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
     .map(
@@ -182,7 +192,7 @@ test("the three Dispatch skills total fewer than 2,340 words", () => {
           .filter((token) => token !== "").length
     )
     .reduce((total, count) => total + count, 0);
-  expect(words).toBeLessThan(2_340);
+  expect(words).toBeLessThan(2_360);
 });
 
 test("the staged decisions rule separates material choices from spec details", () => {

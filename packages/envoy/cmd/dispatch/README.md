@@ -209,8 +209,8 @@ A revoked token therefore stops resolving within five seconds of the introspecti
 an introspection already in flight when the token is revoked is remembered from the moment it completes, and it may take up to five seconds to complete.
 A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service the machine holding it belongs to, and `actor` in the body does not decide that session:
 absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
-A token scoped to one project carries that project on every actor it writes, set from the token and never from the body;
-a token scoped to its person names no single project and carries none.
+A token scoped to one project lists that project, set from the token and never from the body, and is held to it as every credential that lists projects is (below);
+a token scoped to its person lists none.
 Each refusal is its own code and none repeats the token:
 `401 BROKER_TOKEN_NOT_ACTIVE` (the broker does not hold the token live), `401 BROKER_TOKEN_PROOF_INVALID` (the proof did not meet RFC 9449 Section 4.3, a proof presented twice included
 — a proof is single use by its `jti` and target URI), `401 BROKER_TOKEN_KEY_MISMATCH` (a sound proof signed by a key that is not the token's), `401 BROKER_TOKEN_NOT_A_SESSION` (the token is live but is no session's credential:
@@ -221,6 +221,28 @@ nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answer
 A websocket re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
+
+A credential carries a list of the projects it may use (`model.Credential.Projects`), and what its caller sees follows from its person and that list (`access.Resolve`, one read of `access.VisibleProjectsSQL`).
+A personal token's list is its row's `projects`, which Settings and `POST` and `PATCH /api/v1/me/agent-tokens` write:
+at most 16, each a project the caller sees (`400 TOKEN_PROJECTS_INPUT` otherwise), defaulting to the list of the caller's own credential, so a credential that lists projects gives a token only some of its own.
+A broker-issued token's list is the one project the broker scoped it to, and every other credential lists none.
+
+- A person at a browser sees every project they own, that lists them or a group they are a full member of, or that is public while they are a full member.
+
+- A credential that lists projects sees those of them its person sees, and nothing of any other project.
+
+- A credential that lists none sees the public projects its person sees, and no private one, even one its person sees.
+
+- A credential that names no person — the shared token, a Kubernetes service-account token, a broker-issued token that names a service — sees the public projects, within its list when it holds one.
+
+A caller is an open viewer when its person is not a restricted member and its credential lists nothing.
+An open viewer reads every person, every session and every row of the whole deployment.
+Any other caller reads, of what belongs to no project, only the people and sessions of the projects it sees, its own, and the direct conversations its person or session is a party to (`access.PersonClause`, `access.SessionClause`, `access.PartyClause`);
+every read of the whole deployment (`readclass.Deployment`: the priorities, Delivery and Pipeline, the CI reconcile passes, the broadcasts, the delivery and new-issue settings, the credential requests, the machine logins and the groups) is `403 DEPLOYMENT_READ_REFUSED` to it (`api.withinReadScope`).
+A project the caller does not see, and every object in it, answers exactly as one no row holds.
+With no private project in the deployment, a credential that lists nothing sees every project its person sees.
+A private project's Legion daemon therefore presents, in its `dispatch_token_file`, a `dsp_` token that lists the project and every other project the daemon runs, minted by a person who sees them:
+the shared token, and a token that lists no project, read a private project as missing.
 
 A credential that lists projects may write those of them its person sees, and nothing else.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
@@ -258,9 +280,8 @@ It stands in front of every mutating route whatever its class, and outermost of 
 Its reads are untouched: the machine reads everything its session may read, and what it may not do is write, because Dispatch records a write under the person who made it and this credential names none.
 A broker token that does name a person, and every other credential, reaches the handler as before.
 
-The project and session checks are a no-op for a credential that carries no project and proves no session
-— a browser cookie, a personal agent token, a Kubernetes service-account token, the shared token, and an access token the broker scoped to a person rather than to one project.
-That is the rule and not a transitional measure: every caller that exists today writes exactly what it wrote before.
+An open viewer whose credential proves no session — a full member's browser cookie, a personal agent token that lists nothing, a Kubernetes service-account token and the shared token — is refused by the project and session checks only a write to an object of a project it does not see, which answers as missing.
+With no private project in the deployment, such a caller sees every project, and neither check refuses it anything.
 
 GitHub App credentials come either from the `DISPATCH_APP_*` variables or from `~/.local/share/dispatch/app.json`; the variables take precedence.
 Two of them carry rules beyond their row:
@@ -2616,6 +2637,8 @@ It exits 0 once the change commits;
 2 for a key no project holds, for any value but `public`, and for arguments that are not exactly a key and `public`, writing nothing;
 and 1 when the database cannot be opened or written.
 
+To take a key off `DISPATCH_PRIVATE_PROJECTS` on purpose, make its project public first, by either way above, and only then remove the key: a key removed first leaves its project private and reported, at boot, at every maintenance pass and in `/healthz`, until one of the two repairs.
+
 ### Filling the sessions' projects
 
 `session_projects` records which projects each agent session has acted in, which is how a session is one of a project's agents (`access.SessionClause`).
@@ -3880,6 +3903,8 @@ Each item below names a path with its method and identity, then its purpose.
   `outbox_publisher` says whether this process publishes the events outbox now:
   `true` while it holds the outbox's publisher hold and the hold's deadline has not passed, `false` while it stands by for another process's, after it lost the hold, and with NATS disabled.
   One process of a deployment publishes at a time, so a healthy process may report `false`, and the field never decides `ok` or the status.
+  `private_projects_unprovisioned` names, sorted, each project the database holds private that `DISPATCH_PRIVATE_PROJECTS` does not name, as the last of the reads `privateProjectsState` makes every 30 seconds found them, and is absent when there is none;
+  it never decides `ok` or the status, since such a project stays private and the server serves every other one (Required configuration, above).
 
 - `/livez` (GET; none)
 
@@ -4063,6 +4088,7 @@ Each item below names a path with its method and identity, then its purpose.
   List live Envoy sessions (`session_id`, `title`, `dir`, `machine_id`, `roles`, `capabilities`, `last_seen`), newest first, from Dispatch's copy of the listener's session list, at most 5 s old;
   `503 ENVOY_REFILLING` with the listener's `Retry-After` (5 when it sends none) while the listener refuses its list as refilling (it cannot stand behind its copy of the sessions yet), and `503 ENVOY_UNAVAILABLE` when the listener cannot be reached, each for up to 5 s after that listener read without asking the listener again.
   Neither is an empty list: a client reads neither as "no agents".
+  Only the sessions the caller may see are listed (`access.SessionClause`): every one for an open viewer, and for any other caller its own and those that have acted in a project it sees.
 
 - `/api/v1/agents/{session_id}/answers?since=&max_chars=` (GET; cookie, trusted header, or bearer)
 
@@ -4076,11 +4102,11 @@ Each item below names a path with its method and identity, then its purpose.
   `since` defaults to 72 hours ago (older than 7 days or in the future is `400 INVALID_QUERY`);
   `max_chars` (1–100,000) stops the list after the item whose words take the running sum past it, counting an item's `text` and the `dispatch_words` a decline carries beside it, `total` still counting every item;
   a bad `session_id` is `400 INVALID_SESSION_ID`.
-  Not an authorization boundary: direct-message text already reaches every caller through `GET /api/v1/events`, and a person may read any session's list.
+  A caller reads the list of a session it may see (`access.SessionClause`), and only the answers of projects it sees and of its own direct conversations.
 
 - `/api/v1/projects` (GET; cookie, trusted header, or bearer)
 
-  List projects (`key`, `name`, `open_asks`, `gated_steps`, `created_at`), ordered by key.
+  List the projects the caller sees (`key`, `name`, `open_asks`, `gated_steps`, `created_at`, and `visibility: "private"` on a private project, absent on a public one), ordered by key.
   A project's default assignee is not listed: `GET /api/v1/settings/project-default-assignees`, which needs the `person` scope, is the one read of it.
 
 - `/api/v1/projects` (POST; cookie, trusted header, or bearer)
@@ -4158,26 +4184,34 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/me/agent-tokens` (GET, POST; cookie, trusted header, or bearer; GET needs the `person` scope, POST `person` and `approve`)
 
-  List personal-token metadata, each row with the `scopes` its token holds, or mint a personal agent token `{name, scopes?}`.
+  List personal-token metadata, each row with the `scopes` its token holds and the `projects` it lists, absent when it lists none, or mint a personal agent token `{name, scopes?, projects?}`.
   `scopes` defaults to the set the caller's own credential holds;
   a scope this deployment does not know, or `approve` without `person`, is `400 TOKEN_SCOPES_INPUT`, and a scope the caller does not hold itself is `403 OAUTH_SCOPE_REQUIRED`.
+  `projects` is the list of projects the token may use, at most 16, each one the caller sees, stored sorted with each key once, else `400 TOKEN_PROJECTS_INPUT`;
+  it defaults to the list of the caller's own credential, and a credential that lists projects gives a token only some of its own, never an empty list.
+  A listed row's `projects` holds only the projects the caller's own credential sees, so a token whose every project is hidden from the caller reads as one that lists none;
+  at the person's own browser, `projects_hidden: true` marks a token that lists a project the person no longer sees, and it is absent everywhere else.
 
 - `/api/v1/me/agent-tokens/{id}` (PATCH, DELETE; cookie, trusted header, or bearer; needs the `person` and `approve` scopes)
 
-  PATCH sets the token's scopes `{scopes}` — the whole set it is to hold, refused as the mint's are — and answers the token; DELETE revokes it.
+  PATCH sets the token's scopes and projects `{scopes, projects?}` — the whole set and list it is to hold, refused as the mint's are, and a `projects` left out keeps the list — and answers the token as the list does; DELETE revokes it.
   Another person's token, or none, is `404 NOT_FOUND`.
 
 - `/api/v1/users` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
   Everyone who has signed in, as `{users: [{login}]}` sorted by email — the assignee picker's options.
+  A restricted member and a credential that lists projects read only their own person and the people of the projects they see (`access.PersonClause`).
 
 - `/api/v1/whoami` (GET; cookie, trusted header, bearer, or a broker-issued DPoP token)
 
-  Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, project, scopes}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
+  Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, projects, project, scopes}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
   `service` is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential;
   `session` is the session the credential itself proved, which only a broker-issued token does, null otherwise;
-  `project` is the one project key that credential may write, null where it names none).
+  `projects` is the projects the credential lists, sorted, and absent when it lists none;
+  `project` is deprecated, and its value comes from that list alone: the one key of a one-key list, and null for any other list, an empty one included).
   `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none, and every caller is answered it.
+  Either shape carries `member_kind: "restricted"` when the person the caller is or acts for is a restricted member, and leaves it out for everyone else;
+  a member kind that cannot be read is `503 IDENTITY_UNAVAILABLE`.
 
 - `/api/v1/dashboard/builds` (GET; cookie, trusted header, or bearer)
 
