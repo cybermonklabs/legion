@@ -3576,10 +3576,14 @@ this run in the line, a child of a running tree as readily as the root the drive
 
 The driver files child issues under a root itself, in `todo`, and later closes one as `done` and
 parks the others in `backlog`, the last of them while its root waits in `merging` for the
-rest of its tree; each child's planner holds for the driver like every other role. A
-`child-closed` or `child-status` notice of this run needs no action from the root architect: start,
-re-run, park or close nothing for it, write nothing about it, and keep waiting for the next
-targeted message.
+rest of its tree; each child's planner holds for the driver like every other role. The daemon
+starts a child's own architect with the child's first phase. That architect does not start its
+child from its `catch-up` notice. It reads the catch-up, which names its child and every issue
+under it. Then it replies WAITING and waits for the targeted message. It files no child, writes
+no spec and sends no message until then. A
+`child-closed` or `child-status` notice of this run needs no action from the root architect:
+start, re-run, park or close nothing for it, write nothing about it, and keep waiting for the
+next targeted message.
 EOF
 sed -i "s/__LEGION_E2E_PROJECT__/$project/g" "$work/instructions.md"
 # The daily report is the one controller action that waits for no targeted message (daily-report).

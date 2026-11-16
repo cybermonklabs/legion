@@ -103,16 +103,19 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // The move that brings each one back is api.StrandedClaim.Move's.
 //
 // It names no other claim: a worker whose phase is not its own is started again when its phase
-// comes, and a tree that is not running runs nothing yet. That is a lingering tree — a root that
-// leaves the workflow, closed or moved out by a person, always lingers first (leave) — whose
-// members its re-admission starts again, and a root that never ran, whose architect receives its
-// first task only when the line reaches it. A claim of a running tree whose issue waits for a
-// slot is not stranded: its start is already queued, held unclaimable until the issue's slot
-// comes (record.SuperviseRequest.NeedsSlot), and StartFor counts that queued row, so the rule
-// below names it as covered without knowing why it waits. claims are the caller's transaction
-// snapshot, as are the tree lifecycles read here; the daemon's boot logs what this returns, and
-// the state route serves it as strandedClaims. project is the Dispatch project key whose
-// lifecycles are read.
+// comes, a child's own architect is started again by its child's next phase start when it failed
+// (Engine.reviveArchitect: the architect above it heard of the failure in a worker-died) and by
+// the child's next first phase start when the workflow suspended it or an operator stopped it
+// (StartFirstPhase), and a tree that is not running runs nothing yet. That is a lingering tree — a
+// root that leaves the workflow, closed or moved out by a person, always lingers first (leave) —
+// whose members its re-admission starts again, and a root that never ran, whose architect
+// receives its first task only when the line reaches it. A claim of a running tree whose issue
+// waits for a slot is not stranded: its start is already queued, held unclaimable until the
+// issue's slot comes (record.SuperviseRequest.NeedsSlot), and StartFor counts that queued row, so
+// the rule below names it as covered without knowing why it waits. claims are the caller's
+// transaction snapshot, as are the tree lifecycles read here; the daemon's boot logs what this
+// returns, and the state route serves it as strandedClaims. project is the Dispatch project key
+// whose lifecycles are read.
 //
 // A released claim — one whose idle pod the daemon released (supervise.Claim.Released) — is
 // left out of both cases while its pod is coming back: the next wake for its role resumes it, and
@@ -177,8 +180,11 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 			continue
 		}
 		// current is the phase the start that would wake the claim names; the architect's names none.
-		// A sub-architect on a child in accepting is no phase worker either: phase.RoleFor answers
-		// the tree's architect there, which the first case already took.
+		// A child's own architect is no phase worker, in accepting or elsewhere, so none is reported
+		// here (the default case). A failed one has its report already: a worker-died to the
+		// architect above it (Engine.claimFailed), and the daemon starts it again at its child's
+		// next phase start (Engine.reviveArchitect). A stranded claim goes to the controller, whose
+		// remedy is an operator's retry, which a claim the daemon starts again does not need.
 		var current phase.Phase
 		switch {
 		case claim.IsTreeArchitect(c.Role, issue.Key, issue.Tree):

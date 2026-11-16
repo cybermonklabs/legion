@@ -64,9 +64,10 @@ is `todo`, on any repository, no notice is sent then: the recovery records the c
 chain is not `todo`) the architect gets a
 `child-release-stalled` notice at once naming the parent to release first; a child the wave would
 write `todo` under such a child is not written, and its notice says to release it again once that
-child is recorded. When the repository is recovered, each tree's architect gets one more
-`child-release-stalled` notice, listing every child the release left to the recovery that is
-still not recorded, with what to release. That notice waits while the recovery's listing is held
+child is recorded. When the repository is recovered, every child the release left to the recovery
+that is still not recorded is named in one more `child-release-stalled` notice, with what to
+release: a notice to the architect that owns the child's parent, or to the tree's architect when
+that parent is not recorded in the tree. That notice waits while the recovery's listing is held
 for the Dispatch consumer, but for five minutes at most from the first held read (the daemon times
 its next read of the mapping for it), however often the hold is released and made again
 meanwhile: a hold that lasts or keeps coming back (an event that fails at every delivery, say) gets

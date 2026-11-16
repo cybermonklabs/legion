@@ -295,8 +295,9 @@ Check, in order:
    daemon says why on the issue (`Legion did not admit this issue: …`), once until the cause
    changes. Set the issue's repository (the issue header's Repository picker, or
    `dispatch issue-update --repo owner/name`), or install the missing App, and move the issue to
-   `todo` again. A child of a tree is told the same way, and its tree's architect gets a
-   `child-not-recorded` notice.
+   `todo` again. A child of a tree is told the same way, and the architect that owns its parent
+   (the tree's architect when its parent is not recorded in the tree) gets a `child-not-recorded`
+   notice.
 4. **The slots.** When every slot is taken the issue waits its turn:
 
    ```sh
@@ -825,14 +826,16 @@ idle, and, in the log, either the boot's one line per claim for the degraded dae
 `supervise: an event failed` naming the claim whose relaunch keeps being refused.
 
 A restart re-adopts every process still running, but a claim with no process runs again only when
-something starts it. A worker is started by the workflow when its phase begins, and a tree's
-architect by its admission; a notice to an architect with no process waits for it rather than
-starting it. A suspended worker of its issue's current phase that the daemon suspended is resumed
-by the daemon at boot. One an operator suspended (`legion claims suspend`, one claim at a time or a
-whole fleet before a restart), or whose suspension predates the release that records who suspended
-it (`suspendedBy: unknown`), is not; neither is an operator-suspended or failed tree architect, nor
-a claim whose launches ran out, nor a claim a close or a stop retired while its tree runs, whatever
-its role. Each of those is woken by nothing: the daemon looks healthy and the
+something starts it. A worker is started by the workflow when its phase begins, a tree's architect
+by its admission, and a child's own architect by the child's first phase start, and again after a
+failure by the child's next phase start; a notice to an architect with no process waits for it
+rather than starting it. A suspended worker of its issue's current phase that the daemon suspended
+is resumed by the daemon at boot. One an operator suspended (`legion claims suspend`, one claim at
+a time or a whole fleet before a restart), or whose suspension predates the release that records
+who suspended it (`suspendedBy: unknown`), is not; neither is an operator-suspended or failed tree
+architect, nor a claim whose launches ran out, nor a claim a close or a stop retired while its tree
+runs, whatever its role, except a child's own architect, which the list below never names. Each of
+those is woken by nothing: the daemon looks healthy and the
 state shows the tree active, but the tree stops for good at the worker's phase, or at the first
 decision that needs its architect. Once a boot has re-adopted its claims, the daemon names every
 such claim in one error line, under the move that brings it back:
@@ -912,9 +915,9 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
 
 - **`needsWorkflowStart`** (a failed phase worker, or a claim a close or a stop retired while its
   tree runs, whatever its role): a failed worker's issue is held
-  ([An issue is held](#an-issue-is-held)), and its tree's architect retries the phase or escalates
-  it to the controller; `legion claims retry` applies the same retry when the architect cannot, and
-  a `todo` on a held root releases the hold without either of them. A
+  ([An issue is held](#an-issue-is-held)), and the architect that owns the issue retries the
+  phase or escalates it to the controller; `legion claims retry` applies the same retry when the
+  architect cannot, and a `todo` on a held root releases the hold without either of them. A
   failed claim ignores `legion claims resume` and `legion claims deliver`.
   A retired claim ignores those two as well, and `legion claims retry` refuses it because it has
   not failed, so what relaunches it on the session it kept is a start of the phase it owns — its
@@ -930,9 +933,12 @@ slot has that start queued already. A root in
 and the answer's task is delivered on the pass that reads the answer, which takes no slot for it. Never resume or retry by hand a
 claim of a lingering tree or of an issue parked out of the workflow; re-admission or the issue's
 return to `todo` starts it.
-A claim an operator suspended is listed even when a workflow start is queued for it: that start
-waits for the operator's resume. One whose `suspendedBy` is `unknown` is listed only while no start
-is queued for it, since the next phase start or re-admission resumes it as before.
+The list never names a child's own architect: the child's next phase start starts a failed one
+again, the child's next first phase start starts one the workflow suspended or an operator stopped,
+and one an operator suspended waits for the operator's resume (`legion claims list` shows it).
+Any other claim an operator suspended is listed even when a workflow start is queued for it: that
+start waits for the operator's resume. One whose `suspendedBy` is `unknown` is listed only while no
+start is queued for it, since the next phase start or re-admission resumes it as before.
 
 ## A worker that stopped taking turns
 
@@ -1342,10 +1348,10 @@ These arrive as messages on the Dispatch issue:
   started its worker, and each role answers in its own turn. No hook writes to an architect: the
   daemon's own wake to an architect is a notice.
 - **A red check.** Nothing moves for it. The daemon names every check GitHub reported, with the
-  conclusion GitHub gave it, in one message each to the tree's architect, the worker of the
-  issue's current phase and the implementer, and judges none of them. Re-run a check that failed
-  on itself, have the implementer fix code that is at fault, or leave it to GitHub, which holds
-  the merge under the base branch's own required checks.
+  conclusion GitHub gave it, in one message each to the architect that owns the issue, the worker
+  of the issue's current phase and the implementer, and judges none of them. Re-run a check that
+  failed on itself, have the implementer fix code that is at fault, or leave it to GitHub, which
+  holds the merge under the base branch's own required checks.
 - **A review round that no review decides.** Legion's reviewer must approve the head or request
   changes; a plain comment leaves the issue in `needs_review`, and the architect asks the reviewer
   for the decision. Only the review App or an account with write access to the repository decides a

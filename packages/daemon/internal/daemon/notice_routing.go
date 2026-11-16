@@ -195,8 +195,12 @@ func holdsRole(held supervise.ClaimView) bool {
 }
 
 // claimEnded is whether a claim in state will not hold its role again: this daemon does not
-// supervise it (""), or it failed or retired. A suspended claim has not ended: the operator's
-// resume or deliver starts it again (`legion claims resume`).
+// supervise it (""), or it failed or retired. A child's own architect that failed does start again,
+// at its child's next phase start (workflow's reviveArchitect), but that launch's ready queues a
+// catch-up of its own, so nothing held for the failed claim waits for it. A suspended claim has
+// not ended: the operator's resume or deliver starts it again (`legion claims resume`), and so
+// does the workflow's next start of its role for a claim the workflow suspended, which for a
+// child's own architect is the child's next first phase start (workflow's StartFirstPhase).
 func claimEnded(state supervise.ClaimState) bool {
 	return state == "" || state == supervise.StateFailed || state == supervise.StateRetired
 }

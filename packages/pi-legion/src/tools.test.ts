@@ -172,8 +172,8 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every " +
   "role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The " +
   "daemon holds your next task until your process comes back on the new pod, in this same session. " +
-  "request_backward_move returns an issue to an earlier phase (`to`, `reason`): " +
-  "a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which " +
+  "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
+  "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move " +
   "counts a review round. " +
   "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
   "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +

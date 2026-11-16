@@ -5391,7 +5391,7 @@ A listener that refuses the stop or cannot be reached costs nothing but that pro
 Each death counts one `launchFailures`, so a pod that keeps dying before its `/worker/ready` reaches `worker-died` at `MAX_LAUNCH_FAILURES` exactly like a boot that never confirms; a confirmed ready resets the count.
 A finished worker whose pod dies while idle
 — no longer its issue's active phase, nothing queued for it
-— is retired, not relaunched (`… after finishing: <issue>'s active phase is <role> …; retired, not relaunched`); the architect's next `spawn_worker` resumes it.
+— is relaunched too, on the session it recorded (`relaunchAfterFailure` in `internal/supervise/budgets.go`): with no task pending and no turn open, its death is not counted as a death with work outstanding (`chargeDeath`), only as the one launch failure every death counts.
 To exercise this on a kind cluster, crash the process from the node rather than deleting the pod gracefully (a graceful stop lets the shim shut OMP down cleanly):
 `node=$(kind get nodes --name <cluster>)`, `cid=$(docker exec "$node" crictl ps -q --name
 worker --label io.kubernetes.pod.name=<pod>)`, `pid=$(docker exec "$node" crictl inspect --output

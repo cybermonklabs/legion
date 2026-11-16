@@ -29,10 +29,10 @@ A fix you are not sure of is not step 1: hand it over, or ask when a person must
 - A problem inside your issue is not such a finding: fix it in your change, since nothing needed
   for correctness is deferred.
 - A problem inside your tree is work its root spec's acceptance needs. A phase worker's such
-  problem outside its own issue goes to the tree's architect (`skill://legion-worker`, *Stop
-  rules*), which adds it to an open pull request of the tree, or files a child when it is a
-  separately deliverable change. Anything else, in the same
-  repository or not, is a finding.
+  problem outside its own issue goes to the architect that owns its issue, the one its
+  `Legion addressing` line names (`skill://legion-worker`, *Stop rules*). That architect adds it
+  to an open pull request of the tree, or files a child when it is a separately deliverable
+  change. Anything else, in the same repository or not, is a finding.
 - Search first (`skill://dispatch-first`): when an open issue already tracks the problem, comment
   the evidence on that issue and send or ask nothing. When an open ask on the report issue already
   asks about it (`dispatch open-asks --project <PROJECT>` lists them), add your evidence under that
@@ -41,7 +41,7 @@ A fix you are not sure of is not step 1: hand it over, or ask when a person must
 
 These issues are filed:
 
-- an architect's children of its own tree (`dispatch issue --parent`, `skill://legion-architect`)
+- an architect's children of its own issue (`dispatch issue --parent`, `skill://legion-architect`)
 - a Legion root the controller files for a clear defect no running tree owns
 - an issue a person asked the controller to file, in a direct message, in a Slack request, or in
   their answer to an ask
@@ -97,8 +97,9 @@ of these that holds, so a person sees it and the controller finds it when it ret
    KEY>/ask/<id>` under that comment, so the controller takes the ask and not the comment. The
    report issue's assignee sees the ask, and the controller's catch-up takes it.
 2. **The report issue is missing or closed:** ask on your own issue, the evidence posted there as
-   a comment first. Then publish the ask's reference to your tree's architect (`skill://legion-worker`,
-   *Stop rules*). An architect holds its own. The architect holds your issue's
+   a comment first. Then publish the ask's reference to the architect that owns your issue, the
+   one your `Legion addressing` line names (`skill://legion-worker`, *Stop rules*). An architect
+   holds its own. The architect holds your issue's
    acceptance until a controller has taken the ask (`skill://legion-architect`, "Acceptance and the
    merge"). That hold is what keeps the ask readable: an open ask on a closed issue drops out of
    the controller's own listing (`asks.go`'s `listOpenAsks` takes `i.closed_at is null`), so an

@@ -6,7 +6,8 @@ func IsTreeRoot(issue, tree string) bool { return issue == tree }
 
 // IsTreeArchitect is whether a claim is the architect of its tree's own issue: the tree's root
 // claim, one per tree, which ends only when the tree closes. An architect on a child issue is a
-// sub-architect, and a worker on the root issue is not the root claim.
+// sub-architect, the child's own, which the daemon starts with the child's first phase. A worker
+// on the root issue is not the root claim.
 func IsTreeArchitect(role Role, issue, tree string) bool {
 	return role == RoleArchitect && IsTreeRoot(issue, tree)
 }

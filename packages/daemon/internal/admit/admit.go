@@ -2481,8 +2481,8 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	}
 	type midPhaseMember struct {
 		issue record.Issue
-		// owner is the role whose phase the member stands in, empty where that phase is the
-		// tree architect's.
+		// owner is the role whose phase the member stands in, empty where that phase is an
+		// architect's (accepting).
 		owner claim.Role
 		roles []roleToken
 	}
@@ -2510,8 +2510,9 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		if member.Phase == phase.Admitted {
 			return nil
 		}
-		// Accepting's role is the tree's architect, which promotion already started: nothing of
-		// that phase is resumed here.
+		// Accepting's role is an architect, which no phase start brings back here: the root's is
+		// promotion's own start, and a child's own comes back below with the member's other roles
+		// that have run.
 		owner := phase.RoleFor(member.Phase)
 		if owner == claim.RoleArchitect {
 			owner = ""
@@ -2533,7 +2534,8 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		standing := midPhaseMember{issue: member, owner: owner}
 		for _, role := range claim.Roles {
 			// The tree's architect is promotion's own start, with the task that hands it its
-			// tree; a member's own sub-architect is no phase worker and comes back with the rest.
+			// tree; a member's own architect, which the daemon started with that member's first
+			// phase, is no phase worker and comes back with the rest.
 			if claim.IsTreeArchitect(role, member.Key, member.Tree) {
 				continue
 			}

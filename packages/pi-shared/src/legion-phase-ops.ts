@@ -150,9 +150,10 @@ export const PhaseOpArguments = z.discriminatedUnion(
       wake_at: nextLook.optional(),
     }),
     operation("request_backward_move", {
-      // The issue the move names: the tree architect's move names the issue it returns from
-      // accepting (its grant serves its whole tree); a phase worker's leaves it out, or names its
-      // own. Which is the executor's to hold, by the claim's role.
+      // The issue the move names: an architect's move names the issue it returns from accepting
+      // (its grant serves its whole tree, and the daemon takes the move only on an issue that
+      // architect owns); a phase worker's leaves it out, or names its own. Which is the
+      // executor's to hold, by the claim's role.
       issue: z
         .string({ error: "request_backward_move's issue is an issue key, as LEGION-208 is" })
         .optional(),
@@ -226,8 +227,8 @@ export const PHASE_OP_SENTENCES = {
     "the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A release that suspended no role is woken by " +
     "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
-    "request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; " +
-    "the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. ",
+    "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
+    "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. ",
 } as const;
 
 /**

@@ -76,8 +76,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - **OMP extensions** — two Oh My Pi plugins:
   `@sjawhar/pi-envoy` (`packages/pi-envoy`), which every session loads for Envoy messaging and the native Dispatch tools, and `@sjawhar/pi-legion` (`packages/pi-legion`), which a Legion pane loads beside it and which injects the Legion tool (its daemon calls carry session grants the tool mints in-process) and the daemon handshake into that session, reaching the Envoy plugin through the versioned interface in `packages/pi-shared`.
-  The daemon starts every phase worker (planner/implementer/tester/reviewer/merger) itself, from its fixed workflow table;
-  a sub-architect for a child issue runs only when the operator starts one.
+  The daemon starts every phase worker (planner/implementer/tester/reviewer/merger) itself, from its fixed workflow table,
+  and the architect of every child issue when it starts that child's first phase.
   The controller is an interactive OMP session the operator starts on their own machine with `legion controller start` (no `--mode rpc`, no shim), unless `legion.yaml` sets `controller: daemon`, where the daemon launches it in an Agent Sandbox pod of its own, whose one container runs the controller's `legion launcher`, or under `runtime: tmux` in a pane of its own `controller` window, and supervises it like a root architect (`docs/kubernetes.md`, "The controller";
   `docs/deployment.md`, "The `runtime.tmux` block").
 

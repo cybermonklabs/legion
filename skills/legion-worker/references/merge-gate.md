@@ -204,10 +204,11 @@ wait, since it stands whatever CI says and the issue leaves reviewing with it. T
 on nothing either: it ends the round whatever CI says at the head it names, since the round reads
 no CI verdict, and a settlement the daemon reads later — at that head or any above it — moves the
 issue nowhere. The daemon names each check GitHub reported, with the conclusion GitHub gave it,
-in one message to the tree's architect, the worker of the issue's current phase and the
-implementer, and judges none of them: a red is the implementer's to fix or re-run, the
-architect's to decide on, and GitHub's to hold the merge for. So the reviewer's own read before
-it approves is the only read that decides anything. A review that names an older head reviews
+in one message to the architect that owns the issue (the one your `Legion addressing` line
+names), the worker of the issue's current phase and the implementer, and judges none of them: a
+red is the implementer's to fix or re-run, the architect's to decide on, and GitHub's to hold the
+merge for. So the reviewer's own read before it approves is the only read that decides anything.
+A review that names an older head reviews
 code the pull request no longer has. The daemon moves the issue once all three are in — the
 decision GitHub reports, your completion, in either order, and GitHub's own answer that the
 approved head is one the issue may advance on — so a review posted without a completion leaves
@@ -217,8 +218,9 @@ it there until that answer comes clean.
 ## The architect's acceptance
 
 - Between the reviewer's approval and retro the issue sits in `accepting` (Dispatch status
-  `needs_review`), where no worker is started: the tree's architect reads the evidence (the
-  tester's handoff, `dispatch results --issue <issue>` at the approved head and the reviewer's
+  `needs_review`), where no worker is started: the architect that owns the issue, the one each
+  phase worker's `Legion addressing` line names, reads the evidence (the tester's handoff,
+  `dispatch results --issue <issue>` at the approved head and the reviewer's
   approval of the head by SHA; the daemon refuses the sign-off while an issue beneath it is still
   in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`, so a parent is accepted after its children, on
   the head of its last round, `skill://legion-architect`, section 4) and accepts with the
