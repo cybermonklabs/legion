@@ -182,8 +182,11 @@ function RequestChangesDialog({
             htmlFor={reasonId}
           >
             Reason
+            {/* Sized to its text (`field-sizing`) up to half the screen, so the reason Dispatch
+                wrote after a form refusal shows whole rather than in two lines. `min-h-14!`
+                keeps an empty field two lines tall over styles.css's unlayered touch floor. */}
             <textarea
-              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${inputClasses(false)}`}
+              className={`mt-1 block max-h-[50vh] min-h-14! w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none field-sizing-content ${inputClasses(false)}`}
               disabled={saving}
               id={reasonId}
               onChange={(event) => setReason(event.target.value)}
@@ -267,6 +270,10 @@ export function ApprovalChip({
   const submitGuard = useSubmitGuard();
 
   const review = useKeyedWrite({
+    // A form refusal of Approve shows under the actions, and Dispatch refuses the same document
+    // again until its text changes, so the shell's corner offers no Retry for it. Every other
+    // refusal is the corner's, with Retry and Discard.
+    inline: (input, refusal) => input.state === "approved" && isSpecFormRefusal(refusal),
     label: (input: CreateArtifactReviewInput) =>
       `${input.state === "approved" ? "Approval" : "Change request"} on ${artifact.name}`,
     onSettled: () => submitGuard.release(),
@@ -327,9 +334,12 @@ export function ApprovalChip({
           {approval.state === "approved" ? null : (
             // One filled button per surface: approving is the action the header wants, and
             // two outline buttons made a reader choose before reading either.
+            // `aria-disabled` while its write is out, not `disabled`: a browser takes the focus
+            // off a button disabled under it, and the reader would meet the refusal with the
+            // focus on the page. The submit guard drops a press while one is out.
             <button
+              aria-disabled={review.isPending || undefined}
               className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={review.isPending}
               onClick={() =>
                 submitGuard.guard(() => {
                   // Each press is answered on its own: the refusal of the last one goes with it.

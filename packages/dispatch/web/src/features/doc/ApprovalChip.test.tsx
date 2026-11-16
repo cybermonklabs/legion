@@ -6,6 +6,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { specFormRefusal, specFormRefusalBody } from "../../__tests__/spec-form-fixture";
 import { ApiError, api } from "../../api/client";
 import type { Artifact, ArtifactApproval, ArtifactReview } from "../../api/types";
+import { PendingWritesIndicator } from "../writes/PendingWritesIndicator";
 import { ApprovalChip } from "./ApprovalChip";
 
 function artifact(approval: ArtifactApproval | undefined): Artifact {
@@ -428,6 +429,78 @@ test("a second approval takes the earlier form refusal away", async () => {
     );
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+  }
+});
+
+/** The header's chip beside the shell's pending-writes corner, over one app's write queue, as a
+ *  page draws them. */
+function renderChipInShell(target: Artifact) {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <ApprovalChip artifact={target} variant="header" />
+      <PendingWritesIndicator />
+    </QueryClientProvider>
+  );
+}
+
+// The header shows a form refusal of Approve under the actions, and Dispatch refuses the same
+// document again until its text changes: the shell's corner lists no second copy of it with a
+// Retry that can only be refused. The control: Approve refused for another reason is the
+// corner's, with Retry, as before.
+test("a form refusal of Approve is the header's alone, and any other refusal stays in the corner", async () => {
+  const user = userEvent.setup();
+  const createArtifactReview = spyOn(api, "createArtifactReview")
+    .mockRejectedValueOnce(specFormRefusal())
+    .mockRejectedValueOnce(new ApiError(403, { code: "FORBIDDEN", error: "not a reviewer" }));
+  const view = renderChipInShell(artifact({ latest_version: 12, state: "awaiting" }));
+  try {
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(specFormRefusalBody.error);
+    await waitFor(() => {
+      const approve = screen.getByRole("button", { name: "Approve" });
+      expect(approve).not.toHaveAttribute("disabled");
+      expect(approve).not.toHaveAttribute("aria-disabled");
+    });
+    expect(screen.queryByTestId("pending-writes")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    const corner = await screen.findByTestId("pending-writes");
+    expect(
+      within(corner).getByText("Not saved: Approval on Design notes — not a reviewer")
+    ).toBeTruthy();
+    expect(within(corner).getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(createArtifactReview).toHaveBeenCalledTimes(2);
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+  }
+});
+
+// A browser takes the focus off a button that becomes `disabled` under it, which left a reader
+// who pressed Approve on the page itself when the refusal came. The press in flight holds the
+// button with `aria-disabled`, so the focus stays on it and the next Tab reaches Request
+// changes, the step the refusal names.
+test("Approve keeps the focus while its write is out", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<never>();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockReturnValue(answer.promise);
+  const view = renderChip(artifact({ latest_version: 12, state: "awaiting" }), "header");
+  try {
+    const approve = screen.getByRole("button", { name: "Approve" });
+    await user.click(approve);
+    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(approve).toHaveAttribute("aria-disabled", "true"));
+    expect(approve).not.toHaveAttribute("disabled");
+    expect(document.activeElement).toBe(approve);
+    await user.click(approve);
+    expect(createArtifactReview).toHaveBeenCalledTimes(1);
+  } finally {
+    answer.reject(specFormRefusal());
     createArtifactReview.mockRestore();
     view.unmount();
   }

@@ -1188,7 +1188,13 @@ test("an approval-kind ask names the reason Request changes needs, focuses its f
 
 // Dispatch refuses the approval of a document that breaks the form of The Spec, and the refusal
 // names the person's next step: the card says it, offers no Retry, picks Request changes and fills
-// its reason with what Dispatch wrote for the author, so one more press sends the findings.
+// its reason with what Dispatch wrote for the author, so one more press sends the findings. The
+// card has picked Request changes itself, so its last line names the press that is left, Answer,
+// where the header's names Request changes.
+const cardRefusal = specFormRefusalBody.error.replace(
+  "To send these findings to the author, choose Request changes.",
+  "To send these findings to the author, choose Answer."
+);
 for (const variant of ["full", "compact"] as const) {
   test(`a ${variant} approval card refused for the form picks Request changes with Dispatch's reason`, async () => {
     const user = userEvent.setup();
@@ -1216,7 +1222,8 @@ for (const variant of ["full", "compact"] as const) {
       await user.click(within(card).getByRole("button", { name: "Answer" }));
 
       const alert = await within(card).findByRole("alert");
-      expect(alert.textContent).toBe(specFormRefusalBody.error);
+      expect(alert.textContent).toBe(cardRefusal);
+      expect(alert.textContent).not.toContain("choose Request changes");
       expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
       expect(
         (within(card).getByRole("radio", { name: "Request changes" }) as HTMLInputElement).checked
@@ -1232,6 +1239,52 @@ for (const variant of ["full", "compact"] as const) {
         selected: ["Request changes"],
         text: specFormRefusalBody.changes_reason,
       });
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
+// The press that Dispatch refused for the form is answered, not lost: Answer disables while the
+// answer is out, which hands the focus to the row, and the refusal gives it back to Answer, the
+// press the refusal's last line names. The control: an answer that lands leaves the focus on the
+// row, as every answered card does.
+for (const variant of ["full", "compact"] as const) {
+  test(`a ${variant} approval card refused for the form gives the focus back to Answer, and an answered one leaves it on the row`, async () => {
+    const user = userEvent.setup();
+    const submitted: AnswerAskInput[] = [];
+    const input = ask({
+      kind: "approval",
+      options: [{ label: "Approve" }, { label: "Request changes" }],
+    });
+    const { view } = renderCard(
+      <div data-testid="row" tabIndex={-1}>
+        <AskCard
+          answerAsk={async (_id, submission) => {
+            submitted.push(submission);
+            if (submitted.length === 1) throw specFormRefusal();
+            return answered(input, submission.selected, submission.text ?? null);
+          }}
+          ask={input}
+          getAskThread={emptyThread(input)}
+          variant={variant}
+        />
+      </div>
+    );
+
+    try {
+      const card = view.getByTestId("ask-ask-1");
+      await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+      await user.click(within(card).getByRole("button", { name: "Answer" }));
+      await within(card).findByRole("alert");
+      await waitFor(() =>
+        expect(within(card).getByRole("button", { name: "Answer" })).toHaveFocus()
+      );
+
+      await user.click(within(card).getByRole("button", { name: "Answer" }));
+      await waitFor(() => expect(submitted).toHaveLength(2));
+      await view.findByRole("img", { name: "Selected" });
+      expect(view.getByTestId("row")).toHaveFocus();
     } finally {
       view.unmount();
     }

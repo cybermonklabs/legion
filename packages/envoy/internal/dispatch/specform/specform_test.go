@@ -75,6 +75,34 @@ func TestCheckTakesTwoSentencesOfTwentyFiveWords(t *testing.T) {
 	}
 }
 
+// TestAPieceWithNoLetterIsNoSentence holds a statement to sentences that hold a word with a
+// letter: a text of numbers or marks alone has no sentence, so it breaks the rule of one or two
+// sentences, and a piece with no letter beside a real sentence does not count. A number inside a
+// sentence is a word of it.
+func TestAPieceWithNoLetterIsNoSentence(t *testing.T) {
+	const none = "it has 0 sentences, and a statement has one or two"
+	for _, test := range []struct {
+		body   string
+		detail string
+	}{
+		{"42", none},
+		{"...", none},
+		{"—", none},
+		{"12:30.", none},
+		{"Dispatch keeps each message for 72 hours.", ""},
+		{"Dispatch keeps each message for 72 hours. 42.", ""},
+	} {
+		text := statement(test.body)
+		var want []Finding
+		if test.detail != "" {
+			want = []Finding{finding(text, "sentences", test.detail)}
+		}
+		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
+			t.Errorf("Check(%q) = %#v, want %#v", test.body, got, want)
+		}
+	}
+}
+
 // TestCheckLetsTheWordIncidentStand holds the incident rule to an incident's id: level one says
 // "incident" with none.
 func TestCheckLetsTheWordIncidentStand(t *testing.T) {

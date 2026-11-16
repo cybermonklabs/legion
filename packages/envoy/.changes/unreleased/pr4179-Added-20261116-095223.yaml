@@ -1,5 +1,5 @@
 kind: Added
-body: Dispatch refuses an approval request or a person's approval when a covered text breaks the form of The Spec. A text is covered when its document is under a root of The Spec, and the setting DISPATCH_SPEC_ROOTS names the roots. The refusal is 409 SPEC_FORM, and it names each text and its rule. GET /api/v1/artifacts/{id}/spec-form shows the same findings before a request. A reopen or the repair pass leaves such a request resolved, with the findings as its reason.
+body: Dispatch refuses an approval request or a person's approval when a covered text breaks the form of The Spec. A text is covered when its document is under a root of The Spec, and the setting DISPATCH_SPEC_ROOTS names the roots. The refusal is 409 SPEC_FORM, and it names each text and its rule. A statement breaks the form when it has no sentence or more than two sentences. A text such as 42 has no word with a letter, so it has no sentence. GET /api/v1/artifacts/{id}/spec-form shows the same findings before a request. A reopen or the repair pass leaves such a request resolved, with the findings as its reason.
 time: 2026-11-16T09:52:23.463482113Z
 custom:
     Issue: pr4179

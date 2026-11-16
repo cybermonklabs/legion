@@ -149,20 +149,25 @@ async function latestForm(
   }
 }
 
-/** The spec and the Verification document of one issue, each read at its latest settled version. */
+/** The spec and the Verification document among `artifacts`, each read at its latest settled version. */
 async function coveredForms(
   client: DispatchClient,
-  issue: string
+  artifacts: readonly Artifact[]
 ): Promise<{ readonly artifact: Artifact; readonly form: SpecFormRead | undefined }[]> {
-  const artifacts = (await client.listIssueArtifacts(issue)).filter(playsSpecOrVerification);
   return Promise.all(
-    artifacts.map(async (artifact) => ({ artifact, form: await latestForm(client, artifact) }))
+    artifacts
+      .filter(playsSpecOrVerification)
+      .map(async (artifact) => ({ artifact, form: await latestForm(client, artifact) }))
   );
 }
 
-/** `dispatch spec-form --issue KEY` with no `--artifact`: each document the issue's form plays. */
+/**
+ * `dispatch spec-form --issue KEY` with no `--artifact`: each document the issue's form plays,
+ * from the issue's own read. The documents route lists no document for a key that names no issue
+ * and refuses nothing, so the issue's read is what refuses such a key, as `dispatch read` does.
+ */
 async function issueForms(client: DispatchClient, issue: string): Promise<DispatchToolResult> {
-  const read = await coveredForms(client, issue);
+  const read = await coveredForms(client, (await client.getIssue(issue)).artifacts ?? []);
   const lines = read.flatMap(({ artifact, form }) =>
     form === undefined
       ? [noVersionLine(artifact.name)]
@@ -238,7 +243,7 @@ async function rootForms(client: DispatchClient, root: string): Promise<Dispatch
     for (const child of await client.listAllIssues({ parent })) {
       if (seen.has(child.key)) continue;
       seen.add(child.key);
-      const read = await coveredForms(client, child.key);
+      const read = await coveredForms(client, await client.listIssueArtifacts(child.key));
       const totals: Record<string, number> = {};
       let issueFindings = 0;
       const documentRows = read.map(({ artifact, form }) => {

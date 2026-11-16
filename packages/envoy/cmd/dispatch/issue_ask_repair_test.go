@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -79,4 +81,111 @@ func TestRepairIssueAsksAtBootWithdrawsAndLogsItsCounts(t *testing.T) {
 	if count := 0; database.Pool.QueryRow(ctx, `select count(*) from events where type = 'ask.resolved' and payload->>'id' = $1`, ask).Scan(&count) != nil || count != 1 {
 		t.Errorf("the ask has %d ask.resolved events, want 1", count)
 	}
+}
+
+// The started server's repair pass judges the form of The Spec as a reopen does (R49: "This holds
+// for each route that opens an approval request"). Two issues under the root ACME-1 each hold an
+// approval request that a close withdrew, and a release older than the withdrawal reopened both.
+// The boot's pass leaves resolved, with the findings, the request whose spec breaks the form, and
+// restores the clean one. The process itself builds the dependencies the pass runs on, so only the
+// started binary shows which ones the pass gets.
+func TestTheStartedServersRepairPassJudgesTheFormOfTheSpec(t *testing.T) {
+	database := storetest.Open(t)
+	databaseURL := database.Pool.Config().ConnString()
+	options := dispatchOptions{Env: map[string]string{"DISPATCH_SPEC_ROOTS": "ACME-1"}}
+	first := startDispatchProcessWith(t, databaseURL, options)
+	first.waitHealthy(t)
+	first.createProject(t, "ACME", "Acme")
+	if root, _ := first.createIssueIn(t, "ACME", "The root of The Spec", "# The Spec\n\nThe design of the written account.\n"); root != "ACME-1" {
+		t.Fatalf("the first issue of ACME is %s, want ACME-1", root)
+	}
+	broken := first.withdrawnRequestUnderTheRoot(t, "A broken request",
+		"Dispatch stores each comment. Dispatch indexes each comment. Dispatch shows each comment.")
+	clean := first.withdrawnRequestUnderTheRoot(t, "A clean request", "Dispatch stores each comment.")
+	first.Terminate(t)
+	first.WaitExit(t, "SIGTERM")
+
+	reopener := model.Actor{Kind: "session", ID: "session-reopener"}
+	for _, request := range []withdrawnRequest{broken, clean} {
+		reopenAsAnOlderRelease(t, database, request.issue, reopener)
+	}
+	second := startDispatchProcessWith(t, databaseURL, options)
+	second.waitHealthy(t)
+
+	if lines := second.logLines("repaired the asks of closed and reopened issues"); len(lines) != 1 ||
+		!holdsAll(lines[0], "restored=1", "left_resolved=1") {
+		t.Errorf("the boot's repair logged %q, want one line with restored=1 and left_resolved=1", lines)
+	}
+	wantReason := "Dispatch did not open this approval request again, because 1 text breaks the form of The Spec.\n" +
+		"- statement store-comment in spec.md version 1: it has 3 sentences, and a statement has one or two.\n" +
+		"Fix each text, then request approval again."
+	if got := second.readRepairedAsk(t, broken.ask); got.State != "resolved" || got.Resolution == nil ||
+		got.Resolution.Kind != "resolved" || got.Resolution.Reason != wantReason || got.Resolution.Actor.ID != reopener.ID {
+		t.Errorf("the broken request reads %s with resolution %+v, want it left resolved by %s with the reason\n%s",
+			got.State, got.Resolution, reopener.ID, wantReason)
+	}
+	if got := second.readRepairedAsk(t, clean.ask); got.State != "open" || got.Resolution != nil {
+		t.Errorf("the clean request reads %s with resolution %+v, want it restored open", got.State, got.Resolution)
+	}
+}
+
+// withdrawnRequest is an issue and the approval request of its spec that its close withdrew.
+type withdrawnRequest struct{ issue, ask string }
+
+// withdrawnRequestUnderTheRoot makes an issue outside every root whose spec holds statement, opens
+// the approval request of the spec as an agent, moves the issue under ACME-1 and closes it, which
+// withdraws the request. Outside the root the request opens whatever the statement says.
+func (p *dispatchProcess) withdrawnRequestUnderTheRoot(t *testing.T, title, statement string) withdrawnRequest {
+	t.Helper()
+	key, artifactID := p.createIssueIn(t, "ACME", title, "# Spec\n\n:::requirement{#store-comment}\n"+statement+"\n:::\n")
+	answer := p.send(t, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/approval-requests",
+		`{"actor":{"kind":"session","id":"session-0123456789abcdef"}}`,
+		http.Header{"Authorization": {"Bearer " + dispatchTestAgentToken}})
+	var opened struct {
+		Ask struct {
+			ID string `json:"id"`
+		} `json:"ask"`
+	}
+	if err := json.Unmarshal(answer.body, &opened); answer.status != http.StatusCreated || err != nil || opened.Ask.ID == "" {
+		t.Fatalf("request approval of %s: %s (%v), want 201 with the ask", key, answer, err)
+	}
+	p.call(t, http.MethodPatch, "/api/v1/issues/"+key, `{"parent":"ACME-1"}`, http.StatusOK)
+	p.call(t, http.MethodPatch, "/api/v1/issues/"+key, `{"status":"done"}`, http.StatusOK)
+	return withdrawnRequest{issue: key, ask: opened.Ask.ID}
+}
+
+// reopenAsAnOlderRelease reopens issue as a release older than the withdrawal did, with no process
+// serving: the issue's row reads todo, an issue.updated event names actor, and its withdrawn asks
+// stay withdrawn.
+func reopenAsAnOlderRelease(t *testing.T, database *store.Store, issue string, actor model.Actor) {
+	t.Helper()
+	ctx := store.WithTransactionTracking(context.Background())
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the reopen of %s: %v", issue, err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `update issues set status = 'todo', closed_at = null, updated_at = now() where key = $1`, issue); err != nil {
+		t.Fatalf("reopen %s: %v", issue, err)
+	}
+	event := model.Event{IssueKey: &issue, Type: "issue.updated", Actor: actor, Payload: map[string]any{"key": issue, "status": "todo"}}
+	if _, err := events.NewBroker().Append(ctx, tx, event); err != nil {
+		t.Fatalf("append the issue.updated event of %s: %v", issue, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the reopen of %s: %v", issue, err)
+	}
+}
+
+// readRepairedAsk is the ask as the process's API reads it (GET /api/v1/asks/{id}).
+func (p *dispatchProcess) readRepairedAsk(t *testing.T, askID string) model.Ask {
+	t.Helper()
+	answer := p.call(t, http.MethodGet, "/api/v1/asks/"+askID, "", http.StatusOK)
+	var read struct {
+		Ask model.Ask `json:"ask"`
+	}
+	if err := json.Unmarshal(answer, &read); err != nil {
+		t.Fatalf("decode ask %s: %v: %s", askID, err, answer)
+	}
+	return read.Ask
 }

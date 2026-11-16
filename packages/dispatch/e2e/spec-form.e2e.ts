@@ -268,17 +268,28 @@ test("the person's Approve on the header of a broken statement under the root sh
   await withHome(async (home) => {
     const tree = await seedTree(home);
     await page.goto(`/issues/${tree.header.key}`);
-    await page.getByRole("button", { exact: true, name: "Approve" }).click();
+    const approve = page.getByRole("button", { exact: true, name: "Approve" });
+    await approve.click();
     const refusal = page.getByRole("alert").filter({ hasText: "Dispatch refused this approval" });
     await expect(refusal).toContainText(findingLine);
     await expect(refusal).toContainText(
       "To send these findings to the author, choose Request changes."
     );
     await expect(page.getByRole("button", { name: /^Approved/ })).toHaveCount(0);
+    // The refusal is an answer, which the header shows: the press keeps the focus, and the
+    // shell's corner lists no Retry that Dispatch can only refuse again.
+    await expect(approve).toBeFocused();
+    await expect(page.getByTestId("pending-writes")).toHaveCount(0);
 
     await page.getByRole("button", { exact: true, name: "Request changes" }).click();
     const dialog = page.getByRole("dialog", { name: "Request changes" });
-    await expect(dialog.getByLabel("Reason")).toHaveValue(changesReason);
+    const reason = dialog.getByLabel("Reason");
+    await expect(reason).toHaveValue(changesReason);
+    // The field shows the whole reason it opens with, so the person reads what Request changes
+    // sends to the author without scrolling inside a two-line box.
+    await expect
+      .poll(() => reason.evaluate((field) => field.scrollHeight <= field.clientHeight))
+      .toBe(true);
     await expect(dialog.getByRole("alert")).toHaveCount(0);
     await dialog.getByRole("button", { exact: true, name: "Request changes" }).click();
     await expect(page.getByRole("button", { name: "Changes requested" })).toBeVisible();
@@ -310,6 +321,13 @@ test("the person's Approve on the Inbox card of a broken statement under the roo
       "Dispatch refused this approval, because 1 text breaks the form of The Spec."
     );
     await expect(card.getByRole("alert")).toContainText(findingLine);
+    // The card has picked Request changes itself, so its last line names the press left, and
+    // that press keeps the focus.
+    await expect(card.getByRole("alert")).toContainText(
+      "To send these findings to the author, choose Answer."
+    );
+    await expect(card.getByRole("alert")).not.toContainText("choose Request changes");
+    await expect(card.getByRole("button", { name: "Answer" })).toBeFocused();
     await expect(card.getByRole("radio", { name: /^Request changes / })).toBeChecked();
     await expect(card.getByLabel("Reason (required)")).toHaveValue(changesReason);
 

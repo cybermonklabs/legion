@@ -3,6 +3,7 @@ package specform
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -81,7 +82,7 @@ func breaks(c Context, people map[string]bool, text Text) []broken {
 // finding of ste-lint, all as ste-lint reads the line.
 func formBreaks(kind Kind, line string) []broken {
 	var found []broken
-	sentences := ste.Sentences(line)
+	sentences := sentencesOf(line)
 	if kind == KindStatement && (len(sentences) < 1 || len(sentences) > 2) {
 		found = append(found, broken{ruleSentences, fmt.Sprintf("it has %d sentences, and a statement has one or two", len(sentences))})
 	}
@@ -97,6 +98,25 @@ func formBreaks(kind Kind, line string) []broken {
 		}
 	}
 	return found
+}
+
+// sentencesOf is each sentence of line, as its words, that a rule of the form counts: each piece
+// that ste-lint's splitter cuts (ste.Sentences, the one place that says where a sentence ends)
+// and that holds a word with a letter. A piece with no such word, such as "42", "...", "—" or
+// "12:30.", is no sentence, so a text of such pieces alone has no sentence.
+func sentencesOf(line string) [][]string {
+	var sentences [][]string
+	for _, sentence := range ste.Sentences(line) {
+		if slices.ContainsFunc(sentence, hasLetter) {
+			sentences = append(sentences, sentence)
+		}
+	}
+	return sentences
+}
+
+// hasLetter reports whether word holds a letter of any script.
+func hasLetter(word string) bool {
+	return strings.ContainsFunc(word, unicode.IsLetter)
 }
 
 // span is a byte range of a line, with the break found there.

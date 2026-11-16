@@ -199,13 +199,13 @@ const specFormDocumentOwner = documentOwnerValidation(true);
 const specFormValidation: NonNullable<DispatchToolSpec["validation"]> = {
   check: (value) => {
     const input = value as Readonly<Record<string, unknown>>;
-    if (input.root === undefined) return specFormDocumentOwner.check(value);
+    if (input["root"] === undefined) return specFormDocumentOwner.check(value);
     return SPEC_FORM_DOCUMENT_ARGUMENTS.every((name) => input[name] === undefined);
   },
   message: `${specFormDocumentOwner.message} ${SPEC_FORM_ROOT_RULE}`,
   refusal: (value) => {
     const input = value as Readonly<Record<string, unknown>>;
-    return input.root === undefined ? specFormDocumentOwner.message : SPEC_FORM_ROOT_RULE;
+    return input["root"] === undefined ? specFormDocumentOwner.message : SPEC_FORM_ROOT_RULE;
   },
 };
 

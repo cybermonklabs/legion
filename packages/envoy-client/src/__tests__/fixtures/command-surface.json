@@ -1792,7 +1792,7 @@
       "requests": [
         {
           "method": "GET",
-          "path": "/api/v1/issues/DSP-1/artifacts",
+          "path": "/api/v1/issues/DSP-1",
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret"

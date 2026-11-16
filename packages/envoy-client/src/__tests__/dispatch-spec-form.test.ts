@@ -17,7 +17,10 @@ import { DispatchServiceError, forgetKeyedLayerMemory } from "../dispatch-http";
 // The tree the stub holds: ACME-1 is the root, with the children ACME-2 (a spec) and ACME-3 (only
 // notes.md); ACME-4, a child of ACME-3, holds a spec. ACME-5 holds spec.md, verification.md and
 // notes.md, ACME-6 a spec with no version yet beside a Verification document, and ACME-9 is a root
-// with no child.
+// with no child. Any other key is an issue that does not exist, which the stub answers as the
+// server does: the issue's read is 404 NOT_FOUND (`writeHandlerError` in
+// packages/envoy/internal/dispatch/api/handler_errors.go), and the list of its documents is 200 and
+// empty, since `listArtifacts` reads no issue.
 
 const makeDirectory = temporaryDirectories("dispatch-spec-form");
 
@@ -256,17 +259,15 @@ const server = Bun.serve({
     const issue = /^\/api\/v1\/issues\/([^/]+)(\/artifacts)?$/.exec(pathname);
     if (issue !== null && request.method === "GET") {
       const held = ISSUES.find((candidate) => candidate.key === issue[1]);
-      if (held === undefined) {
+      if (issue[2] !== undefined) {
         return Response.json(
-          { code: "ISSUE_NOT_FOUND", error: "issue not found" },
-          { status: 404 }
+          held === undefined ? [] : held.artifacts.map((artifact) => artifactBody(held, artifact))
         );
       }
-      return Response.json(
-        issue[2] === undefined
-          ? issueBody(held)
-          : held.artifacts.map((artifact) => artifactBody(held, artifact))
-      );
+      if (held === undefined) {
+        return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
+      }
+      return Response.json(issueBody(held));
     }
     const artifact = /^\/api\/v1\/artifacts\/([^/]+)\/(spec-form|blocks|approval-requests)$/.exec(
       pathname
@@ -521,6 +522,24 @@ describe("dispatch spec-form", () => {
       "Dispatch read the form of 0 statements, 1 claim, 0 purposes and 0 definitions against 0 terms: no text breaks it.",
       "",
     ]);
+  });
+
+  test("an issue that does not exist is refused as dispatch read refuses it, and no document is read", async () => {
+    const read = await run(["read", "--issue", "ACME-999"]);
+    expect(read).toEqual({ code: 1, stdout: "NOT_FOUND: not found\n", stderr: "" });
+
+    for (const argv of [
+      ["spec-form", "--issue", "ACME-999"],
+      ["spec-form", "ACME-999"],
+      ["spec-form", "--root", "ACME-999"],
+    ]) {
+      requests.length = 0;
+
+      const answered = await run(argv);
+
+      expect(answered, argv.join(" ")).toEqual(read);
+      expect(formReads(), argv.join(" ")).toEqual([]);
+    }
   });
 
   test("--root lists each issue under the root and each document the root covers, then the counts", async () => {

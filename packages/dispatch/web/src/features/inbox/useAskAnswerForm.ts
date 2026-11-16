@@ -57,13 +57,19 @@ interface AskAnswerFailure {
   retryable: boolean;
 }
 
+/** The last line of a form refusal on the card, once it has picked Request changes and filled
+ *  the reason with what Dispatch wrote for the author. */
+const CARD_FORM_NEXT_STEP = "To send these findings to the author, choose Answer.";
+
 /**
  * The refusals the same answer is refused with again however often it is sent, and what the card
  * says for each: the ask was answered or closed elsewhere, its question changed (the card reloads
  * it, so the next answer is to the new wording), writing even its server state would leave the
  * document's live state past what the server can decode, or an approval of a document whose text
- * breaks the form of The Spec (Dispatch's own words, which name each text and the next step). Any
- * other failure may pass on a retry.
+ * breaks the form of The Spec. For that one the card shows Dispatch's own words, which name each
+ * text, but its own last line: Dispatch's names Request changes, which the card has already
+ * picked, so the card's names the press that is left (`CARD_FORM_NEXT_STEP`). Any other failure
+ * may pass on a retry.
  */
 function answerFailure(error: Error): AskAnswerFailure {
   if (error instanceof ApiError) {
@@ -104,7 +110,10 @@ function answerFailure(error: Error): AskAnswerFailure {
           retryable: false,
         };
       case "SPEC_FORM":
-        return { message: error.message, retryable: false };
+        return {
+          message: [...error.message.split("\n").slice(0, -1), CARD_FORM_NEXT_STEP].join("\n"),
+          retryable: false,
+        };
     }
   }
   return { message: "Could not save your answer.", retryable: true };

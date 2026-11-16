@@ -467,14 +467,34 @@ export function AskCard({
   // its text is sent - would have the browser drop focus to the document body (in the Inbox, out
   // of the row, which then lets the row go) with nothing the card could act on afterwards; the
   // same hand-off as a vanishing form, in the commit that disables it, before the browser looks.
+  // The control it took the focus from is kept for a refusal of the form, below.
   const [formRef, trackForm] = useFormRef();
+  const handedOffFrom = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
     const form = formRef.current;
     const active = document.activeElement;
     if (form !== null && active instanceof HTMLElement && active.matches(":disabled")) {
+      handedOffFrom.current = active;
       handOffFocus(form);
     }
   });
+  // A refusal of the form is an answer the reader acts on in this card, so the control they
+  // pressed gets the focus back once it is enabled again. A compact card draws its actions anew
+  // as it opens the reason, so a control no longer in the page stands for the same kind of
+  // control in the form: Answer, or the answer field. An answer that lands leaves the focus where
+  // the hand-off put it, as every answered card does.
+  useEffect(() => {
+    if (mutation.isPending) return;
+    const pressed = handedOffFrom.current;
+    handedOffFrom.current = null;
+    if (formRefusal === null || pressed === null) return;
+    const control = pressed.isConnected
+      ? pressed
+      : formRef.current?.querySelector<HTMLElement>(
+          pressed.matches('[type="submit"]') ? '[type="submit"]' : "[data-ask-answer]"
+        );
+    if (control?.matches(":disabled") === false) control.focus();
+  }, [formRef, formRefusal, mutation.isPending]);
   const submitHintId = `${answerFieldId}-hint`;
   const agentText = useAgentText();
   // The asker as its button's tooltip: a block ask the server indexed with no pending author

@@ -905,6 +905,7 @@ The version is the latest settled one by default.
 A covered document prints that Dispatch refuses its approval request and each finding as `- <kind> <node>: <detail>.`, or what Dispatch read.
 A document out of scope first says why Dispatch refuses nothing for it, by its scope, and still lists its findings.
 With no `--artifact`, it reads the spec and the Verification document of the issue, and names a document that has no version yet.
+It reads them from the issue's own read, so for a key that names no issue it prints what `dispatch read` prints (`NOT_FOUND: not found`) and exits 1.
 `dispatch spec-form --root <KEY>` walks every issue under KEY with the issue list, one parent at a time, and prints one line for each issue and one for each spec and Verification document, with its version, its scope, the count of each kind of text and its findings.
 It ends with the count of issues and documents it read.
 
