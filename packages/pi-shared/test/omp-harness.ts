@@ -2,11 +2,12 @@
 // a stand-in server that is the model gateway and whatever else a test answers, a profile whose
 // every model role is that stand-in, one `omp --mode rpc` child with only the caller's extensions
 // loaded, one interactive `omp` under a pseudo-terminal whose screen a test reads as an operator
-// sees it (`spawnInteractive`), and the Legion pane runner (`runLegionPane`) that puts those
-// together as one Legion pane against a stand-in daemon and listener. The profile format, the
+// sees it (`spawnInteractive`), the Legion pane runner (`runLegionPane`) that puts those
+// together as one Legion pane against a stand-in daemon and listener, and the jj and git binaries
+// a test runs rather than a wrapper on PATH (`jjBinary`, `gitBinary`). The profile format, the
 // flags and the RPC stream are the Oh My Pi pin's (the repository's .omp-pin), so a pin bump that
 // changes one is fixed here once.
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -467,6 +468,91 @@ function ompEnv(options: { readonly home: string; readonly bin?: string }): {
     HOME: options.home,
     PATH: [options.bin, "/usr/local/bin:/usr/bin:/bin"].filter(Boolean).join(":"),
   };
+}
+
+/** The command that prints the executable of the process it runs under, from Linux's /proc: the
+ *  parent of the shell that runs it is that process. */
+const PARENT_EXE = 'readlink "/proc/$PPID/exe"';
+
+/**
+ * The jj binary that `jj` on this process's PATH runs, for a test to link into a pane's `bin`, to
+ * put first on the PATH the code under test reads, and to run on its fixtures itself. It is read
+ * from the running jj: the executable of the process `jj util exec` starts its command under. On
+ * CI it is ~/.local/bin/jj itself (.github/actions/install-jj).
+ *
+ * The first `jj` on PATH cannot be linked into a pane's `bin` as it is, because it can be a
+ * wrapper rather than jj, and a pane runs with a HOME and a PATH of its own (`ompEnv`: the test's
+ * home, `bin` and the system directories). A wrapper finds its jj from the HOME and PATH of
+ * whoever runs it, so in the pane it finds none: a mise shim reads its version from the mise
+ * configuration under $HOME, and the dotfiles jj shim looks for a jj on PATH past itself and
+ * exits 127 (`jj shim: no real jj found on PATH`). A wrapper can also change what jj does: the
+ * dotfiles shim drops the commit trailers in a repository under a temporary root, which is where
+ * every test repository is. So a test runs the binary the wrapper runs, and its result does not
+ * depend on what the machine puts first on PATH.
+ *
+ * The command runs in `dir`, a directory of the test's that no repository holds, and reads no jj
+ * configuration: `JJ_CONFIG` names an empty file written there. Where the exe link cannot be read
+ * (macOS has no /proc), or this jj has no `util exec`, it throws naming the jj it could not
+ * resolve (`runningBinary`).
+ */
+export async function jjBinary(dir: string): Promise<string> {
+  const emptyConfig = path.join(dir, "jj-binary-config.toml");
+  await writeFile(emptyConfig, "");
+  return await runningBinary("jj", ["util", "exec", "--", "sh", "-c", PARENT_EXE], dir, {
+    JJ_CONFIG: emptyConfig,
+  });
+}
+
+/**
+ * The git binary that `git` on this process's PATH runs, for the reason `jjBinary` gives: the
+ * first `git` on PATH can be a wrapper that changes what git does. The dotfiles git shim gives a
+ * commit made in an agent session, in a repository with a remote, an `Omp-Session` trailer and
+ * checks every push; a Legion pod's `/opt/legion/bin/git` runs the leak guard before a push. It is
+ * read from the running git: the executable of the process a shell alias (`!`) runs under. The
+ * command runs in `dir` and reads no git configuration of the machine's (`GIT_CONFIG_GLOBAL` and
+ * `GIT_CONFIG_NOSYSTEM`). Where the exe link cannot be read (macOS has no /proc), it throws naming
+ * the git it could not resolve (`runningBinary`).
+ */
+export async function gitBinary(dir: string): Promise<string> {
+  return await runningBinary("git", ["-c", `alias.binary=!${PARENT_EXE}`, "binary"], dir, {
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+  });
+}
+
+/**
+ * Runs the first `name` on this process's PATH with `args`, which make it run `PARENT_EXE` as its
+ * child, in `dir` with this process's environment and `env` over it, and answers the absolute path
+ * that prints: the binary the PATH's `name` ran. It throws naming the program, the command, its
+ * exit status, what it printed and its stderr when no absolute path comes back.
+ */
+async function runningBinary(
+  name: string,
+  args: readonly string[],
+  dir: string,
+  env: Record<string, string>
+): Promise<string> {
+  const onPath = Bun.which(name);
+  if (onPath === null) throw new Error(`${name} is not on PATH`);
+  const child = Bun.spawn([onPath, ...args], {
+    cwd: dir,
+    env: { ...process.env, ...env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  const binary = stdout.trim();
+  if (code !== 0 || !path.isAbsolute(binary)) {
+    throw new Error(
+      `could not resolve the ${name} binary that ${onPath} runs: \`${[onPath, ...args].join(" ")}\` exited ${code} printing ${JSON.stringify(binary)}; reading the executable of the process that runs it needs Linux's /proc:\n${stderr}`
+    );
+  }
+  await stat(binary);
+  return binary;
 }
 
 export interface Interactive {
