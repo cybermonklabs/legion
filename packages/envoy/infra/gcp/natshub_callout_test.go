@@ -41,6 +41,12 @@ func calloutBlock(keys ...string) string {
 		"  }\n"
 }
 
+// calloutPingLines are the top-level lines core renders after the authorization block beside a
+// callout.
+const calloutPingLines = "# a replica of the auth service that answers nothing is dropped from the callout's queue group within 80 s\n" +
+	"ping_interval: \"20s\"\n" +
+	"ping_max: 2\n"
+
 func otherXKey(t *testing.T) string {
 	t.Helper()
 	curve, err := nkeys.CreateCurveKeys()
@@ -144,22 +150,32 @@ func TestAHubRefusesACalloutCoreRefuses(t *testing.T) {
 }
 
 // nats-server v2.15.1 refuses a reload that changes its authorization callout ("config reload not
-// supported for AuthCallout", which clusteredhub_callout_live_test.go measures), so the clustered
-// hub's pods carry the SHA-256 of the callout's lines in the annotation
-// envoy-infra.sjawhar.dev/auth-callout: a callout change, an added user's key in auth_users
-// among them, changes the pod template and rolls the pods one at a time. A change of a user's grant
-// alone leaves the callout's lines and the annotation as they were, so the reloader applies it.
+// supported for AuthCallout", which clusteredhub_callout_live_test.go measures). It does reload
+// ping_interval and ping_max (server/reload.go:1751-1754), and each connection takes the new
+// interval at its timer's next re-arm (server/reload.go:670-672; server/client.go:6037-6050),
+// within one interval of the old value. So the clustered hub's pods carry the SHA-256 of the
+// callout's lines and the ping lines in the annotation envoy-infra.sjawhar.dev/auth-callout: a
+// change of either, an added user's key in auth_users among them, changes the pod template and
+// rolls the pods one at a time, and every server applies it at one known moment, its pod's
+// restart. A change of a user's grant alone leaves those lines and the annotation as they were,
+// so the reloader applies it.
+//
+// Control: hash the auth_callout block alone (core.Authorization.CalloutLines without the ping
+// lines); the first two rows fail.
 func TestClusteredNatsHubRollsThePodsForACalloutChange(t *testing.T) {
 	annotation := func(t *testing.T, args *gcp.ClusteredNatsHubArgs) any {
 		t.Helper()
 		return podAnnotations(chartValues(t, runClusteredHub(t, args)))["envoy-infra.sjawhar.dev/auth-callout"]
 	}
-	digest := func(block string) string {
-		sum := sha256.Sum256([]byte(block))
+	digest := func(lines string) string {
+		sum := sha256.Sum256([]byte(lines))
 		return hex.EncodeToString(sum[:])
 	}
 	before := annotation(t, calloutClusteredHub())
-	require.Equal(t, digest(calloutBlock(keyA, keyB, keyC, keyD, keyAuth, keySessions)), before)
+	block := calloutBlock(keyA, keyB, keyC, keyD, keyAuth, keySessions)
+	require.Equal(t, digest(block+calloutPingLines), before)
+	require.NotEqual(t, digest(block), before,
+		"the ping lines are in the digest, so a hub whose auth.conf had the callout without them rolls its pods to take them")
 
 	args := calloutClusteredHub()
 	args.AuthCallout.XKey = otherXKey(t)
@@ -168,7 +184,7 @@ func TestClusteredNatsHubRollsThePodsForACalloutChange(t *testing.T) {
 	_, added := testnats.User(t)
 	args = calloutClusteredHub()
 	args.Users = append(args.Users, gcp.NATSUserArgs{Name: "example-host-b", NKey: added, MachineID: pulumi.StringRef("example-host-b")})
-	require.Equal(t, digest(calloutBlock(keyA, keyB, keyC, keyD, keyAuth, added, keySessions)), annotation(t, args),
+	require.Equal(t, digest(calloutBlock(keyA, keyB, keyC, keyD, keyAuth, added, keySessions)+calloutPingLines), annotation(t, args),
 		"an added user's key in auth_users rolls the pods")
 
 	args = calloutClusteredHub()
@@ -176,13 +192,33 @@ func TestClusteredNatsHubRollsThePodsForACalloutChange(t *testing.T) {
 	require.Equal(t, before, annotation(t, args), "a grant change alone leaves the callout's lines, and the pods, as they were")
 }
 
-// TestClusteredNatsHubHashesTheRenderedCalloutBlock: the pods' roll annotation is the SHA-256 of
-// the callout block exactly as the hub's auth.conf holds it, cut from the rendered text (what
-// follows the users' closing "  ]" line, up to the authorization block's own "}" line), so the hash
-// cannot drift from what the servers read. For each hub shape it changes, the callout's own,
-// another xkey and an added user.
+// Beside a callout, auth.conf's top-level ping_interval of 20 s would also govern the routes
+// between the hub's servers, which read cluster.ping_interval first and fall back to it
+// (server/client.go:5957-5964): a route is pinged on every tick, traffic or not (:5968-5970), so a
+// route whose queue takes longer than 2 to 3 intervals to drain is closed as stale. So the chart's
+// cluster block keeps the routes' own ping at today's effective values, 30 s and 2: the 2-minute
+// default capped at routeMaxPingInterval (server/route.go:144, :152; client.go:6005-6010) and the
+// default ping_max (server/const.go:123; client.go:5983-5986). Without a callout the cluster block
+// is as it was (R9).
 //
-// Control: make core's Render write its own block and CalloutBlock leave out the last user's key;
+// Control: drop the merge from the cluster block; the first row fails.
+func TestClusteredNatsHubPinsTheRoutesPingBesideACallout(t *testing.T) {
+	cluster := func(t *testing.T, args *gcp.ClusteredNatsHubArgs) map[string]any {
+		t.Helper()
+		return chartValues(t, runClusteredHub(t, args))["config"].(map[string]any)["cluster"].(map[string]any)
+	}
+	require.Equal(t, map[string]any{"ping_interval": "30s", "ping_max": 2.0}, cluster(t, calloutClusteredHub())["merge"])
+	require.Equal(t, map[string]any{"enabled": true, "replicas": 3.0, "noAdvertise": true}, cluster(t, clusteredArgs()),
+		"without a callout the cluster block is as it was")
+}
+
+// TestClusteredNatsHubHashesTheRenderedCalloutBlock: the pods' roll annotation is the SHA-256 of
+// the callout's lines exactly as the hub's auth.conf holds them: the auth_callout block cut from
+// the rendered text (what follows the users' closing "  ]" line, up to the authorization block's
+// own "}" line), then the ping lines that end it. So the hash cannot drift from what the servers
+// read. For each hub shape it changes, the callout's own, another xkey and an added user.
+//
+// Control: make core's Render write its own block and CalloutLines leave out the last user's key;
 // every row fails.
 func TestClusteredNatsHubHashesTheRenderedCalloutBlock(t *testing.T) {
 	withXKey := calloutClusteredHub()
@@ -201,7 +237,8 @@ func TestClusteredNatsHubHashesTheRenderedCalloutBlock(t *testing.T) {
 			block, _, found := strings.Cut(afterUsers, "\n}\n")
 			require.True(t, found, "no closing authorization line in %q", s.AuthConf)
 			require.True(t, strings.HasPrefix(block, "  auth_callout {\n"), "%q", block)
-			sum := sha256.Sum256([]byte(block + "\n"))
+			require.True(t, strings.HasSuffix(s.AuthConf, calloutPingLines), "%q", s.AuthConf)
+			sum := sha256.Sum256([]byte(block + "\n" + calloutPingLines))
 			require.Equal(t, hex.EncodeToString(sum[:]),
 				podAnnotations(chartValues(t, runClusteredHub(t, args)))["envoy-infra.sjawhar.dev/auth-callout"])
 		})
