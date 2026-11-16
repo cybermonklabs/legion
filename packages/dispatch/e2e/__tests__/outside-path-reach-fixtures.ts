@@ -187,6 +187,30 @@ export function holdingTarget(port = 0) {
   });
 }
 
+/** The bash wrapper `drive` runs to give the script its target list. Its arguments: how the list
+ *  is given (`stdin`, `fifo` or `substitution`), the list's first part, the part written 2 s after
+ *  it (none when empty), the paths of sleep and mkfifo, the named pipe's path, then the shell and
+ *  the script. The writer of a named pipe is stopped once the script exits, in case the script
+ *  stopped before it opened the pipe. */
+const listFeeder = [
+  "via=$1 first=$2 later=$3 sleep=$4 mkfifo=$5 fifo=$6",
+  "shift 6",
+  'feed() { printf "%s" "$first"; [ -z "$later" ] || { "$sleep" 2; printf "%s" "$later"; }; }',
+  "case $via in",
+  '  stdin) feed | OUTSIDE_PATH_TARGETS=/dev/stdin "$@" ;;',
+  "  fifo)",
+  '    "$mkfifo" "$fifo" || exit 70',
+  '    feed >"$fifo" &',
+  "    writer=$!",
+  '    OUTSIDE_PATH_TARGETS=$fifo "$@"',
+  "    status=$?",
+  '    kill "$writer" 2>/dev/null',
+  '    exit "$status"',
+  "    ;;",
+  '  substitution) OUTSIDE_PATH_TARGETS=<(feed) "$@" ;;',
+  "esac",
+].join("\n");
+
 /** Reserves the calling test file's scratch directory and returns it with the helpers that write
  *  there. Call it at the test file's module scope: `temporaryDirectory` registers the hooks that
  *  make and remove the directory in the scope it is called from, and this module is evaluated
@@ -195,10 +219,12 @@ export function reachFixtures() {
   const scratch = temporaryDirectory("outside-path-reach");
 
   /** One run of the script with `env`, over a HOME of its own holding `curlrc` as `.curlrc` when
-   *  given, PATH the host's unless given, run by bash unless `shell` names another program, and
-   *  `stdin`, when given, on its standard input through a pipe, with `stdinLater` written to the
-   *  pipe 2 s after it. Bun hands a child's stdin over as a memfd or a socket, neither of which
-   *  reads as a pipe does, so a bash pipeline makes the pipe. */
+   *  given, PATH the host's unless given, and run by bash unless `shell` names another program.
+   *  With `stdin`, the target list is `stdin`, then `stdinLater` 2 s after it, and the run sets
+   *  OUTSIDE_PATH_TARGETS to where it is given: `/dev/stdin` on a pipe (the default), a named pipe
+   *  in the scratch directory, or a process substitution. Bun hands a child's stdin over as a memfd
+   *  or a socket, neither of which reads as a pipe does, so a bash wrapper makes each of them; it
+   *  runs sleep and mkfifo by the host's own paths, so a PATH of the script's tools alone serves. */
   async function drive(
     env: Record<string, string>,
     options: {
@@ -207,6 +233,7 @@ export function reachFixtures() {
       shell?: string;
       stdin?: string;
       stdinLater?: string;
+      via?: "stdin" | "fifo" | "substitution";
     } = {}
   ): Promise<Run> {
     const home = join(scratch, `home-${randomUUID()}`);
@@ -221,10 +248,14 @@ export function reachFixtures() {
         : [
             bash,
             "-c",
-            '{ printf "%s" "$1"; [ -z "$2" ] || { sleep 2; printf "%s" "$2"; }; } | "$3" "$4"',
+            listFeeder,
             "drive",
+            options.via ?? "stdin",
             options.stdin,
             options.stdinLater ?? "",
+            hostTool("sleep") ?? "sleep",
+            hostTool("mkfifo") ?? "mkfifo",
+            join(scratch, `fifo-${randomUUID()}`),
             options.shell ?? bash,
             script,
           ];

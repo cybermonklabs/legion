@@ -697,15 +697,15 @@ of them separated by `;` are judged as one target's rounds in order; that mode e
 `PASS`'s 0. The script's own header has every rule. A path that puts a sign-in of its own in front
 of Dispatch, such as an identity-aware proxy, answers a request with no credential with that
 sign-in, not Dispatch's, so the run reads `UNKNOWN` there.
-`cd packages/dispatch && bun test e2e/__tests__/outside-path-reach e2e/__tests__/tmout-pipe.red`
-drives it against real listeners, from four files: `outside-path-reach-input.test.ts` for what it
-decides before any probe (the inputs it refuses, the origin's two answers and its classifier),
+`cd packages/dispatch && bun test e2e/__tests__/outside-path-reach` drives it against real
+listeners, from four files: `outside-path-reach-input.test.ts` for what it decides before any
+probe (the inputs it refuses, the origin's two answers and its classifier),
 `outside-path-reach.test.ts` for the runs that probe, `outside-path-reach-blackhole.test.ts` for
 the two runs that need a network dropping TEST-NET-1, which skip with the reason printed where the
-network refuses that address at once, and `tmout-pipe.red.test.ts`, acceptance's own test of a
-list on a pipe under an inherited `TMOUT`. Each row carries its own timeout. The row of
-`outside-path-reach-input.test.ts` that runs the script under zsh skips where zsh is missing, so a
-local run needs zsh for that row; CI's `dispatch-ui` job installs it.
+network refuses that address at once, and `outside-path-reach-tmout.test.ts` for a list on a pipe,
+a named pipe or a process substitution under an inherited `TMOUT`. Each row carries its own
+timeout. The row of `outside-path-reach-input.test.ts` that runs the script under zsh skips where
+zsh is missing, so a local run needs zsh for that row; CI's `dispatch-ui` job installs it.
 
 ## Acceptance run against the deployed image
 
