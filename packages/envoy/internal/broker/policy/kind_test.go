@@ -394,8 +394,11 @@ func TestAGitHubOwnerThatIsNoGitHubLoginIsRefused(t *testing.T) {
 var legacyMintTargetPattern = regexp.MustCompile(`^[a-z0-9-]{6,30}@[a-z0-9-]+\.iam\.gserviceaccount\.com$`)
 
 // TestTheRollbackGuardIsRefusedByEarlierBrokersAndIgnoredHere: the value agent-secrets writes
-// beside a type fails the earlier brokers' rule, so they refuse a type secret rather than serve its
-// stored key, while this broker serves the secret as the type it is and never reads the tag.
+// beside a type fails the mint-service-account rule of the brokers from legion-envoy-v13.19.0 to
+// the release before v16.0.0, so they refuse a type secret rather than serve its stored key, while
+// this broker serves the secret as the type it is and never reads the tag. The brokers from
+// v16.0.0 to the release before the type tag read neither the tag nor type
+// (policy.TagRollbackGuard).
 func TestTheRollbackGuardIsRefusedByEarlierBrokersAndIgnoredHere(t *testing.T) {
 	if legacyMintTargetPattern.MatchString(policy.RollbackGuardValue) {
 		t.Fatalf("RollbackGuardValue %q matches the earlier brokers' mint-service-account rule, so they would mint for it", policy.RollbackGuardValue)

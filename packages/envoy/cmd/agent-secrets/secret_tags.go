@@ -335,8 +335,11 @@ type tagFlags struct {
 // optionalTags is the type, github-owners, requesters, scopes, admin, max-grant and
 // default-grant tags the flags set: each flag's value when it names one, and nothing for one
 // left unset or set to none. A type brings the rollback guard with it (policy.TagRollbackGuard),
-// so a broker from before types refuses the secret rather than serve its stored key or refresh
-// token.
+// which only the brokers from legion-envoy-v13.19.0 to the release before v16.0.0 read, and
+// refuse: every broker from v16.0.0 to the release before the type tag ignores it and serves a
+// secret that carries type alone as a stored secret. What keeps a type secret's key from such a
+// broker is requireTypeTag, before this CLI writes, and a rollback floor at the release that reads
+// the type tag, which the deployment keeps.
 func optionalTags(f tagFlags) map[string]string {
 	named := func(value string) bool { return value != "" && value != tagNone }
 	tags := map[string]string{}

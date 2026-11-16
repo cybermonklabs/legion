@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -708,13 +709,15 @@ type newSecret interface {
 }
 
 // secretSession is one secret form's connection: the broker and the backend (requireAccount)
-// opened for it, and src, the store those reads and writes go to, which every answer and every
-// refusal of the form names (source.go).
+// opened for it; src, the store those reads and writes go to, which every answer and every
+// refusal of the form names (source.go); and readsTypeTag, whether the broker's settings say it
+// reads a secret's type from the type tag (Settings.SecretTypeTag, requireTypeTag).
 type secretSession struct {
-	ctx     context.Context
-	broker  *client
-	backend secretBackend
-	src     source
+	ctx          context.Context
+	broker       *client
+	backend      secretBackend
+	src          source
+	readsTypeTag bool
 }
 
 // Close releases the session's backend connection.
@@ -745,6 +748,23 @@ func (s *secretSession) tagReadRefusal(name string, err error) error {
 		return fmt.Errorf("read %s's tags for its type: %w", name, err)
 	}
 	return fmt.Errorf("read %s's tags for its type, which needs %s: %w", name, s.backend.tagReadPermission(), err)
+}
+
+// requireTypeTag refuses a write after which the secret name holds the type secretType ("" for
+// none) unless the broker's settings said it reads the type tag (Settings.SecretTypeTag). A
+// broker from before the tag sends no such setting, reads no type tag and never the rollback
+// guard (policy.TagRollbackGuard): it serves a secret that carries type alone as a stored secret,
+// so every grant of it would release the key or login it stores, and its reread names no type
+// this CLI can compare (rereadRetag, rereadValue). Create, set and retag ask it before they read a
+// value or write anything. A write that leaves no type is safe on every broker, and is never
+// refused. The refusal names the release this binary was built as (buildversion), whose broker
+// reads the tag, since the CLI and the broker ship in one legion-envoy release.
+func (s *secretSession) requireTypeTag(name, secretType string) error {
+	if secretType == "" || s.readsTypeTag {
+		return nil
+	}
+	return fmt.Errorf("%s would hold the type %s, and %s does not say it reads the type tag: its GET /v1/settings sends no secret_type_tag, as no broker from before that tag does. Such a broker serves a secret that carries type alone as a stored secret, releasing what it stores to every grant, and its reread names no type to check, so nothing is written. Move the broker to the release this agent-secrets is from (%s) or a later one, or run this with the agent-secrets of the broker's own release",
+		name, secretType, s.src.brokerAt(), buildversion.String())
 }
 
 // ownerTag is the owner tag --owner names, as checkOwnerTier answered it: shared, a person's
@@ -797,7 +817,7 @@ func openSession(ctx context.Context, stderr io.Writer, form string) (*secretSes
 	if err != nil {
 		return nil, err
 	}
-	s := &secretSession{ctx: ctx, broker: broker, backend: backend, src: brokerSource(base).withSettings(settings)}
+	s := &secretSession{ctx: ctx, broker: broker, backend: backend, src: brokerSource(base).withSettings(settings), readsTypeTag: settings.SecretTypeTag}
 	if err := backend.requireAccount(ctx); err != nil {
 		s.Close()
 		return nil, err
@@ -855,6 +875,34 @@ func rereadAfter(s *secretSession, stdout, stderr io.Writer, form, name string, 
 		return 1
 	}
 	return 0
+}
+
+// rereadValue is rereadAfter for a write of name's value, create's or set's, which also exits 1
+// when the broker serves the secret as another type than secretType, the one it holds once the
+// write lands ("" for a stored secret), as rereadRetag does for a retag: a broker that serves a
+// type secret as stored releases the key or login it stores to every grant of it, and one that
+// serves a stored secret as a type mints from a value nobody checked as that type's. The value
+// stands, and the line names the retag that writes the secret's type as this form read it and
+// asks the broker to reread it.
+func rereadValue(s *secretSession, stdout, stderr io.Writer, form, name, secretType string) int {
+	r, ok := reread(s, stdout, stderr, form, name, true, nil)
+	if !ok {
+		return 1
+	}
+	if r.Type == secretType {
+		return 0
+	}
+	retag, releases := secretType, ""
+	if retag == "" {
+		retag = tagNone
+	}
+	if r.Type == "" {
+		releases = ", so every grant of it releases what it stores as it is"
+	}
+	fmt.Fprintf(stderr, "agent-secrets %s: the value of %s in %s stands, but %s serves %s as %s, not %s%s. Run `%s` to write the type again and ask it to reread %s, until that exits 0\n",
+		form, name, s.storeName(), s.src.brokerAt(), name, typeName(r.Type), typeName(secretType), releases,
+		pipeCommand(s.backend.signInPrefix(), "secret", "retag", name, "--type", retag), name)
+	return 1
 }
 
 // reread is rereadAfter's reread: it asks the broker, prints its answer, and answers it, with ok
@@ -1121,15 +1169,6 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), stderr, form)
-	if err != nil {
-		return secretFail(stderr, form, err)
-	}
-	defer s.Close()
-	ownerValue, err := s.ownerTag(*owner)
-	if err != nil {
-		return secretFailIn(stderr, form, s, err)
-	}
 	tags := optionalTags(tagFlags{
 		Type:         *secretType,
 		GitHubOwners: *githubOwners,
@@ -1139,6 +1178,18 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 		MaxGrant:     *maxGrant,
 		DefaultGrant: *defaultGrant,
 	})
+	s, err := openSession(context.Background(), stderr, form)
+	if err != nil {
+		return secretFail(stderr, form, err)
+	}
+	defer s.Close()
+	if err := s.requireTypeTag(name, policy.TypeFromTags(tags)); err != nil {
+		return secretFailIn(stderr, form, s, err)
+	}
+	ownerValue, err := s.ownerTag(*owner)
+	if err != nil {
+		return secretFailIn(stderr, form, s, err)
+	}
 	tags[policy.TagOwner], tags[policy.TagTier] = ownerValue, *tier
 	// The cross-tag rules weigh the owner tag, which me resolves to only once the sign-in is
 	// read, so they are checked here rather than beside the flags — still before the value is
@@ -1171,7 +1222,7 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	}
 	// Install cleanup before the first store call: a signal can arrive after the store has
 	// created the empty secret but before its answer reaches the form.
-	pending := &pendingCreate{s: s, form: form, name: name, owner: ownerValue, tier: *tier, stdout: stdout, stderr: stderr, created: s.backend.prepareCreate(slug, tags)}
+	pending := &pendingCreate{s: s, form: form, name: name, secretType: policy.TypeFromTags(tags), owner: ownerValue, tier: *tier, stdout: stdout, stderr: stderr, created: s.backend.prepareCreate(slug, tags)}
 	return runCreate(pending, func(deadline time.Time) (string, error) {
 		value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), command...), deadline, stderr)
 		if err == nil && policy.ValidType(*secretType) {
@@ -1203,9 +1254,10 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 	defer s.Close()
 	// The value is checked under the type the secret carries, as the broker's minter for that
 	// type will read it; a type tag naming no type the broker mints is refused before the value
-	// is read, since the broker serves no value under it. Whoever stores a value may therefore
-	// read that secret's tags, and a store that refuses the read says which permission it needs
-	// (tagReadRefusal).
+	// is read, since the broker serves no value under it, and so is a type secret's value where
+	// the broker does not say it reads the type tag (requireTypeTag). Whoever stores a value may
+	// therefore read that secret's tags, and a store that refuses the read says which permission
+	// it needs (tagReadRefusal).
 	held, err := s.backend.currentTags(s.ctx, slug)
 	if err != nil {
 		return secretFailIn(stderr, form, s, s.tagReadRefusal(name, err))
@@ -1213,6 +1265,9 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 	secretType := policy.TypeFromTags(held.tags)
 	if secretType != "" && !policy.ValidType(secretType) {
 		return secretFailIn(stderr, form, s, usageErr{fmt.Errorf("%s's type tag %q names no type the broker mints, and it refuses the secret as %s: retag it --type %s or %s before setting its value", name, secretType, policy.ReasonTypeUnknown, strings.Join(policy.Types, ", "), tagNone)})
+	}
+	if err := s.requireTypeTag(name, secretType); err != nil {
+		return secretFailIn(stderr, form, s, err)
 	}
 	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), "secret", "set", name), time.Time{}, stderr)
 	if err == nil && secretType != "" {
@@ -1226,7 +1281,7 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "set a new value of %s in %s\n", name, s.storeName())
 	noteEdgeSpaces(stderr, form, name, value)
-	return rereadAfter(s, stdout, stderr, form, name, true, nil)
+	return rereadValue(s, stdout, stderr, form, name, secretType)
 }
 
 // ---------------------------------------------------------------------------

@@ -172,10 +172,19 @@ func (b *secretBroker) failRereads(status int) {
 }
 
 // startSecretBroker serves a secretBroker on AGENT_SECRETS_URL for the rest of t, answering
-// GET /v1/settings with policytest's namespace in testAccount.
+// GET /v1/settings with policytest's namespace in testAccount, as a broker of this release that
+// reads the type tag.
 func startSecretBroker(t *testing.T, answer func(name string) Reread) *secretBroker {
 	t.Helper()
-	return startSecretBrokerWith(t, Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1"}, answer)
+	return startSecretBrokerWith(t, Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1", SecretTypeTag: true}, answer)
+}
+
+// readNoTypeTag makes the broker answer GET /v1/settings from now on as a broker from before the
+// type tag does: with no secret_type_tag, which such a broker never sends.
+func (b *secretBroker) readNoTypeTag() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.settings.SecretTypeTag = false
 }
 
 // startSecretBrokerWith is startSecretBroker with settings of the caller's choosing, so a test for
@@ -186,7 +195,10 @@ func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name str
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/settings":
-			writeJSON(w, b.settings)
+			b.mu.Lock()
+			settings := b.settings
+			b.mu.Unlock()
+			writeJSON(w, settings)
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/secrets/") && strings.HasSuffix(r.URL.Path, "/reread"):
 			name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/secrets/"), "/reread")
 			b.mu.Lock()

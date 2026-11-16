@@ -56,6 +56,7 @@ func gcpTestSettings() Settings {
 	return Settings{
 		Store: secrets.StoreGCP, SecretsPrefix: testGCPPrefix,
 		KMSKeyName: testKMSKeyName, GCPProject: testGCPProject,
+		SecretTypeTag: true,
 	}
 }
 

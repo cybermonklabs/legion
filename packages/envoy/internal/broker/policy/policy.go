@@ -109,12 +109,16 @@ const (
 	// rather than read as an account (ParseGitHubOwners).
 	TagRemoved = "none"
 	// TagRollbackGuard and RollbackGuardValue are the tag `agent-secrets secret` writes beside every
-	// type, and the value it writes. This broker never reads the tag. Brokers from
-	// legion-envoy-v13.19.0 to the release before types read it as the service account a secret
-	// mints for, and refuse a value that is not a service account's email (mint-target-malformed),
-	// so a rollback to one of them refuses a type secret rather than serving its stored App key or
-	// refresh token. Brokers older than legion-envoy-v13.19.0 read no such tag and serve it; never
-	// run one against a store that holds type secrets.
+	// type, and the value it writes. This broker never reads the tag, and neither does any broker
+	// from legion-envoy-v16.0.0 to the release before this one, which read the old kind tag alone
+	// and serve a secret that carries type alone as a stored secret, releasing its App key or
+	// refresh token to every grant. Only brokers from legion-envoy-v13.19.0 to the release before
+	// v16.0.0 read it, as the service account a secret mints for, and refuse it
+	// (mint-target-malformed); brokers older than legion-envoy-v13.19.0 read no such tag. So the
+	// guard does not stop a rollback past this release from serving a type secret's key: the
+	// protection is a rollback floor at this release, which the deployment keeps, and
+	// `agent-secrets`, which writes no typed secret through a broker that does not say it reads the
+	// type tag (the settings' secret_type_tag).
 	TagRollbackGuard   = "mint-service-account"
 	RollbackGuardValue = "type-secret"
 	// OwnerShared is the owner value of a secret nobody owns alone.

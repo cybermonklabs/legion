@@ -53,8 +53,8 @@ func tagPairs(tags map[string]string) string {
 // cmdSecretRetag changes a secret's owner, tier, type, GitHub owners, requesters, scopes, admin
 // mark, max grant or default grant, in one cloud write. A retag that names none
 // (--type none, --github-owners none, --requesters none, --scopes none, --admin none,
-// --max-grant none, --default-grant none) removes those tags and does nothing
-// else; --type none also removes the rollback guard written with the type. Any other retag sets
+// --max-grant none, --default-grant none) removes those tags and does nothing else; --type none
+// also removes the old kind tag and the rollback guard written with the type. Any other retag sets
 // tags. A retag that does both is refused before anything is read or written: AWS removes tags
 // only with UntagResource, so it would be two calls, and a refused second call would leave it
 // half applied.
@@ -72,10 +72,12 @@ func tagPairs(tags map[string]string) string {
 // whose own write landed beside that writer's and put nothing back (errTagsRaced), it also asks
 // the broker to reread.
 //
-// A retag that changes the type tag then reads the
-// secret's value and decodes it as the broker will once the write lands (checkRetagValue): a value
-// that type's minter refuses is refused before anything is written, and a read the store refuses
-// as access denied leaves the retag to go ahead, saying on stderr that the value was not checked.
+// A retag that leaves the secret a type is refused, before anything is written, by a broker whose
+// settings do not say it reads the type tag (requireTypeTag). A retag that changes the type tag
+// then reads the secret's value and decodes it as the broker will once the write lands
+// (checkRetagValue): a value that type's minter refuses is refused before anything is written, and
+// a read the store refuses as access denied leaves the retag to go ahead, saying on stderr that the
+// value was not checked.
 //
 // A retag that sets tags always sends owner and tier, re-sending the one not named as the secret
 // holds it: on AWS, the deployment repository's IAM policy that lets a person tag their own secret
@@ -203,6 +205,9 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	owner, tier := after[policy.TagOwner], after[policy.TagTier]
 	if len(remove) == 0 && (owner == "" || tier == "") {
 		return secretFailIn(stderr, form, s, usageErr{fmt.Errorf("%s has no owner tag or no tier tag, and a retag sends both: name the missing one with --owner or --tier", name)})
+	}
+	if err := s.requireTypeTag(name, policy.TypeFromTags(after)); err != nil {
+		return secretFailIn(stderr, form, s, err)
 	}
 	unchecked, err := checkRetagValue(s, name, slug, held, after)
 	if err != nil {

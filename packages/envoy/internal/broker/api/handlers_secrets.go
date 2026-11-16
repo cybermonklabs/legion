@@ -43,13 +43,18 @@ type settingsResponse struct {
 	// exchange audience is named beside it: a pod's trade mints no launcher credential, so no
 	// machine could register a session under it.
 	GoogleExchangeAudience string `json:"google_exchange_audience,omitempty"`
+	// Always true: this broker reads a secret's type from the type tag (policy.TagType), and the
+	// old kind tag only where type is absent. A broker from before the type tag sends no such
+	// field and reads no type tag, so it serves a secret that carries type alone as a stored
+	// secret, and `agent-secrets` writes no typed secret through a broker that does not say this.
+	SecretTypeTag bool `json:"secret_type_tag"`
 }
 
 // readSettings is GET /v1/settings: public, since it answers only the broker's own configuration,
 // which names no secret.
 func (s *server) readSettings(w http.ResponseWriter, r *http.Request) {
 	resp := settingsResponse{Store: s.deps.SecretsStore, SecretsPrefix: s.deps.SecretsPrefix,
-		GoogleExchangeAudience: s.deps.GoogleExchangeAudience}
+		GoogleExchangeAudience: s.deps.GoogleExchangeAudience, SecretTypeTag: true}
 	switch s.deps.SecretsStore {
 	case secrets.StoreGCP:
 		resp.KMSKeyName = s.deps.SecretsKMSKey

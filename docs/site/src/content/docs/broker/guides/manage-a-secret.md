@@ -171,9 +171,13 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   secret's name in `BROKER_SERVICE_ACCOUNT_SECRETS`, and a secret the deployment has bound to
   nothing releases no token at all, however good its value. Ask whoever runs your deployment to
   create it and bind it.
-  Use `none`, or omit the flag, for a stored secret. A type also
-  writes `mint-service-account: type-secret`, which makes an earlier broker refuse the secret
-  rather than serve its stored key.
+  Use `none`, or omit the flag, for a stored secret. A type needs a broker that reads the `type`
+  tag: against an earlier one, whose settings name no `secret_type_tag`, `create --type`, `set`
+  on a type secret and a retag that leaves a type exit 1 before they write anything, naming the
+  release to move the broker to, since such a broker would serve the secret's stored key as its
+  value. A type also writes `mint-service-account: type-secret`, which only the brokers from
+  legion-envoy-v13.19.0 to the release before v16.0.0 read; it stops no later broker from before
+  the `type` tag.
 - **`--github-owners`** is required with `--type github-app`, and refused with any other type. It
   lists the GitHub accounts the broker mints installation tokens for, separated by spaces, so the
   shell quotes it: `--github-owners "acme-org ada"`. A comma is refused before anything is written.
@@ -550,7 +554,7 @@ sets tags reads the owner and tier tags the secret holds and sends both in one r
 this lets an IAM condition inspect both tags. Every other tag or annotation stays as it is. For a
 secret missing an owner or tier tag, name that tag too.
 
-`--type none` removes the type tag and the `mint-service-account` tag written with it,
+`--type none` removes the type tag, the old `kind` tag and the `mint-service-account` tag written with it,
 `--github-owners none` removes the GitHub owners, `--requesters none` removes the list of who may
 ask, `--scopes none` removes the scopes, so the token carries `cloud-platform` alone again,
 `--admin none` removes the administrator's mark, `--max-grant none` removes the max grant, and
@@ -595,8 +599,12 @@ stale (Secret Manager's metadata can lag a write by hours), and while the broker
 secret as stored, a grant of it releases its stored value raw. So a retag whose reread answers
 another type than the one it wrote exits 1: the broker still sees the old tags. Run the retag
 again, and store no value until the broker serves the secret as that type
-(`broker: serving NAME (type <type>)`) or refuses it as `value-malformed`. A release that finds
-the secret retagged while it reads the store releases nothing and ends that grant.
+(`broker: serving NAME (type <type>)`) or refuses it as `value-malformed`. A `create` or `set`
+whose reread answers another type than the secret holds exits 1 the same way, with the value
+already stored: it names the `secret retag NAME --type <type>` that asks the broker to read the
+tags again, and until that retag exits 0 a broker serving the secret as stored releases its value
+raw. A release that finds the secret retagged while it reads the store releases nothing and ends
+that grant.
 
 Exit 0 is the answer of the one broker process that served the reread, not of every process. That
 process tells the others over Postgres and they reread within seconds, so exit 0 is the usual case

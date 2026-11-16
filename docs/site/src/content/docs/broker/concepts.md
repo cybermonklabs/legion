@@ -356,8 +356,11 @@ marked with tags or annotations:
   For one release, when `type` is absent, the broker reads the old `kind` tag instead and logs
   one warning per secret per broker process. An explicitly empty `type` takes precedence too.
   Writers use `type` on both stores. Deploy this reader before changing production tags; then
-  copy each old classifier to `type` and remove the old tag. `secret retag NAME --type none`
-  removes both classifier names and the rollback guard.
+  copy each old classifier to `type` and remove the old tag. Once a secret carries `type`, this
+  release is a rollback floor: an earlier broker reads no `type` tag and serves the secret as
+  stored ([Rolling back](/legion/broker/operate/#what-it-depends-on)). `agent-secrets` writes a
+  type only through a broker whose settings answer `secret_type_tag: true`.
+  `secret retag NAME --type none` removes both classifier names and the rollback guard.
 - **`github-owners`** is required on a `github-app` secret, and read on no other type. It lists
   the GitHub accounts the broker mints installation tokens for, separated by spaces
   (`acme-org ada`) and compared without regard to case, a form both stores hold. A comma, or an
@@ -412,8 +415,11 @@ marked with tags or annotations:
   value is refused `default-grant-malformed`. Set it with `agent-secrets secret create|retag
   --default-grant session`.
 - **`mint-service-account`** is written by `agent-secrets secret` beside every type, with the value
-  `type-secret`, and this broker never reads it. It makes the brokers before types, from
-  legion-envoy-v13.19.0 on, refuse a type secret rather than serve its stored key.
+  `type-secret`, and this broker never reads it. Only the brokers from legion-envoy-v13.19.0 to
+  the release before v16.0.0 read it, and refuse a type secret rather than serve its stored key.
+  Every broker from v16.0.0 to the release before the `type` tag ignores it and serves a secret
+  that carries `type` alone as a stored secret, so it makes no rollback past the first release
+  that reads `type` safe: that release is the rollback floor.
 
 In Secret Manager these fields are annotations rather than labels because a label's value cannot
 hold an email (`@` and `.` are outside its alphabet), and the broker compares the owner with a
