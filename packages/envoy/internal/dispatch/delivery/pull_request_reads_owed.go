@@ -89,9 +89,9 @@ const RefusedReadsPerPass = 50
 // (ReconcileInterval), so a pull request GitHub never had is read by the reconcile at most twice.
 const owedReadRefusalFinalAfter = ReconcileInterval
 
-// owedReadWriteTimeout bounds the write of an owed read the intake makes at the delivery cap,
-// which runs on a context of its own: the message's own deadline may be the very failure that
-// spent the cap.
+// owedReadWriteTimeout bounds the write of an owed read the intake makes at each delivery whose
+// head write failed (Intake.oweEnvelopesRead), which runs on a context of its own: the message's
+// own deadline may be the very failure of that delivery.
 const owedReadWriteTimeout = 5 * time.Second
 
 // owePullRequestRead records that the pull request number of the repository given changed, that

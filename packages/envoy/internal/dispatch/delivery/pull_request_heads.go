@@ -35,9 +35,8 @@ import (
 // most once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
 // which reads the pull requests owed a read (pull_request_reads_owed.go), every failure before any
 // refusal, creating each one's row where none exists, and then takes every open row read longer
-// than five minutes ago and
-// every merged row the rule this build judges by has not judged yet — one offer per rule version
-// (AttributionRuleVersion, ListStalePullRequestHeads).
+// than five minutes ago and every merged row the rule this build judges by has not judged yet —
+// one offer per rule version (AttributionRuleVersion, ListStalePullRequestHeads).
 //
 // A row a read of GitHub wrote is marked (github_read_at), and only a marked row's time stops a
 // read of GitHub or wins against GitHub's answer (headReadCovers, upsertHeadRow): a release
@@ -690,13 +689,13 @@ const (
 // The bound is one offer per rule version, and the read ends the offer whatever it concluded.
 // Only a reader of GitHub stamps attribution_rule and checked_at — the reconcile's own refresh
 // (RefreshPullRequestHead), MarkPullRequestHeadChecked for a row it could not read at all, the
-// read-through, and an envelope only when its payload was a complete read (UpsertPullRequestHead
-// keeps both where the write carries no read time). So a merged row is taken once per rule: the
-// refresh stamps it at AttributionRuleVersion whether or not GitHub's answer attributed it, and
-// it comes back only when a later build raises that constant, which is how a change to the
-// attribution reaches the merged rows already stored. The `checked_at is null` half of the
-// uncredited term keeps that bound: without it every merged row credited to nobody would come
-// back every pass for ever.
+// read-through, and the intake only when its read of an envelope's pull request was complete
+// (UpsertPullRequestHead keeps both where the write carries no read time). So a merged row is
+// taken once per rule: the refresh stamps it at AttributionRuleVersion whether or not GitHub's
+// answer attributed it, and it comes back only when a later build raises that constant, which is
+// how a change to the attribution reaches the merged rows already stored. The `checked_at is
+// null` half of the uncredited term keeps that bound: without it every merged row credited to
+// nobody would come back every pass for ever.
 //
 // The arm is written as `(issue_key is null and checked_at is null) or attribution_rule < $3`
 // rather than the conjunction it is equal to — `(issue_key is null or attribution_rule < $3)
@@ -788,8 +787,7 @@ func MarkPullRequestHeadChecked(ctx context.Context, pool *store.Pool, repoFull 
 // headInOwnRepository reports whether a pull request's head branch lives in the repository the
 // pull request is in, which is what GitHub's `head.repo.full_name` names. A head outside it is a
 // fork's, and an answer that names no head repository at all — GitHub's null for a fork whose
-// repository was deleted, or a `pull_request` envelope published before Dispatch carried the
-// field — does not say that it is this repository, so neither one is.
+// repository was deleted — does not say that it is this repository, so neither one is.
 func headInOwnRepository(repoFull, headRepo string) bool {
 	return headRepo != "" && strings.EqualFold(headRepo, repoFull)
 }
@@ -913,7 +911,7 @@ func attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Clie
 }
 
 // headRow is the row one pull request GitHub answered makes, with the attribution the read
-// reached: the one builder both GitHub readers below write through, so the two cannot drift.
+// reached: the one builder every GitHub reader below writes through, so they cannot drift.
 // The rule that judged it is the write's own (UpsertPullRequestHead binds
 // AttributionRuleVersion). The list form of a pull request carries merged_at but not merged, so
 // a merge is read from whichever of the two GitHub sent. The row is marked a read of GitHub
@@ -953,7 +951,7 @@ func mergeCommitOf(payload pullRequestPayload) string {
 // attributePayload attributes one pull request GitHub itself answered: the four facts its
 // payload carries, the head repository it names (headRepositoryOf) and, when no candidate those
 // four name is held to the repository the pull request is in, its commit messages, read with the
-// caller's installation token. The one place the two GitHub readers below build an attribution
+// caller's installation token. The one place the GitHub readers below build an attribution
 // from a payload, so a sixth source, or a sixth fact a payload carries, is added in one.
 func attributePayload(ctx context.Context, pool *store.Pool, client *githubapp.Client, token, repoFull string, payload pullRequestPayload) (headAttributionResult, error) {
 	return attributeHead(ctx, pool, client, func() (string, error) { return token, nil },

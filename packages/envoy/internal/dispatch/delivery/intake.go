@@ -298,9 +298,9 @@ const githubIntakeSubject = "notifications.github.>"
 // package's own bounded page retries) and its Postgres writes. A handler that runs past it is
 // cancelled and logged, and acked for every failure but one: the five-minute reconcile is this
 // package's catch-up mechanism, so one slow envelope must not hold the consumer. The one
-// failure it does not cover is a deadline that falls on a pull request's head write, or on
-// either of the reads before it, which leaves a head row no pass can offer (ErrHeadNotStored);
-// that envelope is handed back instead, for the bounded number of redeliveries deliver allows.
+// failure it does not cover is a deadline that falls on a pull request's head write, or on a
+// read before it, which leaves the head row unwritten (ErrHeadNotStored); that envelope is
+// handed back instead, for the bounded number of redeliveries deliver allows.
 // A var so a test can shrink it.
 var intakeMessageTimeout = time.Minute
 
@@ -525,8 +525,8 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 // measured in minutes rather than in round trips.
 const headWriteRedeliverAfter = 10 * time.Second
 
-// headWriteMaxDeliveries is how many deliveries one envelope whose head row could not be
-// stored gets before deliver acknowledges it; each of them records the read its pull request is owed.
+// headWriteMaxDeliveries is how many deliveries one envelope whose head row could not be stored
+// gets before deliver acknowledges it; each of them records the read its pull request is owed.
 // Without it there is no bound at all: the durable sets no MaxDeliver, and a delayed Nak holds
 // the message in the consumer's ack-pending set, so a write that fails the same way every time
 // is redelivered every headWriteRedeliverAfter for ever and holds an in-flight slot throughout.
@@ -566,7 +566,7 @@ var headWriteMaxDeliveries uint64 = 30
 
 // oweEnvelopesRead records that the pull request a `pull_request` envelope's raw payload names is
 // owed a read of GitHub (owePullRequestRead), on a context bounded by owedReadWriteTimeout under
-// handling: the message's own deadline may be the failure that spent the cap, and a stop still
+// handling: the message's own deadline may be the failure of this delivery, and a stop still
 // ends the write. It answers the repository and the number it read from the payload, which it
 // decodes as route decoded it (decodePullRequestNamed), so deliver's line names them whether or
 // not the record was written.

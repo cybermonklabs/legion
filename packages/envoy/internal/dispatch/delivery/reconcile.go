@@ -517,22 +517,21 @@ func (r *Reconcile) reconcilePartialPullRequests(ctx context.Context) error {
 }
 
 // reconcilePullRequestHeads first reads the pull requests owed a read (readOwedPullRequests), and
-// then re-reads the pull request heads ListStalePullRequestHeads
-// hands it, at most PullRequestHeadBatch of them a pass, the longest unread first: the open rows
-// Dispatch last checked over PullRequestHeadStaleAfter ago, the merged rows credited to nobody
-// that no read has reached, and every merged row a rule older than this build's judged, each of
-// those taken once per rule version (AttributionRuleVersion). A row this pass moves from one
-// issue to another records that move on both issues, through the broker handed to the refresh
-// (UpsertPullRequestHead). GitHub's `pull_request` events carry every head move, so this is
-// the backstop for an event that never arrived — a delivery Dispatch was down for, a
-// repository whose webhook was installed late — and the one way a merge that happened while
-// Dispatch was not listening reaches the head row at all. The
-// merged arm is the backstop for a row a write left unattributed or unstamped, and for a rule
-// that has changed since: a write whose commit messages could not be read is incomplete, and
-// GitHub's own answer, read again here, can attribute that row, and a merged row
-// is the one row no other writer ever revisits before a result at its head stands at no basis
-// for good. A rate limit stops the batch and fails the pass, as every other GitHub step's does;
-// any other per-row failure is logged and leaves the row for the next pass.
+// then re-reads the pull request heads ListStalePullRequestHeads hands it, at most
+// PullRequestHeadBatch of them a pass, the longest unread first: the open rows Dispatch last
+// checked over PullRequestHeadStaleAfter ago, the merged rows credited to nobody that no read has
+// reached, and every merged row a rule older than this build's judged, each of those taken once
+// per rule version (AttributionRuleVersion). A row this pass moves from one issue to another
+// records that move on both issues, through the broker handed to the refresh
+// (UpsertPullRequestHead). GitHub's `pull_request` events carry every head move, so this is the
+// backstop for an event that never arrived — a delivery Dispatch was down for, a repository whose
+// webhook was installed late — and the one way a merge that happened while Dispatch was not
+// listening reaches the head row at all. The merged arm is the backstop for a row a write left
+// unattributed or unstamped, and for a rule that has changed since: a write whose commit messages
+// could not be read is incomplete, and GitHub's own answer, read again here, can attribute that
+// row, and a merged row is the one row no other writer ever revisits before a result at its head
+// stands at no basis for good. A rate limit stops the batch and fails the pass, as every other
+// GitHub step's does; any other per-row failure is logged and leaves the row for the next pass.
 func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time) error {
 	if err := r.readOwedPullRequests(ctx, now); err != nil {
 		return err
