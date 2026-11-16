@@ -489,8 +489,7 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	}
 	if err != nil {
 		slog.Warn("dispatch: sign-in refused", append(r.ctx.SignInRule.RefusalLogFields(session.Claims), "reason", err)...)
-		_, outside := r.ctx.SignInRule.(identity.OutsideRule)
-		writeSignInRefusedPage(w, person.Email, err, outside)
+		writeSignInRefusedPage(w, person.Email, err, r.ctx.SignInRule.OffersAccountChooser())
 		return
 	}
 	email := person.Email
@@ -1124,10 +1123,11 @@ const selectAccountPrompt = "select_account"
 // the issuer where JSON would be unreadable, for a person the issuer vouched for but Dispatch does
 // not admit, with the reason: one outside the group or the domain, an account outside the domain
 // that no project's access list names, or one whose email Google has not verified, each named by
-// email; a Google sign-in that carries no email; or a sign-in that names nobody by email. Under
-// outside sign-in (chooser) its link to sign in with a different account asks Google for its
-// account chooser, since a browser holding one Google session would otherwise be sent straight
-// back with the account just refused; under every other rule the link is as it always was.
+// email; a Google sign-in that carries no email; or a sign-in that names nobody by email. Where the
+// rule offers it (chooser: SignInRule.OffersAccountChooser, outside sign-in alone), its link to
+// sign in with a different account asks Google for its account chooser, since a browser holding
+// one Google session would otherwise be sent straight back with the account just refused; under
+// every other rule the link is as it always was.
 func writeSignInRefusedPage(w http.ResponseWriter, email string, reason error, chooser bool) {
 	message := "This sign-in does not name a person by email. Sign in again, or with a different account."
 	switch {
