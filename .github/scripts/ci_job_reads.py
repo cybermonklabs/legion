@@ -492,6 +492,17 @@ RULES = {
         ("docs/kubernetes.md", "internal/textcheck/reclaim_doc_test.go:44,167 reads it under ../../../.."),
         (f"{DAEMON}/internal/runtime/sandbox/reclaim_doc_extract.txt",
          "internal/textcheck/reclaim_doc_test.go:123 reads the committed copy it holds the guide's paragraph to (reclaimExtractLists)")),
+    # cmd/legion/troubleshooting_refusals_test.go reads no text outside its own package and has
+    # no row: troubleshooting_refusals_extract.txt, the copy of the troubleshooting page's refusal
+    # table it reads its rows from, stands in its own directory, and this row is what holds that
+    # copy to the page, in the text-check job (dispatch://INFRA-1413).
+    f"{DAEMON}/internal/textcheck/troubleshooting_refusals_doc_test.go": reads(
+        ("docs/site/src/content/docs/legion/troubleshooting.md",
+         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.. "
+         "for troubleshooting_refusals_doc_test.go:43 (shippedText)"),
+        (f"{DAEMON}/cmd/legion/troubleshooting_refusals_extract.txt",
+         "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../../cmd/legion/troubleshooting_refusals_extract.txt "
+         "for troubleshooting_refusals_doc_test.go:36, the committed copy it holds the page's refusal table to (quotedBody)")),
     # internal/daemon/upgrade_phase_entry_way_back_test.go reads no text outside its own package
     # any more and has no row: upgrade_way_back_extract.txt stands in its own directory, and this
     # row is what holds that copy to the guide, in the text-check job (dispatch://INFRA-1413).

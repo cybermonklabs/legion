@@ -2490,6 +2490,53 @@ check "fails" "$(is "$status" 1)"
 check "names the list and says nothing computes its block" \
   "$(contains "$out" '::error file=.github/workflows/ci.yaml::site has a generated block, and it is no filter of a gate this check computes a read set for')"
 
+# A wildcard //go:embed pattern reads what the go command embeds for it, matched one element at
+# a time as path.Match reads each: a `*` stays inside its directory, a file it matches is that
+# file alone, and a directory it matches is every file of its tree go:embed takes. Read as the
+# whole directory, it would count the test files beside the embedded ones as read, and the
+# directories under it as unread.
+# wildcard_embed <root>: mod/lib imports mod/lib/assets, a package the app job compiles and does
+# not test, whose assets.go embeds `*.up.sql tmpl*`: a.up.sql beside it and the tree of tmpl/.
+wildcard_embed() {
+  local root=$1
+  mkdir -p "$root/mod/lib/assets/tmpl/deep"
+  printf 'package assets\n\nimport "embed"\n\n//go:embed *.up.sql tmpl*\nvar Files embed.FS\n' \
+    > "$root/mod/lib/assets/assets.go"
+  echo 'select 1;' > "$root/mod/lib/assets/a.up.sql"
+  echo '<p>page</p>' > "$root/mod/lib/assets/tmpl/page.html"
+  echo '<p>more</p>' > "$root/mod/lib/assets/tmpl/deep/more.html"
+  printf 'package lib\n\nimport _ "example.com/m/lib/assets"\n\nfunc Hello() {}\n' > "$root/mod/lib/lib.go"
+}
+
+echo "case: a test file beside a wildcard embed is no file the embed reads"
+root=$(fixture embed-wildcard-test-file)
+wildcard_embed "$root"
+printf 'package assets\n\nimport "testing"\n\nfunc TestFiles(t *testing.T) {}\n' > "$root/mod/lib/assets/assets_test.go"
+replace "$root/.github/workflows/ci.yaml" "              - 'mod/lib/*'" "              - 'mod/lib/**'"
+run_check "$root" write
+check "exits 0" "$(is "$status" 0)"
+check "writes the test file out of the filter, so a change to it alone selects no job" \
+  "$(contains "$(<"$root/.github/workflows/ci.yaml")" "^              - '!mod/lib/assets/\*\*/\*_test.go'$")"
+run_check "$root"
+check "and the ordinary mode then passes" "$(is "$status" 0)"
+
+echo "case: a wildcard embed matching a directory reads every file of its tree"
+root=$(fixture embed-wildcard-directory)
+wildcard_embed "$root"
+printf 'draft\n' > "$root/mod/lib/assets/tmpl/_draft.html"
+replace "$root/.github/workflows/ci.yaml" "              - 'mod/lib/*'" $'              - \'mod/lib/*\'\n              - \'mod/lib/assets/*\''
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names a file of the directory the pattern matched" \
+  "$(contains "$out" '::error file=mod/lib/assets/tmpl/page.html::app reads mod/lib/assets/tmpl/page.html, which its filter app does not match')"
+check "and a file of a directory under it" \
+  "$(contains "$out" '::error file=mod/lib/assets/tmpl/deep/more.html::app reads mod/lib/assets/tmpl/deep/more.html, which its filter app does not match')"
+check "and not a file whose name go:embed leaves out of a directory's tree" \
+  "$(is "$(contains "$out" '_draft.html')" false)"
+replace "$root/.github/workflows/ci.yaml" "              - 'mod/lib/assets/*'" "              - 'mod/lib/assets/**'"
+run_check "$root"
+check "passes once the filter selects the tree, so a change there selects the job" "$(is "$status" 0)"
+
 # A tag step can lean on its own job: envoy-go's NATS matrix step runs ./internal/testnats under
 # natslive with -run while envoy-go's own unit step runs that package's untagged tests, so
 # TAG_RUNS pairs the envoy_go filter with itself, and envoy_infra_go too. What rule 15 holds the

@@ -403,17 +403,134 @@ def rel(path: str) -> str | None:
 
 
 def embed_reads(dir_rel: str, patterns, why: str) -> list:
+    """The files a package's //go:embed patterns read. A pattern without a wildcard reads the
+    file it names, or the whole tree of the directory it names. A wildcard pattern - one holding
+    `*`, `?`, `[` or `\\`, path.Match's metacharacters - reads what the go command embeds for it
+    (cmd/go's resolveEmbed): each path it matches in the package's directory (embed_matches), a
+    file alone and a directory as the files of its tree go:embed takes (embedded_tree). Read as
+    `<dir>/*` it would count every file beside the embedded ones as read, the package's test files
+    among them: a change to one of those alone would then select every job whose closure holds the
+    package, and rule 17 could write no `!` pattern keeping a filter off it."""
     reads = []
     for pattern in patterns or []:
+        everything = pattern.startswith("all:")
         pattern = pattern.removeprefix("all:")
-        if any(c in pattern for c in "*?["):
-            parent = os.path.dirname(pattern)
-            reads.append(Read(f"{dir_rel}/{parent}/*" if parent else f"{dir_rel}/*", f"{why} (embed {pattern})"))
+        if any(c in pattern for c in "*?[\\"):
+            for match in embed_matches(REPO / dir_rel, pattern):
+                files = embedded_tree(match, everything) if match.is_dir() else [match]
+                reads += [Read(f.relative_to(REPO).as_posix(), f"{why} (embed {pattern})") for f in files]
         elif (REPO / dir_rel / pattern).is_dir():
             reads.append(Read(f"{dir_rel}/{pattern}/**", f"{why} (embed {pattern})"))
         else:
             reads.append(Read(f"{dir_rel}/{pattern}", f"{why} (embed {pattern})"))
     return reads
+
+
+def embed_matches(package: Path, pattern: str) -> list:
+    """The paths a wildcard //go:embed pattern matches under a package's directory, as the go
+    command finds them with filepath.Glob: one element of the pattern at a time, each matched
+    against the sorted entries of every directory the elements before it matched - by path.Match
+    (go_match_regex) where the element holds a metacharacter, and as that one name where it holds
+    none. A `*` therefore never reaches into a subdirectory, where fnmatch's would. A pattern
+    path.Match refuses matches nothing here; the go command refuses it too, so go list has already
+    reported it and the check fails on that."""
+    matched = [package]
+    for element in pattern.split("/"):
+        literal = not any(c in element for c in "*?[\\")
+        regex = None if literal else go_match_regex(element)
+        if not literal and regex is None:
+            return []
+        found = []
+        for parent in matched:
+            if not parent.is_dir():
+                continue
+            if literal:
+                found += [parent / element] if os.path.lexists(parent / element) else []
+            else:
+                found += [parent / name for name in sorted(os.listdir(parent)) if regex.fullmatch(name)]
+        matched = found
+    return matched
+
+
+def go_match_regex(element: str) -> re.Pattern | None:
+    """One element of a //go:embed pattern as path.Match reads it, a regex over one name: `*` is
+    any run of characters and `?` any one, `[...]` one character of the class and `[^...]` one
+    outside it, each member a character or a `lo-hi` range (one whose ends are reversed holds
+    nothing), and `\\` makes the character after it literal, in a class too. fnmatch reads these
+    otherwise: its `*` crosses a `/`, `[!...]` is its negation and it has no escape. None for an
+    element path.Match refuses."""
+    out, index = "", 0
+    while index < len(element):
+        char, index = element[index], index + 1
+        if char == "*":
+            out += "[^/]*"
+        elif char == "?":
+            out += "[^/]"
+        elif char == "\\":
+            if index == len(element):
+                return None
+            out += re.escape(element[index])
+            index += 1
+        elif char == "[":
+            negated = element.startswith("^", index)
+            if negated:
+                index += 1
+            members, count = "", 0
+            while not (element.startswith("]", index) and count):
+                low, index = class_char(element, index)
+                high = low
+                if low is not None and element.startswith("-", index):
+                    high, index = class_char(element, index + 1)
+                if low is None or high is None:
+                    return None
+                if low <= high:
+                    members += f"{re.escape(low)}-{re.escape(high)}"
+                count += 1
+            index += 1
+            if members:
+                out += f"[{'^' if negated else ''}{members}]"
+            else:
+                out += "[^/]" if negated else "(?!)"
+        else:
+            out += re.escape(char)
+    return re.compile(out)
+
+
+def class_char(element: str, index: int) -> tuple:
+    """The character a member of a path.Match class starts with at index, a `\\` escaping it, and
+    the index after it (path.Match's getEsc); None where path.Match refuses the class: a member
+    that is a bare `-` or `]`, or a class the element ends inside."""
+    if index >= len(element) or element[index] in "-]":
+        return None, index
+    if element[index] == "\\":
+        index += 1
+    if index + 1 >= len(element):
+        return None, index
+    return element[index], index + 1
+
+
+# The names a module never carries, which go:embed passes over in a directory it walks whatever
+# the pattern's prefix (cmd/go's isBadEmbedName).
+VCS_DIRS = (".bzr", ".git", ".hg", ".svn")
+
+
+def embedded_tree(top: Path, everything: bool) -> list:
+    """The files go:embed takes from a directory a pattern matched: every regular file of its tree
+    but, at every level below top, a name starting with `.` or `_` unless the pattern carries the
+    `all:` prefix, a version-control directory, and a directory holding a go.mod, which is another
+    module's. A symbolic link is no regular file, and the walk does not follow one. The go command
+    also passes over a name module.CheckFilePath refuses, which this reads: that can only widen
+    what a filter is held to, never narrow it."""
+    def embeddable(name: str) -> bool:
+        return name not in VCS_DIRS and (everything or not name.startswith((".", "_")))
+
+    files = []
+    for current, subdirs, names in os.walk(top):
+        here = Path(current)
+        subdirs[:] = sorted(s for s in subdirs if embeddable(s) and not os.path.exists(here / s / "go.mod"))
+        files += [here / n for n in sorted(names)
+                  if embeddable(n) and (here / n).is_file() and not (here / n).is_symlink()]
+    return files
 
 
 def go_skips_dir(parent: Path, name: str) -> bool:
