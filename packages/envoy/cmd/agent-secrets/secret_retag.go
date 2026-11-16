@@ -59,7 +59,7 @@ func tagPairs(tags map[string]string) string {
 // only with UntagResource, so it would be two calls, and a refused second call would leave it
 // half applied.
 //
-// Either type of retag reads the tags the secret holds, builds from them the tags it will hold
+// Either kind of retag reads the tags the secret holds, builds from them the tags it will hold
 // once the write lands (after), and checks the github-owners rule and the broker's cross-tag
 // rules against those once (checkGitHubOwnersFor, checkTagsFor), so it leaves no github-app
 // secret without GitHub owners, names no owners for a type that does not read them, and leaves

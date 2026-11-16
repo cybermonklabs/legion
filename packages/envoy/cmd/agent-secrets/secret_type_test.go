@@ -82,10 +82,11 @@ func TestSecretOldClassifierFlagIsUnknown(t *testing.T) {
 // answers GET /v1/settings with no secret_type_tag, reads only the old kind tag and never the
 // rollback guard, and serves a secret that carries type alone as a stored secret, so every grant
 // of it would release the key it stores. On both stores, against such a broker, a create, set or
-// retag after which the secret holds a type exits 1 before it writes anything or asks for a
-// reread, naming the setting and the release this agent-secrets is from, and a write that leaves
-// no type goes ahead. Against a broker that answers secret_type_tag, every row is written and
-// exits 0, so the refusal is the setting's and not the row's.
+// retag after which the secret holds a type exits 1 before it reads standard input or the stored
+// value, writes anything or asks for a reread, naming the setting and the release this
+// agent-secrets is from, and a write that leaves no type goes ahead. Against a broker that answers
+// secret_type_tag, every row is written and exits 0, so the refusal is the setting's and not the
+// row's.
 func TestATypedWriteIsRefusedByABrokerThatDoesNotReadTheTypeTag(t *testing.T) {
 	login := policytest.TypeValue(policy.TypeGoogleLogin)
 	rotated := appValue(t, map[string]string{"type": "authorized_user", "client_id": "client", "client_secret": "secret", "refresh_token": "rotated"})
@@ -133,6 +134,12 @@ func TestATypedWriteIsRefusedByABrokerThatDoesNotReadTheTypeTag(t *testing.T) {
 					}
 					if code != 1 || len(rereads) != 0 {
 						t.Fatalf("%v: exit %d, %d rereads, stdout %q, stderr %q; want 1 before any reread", row.args, code, len(rereads), stdout, stderr)
+					}
+					if reads := store.valueReads(); reads != 0 {
+						t.Fatalf("%v: the refused write read the stored value %d times; the refusal comes before any value read", row.args, reads)
+					}
+					if left, ok := secretStdin.(*strings.Reader); ok && left.Len() != len(row.stdin) {
+						t.Fatalf("%v: the refused write read %d bytes of standard input; the refusal comes before the value is asked for", row.args, len(row.stdin)-left.Len())
 					}
 					for _, says := range []string{"secret_type_tag", "type tag", "as a stored secret", "nothing is written", buildversion.String()} {
 						if !strings.Contains(stderr, says) {

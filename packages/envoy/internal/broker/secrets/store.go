@@ -80,9 +80,8 @@ type Listing struct {
 	// AWSCURRENT, or the Secret Manager version versions/latest resolves to; "" when
 	// HasCurrentValue is false. It comes from the call that answers HasCurrentValue, so it costs
 	// no call of its own, and it is the store's own id, never a digest of the value. The policy
-	// decodes a type secret's value once for each version, type and shape it lists
-	// (policy.Current), so a write of a new value is decoded at the next load and an unchanged one
-	// is read at no load.
+	// decodes a type secret's value once for each version and type it lists (policy.Current), so a
+	// write of a new value is decoded at the next load and an unchanged one is read at no load.
 	Version string
 	// Created is when the store created the secret, and the zero time where its answer named none.
 	// The policy reads it for an Unfilled secret alone: one created less than

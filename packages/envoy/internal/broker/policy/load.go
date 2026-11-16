@@ -236,9 +236,10 @@ func (l Loader) clock() time.Time {
 // Load reads the namespace into a Set: each secret it serves, each it refuses with why
 // (Set.Refused, refusalOf), each waiting for its value (Set.Pending) by the loader's clock
 // (pendingAt), and the version of each served type secret's value as the listing names it, which
-// Current decodes. It writes no line and reads no value: Current, which keeps the set before,
-// writes the lines a change of state calls for, and reads the values. A failed store call fails
-// the whole load.
+// Current decodes. It reads no value, and writes no line but LegacyTypeTagMessage, once per
+// secret per process, for a secret it reads through the old kind tag (listingType): Current,
+// which keeps the set before, writes the lines a change of state calls for, and reads the values.
+// A failed store call fails the whole load.
 func (l Loader) Load(ctx context.Context) (*Set, error) {
 	now := l.clock()
 	l.StoreReads.Inc(readList)
@@ -340,8 +341,8 @@ func (l Loader) secretName(name string) (slug, id string, err error) {
 
 // LoadOne reads the one secret a session asks for as name, by the rules Load applies to each
 // secret it lists, answering the refusal Load would hand to the Set when it refuses it; like Load,
-// it writes no line. A name no secret can carry (secretName) is ErrNameInvalid, with no call made;
-// a failed store call is an error.
+// it writes no line but LegacyTypeTagMessage. A name no secret can carry (secretName) is
+// ErrNameInvalid, with no call made; a failed store call is an error.
 func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 	slug, id, err := l.secretName(name)
 	if err != nil {

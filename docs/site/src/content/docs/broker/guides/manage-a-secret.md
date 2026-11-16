@@ -31,7 +31,7 @@ You need three things:
   configure none of them.
 - **A cloud credential that may reach the broker's account or project.** The CLI takes it from
   the first source that is present, a person's or a machine's, for every form, and refuses none
-  for what type of identity it is: the store's IAM decides what each may read and write. It is not
+  for what kind of identity it is: the store's IAM decides what each may read and write. It is not
   opinionated about where the credential comes from; it reads it from the environment, as the AWS
   CLI, boto3 and gcloud do. AWS: the AWS SDK's own order, in the broker's account: access keys in
   `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, then `AWS_WEB_IDENTITY_TOKEN_FILE`, then
@@ -86,7 +86,7 @@ you chose is the one that configuration names: one that names none is refused, n
 whatever other login gcloud holds.
 
 The login of a gcloud source is the one gcloud itself would use: the one `CLOUDSDK_CORE_ACCOUNT`
-names, else the one a chosen configuration names, else the active one, whatever type of account it
+names, else the one a chosen configuration names, else the active one, whatever kind of account it
 is. An account `CLOUDSDK_CORE_ACCOUNT` names that gcloud holds no login for is refused, never
 replaced by another login. A command the CLI prints for running again keeps the variable that chose
 the source (`GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_ACTIVE_CONFIG_NAME`, `CLOUDSDK_CORE_ACCOUNT`):

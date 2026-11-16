@@ -18,14 +18,21 @@ func TypeFromTags(tags map[string]string) string {
 	return tags[LegacyTypeTag]
 }
 
-// Each broker process reports the old tag once per secret, across loads and rereads.
+// LegacyTypeTagMessage is the line Load and LoadOne write, at WARN, the first time a broker
+// process reads a secret's type from LegacyTypeTag because it carries no TagType: name (the
+// secret's id in the store), old_tag and tag. The operate guide documents its text, so the text
+// changes only with that guide.
+const LegacyTypeTagMessage = "agent secret uses legacy classifier tag; retag it with --type"
+
+// legacyTypesLogged is every secret id this broker process has written LegacyTypeTagMessage for,
+// across loads and rereads, so each secret is reported once per process.
 var legacyTypesLogged sync.Map
 
 func listingType(ls secrets.Listing) string {
 	if _, present := ls.Tags[TagType]; !present {
 		if _, legacy := ls.Tags[LegacyTypeTag]; legacy {
 			if _, logged := legacyTypesLogged.LoadOrStore(ls.ID, struct{}{}); !logged {
-				slog.Warn("agent secret uses legacy classifier tag; retag it with --type", "name", ls.ID, "old_tag", LegacyTypeTag, "tag", TagType)
+				slog.Warn(LegacyTypeTagMessage, "name", ls.ID, "old_tag", LegacyTypeTag, "tag", TagType)
 			}
 		}
 	}

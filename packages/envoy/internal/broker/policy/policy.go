@@ -804,8 +804,8 @@ type Set struct {
 	// versions is the version of each served type secret's value as the load or reread that read
 	// it listed it (secrets.Listing.Version), keyed by Name. It is in neither Secret nor Version,
 	// so a write of a new value moves no Version and ends no grant: Current decodes the value of
-	// each version, type and shape it has not decoded, and refuses the secret only when the
-	// decoder does (ReasonValueMalformed).
+	// each version and type it has not decoded, and refuses the secret only when the decoder does
+	// (ReasonValueMalformed).
 	versions map[string]string
 }
 

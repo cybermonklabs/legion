@@ -9,7 +9,13 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
+// TestTypeTagWinsAndOldTagLogsOnce: type wins over the old kind tag, an empty type wins too, and
+// an invalid type does not fall back; a secret read through the old tag alone writes
+// LegacyTypeTagMessage once across two loads and two rereads. The ids logged are forgotten
+// first and after, so the count is this run's whatever ran before it in the process (-count=2).
 func TestTypeTagWinsAndOldTagLogsOnce(t *testing.T) {
+	policy.ForgetLegacyTypeTagLines()
+	t.Cleanup(policy.ForgetLegacyTypeTagLines)
 	logged := policytest.CaptureLog(t)
 	for _, row := range []struct {
 		name    string
@@ -53,6 +59,9 @@ func TestTypeTagWinsAndOldTagLogsOnce(t *testing.T) {
 			}
 			if got := strings.Count(logged.String(), "name="+policytest.ID(row.name)); got != wantLogs {
 				t.Errorf("old-name warnings for %s = %d, want %d: %s", row.name, got, wantLogs, logged)
+			}
+			if row.old && !strings.Contains(logged.String(), policy.LegacyTypeTagMessage) {
+				t.Errorf("the old-name warning for %s is not %q: %s", row.name, policy.LegacyTypeTagMessage, logged)
 			}
 		})
 	}
