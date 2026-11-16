@@ -121,3 +121,4 @@ func TestLoadTakesANumberedSetWithATimestampedMigration(t *testing.T) {
 		t.Errorf("the last migration is %s at version %d, want the timestamped one last", last.Name, last.Version)
 	}
 }
+// selection probe, never merged
