@@ -101,6 +101,42 @@ while the cause stays. When its claim does not read `failed` and the Envoy regis
 session gone, `fresh_session` on that architect.
 Name each silent issue in the day's report, with its role and the length of its silence.
 
+## `project-paused on <PROJECT>` (`{kind: "project-paused", pause: {id, by, at, reason}}`)
+
+An operator paused your project with `legion project pause`. `pause.id` is the pause, `pause.by`
+is `{kind: "operator"}`, `pause.at` is when, and `pause.reason` is the reason the operator gave.
+The daemon sends one such notice for each pause a person makes. Your own `pause` sends you none,
+because you already know of it.
+
+Read `read_state`. Its `paused:` line gives the same pause, the roles whose turn the pause still
+waits on, and how many rows it holds (`skill://legion-controller/references/session.md`). While
+that line stands, the daemon admits no issue, and it starts no session and gives none a task,
+except you. That is the pause at work, and no stall to act on: restart nothing and re-admit
+nothing for it. `compact` and `fresh_session` answer `PROJECT_PAUSED` until the resume.
+
+Say in your summary that the project is paused, by whom, since when and why, and name the pause in
+the day's report while it stands. Tell nobody who already knows: the person who paused does, so
+send them nothing about it. This notice alone is never a reason to resume the project, or to
+pause it again.
+
+## `project-resumed on <PROJECT>` (`{kind: "project-resumed", pause: {id, by, at}}`)
+
+An operator resumed your project with `legion project resume`. `pause.id` is the pause that
+ended, which may be one you made, `pause.by` is `{kind: "operator"}`, and `pause.at` is when. The
+notice carries no reason. The daemon sends one such notice for each resume a person makes, and
+your own `resume` sends you none.
+
+Read `read_state`. It has no `paused:` line now, its `last pause:` line gives that pause with who
+ended it and when, and `wakesWaiting` lists the launches that the daemon's wake pacing still
+holds. Each session the pause held work for starts once, at that pacing, and every other session
+the pause stopped stays stopped until its next wake. Start none of them yourself. The resume's
+launches are a wave, so while `wakesWaiting` lists any, publish to role topics only as
+[Trees waiting on a root claim](skill://legion-controller/SKILL.md#trees-waiting-on-a-root-claim)
+allows.
+
+Say in your summary that the project runs again, who resumed it and when. Tell nobody who already
+knows. This notice alone is never a reason to pause the project again.
+
 ## `unslotted on <KEY>` (`{kind: "unslotted", reason}`)
 
 Either a root that waited for a slot was moved from `todo` to the status `reason` names, by a
