@@ -164,8 +164,10 @@ export function useIssueFieldWrite<F extends IssueField>(
   // field is noted, with its place in the person's order, while the store holds it, since an
   // outcome names a write the store has let go of, whose request it no longer tells: those the
   // store holds as the report is made, and each after; a board move still waiting its turn is
-  // noted once it joins the line, before its outcome. The listener lives with the picker, so no
-  // outcome falls between a refusal and it.
+  // noted once it joins the line, before its outcome. A write's place is noted afresh at each
+  // change of the store: a Retry from the Pending changes list puts a refused write at the back
+  // of the line, and it is from there that its landing is newer than the refused pick or not.
+  // The listener lives with the picker, so no outcome falls between a refusal and it.
   useEffect(() => {
     const of = { field, issueKey };
     const ofField = new Map<number, number>();
@@ -175,7 +177,7 @@ export function useIssueFieldWrite<F extends IssueField>(
         return;
       }
       for (const { id, rank } of fieldWritesOf(client, of)) {
-        if (id !== undefined && !ofField.has(id)) ofField.set(id, rank);
+        if (id !== undefined) ofField.set(id, rank);
       }
     };
     noting.current = note;

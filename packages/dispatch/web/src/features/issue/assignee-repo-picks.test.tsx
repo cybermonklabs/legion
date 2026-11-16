@@ -4,7 +4,12 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
-import { bodies, signedInHolding } from "../../__tests__/issue-picks";
+import {
+  bodies,
+  details as issueDetails,
+  issue as pickedIssue,
+  signedInHolding,
+} from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
@@ -20,51 +25,9 @@ import { RepoControl } from "./RepoControl";
 // write store on its issue's line (`issue:<KEY>`) as it is made, and picks nobody has sent are
 // one request, the newest.
 
-const issue: Issue = {
-  advances: [],
-  advances_revision: 0,
-  assignee: "alice",
-  blocked_by: [],
-  claim: null,
-  closed_at: null,
-  components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
-  created_at: "2026-09-09T00:00:00Z",
-  created_by: { id: "alice", kind: "user" },
-  decisions_artifact_id: "",
-  external_links: [],
-  key: "CORE-1",
-  labels: [],
-  last_seq: 1,
-  number: 1,
-  parent: null,
-  plan_artifact_id: "",
-  primary_artifact_id: "artifact-1",
-  priority: 1,
-  project: "CORE",
-  rank: "U",
-  repo: null,
-  resolved_repo: "acme/widgets",
-  route: null,
-  status: "todo",
-  title: "Review the spec",
-  updated_at: "2026-09-09T00:00:00Z",
-  verification_artifact_id: "",
-};
-const details: IssueDetails = {
-  holder_state: null,
-  last_seen: null,
-  route_holder: null,
-  route_status: null,
-  route_status_reason: null,
-  takeable_at: null,
-  ...issue,
-  artifacts: [],
-  children: [],
-  design_gates: [],
-  open_asks: [],
-  progress: { tasks: null, children: null },
-  referenced_by_count: 0,
-};
+/** CORE-1 on its project's default repository, which it names none of its own for. */
+const issue: Issue = { ...pickedIssue, resolved_repo: "acme/widgets" };
+const details: IssueDetails = { ...issueDetails, ...issue };
 
 const detailKey = issueQuery(issue.key).queryKey;
 
