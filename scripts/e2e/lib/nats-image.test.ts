@@ -118,7 +118,7 @@ function floorTakes(version: string): boolean {
 const serverModule = "github.com/nats-io/nats-server/v2";
 
 /** `<serverModule>@<what follows>`, up to a space, a quote, a bracket or an angle bracket. */
-const pinAt = new RegExp(`${serverModule.replace(/[./]/g, "\\$&")}@([^\\s\`'"()<>]*)`, "g");
+const pinAt = /github\.com\/nats-io\/nats-server\/v2@([^\s`'"()<>]*)/g;
 
 /**
  * Each pin below the floor in a file's text: `<serverModule>@<version>`, or `@$name` with a literal
