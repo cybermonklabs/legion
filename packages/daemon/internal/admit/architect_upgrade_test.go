@@ -486,14 +486,15 @@ func headerWayBack(t *testing.T, version int) string {
 // the version of the phases row's mark that a resume's task is sent again as written
 // (20261114061900_phase_entry_verbatim.up.sql), whose way back is this migration's.
 // leftStandingVersion is the highest migration neither way back deletes,
-// 20261114031356_merge_queue_removal (dispatch://INFRA-3274, which main carries above the phase
-// entry), which is the version the store reports once both ways back have run.
+// 20261115194357_project_pause (dispatch://INFRA-3759), which stands above every migration of
+// dispatch://INFRA-2614 and which neither block touches, so it is the version the store reports
+// once both ways back have run.
 const (
 	phaseEntryVersion     = 20261111225552
 	stalledNoticesVersion = 20261113181500
 	claimHandshakeVersion = 20261114020537
 	entryVerbatimVersion  = 20261114061900
-	leftStandingVersion   = 20261114031356
+	leftStandingVersion   = 20261115194357
 )
 
 // A rollback and the roll-forward after it leave every root architect settled, as the first
