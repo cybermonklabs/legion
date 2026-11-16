@@ -552,13 +552,30 @@ func startLogged(t *testing.T, name string, cmd *exec.Cmd) *cmdtest.Process {
 // having been given the port by the kernel and released it before the reservation took it: a
 // released-port race of that program's own. The ports are distinct from one another and from
 // every other reservation's, since the kernel gives no bound port twice.
+//
+// The second rule holds only while net.ipv4.ip_autobind_reuse is 0, its default: at 1, a bind to
+// port 0 that finds no free port searches again with relax true and may share a reservation's port
+// (inet_csk_find_open_port; Documentation/networking/ip-sysctl.rst). reservePorts refuses to run
+// on such a host rather than hand out ports another socket can be given, and does not change the
+// host's setting.
 func reservePorts(t *testing.T, n int) []int {
 	t.Helper()
+	requireNoAutobindReuse(t)
 	ports := make([]int, n)
 	for i := range ports {
 		ports[i] = reservePort(t)
 	}
 	return ports
+}
+
+// requireNoAutobindReuse fails the test when net.ipv4.ip_autobind_reuse is not 0, or cannot be
+// read, since a reservation then does not keep the kernel from giving its port to another socket.
+func requireNoAutobindReuse(t *testing.T) {
+	t.Helper()
+	value, err := os.ReadFile("/proc/sys/net/ipv4/ip_autobind_reuse")
+	require.NoError(t, err, "read net.ipv4.ip_autobind_reuse, which a port reservation depends on")
+	require.Equal(t, "0", strings.TrimSpace(string(value)),
+		"net.ipv4.ip_autobind_reuse must be 0 for a reserved port to be given to no other socket (see reservePorts)")
 }
 
 // reservePort reserves one port, as reservePorts describes, and returns it.

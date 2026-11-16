@@ -45,8 +45,10 @@ Extends docs/solutions/testing/race-regression-tests-that-fail-before-the-fix.md
     `packages/envoy/infra/gcp/clusteredhub_live_test.go`). A Go server binds beside it and binds it
     again on a restart, since Go's listeners set `SO_REUSEADDR`, and meanwhile the kernel gives the
     port to no `bind` to port 0 on any address and no `connect`. It cannot stop a program that
-    binds the same number itself with `SO_REUSEADDR`. Other kernels' bind rules differ, and a host
-    without IPv6 fails the reservation loudly.
+    binds the same number itself with `SO_REUSEADDR`. The kernel keeps a reserved port from a
+    `bind` to port 0 only while `net.ipv4.ip_autobind_reuse` is 0, its default, so `reservePorts`
+    checks it and refuses to run otherwise. Other kernels' bind rules differ, and a host without
+    IPv6 fails the reservation loudly.
 - A server's listening log line prints the bound address (`ln.Addr()`), never the configured one,
   or a port-0 server reports port 0.
 - A port someone sets explicitly is used as given and fails with `address already in use` when it
