@@ -298,6 +298,13 @@ GO_VARIABLE = re.compile(r"GO[A-Z0-9]*|CGO_\w+|AR|CC|CXX|FC|GCCGO|PKG_CONFIG")
 # changes no answer here.
 GO_LOCATIONS = frozenset({"GOAUTH", "GOCACHE", "GOINSECURE", "GOMODCACHE", "GONOPROXY", "GONOSUMDB",
                           "GOPATH", "GOPRIVATE", "GOPROXY", "GOSUMDB", "GOTMPDIR", "GOVCS"})
+# The platform every go command here is listed for unless the command sets its own: that of the
+# ubuntu-24.04 runner each job of ci.yaml with a go command runs on, as setup-go's `go env` there
+# prints it (GOOS='linux', GOARCH='amd64', CGO_ENABLED='1' with CC='gcc'; the ci-filters job of
+# run 43856832016, image ubuntu-24.04 20261111.370.1). Without it a listing is the host's: a
+# darwin machine's go lists the _darwin.go files, and a worker pod's go.env turns cgo off.
+# check-ci-filters.sh's header says why linux/amd64 is exact for the jobs on other runners too.
+CI_PLATFORM = {"GOOS": "linux", "GOARCH": "amd64", "CGO_ENABLED": "1"}
 
 
 def go_environment() -> dict:
@@ -320,11 +327,11 @@ def go_environment() -> dict:
 class Session:
     """The go commands' environment and results. Every go command runs under go_environment(),
     which leaves no variable of the caller's that chooses the toolchain or what a listing holds,
-    and with GOPROXY=off over an empty module cache: no download, no rewrite of a go.work.sum, and
-    the same answer on a warm machine as on a cold runner. A third-party package then fails to
-    load, which loses nothing first-party (check-ci-filters.sh's header says why). The toolchain is
-    the exception that cache cannot hold: `toolchain()` resolves it first, under the machine's own
-    cache and proxy."""
+    for CI_PLATFORM unless the command names its own, and with GOPROXY=off over an empty module
+    cache: no download, no rewrite of a go.work.sum, and the same answer on a warm machine as on a
+    cold runner. A third-party package then fails to load, which loses nothing first-party
+    (check-ci-filters.sh's header says why). The toolchain is the exception that cache cannot
+    hold: `toolchain()` resolves it first, under the machine's own cache and proxy."""
 
     problems: list[Annotation] = field(default_factory=list)
     cache: dict = field(default_factory=dict)
@@ -360,7 +367,8 @@ class Session:
         return self.toolchains[workdir]
 
     def go(self, run_: Run, args: list) -> str:
-        env = dict(self.environment, GOPROXY="off", GOMODCACHE=f"{self.tmp}/modcache", GOTOOLCHAIN="local")
+        env = dict(self.environment, **CI_PLATFORM, GOPROXY="off", GOMODCACHE=f"{self.tmp}/modcache",
+                   GOTOOLCHAIN="local")
         env.update(dict(run_.env))
         if run_.race:
             env["CGO_ENABLED"] = "1"  # -race needs cgo
