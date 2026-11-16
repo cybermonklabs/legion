@@ -181,7 +181,7 @@ const ARMS_CHOSEN_AMONG = 12;
 /** The confidence the winner's adjusted bound is read at: 1 - 0.10 / 12, by Bonferroni. */
 const ADJUSTED_CONFIDENCE = 1 - (1 - DEFAULT_CONFIDENCE) / ARMS_CHOSEN_AMONG;
 
-/** Coverage at or above this is useful; under it the skill records the curve and no verdict rule. */
+/** Coverage at or above this is useful; under it the report records the curve and no verdict rule. */
 const USEFUL_COVERAGE = 0.3;
 
 /** How many judgements must return before a case is decided at all. */
@@ -1125,7 +1125,7 @@ export function chooseWinner(
       ? `${leader.arm} covers ${leader.coverage.toFixed(3)}, at or above the usefulness floor of ` +
           `${floor.toFixed(2)}, so the rule names it the winner.`
       : `${leader.arm} covers ${leader.coverage.toFixed(3)}, under the usefulness floor of ` +
-          `${floor.toFixed(2)}: the skill records the curve and no verdict rule, and the curve ` +
+          `${floor.toFixed(2)}: the report records the curve and no verdict rule, and the curve ` +
           "goes to the person who decides."
   );
   return {

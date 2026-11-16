@@ -116,9 +116,9 @@ func TestSecretAStoppedPromptWritesNothingAndNamesTheRetry(t *testing.T) {
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		useTerminal(t)
-		readHidden = func(_ int, prompt, onStop func()) ([]byte, error) {
+		readHidden = func(_ int, _ time.Time, prompt func(), onDiscard func(error)) ([]byte, error) {
 			prompt()
-			onStop()
+			onDiscard(errPromptStopped)
 			return nil, errPromptStopped
 		}
 		out, errOut, code := runSecret(args...)
@@ -699,7 +699,7 @@ func useTerminal(t *testing.T, typed ...string) *[]int {
 		return terminalFD, true
 	}
 	reads := &[]int{}
-	readHidden = func(fd int, prompt, _ func()) ([]byte, error) {
+	readHidden = func(fd int, _ time.Time, prompt func(), _ func(error)) ([]byte, error) {
 		prompt()
 		*reads = append(*reads, fd)
 		if len(*reads) > len(typed) {
@@ -757,7 +757,7 @@ func TestSecretAPromptThatNeverHoldsTheTerminalShowsNoLabel(t *testing.T) {
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
 	useTerminal(t)
-	readHidden = func(int, func(), func()) ([]byte, error) { return nil, errValueCutShort }
+	readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errValueCutShort }
 	_, stderr, code := runSecret("set", "HELD_KEY")
 	if code != 1 || strings.Contains(stderr, "Value for") || strings.HasPrefix(stderr, "\n") {
 		t.Fatalf("exit %d, stderr %q; want 1 with no label and no leading line ending", code, stderr)
@@ -776,7 +776,7 @@ func TestSecretAPromptThatCannotRunNamesThePipeCommand(t *testing.T) {
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		useTerminal(t)
-		readHidden = func(int, func(), func()) ([]byte, error) { return nil, refusal }
+		readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, refusal }
 		_, stderr, code := runSecret("set", "HELD_KEY", "--profile", "work")
 		want := refusal.Error() + "; pipe the value in: agent-secrets secret set HELD_KEY --profile work < FILE"
 		if code != exitUsageError || !strings.Contains(stderr, want) || strings.Contains(stderr, "Value for") {
@@ -823,7 +823,7 @@ func TestSecretAValueOfMoreThanOneLineAtATerminalIsRefused(t *testing.T) {
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		useTerminal(t)
-		readHidden = func(int, func(), func()) ([]byte, error) { return nil, errMoreThanOneLine }
+		readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errMoreThanOneLine }
 		_, stderr, code := runSecret(tc.args...)
 		want := "a value of more than one line must be piped in: " + tc.want
 		if code != exitUsageError || !strings.Contains(stderr, want) {
@@ -847,7 +847,7 @@ func TestSecretAPasteCutShortAtATerminalWritesNothing(t *testing.T) {
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		useTerminal(t)
-		readHidden = func(int, func(), func()) ([]byte, error) { return nil, errPasteCutShort }
+		readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errPasteCutShort }
 		_, stderr, code := runSecret(args...)
 		if code != 1 || !strings.Contains(stderr, errPasteCutShort.Error()) {
 			t.Fatalf("%v: exit %d, stderr %q; want 1 naming %q", args, code, stderr, errPasteCutShort)
@@ -861,36 +861,100 @@ func TestSecretAPasteCutShortAtATerminalWritesNothing(t *testing.T) {
 	}
 }
 
-// testControlByteError is a reader error that names a control byte the prompt refused. It has the
-// interface the form uses, so the form test proves that the byte becomes a usage error rather than
-// a generic terminal failure.
-type testControlByteError byte
-
-func (e testControlByteError) Error() string {
-	return fmt.Sprintf("the control byte 0x%02x cannot be typed at the prompt", byte(e))
+// TestSecretAControlByteAtATerminalIsAUsageError: an unhandled terminal control byte is a usage
+// error, never a stored byte and never a value trimmed of it. It names the byte by its number and
+// its name, where it came in the value, and, for a Tab at either end, that a paste often adds one
+// there; then what to do: enter the value again without it, or pipe the value in where the byte
+// is part of it, naming the command that does.
+func TestSecretAControlByteAtATerminalIsAUsageError(t *testing.T) {
+	for _, row := range []struct {
+		refused   promptControlByteError
+		want, not string
+	}{
+		{promptControlByteError{c: 0x01, textBefore: true, textAfter: true}, "the control byte 0x01 cannot be typed at the prompt: a Ctrl-A inside the value. Nothing was stored, and the value was not trimmed: enter it again without the Ctrl-A, or, if the Ctrl-A is part of it, pipe the value in: ", "paste"},
+		{promptControlByteError{c: '\t', textBefore: true}, "the control byte 0x09 cannot be typed at the prompt: a Tab at the end of the value, where a paste often adds one. Nothing was stored, and the value was not trimmed: enter it again without the Tab, or, if the Tab is part of it, pipe the value in: ", ""},
+		{promptControlByteError{c: '\t', textAfter: true}, "the control byte 0x09 cannot be typed at the prompt: a Tab at the start of the value, where a paste often adds one.", ""},
+		{promptControlByteError{c: '\t', textBefore: true, textAfter: true}, "the control byte 0x09 cannot be typed at the prompt: a Tab inside the value. Nothing", "paste"},
+		{promptControlByteError{c: 0x1b}, "the control byte 0x1b cannot be typed at the prompt: an Escape as the whole value. Nothing was stored, and the value was not trimmed: enter it again without the Escape", "paste"},
+		{promptControlByteError{c: 0x1c, textBefore: true}, `the control byte 0x1c cannot be typed at the prompt: a Ctrl-\ at the end of the value. Nothing`, "paste"},
+	} {
+		for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, {"set", "HELD_KEY"}} {
+			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			startSecretBroker(t, servedBy(local))
+			useAWS(t, local, testAccount, adaSignIn)
+			useTerminal(t)
+			readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, row.refused }
+			_, stderr, code := runSecret(args...)
+			pipe := "pipe the value in: agent-secrets secret " + args[0]
+			if code != exitUsageError || !strings.Contains(stderr, row.want) || !strings.Contains(stderr, pipe) || !strings.Contains(stderr, " < FILE") || (row.not != "" && strings.Contains(stderr, row.not)) {
+				t.Fatalf("%v, %+v: exit %d, stderr %q; want %d naming %q and %q ... < FILE, without %q", args, row.refused, code, stderr, exitUsageError, row.want, pipe, row.not)
+			}
+			if v := valueOf(t, local, "HELD_KEY"); v != "v1" {
+				t.Fatalf("%v: HELD_KEY = %q, want v1 unchanged", args, v)
+			}
+			if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
+				t.Fatalf("%v created NEW_KEY", args)
+			}
+		}
+	}
 }
 
-func (e testControlByteError) ControlByte() byte { return byte(e) }
-
-// TestSecretAControlByteAtATerminalIsAUsageError: an unhandled terminal control byte is a usage
-// error naming the byte and the command that pipes the value in, never a stored byte.
-func TestSecretAControlByteAtATerminalIsAUsageError(t *testing.T) {
-	for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, {"set", "HELD_KEY"}} {
-		local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
-		startSecretBroker(t, servedBy(local))
-		useAWS(t, local, testAccount, adaSignIn)
-		useTerminal(t)
-		readHidden = func(int, func(), func()) ([]byte, error) { return nil, testControlByteError(0x01) }
-		_, stderr, code := runSecret(args...)
-		want := "the control byte 0x01 cannot be typed at the prompt; pipe the value in"
-		if code != exitUsageError || !strings.Contains(stderr, want) {
-			t.Fatalf("%v: exit %d, stderr %q; want %d naming %q", args, code, stderr, exitUsageError, want)
-		}
-		if v := valueOf(t, local, "HELD_KEY"); v != "v1" {
-			t.Fatalf("%v: HELD_KEY = %q, want v1 unchanged", args, v)
-		}
-		if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
-			t.Fatalf("%v created NEW_KEY", args)
+// TestSecretAValueThatStartsOrEndsWithASpaceIsStoredAsGivenWithANotice: a space can be part of a
+// secret, so a value that starts or ends with one is stored as given, neither trimmed nor refused,
+// whether it is piped in or typed at the prompt, by create and by set alike; the form then prints
+// one line on stderr saying that the value starts, ends, or starts and ends with a space and was
+// stored as given, which names the secret and never prints the value. A value with a space inside
+// it alone prints no such line.
+func TestSecretAValueThatStartsOrEndsWithASpaceIsStoredAsGivenWithANotice(t *testing.T) {
+	for _, row := range []struct {
+		value, where string // where is "" for a value that needs no notice
+	}{
+		{" sk-lead", "starts"},
+		{"sk-trail ", "ends"},
+		{"  sk-both  ", "starts and ends"},
+		{"sk in ner", ""},
+	} {
+		for _, route := range []string{"piped", "typed"} {
+			for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, {"set", "HELD_KEY"}} {
+				t.Run(fmt.Sprintf("%q %s %s", row.value, route, args[0]), func(t *testing.T) {
+					local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+					startSecretBroker(t, servedBy(local))
+					useAWS(t, local, testAccount, adaSignIn)
+					if route == "piped" {
+						useStdin(t, row.value+"\n")
+					} else {
+						useTerminal(t, row.value)
+					}
+					stdout, stderr, code := runSecret(args...)
+					if code != 0 {
+						t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
+					}
+					if got := valueOf(t, local, args[1]); got != row.value {
+						t.Fatalf("%s = %q, want %q stored as given", args[1], got, row.value)
+					}
+					secretPart := strings.TrimSpace(row.value)
+					if strings.Contains(stdout+stderr, secretPart) {
+						t.Fatalf("stdout %q, stderr %q print the value", stdout, stderr)
+					}
+					if row.where == "" {
+						if strings.Contains(stderr, "space") {
+							t.Fatalf("stderr %q; want no notice for a space inside the value", stderr)
+						}
+						return
+					}
+					// The notice is one line naming the form, the secret and which end, and saying
+					// the value was stored as given; its wording is free.
+					var notices []string
+					for _, line := range strings.Split(stderr, "\n") {
+						if strings.Contains(line, "space") {
+							notices = append(notices, line)
+						}
+					}
+					if len(notices) != 1 || !strings.Contains(notices[0], "secret "+args[0]) || !strings.Contains(notices[0], args[1]) || !strings.Contains(notices[0], " "+row.where+" ") || !strings.Contains(notices[0], "stored as given") {
+						t.Fatalf("stderr %q; want one line naming %s, %s, that the value %s with a space, and that it was stored as given", stderr, args[0], args[1], row.where)
+					}
+				})
+			}
 		}
 	}
 }
@@ -903,7 +967,7 @@ func TestSecretAValueCutShortAtATerminalWritesNothing(t *testing.T) {
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		useTerminal(t)
-		readHidden = func(int, func(), func()) ([]byte, error) { return nil, errValueCutShort }
+		readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errValueCutShort }
 		_, stderr, code := runSecret(args...)
 		if code != 1 || !strings.Contains(stderr, errValueCutShort.Error()) {
 			t.Fatalf("%v: exit %d, stderr %q; want 1 naming %q", args, code, stderr, errValueCutShort)

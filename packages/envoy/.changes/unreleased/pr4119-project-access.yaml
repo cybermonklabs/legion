@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  The secrets broker can ask Dispatch whether a project is private, whether a person may see it,
+  and what kind of member a person is (`internal/broker/projectaccess`), through Dispatch's
+  `GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person` routes. No Dispatch of this
+  release serves them yet, so leave `BROKER_PROJECT_ACCESS_URL` unset until the broker can reach a
+  Dispatch that does: against one that does not, every trade naming a project is refused
+  `temporarily_unavailable`. Then set `BROKER_PROJECT_ACCESS_URL` to that Dispatch's base URL and
+  `BROKER_PROJECT_ACCESS_TOKEN_FILE` to the broker's own projected ServiceAccount token for
+  Dispatch's audience, both or neither; one alone refuses the start naming the other. Answers are
+  kept 30 seconds. With neither set the broker asks Dispatch nothing and behaves as before.
+time: 2026-11-16T01:48:34Z
+custom:
+    Issue: pr4119
