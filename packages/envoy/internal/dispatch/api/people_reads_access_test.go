@@ -90,10 +90,12 @@ func TestARestrictedMemberSeesOnlyThePeopleAndAgentsOfItsProjects(t *testing.T) 
 		users  []string
 		agents []string
 		// pages is which of alice's and carol's pages the caller opens; the other answers as a
-		// login nobody holds.
+		// login nobody holds. carol's one comment is on PRIV, so a caller that sees nothing of PRIV
+		// cannot open her page (personPageHeldQuery), though it reads her in the people list;
+		// carol's own token, which sees nothing of PRIV, opens her own page, as every caller does.
 		pages []string
 	}{
-		{callerAlice, everyone, every(1), []string{seedAlice, seedCarol}},
+		{callerAlice, everyone, every(1), []string{seedAlice}},
 		{callerBob, ofPrivate, privateOnly, []string{seedCarol}},
 		{callerCarol, everyone, every(2), []string{seedAlice, seedCarol}},
 		{callerCarolPrivToken, ofPrivate, privateOnly, []string{seedCarol}},
@@ -662,5 +664,43 @@ func TestTheUsersOfAPublicListedProjectAreEveryFullMember(t *testing.T) {
 				t.Errorf("PRIV %s: %s reads GET /api/v1/users = %v, want %v", state.visibility, caller, got, state.want)
 			}
 		}
+	}
+}
+
+// TestAPersonPageOfOnlyHiddenActivityAnswersAsMissing: bob's person node exists only because he
+// wrote in PRIV, so a caller that sees nothing of what he wrote reads his page exactly as the
+// page of a login nobody holds (404): his page must not tell alice that he was active in a project
+// she cannot see. A caller that sees what he wrote, and bob himself, read the page. With no
+// private project, every caller that sees the page today reads it byte for byte as it did: alice
+// then reads bob's page exactly as carol does.
+func TestAPersonPageOfOnlyHiddenActivityAnswersAsMissing(t *testing.T) {
+	seed := seedPrivateProject(t)
+	seed.mustRequest(t, callerBob, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPrivate]+"/comments",
+		map[string]any{"body": "bob was here."}, http.StatusCreated)
+	page := "/api/v1/people/" + seedBob + "/nodes"
+	missing := seed.request(t, callerAlice, http.MethodGet, "/api/v1/people/nobody@example.com/nodes", nil)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("a login nobody holds answers %d %s, want 404", missing.Code, missing.Body.String())
+	}
+	for _, caller := range []privateCaller{callerAlice, callerCarolToken} {
+		got := seed.request(t, caller, http.MethodGet, page, nil)
+		if got.Code != missing.Code || got.Body.String() != missing.Body.String() {
+			t.Errorf("PRIV private: %s reads bob's page = %d %s, want what a login nobody holds answers: %d %s",
+				caller, got.Code, got.Body.String(), missing.Code, missing.Body.String())
+		}
+	}
+	for _, caller := range []privateCaller{callerBob, callerCarol, callerCarolPrivToken} {
+		rows := decodeBody[personNodes](t, seed.mustRequest(t, caller, http.MethodGet, page, nil, http.StatusOK)).Rows
+		if len(rows) != 1 || rows[0].Title != "bob was here." {
+			t.Errorf("PRIV private: %s reads bob's page with rows %+v, want his comment", caller, rows)
+		}
+	}
+
+	// No private project: alice reads bob's page as carol, who sees every project, reads it.
+	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
+	want := seed.mustRequest(t, callerCarol, http.MethodGet, page, nil, http.StatusOK)
+	if got := seed.request(t, callerAlice, http.MethodGet, page, nil); got.Code != want.Code || got.Body.String() != want.Body.String() {
+		t.Errorf("PRIV public: alice reads bob's page = %d %s, want carol's answer byte for byte: %d %s",
+			got.Code, got.Body.String(), want.Code, want.Body.String())
 	}
 }
