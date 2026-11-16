@@ -455,10 +455,10 @@ func (s *server) runRelatedCheck(
 	}()
 
 	// Stage 2 runs on a context of its own ending at relatedMeaningAllowance from the check's
-	// start, so the embedding and the meaning query both stop there and leave the rest of the
-	// allowance to stage 1. A question's cross-project leg runs on that context too, so the wait
-	// for it below never outlives it either.
-	meaningAllowance := min(relatedMeaningAllowance, allowance)
+	// start (server.meaningBound in a test), so the embedding and the meaning query both stop
+	// there and leave the rest of the allowance to stage 1. A question's cross-project leg runs
+	// on that context too, so the wait for it below never outlives it either.
+	meaningAllowance := min(cmp.Or(s.meaningBound, relatedMeaningAllowance), allowance)
 	var meaning chan relatedStage
 	var meaningCtx context.Context
 	endMeaning := context.CancelFunc(func() {})

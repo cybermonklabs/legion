@@ -396,6 +396,12 @@ type server struct {
 	// reaches past the meaning deadline is the test's choice rather than a race between the
 	// meaning query and 300 ms of wall clock (INFRA-3904).
 	crossProjectWait time.Duration
+	// meaningBound overrides the meaning allowance of the related-item check
+	// (relatedMeaningAllowance), which the check's own allowance still caps; zero, which every
+	// server the deployment builds leaves it, means relatedMeaningAllowance. Only a test sets it,
+	// so a meaning deadline no load reaches is the test's choice, and what ends a wait before it
+	// can be told from that deadline without a clock (INFRA-3904).
+	meaningBound time.Duration
 	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
 	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it: a
 	// case that reads the gate's verdict gives it a bound of its own (testServerOptions'
