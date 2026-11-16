@@ -132,7 +132,8 @@ export interface ModelAnswer {
    * The model the answer says served the call, where it says one: the `model` of the answered
    * body. `askClaude` refuses an answer whose served model is not the asked one (the `model`
    * fault). `askJev` only records it: the round asks Jev for `jev-latest`, an alias that names no
-   * one model, so no served id can be checked against it, and the rows show the ids served.
+   * one model, so no served id can be checked against it, and the rows show the ids served. A
+   * round reads a Jev answer that names no model as the `model` fault (`servedModelFaultOf`).
    */
   servedModel?: string;
   /** The tokens the endpoint reports it read and wrote, and null where it reports none. */

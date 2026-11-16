@@ -84,9 +84,10 @@ export function rowsPath(round: string): string {
  * unreadable row is for.
  *
  * A row written as answered that records no served model, as every row written before rows
- * recorded one does, or a gateway row another model than its arm's served, is read as the
- * `model` fault (`servedModelFaultOf`), its verdict kept: no reader scores it as its arm's, and
- * the runner's resume asks it again. Figures a round printed before that stay its own code's.
+ * recorded one does, a row whose answer named none, or a gateway row another model than its
+ * arm's served, is read as the `model` fault (`servedModelFaultOf`), its verdict kept: no reader
+ * scores it as its arm's, and the runner's resume asks it again. Figures a round printed before
+ * that stay its own code's.
  */
 export function rowOf(line: string): JudgementRow | null {
   let parsed: unknown;
@@ -107,15 +108,19 @@ export function rowOf(line: string): JudgementRow | null {
 
 /**
  * Why a judgement's verdict is not its arm's model's, or null where it is: the row records no
- * served model, or it is a gateway row whose served model is not its arm's (`servedAsAsked`).
- * A Jev row is only held to recording one, since its arm asks for an alias.
+ * served model, its answer named none, or it is a gateway row whose served model is not its
+ * arm's (`servedAsAsked`). A Jev row must name the model that served it, as System One's answer
+ * does, but is not held to the asked id, since its arm asks for an alias.
  */
 export function servedModelFaultOf(
   row: Pick<JudgementRow, "endpoint" | "model" | "servedModel">
 ): string | null {
   if (row.servedModel === undefined) return "the row records no served model";
-  if (row.endpoint !== "claude" || servedAsAsked(row.model, row.servedModel ?? "")) return null;
-  return `asked ${row.model}, and the answer ${row.servedModel === null ? "names no model" : `came from ${row.servedModel}`}`;
+  if (row.servedModel === null || row.servedModel === "") {
+    return `asked ${row.model}, and the answer names no model`;
+  }
+  if (row.endpoint !== "claude" || servedAsAsked(row.model, row.servedModel)) return null;
+  return `asked ${row.model}, and the answer came from ${row.servedModel}`;
 }
 
 /** What one reading of `rows.jsonl` found: the rows, and how much of the file they were. */

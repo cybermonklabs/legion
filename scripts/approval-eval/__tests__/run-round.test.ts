@@ -601,18 +601,20 @@ describe("the rows file", () => {
   test("a resume asks again a row no served model is recorded for, or another model served", async () => {
     const round = await scratch();
     const { servedModel: _, ...unrecorded } = judgementRow("case-0", 0, null);
+    const jev = { endpoint: "jev", model: "jev-latest" };
     const lines = [
       JSON.stringify(unrecorded),
       JSON.stringify({ ...judgementRow("case-1", 0, null), servedModel: "claude-fable-5-2" }),
       JSON.stringify({ ...judgementRow("case-2", 0, null), servedModel: null }),
       JSON.stringify(judgementRow("case-3", 0, null)),
-      JSON.stringify({ ...judgementRow("case-4", 0, null), endpoint: "jev", servedModel: null }),
+      JSON.stringify({ ...judgementRow("case-4", 0, null), ...jev, servedModel: "jev-2026-11" }),
+      JSON.stringify({ ...judgementRow("case-5", 0, null), ...jev, servedModel: null }),
     ];
     await writeFile(rowsPath(round), `${lines.join("\n")}\n`, "utf8");
     const store = await RowStore.open(round);
-    const answered = [0, 1, 2, 3, 4].map((at) =>
+    const answered = [0, 1, 2, 3, 4, 5].map((at) =>
       store.answered(`bare-opus\u0000case-${at}\u00000`)
     );
-    expect(answered).toEqual([false, false, false, true, true]);
+    expect(answered).toEqual([false, false, false, true, true, false]);
   });
 });
