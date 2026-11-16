@@ -3914,16 +3914,24 @@ Each item below names a path with its method and identity, then its purpose.
 - `/ws/live` (GET; cookie, trusted header, or bearer)
 
   One WebSocket per browser tab, serving delivery, events, and agent subscriptions.
+  An events subscription sends only the events its caller may read, by the rule `GET /api/v1/events/log` reads by, for what the caller sees as resolved from the credential the upgrade proved: resolved when the subscription starts, and again at each `project.access_changed`, `access_group.changed` and `project.created`.
+  When the caller's projects moved, other than by a project just made, the subscription ends as `behind`.
   An events subscription resumes after a decimal event id;
-  its `events_start` says `replay_complete: true` when that id is at or below the log's head and the gap fits the replay's bounds (at most 256 events whose frames total at most 1 MiB), so every event after it is replayed before it goes live and a client may skip the refresh it would owe the gap, and `false` with no resume, past either bound, or above the head (a log that was reset).
+  its `events_start` says `replay_complete: true` when that id is at or below the log's head and the gap fits the replay's bounds (at most 256 events whose frames total at most 1 MiB), so every event after it is replayed before it goes live and a client may skip the refresh it would owe the gap, and `false` with no resume, past either bound, across a `project.access_changed` or `access_group.changed`, or above the head (a log that was reset).
   An events subscription that falls 64 events behind the relay catches up from the log within the same bounds and goes on;
-  past them, or once the log is reset, it ends as `behind` and the page subscribes again.
+  past them, across an access change, or once the log is reset, it ends as `behind` and the page subscribes again.
   An agent view holds at most 8 MiB of queued frames and ends as `behind` past that.
   A page that stops reading meets the socket's own bounds first (#2449):
   the writer's 10 s write deadline (`liveSocketWriteWait`) ends the socket, which holds at most 16 of the hub's frames (`liveSocketQueue`) and 64 stream frames (`liveSocketStream`);
   the agent view's 8 MiB bounds only what it buffers while the socket writes slower than the session produces.
   A socket rotates with 4001 at a random age from 30 to 60 minutes;
   it closes with 1012 on restart, 1008 when its caller stops resolving, and 1013 when the hub queue fills.
+
+- `/ws/doc/{room}` (GET; cookie)
+
+  A person's document socket.
+  A room the person may not read, a document of a project they do not see, is refused exactly as a room no document holds is (`404`).
+  Once an owner, a visibility, an access list or a group changes, every process closes each document socket whose person no longer reads its room, with `4412` (`DOC_ADMISSION_REVOKED`), on which the provider reconnects and that refusal answers it (`docs.Service.recheckAccess`, on the room-sync channel `dispatch_access_changed`).
 
 - `/api/v1/inbox?project=&assignee=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 

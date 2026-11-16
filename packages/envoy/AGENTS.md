@@ -3063,7 +3063,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   for an assignee move the assignee the issue was taken from and the one it was given to, since that same rule moves the rows of the asks nobody has handed on out of one Inbox and into the other, and a side where the issue holds nobody is the project's default assignee, whom a question on such an issue reaches (`issueWriteThreadLogins` resolves it, `api/thread_logins.go`).
   A login in both sets is named once, and a write that moved neither carries no `thread_logins` at all.
   `user_state.updated` carries `changed`, which of `pinned`, `last_read_seq` and `dismissed` the write moved from the row it read (`api/state.go`), or `["snoozed"]` for a snooze or an un-snooze of one Inbox row (`askSnoozeEvent`, `api/ask_snooze.go`), whose payload is exactly `{login, changed: ["snoozed"]}`:
-  the stream has no per-viewer filter, so every signed-in person and agent replays it, and it names no ask and no `state` of the writer's (the writer's tabs refetch their whole Inbox);
+  every reader who sees the project replays it, the event log and the live socket reading it by one rule (`eventReadableSQL`, `api/events.go`), so it names no ask and no `state` of the writer's (the writer's tabs refetch their whole Inbox);
   an event without `changed` predates snooze events, so a reader takes it as any of `pinned`, `last_read_seq` and `dismissed`.
 
 - `GET /api/v1/issues/{key}/summary` and `GET /api/v1/projects/{key}/artifacts/{slug}/summary` (`api/issue_summary.go`, any authenticated caller) answer what a rendered `dispatch://` reference shows, at a cost a page linking a hundred items can pay on every event that touches them:
@@ -3127,8 +3127,10 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   the first subscription starts a generation, the cancellation of the last stops it at once, and each generation reads its first cursor afresh, so a process nobody streams from holds no LISTEN connection of the relay's and the relay reads no event log (the suggestion outcome sweep, `api.RunSuggestionOutcomeSweep`, is the process's other reader of the log, woken on `dispatch_events` by cmd/dispatch's shared wake hub).
   An events subscription's `events_start` says `replay_complete: true` (`LiveEventsStart`, `feedEvents` in `api/live_events.go`) when its resume is at or below the log's newest id when it subscribed and its gap fits the replay's bounds (`maxLiveReplay` events, 256, whose frames total at most `maxLiveReplayBytes`, 1 MiB):
   it is replayed every event after the resume, up to the cursor the relay had published through, before it goes live, so the page missed nothing and may skip the refresh it owes a gap.
-  A subscription with no resume, a resume past either bound (replayed nothing), and a resume above the newest id (an id of a log that was reset) each say `false` and start at the relay's published cursor, which is the page's cue to refresh what it shows once;
+  A subscription with no resume, a resume past either bound (replayed nothing), a resume whose gap holds a `project.access_changed` or `access_group.changed`, and a resume above the newest id (an id of a log that was reset) each say `false` and start at the relay's published cursor, which is the page's cue to refresh what it shows once;
   a subscription that finds the relay still on a reset log's cursor waits for the relay's reset before it starts.
+  Each subscription sends only the events its caller may read (`eventReadableSQL`), for what the caller sees as resolved from the credential its socket's upgrade proved (`readerFor`): when the subscription starts, and again at each `project.access_changed`, `access_group.changed` and `project.created` it meets (`sendReadable`);
+  one whose caller's projects moved, other than by a project just made, ends as `behind`, and the page's resubscribe says `false` because its gap holds that change.
 
 - Project creation, repository mappings, and architecture sources own project-scoped events (`project.created`, `project.updated`, `settings.repo_project.updated`, `settings.architecture_source.updated`, and the importer's `architecture.synced` `{repo, branch, commit, components}` / `architecture.sync_failed` `{repo, branch, error}`, each naming the one source it judges (`components` is that source's count;
   events retained from before migration `0117` carry no `repo` or `branch`), authored by the system actor `{kind: "system", id: "architecture-importer"}` and emitted only on that source's state change:
@@ -3293,7 +3295,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `DELETE /api/v1/me/asks/{id}/snooze` removes it and answers `204` whether or not a row was there.
   Neither write touches the ask or reaches any other login: a snooze is one viewer's view state.
   A write that moves the row - a `PUT` whose moment differs from the one stored (the upsert reads the previous moment from its own statement's snapshot) or a `DELETE` that removed a row - appends, in its own transaction, `user_state.updated` `{login, changed: ["snoozed"]}` owned by the ask's project (`askSnoozeEvent`, `api/ask_snooze.go`), and nothing more:
-  the event feed on `/ws/live` has no per-viewer filter, so every signed-in person and agent replays it, and it names neither the ask nor any issue state of the writer's.
+  the event feed on `/ws/live` sends it to every caller who sees the ask's project (`eventReadableSQL`), so it names neither the ask nor any issue state of the writer's.
   The writer's other tabs and devices refetch their whole Inbox from it; it names nobody but the writer and, like every `user_state.updated`, never notifies.
   A write that moves nothing appends none, since each event refetches the Inbox in every tab the person has open.
   Keyed on the ask, not its issue, so a document ask snoozes exactly like an issue ask.
@@ -5439,7 +5441,7 @@ A thread on an issue follows the issue's rule, exactly as `GET /api/v1/issues/{k
 An issue-less thread is a direct conversation:
 a credential holding the `person` scope reads any of them, since a direct conversation is its person's own, and every other names its session in `?session=` (400 `SESSION_REQUIRED` without it) and reads only one that session is in, whose root targets `session:<id>` or where it authored a reply; any other is 403 `THREAD_FORBIDDEN`.
 The session is the caller's own claim, like `actor` on a write, so this keeps a session from reading another session's direct conversation by mistake and is not an authorization boundary.
-Direct-conversation text also reaches every authenticated caller through that caller's `events` view on `/ws/live`; nothing in Dispatch restricts it by session.
+The `events` view on `/ws/live` sends a direct conversation's events by the event log's rule (`eventReadableSQL`, `access.PartyClause`): to its parties, and to an open viewer that may see every session among them; a restricted member or a credential that lists projects reads only its own.
 The command sends the host's session id.
 
 Messages thread: `in_reply_to` names a message in the same conversation - a message of the same issue, or, for `POST /api/v1/agents/{session_id}/messages`, an issue-less message whose thread root targets that same session (400 `MESSAGE_INPUT` otherwise) - and the reply's event and delivery frame carry `reply_body`, the parent's first 160 characters, or, for a reply that names a block of its parent (`in_reply_to_block`), that block's first 160.
