@@ -64,7 +64,7 @@ func RoleProject(role string) string {
 		return NoProject
 	}
 	token, after, found := strings.Cut(rest, "-")
-	if !found || after == "" || token == "" || strings.Trim(token, "abcdefghijklmnopqrstuvwxyz0123456789") != "" {
+	if !found || after == "" {
 		return NoProject
 	}
 	return legionTokenProject(token)
@@ -299,11 +299,9 @@ func LegacyTwin(canonical string) (string, bool) {
 // refused only.
 func TopicForms(topic string) []string {
 	forms := []string{topic}
-	canonical, legacy := CanonicalTopic(topic)
-	if legacy {
+	if canonical, legacy := CanonicalTopic(topic); legacy {
 		forms = append(forms, canonical)
-	}
-	if twin, ok := LegacyTwin(canonical); ok && twin != topic {
+	} else if twin, ok := LegacyTwin(topic); ok {
 		forms = append(forms, twin)
 	}
 	return forms
