@@ -309,9 +309,10 @@ func (s *server) readDeliveryPopulation(ctx context.Context, reader model.Actor,
 //
 // The rows of a project are the reader's: a pull request whose repository repo_projects maps to a
 // project the reader does not see is not read, nor one of a repository no project maps unless the
-// reader is open (access.RepositoryClause), and an unowned P0 issue or the facts of an issue a pull
-// request names are read only from a project the reader sees (access.ProjectClause). The deploy
-// runs and their jobs are the deployment's own, read alike for every reader that may read them.
+// reader is open (access.RepositoryClause), and neither is it counted among the pull requests that
+// can no longer be fetched; an unowned P0 issue or the facts of an issue a pull request names are
+// read only from a project the reader sees (access.ProjectClause). The deploy runs and their jobs
+// are the deployment's own, read alike for every reader that may read them.
 func (s *server) readDeliveryRows(ctx context.Context, reader model.Actor, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting, withMeasures bool) (deliveryPopulation, error) {
 	pool := s.deps.Store.Pool
 	viewer := refs.VisibilityArg(reader)
@@ -361,7 +362,7 @@ func (s *server) readDeliveryRows(ctx context.Context, reader model.Actor, setti
 			return delivery.ListRuns(ctx, pool, settings.DeployRepo, delivery.DeliveryRunKindDeploy, "main", from)
 		}, &pop.applyRuns, &pop.jobsByRun),
 		func(ctx context.Context) (err error) {
-			pop.unfetchable, err = delivery.CountUnfetchablePullRequests(ctx, pool)
+			pop.unfetchable, err = delivery.CountUnfetchablePullRequests(ctx, pool, viewer)
 			return err
 		},
 		func(ctx context.Context) (err error) {

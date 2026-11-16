@@ -66,8 +66,8 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 		conn.Send(*refusal)
 		return false
 	}
-	spec.reader = frame.Reader
-	spec.key += "|" + deliveryReaderKey(frame.Reader)
+	spec.reader, spec.viewer = frame.Reader, deliveryReaderKey(frame.Reader)
+	spec.key += "|" + spec.viewer
 	var held *DeliveryLiveRevs
 	if frame.Resume != nil {
 		seq, err := strconv.ParseInt(frame.Resume.Seq, 10, 64)
@@ -262,11 +262,15 @@ type hubGeneration struct {
 	epoch     int64
 	// p0 is the open P0 issues (OpenP0Keys), kept current from issue event payloads.
 	p0 map[string]struct{}
-	// fresh is the freshness row as last heard, and sent the verdict last sent; known is false
-	// until the first recompute sets them, silently.
-	fresh deliveryFreshnessHeard
-	sent  deliveryFreshnessVerdict
-	known bool
+	// fresh is the freshness row as last heard; known is false until the first recompute sets it,
+	// silently. unfetchable is the unfetchable count each reader's views last read and sent the
+	// verdict last sent to that reader's pages, both by the reader's part of a view key
+	// (deliveryLiveSpec.viewer): a reader is counted only the pull requests it sees, so its verdict
+	// is its own, set silently by its first read.
+	fresh       deliveryFreshnessHeard
+	unfetchable map[string]int
+	sent        map[string]deliveryFreshnessVerdict
+	known       bool
 }
 
 // hubClock is the hub's clock: what time it is, and a timer that calls f once the clock reaches
@@ -351,7 +355,8 @@ type deliverySub struct {
 
 // deliveryLiveSpec is a subscribed view, resolved: its kind, its window (a preset's length in days,
 // or a custom range), its query without from and to, a pipeline view's pinned at, the reader it is
-// read for, and the canonical key identical views share.
+// read for and that reader's part of the key (deliveryReaderKey), and the canonical key identical
+// views share.
 type deliveryLiveSpec struct {
 	kind     string
 	preset   int
@@ -359,15 +364,14 @@ type deliveryLiveSpec struct {
 	query    url.Values
 	at       *time.Time
 	reader   model.Actor
+	viewer   string
 	key      string
 }
 
-// deliveryFreshnessHeard is the freshness row as the hub last heard it, and the population's
-// unfetchable count as the last recompute computed it.
+// deliveryFreshnessHeard is the freshness row as the hub last heard it.
 type deliveryFreshnessHeard struct {
 	lastEventAt, lastReconcileAt *time.Time
 	lastError                    *string
-	unfetchable                  int
 }
 
 // deliveryFreshnessVerdict is what a freshness frame is sent for: the last error, the sources past
@@ -436,11 +440,13 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 		ctx: ctx, stop: stop,
 		ready:    make(chan struct{}),
 		wakeWork: make(chan struct{}, 1), wakeChanges: make(chan struct{}, 1), connected: make(chan struct{}, 1),
-		barrier: make(chan chan struct{}),
-		feeds:   make(chan hubEventFeed, 1),
-		views:   map[string]*deliveryView{},
-		conns:   map[deliveryLiveConn]map[string]*deliverySub{},
-		p0:      map[string]struct{}{},
+		barrier:     make(chan chan struct{}),
+		feeds:       make(chan hubEventFeed, 1),
+		views:       map[string]*deliveryView{},
+		conns:       map[deliveryLiveConn]map[string]*deliverySub{},
+		p0:          map[string]struct{}{},
+		unfetchable: map[string]int{},
+		sent:        map[string]deliveryFreshnessVerdict{},
 	}
 	listener := &pglisten.Listener{
 		Owner:       "dispatch",

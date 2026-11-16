@@ -195,17 +195,19 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 		view.issues, view.ancestors, view.sessions = read.issues, read.ancestors, read.sessions
 		sent = h.sendLocked(g, view)
 		if !g.known {
-			// The first verdict is set silently, from the first settings read.
+			// The row's freshness is set silently, from the first settings read.
 			g.fresh = deliveryFreshnessHeard{
 				lastEventAt: read.settings.LastEventAt, lastReconcileAt: read.settings.LastReconcileAt,
-				lastError: read.settings.LastError, unfetchable: read.unfetchable,
+				lastError: read.settings.LastError,
 			}
-			g.sent = g.verdictLocked(now)
 			g.known = true
-		} else {
-			g.fresh.unfetchable = read.unfetchable
-			h.judgeLocked(g, now)
 		}
+		g.unfetchable[spec.viewer] = read.unfetchable
+		if _, told := g.sent[spec.viewer]; !told {
+			// A reader's first verdict is set silently too, from its first read.
+			g.sent[spec.viewer] = g.verdictLocked(now, spec.viewer)
+		}
+		h.judgeLocked(g, now)
 	}
 	// What the events heard since the read took its position touched is checked against the
 	// answer it installed, or the last one when it installed none (recheckHeardLocked), and the
@@ -387,8 +389,8 @@ func (h *deliveryHub) answerLocked(g *hubGeneration, sub *deliverySub) bool {
 	sent := h.answerBodyLocked(sub)
 	if sub.needsVerdict {
 		sub.needsVerdict = false
-		if g.known {
-			sub.conn.Send(g.freshnessFrameLocked(g.sent))
+		if verdict, told := g.sent[sub.view.spec.viewer]; g.known && told {
+			sub.conn.Send(g.freshnessFrameLocked(verdict))
 		}
 	}
 	return sent

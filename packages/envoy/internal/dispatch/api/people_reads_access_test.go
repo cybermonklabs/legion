@@ -149,6 +149,110 @@ func TestARestrictedMemberSeesOnlyThePeopleAndAgentsOfItsProjects(t *testing.T) 
 	}
 }
 
+// TestASessionsLastActivityCountsOnlyWhatTheCallerSees: an agent row's last_activity is the newest
+// event of the session among the events the caller sees. alice sees session-priv, as an open
+// viewer sees every session, but none of its events, so its row answers as a session with no
+// activity; session-both's newest event is its ask on PRIV, so alice's row for it is its ask on
+// PUB, older than the one bob and carol read.
+func TestASessionsLastActivityCountsOnlyWhatTheCallerSees(t *testing.T) {
+	listener, _ := newBroadcastListener(t, privateRoster)
+	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
+	seedSessionWork(t, seed)
+	activity := func(caller privateCaller) map[string]*time.Time {
+		t.Helper()
+		rows := map[string]*time.Time{}
+		for _, agent := range decodeBody[[]struct {
+			SessionID    string     `json:"session_id"`
+			LastActivity *time.Time `json:"last_activity"`
+		}](t, seed.mustRequest(t, caller, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)) {
+			rows[agent.SessionID] = agent.LastActivity
+		}
+		return rows
+	}
+	alice, bob, carol, carolToken := activity(callerAlice), activity(callerBob), activity(callerCarol), activity(callerCarolToken)
+	for caller, rows := range map[privateCaller]map[string]*time.Time{callerAlice: alice, callerCarolToken: carolToken} {
+		if at, listed := rows[sessionOfPrivate]; !listed || at != nil {
+			t.Errorf("%s reads session-priv listed %t with last activity %v, want it listed with none: every event of it is PRIV's", caller, listed, at)
+		}
+		if rows[sessionOfPublic] == nil {
+			t.Errorf("%s reads no last activity of session-pub, want its comment on PUB", caller)
+		}
+	}
+	for caller, rows := range map[privateCaller]map[string]*time.Time{callerBob: bob, callerCarol: carol} {
+		if rows[sessionOfPrivate] == nil {
+			t.Errorf("%s reads no last activity of session-priv, want its comment on PRIV", caller)
+		}
+	}
+	if alice[sessionOfBoth] == nil || carol[sessionOfBoth] == nil || bob[sessionOfBoth] == nil {
+		t.Fatalf("session-both's last activity: alice %v, bob %v, carol %v, want one for each", alice[sessionOfBoth], bob[sessionOfBoth], carol[sessionOfBoth])
+	}
+	if !alice[sessionOfBoth].Before(*carol[sessionOfBoth]) {
+		t.Errorf("alice reads session-both's last activity at %s and carol at %s, want alice's older: its ask on PUB, not the later one on PRIV",
+			alice[sessionOfBoth], carol[sessionOfBoth])
+	}
+	if !bob[sessionOfBoth].Equal(*carol[sessionOfBoth]) {
+		t.Errorf("bob reads session-both's last activity at %s and carol at %s, want the same: its ask on PRIV, which both see",
+			bob[sessionOfBoth], carol[sessionOfBoth])
+	}
+}
+
+// TestEachReaderIsToldTheUnfetchableCountOfWhatItSees: the live hub counts, for each reader, the
+// pull requests that can no longer be fetched in the repositories that reader sees, in its
+// snapshot and in the freshness frame a later mark sends it, never another reader's count. The
+// server's own reader sees both repositories; an open reader that sees no project sees only the one
+// no project maps.
+func TestEachReaderIsToldTheUnfetchableCountOfWhatItSees(t *testing.T) {
+	rig := newHubRig(t, nil)
+	seedHubSettings(t, rig.database)
+	createTestProject(t, rig.handler, "HID")
+	if response := dispatchRequest(t, rig.handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/hidden",
+		map[string]any{"project": "HID"}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("map acme/hidden to HID: %d %s", response.Code, response.Body.String())
+	}
+	merged := rig.clock.Now().Add(-3 * time.Hour)
+	upsertPR(t, rig.database, hubPR(1, merged))
+	hidden := hubPR(2, merged)
+	hidden.Repo, hidden.URL = "acme/hidden", "https://github.com/acme/hidden/pull/2"
+	upsertPR(t, rig.database, hidden)
+	if err := delivery.MarkPullRequestUnfetchable(t.Context(), rig.database.Pool, "acme/hidden", 2, "the pull request is gone"); err != nil {
+		t.Fatalf("mark acme/hidden#2 unfetchable: %v", err)
+	}
+
+	readers := []struct {
+		name                  string
+		reader                model.Actor
+		snapshot, afterMarked int
+	}{
+		{"the server's own reader", everyReader, 1, 2},
+		{"an open reader that sees no project", model.Actor{Viewer: &model.Viewer{Open: true, Sees: []string{}}}, 0, 1},
+	}
+	conns := make([]*fakeLiveConn, len(readers))
+	for index, reader := range readers {
+		conns[index] = newFakeLiveConn()
+		rig.hub.Subscribe(conns[index], deliverySubscription{Sub: "p", View: presetView(deliveryLiveTimeline, 7, ""), Reader: reader.reader})
+		snapshot := conns[index].snapshot(t, 5*time.Second, "p")
+		var body deliveryTimelineWithMeasures
+		if err := json.Unmarshal(snapshot.Body, &body); err != nil {
+			t.Fatalf("decode %s's snapshot: %v", reader.name, err)
+		}
+		if got := body.Freshness.UnfetchableCount; got != reader.snapshot {
+			t.Errorf("%s's snapshot counts %d unfetchable pull requests, want %d", reader.name, got, reader.snapshot)
+		}
+	}
+	rig.waitConnected(t)
+
+	if err := delivery.MarkPullRequestUnfetchable(t.Context(), rig.database.Pool, "acme/widgets", 1, "the pull request is gone"); err != nil {
+		t.Fatalf("mark acme/widgets#1 unfetchable: %v", err)
+	}
+	for index, reader := range readers {
+		conns[index].delta(t, 3*time.Second, "p")
+		fresh := conns[index].freshness(t, 3*time.Second, reader.name+"'s freshness frame after the mark")
+		if got := fresh.Freshness.UnfetchableCount; got != reader.afterMarked {
+			t.Errorf("%s is told %d unfetchable pull requests, want %d", reader.name, got, reader.afterMarked)
+		}
+	}
+}
+
 // TestADeploymentReadCountsOnlyTheProjectsTheCallerSees: the reads of the whole deployment that an
 // open viewer still makes, GET /api/v1/priorities, the delivery timeline and measures and GET
 // /api/v1/ci-reconcile/passes, count and list only the work of the projects the caller sees. A
@@ -197,6 +301,12 @@ func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
 			t.Fatalf("store %s#%d: %v", repo, number, err)
 		}
 	}
+	// Two of them can no longer be fetched from GitHub, as the intake marks one.
+	for number, repo := range map[int]string{2: "acme/priv", 3: "acme/other"} {
+		if err := delivery.MarkPullRequestUnfetchable(ctx, seed.database.Pool, repo, number, "the pull request is gone"); err != nil {
+			t.Fatalf("mark %s#%d unfetchable: %v", repo, number, err)
+		}
+	}
 
 	// Three ended passes, each leaving its cursor in another repository, as a pass writes its row.
 	instance := seedServerProcess(t, seed.database, 0)
@@ -223,12 +333,14 @@ func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
 			wantUnowned := []string{seedPublic}
 			wantByProject := []string{seedPublic}
 			wantAdvancing := 1
+			wantUnfetchable := 1
 			if test.sees {
 				wantPRs = []string{"acme/other#3", "acme/priv#2", "acme/pub#1"}
 				wantPasses = []string{"acme/other", "acme/priv", "acme/pub"}
 				wantUnowned = []string{seedPrivate, seedPublic}
 				wantByProject = []string{seedPrivate, seedPublic}
 				wantAdvancing = 2
+				wantUnfetchable = 2
 			}
 
 			priorities := decodeBody[model.Priorities](t, seed.mustRequest(t, test.caller, http.MethodGet, "/api/v1/priorities", nil, http.StatusOK))
@@ -257,6 +369,9 @@ func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
 			if !slices.Equal(gotPRs, wantPRs) {
 				t.Errorf("%s: the delivery timeline lists %v, want %v", test.caller, gotPRs, wantPRs)
 			}
+			if got := timeline.Freshness.UnfetchableCount; got != wantUnfetchable {
+				t.Errorf("%s: the delivery timeline counts %d pull requests that can no longer be fetched, want %d", test.caller, got, wantUnfetchable)
+			}
 			measured := decodeBody[deliveryMeasuresResponse](t, seed.mustRequest(t, test.caller, http.MethodGet, "/api/v1/delivery/measures", nil, http.StatusOK))
 			gotUnowned := []string{}
 			for _, issue := range measured.UnownedP0 {
@@ -266,6 +381,9 @@ func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
 			slices.Sort(gotUnowned)
 			if !slices.Equal(gotUnowned, wantUnowned) {
 				t.Errorf("%s: the measures list unowned P0 issues of %v, want %v", test.caller, gotUnowned, wantUnowned)
+			}
+			if got := measured.Freshness.UnfetchableCount; got != wantUnfetchable {
+				t.Errorf("%s: the measures count %d pull requests that can no longer be fetched, want %d", test.caller, got, wantUnfetchable)
 			}
 
 			passes := decodeBody[[]ciPassView](t, seed.mustRequest(t, test.caller, http.MethodGet, "/api/v1/ci-reconcile/passes", nil, http.StatusOK))

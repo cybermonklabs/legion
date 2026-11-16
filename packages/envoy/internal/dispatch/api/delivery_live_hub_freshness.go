@@ -30,31 +30,46 @@ func (h *deliveryHub) applyFreshness(g *hubGeneration, payload string) {
 	signal(g.wakeWork)
 }
 
-// verdictLocked is g's freshness verdict as of now.
-func (g *hubGeneration) verdictLocked(now time.Time) deliveryFreshnessVerdict {
+// verdictLocked is the freshness verdict as of now for the reader whose part of a view key is
+// viewer: the row's freshness, which every reader shares, and that reader's unfetchable count.
+func (g *hubGeneration) verdictLocked(now time.Time, viewer string) deliveryFreshnessVerdict {
 	stale := []string{}
 	if last := g.fresh.lastReconcileAt; last != nil && now.Sub(*last) > deliveryStaleAfter {
 		stale = append(stale, deliveryReconciledSources...)
 	}
-	return deliveryFreshnessVerdict{lastError: g.fresh.lastError, stale: stale, unfetchable: g.fresh.unfetchable}
+	return deliveryFreshnessVerdict{lastError: g.fresh.lastError, stale: stale, unfetchable: g.unfetchable[viewer]}
 }
 
-// judgeLocked sends every open page a freshness frame when g's verdict changed since the last one,
-// and nothing otherwise; nothing at all before the first recompute set it. A subscription is sent
-// the last one after its first answer (answerLocked).
+// judgeLocked sends each reader's open pages a freshness frame when that reader's verdict changed
+// since the last one it was sent, and nothing otherwise; nothing at all before the first recompute
+// set the row, nor to a reader before its first read set its verdict. A subscription is sent the
+// last one after its first answer (answerLocked).
 func (h *deliveryHub) judgeLocked(g *hubGeneration, now time.Time) {
 	if !g.known {
 		return
 	}
-	verdict := g.verdictLocked(now)
-	if verdict.unfetchable == g.sent.unfetchable && slices.Equal(verdict.stale, g.sent.stale) &&
-		equalStringPointers(verdict.lastError, g.sent.lastError) {
+	frames := map[string]DeliveryLiveFreshness{}
+	for viewer, sent := range g.sent {
+		verdict := g.verdictLocked(now, viewer)
+		if verdict.unfetchable == sent.unfetchable && slices.Equal(verdict.stale, sent.stale) &&
+			equalStringPointers(verdict.lastError, sent.lastError) {
+			continue
+		}
+		g.sent[viewer] = verdict
+		frames[viewer] = g.freshnessFrameLocked(verdict)
+	}
+	if len(frames) == 0 {
 		return
 	}
-	g.sent = verdict
-	frame := g.freshnessFrameLocked(verdict)
-	for conn := range g.conns {
-		conn.Send(frame)
+	for conn, subs := range g.conns {
+		told := map[string]bool{}
+		for _, sub := range subs {
+			viewer := sub.view.spec.viewer
+			if frame, changed := frames[viewer]; changed && !told[viewer] {
+				told[viewer] = true
+				conn.Send(frame)
+			}
+		}
 	}
 }
 

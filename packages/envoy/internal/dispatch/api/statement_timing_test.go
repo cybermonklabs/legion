@@ -97,7 +97,7 @@ func TestStatementTimings(t *testing.T) {
 
 	runner.Pair(t, "agentLastActivity",
 		benchtime.Statement{SQL: mainAgentLastActivityQuery, Args: []any{subjects.Sessions}},
-		benchtime.Statement{SQL: agentLastActivityQuery, Args: []any{subjects.Sessions}})
+		benchtime.Statement{SQL: agentLastActivityQuery, Args: []any{subjects.Sessions, refs.VisibilityArg(everyReader)}})
 
 	runner.Pair(t, "the issue's children",
 		benchtime.Statement{SQL: mainIssueChildrenQuery, Args: []any{subjects.Issue}},

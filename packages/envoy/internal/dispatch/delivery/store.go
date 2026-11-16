@@ -487,11 +487,15 @@ func MarkPullRequestUnfetchable(ctx context.Context, pool *store.Pool, repo stri
 	return err
 }
 
-// CountUnfetchablePullRequests counts every row MarkPullRequestUnfetchable has marked, for the
-// freshness row's "N pull requests can no longer be fetched from GitHub".
-func CountUnfetchablePullRequests(ctx context.Context, pool *store.Pool) (int, error) {
+// CountUnfetchablePullRequests counts every row MarkPullRequestUnfetchable has marked whose
+// repository the viewer sees (access.RepositoryClause over the visibility argument viewer,
+// refs.VisibilityArg), for the freshness row's "N pull requests can no longer be fetched from
+// GitHub".
+func CountUnfetchablePullRequests(ctx context.Context, pool *store.Pool, viewer any) (int, error) {
 	var count int
-	err := pool.QueryRow(ctx, `select count(*) from delivery_pull_requests where unfetchable_at is not null`).Scan(&count)
+	err := pool.QueryRow(ctx, `
+		select count(*) from delivery_pull_requests pr
+		where pr.unfetchable_at is not null and `+access.RepositoryClause("pr.repo", "$1"), viewer).Scan(&count)
 	return count, err
 }
 

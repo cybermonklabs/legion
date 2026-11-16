@@ -98,20 +98,44 @@ func (s *server) visibleRosterSessions(ctx context.Context, viewer any, sessions
 // actor->>'kind' = 'session' because that index is partial on it, and it is joined with `cross
 // join`, not a left join: a session with no event is a session the caller's map must not hold,
 // which is what the grouped read answered by returning it no row.
-const agentLastActivityQuery = `
+//
+// Only an event the reader whose visibility argument is $2 sees counts (sessionActivityVisibleSQL),
+// so a session whose every event is hidden from it answers as a session with none.
+var agentLastActivityQuery = `
 		select s.id, e.created_at
 		from unnest($1::text[]) s(id)
 		cross join lateral (
-			select created_at
-			from events
-			where actor->>'kind' = 'session' and actor->>'id' = s.id
-			order by created_at desc
+			select activity.created_at
+			from events activity
+			where activity.actor->>'kind' = 'session' and activity.actor->>'id' = s.id
+				and ` + sessionActivityVisibleSQL("activity", "$2") + `
+			order by activity.created_at desc
 			limit 1
 		) e
 	`
 
-func (s *server) agentLastActivity(ctx context.Context, sessionIDs []string) (map[string]time.Time, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, agentLastActivityQuery, sessionIDs)
+// sessionActivityVisibleSQL is whether the viewer at viewerParam sees the event aliased event,
+// one a session appended: an event of a project, of an issue or of a document passes when the
+// viewer sees that project (access.ProjectClause), and an event that belongs to no project passes
+// an open viewer alone, as a conversation that names no party does (access.PartyClause over no
+// parties). Each `exists` reads its owner by primary key.
+func sessionActivityVisibleSQL(event, viewerParam string) string {
+	return `case
+		when ` + event + `.project_key is not null then ` + access.ProjectClause(event+".project_key", viewerParam) + `
+		when ` + event + `.issue_key is not null then exists (
+			select 1 from issues owner_issue
+			where owner_issue.key = ` + event + `.issue_key and ` + access.ProjectClause("owner_issue.project_key", viewerParam) + `
+			offset 0)
+		when ` + event + `.artifact_id is not null then exists (
+			select 1 from artifacts owner_artifact
+			where owner_artifact.id = ` + event + `.artifact_id and ` + access.ProjectClause("owner_artifact.project_key", viewerParam) + `
+			offset 0)
+		else ` + access.PartyClause("'{}'::text[]", viewerParam) + `
+	end`
+}
+
+func (s *server) agentLastActivity(ctx context.Context, viewer any, sessionIDs []string) (map[string]time.Time, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, agentLastActivityQuery, sessionIDs, viewer)
 	if err != nil {
 		return nil, fmt.Errorf("query agent activity: %w", err)
 	}
@@ -214,7 +238,7 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	activity, err := s.agentLastActivity(r.Context(), sessionIDs)
+	activity, err := s.agentLastActivity(r.Context(), viewer, sessionIDs)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
