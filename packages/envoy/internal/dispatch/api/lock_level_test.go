@@ -44,13 +44,16 @@ var ownerRowTables = []string{"issues", "artifacts", "projects"}
 
 // ownerRowLockSites are the functions allowed to lock an owner row, keyed by the file that
 // declares them: the events' lockEventOwner, which takes the row `for no key update` when the
-// transaction appends, under the owner's advisory lock it takes first; and the store's
-// ownerRowLockStatement, the statements the owner lock runs right after its advisory lock, before
-// the read it guards, while its fleet read answers that a process of an earlier build is live
-// (store.lockOwnerRows).
+// transaction appends, under the owner's advisory lock it takes first; and the store's owner lock
+// levels (store.ownerLockExclusive, ownerLockShared, ownerLockTry), whose row locks are the
+// statements the owner lock runs right after its advisory lock, before the read it guards, while
+// its fleet read answers that a process of an earlier build is live (store.lockOwnerRows). The
+// levels are package-level values, and a statement declared outside any function is named by no
+// function (sqlStatementsByFunction), so the store's entry is "": the package-level declarations
+// of ownerlock.go, among which the levels alone lock an owner row.
 var ownerRowLockSites = map[string][]string{
 	"internal/dispatch/events/broker.go":   {"lockEventOwner"},
-	"internal/dispatch/store/ownerlock.go": {"ownerRowLockStatement"},
+	"internal/dispatch/store/ownerlock.go": {""},
 }
 
 var (
@@ -148,7 +151,7 @@ func TestNoForUpdateOnOwnerTables(t *testing.T) {
 			strings.Join(ownerLockTables, ", "), strings.Join(forUpdates, "\n\t"))
 	}
 	if len(rowLocks) > 0 {
-		t.Errorf("a row lock on %s is refused outside the owner lock's own owner-row locks (events.lockEventOwner, store.ownerRowLockStatement):\n\t%s\n"+
+		t.Errorf("a row lock on %s is refused outside the owner lock's own owner-row locks (events.lockEventOwner, the row locks of store's owner lock levels):\n\t%s\n"+
 			"Take the owner's advisory lock (store.LockOwner, LockOwners, LockOwnersShared or TryLockOwners) "+
 			"and read the row plainly in the statement after it.",
 			strings.Join(ownerRowTables, ", "), strings.Join(rowLocks, "\n\t"))

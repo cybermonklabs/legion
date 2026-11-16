@@ -470,17 +470,14 @@ func raceWriter(ctx context.Context, s *Store, shape writerShape, owners []Owner
 			return false, err
 		}
 	case advisoryWriter:
-		if _, err := lockOwnerKeys(ctx, tx, owners); err != nil {
+		// The advisory statement alone, whatever its fleet read answers: the writer whose fleet
+		// read found no earlier build.
+		if _, err := tx.Exec(ctx, ownerLockExclusive.statement, ownerLockArgs(lockKeys(owners))...); err != nil {
 			return false, err
 		}
 	case fleetModeWriter:
-		if legacy, err = lockOwnerKeys(ctx, tx, owners); err != nil {
+		if _, legacy, err = lockOwnersAt(ctx, tx, ownerLockExclusive, owners, nil); err != nil {
 			return legacy, err
-		}
-		if legacy {
-			if err := lockOwnerRows(ctx, tx, owners, rowLockExclusive); err != nil {
-				return legacy, err
-			}
 		}
 	case rowFirstWriter:
 		sorted := slices.Clone(owners)
@@ -813,6 +810,188 @@ func awaitGateWait(t *testing.T, s *Store, pid uint32, ended <-chan error, what 
 			t.Fatalf("%s did not wait for the gate within 10s", what)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// fleetReadPauseNamespace and fleetReadPauseKey are the two keys of the advisory lock a test holds
+// to stop a writer inside its first fleet read ("PAUS", 0; pauseFleetReadsAt): a namespace of its
+// own among the module's two-key locks (OwnerLockNamespace's list).
+const (
+	fleetReadPauseNamespace int32 = 0x50415553
+	fleetReadPauseKey       int32 = 0
+)
+
+// pauseFleetReadsAt makes every fleet read (public.owner_lock_fleet_read) of a transaction running
+// as the role it answers stop at the server_processes row of instance until the transaction it
+// answers ends, which holds the pause; the caller commits it to let the reads go on. The pause is
+// a row-level security policy on server_processes, which Postgres checks for each row a scan
+// reads, so a fleet read stops inside its statement, after that statement's snapshot is taken.
+// The policy then hides the row, which the caller leaves a live process of an earlier build to
+// every other condition of the fleet read, so the policy reaches it in whatever order the scan
+// checks them. Superusers skip row-level security, so the writer runs as the role (`set local
+// role`), which may read the fleet read's two tables and take an issue's row.
+func pauseFleetReadsAt(t *testing.T, s *Store, instance string) (role string, pause pgx.Tx) {
+	t.Helper()
+	ctx := context.Background()
+	role = "fleet_read_pause_" + randomDatabaseSuffix(t)
+	if _, err := s.Pool.Exec(ctx, fmt.Sprintf(`
+		create function public.fleet_read_pause(instance uuid) returns boolean language plpgsql as $$
+		begin
+			if instance = '%s'::uuid then
+				perform pg_catalog.pg_advisory_xact_lock_shared(%d, %d);
+				return false;
+			end if;
+			return true;
+		end $$;
+		alter table public.server_processes enable row level security;
+		create policy fleet_read_pause on public.server_processes for select
+			using (public.fleet_read_pause(instance));
+		create role %s nologin;
+		grant select on public.server_processes, public.owner_lock_legacy_mark to %s;
+		grant select, update on public.issues to %s;`,
+		instance, fleetReadPauseNamespace, fleetReadPauseKey, role, role, role)); err != nil {
+		t.Fatalf("set the fleet read's pause up: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := s.Pool.Exec(context.Background(), "drop owned by "+role+"; drop role "+role); err != nil {
+			t.Errorf("drop the role %s: %v", role, err)
+		}
+	})
+	pause, err := s.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pause.Rollback(context.Background()) })
+	if _, err := pause.Exec(ctx, `select pg_advisory_xact_lock($1, $2)`, fleetReadPauseNamespace, fleetReadPauseKey); err != nil {
+		t.Fatalf("hold the fleet read's pause: %v", err)
+	}
+	return role, pause
+}
+
+// awaitFleetReadPause waits up to ten seconds for backend pid to stop at the fleet read's pause
+// (pauseFleetReadsAt), and fails the test when its owner lock answers first (done closes).
+func awaitFleetReadPause(t *testing.T, s *Store, pid uint32, done <-chan struct{}) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting bool
+		if err := s.Pool.QueryRow(context.Background(), `
+			select exists (
+				select from pg_locks
+				where locktype = 'advisory' and database = (select oid from pg_database where datname = current_database())
+				  and classid::bigint = $1 and objid::bigint = $2 and objsubid = 2 and pid = $3 and not granted)`,
+			fleetReadPauseNamespace, fleetReadPauseKey, pid).Scan(&waiting); err != nil {
+			t.Fatalf("read the fleet read's pause: %v", err)
+		}
+		if waiting {
+			return
+		}
+		select {
+		case <-done:
+			t.Fatal("the writer's owner lock answered before its fleet read stopped at the pause")
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the writer's fleet read did not stop at the pause within 10s")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// The fleet read owner_lock_fleet makes after its try reads under a snapshot of its own, so an
+// earlier build whose arrival commits after the first read and before the try is in the fleet by
+// that second read alone. A writer of this build stops inside its first fleet read, after that
+// read's snapshot is taken and before the try (pauseFleetReadsAt), holding no gate; the earlier
+// build arrives - its dashboard publish, or its registration - and commits, taking the gate, which
+// it finds free; then the writer goes on. Its first read cannot see the arrival, and its try takes
+// the gate, which the writer then holds shared, so neither answered that an earlier build is in
+// the fleet; the writer takes the owner's row all the same, as beside an earlier build, which only
+// the second read can have told it. With no arrival the writer, stopped and let go alike, takes the
+// advisory lock alone: the row the pause stops at counts for nothing. A second read that answered
+// the first read's result again would leave the writer in the advisory mode beside the arrival.
+func TestTheFleetReadAfterTheGateSeesAnArrivalCommittedAfterTheFirstRead(t *testing.T) {
+	cases := []struct {
+		name    string
+		arrival *earlierBuildArrival
+	}{
+		{name: "no arrival"},
+		{name: earlierBuildArrivals[0].name, arrival: &earlierBuildArrivals[0]},
+		{name: earlierBuildArrivals[1].name, arrival: &earlierBuildArrivals[1]},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, owners := openFleetStore(t)
+			ctx := context.Background()
+			// The pause's row: registered at this build's protocol, which makes no arrival and
+			// stamps no mark, then moved to 0, which no trigger watches, so that every condition
+			// of the fleet read but the pause's policy holds for it.
+			paused := registerFleetProcess(t, s, OwnerLockProtocol, 0)
+			if _, err := s.Pool.Exec(ctx, `update server_processes set owner_lock_protocol = 0 where instance = $1::uuid`, paused); err != nil {
+				t.Fatal(err)
+			}
+			role, pause := pauseFleetReadsAt(t, s, paused)
+
+			writer, err := s.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writer.Exec(ctx, "set local role "+role); err != nil {
+				_ = writer.Rollback(ctx)
+				t.Fatal(err)
+			}
+			writerPID := writer.Conn().PgConn().PID()
+			locked := make(chan error, 1)
+			done := make(chan struct{})
+			go func() {
+				locked <- LockOwner(ctx, writer, owners.issueA)
+				close(done)
+			}()
+			defer func() {
+				_ = pause.Rollback(ctx)
+				<-done
+				_ = writer.Rollback(ctx)
+			}()
+			awaitFleetReadPause(t, s, writerPID, done)
+			if gate, granted := gateLock(t, s, writerPID); gate != "" {
+				t.Fatalf("the writer stopped at the pause holds the gate as %q (granted %t), want no gate: the pause is in its first fleet read, before its try", gate, granted)
+			}
+			if c.arrival != nil {
+				arrived := make(chan error, 1)
+				go func() { arrived <- arrive(ctx, s, *c.arrival, uuid.NewString()) }()
+				select {
+				case err := <-arrived:
+					if err != nil {
+						t.Fatalf("%s while the writer was stopped inside its first fleet read: %v", c.arrival.name, err)
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatalf("%s waited 10s beside a writer stopped before its try, which holds no gate", c.arrival.name)
+				}
+			}
+			if err := pause.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the writer's owner lock did not answer within 10s of the pause's end")
+			}
+			if err := <-locked; err != nil {
+				t.Fatalf("the writer's owner lock: %v", err)
+			}
+			want := ownerLockAdvisory
+			if c.arrival != nil {
+				want = ownerLockAdvisoryAndRow
+			}
+			if mode := lastOwnerLockMode(); mode != want {
+				t.Errorf("the writer after %s took the %s mode, want %s", c.name, mode, want)
+			}
+			if held := ownerRowHeld(t, s, owners.issueA); held != (c.arrival != nil) {
+				t.Errorf("after %s the writer holds the row of %s: %t, want %t", c.name, owners.issueA.LockKey(), held, c.arrival != nil)
+			}
+			if gate, granted := gateLock(t, s, writerPID); gate != "ShareLock" || !granted {
+				t.Errorf("after %s the writer holds the gate as %q (granted %t), want it held shared: its try took the gate and answered no earlier build", c.name, gate, granted)
+			}
+		})
 	}
 }
 

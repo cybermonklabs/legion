@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // OwnerLockNamespace is the first key of every owner lock ("OWNR"). Postgres keeps the two-key
@@ -136,10 +135,11 @@ func (o Owner) LockKey() string { return string(o.Kind) + ":" + o.Key }
 
 // OwnerLocker is what an owner lock runs on: a transaction, or a savepoint of one, whose rollback
 // gives back the locks taken under it. The pool satisfies it too, for a try that holds its lock only
-// for its own statement.
+// for its own statement. A lock that takes the owners' rows beside an earlier build, or runs the
+// read it guards in its own round trip, sends a batch (lockOwnersAt).
 type OwnerLocker interface {
-	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, arguments ...any) (pgx.Rows, error)
+	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
 }
 
 // The owner lock statements. Each names what it calls owner_lock and spells its keys' text type,
@@ -180,6 +180,123 @@ const (
 // keys keys.
 func ownerLockArgs(keys []string) []any {
 	return []any{OwnerLockNamespace, keys, OwnerLockLegacyWindow.Seconds(), OwnerLockMarkWindow.Seconds()}
+}
+
+// The head of each kind's row lock (ownerLockLevel.rowLocks): the rows of kind's owners named by
+// $1, each answering its key as text (an artifact's id canonical), whose `order by` takes them in
+// byte order of their keys (an issue's or a project's key collated "C", an artifact's id as a
+// uuid, whose order is its text's). A level's row-lock clause follows it.
+const (
+	ownerRowsArtifacts = `select id::text from artifacts where id = any($1::uuid[]) order by id`
+	ownerRowsIssues    = `select key from issues where key = any($1::text[]) order by key collate "C"`
+	ownerRowsProjects  = `select key from projects where key = any($1::text[]) order by key collate "C"`
+)
+
+// ownerLockLevel is a level a read phase takes its owners' locks at, with both locks the level
+// decides in one value, so that the advisory lock and the row lock of one level cannot drift
+// apart: statement, the owner lock statement above that takes the owners' advisory locks at it,
+// and rowLocks, by kind, the statements that take the owners' rows at it beside an earlier build
+// (lockOwnerRows), each with the clause that build takes the row with for the same work. At a
+// level that skips, an owner whose lock or row another transaction holds is left out of what the
+// lock answers rather than waited for. named is what the level's failures say after the owners
+// they name. Every read-phase owner lock runs at one of the three levels below, through
+// lockOwnersAt.
+type ownerLockLevel struct {
+	statement string
+	rowLocks  map[OwnerKind]string
+	skips     bool
+	named     string
+}
+
+// The three levels. Each spells its row locks whole, a kind's head and the level's clause in one
+// constant expression, so api.TestNoForUpdateOnOwnerTables reads each owner table with its lock
+// clause in one statement. These and the write phase's events.lockEventOwner are the only
+// statements of this module that lock an owner row.
+var (
+	// ownerLockExclusive is every writer's (LockOwner, LockOwners, LockOwnersAndRead): the rows
+	// `for no key update`.
+	ownerLockExclusive = &ownerLockLevel{
+		statement: ownersLock,
+		rowLocks: map[OwnerKind]string{
+			OwnerArtifact: ownerRowsArtifacts + " for no key update",
+			OwnerIssue:    ownerRowsIssues + " for no key update",
+			OwnerProject:  ownerRowsProjects + " for no key update",
+		},
+	}
+	// ownerLockShared is the Inbox's (LockOwnersShared): the rows `for share`.
+	ownerLockShared = &ownerLockLevel{
+		statement: ownersLockShared,
+		rowLocks: map[OwnerKind]string{
+			OwnerArtifact: ownerRowsArtifacts + " for share",
+			OwnerIssue:    ownerRowsIssues + " for share",
+			OwnerProject:  ownerRowsProjects + " for share",
+		},
+		named: " for share",
+	}
+	// ownerLockTry is a background pass's (TryLockOwners): each owner's lock tried, and the rows
+	// `for no key update skip locked`.
+	ownerLockTry = &ownerLockLevel{
+		statement: ownersTryLock,
+		rowLocks: map[OwnerKind]string{
+			OwnerArtifact: ownerRowsArtifacts + " for no key update skip locked",
+			OwnerIssue:    ownerRowsIssues + " for no key update skip locked",
+			OwnerProject:  ownerRowsProjects + " for no key update skip locked",
+		},
+		skips: true,
+		named: " without waiting",
+	}
+)
+
+// failed is err, the failure of level's owner lock statement for owners, naming what it locked.
+func (level *ownerLockLevel) failed(owners []Owner, err error) error {
+	if len(owners) == 1 {
+		return fmt.Errorf("lock %s %s%s: %w", owners[0].Kind, owners[0].Key, level.named, err)
+	}
+	return fmt.Errorf("lock owners %v%s: %w", lockKeys(owners), level.named, err)
+}
+
+// scan reads rows, the answer of level's owner lock statement for owners, whose lock keys are
+// keys, to their end, which runs the statement to its end and so takes every lock it names. It
+// answers the owners whose locks the statement took - every one at a level that waits, those its
+// rows name at one that skips - and the fleet read, which it records (noteOwnerLockMode). A try
+// that took none answers no row and so no fleet read, and nothing is recorded.
+func (level *ownerLockLevel) scan(rows pgx.Rows, owners []Owner, keys []string) ([]Owner, bool, error) {
+	defer rows.Close()
+	var byKey map[string]Owner
+	if level.skips {
+		byKey = make(map[string]Owner, len(owners))
+		for index, owner := range owners {
+			byKey[keys[index]] = owner
+		}
+	}
+	var held []Owner
+	legacy, answered := false, false
+	for rows.Next() {
+		if !level.skips {
+			if err := rows.Scan(nil, &legacy); err != nil {
+				return nil, false, err
+			}
+			answered = true
+			continue
+		}
+		var key string
+		if err := rows.Scan(&key, &legacy); err != nil {
+			return nil, false, err
+		}
+		answered = true
+		held = append(held, byKey[key])
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if !answered {
+		return nil, false, nil
+	}
+	noteOwnerLockMode(legacy)
+	if !level.skips {
+		held = owners
+	}
+	return held, legacy, nil
 }
 
 // ownerLockMode is which owner lock a transaction of this process took, by its fleet read
@@ -284,47 +401,68 @@ func LockOwners(ctx context.Context, q OwnerLocker, owners ...Owner) error {
 	if len(owners) == 0 {
 		return nil
 	}
-	legacy, err := lockOwnerKeys(ctx, q, owners)
-	if err != nil {
-		return err
-	}
-	if !legacy {
-		return nil
-	}
-	return lockOwnerRows(ctx, q, owners, rowLockExclusive)
+	_, _, err := lockOwnersAt(ctx, q, ownerLockExclusive, owners, nil)
+	return err
 }
 
-// lockOwnerKeys takes the advisory locks of owners, at least one, in one statement
-// (lockOwnersStatement), and answers its fleet read: whether an earlier build, which serialises on
-// the owner row, is in the fleet. It records the answer (noteOwnerLockMode).
-func lockOwnerKeys(ctx context.Context, q OwnerLocker, owners []Owner) (bool, error) {
-	lock, args := lockOwnersStatement(owners)
-	rows, err := q.Query(ctx, lock, args...)
-	if err != nil {
-		return false, lockOwnersFailed(owners, err)
+// lockOwnersAt is every read-phase owner lock, and the one place its rule is written. It takes the
+// advisory locks of owners at level in one statement, behind the fleet read and the gate
+// (level.statement), and while that fleet read answers that an earlier build is in the fleet, the
+// owners' rows at level in the round trip right after it (lockOwnerRows): that build's writers
+// serialise on the row and never take the advisory lock, so the row alone excludes them. It answers
+// the owners whose locks the transaction now holds - every one of owners, or at a level that
+// skips, those whose lock it took and, beside an earlier build, whose row it took too - and the
+// fleet read. With no earlier build in the fleet the lock is that one statement, which assigns the
+// transaction no transaction id.
+//
+// read, when it is not nil, is the statement the locks guard, sent with them (LockOwnersAndRead):
+// in one batch behind the advisory lock's statement, one round trip. The batch is sent before the
+// fleet read is answered, so read has already run when the answer says the owners' rows must be
+// taken too: read then ran before the rows were locked, and a process of an earlier build may have
+// been writing them. So in that mode its answer is dropped unread, and the round trip that takes
+// the rows runs read again behind them: one more round trip, in that mode alone.
+func lockOwnersAt(ctx context.Context, q OwnerLocker, level *ownerLockLevel, owners []Owner, read *guardedRead) ([]Owner, bool, error) {
+	keys := lockKeys(owners)
+	var (
+		rows    pgx.Rows
+		results pgx.BatchResults
+		err     error
+	)
+	if read == nil {
+		rows, err = q.Query(ctx, level.statement, ownerLockArgs(keys)...)
+	} else {
+		batch := &pgx.Batch{}
+		batch.Queue(level.statement, ownerLockArgs(keys)...)
+		batch.Queue(read.sql, read.args...)
+		results = q.SendBatch(ctx, batch)
+		rows, err = results.Query()
 	}
-	legacy, err := scanLegacyFleet(rows)
-	if err != nil {
-		return false, lockOwnersFailed(owners, err)
-	}
-	return legacy, nil
-}
-
-// scanLegacyFleet reads an owner lock statement's rows to their end, which runs the statement to
-// its end and so takes every lock it names, and answers their fleet read.
-func scanLegacyFleet(rows pgx.Rows) (bool, error) {
-	defer rows.Close()
+	var held []Owner
 	legacy := false
-	for rows.Next() {
-		if err := rows.Scan(nil, &legacy); err != nil {
-			return false, err
+	if err == nil {
+		held, legacy, err = level.scan(rows, owners, keys)
+	}
+	if err != nil {
+		if results != nil {
+			results.Close()
 		}
+		return nil, false, level.failed(owners, err)
 	}
-	if err := rows.Err(); err != nil {
-		return false, err
+	if legacy && len(held) > 0 {
+		if results != nil {
+			// read ran ahead of the row locks: drop its answer (Close reads it and keeps only its
+			// failure) and run it again behind them.
+			if err := results.Close(); err != nil {
+				return nil, legacy, err
+			}
+		}
+		held, err = lockOwnerRows(ctx, q, level, held, read)
+		return held, legacy, err
 	}
-	noteOwnerLockMode(legacy)
-	return legacy, nil
+	if read != nil {
+		err = read.scan(results)
+	}
+	return held, legacy, err
 }
 
 // LockOwnerAndRead takes owner's lock (LockOwner) and then runs read with args, the statement the
@@ -338,58 +476,25 @@ func LockOwnerAndRead(ctx context.Context, tx pgx.Tx, owner Owner, read string, 
 }
 
 // LockOwnersAndRead is LockOwnerAndRead for the locks of several owners, taken as LockOwners takes
-// them, in one statement ahead of read.
-//
-// The batch is sent before the lock's fleet read is answered, so read has already run when the
-// answer says the owners' rows must be taken too: read then ran before the rows were locked, and
-// a process of an earlier build may have been writing them. So in that mode its answer is
-// dropped unread, and a second batch takes the rows (lockOwnerRows) and runs read again behind
-// them: one more round trip, in that mode alone.
+// them, in one statement ahead of read. Beside an earlier build read runs again behind the
+// owners' rows, one round trip more (lockOwnersAt).
 func LockOwnersAndRead(ctx context.Context, tx pgx.Tx, owners []Owner, read string, args []any, dest ...any) error {
-	batch := &pgx.Batch{}
-	lock, lockArgs := lockOwnersStatement(owners)
-	batch.Queue(lock, lockArgs...)
-	batch.Queue(read, args...)
-	results := tx.SendBatch(ctx, batch)
-	rows, err := results.Query()
-	if err == nil {
-		var legacy bool
-		if legacy, err = scanLegacyFleet(rows); err == nil && legacy {
-			// The read ran ahead of the row locks: drop its answer (Close reads it and keeps only
-			// its failure) and read again behind the rows.
-			if err := results.Close(); err != nil {
-				return err
-			}
-			return lockOwnerRowsAndRead(ctx, tx, owners, read, args, dest...)
-		}
-	}
-	if err != nil {
-		results.Close()
-		return lockOwnersFailed(owners, err)
-	}
-	err = results.QueryRow().Scan(dest...)
-	if closeErr := results.Close(); err == nil {
-		err = closeErr
-	}
+	_, _, err := lockOwnersAt(ctx, tx, ownerLockExclusive, owners, &guardedRead{sql: read, args: args, dest: dest})
 	return err
 }
 
-// lockOwnerRowsAndRead takes the rows of owners (lockOwnerRows) and then runs read, in one batch.
-func lockOwnerRowsAndRead(ctx context.Context, tx pgx.Tx, owners []Owner, read string, args []any, dest ...any) error {
-	batch := &pgx.Batch{}
-	locks := ownerRowLocks(owners, rowLockExclusive)
-	for _, lock := range locks {
-		batch.Queue(lock.statement, lock.keys)
-	}
-	batch.Queue(read, args...)
-	results := tx.SendBatch(ctx, batch)
-	for _, lock := range locks {
-		if _, err := results.Exec(); err != nil {
-			results.Close()
-			return lock.failed(err)
-		}
-	}
-	err := results.QueryRow().Scan(dest...)
+// guardedRead is the read a read-phase owner lock guards when the lock sends it
+// (LockOwnersAndRead): its statement and arguments, and what its one row is scanned into.
+type guardedRead struct {
+	sql  string
+	args []any
+	dest []any
+}
+
+// scan scans read's row, the next result of results, into its destinations and closes results.
+// Its failure comes back as Scan returned it, pgx.ErrNoRows included.
+func (read *guardedRead) scan(results pgx.BatchResults) error {
+	err := results.QueryRow().Scan(read.dest...)
 	if closeErr := results.Close(); err == nil {
 		err = closeErr
 	}
@@ -404,20 +509,6 @@ func QueueLockOwner(b *WriteBatch, owner Owner) {
 	b.Queue(fmt.Sprintf("lock %s %s", owner.Kind, owner.Key), ownerLock, OwnerLockNamespace, owner.LockKey())
 }
 
-// lockOwnersStatement is the read-phase statement that takes the exclusive locks of owners, at
-// least one, behind the fleet read and the gate (ownersLock), and its arguments.
-func lockOwnersStatement(owners []Owner) (string, []any) {
-	return ownersLock, ownerLockArgs(lockKeys(owners))
-}
-
-// lockOwnersFailed is err, the failure of lockOwnersStatement's statement, naming what it locked.
-func lockOwnersFailed(owners []Owner, err error) error {
-	if len(owners) == 1 {
-		return fmt.Errorf("lock %s %s: %w", owners[0].Kind, owners[0].Key, err)
-	}
-	return fmt.Errorf("lock owners %v: %w", lockKeys(owners), err)
-}
-
 // lockKeys is each owner's lock key, in owners' order.
 func lockKeys(owners []Owner) []string {
 	keys := make([]string, len(owners))
@@ -426,19 +517,6 @@ func lockKeys(owners []Owner) []string {
 	}
 	return keys
 }
-
-// rowLock is the level lockOwnerRows takes an owner's row at, the one a build that serialises on
-// the row takes for the same work.
-type rowLock int
-
-const (
-	// rowLockExclusive is `for no key update`, every writer's (LockOwner, LockOwners).
-	rowLockExclusive rowLock = iota
-	// rowLockShared is `for share`, the Inbox's (LockOwnersShared).
-	rowLockShared
-	// rowLockTry is `for no key update skip locked`, a background pass's (TryLockOwners).
-	rowLockTry
-)
 
 // ownerRowLock is one statement of lockOwnerRows: the rows of one kind of owner, and their keys.
 type ownerRowLock struct {
@@ -453,11 +531,11 @@ func (l ownerRowLock) failed(err error) error {
 }
 
 // ownerRowLocks is the statements that take the rows of owners at level, one per kind of owner
-// among them, in ownerRowKinds' order: a statement of its own for each kind, whose rows its
-// `order by` takes in byte order of their keys (an issue's or a project's key collated "C", an
-// artifact's id as a uuid, whose order is its text's). A document's id that no uuid spells has no
-// row, and is left out rather than refused by the uuid cast.
-func ownerRowLocks(owners []Owner, level rowLock) []ownerRowLock {
+// among them, in ownerRowKinds' order: a statement of its own for each kind, level's row lock of
+// that kind, which takes the rows in byte order of their keys (ownerRowsArtifacts, ownerRowsIssues,
+// ownerRowsProjects). A document's id that no uuid spells has no row, and is left out rather than
+// refused by the uuid cast.
+func ownerRowLocks(owners []Owner, level *ownerLockLevel) []ownerRowLock {
 	locks := make([]ownerRowLock, 0, len(ownerRowKinds))
 	for _, kind := range ownerRowKinds {
 		var keys []string
@@ -465,70 +543,98 @@ func ownerRowLocks(owners []Owner, level rowLock) []ownerRowLock {
 			if owner.Kind != kind {
 				continue
 			}
-			key := owner.Key
-			if kind == OwnerArtifact {
-				id, err := uuid.Parse(key)
-				if err != nil {
-					continue
-				}
-				key = id.String()
-			}
-			if !slices.Contains(keys, key) {
+			if key, ok := owner.rowKey(); ok && !slices.Contains(keys, key) {
 				keys = append(keys, key)
 			}
 		}
 		if len(keys) > 0 {
-			locks = append(locks, ownerRowLock{kind: kind, statement: ownerRowLockStatement(kind, level), keys: keys})
+			locks = append(locks, ownerRowLock{kind: kind, statement: level.rowLocks[kind], keys: keys})
 		}
 	}
 	return locks
 }
 
-// ownerRowLockStatement is the statement that takes the rows of kind's owners named by $1 at
-// level, each answering its key as text (an artifact's id canonical). These and the write phase's
-// events.lockEventOwner are the only statements of this module that lock an owner row
-// (api.TestNoForUpdateOnOwnerTables).
-func ownerRowLockStatement(kind OwnerKind, level rowLock) string {
-	switch kind {
-	case OwnerArtifact:
-		switch level {
-		case rowLockShared:
-			return `select id::text from artifacts where id = any($1::uuid[]) order by id for share`
-		case rowLockTry:
-			return `select id::text from artifacts where id = any($1::uuid[]) order by id for no key update skip locked`
-		default:
-			return `select id::text from artifacts where id = any($1::uuid[]) order by id for no key update`
-		}
-	case OwnerIssue:
-		switch level {
-		case rowLockShared:
-			return `select key from issues where key = any($1::text[]) order by key collate "C" for share`
-		case rowLockTry:
-			return `select key from issues where key = any($1::text[]) order by key collate "C" for no key update skip locked`
-		default:
-			return `select key from issues where key = any($1::text[]) order by key collate "C" for no key update`
-		}
-	default:
-		switch level {
-		case rowLockShared:
-			return `select key from projects where key = any($1::text[]) order by key collate "C" for share`
-		case rowLockTry:
-			return `select key from projects where key = any($1::text[]) order by key collate "C" for no key update skip locked`
-		default:
-			return `select key from projects where key = any($1::text[]) order by key collate "C" for no key update`
-		}
+// rowKey is the key owner's row is named by in its table and its row lock's answer, an artifact's
+// id canonical, and false for a document's id that no uuid spells, which has no row.
+func (o Owner) rowKey() (string, bool) {
+	if o.Kind != OwnerArtifact {
+		return o.Key, true
 	}
+	id, err := uuid.Parse(o.Key)
+	if err != nil {
+		return "", false
+	}
+	return id.String(), true
 }
 
-// lockOwnerRows takes the rows of owners at level (ownerRowLocks), one statement per kind, after
-// their advisory locks and before any read those locks guard: the mode a fleet with a process of
-// an earlier build in it needs (ownerLockAdvisoryAndRow), since that build's writers serialise on
-// the row and never take the advisory lock.
-func lockOwnerRows(ctx context.Context, q OwnerLocker, owners []Owner, level rowLock) error {
-	for _, lock := range ownerRowLocks(owners, level) {
-		if _, err := q.Exec(ctx, lock.statement, lock.keys); err != nil {
-			return lock.failed(err)
+// lockOwnerRows takes the rows of owners, whose advisory locks the transaction holds, at level
+// (ownerRowLocks), one statement per kind, in one round trip before any read those locks guard,
+// and runs read behind them in that round trip when it is not nil: the mode a fleet with a process
+// of an earlier build in it needs (ownerLockAdvisoryAndRow), since that build's writers serialise
+// on the row and never take the advisory lock. It answers the owners it holds: every one of owners,
+// or at a level that skips, in owners' order, those whose row it took, so an owner whose row a
+// writer of that build holds, or that has no row, is left out.
+func lockOwnerRows(ctx context.Context, q OwnerLocker, level *ownerLockLevel, owners []Owner, read *guardedRead) ([]Owner, error) {
+	locks := ownerRowLocks(owners, level)
+	var taken map[Owner]bool
+	if level.skips {
+		taken = make(map[Owner]bool, len(owners))
+	}
+	if len(locks) > 0 || read != nil {
+		batch := &pgx.Batch{}
+		for _, lock := range locks {
+			batch.Queue(lock.statement, lock.keys)
 		}
+		if read != nil {
+			batch.Queue(read.sql, read.args...)
+		}
+		results := q.SendBatch(ctx, batch)
+		for _, lock := range locks {
+			if err := lock.take(results, taken); err != nil {
+				results.Close()
+				return nil, lock.failed(err)
+			}
+		}
+		var err error
+		if read != nil {
+			err = read.scan(results)
+		} else {
+			err = results.Close()
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !level.skips {
+		return owners, nil
+	}
+	var held []Owner
+	for _, owner := range owners {
+		if key, ok := owner.rowKey(); ok && taken[Owner{Kind: owner.Kind, Key: key}] {
+			held = append(held, owner)
+		}
+	}
+	return held, nil
+}
+
+// take reads the row lock's answer, the next result of results. At a level that waits, whose
+// statement takes every row it names, taken is nil and the answer is left unread; at one that
+// skips, every row the statement took is marked in taken.
+func (l ownerRowLock) take(results pgx.BatchResults, taken map[Owner]bool) error {
+	if taken == nil {
+		_, err := results.Exec()
+		return err
+	}
+	rows, err := results.Query()
+	if err != nil {
+		return err
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		taken[Owner{Kind: l.kind, Key: key}] = true
 	}
 	return nil
 }
@@ -559,18 +665,8 @@ func LockOwnersShared(ctx context.Context, q OwnerLocker, owners ...Owner) error
 	if len(owners) == 0 {
 		return nil
 	}
-	rows, err := q.Query(ctx, ownersLockShared, ownerLockArgs(lockKeys(owners))...)
-	if err != nil {
-		return fmt.Errorf("lock owners %v for share: %w", lockKeys(owners), err)
-	}
-	legacy, err := scanLegacyFleet(rows)
-	if err != nil {
-		return fmt.Errorf("lock owners %v for share: %w", lockKeys(owners), err)
-	}
-	if !legacy {
-		return nil
-	}
-	return lockOwnerRows(ctx, q, owners, rowLockShared)
+	_, _, err := lockOwnersAt(ctx, q, ownerLockShared, owners, nil)
+	return err
 }
 
 // TryLockOwners tries each owner's exclusive lock without waiting and answers, in owners' order,
@@ -592,65 +688,6 @@ func TryLockOwners(ctx context.Context, q OwnerLocker, owners ...Owner) ([]Owner
 	if len(owners) == 0 {
 		return nil, nil
 	}
-	keys := make([]string, len(owners))
-	byKey := make(map[string]Owner, len(owners))
-	for index, owner := range owners {
-		keys[index] = owner.LockKey()
-		byKey[keys[index]] = owner
-	}
-	rows, err := q.Query(ctx, ownersTryLock, ownerLockArgs(keys)...)
-	if err != nil {
-		return nil, fmt.Errorf("try owner locks: %w", err)
-	}
-	legacy := false
-	taken, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Owner, error) {
-		var key string
-		if err := row.Scan(&key, &legacy); err != nil {
-			return Owner{}, err
-		}
-		return byKey[key], nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("try owner locks: %w", err)
-	}
-	if len(taken) == 0 {
-		return nil, nil
-	}
-	noteOwnerLockMode(legacy)
-	if !legacy {
-		return taken, nil
-	}
-	return tryLockOwnerRows(ctx, q, taken)
-}
-
-// tryLockOwnerRows tries the rows of owners, whose advisory locks the caller holds, `for no key
-// update skip locked` (ownerRowLocks) and answers, in owners' order, those whose row it took.
-func tryLockOwnerRows(ctx context.Context, q OwnerLocker, owners []Owner) ([]Owner, error) {
-	locked := map[Owner]bool{}
-	for _, lock := range ownerRowLocks(owners, rowLockTry) {
-		rows, err := q.Query(ctx, lock.statement, lock.keys)
-		if err != nil {
-			return nil, lock.failed(err)
-		}
-		keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return nil, lock.failed(err)
-		}
-		for _, key := range keys {
-			locked[Owner{Kind: lock.kind, Key: key}] = true
-		}
-	}
-	var taken []Owner
-	for _, owner := range owners {
-		key := owner.Key
-		if owner.Kind == OwnerArtifact {
-			if id, err := uuid.Parse(key); err == nil {
-				key = id.String()
-			}
-		}
-		if locked[Owner{Kind: owner.Kind, Key: key}] {
-			taken = append(taken, owner)
-		}
-	}
-	return taken, nil
+	taken, _, err := lockOwnersAt(ctx, q, ownerLockTry, owners, nil)
+	return taken, err
 }

@@ -40,9 +40,10 @@ func registerEarlierBuildProcess(t *testing.T, database *store.Store) {
 }
 
 // readPhaseRowLock matches the statement store.LockOwner takes an issue's row with beside its
-// advisory lock (store.ownerRowLockStatement), and no statement of the write phase; readPhaseLock
-// matches it or the advisory lock's own statement (owner_lock), which a request queues on when a
-// background settlement of the same issue, itself queued on the row, holds the advisory lock.
+// advisory lock (store.ownerLockExclusive's row lock), and no statement of the write phase;
+// readPhaseLock matches it or the advisory lock's own statement (owner_lock), which a request
+// queues on when a background settlement of the same issue, itself queued on the row, holds the
+// advisory lock.
 var (
 	readPhaseRowLock = regexp.MustCompile(`from issues where key = any\(\$1::text\[\]\) order by key collate "C" for no key update`)
 	readPhaseLock    = regexp.MustCompile(readPhaseRowLock.String() + `|as owner_lock`)
