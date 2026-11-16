@@ -344,7 +344,7 @@ CLAUDE_ENVOY_BUILD = reads(
                                      "run scripts/verify-build.sh and tests/build-inputs.test.ts of it"),
         (CONTRACTS_SRC, "packages/claude-envoy/tsconfig.json paths @legion/contracts; bundles import it"),
         ("packages/envoy-client/bin/dispatch.ts", "packages/claude-envoy/scripts/build.ts:310 bundles BUNDLE_ENTRYPOINTS' dispatch (:39), which verify-build runs and tests/dist-fresh.test.ts:304 holds to this path"),
-        ("packages/pi-shared/src/**", "packages/claude-envoy/src/envoy-channel-server.ts:83-84, legion-claim.ts:7-9, legion-tool.ts:3-12 import @legion/pi-shared/*"),
+        ("packages/pi-shared/src/**", "packages/claude-envoy/src/envoy-channel-server.ts:85, legion-claim.ts:8-11, legion-tool.ts:3-13 import @legion/pi-shared/*"),
         ("scripts/third-party-notices.ts", "packages/claude-envoy/scripts/build.ts:24"),
         ("scripts/pi-plugin-prepack.sh", "packages/claude-envoy/scripts/build.ts:198-202 --stage-skills @sjawhar/pi-legion"),
         ("packages/pi-legion/agents/**", "packages/claude-envoy/scripts/build.ts:231-232"),
@@ -353,7 +353,7 @@ CLAUDE_ENVOY_BUILD = reads(
         (".github/scripts/check-private-names.sh", "packages/claude-envoy/scripts/verify-build.sh checks the build with it"),
         (".github/scripts/release-push.sh", "packages/claude-envoy/scripts/verify-build.sh runs its check-built; the claude-envoy job runs its extract-built"),
         (".github/workflows/release.yaml", "packages/claude-envoy/tests/build-inputs.test.ts:154 holds its $CLAUDE_ENVOY_VERSION_ARGS equal to scripts/build-inputs.txt"),
-) + envoy_client_dep("packages/claude-envoy/src/envoy-channel-server.ts:10-82, hooks/session-hook.ts:91-99 import @legion/envoy-client/*")
+) + envoy_client_dep("packages/claude-envoy/src/envoy-channel-server.ts:10-84, hooks/session-hook.ts:91-109 import @legion/envoy-client/*")
 
 # The build above, and what only the claude-envoy job reads: the Claude Code its live answer test
 # runs, and the fixtures and modules of its other tests. The test job runs none of them.

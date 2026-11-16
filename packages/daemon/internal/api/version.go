@@ -2053,21 +2053,12 @@ package api
 // A value is served down as well as a key. At this contract the rows of shaping.go's valueStrips
 // serve these fields' values down: `strandedClaims[].state` (`withoutUnadmittedStrandedStates`), an
 // issue's `waitingOn.answeredBy` (`withoutUnadmittedWaitAnswer`) and an issue's `waitingLine.kind`
-// (`withoutUnadmittedLineKind`). Each strip reads two arrivals from the declared table
-// (answers.go's `EnumeratedFields`): that of the value it finds, and that of the value's field,
-// which is the earliest arrival of the field's list. A strip takes only a value that arrived after
-// its field. Where such a value's arrival is above the lowest contract the caller's pod records, or
-// above the contract a caller states in its header, the strip serves the body without the value:
-// the stranded entry goes, the wait's answered pair goes, and the member's `kind` goes. A strip
-// follows the lowest contract because no reader requires a value and the oldest process of the pod
-// must admit every value it is served (shaping.go's shapeState). A value that arrived with its
-// field is no strip's. A reader below that arrival knows no such key, so it has no enumeration to
-// refuse the value by, and the key leaves with the band of the contract that added it, which
-// follows the pod's highest contract because the pod's newest process may read the key
-// (shaping.go's stateNarrowings). Taking such a value at the lowest contract as well would cost
-// that process a fact and make no reader safer. So a pod recording 46 beside 133 is served each
-// waiting line member's `kind` where it is one of the four words of 85, and no `kind` on a member
-// that waits on another issue, the word of 132. The records under
+// (`withoutUnadmittedLineKind`). A strip takes only a value that arrived after its field, by the
+// arrivals the declared table records (answers.go's `EnumeratedFields`), and serves the body
+// without it where the value arrived above the contract the caller states, else the lowest its
+// pod records: the stranded entry goes, the wait's answered pair goes, and the member's `kind`
+// goes. A value that arrived with its field rides its field's band instead, and shaping.go's
+// `fieldArrivals.heldBack` says why. The records under
 // `packages/contracts/fixtures/daemon-api/contract-shapes.json` hold what this daemon serves every
 // contract it supports, key path by key path and value domain by value domain, so a later shape
 // change that carries no serving-down is red before it ships. A value a contract removes needs no

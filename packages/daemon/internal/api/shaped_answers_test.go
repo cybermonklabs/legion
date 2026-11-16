@@ -456,11 +456,10 @@ func valueStripCases() map[string]valueStripCase {
 		// whyAndLineFieldsContract, and so does every member of another kind.
 		//
 		// `kind` arrived at 85 with those four words, and they ride the band of that contract
-		// and not this strip. A pod recording 46 and 133 is served each of them: its 133 process
-		// reads the line's fields, and its 46 process knows no `kind` key, so it has no
-		// enumeration to refuse a word of it by. That pod is still served no `waiting_on_issue`,
-		// which arrived after the field. The fixture stands a member of the kind `queued_root`
-		// and one of the kind `answered` beside the member that waits on another issue.
+		// and not this strip (fieldArrivals.heldBack says why). So a pod recording 46 and 133 is
+		// served each of them, and still no `waiting_on_issue`, which arrived after the field.
+		// The fixture stands a member of the kind `queued_root` and one of the kind `answered`
+		// beside the member that waits on another issue.
 		droppedLineKind: {
 			state: narrowingState, low: quietTimeContract, high: mergeWaitContract,
 			carries: func(t *testing.T, body []byte) bool {
@@ -535,24 +534,23 @@ func eachValueStrip(t *testing.T, read func(t *testing.T, row valueStrip, tc val
 	}
 }
 
-// A value follows the pod's lowest contract where a key follows its highest, because no reader
-// requires a value and a reader whose enumeration does not name one refuses the whole body for
-// it (shapeState). Every row of valueStrips is read here on a mixed pod, a caller that states no
-// contract in a pod whose claims record low and high at once, low below the arrival of a value
-// the row takes and high at or above it. The body served at this daemon's own contract carries
-// the value, which is what makes the fixture prove anything; a pod whose claims record high
-// alone is served it; and the mixed pod is not, since its low process refuses the whole body for
-// it. A strip keyed to the pod's highest contract serves the mixed pod the value and fails here.
-// The pod's third claim records no contract and moves neither half, and every contract of each
-// pod is one this daemon describes, so neither edge line is written.
+// A value follows the pod's lowest contract where a key follows its highest
+// (fieldArrivals.heldBack says why). Every row of valueStrips is read here on a mixed pod, a
+// caller that states no contract in a pod whose claims record low and high at once, low below
+// the arrival of a value the row takes and high at or above it. The body served at this daemon's
+// own contract carries the value, which is what makes the fixture prove anything; a pod whose
+// claims record high alone is served it; and the mixed pod is not. A strip keyed to the pod's
+// highest contract serves the mixed pod the value and fails here. The pod's third claim records
+// no contract and moves neither half, and every contract of each pod is one this daemon
+// describes, so neither edge line is written.
 //
 // That is the rule of a value newer than its field, which is what a row takes. A value that
 // arrived with its field rides the band of the field's key, which follows the pod's highest
-// contract: a reader below that arrival knows no such key and has no enumeration of it. So a row
-// whose field arrived above the floor is read on a second mixed pod, one whose claims record a
-// contract below the field's arrival beside high. That pod is served every value that arrived
-// with the field, and still none the row takes. A strip that took every value above the pod's
-// lowest contract would take those values too and fail here.
+// contract (fieldArrivals.heldBack says why). So a row whose field arrived above the floor is
+// read on a second mixed pod, one whose claims record a contract below the field's arrival
+// beside high. That pod is served every value that arrived with the field, and still none the
+// row takes. A strip that took every value above the pod's lowest contract would take those
+// values too and fail here.
 //
 // A row with no case fails, so a strip is added to the table with the mixed pod it is read on
 // (eachValueStrip).

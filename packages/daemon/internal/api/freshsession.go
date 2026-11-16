@@ -889,9 +889,9 @@ const (
 // phaseNotRestarted therefore makes that controller read a stopped claim as a live one, and
 // nothing starts the claim.
 //
-// The decision reads restore, the lowest contract of the caller's pod, and not its highest.
-// What moved at processReadContract is what one answer means, and no key of it, so the
-// decision follows the lowest contract as a value strip does (followsTheLowest).
+// The decision reads restore (the contract the caller states, else the lowest its pod records;
+// contractsFor) and not strip. What moved at processReadContract is what one answer means, and
+// no key of it, so the decision follows restore as a value strip does (followsTheLowest).
 //
 // It reads the header before it reads the store. A caller that states its contract in
 // pluginContractHeader is placed by the header alone, so no claim is read for it. A plugin below

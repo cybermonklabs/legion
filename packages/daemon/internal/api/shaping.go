@@ -371,15 +371,11 @@ func shapeState(state State, restore, strip int, took *tookOff) State {
 			state = applyBand(took, place, narrowing.state, state)
 		}
 	}
-	// The value strips follow restore, the contract the caller states or else the lowest its pod
-	// records, where every band above follows strip, the contract it states or else its pod's
-	// highest: a reader that does not know a key the body carries tolerates it and a later reader
-	// may require it, so an added key follows the highest, while a reader whose enumeration does
-	// not admit a value refuses the whole body for it and no reader requires a value at all, so a
-	// value follows the lowest. This loop runs the rows' halves of the body's own values, and
-	// shapeIssue the halves of an issue's. Each strip reports whether it took anything, and takes
-	// nothing from a caller at this daemon's own contract, whose reader admits every value the
-	// table declares.
+	// The value strips follow restore where every band above follows strip (contractsFor says
+	// what each number is, and fieldArrivals.heldBack why a value follows restore). This loop
+	// runs the rows' halves of the body's own values, and shapeIssue the halves of an issue's.
+	// Each strip reports whether it took anything, and takes nothing from a caller at this
+	// daemon's own contract, whose reader admits every value the table declares.
 	for place, row := range valueStrips {
 		if row.state != nil {
 			state = applyValueStrip(took, place, row.state, state, restore)
@@ -419,12 +415,12 @@ func shapeIssue(issue Issue, restore, strip int, took *tookOff) Issue {
 			issue = applyBand(took, place, narrowing.issue, issue)
 		}
 	}
-	// The rows' halves of an issue's values, keyed to restore for the reason shapeState's gives,
-	// and no band of their own: the table says which values this caller's reader admits, and a
-	// caller at this daemon's own contract admits every value the table declares. Each strip
-	// reports whether it took something. They run after the bands, so a caller whose strip is
-	// below whyAndLineFieldsContract has lost `kind` with the rest of the line's fields already,
-	// and withoutUnadmittedLineKind finds no word to take from it.
+	// The rows' halves of an issue's values, keyed to restore for the reason
+	// fieldArrivals.heldBack gives, and no band of their own: the table says which values this
+	// caller's reader admits, and a caller at this daemon's own contract admits every value the
+	// table declares. Each strip reports whether it took something. They run after the bands, so
+	// a caller whose strip is below whyAndLineFieldsContract has lost `kind` with the rest of the
+	// line's fields already, and withoutUnadmittedLineKind finds no word to take from it.
 	for place, row := range valueStrips {
 		if row.issue != nil {
 			issue = applyValueStrip(took, place, row.issue, issue, restore)
@@ -536,8 +532,9 @@ type valueStrip struct {
 // lines, after every band's. shapeState applies the rows' state halves after its bands and
 // shapeIssue their issue halves after its own, and neither holds a strip of its own, so one row
 // serves a strip, records it and describes it, as a row of stateNarrowings does a band. Every row
-// follows restore (shapeState says why). TestEveryValueStripFollowsThePodsLowestContract reads
-// every row on a mixed pod and fails on a row it holds no case for.
+// follows restore (fieldArrivals.heldBack says why).
+// TestEveryValueStripFollowsThePodsLowestContract reads every row on a mixed pod and fails on a
+// row it holds no case for.
 var valueStrips = []valueStrip{
 	{state: withoutUnadmittedStrandedStates, dropped: droppedStrandedState},
 	{issue: withoutUnadmittedWaitAnswer, dropped: droppedWaitAnswer},
@@ -569,7 +566,7 @@ var valueStrips = []valueStrip{
 // those are the highest and the lowest contract the pod records; for a caller that states its
 // contract, both are read from the contract it states (servedContracts). An operator reading a
 // band line at 85 and a value line at 64 in the one request is reading two rules rather than a
-// fault (shapeState says why the two differ).
+// fault (fieldArrivals.heldBack says why the two differ).
 func (s *server) recordShaping(r *http.Request, id AnswerID, at placement, took tookOff) {
 	if id != AnswerState {
 		return
@@ -593,10 +590,11 @@ func (s *server) recordShaping(r *http.Request, id AnswerID, at placement, took 
 }
 
 // followsTheLowest is the clause each value strip's line carries and no band's line does: it
-// says which of the pod's two contracts the number beside it is. The line of a fresh session
-// served the failure contract 103 gave carries it too, since that decision follows the lowest
-// contract as a value strip does (refusedAfterTheStop).
-const followsTheLowest = "the pod's lowest contract, which a value follows where a key follows its highest"
+// says that the number beside it is restore, the contract the caller states or else the lowest
+// its pod records, and not strip, the contract it states or else its pod's highest, which a key
+// follows (contractsFor). The line of a fresh session served the failure contract 103 gave
+// carries it too, since that decision follows restore as a value strip does (refusedAfterTheStop).
+const followsTheLowest = "the contract the caller states, else its pod's lowest, which a value follows where a key follows the stated contract, else the pod's highest"
 
 // droppedStrandedState, droppedWaitAnswer and droppedLineKind are what the rows of valueStrips
 // name as dropped. They are named rather than written in the rows because the tests that read

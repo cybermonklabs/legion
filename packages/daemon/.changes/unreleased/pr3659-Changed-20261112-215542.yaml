@@ -27,11 +27,13 @@ body: |-
   contract gets there the contract its body is shaped to, as before, and a reader below 75 gets no `contract`
   mark at all.
   Two `dropped` texts of the line the daemon already logs as
-  "api: narrowed the state to the caller's plugin contract" changed, the retired stranded entries
-  to "the entries of strandedClaims in a state this caller does not admit" and the waiting line's
-  kind to "the waiting line's kind of every member of a kind this caller does not admit", and a
-  value line now names the pod's lowest contract (or the contract the caller states) under
-  `pluginContract` and carries a `follows` field, so an operator's log query on the old text moves.
+  "api: narrowed the state to the caller's plugin contract" changed, so an operator's log query on
+  an old text moves: the one for the retired stranded entries from "the retired entries of
+  strandedClaims" to "the entries of strandedClaims in a state this caller does not admit", and
+  the one for the waiting line's kind from "the waiting line's kind of every member waiting on
+  another issue" to "the waiting line's kind of every member of a kind this caller does not
+  admit". A value line now names the contract the caller states, else its pod's lowest, under
+  `pluginContract` and carries a `follows` field.
 time: 2026-11-12T21:55:42.614806298Z
 custom:
     Issue: pr3659

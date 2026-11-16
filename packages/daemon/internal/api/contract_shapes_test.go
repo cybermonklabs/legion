@@ -1420,8 +1420,9 @@ func TestEveryEnumeratedFieldsEarliestValueArrivedWithItsKey(t *testing.T) {
 	}
 }
 
-// What the gate catches, shown by six changes a shape change would make. Each is applied to a
-// copy inside this case, so none of them edits a file and none needs a commit.
+// What the gate catches, shown by five kinds of change a shape change would make, the last of
+// them made to two fields. Each is applied to a copy inside this case, so none of them edits a
+// file and none needs a commit.
 func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 	if *updateGolden {
 		t.Skip("the fixture is being rewritten; run the suite again without -update")
@@ -1431,12 +1432,12 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 		t.Fatal(bootstrapMessage())
 	}
 	served := servedShapes(t, callerKinds[0])
-	// The scratch changes below are what the gate reads after an author ran `-update`, which
-	// rewrites this daemon's own contract's records and leaves every earlier one alone. So the
-	// first two and the last fail at every contract below this daemon's own and nowhere else,
-	// which is the whole point of the serving-down: the reader that is hurt is the older one.
-	// fields is the enumerated table `-update` would have read, which is answers.go's own for
-	// every change but the value one, whose author widened a field.
+	// Every scratch change below but the third, which rewrites a record by hand, is what the gate
+	// reads after an author ran `-update`, which rewrites this daemon's own contract's records and
+	// leaves every earlier one alone. So those four fail at every contract below this daemon's own
+	// and nowhere else, which is the whole point of the serving-down: the reader that is hurt is
+	// the older one. fields is the enumerated table `-update` would have read, which is
+	// answers.go's own for every change but the value one, whose author widened a field.
 	afterUpdate := func(changed map[shapeKey]answerShape, fields []EnumeratedField) map[shapeKey]contractShape {
 		records := map[shapeKey]contractShape{}
 		for _, record := range updatedRecords(onFile, shapeRecords(changed, fields)) {
@@ -1527,42 +1528,36 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 		}
 	})
 
-	t.Run("a value is added to a declared enumerated field with no serving-down", func(t *testing.T) {
-		const field = "issues.*.waitingOn.answeredBy"
-		const added = "recalled"
-		// The author gave `answeredBy` a tenth value at this daemon's own contract, wrote its
-		// row in answers.go and served it to every caller. `-update` then records the widened
-		// domain at this contract, and every older contract's record holds the domain it
-		// always held, which is the reader this change exists for.
-		widened := withDeclaredValue(t, EnumeratedFields, AnswerState, field, added, DaemonAPIVersion)
-		changed := withServedValue(t, served, AnswerState, field, added)
-		problems := allShapeProblems(afterUpdate(changed, widened), changed)
-		wantProblemsNaming(t, problems, field, SupportedContracts, DaemonAPIVersion)
-		for _, problem := range problems {
-			if !strings.Contains(problem, "`"+added+"`") {
-				t.Errorf("the gate reported a problem naming the field and not the value `%s`: %s", added, problem)
-			}
-		}
-	})
-
-	t.Run("a fourth stranded state is declared and served past its strip", func(t *testing.T) {
-		const field = "strandedClaims.*.state"
-		const added = "parked"
-		// The second field whose values a strip moves. That strip reads the states the table
-		// declares (withoutUnadmittedStrandedStates), so declaring a fourth state at this
-		// daemon's own contract is the whole of its serving-down: the daemon would drop the
-		// entry of a claim in that state from every caller below this contract. So this case
-		// proves a strip that is bypassed: the fourth state is declared and served to every
-		// caller anyway, and the gate catches it at every contract below this daemon's own, as
-		// it catches a tenth `answeredBy`.
-		widened := withDeclaredValue(t, EnumeratedFields, AnswerState, field, added, DaemonAPIVersion)
-		changed := withServedValue(t, served, AnswerState, field, added)
-		problems := allShapeProblems(afterUpdate(changed, widened), changed)
-		wantProblemsNaming(t, problems, field, SupportedContracts, DaemonAPIVersion)
-		for _, problem := range problems {
-			if !strings.Contains(problem, "`"+added+"`") {
-				t.Errorf("the gate reported a problem naming the field and not the value `%s`: %s", added, problem)
-			}
+	t.Run("a value is declared and served past its strip", func(t *testing.T) {
+		// Each row is a field whose values a strip moves, and each strip reads the values the
+		// table declares (withoutUnadmittedWaitAnswer, withoutUnadmittedStrandedStates). So
+		// declaring a tenth `answeredBy` or a fourth stranded state at this daemon's own
+		// contract is the whole of that strip's serving-down: the daemon would drop the wait's
+		// answered pair, or the entry of a claim in that state, from every caller below this
+		// contract. So each row proves a strip that is bypassed: the value is declared and
+		// served to every caller anyway. `-update` then records the widened domain at this
+		// contract, and every older contract's record holds the domain it always held, which is
+		// the reader this change exists for, so the gate catches the value at every contract
+		// below this daemon's own.
+		for _, tc := range []struct {
+			name  string
+			field string
+			added string
+		}{
+			{name: "a tenth answeredBy", field: "issues.*.waitingOn.answeredBy", added: "recalled"},
+			{name: "a fourth stranded state", field: "strandedClaims.*.state", added: "parked"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				widened := withDeclaredValue(t, EnumeratedFields, AnswerState, tc.field, tc.added, DaemonAPIVersion)
+				changed := withServedValue(t, served, AnswerState, tc.field, tc.added)
+				problems := allShapeProblems(afterUpdate(changed, widened), changed)
+				wantProblemsNaming(t, problems, tc.field, SupportedContracts, DaemonAPIVersion)
+				for _, problem := range problems {
+					if !strings.Contains(problem, "`"+tc.added+"`") {
+						t.Errorf("the gate reported a problem naming the field and not the value `%s`: %s", tc.added, problem)
+					}
+				}
+			})
 		}
 	})
 }
