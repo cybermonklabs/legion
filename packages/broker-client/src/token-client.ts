@@ -101,7 +101,9 @@ const UNREGISTERED_MAX_WAIT_MS = 5 * 60_000;
 const UNREGISTERED_LOG_EVERY_MS = 30 * 60_000;
 
 /** Waits `ms`, or less when `signal` aborts first: the default of
- *  {@link BrokerTokenClientOptions.sleep}. */
+ *  {@link BrokerTokenClientOptions.sleep}. Its timer holds no process open: the wait runs behind
+ *  the calls that need it, and a `dispatch` command that is done exits rather than waiting out a
+ *  retry nobody awaits. */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   if (signal?.aborted) {
@@ -114,6 +116,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     resolve();
   };
   const timer = setTimeout(done, ms);
+  timer.unref();
   signal?.addEventListener("abort", done, { once: true });
   return promise;
 }
@@ -183,6 +186,25 @@ export class BrokerRefusedError extends Error {
     return (
       this.code === INVALID_GRANT && this.description.startsWith(`${POD_SESSION_NOT_REGISTERED}:`)
     );
+  }
+}
+
+/**
+ * A call that stopped waiting, its signal ended by its own deadline, while the broker held no
+ * registration for this pod's session yet ({@link BrokerRefusedError.podSessionUnregistered}).
+ * The client goes on trading for that session in the background, so it is not final
+ * ({@link isFinalRefusal}): a later call takes the token once the registration lands.
+ */
+export class RegistrationPendingError extends Error {
+  constructor(
+    readonly session: string,
+    refusal: BrokerRefusedError
+  ) {
+    super(
+      `the secrets broker has no registration for this pod's session ${session} yet, and the trade is being retried in the background until it lands (${refusal.description})`,
+      { cause: refusal }
+    );
+    this.name = "RegistrationPendingError";
   }
 }
 
@@ -333,8 +355,15 @@ export class BrokerTokenClient {
   /** The most recent `DPoP-Nonce` the broker sent, carried in every later proof. */
   #nonce = "";
   #held: BrokerToken | null = null;
-  /** The trade under way, so two callers that need a token at once make one trade. */
+  /** The trade under way, so two callers that need a token at once make one trade. It runs on
+   *  no caller's signal: each caller stops waiting for it on its own (`#joined`). */
   #trading: Promise<BrokerToken> | null = null;
+  /** The missing-registration refusal the trade under way is waiting out, or null. */
+  #pending: BrokerRefusedError | null = null;
+  /** Cuts that wait short, so a call arriving during it trades at once; null outside it. */
+  #wake: (() => void) | null = null;
+  /** Ended by {@link close}, which stops a trade waiting out a missing registration. */
+  readonly #closed = new AbortController();
 
   constructor(options: BrokerTokenClientOptions) {
     const brokerUrl = withoutTrailingSlashes(options.brokerUrl.trim());
@@ -371,22 +400,59 @@ export class BrokerTokenClient {
    * once — answers the token in hand while it is still live, since a client that already holds
    * an identity need not stop for a broker or an issuer that is merely down, busy, refusing this
    * moment's proof or waiting on a registration. With nothing live in hand, a pod session the
-   * broker holds no registration for yet is waited out (`#renew`) until a trade lands or `signal`
-   * aborts. A final refusal ({@link isFinalRefusal}), and any other failure with nothing live
-   * left, drop the token in hand and throw, so no caller writes with no identity or with one the
-   * broker or the issuer has ended.
+   * broker holds no registration for yet is waited out in the background (`#renew`), and a call
+   * arriving during that wait has the client trade at once. A caller whose `signal` ends first
+   * stops waiting with {@link RegistrationPendingError}, naming the session, while the trade goes
+   * on. A final refusal ({@link isFinalRefusal}), and any other failure with nothing live left,
+   * drop the token in hand and throw, so no caller writes with no identity or with one the broker
+   * or the issuer has ended.
    */
   async token(signal?: AbortSignal): Promise<BrokerToken> {
     const held = this.#held;
     if (held !== null && this.#now() < held.expiresAt.getTime() - this.#renewBeforeMs) return held;
-    if (this.#trading !== null) return await this.#trading;
-    const trading = this.#renew(signal);
-    this.#trading = trading;
-    try {
-      return await trading;
-    } finally {
-      this.#trading = null;
+    let trading = this.#trading;
+    if (trading === null) {
+      const started = this.#renew();
+      const settled = (): void => {
+        if (this.#trading === started) this.#trading = null;
+      };
+      started.then(settled, settled);
+      this.#trading = trading = started;
+    } else {
+      this.#wake?.();
     }
+    return await this.#joined(trading, signal);
+  }
+
+  /**
+   * `trading`, or what this caller is told when its `signal` ends first: that the session's
+   * registration is still pending, where the trade is waiting one out, and otherwise the
+   * signal's own reason. The trade itself goes on either way.
+   */
+  async #joined(
+    trading: Promise<BrokerToken>,
+    signal: AbortSignal | undefined
+  ): Promise<BrokerToken> {
+    if (signal === undefined) return await trading;
+    const { promise, reject } = Promise.withResolvers<never>();
+    const stop = (): void => {
+      const pending = this.#pending;
+      reject(
+        pending === null ? signal.reason : new RegistrationPendingError(this.#session, pending)
+      );
+    };
+    if (signal.aborted) stop();
+    else signal.addEventListener("abort", stop, { once: true });
+    try {
+      return await Promise.race([trading, promise]);
+    } finally {
+      signal.removeEventListener("abort", stop);
+    }
+  }
+
+  /** Stops a trade waiting out a missing registration, for a caller done with this client. */
+  close(): void {
+    this.#closed.abort();
   }
 
   /**
@@ -403,40 +469,53 @@ export class BrokerTokenClient {
    * Trades until a token lands, with what the client does about each failure. A refusal of a pod
    * session the broker holds no registration for yet, with nothing live in hand, is the one it
    * trades again on: a pod's trade can reach the broker before its registration does. It waits
-   * {@link UNREGISTERED_FIRST_WAIT_MS}, doubling to {@link UNREGISTERED_MAX_WAIT_MS}, for as long
-   * as its caller waits, and throws that refusal once `signal` aborts. It says so once, naming
-   * the session, and again every {@link UNREGISTERED_LOG_EVERY_MS} while the refusal lasts.
+   * {@link UNREGISTERED_FIRST_WAIT_MS}, doubling to {@link UNREGISTERED_MAX_WAIT_MS}, until a
+   * trade lands or the client is closed, and a call arriving during a wait cuts it short. It says
+   * so once, naming the session, and again every {@link UNREGISTERED_LOG_EVERY_MS} while the
+   * refusal lasts.
    */
-  async #renew(signal: AbortSignal | undefined): Promise<BrokerToken> {
+  async #renew(): Promise<BrokerToken> {
+    const closed = this.#closed.signal;
     let wait = UNREGISTERED_FIRST_WAIT_MS;
     // When the first refusal came, and when the client last said so; null until one has.
     let since: number | null = null;
     let logged: number | null = null;
-    while (true) {
-      try {
-        const token = await this.#trade(signal);
-        this.#held = token;
-        return token;
-      } catch (error) {
-        const held = this.#held;
-        if (!isFinalRefusal(error) && held !== null && this.#now() < held.expiresAt.getTime()) {
-          return held;
+    try {
+      while (true) {
+        try {
+          const token = await this.#trade(closed);
+          this.#held = token;
+          return token;
+        } catch (error) {
+          const held = this.#held;
+          if (!isFinalRefusal(error) && held !== null && this.#now() < held.expiresAt.getTime()) {
+            return held;
+          }
+          this.#held = null;
+          const unregistered = error instanceof BrokerRefusedError && error.podSessionUnregistered;
+          if (!unregistered || closed.aborted) throw error;
+          this.#pending = error;
+          const now = this.#now();
+          since ??= now;
+          if (logged === null || now - logged >= UNREGISTERED_LOG_EVERY_MS) {
+            logged = now;
+            this.#log(
+              `the secrets broker has no registration for this pod's session ${this.#session} yet (${Math.round((now - since) / 1000)} s so far); trading ${this.describe()} again until it lands`
+            );
+          }
+          const woken = new AbortController();
+          this.#wake = () => woken.abort();
+          try {
+            await this.#sleep(wait, AbortSignal.any([closed, woken.signal]));
+          } finally {
+            this.#wake = null;
+          }
+          if (closed.aborted) throw error;
+          wait = Math.min(wait * 2, UNREGISTERED_MAX_WAIT_MS);
         }
-        this.#held = null;
-        const unregistered = error instanceof BrokerRefusedError && error.podSessionUnregistered;
-        if (!unregistered || signal?.aborted) throw error;
-        const now = this.#now();
-        since ??= now;
-        if (logged === null || now - logged >= UNREGISTERED_LOG_EVERY_MS) {
-          logged = now;
-          this.#log(
-            `the secrets broker has no registration for this pod's session ${this.#session} yet (${Math.round((now - since) / 1000)} s so far); trading ${this.describe()} again until it lands`
-          );
-        }
-        await this.#sleep(wait, signal);
-        if (signal?.aborted) throw error;
-        wait = Math.min(wait * 2, UNREGISTERED_MAX_WAIT_MS);
       }
+    } finally {
+      this.#pending = null;
     }
   }
 

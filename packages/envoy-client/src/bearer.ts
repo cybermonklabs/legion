@@ -72,11 +72,18 @@ export interface RequestCredential {
    * deregistration before its NATS connection starts draining, and one awaited microtask between
    * the two would reverse that. A caller that cares takes the answer as it comes and awaits only
    * a promise (`transport.ts`).
+   *
+   * `signal` is the call's own deadline. A broker credential stops waiting when it ends: while
+   * the broker holds no registration for this pod's session yet, it throws
+   * `RegistrationPendingError` (`@legion/broker-client/token-client`), naming the session, and
+   * goes on trading in the background, so a later call takes the token once the registration
+   * lands. A caller that passes none waits as long as that takes. A bearer ignores it.
    */
   headers(
     method: string,
     url: string,
-    session?: string
+    session?: string,
+    signal?: AbortSignal
   ): Readonly<Record<string, string>> | Promise<Readonly<Record<string, string>>>;
   /**
    * Tells the credential that the server said the token it presented for `session` (the same
