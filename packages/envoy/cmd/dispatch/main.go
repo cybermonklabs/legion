@@ -49,6 +49,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
@@ -1926,12 +1927,18 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // it says only that the process answers, for a liveness or startup probe, which must not wait on
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
+//
+// Each is mounted with what it reads (readclass.Handle). The probes read the process's own
+// health. /metrics reads the deployment's counters, which name no project, issue, person or
+// session (readclass's TestMetricsNameNoProject), and the router reads what each of its routes
+// declares.
 func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers))
-	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	mux.Handle("GET /metrics", registry.Handler())
-	mux.Handle("/", handler)
+	none := []readclass.Class{readclass.None}
+	readclass.Handle(mux, none, "GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers))
+	readclass.Handle(mux, none, "GET /livez", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	readclass.Handle(mux, []readclass.Class{readclass.Deployment}, "GET /metrics", registry.Handler())
+	readclass.Handle(mux, none, "/", handler)
 	return mux
 }
 

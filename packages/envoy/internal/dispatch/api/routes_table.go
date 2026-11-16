@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 )
 
 // routeAuth names who may call a route. It describes the check the handler performs; the
@@ -576,16 +577,18 @@ type routeRow struct {
 }
 
 // apiRoute is one mounted route: the table's row, the class routes() stamps onto it from
-// writeClasses and the OAuth scopes it stamps from routeScopes. Register mounts the table and
-// GET /api/v1 lists it, so the two can never disagree about what the server serves. Every
-// mutating row carries a Scope, and a GET row carries none (project_scope.go); OAuthScopes is
-// empty on every row any authenticated caller may reach; the row's own five columns are read
-// through it by promotion. What the route takes and answers is routeShapes', which only the
-// OpenAPI emitter reads, so no row carries it.
+// writeClasses, the OAuth scopes it stamps from routeScopes and the read classes it stamps from
+// readClasses. Register mounts the table and GET /api/v1 lists it, so the two can never disagree
+// about what the server serves. Every mutating row carries a Scope, and a GET row carries none
+// (project_scope.go); every GET row carries Reads, and a mutating row carries none
+// (read_classes.go); OAuthScopes is empty on every row any authenticated caller may reach; the
+// row's own five columns are read through it by promotion. What the route takes and answers is
+// routeShapes', which only the OpenAPI emitter reads, so no row carries it.
 type apiRoute struct {
 	routeRow
 	Scope       writeScope
 	OAuthScopes routeScopeSet
+	Reads       []readclass.Class
 }
 
 // routeIndexEntry is the public shape of a route in GET /api/v1. Scopes is left out of a route
@@ -854,7 +857,7 @@ func (s *server) routes() []apiRoute {
 	routes := make([]apiRoute, len(rows))
 	for index, row := range rows {
 		name := row.Method + " " + row.Pattern
-		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name]}
+		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name], readClasses[name].Classes}
 	}
 	return routes
 }
