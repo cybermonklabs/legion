@@ -211,11 +211,19 @@ mint_token() {
   remember "$build" "$caller prefix" "$(jq -r .prefix "$work/body")"
 }
 
-# The durations the mask reads as <duration>, by their JSON member: each is a time the run wrote,
-# measured again at every read, so no two reads of the same row agree on it.
+# The durations and the window start the mask reads as <duration> and <time>, by their JSON
+# member: each is measured again at every read from the moment of the read, so no two reads of
+# the same row agree on it.
 #   took_ms       how long a search took (GET /api/v1/search, /search/results)
 #   age_seconds   how old an open ask is (GET /api/v1/asks/open)
+#   keyword_ms, meaning_ms, total_ms
+#                 the timing summary {count, p50, p95, max, over_300ms} of the related-item checks
+#                 the run made (GET /api/v1/related-checks)
+#   since         the start of a window that ends at the read, an RFC 3339 instant
+#                 (GET /api/v1/agents/{session_id}/answers)
 readonly durations='["took_ms","age_seconds"]'
+readonly timings='["keyword_ms","meaning_ms","total_ms"]'
+readonly window_starts='["since"]'
 
 # mask BUILD FILE [EXTRA] prints FILE with every id BUILD's seed recorded replaced by <LABEL>, each
 # `LABEL<tab>VALUE` line of the file EXTRA likewise, every RFC 3339 instant the run wrote (between
@@ -228,6 +236,8 @@ mask() {
     --rawfile ids "$work/ids-$build.tsv" \
     --rawfile extra "$extra" \
     --argjson durations "$durations" \
+    --argjson timings "$timings" \
+    --argjson window_starts "$window_starts" \
     --argjson from "$run_epoch" \
     --argjson to "$(date +%s)" '
       def literal: gsub("(?<c>[.*+?^$|(){}\\[\\]\\\\/])"; "\\\(.c)");
@@ -240,7 +250,10 @@ mask() {
         gsub($id[1] | literal; "<" + $id[0] + ">"))
       | gsub("(?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2}))";
           if (.t | written) then "<time>" else .t end)
-      | reduce $durations[] as $member (.; gsub("\"\($member)\":[0-9]+"; "\"\($member)\":<duration>"))' "$file"
+      | reduce $durations[] as $member (.; gsub("\"\($member)\":[0-9]+"; "\"\($member)\":<duration>"))
+      | reduce $timings[] as $member (.; gsub("\"\($member)\":\\{[^{}]*\\}"; "\"\($member)\":<duration>"))
+      | reduce $window_starts[] as $member (.;
+          gsub("\"\($member)\":\"[0-9]{4}-[0-9]{2}-[0-9]{2}T[^\"]*\""; "\"\($member)\":\"<time>\""))' "$file"
 }
 
 # keep_answer NAME BUILD [EXTRA] keeps the last answer, masked as BUILD's (mask), as
