@@ -380,13 +380,22 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// The close's and the reopen's document work (prepareWithdrawal, prepareRestoration): it reads
 	// the asks, which none of the patch's row writes below touches, and queues its writes. It runs
 	// before the advice so the advice knows which asks the patch withdraws or restores; its writes
-	// are queued, not made, so the advice's queries still hold no transaction id.
+	// are queued, not made, so the advice's queries still hold no transaction id. The reopen's
+	// second half runs here too (recordRestoredAsksTx): its follow of the versions a settlement
+	// wrote while the issue was closed reads and renders those versions, document work that must
+	// not run once the issue's update below has given the transaction its id, and it plans the
+	// restored asks' parts before the follow plans the parts of the request it moves. Its writes
+	// and events queue after the document writes and before everything the patch queues below,
+	// which is where its writes run in the write phase.
 	var closingAsks, reopenedAsks []model.Ask
+	var restoredEvents []*model.Event
 	switch {
 	case closing:
 		closingAsks, err = s.prepareWithdrawal(documentCtx, tx, key, actor)
 	case reopening:
-		reopenedAsks, err = s.prepareRestoration(documentCtx, tx, key, actor)
+		if reopenedAsks, err = s.prepareRestoration(documentCtx, tx, key, actor); err == nil {
+			restoredEvents, err = s.recordRestoredAsksTx(documentCtx, ledger, key, reopenedAsks, actor)
+		}
 	}
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -540,18 +549,14 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// The asks' rows and events come before the status event, and their document writes, queued
-	// above, before either.
+	// above, before either. A reopen's are queued above already, with its follow's.
 	var withdrawn []model.Ask
-	appended := []*model.Event{}
-	switch {
-	case closing:
-		withdrawn, appended, err = s.recordWithdrawnAsksTx(documentCtx, tx, ledger, key, closingAsks, actor)
-	case reopening:
-		appended, err = s.recordRestoredAsksTx(documentCtx, ledger, key, reopenedAsks, actor)
-	}
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	appended := append([]*model.Event{}, restoredEvents...)
+	if closing {
+		if withdrawn, appended, err = s.recordWithdrawnAsksTx(documentCtx, tx, ledger, key, closingAsks, actor); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	// The row as the patch's inline writes left it. Its last_seq is the sequence of the event
 	// stored before this transaction's: every event the write phase appends on the issue is still

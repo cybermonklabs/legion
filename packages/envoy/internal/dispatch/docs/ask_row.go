@@ -125,7 +125,10 @@ func queueAskResolution(b *store.WriteBatch, within, id string, encoded []byte) 
 // one; each block ask's row is recorded as it will stand (recordAskBlock), so a read of the block
 // asks or of a copy's source later in the transaction - the reopen's write of the asks' blocks and
 // copies (WriteIssueAskStates), which classifies them by the rows - reads it open, as it would
-// once the update had run.
+// once the update had run. Every restored ask is recorded too (Ledger.restored), for the reopen's
+// other reads of the asks restored: its mark of the documents whose blocks wait for it, and its
+// follow of the versions written while the issue was closed (MarkReopenOwedAskDocuments,
+// FollowClosedIssueVersions), which read an approval request and the asks' events.
 func WriteRestoredAsks(ctx context.Context, tx pgx.Tx, restored []model.Ask) error {
 	if len(restored) == 0 {
 		return nil
@@ -142,6 +145,18 @@ func WriteRestoredAsks(ctx context.Context, tx pgx.Tx, restored []model.Ask) err
 		if ask.BlockArtifactID != nil {
 			recordAskBlock(ctx, tx, *ask.BlockArtifactID, ask)
 		}
+	}
+	if ledger := queueFor(ctx, tx); ledger != nil {
+		ledger.restored = append(ledger.restored, ids...)
+	}
+	return nil
+}
+
+// restoredAsksOf is the ids of the asks whose restore the ledger queueing tx's writes holds
+// (WriteRestoredAsks): none where no ledger queues them, since the restore then ran at once.
+func restoredAsksOf(ctx context.Context, tx pgx.Tx) []string {
+	if ledger := queueFor(ctx, tx); ledger != nil {
+		return ledger.restored
 	}
 	return nil
 }

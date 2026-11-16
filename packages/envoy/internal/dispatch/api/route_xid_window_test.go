@@ -73,16 +73,18 @@ var routeXidWindowTable = []routeXidWindowCase{
 		ready: readyReviewAnsweringApprovalRequest, window: storetest.XidBatchedWindow,
 	},
 	// The reopen's document work - the withdrawn asks read back, their blocks and copies written
-	// open into the spec (prepareRestoration, docs.WriteIssueAskStates) - runs before the issue's
-	// update and queues its writes. The restored asks' parts are planned after that update
-	// (recordRestoredAsksTx, queueAskParts), and their plan's reads are database reads, three per
-	// ask, so this window grows with the asks the reopen restores; this fixture restores two.
+	// open into the spec (prepareRestoration, docs.WriteIssueAskStates), the mark of the documents
+	// whose ask blocks wait for the reopen (docs.MarkReopenOwedAskDocuments), the restored asks'
+	// parts (recordRestoredAsksTx, queueAskParts) and the follow of the versions a settlement wrote
+	// while the issue was closed (docs.FollowClosedIssueVersions) - runs before the issue's update
+	// and queues its writes, so none of its reads is inside the window, however many asks the
+	// reopen restores; this fixture restores two.
 	{
 		name: "the issue reopen", route: "PATCH /api/v1/issues/{key} reopening a closed issue (patchIssue, prepareRestoration)",
-		ready: readyIssueReopen, closedIssue: true, window: storetest.XidWindowOf(11,
-			"the issue row's own update, then for each of its two restored asks the three reads that "+
-				"plan its parts' index - its block state, its blocks and their references - then the two "+
-				"reads that load the issue it answers with, the batch restoring its asks and appending "+
+		ready: readyIssueReopen, closedIssue: true, window: storetest.XidWindowOf(5,
+			"the issue row's own update, the two reads that load the issue it answers with (its row "+
+				"with its advances chain, then its external links), the batch restoring its asks, writing "+
+				"their blocks, marking its owed documents, indexing the asks' parts and appending "+
 				"ask.opened for each, and the COMMIT ending them"),
 	},
 	{

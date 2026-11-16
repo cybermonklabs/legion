@@ -32,6 +32,7 @@ import {
   type DispatchToolResult,
   dispatchRefFromUrl,
   executeDispatchTool,
+  formatOpenAsksSummary,
   goBlankPattern,
   positionText,
   resolveIssueDocumentId,
@@ -509,6 +510,106 @@ describe("executeDispatchTool", () => {
     ).rejects.toThrow(
       "If the Dispatch URL changed, restart this agent process so it picks up the new configuration."
     );
+  });
+
+  // A configured Dispatch URL may carry a user and a password. The requests go to it as
+  // configured; what the session reads names it without them, in an error and in ordinary
+  // output alike: the unreachable server, a build without the answers route, an issue's page link
+  // when no public URL is set, and an open-asks summary given the configured URL as its base.
+  test("names a Dispatch URL that carries a user and a password without either, in errors and links", async () => {
+    const user = "user-7f2a";
+    const secret = "pw-4c7e19";
+    const withUserinfo = { ...config, url: `https://${user}:${secret}@host.example` };
+    const requested: string[] = [];
+    const issueRead = async (url: RequestInfo | URL): Promise<Response> => {
+      requested.push(String(url));
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          title: "Dispatch issue",
+          status: "open",
+          priority: null,
+          assignee: null,
+          claim: null,
+          components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+          route: null,
+          open_asks: [],
+          last_seq: 0,
+          external_links: [],
+          labels: [],
+          advances: [],
+          advances_revision: 0,
+        });
+      }
+      if (pathname === "/api/v1/issues/DSP-42/events") return response([]);
+      return response({ error: "missing", code: "NOT_FOUND" }, 404);
+    };
+    const noAnswersRoute = async (url: RequestInfo | URL): Promise<Response> =>
+      response(
+        { code: "NOT_FOUND", error: `no route for GET ${new URL(String(url)).pathname}` },
+        404
+      );
+    const unreachable = (() => {
+      throw new TypeError("Unable to connect. Is the computer able to access the url?");
+    }) as unknown as typeof fetch;
+    const run = (tool: string, args: Record<string, unknown>, fetchImpl: typeof fetch) =>
+      executeDispatchTool({
+        tool,
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-1",
+        config: withUserinfo,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl,
+        writeRetry,
+        // A route no build answers is asked three more times before the message: no real wait.
+        sleep: async () => {},
+      });
+    const refusal = (call: Promise<unknown>) =>
+      call.then(
+        () => "",
+        (error: Error) => error.message
+      );
+
+    const read = (await run("dispatch_read", { issue: "DSP-42" }, issueRead as typeof fetch)).text;
+    const answers = await refusal(run("dispatch_answers", {}, noAnswersRoute as typeof fetch));
+    const offline = await refusal(
+      run("dispatch_ask", { issue: "DSP-41", question: releaseQuestion }, unreachable)
+    );
+    const summary = formatOpenAsksSummary(
+      {
+        count: 1,
+        asks: [
+          {
+            ref: "/issues/LEGION-1/asks/ask-1",
+            question: releaseQuestion,
+            age_seconds: 65,
+            priority: null,
+            owner: { issue: { key: "LEGION-1", title: "Reminder" } },
+            waiting_on: "human",
+            waiting_on_person: "alice@example.org",
+          },
+        ],
+      } as unknown as Parameters<typeof formatOpenAsksSummary>[0],
+      withUserinfo.url
+    );
+
+    expect(requested[0]).toStartWith(`${withUserinfo.url}/api/v1/`);
+    expect(read).toContain("\nLink: https://host.example/issues/DSP-42\n");
+    expect(answers).toBe(
+      "This Dispatch (https://host.example) has no answers route yet: its build is older than the answers route."
+    );
+    expect(offline).toContain("Dispatch at https://host.example is unreachable: ");
+    expect(summary).toEndWith(
+      " · https://host.example/issues/LEGION-1/asks/ask-1\n\nWaiting on agent (0):"
+    );
+    for (const text of [read, answers, offline, summary]) {
+      expect(text).not.toContain(user);
+      expect(text).not.toContain(secret);
+    }
   });
 
   test("does not duplicate an ask ref already in the question", async () => {

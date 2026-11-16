@@ -39,15 +39,31 @@ func OpenApprovalAsk(ctx context.Context, tx pgx.Tx, artifactID string) (*model.
 // document renews: two open requests naming one document would ask a person twice about it and
 // strand whichever they did not answer.
 func OpenApprovalAskForDocuments(ctx context.Context, tx pgx.Tx, artifactIDs []string) (*model.Ask, error) {
+	return openApprovalAskAmong(ctx, tx, artifactIDs, nil)
+}
+
+// openApprovalAskAmong is OpenApprovalAskForDocuments with each ask of restored, whose restore the
+// caller's transaction has queued and not yet written (WriteRestoredAsks), read as that restore
+// leaves it: open, with no answer and no resolution.
+func openApprovalAskAmong(ctx context.Context, tx pgx.Tx, artifactIDs, restored []string) (*model.Ask, error) {
+	state := `a.state = 'open'`
+	args := []any{artifactIDs}
+	if len(restored) > 0 {
+		state = `(a.state = 'open' or a.id = any($2::uuid[]))`
+		args = append(args, restored)
+	}
 	row := tx.QueryRow(ctx, `
 		select `+AskColumns+`
 		from asks a
-		where a.kind = 'approval' and a.state = 'open' and `+ApprovalDocumentsJSONPath+` ?| $1::text[]
+		where a.kind = 'approval' and `+state+` and `+ApprovalDocumentsJSONPath+` ?| $1::text[]
 		order by a.created_at desc, a.id desc
 		limit 1
-	`, artifactIDs)
+	`, args...)
 	ask, err := ScanAsk(row)
 	if err == nil {
+		if ask.State != "open" {
+			ask.State, ask.Answer, ask.Resolution = "open", nil, nil
+		}
 		return &ask, nil
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -58,11 +74,13 @@ func OpenApprovalAskForDocuments(ctx context.Context, tx pgx.Tx, artifactIDs []s
 
 // openApprovalAsk is OpenApprovalAsk as this transaction's own writes left it: the row a version
 // write of this transaction moved to its version (MoveApprovalAsk), edited_at included, else the
-// stored one. A request naming several documents is held under the one this transaction's
-// version write moved, which is the document the carry that follows reads it by. A request this
-// transaction's carry has answered (answerApprovalAsk, which records the answered row) is open
-// no longer, so this answers none: the carry's answer is the one write that closes the request,
-// and refuseSecondCarry fails every later version write of that document in the same
+// stored one, where a request whose restore this transaction queued reads open (the reopen's
+// follow, FollowClosedIssueVersions). A request naming several documents is held under each of
+// them (recordPendingApproval), so whichever document a later read finds it by - the carry that
+// follows the move, or the follow's move of the request's next document - reads the one row. A
+// request this transaction's carry has answered (answerApprovalAsk, which records the answered
+// row) is open no longer, so this answers none: the carry's answer is the one write that closes
+// the request, and refuseSecondCarry fails every later version write of that document in the same
 // transaction, so no reader that goes on to commit finds the entry either way.
 func openApprovalAsk(ctx context.Context, tx pgx.Tx, artifactID string) (*model.Ask, error) {
 	if ledger := queueFor(ctx, tx); ledger != nil {
@@ -73,25 +91,62 @@ func openApprovalAsk(ctx context.Context, tx pgx.Tx, artifactID string) (*model.
 			return ask, nil
 		}
 	}
-	return OpenApprovalAsk(ctx, tx, artifactID)
+	return openApprovalAskAmong(ctx, tx, []string{artifactID}, restoredAsksOf(ctx, tx))
 }
 
-// MoveApprovalAsk advances the open approval ask naming the document to a new settled version of
-// it; a request that names two documents moves whichever of them was written. mover is the actor
-// whose edit moved the request: the caller knows it even when the version credits more than one
-// author. The row and its thread stay open; requested_version records that the agent must hand it
-// back before a human sees it in Waiting on you again. Only the first move since the request was
-// opened or handed back wakes anyone, even when a thread reply already left it waiting on its
-// agent; a later one, while a document's requested_version is already below the version it named,
-// is quiet (RewriteApprovalAsk). It runs in a transaction a caller joined, as every other document
-// operation does, and in the one a settlement or the block-id backfill owns, which no caller joins
-// (Ledger): the version write every document version goes through (writeVersionTx) runs in both.
-// A context holding no ledger at all is refused by the rewording it makes (RewriteApprovalAsk,
-// errUnjoined). Its writes reach the transaction's write queue and the event it appends reaches
-// its ledger (eventSink), which publishes it after its Commit. Where its writes are queued, the
-// ledger records the request as moved (recordPendingApproval), so the carry that follows in the
-// same version write reads the request as this move leaves it.
-func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, mover model.Actor, serverURL string) error {
+// MoveApprovalAsk advances the open approval ask naming the document to version, a settled version
+// of it whose text is markdown: the version its caller just wrote, or, at a reopen, the latest
+// version a settlement wrote while the issue was closed (FollowClosedIssueVersions). A request
+// that names two documents moves whichever of them was written. mover is the actor whose edit
+// moved the request: the caller knows it even when the version credits more than one author. The
+// row and its thread stay open; requested_version records that the agent must hand it back before
+// a human sees it in Waiting on you again. Only the first move since the request was opened or
+// handed back wakes anyone, even when a thread reply already left it waiting on its agent; a later
+// one, while a document's requested_version is already below the version it named, is quiet
+// (model.AskEditEventPayload.Quiet, the rule RewriteApprovalAsk also applies).
+//
+// bySettlement says a settlement wrote version: the settlement's own version write
+// (versionWrite.settlement), or the reopen's follow of a version written while the issue was
+// closed, which a settlement or a comment anchor's snapshot wrote, and which no stored version
+// tells apart (FollowClosedIssueVersions). Only then, when the document waits on the human (its
+// requested_version is the version the request names) and markdown is byte for byte the stored
+// text of that version (restoresVersionText), does its requested_version move with its version,
+// quietly: a settlement saves what the room already holds, such as the blocks a close and a reopen
+// wrote back, so the text the person was asked about did not change and the request keeps its
+// turn as if it had not moved, waking nobody. A version a route writes - a named version, an
+// upload, an edit or a summary edit - moves the request to its agent whatever text it stores, as
+// every move did before the rule: the Legion daemon answers an agent's gate wait with such a
+// version's artifact.version, telling the agent the request is back on its turn, which this keeps
+// true.
+//
+// It runs in a transaction a caller joined, as every other document operation does, and in the
+// one a settlement or the block-id backfill owns, which no caller joins (Ledger): the version
+// write every document version goes through (writeVersionTx) runs in both. A context holding no
+// ledger at all is refused by the rewording it makes (rewriteApprovalAsk, errUnjoined). Its reads
+// - the request, as this transaction's own writes left it (openApprovalAsk), and the stored text
+// the keep-turn rule compares - run where it is called; its writes reach the transaction's write
+// queue and the event it appends reaches its ledger (eventSink), which publishes it after its
+// Commit. Where its writes are queued, the ledger records the request as moved
+// (recordPendingApproval), so the carry that follows in the same version write reads the request
+// as this move leaves it.
+func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, bySettlement bool, serverURL string) error {
+	return moveApprovalAsk(ctx, tx, broker, artifactID, version, markdown, mover, nil, bySettlement, serverURL)
+}
+
+// moveApprovalAsk is MoveApprovalAsk with keptEditor, the editor a settlement on the document's
+// closed issue kept, set by a settlement's version that adds none of that editor's text and so
+// names SettlementActor as mover (versionWrite.keptEditor). A request that names a version before
+// the one this version follows was moved by none of the versions between, so each was written
+// while the issue was closed (versionWrite.closedIssue), and its move names keptEditor, as the
+// reopen's move to such a version does (FollowClosedIssueVersions). The rule takes those versions
+// to hold that editor's text; no stored version says whose text each added, so a version the close
+// alone produced, or one a settlement wrote for another edit, is read the same way. A request that
+// names the version this one follows moves over this version's text alone, in mover's name.
+//
+// The version the keep-turn rule reads is a stored one: the request names a version written
+// before this transaction, since the one transaction that moves a request with bySettlement set
+// writes at most one version of the document (a settlement's) or none (the reopen's follow).
+func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, keptEditor *model.Actor, bySettlement bool, serverURL string) error {
 	ask, err := openApprovalAsk(ctx, tx, artifactID)
 	if err != nil {
 		return err
@@ -103,17 +158,30 @@ func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 	if moved == nil || moved.Version == version.Number {
 		return nil
 	}
+	if keptEditor != nil && moved.Version < version.Number-1 {
+		mover = *keptEditor
+	}
 	summary, err := ApprovalAskSummary(*ask)
 	if err != nil {
 		return err
+	}
+	keepsTurn := false
+	if bySettlement && moved.RequestedVersion == moved.Version {
+		if keepsTurn, err = restoresVersionText(ctx, tx, artifactID, moved.Version, markdown); err != nil {
+			return err
+		}
 	}
 	documents := slices.Clone(ask.Approval.Documents)
 	for index := range documents {
 		if documents[index].ArtifactID == artifactID {
 			documents[index].Version = version.Number
+			if keepsTurn {
+				documents[index].RequestedVersion = version.Number
+			}
 		}
 	}
-	if err := RewriteApprovalAsk(ctx, tx, broker, ask, mover, documents, summary, serverURL); err != nil {
+	quiet := keepsTurn || ApprovalAwaitsHandBack(ask.Approval.Documents)
+	if err := rewriteApprovalAsk(ctx, tx, broker, ask, mover, documents, summary, serverURL, quiet); err != nil {
 		return err
 	}
 	recordPendingApproval(ctx, tx, artifactID, ask)
@@ -122,11 +190,14 @@ func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 
 // RewriteApprovalAsk rewords one open approval row to name documents with summary, indexes its
 // new question and the parts that question is the first of, stamps edited_at, and records its
-// ask.edited event. A document version move, a request with a new summary and a request that
-// changes which documents it covers all reword; none hands the request back, so each document's
-// requested_version stays as it was. A move of a request that an earlier version already moved
-// since it was opened or handed back, a document's requested_version below the version it named,
-// is recorded quiet
+// ask.edited event, through the rewording a document version move (MoveApprovalAsk) also takes
+// (rewriteApprovalAsk). A version move, a request with a new summary and a request that changes
+// which documents it covers all reword; none hands the request back, so each document's
+// requested_version stays as it was. The one exception is a settlement's version move that stores
+// byte for byte the text of the version the person was asked about, which moves that document's
+// requested_version with its version, quietly (MoveApprovalAsk). A move of a request that an
+// earlier version already moved since it was opened or handed back, a document's
+// requested_version below the version it named, is recorded quiet
 // (model.AskEditEventPayload.Quiet): it changes only that version, so like a human's unnamed version
 // it wakes nobody. The event it appends goes to the ledger of the transaction it runs in, as every
 // document operation's does (eventSink), which publishes it after its Commit; no caller reads it
@@ -153,12 +224,27 @@ func RewriteApprovalAsk(
 	documents []model.AskApprovalDocument,
 	summary, serverURL string,
 ) error {
+	quiet := approvalMoves(ask.Approval.Documents, documents) && ApprovalAwaitsHandBack(ask.Approval.Documents)
+	return rewriteApprovalAsk(ctx, tx, broker, ask, actor, documents, summary, serverURL, quiet)
+}
+
+// rewriteApprovalAsk is the rewording RewriteApprovalAsk and MoveApprovalAsk share. Each caller
+// decides quiet, which marks its ask.edited (model.AskEditEventPayload.Quiet), by its own rule.
+func rewriteApprovalAsk(
+	ctx context.Context,
+	tx pgx.Tx,
+	broker *events.Broker,
+	ask *model.Ask,
+	actor model.Actor,
+	documents []model.AskApprovalDocument,
+	summary, serverURL string,
+	quiet bool,
+) error {
 	if ledgerFrom(ctx) == nil {
 		return errUnjoined
 	}
 	sink := eventSink(ctx)
 	previous := model.NewAskEditPrevious(*ask)
-	quiet := approvalMoves(ask.Approval.Documents, documents) && ApprovalAwaitsHandBack(ask.Approval.Documents)
 	ask.Question = ApprovalQuestion(documents, summary)
 	// A fresh approval rather than the old one changed in place: the event below keeps its own
 	// copy of the row, which a later rewording of the same request in this transaction must not

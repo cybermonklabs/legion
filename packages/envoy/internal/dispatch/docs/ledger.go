@@ -163,6 +163,14 @@ type Ledger struct {
 	// phase has run, so what this transaction reads of them it reads from here as well as from
 	// the table (transactionRecordedAskAuthors).
 	askAuthors map[string]map[string]model.Actor
+	// restored holds the ids of the asks this transaction writes back open from the withdrawal of
+	// their issue's close (WriteRestoredAsks), each of which its caller opens again with an
+	// ask.opened queued after that write (api.recordRestoredAsksTx). The asks table reads them
+	// withdrawn, and the events table holds no such ask.opened, until the write phase has run, so
+	// the reopen's reads that must see them restored take them from here (restoredAsksOf): its
+	// mark (MarkReopenOwedAskDocuments), and its follow's request and carry (openApprovalAsk,
+	// reopenRestoredSince).
+	restored []string
 }
 
 // WriteStep is one step of a transaction's write phase: it puts the statements of one write on the
@@ -716,7 +724,11 @@ func pendingArtifact(ctx context.Context, artifactID string) (refs.DocumentAddre
 // writes leave it, on the ledger ctx queues tx's writes on: the open row a version write's move
 // leaves (MoveApprovalAsk), or the answered row the same write's carry leaves
 // (answerApprovalAsk). The caller has queued the write that leaves it so, and a reader before the
-// write phase takes the request from here (PendingApproval, api.movedApprovalRequestAdvice).
+// write phase takes the request from here (PendingApproval, api.movedApprovalRequestAdvice). The
+// row is recorded under every document the request names, beside artifactID, since it is one row
+// whichever of them a later read finds it by: the reopen's follow moves and carries each document
+// of the issue in one transaction (FollowClosedIssueVersions), so the move of a request's second
+// document goes on from the row its first document's move or carry left.
 func recordPendingApproval(ctx context.Context, tx pgx.Tx, artifactID string, ask *model.Ask) {
 	ledger := queueFor(ctx, tx)
 	if ledger == nil {
@@ -726,6 +738,11 @@ func recordPendingApproval(ctx context.Context, tx pgx.Tx, artifactID string, as
 		ledger.approvals = make(map[string]*model.Ask)
 	}
 	ledger.approvals[artifactID] = ask
+	if ask.Approval != nil {
+		for _, document := range ask.Approval.Documents {
+			ledger.approvals[document.ArtifactID] = ask
+		}
+	}
 }
 
 // recordPendingReview records review as the newest review of artifactID on the ledger ctx queues

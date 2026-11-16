@@ -17,10 +17,17 @@ A measurement outranks any line here.
 - **Everything in Dispatch is a node in the graph, and a feature is a query over it.**
   When a feature is hard to build over the model, the model is the defect.
 
+- **One source of truth for each fact.**
+  A copy drifts, so a copy never overrules the system that writes the fact.
+
 - **The daemon is a state machine, not a gateway.**
 
 - **Agents are engineers.**
   They get the privileges their work needs.
+
+- **A new or changed requirement, or a weaker check, waits for a person's approval, and no other fix needs one.**
+  Humans decide what, and agents decide how.
+  Record the exact text approved and each change after it, and start gated work only while its approval stands.
 
 - **Start with the standard answer, then make it agent-native.**
 
@@ -34,6 +41,10 @@ A measurement outranks any line here.
 - **Make it modular.**
 
 - **Instrument and log everything.**
+
+- **Keep each bound you state, at the load it names.**
+  At the bound, refuse with the reason and drop nothing in silence.
+  A silent drop looks like success, so nobody looks for it.
 
 - **Self-organization over coordination.**
 
@@ -56,10 +67,16 @@ A measurement outranks any line here.
 - **Make invalid input impossible to represent.**
   Typing is your friend.
 
+- **Change a contract so the clients already deployed can still read it.**
+  No rollout updates both sides at once.
+
 * **There are no rules, there are only reasons.**
   Explain what is not obvious, but do not turn that into law.
 
-Evidence for each line, with the issues behind it and the cases that cut against it: dispatch://INFRA-1225/artifact/principles-evidence-md.
+Evidence for each earlier line, with the issues behind it and the cases that cut against it: dispatch://INFRA-1225/artifact/principles-evidence-md.
+Four lines came later, at the owner's request (dispatch://INFRA-3757/ask/a09d1002-5970-4c1e-a2db-bad1da6ade4b): one source of truth, kept bounds, approvals and contract changes.
+The evidence of each is the `Sources` list of its statement in version 7 of dispatch://INFRA-3757/spec:
+`copies-of-a-fact-defer-to-its-owner`, `stated-bounds-are-kept`, `approval-binds-the-spec-and-work` and `services-and-clients-share-declared-contracts`.
 
 ## Architecture
 
@@ -91,7 +108,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   Raising Bun is two commits: first the new version's row in `.github/ci-images.yaml`, which `ci.yaml`'s `ci-images` job copies, then `.bun-version`, that ARG and every `FROM` on the row it leaves, with the three `bun-*` rows of `.github/ci-tools.yaml` moving in that second commit beside `.bun-version`.
   `.github/scripts/check-bun-version.sh` fails the build until they agree
 
-- **bun.lock** — `ci.yaml`'s `lint` job holds the step `Check bun.lock agrees with the workspace manifests`, which runs `bun install --lockfile-only` and fails when the committed `bun.lock` differs;
+- **bun.lock** — the step `Check bun.lock agrees with the workspace manifests` of `ci.yaml`'s `lint` job (`.github/workflows/ci-job-lint.yaml`, which holds that job's steps) runs `bun install --lockfile-only` and fails when the committed `bun.lock` differs;
   a red `lint` fails `ci-ok`, which main's ruleset requires.
   Correct a refused lockfile by running `bun install` and committing what it writes.
   After a forward merge of main that touched `bun.lock`, take one side's file whole first (`git checkout origin/main -- bun.lock`) and install only then,
@@ -168,7 +185,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 - **The tool gate** `.github/scripts/check-ci-tools.sh` is a step of `lint`.
   It holds each row to its shape — every field present, and not empty but for the six a row may leave empty (`primary`, `mirror_member`, `second_member` and the three `primary_*` fields), one name per row, a `primary_source` and a `second_source` each written in one of the five words the helper names a source by (`github-release`, `ghcr-mirror`, `npm`, `pypi` and `pulumi-releases`), of which a primary may take the three that are an origin of the bytes alone (`github-release`, `pypi` and `pulumi-releases`), the two further fields the second word decides (`mirror_from` and `mirror_member` for `ghcr-mirror`, `npm_package` and `npm_member` for `npm`, `second_url` and `second_member` for the other three), a bare 64-hex lower-case `digest`, and a `primary`, a `mirror_from` and a `second_url` that each hold the row's own `version` where they are not empty.
   A member field holds that same `version` where it holds a version at all — `primary_member`, `mirror_member`, `npm_member` and `second_member` alike, a version being a dotted run of digits such as `0.13.5` — so a member that holds no such token is left alone, which is what keeps `./jj`, `package/bin/bun` and `uv-x86_64-unknown-linux-gnu/uv` right, and a member left behind at the old version while its row and its URLs move names a path the new archive does not hold, which is an install that fetches the right bytes and then finds no tool inside them.
-  Where that surfaces is the side the member is written on: a stale `primary_member` breaks the install that reads the primary, which for the one row that names one, `uv`, is `install-uv` in the `test` job on every pull request that selects it, and a stale member on the second side is read only where that source is, which is `tool-fallback`, a job of about five minutes (job 129885098900 ran 284 s); the gate says either in `lint` in a second.
+  Where that surfaces is the side the member is written on: a stale `primary_member` breaks the install that reads the primary, which for the one row that names one, `uv`, is `install-uv` in the `daemon-go` job on every pull request that selects it, and a stale member on the second side is read only where that source is, which is `tool-fallback`, a job of about five minutes (job 129885098900 ran 284 s); the gate says either in `lint` in a second.
   `primary_digest` is bare 64-hex too where it is set, a row that sets `primary_member` sets `primary_digest`, and a row that sets `primary_digest` sets `primary_digest_of`, because a digest that does not say what it is of is how an archive comes to be checked against a binary and called equal.
   It holds each row to the pin that installs it as well: `.bun-version`; `ARG MISE_VERSION`, `ARG MISE_SHA256` and `ARG JJ_TOOL` of the worker image's Dockerfile, and that same file's `ARG UV_VERSION` and `ARG UV_SHA256`, which the `uv` row's `version` and its `primary_digest` answer to; `const DockerPluginVersion` of `packages/envoy/infra/internal/pulumitest/pulumitest.go`, which the `pulumi-docker` row's `version` answers to; and the `crane`, `changie`, `elan` and `pulumi-cli` rows, which are their own pins, since their installs hold no version of their own.
 
@@ -325,7 +342,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   a pod's model route is the operator's (`runtime.kubernetes.pod` and `provider_keys`, docs/kubernetes.md "Operator configuration");
   the Sandbox runtime's three flags for a role's process, the daemon-launched controller's included, in a pod enrolled with the secrets broker (runtime.kubernetes.agent_secrets):
   the shim runs agent-secrets keygen there before its hello, sends the key's thumbprint and the projected token in hello2, answers the daemon's `agent-secrets-token` frame with the token as its mount holds it then (asked when the hello's token would expire before the daemon enrolls), keeps the enrollment id the daemon hands back, and runs agent-secrets renew;
-  the daemon-launched controller's process gets them as a workflow role's does, so its `slack_post` is granted the Legion daemon's `LEGION_SLACK_BOT_TOKEN`, and a tmux pane never gets them (daemon-spawned under either runtime, by a tmux pane's command or by a pod launcher's start command, never run by hand)
+  the daemon-launched controller's process gets them as a workflow role's does, so its `slack_post` is granted `LEGION_SLACK_BOT_TOKEN`, a shared agent secret the broker grants every session enrolled with it, and a tmux pane never gets them (daemon-spawned under either runtime, by a tmux pane's command or by a pod launcher's start command, never run by hand)
 
 - `legion claude-bridge -- <claude argv…>`
 
@@ -340,17 +357,21 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   The multi-role form is PID 1 of an issue pod's one `roles` container (`--roles-dir /var/run/legion/roles` and one `--role` per workflow role):
   it holds one worker-stream connection per role, each authenticated with that role's own launcher token read from `<dir>/<r>/launcher/LAUNCHER_TOKEN`, and starts each role's generation through the hidden `legion launcher role-init` in Linux user, mount, PID and IPC namespaces of its own, which show the role only its own gh, private, state and agent-secrets directories (bound at the fixed paths under /var/run/legion) and never its launcher token;
   the launcher's own log lines for a role and each role child's stdout and stderr lines are prefixed `<role>: `, and a line the launcher writes for no role (a panic, a failed reap) has no prefix.
-  The multi-role form also runs the pod's memory guard (`packages/daemon/internal/memoryguard`) where the deployment runs it (it is on by default): it reads the pod's anonymous memory (`AnonPages`) each interval, and at `runtime.kubernetes.memory_guard.issue_pods.act_percent` of the container's limit (85 by default) it ends with SIGKILL the largest process that is neither Legion's own nor an agent's own and reports the kill on the connection of that process's role, which the daemon then tells on its role topic (`docs/kubernetes.md`, "The memory guard in an issue pod").
   The single-role form is PID 1 of the one `controller` container of the project controller's own pod under `controller: daemon`.
   Either form authenticates to the worker stream with each role's own launcher token, bound to the pod's uid (POD_UID by default), reports the child it runs after every connection, and starts or stops that role's `legion worker-shim` process group on the daemon's command;
   each generation's boot token and launch credentials arrive in the start command and are written owner-only and exclusively into a fresh `g<generation>` directory of the role's private directory (anything already there removed without being followed) and removed when the generation ends;
-  the three session flags name the Cloud SQL database every generation keeps its Oh My Pi session in
-  — the instance's connection name, the database in it, and the IAM login the pod signs in as
-  — and the optional fourth, --session-impersonate-service-account, names the Google service account that the pod's proxy impersonates with the pod's own credentials and signs in as.
-  The runtime passes the three only under `runtime.kubernetes.session_store: cloudsql-iam`, and the fourth only when `session_database.impersonate_service_account` is set (none under the other stores, and a database named in part, the fourth without all of the three among them, is refused before the launcher connects):
-  with them, before it looks a resume up and before it starts the child, the launcher writes that generation's connection URL into its `g<generation>` directory as OMP_SESSION_SQL_DSN, binds the unix socket `.s.PGSQL.5432` beside it and proxies it to that instance over the pod's own cloud identity, or as the service account the fourth names, with no password written anywhere (`internal/sessionproxy`, which proves one upstream connection, within half of --stop-grace, before the start returns and refuses the generation by name when it cannot, leaving nothing bound and no child started), and that proxy serves the child through its stop grace however the stop arrives and is closed after the child and the generation's leftover processes, before the generation's directory goes:
-  in a pod within one grace of a stop (its SIGKILL reaches the whole PID namespace), and within one grace of a child's own exit for the processes it left behind, then lets connections still open finish for at most one second before it closes them (docs/kubernetes.md "What `cloudsql-iam` puts in a pod");
-  it survives a daemon restart without stopping the child, refuses a generation that already ran or a reused request id with another payload, and never restarts a child itself
+
+  - the three session flags name the Cloud SQL database every generation keeps its Oh My Pi session in
+    — the instance's connection name, the database in it, and the IAM login the pod signs in as
+    — and the optional fourth, --session-impersonate-service-account, names the Google service account that the pod's proxy impersonates with the pod's own credentials and signs in as.
+    The runtime passes the three only under `runtime.kubernetes.session_store: cloudsql-iam`, and the fourth only when `session_database.impersonate_service_account` is set (none under the other stores, and a database named in part, the fourth without all of the three among them, is refused before the launcher connects):
+    with them, before it looks a resume up and before it starts the child, the launcher writes that generation's connection URL into its `g<generation>` directory as OMP_SESSION_SQL_DSN, binds the unix socket `.s.PGSQL.5432` beside it and proxies it to that instance over the pod's own cloud identity, or as the service account the fourth names, with no password written anywhere (`internal/sessionproxy`, which proves one upstream connection, within half of --stop-grace, before the start returns and refuses the generation by name when it cannot, leaving nothing bound and no child started), and that proxy serves the child through its stop grace however the stop arrives and is closed after the child and the generation's leftover processes, before the generation's directory goes:
+    in a pod within one grace of a stop (its SIGKILL reaches the whole PID namespace), and within one grace of a child's own exit for the processes it left behind, then lets connections still open finish for at most one second before it closes them (docs/kubernetes.md "What `cloudsql-iam` puts in a pod");
+    it survives a daemon restart without stopping the child, refuses a generation that already ran or a reused request id with another payload, and never restarts a child itself
+
+- `legion launcher`'s memory guard
+
+  The launcher's multi-role form runs the pod's memory guard (`packages/daemon/internal/memoryguard`) where the deployment runs it (it is on by default): it reads the pod's anonymous memory (`AnonPages`) each interval, and at `runtime.kubernetes.memory_guard.issue_pods.act_percent` of the container's limit (85 by default) it ends with SIGKILL the largest process that is neither Legion's own nor an agent's own and reports the kill on the connection of that process's role, which the daemon then tells on its role topic (`docs/kubernetes.md`, "The memory guard in an issue pod").
 
 - `legion controller start --config <controller.yaml> [--daemon-url <url>]`
 
@@ -381,8 +402,11 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   the guard keeps public repository visibility answers for the pod and reads private or internal visibility on every call it guards;
   where GitHub refuses the REST read for a rate limit (read with `internal/githubrest`'s model: a 429, or a 403 with no requests left, a `Retry-After`, or a message naming the secondary limit or its abuse detection mechanism), the limit is the secondary one where the message names it, whatever `X-RateLimit-Remaining` says (octokit's throttling plugin reads a message saying `secondary rate` that way, and `internal/githubrest` reads the older name, `abuse detection mechanism`, the same way), or where the answer has a `Retry-After` or no `X-RateLimit-Remaining: 0`, and the core limit otherwise (no such message, no requests left and no `Retry-After`); the guard waits once only for a core limit's reset or a secondary limit's `Retry-After`, and only when that wait is at most two minutes and the caller's bound leaves room for it and the reads after it; a secondary limit not waited for, or still refused after the wait, goes at once to an unauthenticated `git ls-remote`, never to GraphQL, which shares that limit, and that `ls-remote` makes no API request, so the guard does not wait for the reset GitHub asks a caller with no requests left to wait for before its next API request, and its exit 0 alone reads public; a core limit not waited for, or still refused, is read through GitHub's GraphQL API with the repository's own token, taking its public, private or internal, and only where GraphQL's own limit is spent too through that `git ls-remote`; any other outcome refuses the call, naming the limit, with a core limit's reset in UTC, or that GitHub gave none, and a secondary limit's `Retry-After` wait where it has one;
   `legion gh` answers the shared check's own visibility read (`gh api --hostname github.com repos/<slug> --jq .visibility` with `PUBLIC_LEAK_CHECK_VISIBILITY_READ`) itself by that same rule, read fresh: it neither takes nor keeps the guard's kept public, because the check counts the commits of another remote it reads public as held and does not scan them, so for that read a false public is the leak; it prints the word with exit 0, or nothing with exit 1, which the check reads as an unknown visibility;
-  a call that writes nothing, by the rule `ghWritesNothing` holds (`packages/daemon/cmd/legion/gh_reads.go`: a call in a read grammar of the words as typed, `ghReadGrammar`, which admits a listed read leaf typed by its canonical path with only the options its entry in `ghReadLeaves` names, `--web` never among them, or a `gh api` call of one relative REST endpoint with only `--jq`/`-q`, `--template`/`-t`, `--cache`, `-X`/`--method` given exactly `GET`, `-H`/`--header` naming no method override, `--paginate` and `--slurp`; each option its own word and each value the next word, neither empty nor beginning with `-`, so no `--name=value`, no joined short options and no `--`; each a call the shared check also reads as a read, which refuses a credential in it and looks up no target for it; any other spelling is guarded whole), runs the shared check alone, with no visibility read and no private-name pass, only where the resolved check's `public_leak_check.py` has the sha256 that rule was proven against (`ghReadsProvenCheck`, held to the worker image's `ARG LEAK_CHECK_TAG` by a test; `GhRequest.ProvenCheck`, `packages/daemon/internal/leakguard/gh.go`), and gets the whole guard under any other check, a tmux pane's of another version included; a read whose shared check refuses it or cannot run is refused as any call is; the exact `gh api rate_limit` reaches gh with no check and no help read, the guard's own visibility reads (REST and GraphQL) and `gh auth git-credential` with no check, and the shared check's own visibility read is answered as above; each of these is decided before a call that writes nothing, so none is taken for one; gh runs each call the shared check alone read, the rate-limit read and the guard's own visibility reads with `GH_PAGER=cat` and without `GH_BROWSER` or `BROWSER`, so no pager or browser program of the environment's runs with its token; every other call is guarded whole or refused as before;
   each user-initiated wrapped call appends a line to a 1 MiB-bounded log, `$XDG_STATE_HOME/legion-gh/calls.log` (`appendGhCallLog`, `packages/daemon/cmd/legion/gh.go`), serializing append and rotation across processes, with its time, role, issue, resolved repository, command path, visibility source (`checked-only` for a call the shared check alone read) and exit status, never argument text or a response body
+
+- `legion gh`'s path for a call that writes nothing
+
+  a call that writes nothing, by the rule `ghWritesNothing` holds (`packages/daemon/cmd/legion/gh_reads.go`: a call in a read grammar of the words as typed, `ghReadGrammar`, which admits a listed read leaf typed by its canonical path with only the options its entry in `ghReadLeaves` names, `--web` never among them, or a `gh api` call of one relative REST endpoint with only `--jq`/`-q`, `--template`/`-t`, `--cache`, `-X`/`--method` given exactly `GET`, `-H`/`--header` naming no method override, `--paginate` and `--slurp`; each option its own word and each value the next word, neither empty nor beginning with `-`, so no `--name=value`, no joined short options and no `--`; each a call the shared check also reads as a read, which refuses a credential in it and looks up no target for it; any other spelling is guarded whole), runs the shared check alone, with no visibility read and no private-name pass, only where the resolved check's `public_leak_check.py` has the sha256 that rule was proven against (`ghReadsProvenCheck`, held to the worker image's `ARG LEAK_CHECK_TAG` by a test; `GhRequest.ProvenCheck`, `packages/daemon/internal/leakguard/gh.go`), and gets the whole guard under any other check, a tmux pane's of another version included; a read whose shared check refuses it or cannot run is refused as any call is; the exact `gh api rate_limit` reaches gh with no check and no help read, the guard's own visibility reads (REST and GraphQL) and `gh auth git-credential` with no check, and the shared check's own visibility read is answered as above; each of these is decided before a call that writes nothing, so none is taken for one; gh runs each call the shared check alone read, the rate-limit read and the guard's own visibility reads with `GH_PAGER=cat` and without `GH_BROWSER` or `BROWSER`, so no pager or browser program of the environment's runs with its token; every other call is guarded whole or refused as before
 
 - `legion git --real <git> -- <git argument>…` and `legion git --after <directory> -- <git argument>…`
 
@@ -742,6 +766,27 @@ Each item below names a task and where its code is, then notes on it.
   The `envoy-infra` Pulumi plugin and the `envoy-infra` command (`seed`, `render`), a Go module outside the root `go.work`.
   Operators: `packages/envoy/infra/README.md`; changing it: `packages/envoy/infra/AGENTS.md`
 
+- Add or change a CI job — `.github/workflows/ci.yaml`, `.github/workflows/ci-job-<job id>.yaml`
+
+  A job of `ci.yaml` holds its steps in a reusable workflow of its own, `.github/workflows/ci-job-<job id>.yaml`, which the job calls with `uses:` and hands `ci-ok-changes: ${{ toJSON(needs.changes) }}` in its `with:`, under a `permissions:` block of its own.
+  What decides whether those steps run stays in the router: the job's filter in `changes`, its `needs: changes` and its `if:`.
+  Eight jobs are not in that shape: `changes`, `pr-title`, `cancel-started` and `ci-ok` hold their own steps, and `docs`, `dispatch-browser`, `worker-image` and `browser-image` call `docs-site.yaml`, `dispatch-browser.yaml`, `worker-image.yaml` and `browser-image.yaml` instead.
+  The `changes` job declares its filters in more than one `dorny/paths-filter` step (`filter`, `filter2` and `filter3`), because one `filters` input over 131,072 bytes is a string the kernel refuses to pass the action, which a run measured; a new filter goes in a step with room under rule 18 of `check-ci-filters.sh`, which refuses a step near that limit and names it, and its `changes` output names that step, which rule 19 holds.
+  Most of each filter's `!` patterns are generated: `.github/scripts/check-ci-filters.sh write` writes, into a marked block of each filter, the patterns that keep it off the Go test files its job does not run, and the check refuses a block that is not what it computes.
+  Those blocks name Go test files one by one, so a change that adds, deletes or renames a `_test.go` file anywhere a Go job reads runs that command too and commits what it writes, whatever else the change touches:
+  a pull request that adds one and leaves the blocks alone is refused by `ci-filters`, naming the file and each filter whose block lacks it (run 42532845737 is such a refusal, of three filters over one new migration test).
+  A pull request is judged on the merge of its head and the base, so another pull request's new test file reddens this check on a head that never changed, and the cure is the same command after a forward merge, in the same commit that resolves it.
+  `ci.yaml`'s own header lists the eight places a new job joins the router, and `docs/solutions/github/join-a-job-to-the-ci-router.md` walks through the shape it had before this split
+
+- Prove each Go test runs once per CI run — `.github/scripts/go-test-step-expansion.py`
+
+  The by-hand tool of dispatch://INFRA-1408's check k1.
+  It expands every `go test` step of `ci.yaml` and of the workflows its jobs call whose working directory is `packages/envoy`, `packages/envoy/infra` or `packages/daemon` into the test functions that step really runs — through the step's own packages, `-tags`, `-race`, `-run` and `-skip`, with `go test -list` — and gives two verdicts, exiting 1 on either:
+  every (package, function) pair more than one step runs, which no `EXCEPTIONS` entry declares with the requirement that makes it run twice, and every pair some expanded step compiles while no step runs it.
+  The second verdict is fixed to the packages the expansion already touches, never to every test of the three modules, because a tag-gated live proof no step runs is true and useless; an unrun pair is closed in the workflow rather than declared, by giving the function to a step's `-run` or taking its package off the step that only builds it.
+  The daemon joined the scope with the `-run`/`-skip` pair that keeps `internal/daemon`'s three real-Oh-My-Pi tests to one run each (dispatch://INFRA-1413): a check that sees one of the two steps and not the other proves nothing about them.
+  No CI job runs it and none should — it compiles every test binary of all three modules, the `-race` ones included, which the script's own header times.
+
 - Documentation site — `docs/site/`
 
   Astro Starlight.
@@ -769,7 +814,7 @@ Each item below names a task and where its code is, then notes on it.
 - **The slow test suites run in the merge queue, not on a pull-request push**
   — nine jobs of `ci.yaml` (`envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess`, `dispatch-two-builds` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
   The browser suite (`dispatch-browser`, whose called workflow builds the Go commands its stacks run in a `binaries` job of its own) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
-  A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, or when a person asks.
+  A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, when a person asks, or when the change touches `packages/envoy/internal/dispatch/store/migrations/**` or `packages/envoy/internal/pgmigrate/**`, where the label goes on before the approval: a migration is proven by the suites that run against a migrated database, and #2983's merge-group run 42464051293 is what a pull request without it leaves to the queue.
   The label is read from the pull request as the run's own event carries it, so it takes effect at the next push, not when it is added.
   The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the nine again, and the browser suite's full lane with them.
 
@@ -790,8 +835,11 @@ Each item below names a task and where its code is, then notes on it.
 
 - **A change that touches the daemon API contract declares a number above its base's**
   — `const DaemonAPIVersion` in `packages/daemon/internal/api/version.go` is the number a daemon and the Legion plugin in its pods must agree on, so two changes cannot both declare one, and the one that lands second is renumbered after its review has already run.
-  `.github/scripts/check-daemon-api-contract.sh` refuses a change that touches that file and declares a number no higher than its base carries — the tip of the base branch on a pull request, the commit the queue built the group on in the merge queue — and the refusal names a free number, the lowest above the base's that no open pull request declares, and the four files that hold the number (that file, `packages/contracts/fixtures/daemon-api/version.json`, `packages/pi-legion/package.json` and `packages/claude-envoy/package.json`).
-  A change that leaves that file alone passes whatever its base carries, and two entries of one merge group that both picked the same next number pass together, since the group's tree carries both changes at that number.
+  `.github/scripts/check-daemon-api-contract.sh` refuses a change that touches that file and declares a number no higher than its base carries — the tip of the base branch on a pull request, the commit the queue built the group on in the merge queue — and the refusal names a free number, the lowest above the base's that no open pull request declares, and every file that holds the number (that file, `packages/contracts/fixtures/daemon-api/version.json`, `packages/contracts/fixtures/daemon-api/state.json`, `packages/pi-legion/package.json` and `packages/claude-envoy/package.json`).
+  A change touches that file when it changes the file's history or its declaration, the text from the first `// <number>:` entry to the end of the file, so an edit of the doc comment above the history alone passes.
+  A change that leaves that file's history and declaration alone is held to no number of its base's, and two entries of one merge group that both picked the same next number pass together, since the group's tree carries both changes at that number.
+  The check also refuses, whatever the base carries, a change in which another file that holds the number disagrees with the declared number, and the refusal names that file.
+  In `packages/daemon`, `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes the two fixtures, and each manifest holds the number at `legion.daemonApiVersion`.
   `ci.yaml`'s `lint` job runs the check on a pull request and on a merge group, and its `test` job runs `.github/scripts/check-daemon-api-contract.test.sh`
 
 - **Changelog entries are fragment files**
@@ -919,7 +967,7 @@ One issue beneath is left out of the `sign_off` refusal, the `close_root` refusa
 When the root that held it closes, the tree's linger hands that child to Legion as a root of its own, so the work a person asked for runs once the ancestor has closed, as the `child-status` notice says it will.
 A parent with children puts the work into them, and its own pull request joins and proves their merged work.
 
-**Acceptance:** the reviewer's approval moves the issue to `accepting` (Dispatch status `needs_review`) once GitHub reports the approved head one it would merge, and there no worker runs:
+**Acceptance:** the reviewer's approval moves the issue to `accepting` (Dispatch status `needs_review`) once GitHub reports the approved head one it would merge or the pull request has merged at that head, and there no worker runs:
 the tree's architect reads the tester's handoff, each `check` block of the issue's Verification document with the results recorded against it (`dispatch results --issue <issue>`), and the reviewer's approval of the head by SHA, then accepts with the `legion` tool's `sign_off` (→ `retro`;
 refused in every other phase, `SIGNOFF_OUTSIDE_ACCEPTING`;
 refused while an issue beneath the one being accepted is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work) or sends the issue back to `implementing` or `testing` with `request_backward_move`, which counts a review round, or a conflict round that `review_round_cap` does not count when the record holds the pull request's head as conflicting with its base.
@@ -969,7 +1017,7 @@ issue-update`.
 A person's `legion` label on an unrecorded root in `triage` is queued by the daemon: the daemon writes the root's `todo` through its outbox (a `dispatch_status` row marked a person's handover), and no agent's write admits it.
 A session's label on such a root wakes the controller with `triage`, and the daemon writes nothing for it.
 A person's approval of the primary document of a parked (`backlog` or `icebox`) labelled root with no parent and no live tree is queued by the daemon the same way, which re-admits a root that ran before as a new generation.
-A carried approval (the review Dispatch writes in the person's name, with a reason that begins `Carried forward from the approval of version`, when their answer to a decision block was the whole change since the version they approved or a later version's text is the text they approved) queues nothing.
+A carried approval (the review Dispatch writes in the person's name, with a reason that begins `Carried forward from the approval of version`, when their answer to a decision block was the whole change since the version they approved, a later version's text is the text they approved, or a later version's text is that text with the questions a reopen opened again) queues nothing.
 Each such write holds only while the status it answered and the label still stand when it is delivered.
 A recorded root a person moved back to `triage` is never queued again.
 The controller starts no other work on its own:
@@ -1127,7 +1175,7 @@ A boot releases the ones parked before, one release for each issue of its listin
 The boot's pass makes no operator test of its own, so it queues a row for such a tree too, and the executor ends that row when it runs, on the reading current then.
 A person's spec decision on it (an approval, a changes request, or an approval carried to a child's new tree) that the daemon could not deliver to its architect, and a person's answer, resolution or reply on an ask of its issues (one that gives the turn to the agent, or one under a closed ask), goes to the controller as `parked-decision`, once per decision.
 One approval is not relayed: a person's approval of the primary document of a parked root that carries the `legion` label, keeps no Dispatch parent and whose tree is not live is that person's handover, which the daemon queues itself (`todo`, logged `admission: queued a person's handover` with `source=approval`), whoever parked the root, and no `parked-decision` is sent for it.
-A carried approval, the review Dispatch writes in the person's name with a reason that begins `Carried forward from the approval of version` (when their answer to a decision block was the whole change since the version they approved, or when a later version's text is the text of the version they approved), is no such handover and is relayed as any other approval.
+A carried approval, the review Dispatch writes in the person's name with a reason that begins `Carried forward from the approval of version` (when their answer to a decision block was the whole change since the version they approved, when a later version's text is the text of the version they approved, or when a later version's text is that text with the questions a reopen opened again), is no such handover and is relayed as any other approval.
 The daemon keeps the newest decision per Dispatch reference, under the issue it was decided on, never under a root: the tree that owes the person an answer is the tree that issue stands in now, so a child a linger hands to Legion, a parked child a person's todo orphans, a grandchild handed over beside its parent and a queued root admission adopts into a live tree each take what was decided on them with them, in any order, with nothing to move.
 That tree's next architect start names each one: admission's start task, or the catch-up of a later launch (a `legion claims retry` relaunch), with both spec versions when the approved one is no longer the current one.
 Each kept decision is claimed by the one start or catch-up that names it, in the transaction that queues it, and a start whose task the architect's claim queues leaves it to that delivery, which holds it until the turn that takes the task starts: the write recording that confirmation is what tells it, and a published catch-up tells what it named itself.

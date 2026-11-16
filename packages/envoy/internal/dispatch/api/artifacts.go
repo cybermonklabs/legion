@@ -690,11 +690,12 @@ func (s *server) storeArtifact(
 	var diff *string
 	if !created && kind == "doc" {
 		// This route writes its version itself rather than through the document service, so its
-		// open approval request follows that version just as every other version write does. The
-		// move's writes and its event are queued after the version's; Commit publishes the event
-		// before this route publishes its own.
+		// open approval request follows that version just as every other version write does. An
+		// upload is no settlement's version, so the request moves to its agent whatever text it
+		// stores (docs.MoveApprovalAsk). The move's writes and its event are queued after the
+		// version's; Commit publishes the event before this route publishes its own.
 		if err := docs.MoveApprovalAsk(
-			documentCtx, tx, s.deps.Events, artifact.ID, version, actor, s.deps.ServerURL,
+			documentCtx, tx, s.deps.Events, artifact.ID, version, documentMarkdown, actor, false, s.deps.ServerURL,
 		); err != nil {
 			s.writeHandlerError(w, err)
 			return

@@ -262,6 +262,13 @@ func NewestReview(ctx context.Context, q Queryer, artifactID string) (*model.Art
 // changes, so a request a person answered "Request changes" on would otherwise read as settled
 // and the person never be asked again about the document they rejected.
 func NamedDocumentsApproved(ctx context.Context, q Queryer, documents []model.AskApprovalDocument, known string, knownApproved bool) (bool, error) {
+	return namedDocumentsApproved(ctx, q, documents, known, knownApproved, nil)
+}
+
+// namedDocumentsApproved is NamedDocumentsApproved with the reviews ledger has queued and not yet
+// written (Ledger.PendingReview) read in place of the stored newest review of the documents they
+// review: a queued review is newer than every stored one. A nil ledger queues none.
+func namedDocumentsApproved(ctx context.Context, q Queryer, documents []model.AskApprovalDocument, known string, knownApproved bool, ledger *Ledger) (bool, error) {
 	for _, document := range documents {
 		if document.ArtifactID == known {
 			if !knownApproved {
@@ -269,9 +276,15 @@ func NamedDocumentsApproved(ctx context.Context, q Queryer, documents []model.As
 			}
 			continue
 		}
-		review, err := NewestReview(ctx, q, document.ArtifactID)
-		if err != nil {
-			return false, err
+		var review *model.ArtifactReview
+		if pending, queued := ledger.PendingReview(document.ArtifactID); queued {
+			review = &pending
+		} else {
+			stored, err := NewestReview(ctx, q, document.ArtifactID)
+			if err != nil {
+				return false, err
+			}
+			review = stored
 		}
 		if review == nil || review.State != "approved" || review.Version != document.Version {
 			return false, nil

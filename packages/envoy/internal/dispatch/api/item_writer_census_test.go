@@ -127,12 +127,14 @@ var itemRowWriters = map[string]map[string]string{
 			"holds (lockArtifactOwner, writeVersionTx)",
 	},
 	"internal/dispatch/docs/approval_ask.go": {
-		"RewriteApprovalAsk": "the document's owner lock, held by the version write that moves " +
-			"the request or by the route that hands it back (lockArtifactOwner, requireOpenOwner)",
+		"rewriteApprovalAsk": "the document's owner lock, held by the version write that moves " +
+			"the request, by the reopen that follows a closed issue's versions or by the route " +
+			"that hands it back (lockArtifactOwner, api's lockIssue, requireOpenOwner)",
 	},
 	"internal/dispatch/docs/approval_carry.go": {
 		"answerApprovalAsk": "the document's owner lock, which the version write holds " +
-			"(lockArtifactOwner)",
+			"(lockArtifactOwner), or the issue's, which the reopen that follows a closed issue's " +
+			"versions holds (api's lockIssue)",
 	},
 	"internal/dispatch/docs/ask_blocks.go": {
 		"createAskBlock":      "the document's owner lock, which settlement holds (lockArtifactOwner)",
@@ -249,7 +251,7 @@ const seedLoaderException = "none, and none to take: cmd/dispatch-seed is a comm
 // map and is found there, which is how docs/decided_wording.go's restore is found in
 // restoreWordings.
 func TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus(t *testing.T) {
-	sources := moduleSources(t, "../../..")
+	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
 		t.Fatal(err)
@@ -326,7 +328,7 @@ const itemRowNoOwnerLock = "takes no owner lock at all, which is its census entr
 var itemRowLockNoRow = map[string]map[string]string{
 	// Writers whose statements run in a transaction some other writer opened and locked.
 	"internal/dispatch/docs/anchor_refresh.go": {"refreshAnchors": itemRowCallersTransaction},
-	"internal/dispatch/docs/approval_ask.go":   {"RewriteApprovalAsk": itemRowCallersTransaction},
+	"internal/dispatch/docs/approval_ask.go":   {"rewriteApprovalAsk": itemRowCallersTransaction},
 	"internal/dispatch/docs/approval_carry.go": {"answerApprovalAsk": itemRowCallersTransaction},
 	"internal/dispatch/docs/ask_blocks.go": {
 		"createAskBlock":      itemRowCallersTransaction,

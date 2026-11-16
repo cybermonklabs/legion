@@ -851,7 +851,7 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 		joined, ledger := doc.documentService.Join(ctx, tx)
 		defer ledger.Discard()
 		edits := askEventCount(t, doc.database, doc.askID, "ask.edited")
-		if err := docs.MoveApprovalAsk(joined, tx, events.NewBroker(), doc.artifactID, model.Version{Number: 2}, docs.SettlementActor, ""); err != nil {
+		if err := docs.MoveApprovalAsk(joined, tx, events.NewBroker(), doc.artifactID, model.Version{Number: 2}, "A spec, as a settlement wrote it.\n", docs.SettlementActor, true, ""); err != nil {
 			t.Fatalf("move with no known writer: %v", err)
 		}
 		// The move queues its writes on the ledger and appends its event to it, as every document
