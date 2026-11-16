@@ -3540,6 +3540,9 @@ Every role can write the whole issue volume, and the roles share the pod's netwo
 
 The issue's roles trust one another's writes to the volume as they did when each ran in a container of its own.
 The namespaces keep a role's tokens and private files out of a sibling's own reads, and no further.
+One credential is the pod's and not a role's: the exchange token of `runtime.kubernetes.agent_secrets.exchange_audience` ([Operator configuration](#operator-configuration)), which every role of the pod reads at the same path, and every role's session is registered for that one pod.
+So, with the key set, any role of an issue pod can trade that token for a broker token of a sibling role's session, and read what that session's token reads, without reading anything of the sibling's.
+Binding each registration to its role's own DPoP key, so that only the role that holds the key can trade for its session, is planned in dispatch://INFRA-840 and is not in this release; until it is, no deployment sets the key (no agent-infra program renders it).
 Through the helper, every git a role runs, the setup command's ([Configuration](#configuration)) and an agent's own clone of another repository included, answers `https://github.com/<owner>/…` from the role's own files when `<owner>` is an owner the bundle holds a directory for (one of the project's) and the role's App is installed on that repository;
 git in the shared clone asks the same helper it asked before, and every other host is left to the configuration files.
 The `legion` in the helper resolves on the PATH of whichever process runs git.
@@ -6207,6 +6210,7 @@ each issue's pod (every role of it alike) and the image probe's.
   that includes `403 POD_REGISTRAR_NOT_LISTED`, which a broker answers until the deployment lists the daemon's account as a registrar for its pods' account.
   Any other refusal is logged and not written again for that process.
   Unset, the daemon makes no registration call.
+  The exchange token is the pod's, not a role's: every role reads it at the same path, and every role's session is registered for the same pod, so any role of the pod can trade it for a sibling role's session ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) says what that reaches); binding each registration to the role's own key is planned in dispatch://INFRA-840 and is not in this release.
 
 - **`provider_keys`** (top-level) maps each variable Oh My Pi reads to a key of the providers Secret, `legion-<project>-providers`, which the operator creates.
   Every pod mounts the keys `provider_keys` names and no other key of the Secret, each at a file named for its variable, and the shim exports each into Oh My Pi's environment, never its own.
