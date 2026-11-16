@@ -4,50 +4,56 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/cputest"
 )
 
-// Saving a document takes time linear in a pathological run over the tested ladder sizes
-// (LEGION-465). Before the fix Postgres's search indexing read a run of `a_` or `q_` in quadratic
-// time, and pmdoc parsed `a_b*` in nearly quadratic time. On one loaded machine, before the fix
-// and after it at the same moment, 64 KiB of `a_` saved in 46 s and 0.3 s, 128 KiB of `a_b*` in
-// 33 s and 1.3-2.1 s, an issue titled with 32 KiB of `q_` in 12 s and 0.06-0.17 s, and the
-// duplicate check against a 16 KiB title took 18-21 s and 0.12-0.31 s. Times after the fix follow
-// the runner's load, so no wall-clock bound holds on every runner; each save is timed at growing
-// sizes instead, and its growth is bounded (growsLinearly).
+// Saving a document takes time linear in a pathological run (LEGION-465). Before the fix Postgres's
+// search indexing read a run of `a_` or `q_` in quadratic time, and pmdoc parsed `a_b*` in nearly
+// quadratic time. On one loaded machine, before the fix and after it at the same moment, 64 KiB of
+// `a_` saved in 46 s and 0.3 s, 128 KiB of `a_b*` in 33 s and 1.3-2.1 s, an issue titled with
+// 32 KiB of `q_` in 12 s and 0.06-0.17 s, and the duplicate check against a 16 KiB title took
+// 18-21 s and 0.12-0.31 s.
 //
-// A ladder's first size is small enough that the request's own cost is most of its time, about
-// the same before the fix and after (1 KiB of `a_`: 39-48 ms before, 51-61 ms after); its second
-// is where the code before the fix is many times slower, so that code fails the first step by
-// several times the bound. Written as paragraph text, the larger runs make more elements than one
-// write may (TestUploadRefusesADocumentTooLargeToStore), so each run is a code block's text: the
-// document stores it whole and search indexes it whole, which is where the time went, and pmdoc's
-// linear-time test holds the parser on the same runs. The `)_` ladder stops at 256 KiB, as before
-// the element limit. `)_` saved in linear time before the fix too and is held to the same growth.
+// Neither a bound on one save's time nor a bound on how it grows from a small size to a large one
+// holds on every runner: the large save and the small one run at different moments under different
+// load, and the small one is mostly the request's own cost, which load stretches differently from
+// the work. On one machine at a load of 140 to 218, a ladder that timed the replacement below in
+// this process's CPU time failed 2 of 100 runs, and passed 3 more only on a retry. Each write is
+// held to its linear-size control instead (costsNoMoreThanItsParts): one write of a size, timed
+// between sixteen writes of a sixteenth of it each, the same input split among them. Work linear in
+// the input makes the one write cost no more than the sixteen, whatever the load does to the
+// request's own cost or to the work, since the sixteen do the same work and pay that cost sixteen
+// times; work quadratic in the input makes it cost about sixteen times as much. The search indexing
+// and the block walk below are work no allocation counts: Postgres does the one, and ygo's walk
+// allocates nothing, so either defect, put back, left this process's allocations per save as they
+// were and multiplied its time.
+//
+// Each pathological run is a code block's text. Written as paragraph text, the larger runs make
+// more elements than one write may (TestUploadRefusesADocumentTooLargeToStore); the document stores
+// a code block's text whole and search indexes it whole, which is where the time went, and pmdoc's
+// linear-time test holds the parser on the same runs. The `)_` sizes stop at 256 KiB, as before the
+// element limit. `)_` saved in linear time before the fix too and is held to the same control.
 //
 // A comment, a comment edit, a message and a broadcast hold up to contracts.DispatchBlockUnits
-// characters in one block - 32,000 since INFRA-45, sixteen times the 2,000 that was too short
-// for a ladder to tell the code before the fix from the code after it, whose removed timings
-// measured a 2,000-character `a_` comment at 51 ms before the fix and 56 ms after. That bound is
-// laddered here ("comment a_"), a one-block `a_` comment at it being the longest pathological
-// text a caller can write outside a document; growsLinearly is what holds it, so a write that
-// stops being bounded at the block bound fails this test rather than waiting for a reader to
-// notice. An issue title is capped at 1,000 (contracts.IssueTitleMax), too short to ladder; the
-// title's ladders, and the duplicate check's against a stored title, went with the title cap
-// (TestIssueTitlesAreCappedOnCreateAndRetitle). Every one of these texts
-// is indexed through the search_text the document ladders time.
+// characters in one block - 32,000 since INFRA-45, sixteen times the 2,000 that was too short for a
+// comparison to tell the code before the fix from the code after it, whose removed timings measured
+// a 2,000-character `a_` comment at 51 ms before the fix and 56 ms after. That bound is held here
+// ("comment a_"), a one-block `a_` comment at it being the longest pathological text a caller can
+// write outside a document, so a write that stops being bounded at the block bound fails this test
+// rather than waiting for a reader to notice. An issue title is capped at 1,000
+// (contracts.IssueTitleMax), too short to tell the two apart; the title's checks, and the duplicate
+// check's against a stored title, went with the title cap (TestIssueTitlesAreCappedOnCreateAndRetitle).
+// Every one of these texts is indexed through the search_text the document checks time.
 //
 // Settlement is held off. A document's settlement holds its issue's row while it renders, so a
 // save timed while one ran would count the wait for it; and the test server's shutdown, which
 // would otherwise spend its drain budget settling 1 MiB documents, finds no document loaded and
-// leaves each to resume.
+// leaves each to resume. No test in this package calls t.Parallel, so nothing else this process
+// runs shares a timed write's moment.
 func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createArtifactIssue(t, handler)
@@ -56,46 +62,47 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 		shape string
 		sizes []int
 	}{
-		{"a_", []int{1 << 10, 64 << 10, 1 << 20}},
-		{"a_b*", []int{2 << 10, 128 << 10, 1 << 20}},
-		{")_", []int{256, 16 << 10, 256 << 10}},
+		{"a_", []int{64 << 10, 1 << 20}},
+		{"a_b*", []int{128 << 10, 1 << 20}},
+		{")_", []int{16 << 10, 256 << 10}},
 	} {
 		t.Run("document "+test.shape, func(t *testing.T) {
-			growsLinearly(t, "saving a document of `"+test.shape+"`", test.sizes, func(size int) time.Duration {
-				documents++
-				const fence = "```\n"
-				body := fence + strings.Repeat(test.shape, (size-2*len(fence)-1)/len(test.shape)) + "\n" + fence
-				started := time.Now()
-				response := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
-					"name": fmt.Sprintf("pathological-%d.md", documents),
-				}, "body.md", "text/markdown", []byte(body), "alice")
-				elapsed := time.Since(started)
-				if response.Code != http.StatusCreated {
-					t.Fatalf("upload %s of %q: status=%d body=%.200s", sizeText(size), test.shape, response.Code, response.Body.String())
-				}
-				return elapsed
-			})
+			for _, size := range test.sizes {
+				costsNoMoreThanItsParts(t, "saving a document of `"+test.shape+"`", size, splitParts, func(size int) time.Duration {
+					documents++
+					const fence = "```\n"
+					body := fence + strings.Repeat(test.shape, (size-2*len(fence)-1)/len(test.shape)) + "\n" + fence
+					started := time.Now()
+					response := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
+						"name": fmt.Sprintf("pathological-%d.md", documents),
+					}, "body.md", "text/markdown", []byte(body), "alice")
+					elapsed := time.Since(started)
+					if response.Code != http.StatusCreated {
+						t.Fatalf("upload %s of %q: status=%d body=%.200s", sizeText(size), test.shape, response.Code, response.Body.String())
+					}
+					return elapsed
+				})
+			}
 		})
 	}
 	// A comment's whole body is one search_text run, as a document's is, so the same pathological
-	// shape is timed at the longest block a caller may send, in three rungs derived from it: the
-	// block bound is a thirty-second of the largest document rung, enough of a span for a ladder
-	// since INFRA-45.
+	// shape is held at the longest block a caller may send and at a quarter of it.
 	t.Run("comment a_", func(t *testing.T) {
 		const shape = "a_"
-		sizes := []int{contracts.DispatchBlockUnits / 32, contracts.DispatchBlockUnits / 4, contracts.DispatchBlockUnits}
-		growsLinearly(t, "writing a comment of `"+shape+"`", sizes, func(size int) time.Duration {
-			body := strings.Repeat(shape, size/len(shape))
-			started := time.Now()
-			response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
-				"body": body,
-			}, "alice")
-			elapsed := time.Since(started)
-			if response.Code != http.StatusCreated {
-				t.Fatalf("comment of %s of %q: status=%d body=%.200s", sizeText(size), shape, response.Code, response.Body.String())
-			}
-			return elapsed
-		})
+		for _, size := range []int{contracts.DispatchBlockUnits / 4, contracts.DispatchBlockUnits} {
+			costsNoMoreThanItsParts(t, "writing a comment of `"+shape+"`", size, splitParts, func(size int) time.Duration {
+				body := strings.Repeat(shape, size/len(shape))
+				started := time.Now()
+				response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+					"body": body,
+				}, "alice")
+				elapsed := time.Since(started)
+				if response.Code != http.StatusCreated {
+					t.Fatalf("comment of %s of %q: status=%d body=%.200s", sizeText(size), shape, response.Code, response.Body.String())
+				}
+				return elapsed
+			})
+		}
 	})
 	// Replacing a document of many short blocks with as many others, every block changing type,
 	// takes time linear in its blocks (LEGION-465): pmdoc wrote each new block at its own index,
@@ -104,135 +111,160 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 	// at 21,844, the most one write's element limit allows of it, before the fix, and 27 ms and
 	// 1.5 s after it, on one machine at a load of 309 to 343. Replaced blocks that stand apart, kept
 	// blocks between them, still cost a walk each in ygo (pmdoc's TestUpdateIsLinearInTheBlockCount).
-	// Each rung is timed in this process's CPU (cputest.Process), since a rung's wall time at these
-	// sizes is mostly the request's own cost and the runner's load, over as many replacements, each
-	// of a document of its own, as the clock needs to resolve their time (cputest.Measure). No test
-	// in this package calls t.Parallel.
+	// Each replacement is a document of its own, seeded with the headings untimed. The whole is split
+	// in replacedParts, not splitParts: a part of 2,730 blocks, like the whole's 21,840, holds more
+	// blocks than a write indexes in its own request (deferBlockIndexBlocks), where a sixteenth,
+	// 1,365, indexes its blocks in its own request and the whole does not, work only the parts would
+	// do. Split in sixteen, a quadratic scan put into the upload, 3.8 s of the whole's time, passed at
+	// 1.5 times its parts, and pmdoc's walk put back failed at 6.5; split in eight, they failed at 3.9
+	// to 4.5 and 11 to 12.7 times.
 	t.Run("replacing many blocks", func(t *testing.T) {
-		const from, to = "> #\n", "> ***\n"
-		growsLinearly(t, "replacing a quote of headings with a quote of rules", []int{682 * len(to), 5_461 * len(to), 21_844 * len(to)}, func(size int) time.Duration {
-			blocks := size / len(to)
-			headings, rules := []byte(strings.Repeat(from, blocks)), []byte(strings.Repeat(to, blocks))
-			upload := func(name string, body []byte) {
-				response := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": name}, "body.md", "text/markdown", body, "alice")
+		costsNoMoreThanItsParts(t, "replacing a quote of headings with a quote of rules", replacedBlocks*len(replacedTo), replacedParts, func(size int) time.Duration {
+			blocks := size / len(replacedTo)
+			documents++
+			name := fmt.Sprintf("many-blocks-%d.md", documents)
+			upload := func(body string) time.Duration {
+				started := time.Now()
+				response := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": name}, "body.md", "text/markdown", []byte(body), "alice")
+				elapsed := time.Since(started)
 				if response.Code != http.StatusCreated {
-					t.Fatalf("upload %d blocks of %q: status=%d body=%.200s", blocks, body[:len(from)], response.Code, response.Body.String())
+					t.Fatalf("upload %d blocks of %q: status=%d body=%.200s", blocks, body[:len(replacedFrom)], response.Code, response.Body.String())
 				}
+				return elapsed
 			}
-			took, _ := cputest.Measure(func(runs int) (time.Duration, error) { // this batch has no error to report
-				names := make([]string, runs)
-				for i := range names {
-					documents++
-					names[i] = fmt.Sprintf("many-blocks-%d.md", documents)
-					upload(names[i], headings)
-				}
-				before := cputest.Process()
-				for _, name := range names {
-					upload(name, rules)
-				}
-				return cputest.Process() - before, nil
-			})
-			return took
+			upload(strings.Repeat(replacedFrom, blocks))
+			return upload(strings.Repeat(replacedTo, blocks))
 		})
 	})
 }
 
-// TestGrowsLinearlyRejectsQuadraticFinalRung proves the final-rung bound stays anchored to the
-// first rung, even when a prior rung fills the permitted per-step growth. The helper must fail for
-// both an ordinary first sample and one artificial slow first sample.
-func TestGrowsLinearlyRejectsQuadraticFinalRung(t *testing.T) {
-	for _, slowFirstSample := range []bool{false, true} {
-		t.Run(fmt.Sprintf("slow first sample %t", slowFirstSample), func(t *testing.T) {
-			command := exec.Command(os.Args[0], "-test.run=^TestGrowsLinearlyRejectsQuadraticFinalRungHelper$")
-			command.Env = append(os.Environ(), fmt.Sprintf("GROWS_LINEARLY_SLOW_FIRST=%t", slowFirstSample))
-			output, err := command.CombinedOutput()
-			if err == nil {
-				t.Fatalf("quadratic final rung passed:\n%s", output)
+// replacedBlocks is how many blocks TestSavingAPathologicalBodyIsBounded's replacement replaces in
+// its whole write: a quote of that many replacedFrom headings becomes a quote of as many replacedTo
+// rules, the most one write's element limit allows of it that splits into replacedParts equal
+// parts.
+const (
+	replacedBlocks           = 21_840
+	replacedParts            = 8
+	replacedFrom, replacedTo = "> #\n", "> ***\n"
+)
+
+// TestASplitRefusesQuadraticWork holds costsNoMoreThanItsParts's measure and verdict (splitTimes,
+// splitVerdict) to what they are for, with costs computed rather than timed: linear work with a
+// request's own cost passes, and so does linear work one of whose whole writes stalls; quadratic
+// work fails, and so does the weakest defect this file's checks measured, put back - pmdoc writing
+// each replaced block at its own index, whose quadratic walk sits beside the replacement's linear
+// work in the whole and in each part.
+func TestASplitRefusesQuadraticWork(t *testing.T) {
+	const size = replacedBlocks * len(replacedTo)
+	// The fixed replacement's whole took 0.49 s: a request's own cost and the work linear in it.
+	linear := func(n int) time.Duration {
+		return 20*time.Millisecond + time.Duration(n)*470*time.Millisecond/time.Duration(size)
+	}
+	stalls := 0
+	for _, test := range []struct {
+		name    string
+		cost    func(n int) time.Duration
+		refused bool
+	}{
+		{"linear work with a request's own cost", linear, false},
+		{"linear work whose first whole write stalls", func(n int) time.Duration {
+			if n == size && stalls == 0 {
+				stalls++
+				return 20 * linear(n)
 			}
-			if !strings.Contains(string(output), "at "+sizeText(quadraticFinalRung)) {
-				t.Fatalf("quadratic final rung failed unexpectedly:\n%s", output)
+			return linear(n)
+		}, false},
+		{"quadratic work", func(n int) time.Duration { return time.Duration(n) * time.Duration(n) }, true},
+		// The replacement with pmdoc's walk put back took 10.7 s for the whole: the fixed code's
+		// 0.49 s and a walk of 10.2 s growing as the square of the blocks (the comment above
+		// TestSavingAPathologicalBodyIsBounded's replacement has the measurement).
+		{"the replacement's walk put back", func(n int) time.Duration {
+			fraction := float64(n) / float64(size)
+			return linear(n) + time.Duration(fraction*fraction*float64(10200*time.Millisecond))
+		}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			whole, parts := splitTimes(size, replacedParts, test.cost)
+			if err := splitVerdict(test.name, size, replacedParts, whole, parts); (err != nil) != test.refused {
+				t.Fatalf("verdict on %s (%s against %s for its parts) = %v, want refused %t", test.name, whole, parts, err, test.refused)
 			}
 		})
 	}
 }
 
-// quadraticFinalRung is the last size of the helper's ladder, the rung whose time grows
-// quadratically and fails the bound.
-const quadraticFinalRung = 64
+// splitParts is how many writes a write's linear-size control splits its input among
+// (costsNoMoreThanItsParts), where nothing the server does changes with the write's size.
+const splitParts = 16
 
-func TestGrowsLinearlyRejectsQuadraticFinalRungHelper(t *testing.T) {
-	slowFirstValue, helper := os.LookupEnv("GROWS_LINEARLY_SLOW_FIRST")
-	if !helper {
-		t.Skip("subprocess helper")
+// splitAllowance is how many times its parts' time, between them, one write may take. Linear work
+// makes the one write take less than its parts, which do the same work and pay a request's own
+// cost once each; quadratic work makes it take about as many times as long as there are parts,
+// eight or sixteen, less the linear work both sides share.
+const splitAllowance = 2
+
+// sampleCount is how many times splitTimes times the whole write between its parts, and so how many
+// samples a load that slows the whole write but not the parts around it has to reach before the
+// verdict reads it as growth. With the replacement's process and its Postgres on one CPU that
+// three busy loops took in bursts of 0.2 to 2 s, 9 of 120 samples of the fixed replacement were
+// over splitAllowance, so three samples would all be over it about once in 2,400 runs, and five
+// about once in 400,000. At this machine's own load of 138 to 252, the replacement's verdict was at
+// most 0.97 in 120 runs of three samples.
+const sampleCount = 5
+
+// costsNoMoreThanItsParts holds a write of size to its linear-size control: timed(size), one write
+// of the whole input, against split calls of timed(size/split), each a write of its own, timed
+// around it (splitTimes). It fails t when the whole takes more than splitAllowance times its parts
+// between them (splitVerdict).
+func costsNoMoreThanItsParts(t *testing.T, what string, size, split int, timed func(size int) time.Duration) {
+	t.Helper()
+	whole, parts := splitTimes(size, split, timed)
+	if err := splitVerdict(what, size, split, whole, parts); err != nil {
+		t.Fatal(err)
 	}
-	slowFirstSample := slowFirstValue == "true"
-	firstSamples := 0
-	growsLinearly(t, "a quadratic final rung", []int{1, 8, quadraticFinalRung}, func(size int) time.Duration {
-		switch size {
-		case 1:
-			firstSamples++
-			if slowFirstSample && firstSamples == 1 {
-				return 50 * time.Millisecond
-			}
-			return time.Millisecond
-		case 8:
-			return 32 * time.Millisecond
-		case quadraticFinalRung:
-			return time.Duration(size*size/4) * time.Millisecond
-		default:
-			t.Fatalf("unexpected size %d", size)
-			return 0
+	t.Logf("%s: %s at %s, %.2f times the %s %d writes of %s took between them (at most %d)",
+		what, whole.Round(time.Millisecond), sizeText(size), float64(whole)/float64(parts), parts.Round(time.Millisecond), split, sizeText(size/split), splitAllowance)
+}
+
+// splitTimes takes sampleCount samples, each the whole write of size timed between two halves of
+// its split parts, and returns the sample whose whole took the least against its parts. The parts
+// come first, so the first request's warm-up counts against them. A change in the machine's load
+// reaches the whole and the parts written just before and after it alike, and a stall during one
+// whole write moves only its own sample, so only a load that slows every whole write and spares the
+// parts around each one is read as growth.
+func splitTimes(size, split int, timed func(size int) time.Duration) (whole, parts time.Duration) {
+	for sample := range sampleCount {
+		var each time.Duration
+		for range split / 2 {
+			each += timed(size / split)
 		}
-	})
-}
-
-// growthAllowance is the permitted variation in time per input byte from the first rung. A linear
-// save takes no more time per input byte as it grows, so each later rung may take four times the
-// first rung's time per byte. Quadratic growth exceeds that headroom across this ladder's input
-// ratios.
-const growthAllowance = 4
-
-// growsLinearly times a three-rung ladder and compares each later rung with the first. The first
-// size, where the request's own cost is most of the time, is timed three times before the second
-// size and three times after it, and the fastest of the six kept: the first save's warm-up does
-// not count as that cost, and a load spike inflates it only if it lasts all six first-rung saves.
-// A rung over the bound is timed again and keeps the faster time, so a one-save load spike is not
-// read as growth.
-func growsLinearly(t *testing.T, what string, sizes []int, timed func(size int) time.Duration) {
-	t.Helper()
-	firstSize, secondSize, thirdSize := sizes[0], sizes[1], sizes[2]
-	first := func() time.Duration { return min(timed(firstSize), timed(firstSize), timed(firstSize)) }
-	firstTook := first()
-
-	secondTook := timed(secondSize)
-	firstTook = min(firstTook, first())
-	checkLinearGrowth(t, what, firstSize, firstTook, secondSize, secondTook, timed)
-
-	thirdTook := timed(thirdSize)
-	checkLinearGrowth(t, what, firstSize, firstTook, thirdSize, thirdTook, timed)
-}
-
-func checkLinearGrowth(t *testing.T, what string, firstSize int, firstTook time.Duration, size int, took time.Duration, timed func(size int) time.Duration) {
-	t.Helper()
-	growth := size / firstSize
-	bound := time.Duration(growthAllowance*growth) * firstTook
-	if took > bound {
-		t.Logf("%s: %s at %s against %s at %s is over the bound; timing it again", what, took.Round(time.Millisecond), sizeText(size), firstTook.Round(time.Millisecond), sizeText(firstSize))
-		took = min(took, timed(size))
+		one := timed(size)
+		for range split - split/2 {
+			each += timed(size / split)
+		}
+		if sample == 0 || float64(one)/float64(each) < float64(whole)/float64(parts) {
+			whole, parts = one, each
+		}
 	}
-	ratio := float64(took) / float64(firstTook)
-	if took > bound {
-		t.Fatalf("%s took %s at %s, %.0f times the %s it took at %s: the input grew %d times, and a save linear in it may grow %d times at most (growthAllowance)",
-			what, took.Round(time.Millisecond), sizeText(size), ratio, firstTook.Round(time.Millisecond), sizeText(firstSize), growth, growthAllowance*growth)
-	}
-	t.Logf("%s: %s at %s, %s at %s, %.1f times for an input %d times larger (at most %d)", what, firstTook.Round(time.Millisecond), sizeText(firstSize), took.Round(time.Millisecond), sizeText(size), ratio, growth, growthAllowance*growth)
+	return whole, parts
 }
 
+// splitVerdict is nil when the whole write of size took at most splitAllowance times its split
+// parts between them, and otherwise names both.
+func splitVerdict(what string, size, split int, whole, parts time.Duration) error {
+	if whole <= splitAllowance*parts {
+		return nil
+	}
+	return fmt.Errorf("%s took %s at %s, %.1f times the %s %d writes of %s took between them: they write the same input, so a write linear in it takes no longer than they do, and may take %d times as long at most (splitAllowance)",
+		what, whole.Round(time.Millisecond), sizeText(size), float64(whole)/float64(parts), parts.Round(time.Millisecond), split, sizeText(size/split), splitAllowance)
+}
+
+// sizeText is a size in bytes as this file's messages give it: in MiB or KiB where it is a whole
+// number of them, else in bytes, so a comment's 2,000 characters never read as 1 KiB.
 func sizeText(size int) string {
 	switch {
 	case size >= 1<<20 && size%(1<<20) == 0:
 		return fmt.Sprintf("%d MiB", size>>20)
-	case size >= 1<<10:
+	case size >= 1<<10 && size%(1<<10) == 0:
 		return fmt.Sprintf("%d KiB", size>>10)
 	}
 	return fmt.Sprintf("%d B", size)
