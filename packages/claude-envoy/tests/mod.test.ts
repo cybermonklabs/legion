@@ -8,10 +8,8 @@
  * shares one session: it is started once and every test drives steps through it.
  */
 import { afterAll, beforeAll, expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { rm } from "node:fs/promises"
 import { request as httpRequest } from "node:http"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import type {
   EngineInterface,
   HookStream,
@@ -38,6 +36,7 @@ import {
   unreadRowPrompt,
 } from "../hooks/mod-protocol"
 import { type ModLink, startModLink } from "../src/mod-link"
+import { modSocketScratch } from "./mod-socket-scratch"
 
 /** The hook `on("session.start", ...)` takes, as `On` declares it. */
 type SessionStartHook = (
@@ -382,7 +381,7 @@ async function turn(turnId: string, requests: number, inside?: () => Promise<voi
 }
 
 beforeAll(async () => {
-  const directory = await mkdtemp(join(tmpdir(), "mod-"))
+  const directory = await modSocketScratch("mod-")
   scratch = directory
   const server = await startModLink({
     sessionId: SESSION_ID,

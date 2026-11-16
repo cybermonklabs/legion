@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { mkdir, rm, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import {
   type EnvoyStack,
@@ -13,6 +12,7 @@ import { RECOVERY_BOUND_MS, runFreezeScenario } from "@legion/envoy-client/test/
 import type { Subprocess } from "bun"
 import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
 import { startFakeMod } from "./fake-mod"
+import { modSocketScratch } from "./mod-socket-scratch"
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
@@ -51,7 +51,7 @@ async function startChannelServer(
   sessionPrefix: string,
 ): Promise<ChannelServer> {
   const proxy = await startStallProxy(stack.natsHostPort)
-  const home = await mkdtemp(join(tmpdir(), "claude-envoy-stall-"))
+  const home = await modSocketScratch("claude-envoy-stall-")
   const configDirectory = join(home, "claude-config")
   await mkdir(configDirectory)
   await writeFile(
