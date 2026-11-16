@@ -354,12 +354,12 @@ type batchEvent struct {
 	// is left out and holds none of the owner's later events back: the mention is on its way to
 	// that very session - its own attempt names it, or an unpinned attempt this read resolved to
 	// it does - so the session has the comment before the owner's later events reach it,
-	// whichever way the send ends. A role copy is nobody else's to deliver - a keep waits for
-	// the role's next claim, and a forward is the holder's one copy - and a copy waiting on an
-	// attempt whose holder could not be named is nobody else's either, that mention being as
-	// likely to be pinned elsewhere, so leaving either out would let the owner's next event
-	// overtake it at that session, and it stays in the list holding its key instead
-	// (planChains).
+	// whichever way the send ends. A role copy is nobody else's to deliver - a keep waits up to
+	// its hour for the role's next live holder, and a forward is the holder's one copy - and a
+	// copy waiting on an attempt whose holder could not be named is nobody else's either, that
+	// mention being as likely to be pinned elsewhere, so leaving either out would let the
+	// owner's next event overtake it at that session, and it stays in the list holding its key
+	// instead (planChains).
 	delivered      map[string]struct{}
 	destinationsOf []destination
 	resolveErr     error
@@ -499,11 +499,11 @@ type chain struct {
 // held event is read again beside it - and behind its nextAttempt when it is not. Two copies
 // wait that way, and both for the same reason: nothing else delivers them to that session.
 // A role route's copy waits for the mention that decides its key (resolveRoleHolders): a keep
-// waits for the role's next claim and a forward is the holder's one copy, so a later event let
-// past it would reach the role's holder first - the kept lane is drained in stream order
-// (walkKeptRole in cmd/listener/role_keep.go) and a forward goes straight to the holder's agent
-// subject. The copy of a session the owner's own work names waits for an attempt of the comment
-// that names no session yet and whose role this read could name no holder for
+// waits up to its hour for the role's next live holder and a forward is the holder's one copy, so
+// a later event let past it would reach the role's holder first - the kept lane is drained in
+// stream order (walkKeptRole in cmd/listener/role_keep.go) and a forward goes straight to the
+// holder's agent subject. The copy of a session the owner's own work names waits for an attempt of
+// the comment that names no session yet and whose role this read could name no holder for
 // (destinations.addWorkingSession): that mention may be pinned to another session, and then
 // nothing but this copy delivers the comment here, so a later event let past it would overtake
 // the comment at that session.

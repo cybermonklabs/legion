@@ -1,0 +1,133 @@
+name: CI job tool-fallback-arm
+
+# The steps of ci.yaml's `tool-fallback-arm` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own. The
+# comment above that job says what the arm64 half proves and why it needs the `changes` job alone.
+#
+# The split is for the filters. The tool_fallback filter names this file beside ci.yaml and the
+# tool-fallback job's own file, so a change to these steps selects this job alone, where a change
+# to ci.yaml selects every job.
+#
+# The job id here is the one ci.yaml calls this file under, and it has to stay: a composite
+# action reads `github.job` as the id of the job that called it, and .github/actions/setup-bun
+# passes no-cache for every job whose id starts with `tool-fallback`, so no call of it here can be
+# served by the Actions cache.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+jobs:
+  tool-fallback-arm:
+    runs-on: ubuntu-24.04-arm
+    # The budget, added up from the slowest run this job can have rather than copied from
+    # another job: the checkout and the runner's download of the actions (1), the healthy
+    # install of the 34 MB release zip (2), the fault and its probe, whose two requests are
+    # bounded at 15 s each (1), the faulted install — oven-sh/setup-bun's own download against a
+    # proxy that refuses it at once, then one ladder of .github/scripts/ci-tools.sh, which
+    # `--retry-max-time 60` bounds at a minute of new attempts plus one last attempt of the
+    # row's `max_time` 60 s, so two minutes at worst (4) — the 107 MB npm tarball, its gunzip
+    # and the write (3), the two readings, each a sha256 of that binary (2), the report step
+    # (1), and the machine watch's start and its report (1). That is 15, and a job its own
+    # limit cuts off reports `cancelled`, which ci-ok fails, so the limit is the next minute
+    # up.
+    # Measured, this job sits far inside that budget, and the ladder those two minutes allow for
+    # is not driven in the runs measured. In five green runs on 2026-11-10 it took 41 s, 41 s,
+    # 43 s, 45 s and 50 s (jobs 129726973920, 129733754662, 129745140461, 129743510021 and
+    # 129721254112), where the tool-fallback job took 1,611 s to 2,007 s in those same five runs.
+    # The reason is the shape of this job's faulted install. It reads ci_tools_fetch_fallback
+    # (.github/actions/setup-bun/action.yml line 174), which reads the second source alone and
+    # tries no primary (.github/scripts/ci-tools.sh lines 1259 to 1268), and the primary it does
+    # not try is fetched by oven-sh/setup-bun, a Node action that calls no curl. The one fetch
+    # the helper makes here is of npm, which answers. In the step list of job 129743510021 one
+    # step alone is above 3 s: the faulted setup-bun at 32 s, which is the 107 MB npm download.
+    # The two minutes above stay as the headroom of the run where npm does not answer at once.
+    # This job is therefore the control of the change INFRA-2621 makes to the tool-fallback job:
+    # a stand-in curl shortens that job's arranged refusals, and this job, whose measured runs
+    # drive no such ladder, must not move.
+    # Each of this job's two install steps declares `timeout-minutes: 11`, for the reason the
+    # tool-fallback job's comment gives (.github/workflows/ci-job-tool-fallback.yaml). Neither
+    # of them carries `continue-on-error`, so a held install here is loud by itself: the bound
+    # fails the job at about 11.5 minutes, the steps after it are skipped, and the job uploads
+    # its log. This job's own 16-minute limit reaches that install first only when the steps
+    # before it took more than about five minutes, which the 41 s to 50 s measured above says
+    # they do not. The reading either way is a job with a log, which is what the twenty-four
+    # installs of tool-fallback cannot give and why their clock exists.
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The same reading as the tool-fallback job's, over both halves of this one, and for the
+      # same reason: this is the only job of this repository that installs a tool on arm64, so
+      # nothing else says what one of those runners had (dispatch://INFRA-2605). The comment on
+      # that job's own pair (.github/workflows/ci-job-tool-fallback.yaml) says what the series
+      # shows and what it cannot.
+      - name: Start the machine watch over both halves
+        run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/disk-watch.json"
+
+      # The healthy path, with nothing faulted: the release asset serves Bun, and the action's
+      # fourth step holds what it installed to the row its third step read out of `uname -m`.
+      - timeout-minutes: 11
+        uses: ./.github/actions/setup-bun
+
+      - name: Read the Bun the release asset served
+        run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64
+
+      # The fault and the routing of every later step through it, as in the tool-fallback job:
+      # the rig starts the proxy over the release hosts its own FAULT_HOSTS names and writes the
+      # four spellings of the two proxy variables and the two emptied bypass lists to
+      # $GITHUB_ENV, so neither the hosts nor the variables are written in this file.
+      - name: Start the fault in front of GitHub's release assets
+        run: .github/scripts/ci-tools-proof.sh start-fault
+
+      - name: Read the fault before any install meets it
+        run: .github/scripts/ci-tools-proof.sh probe github.com
+
+      # Both names, because the action's refusal takes both: what must be read again is an
+      # install, and not the bun the healthy half left behind.
+      - name: Take the installed Bun away, so the second source must serve it
+        run: rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
+
+      # The npm path on arm64: the release asset answers nothing behind the fault, so the
+      # action's third step reads the @oven/bun-linux-aarch64 package the row names.
+      - timeout-minutes: 11
+        uses: ./.github/actions/setup-bun
+
+      # --expect-refused is this half's own reading of the source: the proxy's 504 for
+      # github.com after the probe is the refusal that sent this install to npm, and the
+      # version and the digest cannot say it, since both sources serve one binary.
+      - name: Read the Bun npm served
+        run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64 --expect-refused github.com
+
+      # `always()`, because the reading a reader wants most is the one from a job that failed.
+      - name: Report what this job ran on
+        if: always()
+        run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/disk-watch.json"
+
+      # The proxy stops with this job, and the steps after this one must not be routed through
+      # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
+      # upload through a proxy that is about to go. The rig writes the emptied variables, as it
+      # wrote the proxy ones.
+      - name: Stop routing this job through the fault
+        if: always()
+        run: .github/scripts/ci-tools-proof.sh stop-fault
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: tool-fallback-arm
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

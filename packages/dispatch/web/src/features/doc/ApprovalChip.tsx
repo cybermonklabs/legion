@@ -1,7 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
 
-import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
+import {
+  type ApiError,
+  api,
+  type CreateArtifactReviewInput,
+  isCapExceeded,
+  isSpecFormRefusal,
+} from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
@@ -138,17 +144,22 @@ function ReviewsDialog({
 
 function RequestChangesDialog({
   error,
+  initialReason = "",
   onClose,
   onSubmit,
   saving,
 }: {
-  /** What the server answered the last request with, or null while none was refused. */
+  /** What the server answered the last request for changes with, or null while none was
+   *  refused. */
   error: Error | null;
+  /** The reason the field opens with: what Dispatch wrote for the author when it refused the
+   *  person's approval for the form of The Spec, else nothing. */
+  initialReason?: string;
   onClose: () => void;
   onSubmit: (reason: string) => void;
   saving: boolean;
 }): ReactNode {
-  const [reason, setReason] = useState("");
+  const [reason, setReason] = useState(initialReason);
   const reasonId = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: textareaRef, onClose, open: true });
@@ -249,6 +260,9 @@ export function ApprovalChip({
   const { approval } = artifact;
   const [reviewsOpen, setReviewsOpen] = useState(false);
   const [requestChangesOpen, setRequestChangesOpen] = useState(false);
+  // Dispatch's refusal of the reader's last Approve for the form of The Spec: its words show under
+  // the actions, and the reason it wrote for the author is what Request changes opens with.
+  const [formRefusal, setFormRefusal] = useState<ApiError | undefined>(undefined);
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
 
@@ -257,7 +271,13 @@ export function ApprovalChip({
       `${input.state === "approved" ? "Approval" : "Change request"} on ${artifact.name}`,
     onSettled: () => submitGuard.release(),
     write: (input, bounds) => api.createArtifactReview(artifact.id, input, bounds),
+    onError: (error, input) => {
+      if (input.state === "approved" && isSpecFormRefusal(error)) {
+        setFormRefusal(error);
+      }
+    },
     onSuccess: () => {
+      setFormRefusal(undefined);
       setRequestChangesOpen(false);
       onReviewed?.();
       void queryClient.invalidateQueries({ queryKey: ["artifact-reviews", artifact.id] });
@@ -310,7 +330,13 @@ export function ApprovalChip({
             <button
               className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
               disabled={review.isPending}
-              onClick={() => submitGuard.guard(() => review.mutate({ state: "approved" }))}
+              onClick={() =>
+                submitGuard.guard(() => {
+                  // Each press is answered on its own: the refusal of the last one goes with it.
+                  setFormRefusal(undefined);
+                  review.mutate({ state: "approved" });
+                })
+              }
               type="button"
             >
               {approveLabel}
@@ -324,6 +350,14 @@ export function ApprovalChip({
           >
             Request changes
           </button>
+          {formRefusal === undefined ? null : (
+            <p
+              className={`basis-full min-w-0 text-sm whitespace-pre-line [overflow-wrap:anywhere] ${dangerText}`}
+              role="alert"
+            >
+              {formRefusal.message}
+            </p>
+          )}
         </>
       ) : null}
       {reviewsOpen ? (
@@ -331,7 +365,12 @@ export function ApprovalChip({
       ) : null}
       {requestChangesOpen ? (
         <RequestChangesDialog
-          error={review.isError ? review.error : null}
+          // Only a failed request for changes is the dialog's to report: a refused Approve, the
+          // other press this write makes, is reported under the actions or by the shell.
+          error={
+            review.isError && review.variables?.state === "changes_requested" ? review.error : null
+          }
+          initialReason={formRefusal?.changesReason}
           onClose={() => {
             review.reset();
             setRequestChangesOpen(false);

@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The `envoy_publish` tool result says until when Envoy keeps a role message no live session holds,
+  names a holder that is not live with its state, says that your session gets a message if no session
+  takes the copy by then, unless Envoy drops it more than an hour late, and carries `kept_until` and
+  `last_seen`. The phase reminder's notice to the architect is now kept for an architect role no live
+  session holds, as it is in Oh My Pi.

@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The phase reminder's notice to the architect and the stuck tool call notice to its owner are
+  published without `keep: false`, so Envoy keeps them for an owner role no live session holds and
+  wakes that role. A `202` kept answer still records no owner as told. After a `202` with no
+  `kept_until`, from a listener of an earlier release, the phase reminder uses a new idempotency key
+  at its next attempt.

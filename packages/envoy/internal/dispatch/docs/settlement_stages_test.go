@@ -37,11 +37,11 @@ func stageSettlement(t *testing.T, service *Service, artifactID string) *settlem
 
 // openStageTransaction opens what settleRoomWithin opens between take and readLocked: the
 // settlement's ledger and the cursor of the instance it holds, a transaction holding the
-// document's owner row, and the context the stages after take read and write through. The
-// transaction is rolled back when the test ends, and what the settlement wrote into the room is
-// discarded with it, as abandon discards it, so a settlement left half-run holds neither the
-// document's advisory lock nor the room's persistence worker. A settlement whose own stage
-// committed the transaction finished its writes itself.
+// document's owner row, the issue's state as that row reads (issueClosed), and the context the
+// stages after take read and write through. The transaction is rolled back when the test ends,
+// and what the settlement wrote into the room is discarded with it, as abandon discards it, so a
+// settlement left half-run holds neither the document's advisory lock nor the room's persistence
+// worker. A settlement whose own stage committed the transaction finished its writes itself.
 func openStageTransaction(t *testing.T, settle *settlement, parent context.Context) context.Context {
 	t.Helper()
 	service, artifactID := settle.service, settle.room
@@ -63,10 +63,7 @@ func openStageTransaction(t *testing.T, settle *settlement, parent context.Conte
 	if err != nil {
 		t.Fatalf("lock the document's owner row: %v", err)
 	}
-	if !open {
-		t.Fatal("the document's owner is closed")
-	}
-	settle.owner = owner
+	settle.owner, settle.issueClosed = owner, !open
 	return withOwnerVerified(ctx)
 }
 

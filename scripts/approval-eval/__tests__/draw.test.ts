@@ -321,7 +321,12 @@ describe("drawSlices under a read of the reserve", () => {
     return {
       reference: "claim:test",
       holds,
-      grouping: { groupOf: (row) => `tree:${row.issueKey}`, outcomes, groups: new Map() },
+      grouping: {
+        groupOf: (row) => `tree:${row.issueKey}`,
+        outcomes,
+        groups: new Map(),
+        joins: [],
+      },
       beforeCut: leftOut.map((one) => one.row),
     };
   }
@@ -356,6 +361,7 @@ describe("drawSlices under a read of the reserve", () => {
       beforeCut: { total: 0, cases: [] },
       heldOutsideReport: { total: 0, cases: [] },
       parentChanges: [],
+      nearDuplicates: { threshold: 0.9, joins: [] },
     });
     expect(draw.counts.fit.approval).toBeGreaterThan(TARGETS.approval.fit - 3);
   });

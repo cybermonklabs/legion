@@ -19,9 +19,30 @@ import (
 	"github.com/sjawhar/envoy/internal/cputest"
 )
 
+// parseFullTarget and renderFullTarget are
+// TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText's full-size targets.
+const (
+	// parseFullTarget is a mebibyte: the write-path limit (MaxDocumentBytes) this loop's parse
+	// reads back, since a caller's write of this much is refused for the elements it makes.
+	parseFullTarget = 1 << 20
+	// renderFullTarget is smaller: large enough for growthStep's quadratic margin, small enough
+	// that even the slowest shape (`<a`) stays fast - rendering is not bound by MaxDocumentBytes.
+	renderFullTarget = 512 << 10
+	// updateSeedTarget is TestUpdateIsLinearInTheBlockCount's seed of one-word paragraphs: the
+	// mebibyte a document may hold, which a rebuild from a stored rendering writes whole.
+	updateSeedTarget = 1 << 20
+	// updateShapeTarget is its other shapes', each 21,845 blocks or fewer, about what the 65,536
+	// elements one upload may make allow of them.
+	updateShapeTarget = 128 << 10
+)
+
+// alternatingBlocks are the documents TestUpdateIsLinearInTheBlockCount replaces every other block
+// of: 16,384 blocks is about the most paragraphs the 65,536 elements one upload may make allow.
+var alternatingBlocks = []int{4_096, 16_384}
+
 // Parse and Render finish in time linear in the text on the shapes that cost quadratic time
 // before LEGION-465. Each shape is timed at growthStep's fraction of its target size and then at
-// the full size (parseFullTarget/renderFullTarget: linear_sizes.go), through growsLinearly
+// the full size (parseFullTarget/renderFullTarget, above), through growsLinearly
 // (below).
 //
 // What each shape's closure measures is the CPU time this process spends on the call alone
@@ -50,7 +71,7 @@ import (
 //
 // A write of a mebibyte of these is refused for the elements it makes (MaxDocumentElements), so
 // the parse here is a read-back's, which counts none and reads all of it. Render's target is
-// smaller than parse's (linear_sizes.go): this loop's own ratio check is `<a`'s live linearity
+// smaller than parse's (above): this loop's own ratio check is `<a`'s live linearity
 // measurement, at whatever parseFullTarget/renderFullTarget currently are, not a one-time aside
 // recorded in a comment to go stale. The margin it checks is between the CPU time healthy linear
 // work costs and the far greater time a reintroduced O(n²) bug would cost, not a hang (which

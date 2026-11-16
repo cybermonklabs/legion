@@ -227,10 +227,15 @@ Successful direct sends return both the envelope and listener-selected recipient
 `duplicate` when the listener already held a send under that target and idempotency key.
 A publish returns the envelope and an optional role holder. A role publish has three answers,
 told apart by status. 200 is a live holder that took the message, named by `holder`. 202 is a
-message the listener kept for the session that claims the role next, with `kept`, `keptReason`
-(`unclaimed` or `holder_lapsed`) and `holder` when a lapsed claim named one. 404 is nothing kept,
-thrown as an `EnvoyApiError`, and the sender's own fallback must run. A sender that keeps a queue
-of its own passes `keep: false` to get the 404. Network failures, timeouts (5 s an
+message the listener kept for one hour because no live session holds the role, with `kept`,
+`keptReason` (`unclaimed`, or `holder_lapsed` with the `holder`, its `holderState` and its
+`lastSeen` when the claim's holder is not live) and `keptUntil`, the end of that hour in epoch
+milliseconds. The next session to hold the role live before `keptUntil` is handed the message. If
+none does, the listener drops it and sends the publishing session a dead letter, when the publish
+named that session as its source and the listener did not drop it more than an hour late. A
+listener of an earlier release sends no `keptUntil`. 404 is nothing kept, thrown as an
+`EnvoyApiError`, and the sender's own fallback must run. A sender that
+keeps a queue of its own passes `keep: false` to get the 404. Network failures, timeouts (5 s an
 attempt, the answer's body included) and 5xx responses retry once after 250 ms, under the same
 idempotency key; a 4xx whose body does not arrive is still a refusal. A send any attempt of which
 got no answer, an unreadable 2xx or a 5xx throws `EnvoySendUnconfirmedError`, even when a later
@@ -855,7 +860,7 @@ prints its URL, for proving what a command shows when a gateway, not Dispatch, a
 
 ## Command specs
 
-`@legion/contracts` `src/dispatch-tools.ts` is the single source for the thirty-five
+`@legion/contracts` `src/dispatch-tools.ts` is the single source for the thirty-six
 Dispatch specs behind the `dispatch` command: each one's name, description, field schemas
 and example. `dispatch-command.ts` derives the command and its flags from them, and no host
 adds aliases or descriptions of its own.
@@ -890,6 +895,18 @@ anything, a `delete` or `retype` by block id that would take an `ask` block out 
 (the block itself, or one inside a deleted block) while its ask is open: the edit would write its
 version at once and settlement would retract the ask without writing another, so the question
 would leave the human's Inbox unanswered and the approval refusal would find no block to judge.
+
+`dispatch request-approval` prints a refusal for the form of The Spec as Dispatch writes it, after its code (`SPEC_FORM: <error>`), and exits 1.
+The `DispatchServiceError` it throws carries `findings`, each text and its rule, and `changesReason`, the reason a person's Request changes sends, as it carries `mismatches`.
+A request that Dispatch records ends with one line on the form when a root of The Spec covers the document (the answer's `spec_form`): the count of each kind of text it read against the terms, or that it found no text of The Spec.
+
+`dispatch spec-form --issue <KEY> [--artifact <document>] [--version <N>]` prints the form of The Spec in one version of a document, as an approval request would judge it, and writes nothing (`specFormCommand`, `src/dispatch-commands/spec-form.ts`, over `GET /api/v1/artifacts/{id}/spec-form`).
+The version is the latest settled one by default.
+A covered document prints that Dispatch refuses its approval request and each finding as `- <kind> <node>: <detail>.`, or what Dispatch read.
+A document out of scope first says why Dispatch refuses nothing for it, by its scope, and still lists its findings.
+With no `--artifact`, it reads the spec and the Verification document of the issue, and names a document that has no version yet.
+`dispatch spec-form --root <KEY>` walks every issue under KEY with the issue list, one parent at a time, and prints one line for each issue and one for each spec and Verification document, with its version, its scope, the count of each kind of text and its findings.
+It ends with the count of issues and documents it read.
 
 `dispatch review --issue <KEY> [--artifact <document>] --version <N> --verdict <verdict>
 [--reason <text>]` records a person's review of one version of an issue's document: what the

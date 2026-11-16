@@ -146,7 +146,7 @@ the three `-alone` ones among them - runs on a pull request labelled `full-ci`, 
 queue and nightly, and the `alone` job that holds the wall-clock rows is gated on it
 (`if: inputs.lane == 'full'` under `alone:` in `.github/workflows/dispatch-browser.yaml`), so no
 unlabelled pull request runs a wall-clock row at all. One spec needs
-the same stack as all of them: a Postgres with pgvector. On a digest
+the same stack as all the specs: a Postgres with pgvector. On a digest
 carrying `legion-testpg`, use the pod's own server
 (`skill://legion-worker/references/tools.md#the-database-your-tests-use`) and
 unpack nothing. On a digest without it, the way

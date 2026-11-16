@@ -1,6 +1,6 @@
 ---
 name: Legion and Dispatch
-last_updated: 2026-11-07
+last_updated: 2026-11-16
 ---
 
 # Legion and Dispatch Strategy
@@ -63,7 +63,7 @@ Everything is a node, so verification, handoffs that live in Dispatch, and refer
 
 - **Cross review because intelligence is fallible.** An implementer falls for sunk cost and confirmation bias, like anyone. Cross-model-family review is a bias of Legion's, not a statement that agents are misaligned.
 - **Pluggable.** Any models; a workflow a team can change to meet its needs; repository-specific prompts.
-- **General by default.** Most changes should make Legion more general and move deployment-specific behaviour into the deployment's configuration. Legion holds an opinion about how software engineering is done only where its owner chooses to give it one.
+- **General by default.** Most changes should make Legion, Dispatch and Envoy more general and move deployment-specific behaviour into the deployment's configuration. Legion holds an opinion about how software engineering is done only where its owner chooses to give it one.
 - **Infrastructure, credentials and builds live in infrastructure as code and CI**, never on someone's machine.
 - **Tests run before the merge, by machine.** Automated, in CI, enforced by the repository's rules; never a manual or production check handed to a person, and never a circular test.
 - **Merged changes reach production on their own**, without downtime.

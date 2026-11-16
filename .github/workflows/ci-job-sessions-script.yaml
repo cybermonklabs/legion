@@ -1,0 +1,81 @@
+name: CI job sessions-script
+
+# The steps of ci.yaml's `sessions-script` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# What runs here is scripts/sessions' own suite, which measures message-wait.ts over a session
+# store of its own: it creates a database on the server LEGION_TEST_PG_DSN names, writes the
+# fixture into it, spawns the script, and drops the database again
+# (scripts/sessions/__tests__/message-wait.test.ts). It refuses without that variable and never
+# skips, which is what turned the `test` job red at run 42443071997 once the Postgres service
+# and the variable left that job with the daemon's Go suite (dispatch://INFRA-1413).
+#
+# A job rather than the service put back on `test`: this was the one step of those thirty-odd
+# that needs a database, and a service on `test` starts Postgres for every change that selects
+# any of its thirty-two harness steps — the cost this issue exists to stop. The `test` job keeps
+# the lint and the typecheck of scripts/sessions, which need no database and share its Bun.
+#
+# No install: the suite and the script it spawns import node: builtins and bun alone, so the Bun
+# the setup action installs is the whole of what they need and this job's filter names no
+# lockfile.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+jobs:
+  sessions-script:
+    runs-on: ubuntu-24.04
+    # One Bun suite over a local Postgres: the measured run is seconds, and ten minutes fails a
+    # hung connection rather than waiting out the runner's own limit.
+    timeout-minutes: 10
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml),
+        # the image .github/workflows/ci-job-daemon-go.yaml's service runs: one pinned Postgres
+        # for the workflow rather than a second digest to bump.
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # The server the suite creates its own session-store database on, and drops again: the
+      # login is the image's superuser, since the test's first statement is a CREATE DATABASE.
+      LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Test the session message-wait script
+        run: bun test scripts/sessions
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: sessions-script
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

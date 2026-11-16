@@ -1,0 +1,5 @@
+kind: Added
+body: The web app shows the refusal of Dispatch when a document breaks the form of The Spec. On the document header, the refusal of an approval shows under Approve and Request changes. Request changes then opens with the reason that Dispatch wrote for the author. On an approval card, the refusal selects Request changes, and the answer field holds that reason. The author gets the findings with one more press. A refusal that lists its findings shows one finding on each line.
+time: 2026-11-16T09:24:52.029347526Z
+custom:
+    Issue: pr4179

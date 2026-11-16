@@ -1,0 +1,290 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { createIssue, createProject, editArtifact, getAsk, listIssueAsks, patchIssue } from "./api";
+import { type CliRun, cliSession, runDispatch } from "./dispatch-cli";
+import { inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
+import { expect, test } from "./test";
+
+/**
+ * The form of The Spec, end to end: Dispatch refuses an approval request, and a person's approval,
+ * when a text of a document under the root of The Spec breaks the form, and the refusal names the
+ * node and the rule. The real `dispatch` command (`e2e/dispatch-cli.ts`) and a real browser drive
+ * the real server, whose root is `STE-1`: `e2e/run-server.sh` names it in `DISPATCH_SPEC_ROOTS`
+ * unless the caller's `DISPATCH_E2E_SPEC_ROOTS` names another root.
+ *
+ * Every row seeds the same tree in the project STE. The root, an issue outside it, and four issues
+ * whose spec holds one statement of three sentences. Three of them are under the issue outside the
+ * root when the agent asks for their approval, so Dispatch opens those requests, which is the
+ * control of the gate's scope. Then two of them move under the root, so the person's approval of
+ * them is judged; the third stays outside until the reopen row moves it. The fourth is under the
+ * root from the start, and the agent's request of it is refused.
+ */
+
+/** The root of The Spec that `e2e/run-server.sh` names for every harness server. */
+const ROOT = "STE-1";
+/** The node of the one statement every spec of the tree holds. */
+const node = "keep-each-message";
+/** A statement of three sentences, where the form allows one or two. */
+const threeSentences =
+  "Dispatch keeps each message. Dispatch indexes each message. Dispatch shows each message.";
+/** What every refusal and every listing says of that statement. */
+const detail = "it has 3 sentences, and a statement has one or two";
+/** The refusal's line for it in spec.md version 1. */
+const findingLine = `- statement ${node} in spec.md version 1: ${detail}.`;
+/** The control of the form in the other direction: two sentences of 25 words each, which no rule
+ *  refuses (`twentyFiveWords`, `internal/dispatch/api/spec_form_routes_test.go`). */
+const twentyFiveWords =
+  "Dispatch shows the person each question of each issue that the person follows, with the time of the question and the name of its project. " +
+  "Dispatch shows the person each approval request that waits on the person, with the document, its version and the short summary that its agent wrote.";
+/** The text a person's refused approval sends to the author with Request changes. */
+const changesReason = [
+  "Dispatch refused my approval, because 1 text breaks the form of The Spec.",
+  findingLine,
+  "Fix each text, then request approval again.",
+].join("\n");
+/** A width under the Inbox's reading column, where the Inbox draws an approval as its own card
+ *  with the two options and Answer (`e2e/inbox-pane.ts`). */
+const CARD_WIDTH = READING_PANE_WIDTH - 180;
+/** The agent's own writes, as the session the command runs as. */
+const agent = { actor: { id: cliSession, kind: "session" as const }, as: "agent" as const };
+
+function spec(statement: string): string {
+  return `# Spec\n\n:::requirement{#${node}}\n${statement}\n:::\n`;
+}
+
+/** What a run printed, both streams: a refusal goes to stderr and an answer to stdout. */
+function printed(run: CliRun): string {
+  return `${run.stdout}${run.stderr}`;
+}
+
+/** The ids of the open approval requests of an issue. */
+async function openRequests(issue: string): Promise<string[]> {
+  return (await listIssueAsks(issue))
+    .filter((ask) => ask.kind === "approval" && ask.state === "open")
+    .map((ask) => ask.id);
+}
+
+/** The one open approval request of an issue, which the seed opened. */
+async function theOpenRequest(issue: string): Promise<string> {
+  const open = await openRequests(issue);
+  expect(open, `the open approval requests of ${issue}`).toHaveLength(1);
+  return open[0] ?? "";
+}
+
+/** The command's own home and state directory for one row, removed when the row ends. */
+async function withHome(row: (home: string) => Promise<void>): Promise<void> {
+  const home = mkdtempSync(join(tmpdir(), "dispatch-spec-form-"));
+  try {
+    await row(home);
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+}
+
+async function seedTree(home: string) {
+  await createProject({ key: "STE", name: "The Spec" });
+  const root = await createIssue({ project: "STE", title: "The Spec" });
+  // e2e/run-server.sh names this key, so the seed must make it.
+  expect(root.key).toBe(ROOT);
+  const outside = await createIssue({ project: "STE", title: "Work outside The Spec" });
+  // The four specs hold the same statement on purpose, so creation is told they are no
+  // duplicates (`force`), which it would otherwise refuse as near copies.
+  const broken = (parent: string, title: string) =>
+    createIssue({ force: true, parent, project: "STE", spec: spec(threeSentences), title });
+  const header = await broken(outside.key, "Approved from the header");
+  const card = await broken(outside.key, "Approved from the Inbox card");
+  const reopened = await broken(outside.key, "Closed and reopened");
+  const requested = await broken(root.key, "Requested by the agent");
+  // Outside the root no text is judged: the agent's request of each opens.
+  for (const issue of [header, card, reopened]) {
+    const request = ["request-approval", "--issue", issue.key, "--summary", "The statement."];
+    const opened = await runDispatch(request, home);
+    expect(opened.code, printed(opened)).toBe(0);
+  }
+  const asks = {
+    card: await theOpenRequest(card.key),
+    header: await theOpenRequest(header.key),
+    reopened: await theOpenRequest(reopened.key),
+  };
+  await patchIssue(header.key, { parent: root.key });
+  await patchIssue(card.key, { parent: root.key });
+  return { asks, card, header, reopened, requested };
+}
+
+// SLOW(>=2s): eight cold `bun` starts of the real `dispatch` command around one Inbox page load.
+test("an agent's request of a broken statement under the root is refused with the finding, spec-form lists it, and the request of the fixed statement reaches the person", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await withHome(async (home) => {
+    const tree = await seedTree(home);
+    const request = [
+      "request-approval",
+      "--issue",
+      tree.requested.key,
+      "--summary",
+      "The statement.",
+    ];
+
+    // (a) to (b2) each read their own output, so each is its own reported check
+    // (`expect.soft`): a run where one of them is wrong says which.
+    // (a) The request is refused, with the code, the finding and the next step, and opens nothing.
+    const refused = await runDispatch(request, home);
+    expect.soft(refused.code, printed(refused)).toBe(1);
+    expect
+      .soft(printed(refused))
+      .toContain(
+        "SPEC_FORM: Dispatch refused this approval request, because 1 text breaks the form of The Spec."
+      );
+    expect.soft(printed(refused)).toContain(findingLine);
+    expect.soft(printed(refused)).toContain("Fix each text, then request approval again.");
+    expect.soft(await openRequests(tree.requested.key)).toEqual([]);
+
+    // (b) spec-form shows the same finding before a request.
+    const form = await runDispatch(["spec-form", "--issue", tree.requested.key], home);
+    expect.soft(form.code, printed(form)).toBe(0);
+    expect
+      .soft(form.stdout)
+      .toContain(
+        [
+          "spec.md version 1:",
+          "Dispatch refuses an approval request of spec.md version 1, because 1 text breaks the form of The Spec.",
+          `- statement ${node}: ${detail}.`,
+        ].join("\n")
+      );
+
+    // (b2) The walk lists each issue under the root with its spec, and the issue outside it not.
+    const walk = await runDispatch(["spec-form", "--root", ROOT], home);
+    expect.soft(walk.code, printed(walk)).toBe(0);
+    const counts = "1 statement, 0 claims, 0 purposes and 0 definitions, with 1 finding.";
+    for (const issue of [tree.header, tree.card, tree.requested]) {
+      expect
+        .soft(walk.stdout)
+        .toContain(
+          `${issue.key} [${issue.status}] ${issue.title}: ${counts}\n  spec.md version 1 (scope covered): ${counts}`
+        );
+    }
+    expect.soft(walk.stdout).not.toContain(tree.reopened.key);
+    expect
+      .soft(walk.stdout.trimEnd().split("\n").at(-1))
+      .toBe(`Dispatch read 3 issues and 3 documents under ${ROOT}.`);
+
+    // (d) The agent fixes the statement, and the request opens and says what Dispatch read.
+    await editArtifact(
+      tree.requested.primary_artifact_id,
+      { ops: [{ op: "replace", find: threeSentences, with: twentyFiveWords }] },
+      agent
+    );
+    const fixed = await runDispatch(request, home);
+    expect(fixed.code, printed(fixed)).toBe(0);
+    expect(fixed.stdout).toContain(
+      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions against 0 terms: no text breaks it."
+    );
+    const [opened] = await openRequests(tree.requested.key);
+    expect(opened, "the request the fixed statement opened").toBeDefined();
+    await page.goto("/");
+    await expect(inboxRow(page, opened ?? "")).toBeVisible();
+  });
+});
+
+// SLOW(>=2s): four cold `bun` starts of the real `dispatch` command around a spec page and a review written in it.
+test("the person's Approve on the header of a broken statement under the root shows Dispatch's refusal, and Request changes sends the findings to the author", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await withHome(async (home) => {
+    const tree = await seedTree(home);
+    await page.goto(`/issues/${tree.header.key}`);
+    await page.getByRole("button", { exact: true, name: "Approve" }).click();
+    const refusal = page.getByRole("alert").filter({ hasText: "Dispatch refused this approval" });
+    await expect(refusal).toContainText(findingLine);
+    await expect(refusal).toContainText(
+      "To send these findings to the author, choose Request changes."
+    );
+    await expect(page.getByRole("button", { name: /^Approved/ })).toHaveCount(0);
+
+    await page.getByRole("button", { exact: true, name: "Request changes" }).click();
+    const dialog = page.getByRole("dialog", { name: "Request changes" });
+    await expect(dialog.getByLabel("Reason")).toHaveValue(changesReason);
+    await expect(dialog.getByRole("alert")).toHaveCount(0);
+    await dialog.getByRole("button", { exact: true, name: "Request changes" }).click();
+    await expect(page.getByRole("button", { name: "Changes requested" })).toBeVisible();
+
+    const ref = `dispatch://${tree.header.key}/ask/${tree.asks.header}`;
+    const read = await runDispatch(["read", "--ref", ref], home);
+    expect(read.code, printed(read)).toBe(0);
+    expect(read.stdout).toContain("State: answered");
+    expect(read.stdout).toContain("- Selected: Request changes");
+    expect(read.stdout).toContain(`- Text: ${changesReason}`);
+  });
+});
+
+// SLOW(>=2s): four cold `bun` starts of the real `dispatch` command around the Inbox and an answer written in it.
+test("the person's Approve on the Inbox card of a broken statement under the root shows Dispatch's refusal and picks Request changes with the findings", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await withHome(async (home) => {
+    const tree = await seedTree(home);
+    await page.setViewportSize({ height: 900, width: CARD_WIDTH });
+    await page.goto("/");
+    const card = page.getByTestId(`ask-${tree.asks.card}`);
+    // Each option's name is its label and its description, and Request changes' description
+    // holds the word "approved", so each is named by the start of its label.
+    await card.getByRole("radio", { name: /^Approve / }).check();
+    await card.getByRole("button", { name: "Answer" }).click();
+    await expect(card.getByRole("alert")).toContainText(
+      "Dispatch refused this approval, because 1 text breaks the form of The Spec."
+    );
+    await expect(card.getByRole("alert")).toContainText(findingLine);
+    await expect(card.getByRole("radio", { name: /^Request changes / })).toBeChecked();
+    await expect(card.getByLabel("Reason (required)")).toHaveValue(changesReason);
+
+    await card.getByRole("button", { name: "Answer" }).click();
+    await expect.poll(async () => (await getAsk(tree.asks.card)).ask.state).toBe("answered");
+    const ref = `dispatch://${tree.card.key}/ask/${tree.asks.card}`;
+    const read = await runDispatch(["read", "--ref", ref], home);
+    expect(read.code, printed(read)).toBe(0);
+    expect(read.stdout).toContain("- Selected: Request changes");
+    expect(read.stdout).toContain(`- Text: ${changesReason}`);
+  });
+});
+
+// SLOW(>=2s): six cold `bun` starts of the real `dispatch` command, a close and a reopen, then the Inbox.
+test("a reopen leaves a broken request under the root resolved with its finding, and the person's Inbox shows no card for it", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await withHome(async (home) => {
+    const tree = await seedTree(home);
+    const key = tree.reopened.key;
+    await patchIssue(key, { parent: ROOT });
+    const close = ["issue-update", "--issue", key, "--status", "done"];
+    const closed = await runDispatch([...close, "--reason", "Close to try the reopen."], home);
+    expect(closed.code, printed(closed)).toBe(0);
+    const reopen = await runDispatch(["issue-update", "--issue", key, "--status", "todo"], home);
+    expect(reopen.code, printed(reopen)).toBe(0);
+
+    const read = await runDispatch(
+      ["read", "--ref", `dispatch://${key}/ask/${tree.asks.reopened}`],
+      home
+    );
+    expect(read.code, printed(read)).toBe(0);
+    expect(read.stdout).toContain("State: resolved");
+    expect(read.stdout).toContain(
+      [
+        "- Reason: Dispatch did not open this approval request again, because 1 text breaks the form of The Spec.",
+        findingLine,
+        "Fix each text, then request approval again.",
+      ].join("\n")
+    );
+
+    // The Inbox lists the card's request, which is still open, so its list is drawn; the
+    // reopened request is not in it.
+    await page.goto("/");
+    await expect(inboxRow(page, tree.asks.card)).toBeVisible();
+    await expect(inboxRow(page, tree.asks.reopened)).toHaveCount(0);
+  });
+});

@@ -3024,13 +3024,14 @@ func TestListenerDeliveryHandler_RoleReleasedByReplacementIsKeptForItsNextHolder
 	noException(t, probe)
 }
 
-// A role-lane delivery whose holder is not answering reports the delivery failed and leaves the
-// claim exactly as it is: the role lane is one more reader of a session's state, and the one
-// caller that ends a claim is the role reaper, once the holder is gone. Dropping it here took the
-// role away from a holder stalled for a minute, and every message for that role then reached
-// nobody until it claimed again. Nothing is kept for it either: a claim that stands is a claim no
-// next holder will make, so a kept copy would wait for a claim that never comes (roleKeepable).
-func TestListenerDeliveryHandler_ExpiredRoleKeepsTheClaimAfterItsException(t *testing.T) {
+// A role-lane delivery whose holder is not answering keeps the message for the role's next live
+// holder and leaves the claim exactly as it is: the role lane is one more reader of a session's
+// state, and the one caller that ends a claim is the role reaper, once the holder is gone.
+// Dropping the claim here took the role away from a holder stalled for a minute, and every message
+// for that role then reached nobody until it claimed again. The kept copy waits on the role's kept
+// lane for that holder answering again or a successor (roleKeepable), so no delivery exception
+// goes out: the message is not lost.
+func TestListenerDeliveryHandler_ExpiredRoleKeepsTheClaimAndItsMessageIsKept(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const role = "expired-holder"
 	if _, err := harness.registry.SetRole("ses_expired", "test-machine", role, false); err != nil {
@@ -3054,9 +3055,10 @@ func TestListenerDeliveryHandler_ExpiredRoleKeepsTheClaimAfterItsException(t *te
 	if err := harness.client.Publish(item); err != nil {
 		t.Fatalf("publish role delivery: %v", err)
 	}
-	assertDeliveryException(t, probe, item, "delivery_failed")
+	waitForKeptRoleMessage(t, harness.client, role, item.EventID)
+	noException(t, probe)
 	if holder, err := harness.registry.RoleHolder(role); err != nil || holder != "ses_expired" {
-		t.Fatalf("the claim after the failed delivery = %q, %v; want ses_expired's, left for the reaper", holder, err)
+		t.Fatalf("the claim after the kept delivery = %q, %v; want ses_expired's, left for the reaper", holder, err)
 	}
 }
 
@@ -3853,10 +3855,17 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 		messagesNAKed:     met.NewCounter("test_messages_naked", "test"),
 		deliveryDuration:  met.NewHistogram("test_delivery_duration", "test", metrics.DefaultBuckets),
 		roleKeptExpired:   met.NewCounter("test_role_kept_expired", "test"),
+		// The walk's other two counts, and its dead letters stored as main.go stores them, on
+		// the sender's agent subject of this test's own stream.
+		roleDeadLetters:     met.NewCounter("test_role_dead_letters", "test"),
+		roleKeptUndecodable: met.NewCounter("test_role_kept_undecodable", "test"),
+		publishDeadLetter:   client.PublishStoredAs,
 		// The handler refuses a config without its deferral set or its kept-lane drain guards, as
-		// main.go's always has both; the harness's two handlers share these as main.go's do.
+		// main.go's always has both; the harness's two handlers share these as main.go's do. The
+		// clock is main.go's too, which a test that crosses a kept copy's hour replaces on its copy.
 		deferredUnplaceable: newUnplaceableDeferrals(),
 		roleKeepDrains:      newRoleKeepGuards(),
+		now:                 time.Now,
 	}
 	// The role lane's forwards run on the role forwarder, as main.go wires them: it is the one
 	// path those messages take. It is wired last, from the configuration above, so a test that

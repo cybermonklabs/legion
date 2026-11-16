@@ -868,11 +868,11 @@ func (s *Service) creditLiveWrite(write *liveWrite, actor model.Actor) {
 // update is armed here instead (scheduleSettle; the write's slot defers it to finishLiveWrite), so
 // the write is versioned a settle delay on, as a published one is; that settlement loads the room
 // it settles, and so does Shutdown's when a shutdown stops the armed timer (settleRoomWithin's
-// mayLoad). A closed issue's document is the one that loads no room for it: the warm-up's load is
-// refused (allowInject), and the settlement ends there, its pending-settlement row left for the
-// resumption once the issue reopens (settleRoomWithin). A load already under way when the write
-// committed was told of the write's versions before the commit (Ledger.takeRoomCursors) and is
-// listed by ygo from before its read of the store, so it is found here and published into:
+// mayLoad). A closed issue's document loads its room the same way: the warm-up's load carries the
+// service's own mark (withOwnerVerified), which allowInject admits, and the settlement saves the
+// write as it saves any closed issue's document (settleRoomWithin). A load already under way when
+// the write committed was told of the write's versions before the commit (Ledger.takeRoomCursors)
+// and is listed by ygo from before its read of the store, so it is found here and published into:
 // Server.Apply waits for its load. A room that retires between this check and the publish's
 // Apply is loaded again by that Apply, from a store that holds the write, and idles out like any
 // room a write loads.

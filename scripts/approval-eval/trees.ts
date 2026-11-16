@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CaseRow } from "./build-corpus";
@@ -267,34 +268,146 @@ export function changesAfterAskOf(group: TreeGroup): ParentChange[] {
   return group.parentChanges.filter((change) => change.eventId > opened);
 }
 
-/** How the claim's draw groups the cases, and each group's outcome under item 6. */
-export interface TreeGrouping {
-  /** The group a case is in: `tree:<key>` for a case on an issue, `ask:<id>` for one on none. */
-  groupOf: (row: CaseRow) => string;
-  /** Each group's outcome, read over every case of the corpus in it, not only the drawn ones. */
-  outcomes: ReadonlyMap<string, TreeOutcome>;
-  /** The trees, by the group key `groupOf` gives. */
-  groups: ReadonlyMap<string, TreeGroup>;
+/**
+ * The Jaccard similarity of two cases' word 5-grams at or above which the two are near-duplicates
+ * and their groups join (dispatch://INFRA-3189 v8, "Grouping"). The reserve's item 6 has the claim
+ * group near-duplicate requests as that method says.
+ */
+export const NEAR_DUPLICATE_JACCARD = 0.9;
+
+/** How many words one shingle of a case's evidence holds: the method's word 5-grams. */
+export const SHINGLE_WORDS = 5;
+
+/**
+ * The word 5-grams of a case's evidence, which near-duplicate grouping compares. The text is
+ * lower-cased and cut into runs of letters and digits; every five consecutive runs are one
+ * shingle. Each shingle is kept as the first six bytes of its sha256, a whole number below 2^48,
+ * so the sets of a whole corpus fit in memory and hold none of its text. Two different shingles
+ * share a number with a chance near 2^-48 for each pair of them, so the corpus's millions of
+ * shingles may hold a few such pairs; each adds one shared shingle to every comparison of two
+ * cases that hold one of each. A text of fewer than five words has no 5-gram, so this keeps its
+ * whole run as one shingle, and two such texts join only when they are the same words, barring
+ * such a shared number; a text with no word has none and joins nothing. Sorted ascending, each
+ * number once.
+ */
+export function shinglesOf(text: string): number[] {
+  const words = text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const runs: string[] = [];
+  if (words.length > 0 && words.length < SHINGLE_WORDS) runs.push(words.join(" "));
+  for (let at = 0; at + SHINGLE_WORDS <= words.length; at += 1) {
+    runs.push(words.slice(at, at + SHINGLE_WORDS).join(" "));
+  }
+  const numbers = new Set<number>();
+  for (const run of runs) {
+    numbers.add(createHash("sha256").update(run, "utf8").digest().readUIntBE(0, 6));
+  }
+  return [...numbers].sort((one, other) => one - other);
+}
+
+/** The Jaccard similarity of two sorted sets of shingles: what they share over what either holds. */
+export function jaccardOf(one: readonly number[], other: readonly number[]): number {
+  let shared = 0;
+  let at = 0;
+  let next = 0;
+  while (at < one.length && next < other.length) {
+    const here = one[at] as number;
+    const there = other[next] as number;
+    if (here === there) {
+      shared += 1;
+      at += 1;
+      next += 1;
+    } else if (here < there) at += 1;
+    else next += 1;
+  }
+  const either = one.length + other.length - shared;
+  return either === 0 ? 0 : shared / either;
+}
+
+/** Two cases whose evidence is near-duplicate, the lesser case id first, and their similarity. */
+export interface NearDuplicatePair {
+  cases: [string, string];
+  jaccard: number;
 }
 
 /**
- * Groups every case of a corpus by the trees its build wrote, and puts each group under item 6.
- * A case on no issue is a group of its own that the reserve never holds. A case whose issue the
- * trees do not name means the trees were written by another build, and stops the claim.
+ * Every pair of cases whose shingles have a Jaccard similarity of `threshold` or more and that
+ * `apart` keeps, in the order of the cases' sizes then ids. A case with no shingle is in no pair.
+ * `apart` lets a caller drop the pairs it has no use for before they are held, which keeps a
+ * corpus of many copies of one case from holding every pair of them.
+ */
+export function nearDuplicatesOf(
+  shingles: ReadonlyMap<string, readonly number[]>,
+  apart: (one: string, other: string) => boolean = () => true,
+  threshold: number = NEAR_DUPLICATE_JACCARD
+): NearDuplicatePair[] {
+  const entries = [...shingles.entries()]
+    .filter(([, set]) => set.length > 0)
+    .sort(
+      ([oneId, one], [otherId, other]) =>
+        one.length - other.length || (oneId < otherId ? -1 : oneId > otherId ? 1 : 0)
+    );
+  const pairs: NearDuplicatePair[] = [];
+  for (let at = 0; at < entries.length; at += 1) {
+    const [id, set] = entries[at] as [string, readonly number[]];
+    for (let next = at + 1; next < entries.length; next += 1) {
+      const [otherId, other] = entries[next] as [string, readonly number[]];
+      // Two sets share at most the smaller's size over the larger's, and the sizes only grow
+      // from here on, so no later case can reach the threshold either. The bound is the same
+      // division `jaccardOf` makes for a set inside another, so rounding cannot drop a pair.
+      if (set.length / other.length < threshold) break;
+      if (!apart(id, otherId)) continue;
+      const jaccard = jaccardOf(set, other);
+      if (jaccard >= threshold) {
+        pairs.push({ cases: id < otherId ? [id, otherId] : [otherId, id], jaccard });
+      }
+    }
+  }
+  return pairs;
+}
+
+/** A near-duplicate pair that joined two groups: its cases, their groups before it, its similarity. */
+export interface NearDuplicateJoin extends NearDuplicatePair {
+  groups: [string, string];
+}
+
+/** How the claim's draw groups the cases, and each group's outcome under item 6. */
+export interface TreeGrouping {
+  /**
+   * The group a case is in: its tree, `tree:<key>`, or `ask:<id>` for a case on no issue, joined
+   * with every group a near-duplicate case links it to; a joined group goes by its least key.
+   */
+  groupOf: (row: CaseRow) => string;
+  /** Each group's outcome, read over every case of the corpus in it, not only the drawn ones. */
+  outcomes: ReadonlyMap<string, TreeOutcome>;
+  /** Each group's issues, asks and parent changes, every tree a join brought in included. */
+  groups: ReadonlyMap<string, TreeGroup>;
+  /** Every near-duplicate pair whose cases were in two groups, by case ids. */
+  joins: NearDuplicateJoin[];
+}
+
+/**
+ * Groups every case of a corpus by the trees its build wrote, joins the groups of every two cases
+ * whose evidence is near-duplicate (`shingles`, by case id; each connected component is one group),
+ * and puts each group under item 6, read over all its trees' asks and all its cases.
+ *
+ * A case on no issue is in no tree and the reserve never holds it; item 6 (a) reads its ask's own
+ * opening, and an opening the corpus does not record counts as before the cut. A case whose issue
+ * the trees do not name means the trees were written by another build, and a case with no
+ * shingles is one whose near-duplicates cannot be found: each stops the claim.
  */
 export function treeGroupingOf(
   rows: readonly CaseRow[],
   trees: TreesFile,
   checks: TreeChecks,
+  shingles: ReadonlyMap<string, readonly number[]>,
   cut: string = RESERVE_TREE_CUT
 ): TreeGrouping {
   const byIssue = new Map<string, TreeGroup>();
-  const groups = new Map<string, TreeGroup>();
   for (const group of trees.groups) {
-    groups.set(`tree:${group.key}`, group);
     for (const issue of group.issues) byIssue.set(issue, group);
   }
-  const groupOf = (row: CaseRow): string => {
+  const treeOf = new Map<string, TreeGroup>();
+  const ownGroupOf = (row: CaseRow): string => {
     if (row.issueKey === null) return `ask:${row.askId}`;
     const group = byIssue.get(row.issueKey);
     if (group === undefined) {
@@ -303,24 +416,89 @@ export function treeGroupingOf(
           "they were written by another build"
       );
     }
+    treeOf.set(`tree:${group.key}`, group);
     return `tree:${group.key}`;
   };
+  const own = new Map<string, string>();
+  const evidence = new Map<string, readonly number[]>();
+  for (const row of rows) {
+    const set = shingles.get(row.caseId);
+    if (set === undefined) {
+      throw new CorpusError(
+        `the claim's draw holds no evidence of ${row.caseId}, so it cannot join that case's ` +
+          'near-duplicates (dispatch://INFRA-3189 v8, "Grouping")'
+      );
+    }
+    own.set(row.caseId, ownGroupOf(row));
+    evidence.set(row.caseId, set);
+  }
+  const leader = new Map<string, string>();
+  const find = (key: string): string => {
+    let at = key;
+    for (;;) {
+      const up = leader.get(at) ?? at;
+      if (up === at) return at;
+      leader.set(at, leader.get(up) ?? up);
+      at = up;
+    }
+  };
+  const joins: NearDuplicateJoin[] = [];
+  // A pair inside one group changes nothing, so only pairs of two groups are kept.
+  for (const pair of nearDuplicatesOf(evidence, (one, other) => own.get(one) !== own.get(other))) {
+    const one = own.get(pair.cases[0]) as string;
+    const other = own.get(pair.cases[1]) as string;
+    joins.push({ ...pair, groups: [one, other] });
+    const a = find(one);
+    const b = find(other);
+    // The least key leads, so a joined group's key is its least whatever the order of the joins.
+    if (a < b) leader.set(b, a);
+    else if (b < a) leader.set(a, b);
+  }
+  joins.sort((one, other) => {
+    const [a, b] = [one.cases.join(" "), other.cases.join(" ")];
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  const groupOf = (row: CaseRow): string => find(own.get(row.caseId) ?? ownGroupOf(row));
   const casesOf = new Map<string, CaseRow[]>();
+  const membersOf = new Map<string, Set<string>>();
   for (const row of rows) {
     const key = groupOf(row);
     const cases = casesOf.get(key);
     if (cases === undefined) casesOf.set(key, [row]);
     else cases.push(row);
+    const members = membersOf.get(key) ?? new Set<string>();
+    members.add(own.get(row.caseId) as string);
+    membersOf.set(key, members);
   }
+  const groups = new Map<string, TreeGroup>();
   const outcomes = new Map<string, TreeOutcome>();
+  const cutTime = Date.parse(cut);
   for (const [key, cases] of casesOf) {
-    const group = groups.get(key);
+    const members = [...(membersOf.get(key) ?? [])].sort();
+    const memberTrees = members.flatMap((member) => treeOf.get(member) ?? []);
+    const group: TreeGroup =
+      members.length === 1 && memberTrees.length === 1
+        ? (memberTrees[0] as TreeGroup)
+        : {
+            key: memberTrees[0]?.key ?? "",
+            issues: [...new Set(memberTrees.flatMap((tree) => tree.issues))].sort(),
+            asks: memberTrees
+              .flatMap((tree) => tree.asks)
+              .sort((one, other) => one.eventId - other.eventId),
+            parentChanges: memberTrees
+              .flatMap((tree) => tree.parentChanges)
+              .sort((one, other) => one.eventId - other.eventId),
+          };
+    groups.set(key, group);
+    const issuelessBeforeCut = cases.some(
+      (row) => row.issueKey === null && !(Date.parse(row.askCreatedAt ?? "") >= cutTime)
+    );
     outcomes.set(
       key,
-      group === undefined ? "not-held-at-opening" : treeOutcomeOf(group, cases, checks, cut)
+      issuelessBeforeCut ? "ask-before-cut" : treeOutcomeOf(group, cases, checks, cut)
     );
   }
-  return { groupOf, outcomes, groups };
+  return { groupOf, outcomes, groups, joins };
 }
 
 /** The ids (UUIDs) a text names, in lower case: what a scorer's record or a session list holds. */
@@ -334,7 +512,10 @@ export function idsIn(text: string): Set<string> {
   return ids;
 }
 
-/** Every id the files name, read whole: a file that cannot be read stops the claim. */
+/**
+ * Every id the files name, read whole. A file that cannot be read stops the claim, and so does a
+ * file that names no id: item 6 (c) or (d) would then check nothing against it, which is no check.
+ */
 export async function idsInFiles(paths: readonly string[]): Promise<Set<string>> {
   const ids = new Set<string>();
   for (const path of paths) {
@@ -344,7 +525,11 @@ export async function idsInFiles(paths: readonly string[]): Promise<Set<string>>
     } catch {
       throw new CorpusError(`${path} could not be read, so the claim cannot check it`);
     }
-    for (const id of idsIn(text)) ids.add(id);
+    const named = idsIn(text);
+    if (named.size === 0) {
+      throw new CorpusError(`${path} names no id, so the claim would check nothing against it`);
+    }
+    for (const id of named) ids.add(id);
   }
   return ids;
 }

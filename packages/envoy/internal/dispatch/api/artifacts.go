@@ -658,9 +658,11 @@ func (s *server) storeArtifact(
 	var diff *string
 	if !created && kind == "doc" {
 		// This route writes its version itself rather than through the document service, so its
-		// open approval request follows that version just as every other version write does.
+		// open approval request follows that version just as every other version write does. An
+		// upload is no settlement's version, so the request moves to its agent whatever text it
+		// stores (docs.MoveApprovalAsk).
 		movedEvents, err = docs.MoveApprovalAsk(
-			r.Context(), tx, s.deps.Events, artifact.ID, version, actor, s.deps.ServerURL,
+			r.Context(), tx, s.deps.Events, artifact.ID, version, documentMarkdown, actor, false, s.deps.ServerURL,
 		)
 		if err != nil {
 			s.writeHandlerError(w, err)
