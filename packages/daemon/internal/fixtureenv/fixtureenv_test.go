@@ -249,11 +249,11 @@ func writeWrapper(t *testing.T, dir, name, body string) string {
 	return path
 }
 
-// RealGitAndJJ puts first on PATH the git that the PATH's own git runs, read from that git as it
-// runs, so a wrapper first on PATH no longer stands between a test and git: here one that refuses
-// every commit, as a machine's own git shim can under a fixture's home. The same commit through
-// the wrapper is refused first, so the wrapper is in the way until RealGitAndJJ runs.
-func TestRealGitAndJJPutsTheGitAWrapperRunsFirstOnPath(t *testing.T) {
+// Guard puts first on PATH the git that the PATH's own git runs, read from that git as it runs, so
+// a wrapper first on PATH no longer stands between a test and git: here one that refuses every
+// commit, as a machine's own git shim can under a fixture's home. The same commit through the
+// wrapper is refused first, so the wrapper is in the way until Guard runs.
+func TestGuardPutsTheGitAWrapperRunsFirstOnPath(t *testing.T) {
 	git, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatalf("this test drives a real git: %v", err)
@@ -270,11 +270,9 @@ func TestRealGitAndJJPutsTheGitAWrapperRunsFirstOnPath(t *testing.T) {
 		t.Fatalf("the commit through the wrapper succeeded, so this test proves nothing:\n%s", out)
 	}
 
-	remove, err := fixtureenv.RealGitAndJJ()
-	if err != nil {
+	if err := fixtureenv.Guard(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(remove)
 	first, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)
@@ -283,21 +281,20 @@ func TestRealGitAndJJPutsTheGitAWrapperRunsFirstOnPath(t *testing.T) {
 		t.Fatalf("the first git on PATH is %s (%s, %v), want a link to the git the wrapper runs", first, target, err)
 	}
 	if out, err := run(repo, env, commit...); err != nil {
-		t.Fatalf("the commit after RealGitAndJJ = %v, want the real git's:\n%s", err, out)
+		t.Fatalf("the commit after Guard = %v, want the real git's:\n%s", err, out)
 	}
 }
 
 // A git or jj on PATH whose program cannot be read from it, here a jj that runs no jj, is an error
-// naming it, and PATH is left as it was.
-func TestRealGitAndJJNamesAToolItCannotRead(t *testing.T) {
+// of Guard's naming it, and PATH is left as it was.
+func TestGuardNamesAToolItCannotRead(t *testing.T) {
 	wrappers := t.TempDir()
 	broken := writeWrapper(t, wrappers, "jj", "echo 'no jj here' >&2\nexit 1\n")
 	path := wrappers + string(filepath.ListSeparator) + os.Getenv("PATH")
 	t.Setenv("PATH", path)
-	remove, err := fixtureenv.RealGitAndJJ()
+	err := fixtureenv.Guard()
 	if err == nil {
-		remove()
-		t.Fatal("RealGitAndJJ answered no error over a jj that runs no jj")
+		t.Fatal("Guard answered no error over a jj that runs no jj")
 	}
 	if !strings.Contains(err.Error(), broken) || !strings.Contains(err.Error(), "no jj here") {
 		t.Errorf("the error is %q, want it to name %s and what it printed", err, broken)
