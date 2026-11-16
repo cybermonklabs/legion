@@ -981,6 +981,66 @@ func TestASweepAtTheGreatestMinimumAgeDeletesPastItAndKeepsInsideIt(t *testing.T
 	f.assertPrefixed()
 }
 
+// An entry exactly the minimum age old is deleted, and one a second inside the age is kept. R3 has
+// the trimmer delete "no entry whose newest modification time is inside the minimum age", so an
+// entry whose newest time is the cutoff itself is outside it, and the listing keeps out only an
+// entry newer than the cutoff (`at.After(eligible)`, list). The other cases stand a minute either
+// side of an age (TestASweepAtTheGreatestMinimumAgeDeletesPastItAndKeepsInsideIt) or further, and a
+// listing that kept out the entry at the cutoff itself is green with them. The trimmer's clock is
+// moved onto a whole second first, so that the cutoff the sweep computes is a time a file on this
+// volume holds exactly, and every time of both entries is read back before the sweep to show it
+// stands where the case put it. The entries are bun's install cache's, which the minimum age
+// alone guards, with no allowance of Go's on top of it (goCacheMtimeSlack), and the age is
+// written out rather than read off trimSettings, as the greatest age's case writes its own.
+func TestAnEntryExactlyTheMinimumAgeOldIsDeletedAndOneASecondInsideItIsKept(t *testing.T) {
+	const minAge = 30 * time.Minute
+	f := newTrimFixture(t, 0)
+	root := f.roots[3]
+	if root.Entry != ImmediateChildren {
+		t.Fatalf("the fourth reclaimable root is %+v, want bun's install cache, whose entries are its immediate children", root)
+	}
+	f.clock.advance(f.clock.at.Truncate(time.Second).Add(time.Second).Sub(f.clock.at))
+	cutoff := f.clock.at.Add(-minAge)
+	retime := func(entry *fixtureEntry, at time.Time) {
+		t.Helper()
+		for _, path := range []string{filepath.Join(entry.path, "b1", "out"), filepath.Join(entry.path, "b1"), entry.path} {
+			if err := os.Chtimes(path, at, at); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !info.ModTime().Equal(at) {
+				t.Fatalf("%s reads as written at %s, want the %s the case wrote: the case would not stand where it says", path, info.ModTime(), at)
+			}
+		}
+		entry.at = at
+	}
+	exactly := f.addTree(filepath.Join(root.Path, "tool-exactly-the-minimum-age"), root.Entry)
+	retime(exactly, cutoff)
+	inside := f.addTree(filepath.Join(root.Path, "tool-a-second-inside-the-minimum-age"), root.Entry)
+	retime(inside, cutoff.Add(time.Second))
+
+	f.useVolume(steady(90))
+	set := trimSettings()
+	set.MinAgeMinutes = int(minAge / time.Minute)
+	f.setSettings(set)
+	out := f.trimmer().sweep(context.Background(), *set, steady(90)(0))
+
+	if f.exists(exactly.path) {
+		t.Errorf("the sweep kept %s, whose newest time is exactly %s before the sweep began under a minimum age of %s: that entry is not inside the age, and R3 keeps only the entries that are (%s)",
+			exactly.path, minAge, minAge, out.reason)
+	}
+	if !f.exists(inside.path) {
+		t.Errorf("the sweep deleted %s, whose newest time is a second inside the minimum age of %s: an entry inside the age is one a role may still be using", inside.path, minAge)
+	}
+	if out.deletions != 1 {
+		t.Errorf("the sweep deleted %d entries, want the one at the minimum age: %s", out.deletions, out.reason)
+	}
+	f.assertProtected()
+}
+
 // The age a minute past the greatest an operator may ask for is refused: the trimmer stays off,
 // reads the volume not once, and the entry older than that age is still on the volume
 // afterwards.
@@ -2015,6 +2075,41 @@ func TestTheSweepReadsItsProgressFromTheVolumeAndNotFromTheBytesItUnlinked(t *te
 		entries, unlinkable, percentBytes(20))
 }
 
+// A reading a byte under the one before it is a decrease, and starts the count of readings that
+// show none over: R1 stops the sweep "when three of those readings in a row show no decrease",
+// and the case above stands every reading on the one before it, with which a count that took a
+// one-byte decrease for no decrease is as green. The sweep here deletes four hundred entries
+// with a reading after each hundred, each a byte under the one before and every one far above the
+// low mark, so it deletes all four hundred and ends with no entry eligible, where a count of
+// three readings showing no decrease would end it at three hundred.
+func TestAReadingAByteUnderTheOneBeforeItIsADecrease(t *testing.T) {
+	const entries = 400
+	f := newTrimFixture(t, 0)
+	root := f.roots[1] // GOCACHE, whose entries are single files, the cheapest entry to make
+	for at := range entries {
+		shard := filepath.Join(root.Path, fmt.Sprintf("%02x", at%16))
+		mkdirFixture(t, shard)
+		f.addFile(filepath.Join(shard, fmt.Sprintf("%032x-a", at)), root.Entry)
+	}
+	first := usageAt(90)
+	// The reading after the n-th hundred deletions is n bytes under the sweep's first.
+	f.useVolume(func(call int) volumeUsage {
+		used := first.UsedBytes - uint64(call)
+		return volumeUsage{UsedBytes: used, AvailableBytes: fixtureVolumeBytes - used}
+	})
+	f.setSettings(trimSettings())
+
+	out := f.trimmer().sweep(context.Background(), *trimSettings(), first)
+
+	if out.deletions != entries || strings.Contains(out.reason, "no decrease") {
+		t.Errorf("the sweep deleted %d of %d entries and stopped because %q, want every one deleted: each reading was a byte under the one before it, which is a decrease",
+			out.deletions, entries, out.reason)
+	}
+	if reads := f.readCount(); reads != entries/100 {
+		t.Errorf("the sweep read the volume %d times, want %d: one after each hundred deletions", reads, entries/100)
+	}
+}
+
 // The sweep skips an entry any process of the pod is using, driven one /proc entry at a time:
 // each case builds a /proc holding one process that names the entry through that entry alone,
 // so a trimmer reading only open file descriptors fails five of the six. A path on the entry
@@ -2180,6 +2275,20 @@ func TestAProcessThatStartsAfterTheSweepBeganStillProtectsItsEntry(t *testing.T)
 			t.Errorf("the sweep deleted %d of %d entries, want every one: no reading of the set it deletes by holds them", deletions, entries)
 		}
 	})
+	// The second itself: a set exactly a second old is read again, since the sweep reads it again
+	// "whenever it is volumeUsedPathsMaxAge old" (sweep's guard), so a process that appears with
+	// exactly a second of the sweep's clock gone protects its entry. The two cases either side of
+	// it stand a millisecond off, and a set read again only once it was older than a second is
+	// green with them.
+	t.Run("a process that appears with exactly a second of the sweep's clock gone", func(t *testing.T) {
+		survived, deletions, entries := sweep(t, true, time.Second)
+		if !survived {
+			t.Error("the sweep deleted the entry a process took hold of with exactly a second of its clock gone, want the used-path set read again once it is a second old")
+		}
+		if deletions != entries-1 {
+			t.Errorf("the sweep deleted %d entries, want the %d that nothing holds", deletions, entries-1)
+		}
+	})
 }
 
 // Immediately before the delete the entry's newest time is read again, and an entry something
@@ -2244,6 +2353,83 @@ func TestAnEntryWhoseTimeMovedBetweenTheScanAndTheDeleteIsSkipped(t *testing.T) 
 				}
 			})
 		}
+	}
+}
+
+// An entry written a second after the time its listing read is skipped, as one written at the
+// sweep's own time is: the pre-delete re-read skips an entry anything in which is newer than the
+// time the listing read (moved, newerThan). The case above writes the entry at the sweep's own
+// time, two hours and more past the time the listing read, and a re-read that allowed a second of
+// slack is as green with it as with its control, which writes nothing. Each of the three reads of
+// that re-read is driven: a file inside a directory entry, which newerThan's walk reads; the
+// directory entry's own time, which newerThan's lstat of it reads and which the case above never
+// moves, since it writes only the file inside; and a single file entry, which moved's own lstat
+// reads. Each is written a second past the time read off it before the sweep, the time the
+// listing reads too, and read back to show it stands there.
+func TestAnEntryWrittenASecondAfterTheTimeItsListingReadIsSkipped(t *testing.T) {
+	for _, kind := range []struct {
+		name    string
+		dir     bool   // whether the entry is a directory, or a single file
+		written string // what of the entry is written, below its path
+	}{
+		{"a file in a directory entry", true, filepath.Join("b1", "out")},
+		{"a directory entry's own time", true, ""},
+		{"a single file entry", false, ""},
+	} {
+		t.Run(kind.name, func(t *testing.T) {
+			f := newTrimFixture(t, 4)
+			order := f.oldestFirst()
+			first := order[0]
+			var moved *fixtureEntry
+			for at := len(order) - 1; at >= 0; at-- {
+				info, err := os.Lstat(order[at].path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.IsDir() == kind.dir && order[at] != first {
+					moved = order[at]
+					break
+				}
+			}
+			if moved == nil {
+				t.Fatalf("the fixture holds no late entry of the kind %q", kind.name)
+			}
+			path := filepath.Join(moved.path, kind.written)
+			info, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			later := info.ModTime().Add(time.Second)
+			touched := false
+			f.clock.setHook(func(_ *fakeClock) {
+				if touched || f.exists(first.path) {
+					return
+				}
+				touched = true
+				if err := os.Chtimes(path, later, later); err != nil {
+					t.Error(err)
+				}
+				switch info, err := os.Lstat(path); {
+				case err != nil:
+					t.Error(err)
+				case !info.ModTime().Equal(later):
+					t.Errorf("%s reads as written at %s, want the %s the case wrote", path, info.ModTime(), later)
+				}
+			})
+			f.useVolume(steady(90))
+			f.setSettings(trimSettings())
+
+			out := f.trimmer().sweep(context.Background(), *trimSettings(), steady(90)(0))
+			if !touched {
+				t.Fatal("the case never reached the moment it stages: the sweep deleted nothing at all")
+			}
+			if !f.exists(moved.path) {
+				t.Errorf("the sweep deleted %s, written a second after the time its listing read: something wrote in it between the listing and the delete", moved.path)
+			}
+			if out.deletions != len(f.entries)-1 {
+				t.Errorf("the sweep deleted %d entries, want the %d whose time had not moved: %s", out.deletions, len(f.entries)-1, out.reason)
+			}
+		})
 	}
 }
 
@@ -2495,6 +2681,35 @@ func TestARefusedProcReadOfASweepThatSendsNoReportIsCarriedIntoTheNext(t *testin
 	}
 	if err := report.Validate(); err != nil {
 		t.Errorf("the daemon would refuse this report: %v", err)
+	}
+}
+
+// The refused /proc reads a trimmer carries between reports are kept up to the most a report
+// names and counted past it (carryRefused): twenty-five carried are twenty-five kept and none
+// counted, and one more is counted and not kept, so a pod that never reports holds no more than
+// the bound for the life of the launcher process. The other cases carry one, or two hundred into a
+// report, whose own bound cuts any list to the same cap (bound) and so is green with a carry that
+// kept twenty-six; what the trimmer holds is read here, after each carry. The figures are written
+// out rather than read off shimwire.VolumeReportRefusedReads, which a case staged from would move
+// with.
+func TestTheTrimmerCarriesTwentyFiveRefusedReadsAndCountsTheTwentySixth(t *testing.T) {
+	const most = 25
+	tr := newTrimFixture(t, 0).trimmer()
+	refusals := make([]string, most+1)
+	for at := range refusals {
+		refusals[at] = fmt.Sprintf("process %d: fd: permission denied", 7000+at)
+	}
+
+	tr.carryRefused(refusals[:most])
+	if len(tr.refusedReads) != most || tr.refusedDropped != 0 {
+		t.Errorf("the trimmer holds %d refused reads and counts %d more after %d were carried, want all %d held and none counted", len(tr.refusedReads), tr.refusedDropped, most, most)
+	}
+	tr.carryRefused(refusals[most:])
+	if len(tr.refusedReads) != most || tr.refusedDropped != 1 {
+		t.Errorf("the trimmer holds %d refused reads and counts %d more after %d were carried, want %d held and the last counted", len(tr.refusedReads), tr.refusedDropped, most+1, most)
+	}
+	if !slices.Equal(tr.refusedReads, refusals[:most]) {
+		t.Errorf("the trimmer holds %q, want the first %d it was carried", tr.refusedReads, most)
 	}
 }
 
@@ -3294,7 +3509,10 @@ func TestThePauseAfterASweepThatFreedUnderAPointIsTenIntervals(t *testing.T) {
 // intervals". A higher figure engages the pause on a sweep that did free real space, so a full
 // volume waits ten intervals with caches the trimmer could have deleted; a lower one lets a
 // trimmer that can free nothing list the volume's whole reclaimable set once an interval in
-// the process that is PID 1 of the roles container.
+// the process that is PID 1 of the roles container. A sweep that freed exactly one point is not
+// under it and engages no pause: the two rows a tenth either side of the point are green with a
+// pause engaged at the point itself, so the third row stands on it, and every row first reads
+// the figure the model's two readings give on the side it stands on.
 //
 // Both halves are staged from the volume the reading models and never from
 // volumeSweepMinFreedPoints — one entry carries every byte the sweep can free and the others
@@ -3308,8 +3526,15 @@ func TestThePauseIsEngagedByASweepUnderAPointAndNotByOneOverIt(t *testing.T) {
 	}{
 		{"a sweep that freed nine tenths of a point", 0.9, true},
 		{"a sweep that freed eleven tenths of a point", 1.1, false},
+		{"a sweep that freed exactly one point", 1.0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// The sweep's first reading and its last, as the model below gives them.
+			left := percentBytes(90) - percentBytes(tc.points)
+			freed := usageAt(90).Percent() - (volumeUsage{UsedBytes: left, AvailableBytes: fixtureVolumeBytes - left}).Percent()
+			if (tc.points == 1 && freed != 1) || (freed < 1) != tc.pauses {
+				t.Fatalf("the model's readings free %v points, which is not the side of the one point this row stands on", freed)
+			}
 			f := newTrimFixture(t, 1) // four entries, of which one holds the bytes
 			for at, entry := range f.entries {
 				entry.bytes = 0
@@ -4388,6 +4613,198 @@ func TestAnIntervalReadingAtTheLowMarkIsARecoveryAndOneATenthAboveItIsNot(t *tes
 	}
 }
 
+// An interval reading exactly at the high mark makes a sweep, raises episode 1 (first) and puts
+// the trimmer above the mark, so that a reading at the low mark after it is a recovery, and one a
+// byte under the mark does none of the three: the boundary is at or above the high mark, for the
+// sweep (tick), for the first episode and for the reading above the mark (episodeOf) alike, as R1
+// has it — "At or above the high mark it makes a sweep". The other cases read the mark's sides at
+// 84.9 and 90 (TestAReadingBelowTheHighMarkSweepsNothing,
+// TestTheEpisodeNumberFollowsTheVolumeAcrossTheMarks), and a trimmer that swept only above the
+// mark, or from a twentieth of a point under it, is green with both. A byte is the least a
+// reading of the volume moves by, so the mark moved either way by any amount turns a side red.
+//
+// Each side is two intervals of a trimmer that has read nothing before them, over a volume of one
+// entry per root, every one old enough to go. The side on the mark deletes them, reads the volume
+// once more at the sweep's end, a sweep's own last reading, and reports from episode 1 with the
+// volume still above the low mark, and its second interval, inside the pause that sweep engaged,
+// reads the low mark and raises a recovery; the side a byte under the mark reads the volume once,
+// deletes nothing and raises no episode, and its reading at the low mark raises nothing either.
+// The intervals are driven through tick itself rather than the running loop, as in
+// TestAVolumeTheTrimmerCannotReadIsSaidOnce, so a boundary moved either way is a failure read at
+// once rather than a wait for a line that never comes.
+//
+// A trimmer still in episode 0 reads a reading under the mark no further than the first episode's
+// own test of it (episodeOf), so a byte under the mark meets the test of the reading above the
+// mark only once an episode is open and a recovery has closed the last stay above the mark. The
+// last subtest puts readings through episodeOf there, in the order tick reads them: a byte under
+// the mark leaves the low mark no recovery, and the mark itself makes it one.
+func TestAnIntervalReadingAtTheHighMarkSweepsAndRaisesTheFirstEpisodeAndOneAByteUnderItDoesNot(t *testing.T) {
+	under := percentBytes(85) - 1
+	aByteUnder := volumeUsage{UsedBytes: under, AvailableBytes: fixtureVolumeBytes - under}
+	if at, below := usageAt(85).Percent(), aByteUnder.Percent(); at != 85 || below >= 85 {
+		t.Fatalf("the fixture reads the high mark 85%% as %v and a byte under it as %v, which are not the two sides of the mark this case stands on", at, below)
+	}
+	for _, side := range []struct {
+		name string
+		// The first interval's reading, the sweep's last where it sweeps, above the low mark so
+		// that the sweep reports, and the second interval's reading, at the low mark.
+		readings []volumeUsage
+		reads    int    // in the first interval: its reading, and the sweep's last where it sweeps
+		episode  int    // the episode the first interval leaves the trimmer in
+		raisedBy string // and what raised it
+		recovery bool   // whether the second interval's reading at the low mark is a recovery
+	}{
+		{"exactly at the high mark", []volumeUsage{usageAt(85), usageAt(84.6), usageAt(70)}, 2, 1, shimwire.VolumeEpisodeFirst, true},
+		{"a byte under the high mark", []volumeUsage{aByteUnder, usageAt(70)}, 1, 0, "", false},
+	} {
+		t.Run(side.name, func(t *testing.T) {
+			percent := side.readings[0].Percent()
+			f := newTrimFixture(t, 1)
+			f.useVolume(func(call int) volumeUsage { return side.readings[min(call, len(side.readings))-1] })
+			set := *trimSettings()
+			f.setSettings(&set)
+			tr := f.trimmer()
+
+			if _, ending := tr.tick(context.Background(), &set); ending != trimGoesOn {
+				t.Fatalf("the interval ended the trimmer (%v), want it to go on", ending)
+			}
+
+			swept := side.episode == 1
+			if reads := f.readCount(); reads != side.reads {
+				t.Errorf("the interval reading %v%% read the volume %d times, want %d", percent, reads, side.reads)
+			}
+			if gone := len(f.gone()); (swept && gone != len(f.entries)) || (!swept && gone != 0) {
+				t.Errorf("the interval reading %v%% deleted %d of the %d entries, want every one where it sweeps and none where it does not; the trimmer wrote %q",
+					percent, gone, len(f.entries), f.linesWritten())
+			}
+			if tr.episode != side.episode || tr.raisedBy != side.raisedBy {
+				t.Errorf("the interval reading %v%% left the trimmer in episode %d raised by %q, want %d raised by %q; the trimmer wrote %q",
+					percent, tr.episode, tr.raisedBy, side.episode, side.raisedBy, f.linesWritten())
+			}
+			var want []reportEpisode
+			if swept {
+				want = []reportEpisode{{1, shimwire.VolumeEpisodeFirst}}
+			}
+			assertReportEpisodes(t, f, want)
+
+			if _, ending := tr.tick(context.Background(), &set); ending != trimGoesOn {
+				t.Fatalf("the second interval ended the trimmer (%v), want it to go on", ending)
+			}
+			episode, raisedBy := side.episode, side.raisedBy
+			if side.recovery {
+				episode, raisedBy = side.episode+1, shimwire.VolumeEpisodeRecovery
+			}
+			if tr.episode != episode || tr.raisedBy != raisedBy {
+				t.Errorf("the reading at the low mark after the interval reading %v%% left the trimmer in episode %d raised by %q, want %d raised by %q: a reading at the high mark is a reading above it, which the low mark after it recovers from; the trimmer wrote %q",
+					percent, tr.episode, tr.raisedBy, episode, raisedBy, f.linesWritten())
+			}
+			f.assertProtected()
+			f.assertPrefixed()
+		})
+	}
+
+	t.Run("a byte under the high mark and exactly at it after a recovery", func(t *testing.T) {
+		f := newTrimFixture(t, 0)
+		tr := f.trimmer()
+		set := *trimSettings()
+		for at, step := range []struct {
+			reading  volumeUsage
+			episode  int
+			raisedBy string
+		}{
+			{usageAt(90), 1, shimwire.VolumeEpisodeFirst},
+			{usageAt(70), 2, shimwire.VolumeEpisodeRecovery},
+			{aByteUnder, 2, shimwire.VolumeEpisodeRecovery},
+			{usageAt(70), 2, shimwire.VolumeEpisodeRecovery}, // no recovery: nothing since the last one was at the high mark
+			{usageAt(85), 2, shimwire.VolumeEpisodeRecovery},
+			{usageAt(70), 3, shimwire.VolumeEpisodeRecovery}, // a recovery: the reading before it was at the high mark
+		} {
+			tr.episodeOf(step.reading.Percent(), set)
+			if tr.episode != step.episode || tr.raisedBy != step.raisedBy {
+				t.Fatalf("reading %d, %v%%, left the trimmer in episode %d raised by %q, want %d raised by %q; the trimmer wrote %q",
+					at+1, step.reading.Percent(), tr.episode, tr.raisedBy, step.episode, step.raisedBy, f.linesWritten())
+			}
+		}
+		f.assertPrefixed()
+	})
+}
+
+// A sweep whose reading stands a byte above the low mark goes on deleting, and one whose last
+// reading stands there reports: the sweep stops at the first reading at or below the low mark and
+// reports where it ends above it (sweep). The cases on the mark read it at 70.0 — the reading
+// after the two hundredth deletion of TestTheSweepDeletesOldestFirstAcrossEveryRootUntilTheLowMark,
+// where the sweep stops and asks for no report, and the last reading of
+// TestASweepThatEndsExactlyAtTheLowMarkEndsTheEpisode — and every reading above the mark that a
+// sweep goes on from or reports at stands four points or more over it, so a stop or a report moved
+// up is green with them. A byte is the least a reading of the volume moves by, so a stop or a
+// report moved up by any amount turns this case red. The sweep here has a hundred and fifty
+// entries and reads the volume a byte above 70% after its hundredth deletion and again at its end:
+// it deletes every entry, ends with none eligible, and asks for a report.
+func TestASweepReadingAByteAboveTheLowMarkGoesOnAndReportsWhereItEnds(t *testing.T) {
+	const entries = 150
+	above := percentBytes(70) + 1
+	aByteAbove := volumeUsage{UsedBytes: above, AvailableBytes: fixtureVolumeBytes - above}
+	if percent := aByteAbove.Percent(); percent <= 70 {
+		t.Fatalf("the fixture reads a byte above 70%% as %v, which is not above the low mark 70 this case stands over", percent)
+	}
+	f := newTrimFixture(t, 0)
+	root := f.roots[3]
+	for at := range entries {
+		f.addTree(filepath.Join(root.Path, fmt.Sprintf("tool-%03d", at)), root.Entry)
+	}
+	f.useVolume(func(int) volumeUsage { return aByteAbove })
+	f.setSettings(trimSettings())
+
+	out := f.trimmer().sweep(context.Background(), *trimSettings(), usageAt(90))
+
+	if out.deletions != entries || strings.Contains(out.reason, "low mark") {
+		t.Errorf("the sweep deleted %d of %d entries and stopped because %q, want every one deleted: a reading a byte above the low mark is no reason to stop",
+			out.deletions, entries, out.reason)
+	}
+	if reads := f.readCount(); reads != 2 {
+		t.Errorf("the sweep read the volume %d times, want 2: after its hundredth deletion and at its end", reads)
+	}
+	if !out.report {
+		t.Errorf("the sweep that ended at %v%%, a byte above the low mark, asks for no report, want one: R4 has a sweep that ends above the low mark send one", out.last.Percent())
+	}
+}
+
+// A reading a byte above the low mark after one at the high mark is no recovery, and a reading at
+// the low mark after it is one: a recovery is a reading of the trimmer's own at or below the low
+// mark (episodeOf). The case on the mark's two sides through the running loop,
+// TestAnIntervalReadingAtTheLowMarkIsARecoveryAndOneATenthAboveItIsNot, stands its side above the
+// mark a tenth over it, with which a recovery read up to a twentieth of a point above the mark is
+// as green. A byte is the least a reading of the volume moves by, so a recovery moved up by any
+// amount turns this case red. The readings are put through episodeOf in the order tick puts its
+// readings through it, as TestAFloorFivePointsAboveTheAnchorRaisesTheEpisodeAndOneUnderItDoesNot
+// puts its starts.
+func TestAReadingAByteAboveTheLowMarkIsNoRecoveryAndOneAtItIs(t *testing.T) {
+	above := percentBytes(70) + 1
+	aByteAbove := volumeUsage{UsedBytes: above, AvailableBytes: fixtureVolumeBytes - above}
+	if at, over := usageAt(70).Percent(), aByteAbove.Percent(); at != 70 || over <= 70 {
+		t.Fatalf("the fixture reads the low mark 70%% as %v and a byte above it as %v, which are not the two sides of the mark this case stands on", at, over)
+	}
+	f := newTrimFixture(t, 0)
+	tr := f.trimmer()
+	set := *trimSettings()
+	for at, step := range []struct {
+		reading  volumeUsage
+		episode  int
+		raisedBy string
+	}{
+		{usageAt(90), 1, shimwire.VolumeEpisodeFirst},
+		{aByteAbove, 1, shimwire.VolumeEpisodeFirst},
+		{usageAt(70), 2, shimwire.VolumeEpisodeRecovery},
+	} {
+		tr.episodeOf(step.reading.Percent(), set)
+		if tr.episode != step.episode || tr.raisedBy != step.raisedBy {
+			t.Fatalf("reading %d, %v%%, left the trimmer in episode %d raised by %q, want %d raised by %q; the trimmer wrote %q",
+				at+1, step.reading.Percent(), tr.episode, tr.raisedBy, step.episode, step.raisedBy, f.linesWritten())
+		}
+	}
+	f.assertPrefixed()
+}
+
 // sweepsAndPauses ticks the loop through count sweeps of a volume no sweep brings down, each
 // followed by the intervals of the pause it engages (volumeQuietIntervals). The loop takes a tick
 // only once the interval before it has ended, so by the end every sweep's report has been sent.
@@ -4612,6 +5029,53 @@ func TestTheLineOfASweepTheRolesOutwroteSaysTheVolumeGrew(t *testing.T) {
 	}
 	if said := f.logged(fmt.Sprintf("-%d", grown)) + f.logged("B freed") + f.logged("freed -"); said != 0 {
 		t.Errorf("the trimmer wrote %d lines of bytes or points freed by a sweep that freed none: %q", said, f.linesWritten())
+	}
+}
+
+// A sweep that freed exactly nothing says it freed 0 B and 0.00 points, and one whose volume grew
+// by a single byte while it ran says the volume grew, in its sweep's line and in its pause's: each
+// line reads the volume as grown only where the sweep's last reading is above its first (tick,
+// which tests the bytes for the one and the points for the other), and the case above stands its
+// last reading half a point above, with which lines that took a sweep freeing nothing for one the
+// volume grew under, or a byte's growth for none, are as green. Each sweep deletes the fixture's
+// four entries from a volume whose readings the case writes out, and is one interval driven
+// through tick.
+func TestASweepThatFreedNothingSaysSoAndOneTheVolumeGrewAByteUnderSaysThat(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		grown uint64 // what the sweep's last reading holds over its first
+		want  []string
+	}{
+		{"freed nothing", 0, []string{
+			"4 entries deleted, 0 B freed, leaving the volume at",
+			"the sweep freed 0.00 points of the volume, under 1: no new sweep for the next",
+		}},
+		{"grew by a byte", 1, []string{
+			"4 entries deleted, the volume grew by 1 B while the sweep ran, leaving the volume at",
+			"the volume grew by 0.00 points while the sweep ran, so the sweep freed under 1: no new sweep for the next",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTrimFixture(t, 1)
+			f.useVolume(func(call int) volumeUsage {
+				used := percentBytes(90)
+				if call > 1 {
+					used += tc.grown
+				}
+				return volumeUsage{UsedBytes: used, AvailableBytes: fixtureVolumeBytes - used}
+			})
+			set := *trimSettings()
+			f.setSettings(&set)
+			tr := f.trimmer()
+
+			tr.tick(context.Background(), &set)
+
+			for _, want := range tc.want {
+				if said := f.logged(want); said != 1 {
+					t.Errorf("the trimmer wrote %d lines saying %q, want one: %q", said, want, f.linesWritten())
+				}
+			}
+		})
 	}
 }
 
@@ -4974,6 +5438,60 @@ func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t 
 				kept.Trimmer, kept.RaisedBy, whole.id, shimwire.VolumeEpisodeRecovery)
 		}
 	})
+}
+
+// Every string a report carries is kept whole at its bound in runes and cut at one rune more, to
+// the bound with an ellipsis in place of its last rune (cutRunes, bound). The other cases cut
+// strings at three times their bound or more and read only that the result is within it
+// (TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes,
+// TestDirectoriesReadInPartAreBoundedInTheReportAndTheLog), with which a cut at the bound itself
+// or a rune short of it is as green; only the identifier and the raised-by are held to their
+// length. Each string is of a rune two bytes long, so a cut counted in bytes is no cut in runes.
+// The bounds are written out rather than read off the constants, as the other bounds of this
+// package are, since a case staged from the constant it tests moves with it.
+func TestEveryStringOfAReportIsKeptWholeAtItsBoundAndCutAtOneRuneMore(t *testing.T) {
+	const (
+		pathRunes       = 200
+		stopReasonRunes = 400
+		faultRunes      = 2000
+		trimmerRunes    = 100
+	)
+	tr := newTrimFixture(t, 0).trimmer()
+	for _, past := range []int{0, 1} {
+		of := func(bound int) string { return strings.Repeat("é", bound+past) }
+		report := tr.bound(shimwire.LauncherVolumeReport{
+			Trimmer: of(trimmerRunes), Episode: 1, RaisedBy: of(trimmerRunes),
+			StopReason:   of(stopReasonRunes),
+			Sizes:        []shimwire.LauncherVolumeSize{{Path: of(pathRunes), Refused: of(pathRunes)}},
+			SizesMissing: []shimwire.LauncherVolumeMissing{{Path: of(pathRunes), Reason: of(pathRunes)}},
+			RefusedReads: []string{of(pathRunes)},
+			Faults:       []string{of(faultRunes)},
+		})
+		for _, field := range []struct {
+			name  string
+			got   string
+			bound int
+		}{
+			{"trimmer", report.Trimmer, trimmerRunes},
+			{"raised-by", report.RaisedBy, trimmerRunes},
+			{"stop reason", report.StopReason, stopReasonRunes},
+			{"size's path", report.Sizes[0].Path, pathRunes},
+			{"size's refused read", report.Sizes[0].Refused, pathRunes},
+			{"unmeasured path", report.SizesMissing[0].Path, pathRunes},
+			{"unmeasured path's reason", report.SizesMissing[0].Reason, pathRunes},
+			{"refused /proc read", report.RefusedReads[0], pathRunes},
+			{"fault", report.Faults[0], faultRunes},
+		} {
+			want := of(field.bound)
+			if past > 0 {
+				want = strings.Repeat("é", field.bound-1) + "…"
+			}
+			if field.got != want {
+				t.Errorf("the report's %s of %d runes is carried as %d runes ending %q, want %d runes ending %q: whole at its bound of %d, and cut to it with an ellipsis one rune past",
+					field.name, field.bound+past, utf8.RuneCountInString(field.got), field.got[max(0, len(field.got)-8):], utf8.RuneCountInString(want), want[len(want)-8:], field.bound)
+			}
+		}
+	}
 }
 
 // pathsOf is the path of each size a report carries.

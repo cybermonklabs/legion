@@ -160,6 +160,33 @@ func TestTheDeletersStandardErrorIsKeptToItsBound(t *testing.T) {
 	}
 }
 
+// The bound is the most of the deleter's standard error kept whole, so what it said at exactly
+// the bound is carried as it said it, with no mark, and one byte more is cut to the bound with the
+// mark after it, as a reply at its bound is (the case above writes 64 times the bound, with which a
+// buffer that marked a write at the bound as cut is as green). Each is written in two writes, the
+// second of which meets the bound, since the room is counted across writes. The bound is written
+// out, 4096 bytes, the bound a reply of the deleter is kept to (volumeDeleteReplyBytes), rather
+// than read off volumeDeleteSaidBytes, which a case staged from would move with.
+func TestTheDeletersStandardErrorAtItsBoundIsKeptWholeAndOneByteMoreIsCut(t *testing.T) {
+	const bound = 4096
+	for _, size := range []int{bound, bound + 1} {
+		said := &saidBuffer{}
+		written := strings.Repeat("z", size)
+		for _, part := range []string{written[:size-96], written[size-96:]} {
+			if n, err := said.Write([]byte(part)); n != len(part) || err != nil {
+				t.Fatalf("a write of %d bytes was answered %d, %v, want the whole of it written", len(part), n, err)
+			}
+		}
+		want := " (" + written + ")"
+		if size > bound {
+			want = " (" + written[:bound] + volumeDeleteSaidCut + ")"
+		}
+		if got := said.trailing(); got != want {
+			t.Errorf("what the child said in %d bytes is carried as %d bytes ending %q, want %d bytes ending %q", size, len(got), got[max(0, len(got)-60):], len(want), want[max(0, len(want)-60):])
+		}
+	}
+}
+
 // discardRequests is a deleter's request pipe that goes nowhere, for a case that writes its
 // replies itself.
 type discardRequests struct{}

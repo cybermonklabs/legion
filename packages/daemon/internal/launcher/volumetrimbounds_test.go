@@ -222,6 +222,26 @@ func TestASweepsReasonNamesAtMostTwentyFiveRefusals(t *testing.T) {
 	}
 }
 
+// A reason names every refusal up to twenty-five of them and says nothing of more, and at
+// twenty-six names the first twenty-five and says there is one more (refusalsSaid). The case above
+// stands forty refusals, fifteen past the bound, with which a reason that cut at the bound itself,
+// or a refusal past it, is as green. Twenty-five is written out rather than read off
+// shimwire.VolumeReportRefusedReads, which a case staged from would move with.
+func TestASweepsReasonNamesTwentyFiveRefusalsWholeAndSaysOfATwentySixth(t *testing.T) {
+	const most = 25
+	refusals := make([]string, most+1)
+	for at := range refusals {
+		refusals[at] = fmt.Sprintf("process %d: fd: permission denied", 6000+at)
+	}
+	if said := refusalsSaid(refusals[:most]); said != strings.Join(refusals[:most], "; ") {
+		t.Errorf("the reason names %d refusals as %q, want all %d of them joined and nothing said of more", most, said, most)
+	}
+	said := refusalsSaid(refusals)
+	if want := strings.Join(refusals[:most], "; ") + "; and 1 more"; said != want {
+		t.Errorf("the reason names %d refusals as %q, want the first %d and one more counted: %q", most+1, said, most, want)
+	}
+}
+
 // A sweep names the first ten entries of a root it passes over, one line each, and counts the
 // rest into one line when it ends: a role may fill a root with links, and a line per link is a
 // line per link on every sweep. The negative control is the sweep that wrote a line for every
@@ -251,6 +271,46 @@ func TestASweepNamesTenEntriesOfARootItPassesOverAndCountsTheRest(t *testing.T) 
 		t.Errorf("the sweep said %d times how many more it passed over, want once; it wrote %d lines", said, len(f.linesWritten()))
 	}
 	f.assertPrefixed()
+}
+
+// A root whose entries the sweep passes over ten times has them named in ten lines and no line
+// counting more, and one passed over eleven times has the eleventh counted in one line of one more
+// (passedOver). The case above passes fifty over, forty past the ten, with which a count line
+// written at ten, or only from twelve, is as green. Ten is written out rather than read off
+// volumePassedOverLines, which a case staged from would move with.
+func TestASweepNamesTenPassedOverEntriesWithNoCountAndCountsAnEleventh(t *testing.T) {
+	const named = 10
+	for _, links := range []int{named, named + 1} {
+		t.Run(fmt.Sprintf("%d links", links), func(t *testing.T) {
+			f := newTrimFixture(t, 0)
+			bun := f.roots[3]
+			if bun.Entry != ImmediateChildren {
+				t.Fatalf("the fourth reclaimable root is %+v, want bun's install cache", bun)
+			}
+			target := t.TempDir()
+			for at := range links {
+				if err := os.Symlink(target, filepath.Join(bun.Path, fmt.Sprintf("link-%02d", at))); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.useVolume(steady(90))
+			f.setSettings(trimSettings())
+
+			f.trimmer().sweep(context.Background(), *trimSettings(), steady(90)(0))
+
+			if said := f.logged("is passed over: "); said != named {
+				t.Errorf("the sweep named %d of the %d links it passed over, want %d", said, links, named)
+			}
+			counted := f.logged("more entries of the reclaimable root")
+			switch {
+			case links == named && counted != 0:
+				t.Errorf("the sweep that passed over %d links wrote %d lines counting more, want none: it named every one; it wrote %q", links, counted, f.linesWritten())
+			case links > named && (counted != 1 || f.logged(fmt.Sprintf("1 more entries of the reclaimable root %s were passed over", bun.Path)) != 1):
+				t.Errorf("the sweep that passed over %d links wrote %d lines counting more, want one counting the one past the %d named; it wrote %q", links, counted, named, f.linesWritten())
+			}
+			f.assertPrefixed()
+		})
+	}
 }
 
 // The line a sweep writes for an entry whose age it could not read names what it failed on, and a
@@ -394,5 +454,71 @@ func TestEveryReportTheTrimmerBoundsIsOneTheDaemonTakes(t *testing.T) {
 		if list.held != list.cap || list.left != past {
 			t.Errorf("the bounded report holds %d %s and counts %d left out, want the cap of %d and the %d past it", list.held, list.name, list.left, list.cap, past)
 		}
+	}
+}
+
+// Each list of a report one entry past its cap is cut to the cap with that one entry counted, and
+// each list at its cap is carried whole with none counted (bound). The case above stands every
+// list seven past its cap, and TestAReportThatReplacesAHeldOneSaysOnceWhatItLeavesOut its sizes two
+// past it, with which a bound that let a list run one entry past its cap is as green, and the
+// daemon refuses a report holding one entry past any cap (shimwire.LauncherVolumeReport.Validate),
+// so that one entry would cost the pod its report. The caps are written out rather than read off
+// shimwire's constants, which a case staged from would move with: fifty sizes, fifty unmeasured
+// paths, twenty-five refused /proc reads and three faults.
+func TestEveryListOfAReportOneEntryPastItsCapIsCutToItAndOneAtItIsCarriedWhole(t *testing.T) {
+	const sizes, missing, refused, faults = 50, 50, 25, 3
+	tr := newTrimFixture(t, 0).trimmer()
+	for _, past := range []int{0, 1} {
+		report := tr.bound(shimwire.LauncherVolumeReport{
+			Trimmer: tr.id, Episode: 1, RaisedBy: shimwire.VolumeEpisodeFirst,
+			Sizes:        make([]shimwire.LauncherVolumeSize, sizes+past),
+			SizesMissing: make([]shimwire.LauncherVolumeMissing, missing+past),
+			RefusedReads: make([]string, refused+past),
+			Faults:       make([]string, faults+past),
+		})
+		for _, list := range []struct {
+			name            string
+			held, cap, left int
+		}{
+			{"sizes", len(report.Sizes), sizes, report.SizesOmitted},
+			{"unmeasured paths", len(report.SizesMissing), missing, report.SizesMissingOmitted},
+			{"refused reads", len(report.RefusedReads), refused, report.RefusedReadsOmitted},
+			{"faults", len(report.Faults), faults, report.FaultsOmitted},
+		} {
+			if list.held != list.cap || list.left != past {
+				t.Errorf("a report of %d %s is bounded to %d of them with %d counted left out, want the cap of %d and the %d past it counted", list.cap+past, list.name, list.held, list.left, list.cap, past)
+			}
+		}
+		if err := report.Validate(); err != nil {
+			t.Errorf("the daemon refuses the report this launcher bounded from lists %d past their caps: %v", past, err)
+		}
+	}
+}
+
+// The trimmer holds the newest three faults it recovered and counts the rest (fault): three are
+// three held and none counted, and a fourth is held in place of the oldest, which is counted. A
+// pod whose volume stays healthy never reports, so what fault holds is what the launcher process
+// holds for its life, a stack of kilobytes each. A report cuts its faults to the same three again
+// (bound), so a trimmer that held a fourth sends the same report as one that did not — the four
+// faults of TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes reach the
+// report as three and one counted either way — and what the trimmer holds is read here, after
+// each fault. The faults are not in a row, as that case's four are not, since three in a row
+// switch the trimmer off: tick clears the run on every interval that recovers nothing, which is
+// done here by hand. Three is written out rather than read off shimwire.VolumeReportFaults.
+func TestTheTrimmerHoldsTheNewestThreeFaultsAndCountsAFourth(t *testing.T) {
+	const most = 3
+	tr := newTrimFixture(t, 0).trimmer()
+	for at := range most + 1 {
+		if off := tr.fault(fmt.Sprintf("panic %d", at), []byte("the stack")); off {
+			t.Fatalf("fault %d switched the trimmer off, want it on: no two of them are in a row", at+1)
+		}
+		tr.consecutive = 0 // the clean interval between two faults (tick)
+		held, dropped := min(at+1, most), max(0, at+1-most)
+		if len(tr.faults) != held || tr.faultsDropped != dropped {
+			t.Errorf("after %d faults the trimmer holds %d and counts %d more, want %d held and %d counted", at+1, len(tr.faults), tr.faultsDropped, held, dropped)
+		}
+	}
+	if !strings.HasPrefix(tr.faults[0], "panic 1\n") {
+		t.Errorf("the trimmer holds %q first, want the newest three of the four, from the second on", tr.faults[0])
 	}
 }

@@ -162,6 +162,58 @@ func TestEachSizeCarriesItsTwoAgeSplits(t *testing.T) {
 	}
 }
 
+// A file exactly an hour old is not among a size's bytes over an hour, and one a second older is;
+// the same holds of a day: R4 has each size carry "the bytes whose newest time is more than an hour
+// old and the bytes more than a day old" (countFile). The case above writes files ten minutes, two
+// hours and two days old, with which a split that took in the file at the hour or the day itself,
+// or left out one a second past it, is as green. The clock stands on a whole second, so every time
+// is one a file on this volume holds exactly, and each is read back before the walk.
+func TestAFileExactlyAnHourOrADayOldIsNotOverItAndOneASecondOlderIs(t *testing.T) {
+	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
+	root := walkTree(t, clock.at.Add(-2*time.Hour))
+	measured := filepath.Join(root, "scratch", "tmp")
+	if err := os.Remove(filepath.Join(measured, "one")); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []struct {
+		name  string
+		age   time.Duration
+		bytes int
+	}{
+		{"an-hour", time.Hour, 1},
+		{"a-second-past-an-hour", time.Hour + time.Second, 10},
+		{"a-day", 24 * time.Hour, 100},
+		{"a-second-past-a-day", 24*time.Hour + time.Second, 1000},
+	} {
+		path, at := filepath.Join(measured, file.name), clock.at.Add(-file.age)
+		if err := os.WriteFile(path, make([]byte, file.bytes), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+		if info, err := os.Lstat(path); err != nil || !info.ModTime().Equal(at) {
+			t.Fatalf("%s does not read as written at %s (%v): the case would not stand where it says", path, at, err)
+		}
+	}
+
+	result := walkOf(root, clock, &fakeTicks{}, measureTree).run(context.Background())
+	at := slices.IndexFunc(result.Sizes, func(size shimwire.LauncherVolumeSize) bool { return size.Path == measured })
+	if at < 0 {
+		t.Fatalf("the walk did not measure %s at all: %+v", measured, result.Sizes)
+	}
+	size := result.Sizes[at]
+	if size.Bytes != 1111 {
+		t.Errorf("%s holds %d B, want the 1111 of the four files in it", measured, size.Bytes)
+	}
+	if size.BytesOverHour != 1110 {
+		t.Errorf("%s holds %d B older than an hour, want the 1110 of the three files a second or more past the hour: the file exactly an hour old is not more than an hour old", measured, size.BytesOverHour)
+	}
+	if size.BytesOverDay != 1000 {
+		t.Errorf("%s holds %d B older than a day, want the 1000 of the file a second past the day: the file exactly a day old is not more than a day old", measured, size.BytesOverDay)
+	}
+}
+
 // The walk is bounded at sixty seconds, and a walker that blocks is cut where it stands: the
 // sizes it did produce are the first in the order the rule names, and everything it had not
 // reached is named as missing rather than reported as a directory of no bytes.
@@ -720,6 +772,59 @@ func TestNoSecondWalkIsMadeInsideTheHour(t *testing.T) {
 	}
 	if third.At.Equal(first.At) {
 		t.Errorf("the walk an hour later was read at %s, the same as the first: it is the same measurement", third.At)
+	}
+}
+
+// The walk an hour old is made again, and one a second younger is not: the trimmer walks again
+// once the last walk is an hour old and answers with the last one while it is less (sizes). The
+// case above moves the clock an hour and a minute, and reads the walk again at once, with which a
+// walk made again only past the hour, or a minute short of it, is as green. The clock does not
+// move on reading, so every reading of it is where the case put it.
+func TestAWalkAnHourOldIsMadeAgainAndOneASecondYoungerIsNot(t *testing.T) {
+	f := newTrimFixture(t, 1)
+	tr := f.trimmer()
+	calls := 0
+	tr.measure = func(_ context.Context, _ *dirHandle, _ string, _ time.Time) measured {
+		calls++
+		return measured{size: shimwire.LauncherVolumeSize{Bytes: int64(calls)}}
+	}
+
+	first := tr.sizes(context.Background())
+	made := calls
+	if made == 0 {
+		t.Fatal("the first walk measured nothing at all")
+	}
+	f.clock.advance(time.Hour - time.Second)
+	if young := tr.sizes(context.Background()); calls != made || !young.At.Equal(first.At) {
+		t.Errorf("the trimmer walked again %s after the last walk, want the last walk's numbers until it is an hour old", f.clock.now().Sub(first.At))
+	}
+	f.clock.advance(time.Second)
+	if age := f.clock.now().Sub(first.At); age != time.Hour {
+		t.Fatalf("the last walk is %s old, want exactly the hour this case stands on", age)
+	}
+	if old := tr.sizes(context.Background()); calls == made || !old.At.Equal(first.At.Add(time.Hour)) {
+		t.Errorf("the trimmer answered a walk read at %s an hour after the walk read at %s, having measured %d more targets, want a new walk", old.At, first.At, calls-made)
+	}
+}
+
+// The walk a report carries is given a budget of a minute: R4 has the size walk "bounded at sixty
+// seconds", and the cases of the budget arm their walks with volumeWalkBudget and read the budget
+// a walk asked for against it (TestTheWalkEndsOnItsBudgetAgainstAWalkerThatBlocks), with which a
+// budget of any length is as green. The trimmer's own walk is made here (sizes), and the budget it
+// asked the clock for is read against the minute written out: a budget a second either side of it
+// is a clock of another period.
+func TestTheTrimmersWalkIsGivenABudgetOfAMinute(t *testing.T) {
+	f := newTrimFixture(t, 1)
+	tr := f.trimmer()
+	before := f.ticks.count()
+	if walk := tr.sizes(context.Background()); walk.Partial {
+		t.Fatalf("the walk was cut, want it whole: the budget's clock never ticks in this case: %+v", walk)
+	}
+	if made := f.ticks.count() - before; made != 1 {
+		t.Fatalf("the walk made %d clocks, want the one its budget runs on", made)
+	}
+	if period := f.ticks.periodOf(before); period != time.Minute {
+		t.Errorf("the trimmer's walk asked for a budget of %s, want a minute", period)
 	}
 }
 

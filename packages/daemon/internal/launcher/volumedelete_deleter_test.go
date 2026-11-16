@@ -179,6 +179,45 @@ func TestARemovalOfADirectoryStillBeingWrittenInEnds(t *testing.T) {
 	}
 }
 
+// A removal makes two passes over a directory whose names keep appearing, and then answers
+// errStillFilling (empty, volumeRemovalPasses). The case above races a writer, so it holds that
+// the removal answers and not after how many passes: a bound of one pass, or of three, answers as
+// well. Here the writer is the removal's own window between the unlink of a name and its open
+// (betweenUnlinkAndOpen): each subdirectory of the entry the removal reaches has the next made
+// beside it there, so every pass meets one new name, and the passes are counted by the
+// subdirectories it reached. Two is written out rather than read off the constant.
+func TestARemovalMakesTwoPassesOverADirectoryWhoseNamesKeepAppearing(t *testing.T) {
+	const passes = 2
+	dir := t.TempDir()
+	held, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	entry := filepath.Join(dir, "entry")
+	mkdirFixture(t, filepath.Join(entry, "n1"))
+	reached := 0
+	betweenUnlinkAndOpen = func(name string) {
+		if !strings.HasPrefix(name, "n") {
+			return // the entry itself
+		}
+		reached++
+		if err := os.Mkdir(filepath.Join(entry, fmt.Sprintf("n%d", reached+1)), 0o755); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { betweenUnlinkAndOpen = nil })
+
+	removal := removeEntryAt(held, "entry", make([]byte, volumeRemovalNamesBytes))
+
+	if !errors.Is(removal, errStillFilling) {
+		t.Fatalf("the removal answered %v, want %v for a directory a new name appeared in at every pass", removal, errStillFilling)
+	}
+	if reached != passes {
+		t.Errorf("the removal made %d passes over the entry, want %d: the first, and one more for the names made while it ran", reached, passes)
+	}
+}
+
 // A directory still being written in that also holds a name whose removal fails for a reason of
 // its own is answered with that reason, not with errStillFilling: the writer is what made the
 // removal stop at its bound, but the name that failed is what would still stand once the writer
@@ -776,6 +815,18 @@ func TestTheDeleterAnswersARemovalItCannotMakeAsARefusal(t *testing.T) {
 	}
 	if _, err := os.Lstat(entry); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the entry the deleter answered removed is still there: %v", err)
+	}
+}
+
+// A request naming a descriptor below the first the trimmer passes is refused before anything is
+// opened (removeOneRequest): the directories begin at the fourth descriptor, and the trimmer
+// numbers them from 0, which every deleter case asks for, so -1 is the request one below them.
+// A refusal at -1 is no reach into the deleter's own standard error, the third descriptor, which
+// the number would otherwise name.
+func TestARequestNamingADescriptorBelowTheFirstPassedIsRefused(t *testing.T) {
+	err := removeOneRequest(map[int]*os.File{}, `-1 "entry"`, make([]byte, volumeRemovalNamesBytes))
+	if err == nil || !strings.Contains(err.Error(), "names the descriptor -1, which the trimmer passed none at") {
+		t.Errorf("the request for descriptor -1 was answered %v, want it refused as naming no descriptor the trimmer passed", err)
 	}
 }
 
