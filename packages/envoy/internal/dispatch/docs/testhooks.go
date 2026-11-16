@@ -733,6 +733,16 @@ func StateStructsForTest(state []byte) (int64, error) {
 	return int64(doc.StructCount()), nil
 }
 
+// PeerStructsAllowedForTest is how many structs one browser's update may carry into a room whose
+// stored state carries structs items and which the state cap leaves whole: the Structs field of
+// the allowance the peer update hook builds (peerApplyAllowance), the decode cap's structs'
+// share of what that cap leaves above the room (capShares) or what the state cap's bytes buy,
+// whichever is less. A real-process drive sizes the frames it fills a room with from it, so the
+// drive follows the hook's own share rather than keeping a copy of its arithmetic.
+func PeerStructsAllowedForTest(structs int64) int {
+	return peerApplyAllowance(0, 0, 0, uint64(max(structs, 0)), false, peerPressure{}).budget.Structs
+}
+
 // RescanForTest is what a re-scan of state, a document's stored Yjs state, scans (rescan): the
 // count a room's load starts its scan total at, since the load decodes the same bytes the same
 // way (roomScans.rescanned, decodeStoredCopy). A real-process drive reads from the allowance a

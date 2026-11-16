@@ -97,18 +97,22 @@ const (
 
 	// These mirror constants of internal/dispatch/docs, which this package cannot read:
 	// roomBudgetBytes, bytesOfHeapAStateByte, bytesOfHeapAStruct, roomCopies,
-	// maxPeerInsertAtTheBound, maxPeerByteCreep, maxRoomStateBytes and maxMessageBytes. Each is
-	// the figure the cut of INFRA-179 left: two prices in place of the six the budget charged
-	// before - a state byte and a struct, the larger of the two terms deciding - and
-	// the room's state cap in place of the unrendered bound and the frame total
+	// maxPeerInsertAtTheBound, maxPeerByteCreep, maxRoomStateBytes, maxMessageBytes,
+	// nearTheStateCap, bytesOfStateAStruct and smallestReplacementAdds. Each is the figure the
+	// cut of INFRA-179 left: two prices in place of the six the budget charged before - a state
+	// byte and a struct, the larger of the two terms deciding - and the room's state cap in place
+	// of the unrendered bound and the frame total
 	// (dispatch://INFRA-179/artifact/infra179-new-design-md).
 	//
 	// No drive takes a mirror on trust. The server names its budget in the line it logs for a
 	// refusal (refuseOverRoomBudget), and the budget drives fail unless that is this number; the
 	// byte drive fails unless a run of small inserts is refused exactly once the room is the
 	// creep past the bound, a paste past the insert allowance is refused, and a frame of exactly
-	// the message floor reaches the room's hook while one byte more does not; and the state cap
-	// drive fails unless exactly as many margin records are admitted as fit under it.
+	// the message floor reaches the room's hook while one byte more does not; the state cap
+	// drive fails unless exactly as many margin records are admitted as fit under it, each of
+	// its refusals allows the structs its bytes buy at the struct price, and its refusals close
+	// by the side of the margin they fall on; and the decode cap drive fails unless the structs
+	// each refusal allows are capShares' and a room within the near margin offers the rebuild.
 	roomBudgetBytesForTest         = 2 << 30
 	bytesOfHeapAStateByteForTest   = 17
 	bytesOfHeapAStructForTest      = 630
@@ -120,6 +124,21 @@ const (
 	// a room at the cap hands over a frame about the size of its state and four such frames fit
 	// the floor; the mirror derives it the same way rather than naming a second number.
 	maxRoomStateBytesForTest = maxMessageBytesForTest / 4
+	// nearTheStateCapForTest mirrors nearTheStateCap, the bytes under the state cap within which
+	// the rebuild route reads a room as near and takes it, and so within which a refusal of the
+	// state cap offers the rebuild (DOC_NEEDS_REBUILD) rather than DOC_TOO_LARGE (docs'
+	// nearACapUnencoded). The state cap drive refuses a room on either side of it and holds the
+	// close to the side.
+	nearTheStateCapForTest = maxPeerByteCreepForTest
+	// bytesOfStateAStructForTest mirrors bytesOfStateAStruct, what the state cap charges a struct
+	// an update carries past its content. The state cap drive holds the structs each refusal's
+	// line allows to the bytes it leaves at this price.
+	bytesOfStateAStructForTest = 48
+	// smallestReplacementAddsForTest mirrors smallestReplacementAdds, the structs within which of
+	// the decode cap the rebuild route reads a room as near without reading its text, and so
+	// within which a refusal of the decode cap offers the rebuild. The decode cap drive takes a
+	// room as near as a browser's frames can and holds its refusal to that side.
+	smallestReplacementAddsForTest = 3
 
 	// perFrameScanCeilingForTest mirrors perFrameScanCeiling, the most items one browser's
 	// update may scan when it holds a load slot, and bytesOfAScanMarkForTest bytesOfAScanMark,
@@ -885,12 +904,21 @@ func marginFloodRecord(client uint64, key, text string) []byte {
 // and took a room's whole-state frame from 264 bytes to 80,001,457, past the message floor every
 // browser of the document then reconnects against. Each is admitted while the room's tracked
 // state has room under maxRoomStateBytes for the content it carries, and the first that would
-// pass the cap and every one after it is refused with 4413 and DOC_NEEDS_REBUILD: the cap is the
-// one bound of the document's that only a rebuild clears, and the editor offers that rebuild.
-// The stored document, once settled, is a whole-state frame within the cap and one record, four
-// of which fit the message floor, and a browser opening it receives that state and hands it back
-// whole without its socket being closed. The room budget is set out of reach first, so what
-// refuses is the document's own bound and nothing else.
+// pass the cap and every one after it is refused with 4413. The stored document, once settled,
+// is a whole-state frame within the cap and one record, four of which fit the message floor, and
+// a browser opening it receives that state and hands it back whole without its socket being
+// closed. The room budget is set out of reach first, so what refuses is the document's own bound
+// and nothing else.
+//
+// The reason the refusal carries is the rebuild route's own reading of the room, and the drive
+// holds both of its halves (docs' peerRule.refusal, nearACapUnencoded). The flood's refusals
+// come with the room still 776,470 bytes under the cap, measured on 2026-11-16, far past the
+// 65,536 of nearTheStateCap: the route reads such a room far from every cap and answers a
+// rebuild 409 DOCUMENT_LIVE, so the close names none - DOC_TOO_LARGE, whose remedy is a smaller
+// edit, which the room still takes. One record then fills the room to within that margin, and
+// the next refusal, of a room the route does take, offers the rebuild - DOC_NEEDS_REBUILD. Each
+// is read from the line the server logs for the refusal: the rule that set the limit, the bytes
+// the cap left, and the structs it left at bytesOfStateAStruct a struct.
 //
 // internal/dispatch/docs holds the same cap in process
 // (TestBrowserUpdatesOfMarginBytesStopAtTheRoomsStateCap). What this drive adds is what the cap
@@ -901,10 +929,10 @@ func marginFloodRecord(client uint64, key, text string) []byte {
 // How many are admitted is the cap's own arithmetic, taken from the bytes themselves rather than
 // from a figure of the drive's. A room's tracked state starts at the stored state its load
 // decoded - which is why the drive restarts the server before it floods, so that state is the
-// one it measured - and each admitted update raises it by that update's own bytes (docs'
-// renderedReplica.chargeAdded). An update is admitted while the content it carries fits under
-// the cap above that tracked state, so the admitted are the first (cap - state - content)/update
-// + 1 of them.
+// one it measured - and each admitted update raises it by what the library reports the apply
+// added to the encoded state (docs' roomApplies.noteApply), about the update's own bytes for a
+// record like these. An update is admitted while the content it carries fits under the cap above
+// that tracked state, so the admitted are the first (cap - state - content)/update + 1 of them.
 func TestMarginFloodUpdatesStopAtTheRoomsStateCapAndTheFrameStaysUnderTheFloor(t *testing.T) {
 	memory := newMemoryHarness(t)
 	uploading := memory.start(t)
@@ -937,12 +965,41 @@ func TestMarginFloodUpdatesStopAtTheRoomsStateCapAndTheFrameStaysUnderTheFloor(t
 			admitted++
 			continue
 		}
-		requireRefused(t, applied, closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentNeedsRebuildCloseReason)
+		requireRefused(t, applied, closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentTooLargeCloseReason)
 		refused++
 		flooding.leave()
 		flooding = server.openBrowser(t, room)
 	}
 	flooding.leave()
+
+	// The far half: the flood's first refusal is the state cap's, of a room further from the cap
+	// than the margin the rebuild route reads as near.
+	far := awaitRefusalFigures(t, server, room, 0)
+	left := requireStateCapRefusal(t, far, "the flood's first refusal")
+	t.Logf("the flood's first refusal left the room %d bytes under the %d-byte state cap, %d past the %d-byte margin the rebuild route reads as near, and closed it %s",
+		left, maxRoomStateBytesForTest, left-nearTheStateCapForTest, nearTheStateCapForTest, far["close_reason"])
+	if left < nearTheStateCapForTest {
+		t.Fatalf("the flood was refused %d bytes under the state cap, inside the %d-byte margin: this drive's far refusal is no longer of a far room", left, nearTheStateCapForTest)
+	}
+	// The near half: a record that leaves the room half the margin under the cap is admitted,
+	// and the next one past what is left is refused with the rebuild offered.
+	nearing := server.openBrowser(t, room)
+	requireApplied(t, nearing, marginFloodRecord(uint64(5_000_000+updates), "near", strings.Repeat("m", int(left-nearTheStateCapForTest/2))),
+		"a margin record that fills the room to within the state cap's margin")
+	nearing.leave()
+	refusing := server.openBrowser(t, room)
+	applied, closed, err := refusing.send(refusing.updateFrame(marginFloodRecord(uint64(5_000_001+updates), "past", strings.Repeat("m", nearTheStateCapForTest))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireRefused(t, applied, closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentNeedsRebuildCloseReason)
+	refusing.leave()
+	near := awaitRefusalFigures(t, server, room, refused)
+	nearLeft := requireStateCapRefusal(t, near, "the refusal within the margin")
+	t.Logf("a room %d bytes under the state cap, inside the %d-byte margin, closed the update past it %s", nearLeft, nearTheStateCapForTest, near["close_reason"])
+	if nearLeft >= nearTheStateCapForTest {
+		t.Fatalf("the refusal offering the rebuild left the room %d bytes under the cap, outside the %d-byte margin the route reads as near", nearLeft, nearTheStateCapForTest)
+	}
 	memory.waitForSettled(t, room)
 	frame := int64(len(canonicalState(t, memory.storedState(t, room))))
 	t.Logf("%d of %d updates carrying %d bytes of content in %d bytes of update were admitted into a room starting at %d bytes of state, against the %d-byte state cap, %d refused; the stored whole-state frame is %d bytes, four of which are weighed against the %d-byte floor",
@@ -975,6 +1032,25 @@ func TestMarginFloodUpdatesStopAtTheRoomsStateCapAndTheFrameStaysUnderTheFloor(t
 	cut := crdt.EncodeStateAsUpdateV1(cutDoc, held)
 	requireInsertsNothing(t, cut)
 	requireApplied(t, cutting, cut, "a delete of a margin record from a room at the state cap")
+}
+
+// requireStateCapRefusal fails the test unless figures, a refusal's line (refusalFigures), name
+// the state cap as the rule that set both the bytes and the structs an apply may add - its bytes
+// what the cap leaves above the room's tracked state, and its structs that at
+// bytesOfStateAStructForTest a struct (docs' peerApplyAllowance) - and answers the bytes the cap
+// left, which is how far the room stood under it.
+func requireStateCapRefusal(t *testing.T, figures map[string]string, what string) int64 {
+	t.Helper()
+	left := refusalFigure64(t, figures, "content_limit")
+	if rule := refusalFigure64(t, figures, "byte_rule_limit"); rule != maxRoomStateBytesForTest {
+		t.Fatalf("%s names a byte rule of %d, want the %d-byte state cap: %v", what, rule, maxRoomStateBytesForTest, figures)
+	}
+	structs, rule := refusalFigure64(t, figures, "structs_limit"), refusalFigure64(t, figures, "struct_rule_limit")
+	if rule != maxRoomStateBytesForTest || structs != left/bytesOfStateAStructForTest {
+		t.Fatalf("%s allowed %d structs under a rule of %d, want the state cap's %d of the %d bytes it left, at %d a struct: %v",
+			what, structs, rule, left/bytesOfStateAStructForTest, left, bytesOfStateAStructForTest, figures)
+	}
+	return left
 }
 
 // The room budget refuses the browser its own arithmetic says it has no room for: documents of a
@@ -2162,6 +2238,56 @@ func pageRefusals(server *memoryServer, room string) []string {
 	return refusals
 }
 
+// refusalFigure is one key=value pair of a line the server logs, its value quoted or bare.
+var refusalFigure = regexp.MustCompile(`(\w+)=("[^"]*"|\S+)`)
+
+// refusalFigures is the figures of the nth line the server logged refusing a browser's update
+// into room - the rule, the close and every count and limit it names (docs' logRefusal) - by
+// key, quotes taken off; nil where it has logged no more than n such lines.
+func refusalFigures(server *memoryServer, room string, n int) map[string]string {
+	seen := 0
+	for _, line := range strings.Split(server.output.String(), "\n") {
+		if !strings.Contains(line, `msg="dispatch: refused a browser's update`) || !strings.Contains(line, " room="+room+" ") {
+			continue
+		}
+		if seen++; seen <= n {
+			continue
+		}
+		figures := make(map[string]string)
+		for _, pair := range refusalFigure.FindAllStringSubmatch(line, -1) {
+			figures[pair[1]] = strings.Trim(pair[2], `"`)
+		}
+		return figures
+	}
+	return nil
+}
+
+// refusalFigure64 is the number figure key of a refusal's figures (refusalFigures), failing the
+// test where the line carries none.
+func refusalFigure64(t *testing.T, figures map[string]string, key string) int64 {
+	t.Helper()
+	value, err := strconv.ParseInt(figures[key], 10, 64)
+	if err != nil {
+		t.Fatalf("the refusal's line carries no number %s: %v (%v)", key, err, figures)
+	}
+	return value
+}
+
+// awaitRefusalFigures waits for the server to log its nth refusal of an update into room, the
+// line reaching this process through the server's own output after the close it sent, and
+// answers that line's figures (refusalFigures).
+func awaitRefusalFigures(t *testing.T, server *memoryServer, room string, n int) map[string]string {
+	t.Helper()
+	for deadline := time.Now().Add(browserAnswerWithin); ; time.Sleep(10 * time.Millisecond) {
+		if figures := refusalFigures(server, room, n); figures != nil {
+			return figures
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server logged no refusal %d of an update into %s within %s", n, room, browserAnswerWithin)
+		}
+	}
+}
+
 // awaitPageRefusal waits for the server to log a refusal of an update into room past the first
 // after of them, and answers the close it logged.
 func awaitPageRefusal(t *testing.T, server *memoryServer, room string, after int) string {
@@ -2216,29 +2342,41 @@ const gcFloodClient = 5_000_000
 // server. A room is brought to within capHeadroom structs of the cap by updates of GC structs
 // its allowance admits, and one that would take it one struct past - sized from the structs the
 // room's own document holds, which is what the apply's allowance is built from
-// (crdt.Doc.StructCount, docs' peerApplyAllowance) - is refused with 4413 and DOC_NEEDS_REBUILD,
-// the rebuild the decode cap offers (docs' peerRule.refusal), and taken back out whole, leaving
-// the room as it was. The frame that takes the room to the cap exactly is admitted, and so is a
-// frame of delete ranges, which integrates nothing: the splits a delete makes in items the
+// (crdt.Doc.StructCount, docs' peerApplyAllowance) - is refused with 4413 and taken back out
+// whole, leaving the room as it was. Frames of what the allowance carries then take the room as
+// near the cap as a browser's frames can, and one struct more is refused too. A frame of delete
+// ranges, which integrates nothing, is admitted there: the splits a delete makes in items the
 // document already held are not the update's own and are not counted against it
 // (crdt.ApplyBudget.Structs), so a document at the cap can still be trimmed. The stored document
 // then loads in a new room of a new server, within the cap.
 //
-// The fill is gcFillFrame structs a frame and no more because a GC struct is a deleted item's
-// clock, which the apply's byte allowance counts (crdt.ApplyBudget.Bytes, sjawhar/ygo
-// v1.55.1-sami.8): a frame of more than about 500,000 of them is over the document's own byte
-// bound before its structs are weighed at all, and would be refused for the bytes rather than
-// for the cap this drives. capHeadroom is what is left above the fill, so the two frames that
-// meet the cap - the one past it and the one that reaches it - are a kilobyte each and are
-// weighed by the cap alone.
+// Every frame's size is the hook's own share, read from the code (docs.PeerStructsAllowedForTest)
+// rather than written here: a struct that parks costs the stored state two items, so the
+// structs' half of what the cap leaves carries half as many structs as it holds items (docs'
+// capShares), and a copy of that arithmetic in the drive is what went stale when the share
+// changed. What stops the fill is that share and not the state cap: measured on 2026-11-16, the
+// first frame into a ten-struct room was allowed 262,141 structs by the decode cap where the state
+// cap's bytes would have bought 349,519, and a run of GC structs of one client adds about two
+// bytes of state a struct, so the state cap's figure stays far above the decode cap's share all
+// the way to it. Each refusal's line is held to both numbers: the structs it allowed are the
+// hook's share, under the decode cap's rule, and the state cap's bytes would have bought more.
+// The share stops two structs short of the cap - the last items are the splits' half - which is
+// within the smallestReplacementAdds the rebuild route reads as near, so a browser cannot take a
+// room to the decode cap itself.
 //
-// Before the cut the room kept a running struct total of its own and charged each struct of an
-// update with the two splits it could cause, which is why a frame of a third of the cap's
-// structs was refused where these take it; ygo counts what the apply integrates now, so the
-// drive asks for the exact frame the cap refuses. internal/dispatch/docs holds the same cap in
-// process (TestAnUpdateThatWouldTakeTheRoomPastTheDecodeCapIsRefused); what this drive adds is
-// that the room a real socket drove is left byte for byte as it was and that its stored history
-// loads again.
+// The reason each refusal carries is the rebuild route's own reading of the room, and the drive
+// holds both halves (docs' peerRule.refusal, nearACapUnencoded): 1,024 structs short of the cap
+// is far, so the route would answer a rebuild 409 DOCUMENT_LIVE and the close names none -
+// DOC_TOO_LARGE, whose remedy is a smaller frame, which the room then takes - while within the
+// near margin the route takes the room and the close offers it - DOC_NEEDS_REBUILD.
+//
+// The fill is gcFillFrame structs a frame at most so that no frame is refused for its bytes
+// before its structs are weighed. capHeadroom is what is left above the fill, so the frames
+// that meet the cap are a kilobyte each and are weighed by the cap alone.
+// internal/dispatch/docs holds the same cap in process
+// (TestAnUpdateThatWouldTakeTheRoomPastTheDecodeCapIsRefused); what this drive adds is that the
+// room a real socket drove is left byte for byte as it was and that its stored history loads
+// again.
 func TestABrowserCannotPushADocumentPastTheDecodeCap(t *testing.T) {
 	const gcFillFrame, capHeadroom = 262_144, 1_024
 	memory := newMemoryHarness(t)
@@ -2266,19 +2404,14 @@ func TestABrowserCannotPushADocumentPastTheDecodeCap(t *testing.T) {
 		if short <= 0 {
 			break
 		}
-		// One apply may integrate the structs' half of what the cap leaves above the room, since
-		// the other half is the splits' and ygo counts the two apart (docs' peerApplyAllowance,
-		// dispatch://INFRA-179, review 6's finding 1). A frame of the whole headroom is refused
-		// once the room is past half the cap, which is where this fill spends most of its time.
-		frame := min(short-short/2, gcFillFrame)
-		requireApplied(t, filling, gcFrame(fillClient, frame, 1), fmt.Sprintf("an update of %d GC structs", frame))
+		frame := min(docs.PeerStructsAllowedForTest(held), short, gcFillFrame)
+		requireApplied(t, filling, gcFrame(fillClient, frame, 1), fmt.Sprintf("an update of %d GC structs into a room of %d", frame, held))
 		fillClient++
 	}
 	left := int(maxUpdateItemsForTest - held)
 	t.Logf("the room holds %d structs after %d fill frames, %d short of the %d-struct decode cap", held, fillClient-gcFloodClient, left, maxUpdateItemsForTest)
-	if left < 2 {
-		t.Fatalf("the room is %d structs short of the cap, want room for the frame that reaches it and the one that passes it", left)
-	}
+
+	// The far half: one struct past the cap, into a room 1,024 short of it.
 	refusing := server.openBrowser(t, room)
 	t.Cleanup(refusing.leave)
 	past := gcFrame(fillClient, left+1, 1)
@@ -2287,21 +2420,36 @@ func TestABrowserCannotPushADocumentPastTheDecodeCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("a %d-byte update of %d GC structs, one past the cap: applied %v, closed %v", len(past), left+1, applied, closed)
-	requireRefused(t, applied, closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentNeedsRebuildCloseReason)
+	requireRefused(t, applied, closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentTooLargeCloseReason)
+	requireDecodeCapRefusal(t, awaitRefusalFigures(t, server, room, 0), held, "the refusal 1,024 structs short of the cap")
 	if state := canonicalState(t, filling.state(t)); !bytes.Equal(state, before) {
 		t.Fatalf("the room holds a %d-byte state after the refused update, want the %d-byte state it held", len(state), len(before))
 	}
-	// What the cap admits: the frame that reaches it exactly, and a frame of delete ranges,
-	// which integrates nothing of its own whatever the room already holds.
-	// The frame that reaches the cap is the structs' half of what is left, sent until nothing is:
-	// each apply takes half the remaining headroom, so the room reaches the cap in a few frames
-	// rather than one, and none of them leaves the splits' half with nothing.
-	for short := left; short > 0; short = int(maxUpdateItemsForTest - structsOf(t, filling)) {
+	// What the cap admits: frames of the share, sent until it allows nothing, and a frame of
+	// delete ranges, which integrates nothing of its own whatever the room already holds.
+	for share := docs.PeerStructsAllowedForTest(held); share > 0; share = docs.PeerStructsAllowedForTest(held) {
 		fillClient++
-		requireApplied(t, filling, gcFrame(fillClient, short-short/2, 1), fmt.Sprintf("an update of %d GC structs, toward the cap", short-short/2))
-		if short-short/2 == 0 {
-			break
-		}
+		requireApplied(t, filling, gcFrame(fillClient, share, 1), fmt.Sprintf("an update of %d GC structs, toward the cap", share))
+		held = structsOf(t, filling)
+	}
+	t.Logf("frames of the hook's share took the room to %d structs, %d short of the %d-struct cap, where it allows none", held, maxUpdateItemsForTest-held, maxUpdateItemsForTest)
+	if held > maxUpdateItemsForTest || held+smallestReplacementAddsForTest <= maxUpdateItemsForTest {
+		t.Fatalf("the share's last frame left the room at %d structs, want it within the %d of the cap the rebuild route reads as near and not past the %d-struct cap",
+			held, smallestReplacementAddsForTest, maxUpdateItemsForTest)
+	}
+	// The near half: one struct more, into a room the rebuild route takes.
+	before = canonicalState(t, filling.state(t))
+	nearing := server.openBrowser(t, room)
+	t.Cleanup(nearing.leave)
+	fillClient++
+	applied, closed, err = nearing.send(nearing.updateFrame(gcFrame(fillClient, 1, 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireRefused(t, applied, closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentNeedsRebuildCloseReason)
+	requireDecodeCapRefusal(t, awaitRefusalFigures(t, server, room, 1), held, "the refusal within the near margin")
+	if state := canonicalState(t, filling.state(t)); !bytes.Equal(state, before) {
+		t.Fatalf("the room holds a %d-byte state after the refused struct, want the %d-byte state it held", len(state), len(before))
 	}
 	fillClient++
 	requireApplied(t, filling, deleteRangesFrame(fillClient+2, 64), "an update of 64 delete ranges into a room at the cap")
@@ -2310,7 +2458,7 @@ func TestABrowserCannotPushADocumentPastTheDecodeCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("count the room's structs at the cap: %v", err)
 	}
-	t.Logf("the room holds %d structs once the frame that reaches the cap and a frame of delete ranges have applied", capped)
+	t.Logf("the room holds %d structs once the frames of the share and a frame of delete ranges have applied", capped)
 	if capped > maxUpdateItemsForTest {
 		t.Fatalf("the room holds %d structs, past the %d-struct cap: the allowance admitted more than what was left of it", capped, maxUpdateItemsForTest)
 	}
@@ -2327,6 +2475,26 @@ func TestABrowserCannotPushADocumentPastTheDecodeCap(t *testing.T) {
 	t.Logf("a new server's room loads the stored document as a %d-byte state of %d structs", len(state), loaded)
 	if !bytes.Equal(state, atTheCap) || loaded > maxUpdateItemsForTest {
 		t.Fatalf("a new room loads a %d-byte state of %d structs, want the %d-byte state the room held, within the %d-struct cap", len(state), loaded, len(atTheCap), maxUpdateItemsForTest)
+	}
+}
+
+// requireDecodeCapRefusal fails the test unless figures, a refusal's line (refusalFigures) of an
+// update into a room holding held structs, name the decode cap as the rule that set the structs
+// the apply may carry, at the hook's own share (docs.PeerStructsAllowedForTest), and show the
+// state cap leaving bytes that would buy more structs than that at bytesOfStateAStructForTest a
+// struct: the decode cap binds, and not the state cap.
+func requireDecodeCapRefusal(t *testing.T, figures map[string]string, held int64, what string) {
+	t.Helper()
+	structs, rule := refusalFigure64(t, figures, "structs_limit"), refusalFigure64(t, figures, "struct_rule_limit")
+	stateBuys := refusalFigure64(t, figures, "content_limit") / bytesOfStateAStructForTest
+	t.Logf("%s allowed %d structs under the decode cap's rule (%d) and closed %s; the state cap's bytes would have bought %d",
+		what, structs, rule, figures["close_reason"], stateBuys)
+	if rule != maxUpdateItemsForTest || structs != int64(docs.PeerStructsAllowedForTest(held)) {
+		t.Fatalf("%s allowed %d structs under a rule of %d, want the decode cap's share of %d for a room of %d structs: %v",
+			what, structs, rule, docs.PeerStructsAllowedForTest(held), held, figures)
+	}
+	if stateBuys <= structs {
+		t.Fatalf("%s left the state cap %d structs' worth of bytes, no more than the %d the decode cap allowed: the state cap binds here", what, stateBuys, structs)
 	}
 }
 
