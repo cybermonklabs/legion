@@ -393,13 +393,24 @@ export function blockIds(markdown: string): string[] {
 /**
  * The term names of the `- **term**: definition` lines under a heading `Terms`, with `-`, `*` or
  * `+`, read as specform.ExtractDocument reads them: the section ends at the next heading of its
- * level or above.
+ * level or above, and no line of a code fence counts, a heading among them.
  */
 export function termNames(markdown: string): string[] {
   const names: string[] = [];
   let level = 0;
+  let fence = "";
   for (const line of markdown.split("\n")) {
-    const heading = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line.trim());
+    const trimmed = line.trim();
+    if (fence !== "") {
+      if (trimmed.startsWith(fence) && /^([`~])\1*$/.test(trimmed)) fence = "";
+      continue;
+    }
+    const opening = /^(`{3,}|~{3,})/.exec(trimmed);
+    if (opening !== null) {
+      fence = opening[1] ?? "";
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(trimmed);
     if (heading !== null) {
       const depth = (heading[1] ?? "").length;
       if (level > 0 && depth <= level) level = 0;
